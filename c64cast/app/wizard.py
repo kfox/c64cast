@@ -183,10 +183,17 @@ def build_config(
     audio_enabled: bool | None = None,
     vision_enabled: bool | None = None,
     audio_overrides: dict[str, object] | None = None,
+    base: cfgmod.Config | None = None,
 ) -> cfgmod.Config:
     """Assemble a single-scene Config from collected answers. Pure — no I/O —
-    so the wizard's terminal shell stays a thin layer over this."""
-    cfg = cfgmod.Config()
+    so the wizard's terminal shell stays a thin layer over this.
+
+    `base` is the Config the answers are applied on top of; the terminal shell
+    passes `config.machine_baseline()` so the wizard validates what will
+    actually run, and so the same baseline can be handed to the serializer —
+    which is what keeps this machine's settings out of the written file. It is
+    mutated, so callers pass a Config of their own."""
+    cfg = base if base is not None else cfgmod.Config()
     _apply_globals(
         cfg,
         url=url,
@@ -209,11 +216,13 @@ def build_multi_config(
     audio_overrides: dict[str, object] | None = None,
     playlist: dict[str, object] | None = None,
     interstitial: dict[str, object] | None = None,
+    base: cfgmod.Config | None = None,
 ) -> cfgmod.Config:
     """Assemble a multi-scene Config. `scenes` is set verbatim (order
     preserved); `playlist`/`interstitial` are dict overrides applied via
-    setattr onto the matching section. Pure — no I/O."""
-    cfg = cfgmod.Config()
+    setattr onto the matching section. `base` is as `build_config`'s. Pure —
+    no I/O."""
+    cfg = base if base is not None else cfgmod.Config()
     _apply_globals(
         cfg,
         url=url,
@@ -719,14 +728,19 @@ def _write_and_offer_launch(
     q,
     cfg: cfgmod.Config,  # type: ignore[no-untyped-def]
     path_arg: str | None,
+    baseline: cfgmod.Config | None = None,
 ) -> tuple[str, bool] | None:
     """Shared tail: preview, confirm path, write the TOML, offer to launch.
-    Returns (written_path, launch_now) or None on cancel."""
+    Returns (written_path, launch_now) or None on cancel.
+
+    `baseline` is the Config `cfg` was built on — the machine layer — so the
+    written file says what the *user* chose and leaves what this machine
+    already supplies to the machine settings."""
     out_path = path_arg or "c64cast.toml"
     out_path = q.text("Write to", default=out_path).ask()
     if out_path is None:
         return None
-    toml = ser.dumps(cfg, schema_path=schema_directive_for(out_path))
+    toml = ser.dumps(cfg, schema_path=schema_directive_for(out_path), baseline=baseline)
     print("\n--- generated config -------------------------------------\n")
     print(toml)
     print("----------------------------------------------------------\n")
@@ -738,7 +752,7 @@ def _write_and_offer_launch(
         return None
     if not q.confirm(f"Write {out_path}?", default=True).ask():
         return None
-    ser.dump(cfg, out_path, schema_path=schema_directive_for(out_path))
+    ser.dump(cfg, out_path, schema_path=schema_directive_for(out_path), baseline=baseline)
     print(f"\n✓ wrote {out_path}")
 
     launch = bool(q.confirm("Launch it now?", default=False).ask())
@@ -759,6 +773,10 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         return None
     url, system = globals_
 
+    # Two instances rather than one: the build mutates what it is handed, and
+    # the serializer needs an untouched copy of the same layer to measure the
+    # answers against.
+    baseline = cfgmod.machine_baseline()
     cfg = build_config(
         scene_type=str(scene["scene_type"]),
         scene_fields=scene["scene_fields"],  # type: ignore[arg-type]
@@ -767,6 +785,7 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         system=system,
         audio_enabled=scene["audio_enabled"],  # type: ignore[arg-type]
         audio_overrides=audio_overrides,
+        base=cfgmod.machine_baseline(),
     )
 
     err = validate(cfg)
@@ -774,7 +793,7 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         print(f"\n⚠  This config doesn't validate yet:\n   {err}\n")
         if not q.confirm("Write it anyway?", default=False).ask():
             return None
-    return _write_and_offer_launch(q, cfg, path_arg)
+    return _write_and_offer_launch(q, cfg, path_arg, baseline)
 
 
 def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ignore[no-untyped-def]
@@ -800,7 +819,9 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
         return None
     url, system = globals_
 
+    baseline = cfgmod.machine_baseline()  # untouched copy — see _run_single
     cfg = build_multi_config(
+        base=cfgmod.machine_baseline(),
         scenes=[
             make_scene(
                 str(s["scene_type"]),
@@ -825,7 +846,7 @@ def _run_multi(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ign
         print()
         if not q.confirm("Write it anyway?", default=False).ask():
             return None
-    return _write_and_offer_launch(q, cfg, path_arg)
+    return _write_and_offer_launch(q, cfg, path_arg, baseline)
 
 
 def run_init(path_arg: str | None) -> tuple[str, bool] | None:

@@ -9,7 +9,7 @@
   import type { Console } from "$lib/console.svelte";
   import { DocIndex, documentation } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigDetail, ConfigIndex } from "$lib/types";
+  import type { ConfigDetail, ConfigEdit, ConfigIndex } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -24,13 +24,15 @@
   let loading = $state(false);
   let problem = $state("");
   let view = $state<"form" | "text">("form");
-  let onlyChanged = $state(true);
 
   // Edits survive clicking away to another file and back. The alternative —
   // a "you have unsaved changes" dialog on every navigation — asks the reader
-  // to defend an edit they may just be comparing against something else.
+  // to defend an edit they may just be comparing against something else. Both
+  // editors get it: the form's staged edits are kept per ref the same way the
+  // raw text is.
   let drafts = $state<Record<string, string>>({});
   let draft = $state("");
+  let staged = $state<Record<string, Record<string, ConfigEdit>>>({});
 
   // A click through a long list starts several loads; only the newest one is
   // allowed to land, or the screen settles on whichever file the network
@@ -38,8 +40,24 @@
   let generation = 0;
 
   const selected = $derived(router.tail);
-  const edited = $derived(Object.keys(drafts));
-  const dirty = $derived(detail !== null && draft !== detail.text);
+  const pending = $derived(staged[selected] ?? {});
+  const edited = $derived([
+    ...new Set([
+      ...Object.keys(drafts),
+      ...Object.keys(staged).filter((ref) => Object.keys(staged[ref]).length > 0),
+    ]),
+  ]);
+  const dirty = $derived(
+    (detail !== null && draft !== detail.text) || Object.keys(pending).length > 0,
+  );
+
+  /** True when the file on screen is the one the session is running, which is
+   *  what makes "saved" and "in effect" two different things worth saying. */
+  const isRunning = $derived(
+    detail !== null &&
+      host.session?.state === "running" &&
+      host.session.config_path === detail.abs_path,
+  );
 
   onMount(() => {
     void refreshIndex();
@@ -109,19 +127,39 @@
     return next;
   }
 
+  function stage(next: Record<string, ConfigEdit>): void {
+    staged = { ...staged, [selected]: next };
+  }
+
   /** A save changes what the file *is*, so the form beside it is re-read
-   *  rather than left describing the version that was there a moment ago. */
+   *  rather than left describing the version that was there a moment ago —
+   *  and both editors drop what they had staged for it, since the file now
+   *  says it. */
   async function reread(): Promise<void> {
     drafts = withDraft(null);
+    stage({});
     await load(selected);
     await refreshIndex();
+  }
+
+  /** Rebuild the running scenes from the file just saved. Only offered for
+   *  the config that is actually running: a reload is the supervisor's, not
+   *  this file's, and pointing it at a config it isn't running would be a
+   *  button that lies. */
+  async function reload(): Promise<void> {
+    problem = "";
+    try {
+      await api.reload();
+    } catch (e) {
+      problem = describe(e);
+    }
   }
 
   const clock = (t: number) => new Date(t * 1000).toLocaleString();
 </script>
 
 <div class="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-  <section class="panel p-5">
+  <section class="panel min-w-0 p-5">
     <header class="mb-3 flex items-center justify-between gap-3">
       <h2 class="text-lg font-semibold">Configurations</h2>
       <Button onclick={refreshIndex}>Refresh</Button>
@@ -165,6 +203,20 @@
           {/if}
         </p>
       </header>
+
+      {#if isRunning}
+        <div
+          class="mb-4 flex flex-wrap items-center gap-3 rounded-lg bg-[var(--panel-alt)] px-3 py-2"
+        >
+          <p class="flex-1 text-sm">
+            This is what the session is running. A save lands on disk; the show picks it up on a
+            reload.
+          </p>
+          {#if !host.readOnly}
+            <Button onclick={reload}>Reload scenes</Button>
+          {/if}
+        </div>
+      {/if}
 
       {#if detail.error}
         <p class="mb-4 rounded-lg border border-c64-red/50 px-3 py-2 text-sm text-c64-red">
@@ -212,16 +264,15 @@
           onsaved={() => void reread()}
         />
       {:else if detail.form && docs}
-        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" bind:checked={onlyChanged} class="size-4" />
-            Only what this file changes
-          </label>
-          <p class="text-xs text-[var(--ink-dim)]">
-            Values are what the loader resolved, so machine settings and defaults show through.
-          </p>
-        </div>
-        <ConfigForm form={detail.form} {docs} {onlyChanged} />
+        <ConfigForm
+          form={detail.form}
+          {docs}
+          path={detail.path}
+          readOnly={host.readOnly}
+          {pending}
+          onpending={stage}
+          onsaved={() => void reread()}
+        />
       {:else if detail.kind === "ensemble"}
         <p class="text-sm text-[var(--ink-dim)]">
           An ensemble master is authored across several files, so there is no single set of settings

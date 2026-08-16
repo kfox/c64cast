@@ -24,8 +24,24 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import MachineSettingsIsolation
+
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store
+
+# Every read and every patch measures against the machine-settings layer, so a
+# real settings file on the developer's machine would change what `is_default`
+# says and what a save writes. `MachineBaselineTest` supplies its own file.
+_settings_isolation = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _settings_isolation.start()
+
+
+def tearDownModule() -> None:
+    _settings_isolation.stop()
+
 
 # `[audio].enabled` defaults on and `validate_configs` refuses it when
 # sounddevice is absent, which is the CI job's environment — a fixture that
@@ -332,6 +348,15 @@ class PatchTest(StoreTestCase):
             cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0].color.dither, "ordered"
         )
 
+    def test_a_scenes_type_is_not_a_field_edit(self):
+        # Changing it would reinterpret every other field in the block, and the
+        # re-serialise would then drop the ones the new type has no use for —
+        # a save that quietly loses what the scene said. Text editor's job.
+        with self.assertRaises(config_store.EditRejected) as caught:
+            self.store.patch("shows/gig.toml", [{"scene": 0, "field": "type", "value": "video"}])
+        self.assertIn("as text", str(caught.exception))
+        self.assertIn('type = "blank"', self._read())
+
     def test_reset_removes_the_key_the_way_the_form_unsets_it(self):
         # `minimal = true` is what drops it: a field back at its default is a
         # field a human wouldn't have written.
@@ -470,6 +495,92 @@ class DescribeTest(unittest.TestCase):
         cfg = cfgmod.Config()
         cfg.scenes.append(cfgmod.SceneCfg(type="blank"))
         json.dumps(config_store.describe(cfg))
+
+    def test_every_field_carries_what_it_falls_back_to(self):
+        # The form shows this before offering a `reset`, and it can't be read
+        # off the introspection document — that carries the dataclass default,
+        # which is a different thing on a machine with settings.
+        baseline = cfgmod.Config()
+        baseline.video.device = 3
+        form = config_store.describe(cfgmod.Config(), baseline)
+        video = next(s for s in form["sections"] if s["name"] == "video")
+        device = next(f for f in video["fields"] if f["name"] == "device")
+        self.assertEqual(device["baseline"], 3)
+
+    def test_scene_fields_carry_one_too(self):
+        cfg = cfgmod.Config()
+        cfg.scenes.append(cfgmod.SceneCfg(type="blank", duration_s=9.0))
+        field = next(
+            f
+            for f in config_store.describe(cfg)["scenes"][0]["fields"]
+            if f["name"] == "duration_s"
+        )
+        self.assertEqual(field["baseline"], cfgmod.SceneCfg().duration_s)
+
+    def test_is_default_is_measured_against_the_baseline(self):
+        # A field the machine layer set and the file did not is *not* something
+        # this file changes, so the form must not mark it as one.
+        baseline = cfgmod.Config()
+        baseline.video.device = 3
+        cfg = cfgmod.Config()
+        cfg.video.device = 3
+        form = config_store.describe(cfg, baseline)
+        video = next(s for s in form["sections"] if s["name"] == "video")
+        device = next(f for f in video["fields"] if f["name"] == "device")
+        self.assertTrue(device["is_default"])
+
+
+class MachineBaselineTest(StoreTestCase):
+    """What the machine-settings layer does to a read and to a save.
+
+    The bug this pins: a config saved from the form used to come back carrying
+    every machine setting that differed from a shipped default — so a show file
+    edited on the machine with the capture card grew a `[video] device` that
+    then overrode the next machine's own."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        settings = self.tmp / "settings.toml"
+        settings.write_text("[video]\ndevice = 3\n", encoding="utf-8")
+        patch = mock.patch.dict(os.environ, {"C64CAST_SETTINGS": str(settings)})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _read(self) -> str:
+        return (self.shows / "gig.toml").read_text(encoding="utf-8")
+
+    def test_a_read_shows_the_resolved_value_but_calls_it_unchanged(self):
+        form = self.store.read("shows/gig.toml")["form"]
+        video = next(s for s in form["sections"] if s["name"] == "video")
+        device = next(f for f in video["fields"] if f["name"] == "device")
+        self.assertEqual(device["value"], 3)  # what the run will use
+        self.assertTrue(device["is_default"])  # but not what this file says
+
+    def test_a_patch_does_not_write_the_machine_setting_into_the_file(self):
+        self.store.patch(
+            "shows/gig.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        self.assertIn('dither = "ordered"', self._read())
+        self.assertNotIn("device", self._read())
+
+    def test_a_patch_can_still_override_the_machine_setting(self):
+        self.store.patch("shows/gig.toml", [{"section": "video", "field": "device", "value": 5}])
+        self.assertIn("device = 5", self._read())
+
+    def test_reset_puts_a_field_back_to_the_machine_setting(self):
+        self.store.patch("shows/gig.toml", [{"section": "video", "field": "device", "value": 5}])
+        self.store.patch("shows/gig.toml", [{"section": "video", "field": "device", "reset": True}])
+        self.assertNotIn("device", self._read())
+        self.assertEqual(cfgmod.load(str(self.shows / "gig.toml")).video.device, 3)
+
+    def test_a_password_in_the_machine_settings_does_not_block_editing(self):
+        settings = self.tmp / "settings.toml"
+        settings.write_text('[ultimate64]\ndma_password = "hunter2"\n', encoding="utf-8")
+        out = self.store.patch(
+            "shows/gig.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+        )
+        self.assertTrue(out["ok"])
+        self.assertNotIn("dma_password", self._read())
 
 
 if __name__ == "__main__":

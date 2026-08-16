@@ -402,6 +402,9 @@ def run_save_settings(args: argparse.Namespace) -> int:
     if args.system is not None:
         cfg.ultimate64.system = args.system
 
+    # No `baseline` here, unlike every other save-back: this *is* the machine
+    # layer, so the dataclass defaults are what it sits on. Measuring it against
+    # itself would write an empty file.
     text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
     dest = paths.settings_path()
     transport.atomic_write_text(dest, text)

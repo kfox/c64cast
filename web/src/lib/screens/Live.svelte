@@ -87,7 +87,7 @@
     <!-- `items-start` so a short clip grid does not stretch to the height of a
          long effect rack, which on a two-effect show is most of the panel. -->
     <div class="grid items-start gap-4 lg:grid-cols-2">
-      <section class="panel p-5">
+      <section class="panel min-w-0 p-5">
         <h2 class="mb-3 text-lg font-semibold">Clips</h2>
         <ClipGrid
           clips={current.clips}
@@ -96,7 +96,7 @@
         />
       </section>
 
-      <section class="panel p-5">
+      <section class="panel min-w-0 p-5">
         <h2 class="mb-3 text-lg font-semibold">Effects</h2>
         <EffectRack
           effects={current.effects}
@@ -106,7 +106,7 @@
         />
       </section>
 
-      <section class="panel p-5 lg:col-span-2">
+      <section class="panel min-w-0 p-5 lg:col-span-2">
         <h2 class="mb-3 text-lg font-semibold">Looks</h2>
         <LookPads
           looks={current.looks}

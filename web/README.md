@@ -53,7 +53,15 @@ reason.
 | `src/lib/introspect.ts` | `/api/introspect`, fetched once, indexed for lookup |
 | `src/lib/types.ts` | Hand-written mirrors of the daemon's JSON |
 | `src/lib/components/` | Presentational pieces |
+| `src/lib/components/FieldInput.svelte` | One config field's control, chosen by its declared type |
 | `src/lib/screens/` | One file per screen |
+
+Two rules the screens follow and a new one should too. Panels are `min-w-0`
+grid items — a grid item is min-content-sized by default, so one long log line
+otherwise makes the whole *page* wider than the phone reading it. And a control
+under the finger ignores the echo: values round-trip through the parent and come
+back formatted, so a text input holds its raw text while it has the caret
+(`FieldInput`) and a slider holds its position through a gesture (`FxSlider`).
 
 Design notes — why the bundle is committed, why the fallback is a catch-all,
 why the assets are served by hand — are in

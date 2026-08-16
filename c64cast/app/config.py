@@ -3346,6 +3346,22 @@ def apply_machine_settings(cfg: Config, unknown: list[UnknownKey] | None = None)
     return cfg
 
 
+def machine_baseline() -> Config:
+    """A fresh Config carrying the machine-settings layer and nothing above it.
+
+    This is the "nothing was set *here*" reference for every layer that has to
+    tell an authored value from an inherited one. Two callers need it and they
+    need it for the same reason: :func:`apply_master_defaults` decides whether a
+    per-system file set a field, and :func:`config_serialize.dumps` decides
+    whether a field is worth writing — and a field the machine layer supplies
+    was not set by either the system or the file.
+
+    Reads the settings file on every call, which is what makes it correct rather
+    than cached: a run that saves machine settings and then serializes a config
+    must measure against the file as it now is."""
+    return apply_machine_settings(Config())
+
+
 def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
     """Load a Config from a TOML file path, or from the default search path
     if `path` is None, or return defaults if neither exists.
@@ -3698,8 +3714,7 @@ def load_master(path: str | None) -> LoadResult:
     # Config (not a blank one): a field coming only from the machine layer must
     # still be treated as "this system didn't set it" so the master TOML can
     # override it — machine < master < per-system. Built once, reused per system.
-    machine_baseline = Config()
-    apply_machine_settings(machine_baseline)
+    cascade_baseline = machine_baseline()
 
     master_dir = os.path.dirname(os.path.abspath(path))
     cfgs: list[Config] = []
@@ -3709,7 +3724,7 @@ def load_master(path: str | None) -> LoadResult:
         if not os.path.isabs(sub_path):
             sub_path = os.path.join(master_dir, sub_path)
         sys_cfg = load(sub_path, unknown)
-        sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=machine_baseline)
+        sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=cascade_baseline)
         # Per-system Configs never carry ensemble metadata themselves —
         # only the master TOML does. (Belt and braces: load() never sets
         # ensemble either since it doesn't know about [ensemble].)
