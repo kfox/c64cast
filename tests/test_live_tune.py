@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 from dataclasses import fields, replace
-from typing import cast
+from typing import Any, cast
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
@@ -21,6 +21,7 @@ from c64cast.scenes import scenes
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI  # noqa: E402
 
+from c64cast.control import live_tune as lt
 from c64cast.control.midi_control import MidiControlListener
 from c64cast.control.transport import LiveTuneTracker, atomic_write_text
 from c64cast.video.dither import DITHER_METHODS
@@ -223,6 +224,33 @@ class ModeSetterTests(unittest.TestCase):
         self.assertNotIn("palette_mode", HiresDisplayMode.LIVE_CHOICES)
 
 
+class LiveChoiceReadbackTests(unittest.TestCase):
+    """Every declared LIVE_CHOICE must read back as one of its own choices.
+
+    A mode declares a live choice by adding an entry to `LIVE_CHOICES`, and
+    `get_live_choice` used to need a matching case — `cell_pick` was declared
+    without one and read back `None`. Nothing caught it because the only reader
+    was the MIDI cycle path, which treats `None` as "start at the first one".
+    A surface that *shows* the value renders an empty picker instead."""
+
+    def _modes(self):
+        return [
+            HiresDisplayMode(),
+            MCMDisplayMode(),
+            MultiHiresDisplayMode(),
+            PETSCIIDisplayMode(),
+        ]
+
+    def test_every_declared_choice_reads_back_a_declared_value(self):
+        for mode in self._modes():
+            for name, choices in type(mode).LIVE_CHOICES.items():
+                with self.subTest(mode=type(mode).__name__, choice=name):
+                    self.assertIn(mode.get_live_choice(name), choices)
+
+    def test_an_undeclared_name_is_none(self):
+        self.assertIsNone(HiresDisplayMode().get_live_choice("nonesuch"))
+
+
 # -------------------------------------- MIDI mode.<name> holder ----------------
 class _FakeMode:
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
@@ -301,6 +329,159 @@ class MidiModeHolderTests(unittest.TestCase):
         lis._apply_param(pl, "mode.nonexistent", 64, "cc")  # type: ignore[arg-type]
         self.assertFalse(pl.osd_posts)
         self.assertFalse(pl.live_tracker.has_changes())
+
+
+# ------------------------------------------ live_tune, the shared module -------
+class _FakeEffect:
+    LIVE_PARAMS = {"amount": (0.0, 4.0)}
+
+    def __init__(self):
+        self.amount = 1.0
+
+
+class _FakeSource:
+    LIVE_PARAMS = {"speed": (0.0, 2.0)}
+
+    def __init__(self):
+        self.speed = 0.5
+
+
+class _RichScene:
+    """A scene with one of everything a holder prefix can name."""
+
+    LIVE_PARAMS = {"gain": (0.25, 3.0)}
+
+    def __init__(self, mode):
+        self.display_mode = mode
+        self.api = object()
+        self.gain = 1.0
+        self.source = _FakeSource()
+        self.effects = [_FakeEffect(), _FakeEffect()]
+
+
+def _rich() -> tuple[Any, _FakeMode, _RichScene]:
+    """A playlist standing in for the real one. The fake exposes exactly what
+    `live_tune` touches — `current`, `post_osd`, `live_tracker` — which is most
+    of what makes the module worth having as one."""
+    mode = _FakeMode()
+    scene = _RichScene(mode)
+    return _FakePlaylist(scene), mode, scene
+
+
+class LiveTuneResolveTests(unittest.TestCase):
+    """One lookup, shared by the MIDI surface, the WLED bridge and the web
+    console — the thing that used to be three hand-mirrored copies."""
+
+    def test_every_holder_prefix(self):
+        _pl, mode, scene = _rich()
+        self.assertIs(lt.resolve_holder(scene, "scene"), scene)
+        self.assertIs(lt.resolve_holder(scene, "mode"), mode)
+        self.assertIs(lt.resolve_holder(scene, "source"), scene.source)
+        self.assertIs(lt.resolve_holder(scene, "fx1"), scene.effects[1])
+        self.assertIs(lt.resolve_holder(scene, "effect[0]"), scene.effects[0])
+
+    def test_holders_that_are_not_there(self):
+        _pl, _mode, scene = _rich()
+        self.assertIsNone(lt.resolve_holder(None, "mode"))
+        self.assertIsNone(lt.resolve_holder(scene, "fx7"))  # past the chain
+        self.assertIsNone(lt.resolve_holder(scene, "nonesuch"))
+
+    def test_a_holder_without_the_declaration_does_not_resolve(self):
+        # The class attributes are the whole definition of what is tunable: a
+        # holder that exists but declares nothing is as unresolved as no holder.
+        _pl, _mode, scene = _rich()
+        self.assertIsNone(lt.resolve(scene, "source.nonesuch"))
+        self.assertIsNone(lt.resolve(scene, "source"))
+
+    def test_scalar_and_choice_carry_what_the_class_declared(self):
+        _pl, _mode, scene = _rich()
+        scalar = lt.resolve(scene, "mode.dither_strength")
+        assert scalar is not None
+        self.assertEqual((scalar.kind, scalar.lo, scalar.hi), ("scalar", 0.0, 2.0))
+        choice = lt.resolve(scene, "mode.dither_method")
+        assert choice is not None
+        self.assertEqual(choice.kind, "choice")
+        self.assertEqual(choice.choices, tuple(DITHER_METHODS))
+
+    def test_resolve_first_is_the_wled_slider_rule(self):
+        _pl, _mode, scene = _rich()
+        found = lt.resolve_first(scene, ("nope.nope", "source.speed", "scene.gain"))
+        assert found is not None
+        self.assertEqual(found.name, "speed")
+        self.assertIsNone(lt.resolve_first(scene, ("nope.nope",)))
+
+    def test_read_and_norm(self):
+        _pl, _mode, scene = _rich()
+        self.assertEqual(lt.read(scene, "source.speed"), 0.5)
+        self.assertIsNone(lt.read(scene, "source.nonesuch"))
+        found = lt.resolve(scene, "source.speed")
+        assert found is not None
+        self.assertAlmostEqual(lt.norm_of(found, 0.5), 0.25)
+
+
+class LiveTuneApplyTests(unittest.TestCase):
+    def test_a_position_scales_into_the_declared_range(self):
+        pl, _mode, scene = _rich()
+        self.assertTrue(lt.apply(pl, "source.speed", lt.Move(position=127, full_scale=127.0)))
+        self.assertAlmostEqual(scene.source.speed, 2.0)
+        lt.apply(pl, "source.speed", lt.Move(position=128, full_scale=255.0))
+        self.assertAlmostEqual(scene.source.speed, 2.0 * 128 / 255, places=4)
+
+    def test_a_real_value_is_taken_as_it_is_and_clamped(self):
+        pl, _mode, scene = _rich()
+        lt.apply(pl, "source.speed", lt.Move(value=1.25))
+        self.assertAlmostEqual(scene.source.speed, 1.25)
+        lt.apply(pl, "source.speed", lt.Move(value=99.0))
+        self.assertAlmostEqual(scene.source.speed, 2.0)
+
+    def test_a_choice_by_name_by_position_and_by_cycle(self):
+        pl, mode, _scene = _rich()
+        lt.apply(pl, "mode.dither_method", lt.Move(value=DITHER_METHODS[2]))
+        self.assertEqual(mode._dither_method, DITHER_METHODS[2])
+        lt.apply(pl, "mode.dither_method", lt.Move(cycle=True))
+        self.assertEqual(mode._dither_method, DITHER_METHODS[3 % len(DITHER_METHODS)])
+        lt.apply(pl, "mode.dither_method", lt.Move(position=0, full_scale=127.0))
+        self.assertEqual(mode._dither_method, DITHER_METHODS[0])
+
+    def test_a_choice_the_list_does_not_contain_is_refused(self):
+        pl, mode, _scene = _rich()
+        start = mode._dither_method
+        self.assertFalse(lt.apply(pl, "mode.dither_method", lt.Move(value="marching-ants")))
+        self.assertEqual(mode._dither_method, start)
+
+    def test_the_osd_line_is_the_surfaces_decision(self):
+        # A controller wants the C64 to confirm the change; the web console must
+        # not put a performer's edits on an audience-facing screen.
+        pl, _mode, _scene = _rich()
+        lt.apply(pl, "source.speed", lt.Move(value=1.0))
+        self.assertEqual(len(pl.osd_posts), 1)
+        lt.apply(pl, "source.speed", lt.Move(value=1.5, osd=False))
+        self.assertEqual(len(pl.osd_posts), 1)
+
+    def test_only_mode_changes_reach_the_save_back(self):
+        # mode.* is the live face of a [color] config field; a generator's speed
+        # is runtime state, and tracking it would write knob positions into a
+        # show file.
+        pl, _mode, _scene = _rich()
+        lt.apply(pl, "source.speed", lt.Move(value=1.0))
+        lt.apply(pl, "scene.gain", lt.Move(value=2.0))
+        lt.apply(pl, "fx0.amount", lt.Move(value=2.0))
+        self.assertFalse(pl.live_tracker.has_changes())
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        self.assertEqual(pl.live_tracker.describe(), ["mode.dither_strength: None -> 1.5"])
+
+    def test_a_target_that_does_not_resolve_writes_nothing(self):
+        pl, _mode, _scene = _rich()
+        self.assertFalse(lt.apply(pl, "mode.nonexistent", lt.Move(value=1.0)))
+        self.assertFalse(lt.apply(pl, "fx9.amount", lt.Move(value=1.0)))
+        self.assertFalse(lt.apply_first(pl, ("a.b", "c.d"), lt.Move(value=1.0)))
+        self.assertFalse(pl.osd_posts)
+
+    def test_a_move_that_says_nothing_a_target_can_use(self):
+        pl, _mode, scene = _rich()
+        self.assertFalse(lt.apply(pl, "source.speed", lt.Move(value="fast")))
+        self.assertFalse(lt.apply(pl, "source.speed", lt.Move(cycle=True)))
+        self.assertAlmostEqual(scene.source.speed, 0.5)
 
 
 # ---------------------------------------------- LiveTuneTracker ----------------

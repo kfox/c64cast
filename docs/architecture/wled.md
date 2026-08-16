@@ -54,9 +54,9 @@ Top-level `on` gates **every** system's transport (a master switch) and top-leve
 
 * **`on`** → `pause_event` / `resume_event`. A segment plays when master-on **and** its own on. `bri` only dims and is decoupled from transport — see `_apply_dim`.
 * **`fx`** → `request_jump(fx, skip_interstitial=True)`. Skipped when `fx` is already the current scene, so a redundant re-select or a same-scene preset recall never restarts it.
-* **`sx` / `ix`** → the current scene's first-declared `LIVE_PARAMS` among `_SX_TARGETS` / `_IX_TARGETS`, via `_set_live_param` — the same holder/`LIVE_PARAMS` seam `midi_control._apply_param` uses. A no-op when the scene declares none.
+* **`sx` / `ix`** → the current scene's first-declared `LIVE_PARAMS` among `_SX_TARGETS` / `_IX_TARGETS`, via `_set_live_param`. All this path still owns is the 0..255 full scale: holder lookup, range mapping and the OSD line are [`live_tune`](control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7), shared with the MIDI surface and the web console. A no-op when the scene declares none.
 
-`_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")`. Source-first preserves generator behavior; `effect.intensity` reaches the pulse/rgb_shift reaction depth; and the `scene.gain` fallback drives the scope scenes, which have no source or effect holder — see the `scene.` prefix in the `LIVE_PARAMS` registry note.
+`_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")`. Source-first preserves generator behavior; `effect.intensity` reaches the pulse/rgb_shift reaction depth; and the `scene.gain` fallback drives the scope scenes, which have no source or effect holder — see the `scene` prefix in `live_tune.resolve_holder`.
 
 `sx` stays a documented no-op on scope scenes: their only speed-ish knob, `auto_cycles`, is dead under the default `time_base="wallclock"`.
 
@@ -120,7 +120,7 @@ The self-served `/` page exposes brightness as a single **master** slider drivin
 | --- | --- |
 | `pal` | The current scene's mode exposes `set_palette_mode` (what `_apply_palette` needs) |
 | `col` | It *also* exposes `set_color_map` (what `_apply_force_colors` needs) |
-| `sx` / `ix` | `_resolve_live_target` — extracted from `_set_live_param`, including the `scene.` case — finds a matching `LIVE_PARAM` on `_SX_TARGETS`/`_IX_TARGETS` |
+| `sx` / `ix` | `_resolve_live_target` (now a thin name over `live_tune.resolve_first`) finds a matching `LIVE_PARAM` on `_SX_TARGETS`/`_IX_TARGETS` |
 
 No scene means all False.
 
@@ -128,7 +128,7 @@ Our own `GET /` page reads it as `seg.c64`, defaulting all-true so an older payl
 
 The key rides both the `/json` poll and the proactive WS push, so hints refresh on auto-advance for free. WLED clients ignore the unknown seg key, though they must still *parse* the payload — that was the load-bearing hardware check.
 
-It does **not** touch `midi_control`; that mirror of `_set_live_param` stays verbatim.
+It asks only whether a write *would* land, never performing one — which is why resolution and application are separate calls in `live_tune`.
 
 > The third-party WLED *app* still renders a fixed control set we cannot remotely disable, so a dead palette or color pick there remains a silent no-op. Only the `/` page reflects capability.
 

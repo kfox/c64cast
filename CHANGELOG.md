@@ -14,6 +14,37 @@ the version and stamps it with the date.
 
 ### Added
 
+- **A Tune panel on the console's Live screen** — the colour pipeline, the
+  generator and the scope, from a phone. A MIDI controller and the C64's own
+  menu could always reach these 20-odd knobs; the browser reached the effect
+  chain and nothing else, which made a phone a weaker controller than a MIDI
+  box. Dither strength and method, palette mode, colour matching, cell strategy,
+  motion smoothing, auto-fit, every generator's speed and scale, the scope's
+  gain: sliders for the numbers, pickers for the choices.
+
+  The panel is generated from what the **running scene** actually declares, so
+  every control on it writes somewhere — a blank scene has no generator and a
+  PETSCII scene has no dither, and neither shows a slider that does nothing. And
+  because the browser now turns a knob the same way a MIDI CC does, a
+  colour-pipeline change made from a phone is recorded like any other live tune
+  — the same record a `c64cast --config …` run offers to write back into the
+  config when it ends. (The `--serve` daemon does not make that offer: it has no
+  terminal to prompt on, and rewriting show files on every stop would be the
+  wrong default.)
+
+- **Pause, resume, skip and jump-to-scene in the console.** The control plane
+  has answered these since before the console existed, and the console offered
+  none of them — so skipping a scene that was running long meant a keyboard at
+  the machine or a `curl`. Transport now sits in the Live screen's tempo bar
+  where a thumb already is, next to a scene list that says what is playing and
+  jumps to any of it. A jump is a cut: it goes straight to the scene rather than
+  playing the interstitial in front of it.
+
+- **The log follows you.** It lives in a collapsed bar on every screen showing
+  the latest line, and opens in place. A save refused or a scene that failed
+  mid-show is the host's own account of what happened, and it used to be a tab
+  away from wherever you were when it landed.
+
 - **The web console's Settings view now edits.** Every scene field and every
   setting in a configuration gets the control its type asks for — a switch, a
   picker holding exactly the values the loader accepts, a number, a box of JSON
@@ -45,7 +76,36 @@ the version and stamps it with the date.
   C64 are two different acts, and the reflex for the second one — restart the
   show — costs a machine reset.
 
+- **The console says which of your changes a reload will actually apply.** A
+  reload re-reads the file and rebuilds the scenes; `[audio]`, `[video]` and
+  `[ultimate64]` were read once when the session started and their threads are
+  already running. So the save now says so — *"Saved 3 changes. `[audio]` needs
+  the session restarted; the rest apply on a reload"* — the staged-edit bar
+  warns before you save rather than after, and when a reload would not be
+  enough the running-show banner stops pretending it is and offers a **Restart
+  on this config** beside it.
+
 ### Fixed
+
+- **A validation error now says which file it came from.** A configuration is
+  checked with your machine settings underneath it, so one stray value in
+  `~/.config/c64cast/settings.toml` refused *every* configuration on the host —
+  with an error naming a section, and nothing anywhere saying the value was not
+  in the file on screen. The reflex is to hunt for a key in a file that does not
+  contain it. Both editors now name the setting, its value and the file it came
+  from, and only when all three are true: your machine supplies it, the file
+  being edited is silent about it, and the failure mentions it by name.
+
+- **Unsaved config edits survive leaving the screen.** Switching to Live to
+  check something against the running show and coming back used to discard
+  whatever was typed. Edits are now the console's rather than the screen's, and
+  the Configs tab carries a dot while any are outstanding, so an unsaved change
+  is visible from anywhere instead of only from the file it belongs to.
+
+- **The console's finder falls back to descriptions.** Searching settings by
+  name is right until you do not know the name — `cell_strategy` is not a word
+  anybody guesses. A query that matches no name now searches what each setting
+  *does*, and says that is what it did.
 
 - **A saved configuration no longer absorbs your machine's settings.** Machine
   settings (`~/.config/c64cast/settings.toml`) are a layer *under* a config

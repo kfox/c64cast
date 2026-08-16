@@ -21,6 +21,7 @@ import numpy as np
 
 from c64cast.app.config import Config, SceneCfg, _is_valid_param_holder
 from c64cast.app.scene_factory import build_scene, validate_scene_cfg
+from c64cast.control import live_tune as lt
 from c64cast.control import midi_control as mc
 from c64cast.control.tempo import ClockModulationSource, TempoClock
 from c64cast.hw.backend import HardwareProfile
@@ -355,20 +356,20 @@ class ParamHolderGrammarTest(unittest.TestCase):
     def test_resolve_layer_by_fx_number(self):
         a, b = build_effect("trails"), build_effect("blur")
         scene = SimpleNamespace(effects=[a, b])
-        self.assertIs(mc._resolve_param_holder(scene, "fx0"), a)
-        self.assertIs(mc._resolve_param_holder(scene, "fx1"), b)
-        self.assertIs(mc._resolve_param_holder(scene, "effect[1]"), b)
+        self.assertIs(lt.resolve_holder(scene, "fx0"), a)
+        self.assertIs(lt.resolve_holder(scene, "fx1"), b)
+        self.assertIs(lt.resolve_holder(scene, "effect[1]"), b)
 
     def test_resolve_out_of_range_layer_is_none(self):
         scene = SimpleNamespace(effects=[build_effect("trails")])
-        self.assertIsNone(mc._resolve_param_holder(scene, "fx5"))
+        self.assertIsNone(lt.resolve_holder(scene, "fx5"))
 
     def test_resolve_plain_effect_uses_attribute(self):
         # `effect` (no index) falls through to getattr — the back-compat path
         # (the real Scene.effect property returns effects[0]).
         sentinel = object()
         scene = SimpleNamespace(effect=sentinel, effects=[])
-        self.assertIs(mc._resolve_param_holder(scene, "effect"), sentinel)
+        self.assertIs(lt.resolve_holder(scene, "effect"), sentinel)
 
 
 class FxToggleTest(unittest.TestCase):

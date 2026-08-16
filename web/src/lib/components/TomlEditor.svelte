@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
+  import LayerBlame from "$lib/components/LayerBlame.svelte";
   import type { ConfigWritten, ValidationReport } from "$lib/types";
 
   interface Props {
@@ -130,6 +131,7 @@
           {/each}
         </ul>
       {/if}
+      <LayerBlame layers={report.layers} />
     </div>
   {/if}
 </div>

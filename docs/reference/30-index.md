@@ -23,7 +23,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `asid_port` | [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `aspect_mode` | [`slideshow` (2)](03-vocabulary.md#slideshow), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `--audio` | [Audio (G)](26-appendix-g-cli-flags.md#audio) |
-| `[audio]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [What a Scene Records About Itself (6)](07-inputs-and-outputs.md#what-a-scene-records-about-itself), [`audio` (A)](20-appendix-a-configuration.md#audio) |
+| `[audio]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Console (6)](07-inputs-and-outputs.md#the-console), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain) |
 | `--audio-device` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio_features]` | [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
@@ -317,7 +317,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `mic_sensitivity` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | microphone | [Generators (3)](04-display-pipeline.md#generators), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone) |
 | `midi` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`midi` (2)](03-vocabulary.md#midi), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `--midi-setup` | [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`performance` (A)](20-appendix-a-configuration.md#performance), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
+| `--midi-setup` | [The Console (6)](07-inputs-and-outputs.md#the-console), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `midi_adsr` | [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `[midi_control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [MIDI In and Out (6)](07-inputs-and-outputs.md#midi-in-and-out), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `midi_feedback` | [MIDI Out — Lighting the Pads (6)](07-inputs-and-outputs.md#midi-out--lighting-the-pads), [`performance` (A)](20-appendix-a-configuration.md#performance) |
@@ -545,7 +545,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `--verbose` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `verbose` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `--version` | [Options (G)](26-appendix-g-cli-flags.md#options) |
-| `[video]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`video` (A)](20-appendix-a-configuration.md#video) |
+| `[video]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Console (6)](07-inputs-and-outputs.md#the-console), [`video` (A)](20-appendix-a-configuration.md#video) |
 | `video` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `--videos` | [Playlist (G)](26-appendix-g-cli-flags.md#playlist) |
 | `videos_dir` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |

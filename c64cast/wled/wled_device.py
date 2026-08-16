@@ -74,6 +74,7 @@ from typing import Any
 
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
+from c64cast.control import live_tune
 from c64cast.control.transport import JsonSlotStore
 from c64cast.video.modes import PALETTE_MODES
 
@@ -466,8 +467,8 @@ startWS();
 """
 # Source-first preserves the existing generator behavior; `scene.gain` reaches
 # the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
-# renderer and so have no source/effect holder — see the `scene.` case in
-# _set_live_param.
+# renderer and so have no source/effect holder — see the `scene` prefix in
+# live_tune.resolve_holder.
 _IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
 
 
@@ -485,50 +486,24 @@ def _local_ip() -> str:
         s.close()
 
 
-def _resolve_live_target(scene: Any, targets: tuple[str, ...]) -> tuple[Any, str] | None:
-    """The first `(holder, name)` among `targets` whose holder declares that
-    `name` in its `LIVE_PARAMS`, or None if none does (no scene, or no scene
-    object exposes any of the targets).
+def _resolve_live_target(scene: Any, targets: tuple[str, ...]) -> live_tune.LiveTarget | None:
+    """The first of `targets` the current scene actually declares, or None.
 
-    `scene.<name>` targets the scene itself (scope scenes mix in the renderer, so
-    the param lives on the scene, not a source/effect holder); `source.<name>` /
-    `effect.<name>` target that attribute. Shared by `_set_live_param` (which
-    performs the write) and `_seg_caps` (which only needs to know whether a write
-    *would* land, to gray out a dead slider on the `/` page)."""
-    if scene is None:
-        return None
-    for target in targets:
-        holder_attr, _, name = target.partition(".")
-        # `mode.<name>` targets the scene's display mode (the live color-pipeline
-        # knobs); kept mirrored with midi_control._apply_param's holder resolution.
-        if holder_attr == "scene":
-            holder = scene
-        elif holder_attr == "mode":
-            holder = getattr(scene, "display_mode", None)
-        else:
-            holder = getattr(scene, holder_attr, None)
-        if holder is None:
-            continue
-        live_params = getattr(type(holder), "LIVE_PARAMS", {})
-        if name in live_params:
-            return holder, name
-    return None
+    A thin name over :func:`live_tune.resolve_first` because two callers here
+    want different halves of it: `_set_live_param` performs the write, while
+    `_seg_caps` only needs to know whether a write *would* land, to gray out a
+    dead slider on the `/` page."""
+    return live_tune.resolve_first(scene, targets)
 
 
 def _set_live_param(pl: Playlist, targets: tuple[str, ...], value_0_255: int) -> None:
     """Drive the current scene's first-declared LIVE_PARAM among `targets` from a
-    0..255 WLED slider value. Mirrors midi_control._apply_param's holder/LIVE_PARAMS
-    lookup; a silent no-op when no scene / no matching param (documented)."""
-    resolved = _resolve_live_target(pl.current, targets)
-    if resolved is None:
-        return
-    holder, name = resolved
-    norm = max(0.0, min(1.0, value_0_255 / _SLIDER_MAX))
-    lo, hi = getattr(type(holder), "LIVE_PARAMS", {})[name]
-    new = lo + norm * (hi - lo)
-    setattr(holder, name, new)
-    # Same on-screen feedback the MIDI knob path posts (mirrors midi_control).
-    pl.post_osd(f"{name} {new:.2f}")
+    0..255 WLED slider value. A silent no-op when no scene / no matching param.
+
+    The 0..255 full scale is the whole of what is WLED's own here; everything
+    else — holder lookup, range mapping, the OSD line — is :mod:`live_tune`,
+    shared with the MIDI surface and the web console."""
+    live_tune.apply_first(pl, targets, live_tune.Move(position=value_0_255, full_scale=_SLIDER_MAX))
 
 
 def _seg_caps(pl: Playlist) -> dict[str, bool]:

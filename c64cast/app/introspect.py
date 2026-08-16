@@ -63,6 +63,11 @@ class SectionDoc:
     name: str  # TOML section name, e.g. "ultimate64"
     help: str
     fields: tuple[FieldDoc, ...]
+    #: Whether a running session's *reload* picks this section up, or it takes a
+    #: restart. `FieldDoc.apply` answers the narrower question of whether a
+    #: change lands without even a scene rebuild; this is the one a console has
+    #: to answer at the moment somebody saves.
+    reload: bool = False
 
 
 @dataclass(frozen=True)
@@ -312,7 +317,12 @@ def _field_docs(dc: type) -> list[FieldDoc]:
 
 def config_sections() -> list[SectionDoc]:
     return [
-        SectionDoc(name=name, help=help_, fields=tuple(_field_docs(dc)))
+        SectionDoc(
+            name=name,
+            help=help_,
+            fields=tuple(_field_docs(dc)),
+            reload=name in cfgmod.RELOADABLE_SECTIONS,
+        )
         for name, dc, help_ in _SECTIONS
     ]
 
@@ -593,7 +603,12 @@ def as_dict() -> dict[str, Any]:
 
     return {
         "sections": [
-            {"name": s.name, "help": s.help, "fields": [field_dict(f) for f in s.fields]}
+            {
+                "name": s.name,
+                "help": s.help,
+                "reload": s.reload,
+                "fields": [field_dict(f) for f in s.fields],
+            }
             for s in config_sections()
         ],
         "scene_types": [

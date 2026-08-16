@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { FxParam } from "$lib/types";
+  import type { Knob } from "$lib/types";
 
   interface Props {
-    param: FxParam;
+    param: Knob;
     readOnly?: boolean;
     onchange: (norm: number) => void;
   }

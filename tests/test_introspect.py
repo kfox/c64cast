@@ -231,5 +231,28 @@ class AppliesToTest(unittest.TestCase):
             self.assertIn("overlays", names, s.name)
 
 
+class ReloadableSectionsTest(unittest.TestCase):
+    """`RELOADABLE_SECTIONS` is what the web console reads to say, at the moment
+    of saving, which changes a reload will apply and which need a restart. It is
+    a claim about `session.reload_all`, so it has to name real sections and the
+    docstring that describes the behaviour has to point at it."""
+
+    def test_every_named_section_exists(self):
+        known = {s.name for s in introspect.config_sections()}
+        self.assertTrue(known >= cfgmod.RELOADABLE_SECTIONS, cfgmod.RELOADABLE_SECTIONS - known)
+
+    def test_the_flag_reaches_introspection(self):
+        flags = {s.name: s.reload for s in introspect.config_sections()}
+        for name in cfgmod.RELOADABLE_SECTIONS:
+            self.assertTrue(flags[name], name)
+        self.assertFalse(flags["ultimate64"])  # the connection is built once
+        self.assertFalse(flags["audio"])  # its threads start with the session
+
+    def test_reload_all_documents_the_same_rule(self):
+        from c64cast.app.session import reload_all
+
+        self.assertIn("RELOADABLE_SECTIONS", reload_all.__doc__ or "")
+
+
 if __name__ == "__main__":
     unittest.main()

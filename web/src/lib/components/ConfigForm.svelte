@@ -2,6 +2,7 @@
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
+  import LayerBlame from "$lib/components/LayerBlame.svelte";
   import type { DocIndex } from "$lib/introspect";
   import type {
     ConfigEdit,
@@ -23,7 +24,10 @@
      *  file to compare against doesn't discard them. Keyed by row. */
     pending: Record<string, ConfigEdit>;
     onpending: (next: Record<string, ConfigEdit>) => void;
-    onsaved: (written: ConfigPatched) => void;
+    /** `restart` names the sections a reload will *not* pick up, so the screen
+     *  can stop offering a reload as if it were enough. Empty on a save that a
+     *  reload covers in full. */
+    onsaved: (written: ConfigPatched, restart: string[]) => void;
   }
 
   let { form, docs, path, readOnly, pending, onpending, onsaved }: Props = $props();
@@ -46,25 +50,53 @@
   const edits = $derived(Object.values(pending));
   const blocked = $derived(Object.values(invalid).some(Boolean));
 
+  /** The sections among the staged edits that a reload will not pick up.
+   *
+   * A reload re-reads the file and hands the playlist fresh scenes, so a scene
+   * edit lands; the connection, the audio threads and the control surfaces are
+   * built once with the session and do not. Which sections are which is the
+   * host's answer (`SectionDoc.reload`), not a list kept here. */
+  const restartEdits = $derived(
+    edits.filter((edit) => !!edit.section && !docs.section(edit.section)?.reload),
+  );
+  const restart = $derived([...new Set(restartEdits.map((edit) => edit.section as string))]);
+
   /** A row's identity. The wire shape names a section *or* a scene index, and
    *  so does this — one string, so a lookup never has to reconstruct which. */
   const sectionKey = (section: string, field: string) => `s:${section}.${field}`;
   const sceneKey = (index: number, field: string) => `n:${index}.${field}`;
 
-  function shown(fields: FormField[], key: (f: FormField) => string): FormField[] {
+  const needle = $derived(query.trim().toLowerCase());
+
+  /** Whether *any* field is named like the query. Names are searched first and
+   *  alone, because matching help text on "color" pulls in everything that
+   *  mentions colour — but a reader who does not know a setting is called
+   *  `cell_strategy` has no way in at all, so a query that names nothing falls
+   *  through to the descriptions and the form says that is what happened. */
+  const byName = $derived(
+    needle !== "" &&
+      [
+        ...form.sections.flatMap((s) => s.fields.map((f) => f.name)),
+        ...form.scenes.flatMap((s) => s.fields.map((f) => f.name)),
+      ].some((name) => name.toLowerCase().includes(needle)),
+  );
+
+  function shown(fields: FormField[], key: (f: FormField) => string, help: HelpOf): FormField[] {
     return fields.filter((f) => {
       // An unsaved edit is never hidden by a filter — losing sight of one is
       // how it gets saved by accident or lost by surprise.
       if (pending[key(f)]) return true;
-      // Searching is asking for a field by name, which is the one move the
-      // "only what this file changes" filter would defeat.
-      if (query) return matches(f.name);
+      // Searching is asking for a field, which is the one move the "only what
+      // this file changes" filter would defeat.
+      if (needle) return matches(f.name) || (!byName && help(f.name).toLowerCase().includes(needle));
       return !onlyChanged || !f.is_default;
     });
   }
 
+  type HelpOf = (field: string) => string;
+
   function matches(name: string): boolean {
-    return name.toLowerCase().includes(query.trim().toLowerCase());
+    return name.toLowerCase().includes(needle);
   }
 
   // A section with nothing to say disappears rather than leaving an empty
@@ -73,7 +105,11 @@
     form.sections
       .map((s: FormSection) => ({
         section: s,
-        fields: shown(s.fields, (f) => sectionKey(s.name, f.name)),
+        fields: shown(
+          s.fields,
+          (f) => sectionKey(s.name, f.name),
+          (name) => docs.field(s.name, name)?.help ?? "",
+        ),
       }))
       .filter((row) => row.fields.length > 0),
   );
@@ -84,7 +120,11 @@
     form.scenes.map((sc: FormScene, i: number) => ({
       scene: sc,
       index: i,
-      fields: shown(sc.fields, (f) => sceneKey(i, f.name)),
+      fields: shown(
+        sc.fields,
+        (f) => sceneKey(i, f.name),
+        (name) => docs.sceneField(sc.type, name)?.help ?? "",
+      ),
     })),
   );
 
@@ -142,19 +182,34 @@
     onpending({});
   }
 
+  /** What it takes to *see* the change that was just saved — which is the
+   *  question actually being asked at the moment of saving, and the one the
+   *  console used to answer with a count and nothing else. */
+  function applies(count: number, held: number, sections: string[]): string {
+    const named = sections.map((s) => `[${s}]`).join(", ");
+    const verb = sections.length === 1 ? "needs" : "need";
+    if (held === 0) return count === 1 ? "It applies on a reload." : "They apply on a reload.";
+    if (held === count) return `${named} ${verb} the session restarted.`;
+    return `${named} ${verb} the session restarted; the rest apply on a reload.`;
+  }
+
   async function save(): Promise<void> {
     report = null;
     problem = "";
     saved = "";
     busy = true;
+    // Read before the save: `onsaved` re-reads the file, which clears the
+    // staged edits these were derived from.
+    const needsRestart = restart;
+    const count = edits.length;
+    const held = restartEdits.length;
     try {
       const written = await api.patchConfig(path, edits);
-      const what = edits.length === 1 ? "1 change" : `${edits.length} changes`;
-      saved = written.backup
-        ? `Saved ${what}. The previous version is in ${written.backup}.`
-        : `Saved ${what}.`;
+      const what = count === 1 ? "1 change" : `${count} changes`;
+      const kept = written.backup ? ` The previous version is in ${written.backup}.` : "";
+      saved = `Saved ${what}. ${applies(count, held, needsRestart)}${kept}`;
       invalid = {};
-      onsaved(written);
+      onsaved(written, needsRestart);
     } catch (e) {
       // A refused save answers 422 with the whole validation report — the same
       // shape the text editor's Check returns, shown the same way rather than
@@ -186,9 +241,13 @@
     </label>
   </div>
   <p class="-mt-4 text-xs text-[var(--ink-dim)]">
-    Values are what the loader resolved, so machine settings and defaults show through. Saving
-    writes only what this file changes; <span class="font-mono">Clear</span> takes a setting back out
-    of it.
+    {#if needle && !byName}
+      Nothing is <em>named</em> like that, so these are the settings whose description mentions it.
+    {:else}
+      Values are what the loader resolved, so machine settings and defaults show through. Saving
+      writes only what this file changes; <span class="font-mono">Clear</span> takes a setting back
+      out of it.
+    {/if}
   </p>
 
   <section>
@@ -325,6 +384,10 @@
       <Button disabled={busy || edits.length === 0} onclick={discard}>Discard</Button>
       {#if blocked}
         <span class="text-xs text-c64-red">Something typed isn't a value yet.</span>
+      {:else if restart.length}
+        <span class="text-xs text-c64-yellow">
+          unsaved · {restart.map((s) => `[${s}]`).join(", ")} will need a restart
+        </span>
       {:else if edits.length}
         <span class="text-xs text-c64-yellow">unsaved changes</span>
       {/if}
@@ -349,6 +412,7 @@
           {/each}
         </ul>
       {/if}
+      <LayerBlame layers={report.layers} />
       <p class="mt-1 text-xs text-[var(--ink-dim)]">
         The file is untouched and the changes are still staged.
       </p>

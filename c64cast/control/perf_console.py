@@ -16,17 +16,26 @@ a web launch and a pad launch are indistinguishable downstream:
   ``pl.performance`` (drained on the playlist thread) — never a scene mutation on
   this HTTP thread, the rule the whole performance path follows.
 * **Tap tempo** calls ``pl.tempo.tap()`` — an in-memory beat-grid write, no DMA.
-* **Effect bypass / param** flips ``scene.effects[i].enabled`` or sets a declared
-  ``LIVE_PARAMS`` field — the identical GIL-atomic writes ``midi_control`` and the
-  WLED bridge already make off the render thread. **No** ``post_osd``: performance
-  feedback stays off the audience screen (the whole point of this surface).
+* **Effect bypass** flips ``scene.effects[i].enabled`` — a GIL-atomic bool the
+  render loop reads next frame.
+* **Live tune** goes through :mod:`live_tune`, the one module that resolves a
+  target string against the running scene, so a knob turned here is the same
+  write a MIDI CC or a WLED slider makes — including the live-tune tracker entry
+  that lets a ``mode.*`` change be saved back into the config. The one thing
+  this surface asks for differently is **no** ``post_osd``: performance feedback
+  stays off the audience screen, which is the whole point of a phone console.
+* **Transport** (``pause`` / ``resume`` / ``skip``) and **jump** set the same
+  playlist events the C64's own keys do, so the run loop applies them at its
+  next clean boundary rather than this thread mutating a scene.
 * **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.control.performance.LookEvent`
   (``save`` / recall), drained on the playlist thread exactly like a clip launch —
   a look captures the active clip + effect-chain state and re-fires it on recall.
 
-The effect-rack controls are generated from each live layer's own class
-``LIVE_PARAMS`` — the same class attribute :func:`introspect.live_targets` reads —
-so the UI can't drift from the effect registry.
+The controls are generated from the registries rather than listed here: the
+effect rack from each live layer's own class ``LIVE_PARAMS``, and the tune panel
+from :func:`introspect.live_targets` filtered to what the *current scene* can
+actually be asked for. Neither can drift from the code, and neither can offer a
+slider that writes nowhere.
 
 Like :mod:`wled_device`, this module deliberately does **not** ``from __future__
 import annotations``: the WebSocket route below annotates its param with a name
@@ -43,9 +52,15 @@ from typing import Any
 
 from c64cast.app.playlist import Playlist
 
+from . import live_tune
 from .performance import ClipEvent
 
 log = logging.getLogger(__name__)
+
+#: The transport verbs a console may send. Each is one event the playlist's run
+#: loop already watches — the same events the C64 keyboard and a MIDI transport
+#: button set, so a web pause and a keyboard pause are the same pause.
+TRANSPORT_VERBS = ("pause", "resume", "skip")
 
 # How often the WebSocket pushes a fresh state snapshot to connected consoles.
 # The beat grid advances continuously, so a client extrapolates the beat pulse
@@ -129,6 +144,77 @@ def _effects_dict(pl: Playlist) -> list[dict[str, Any]]:
     return out
 
 
+#: Every declared live-tune target, read once. It describes the registries, not
+#: the run, so it cannot change while the process is up — and building it pulls
+#: in numpy/cv2 through the mode and generator modules, which is work the state
+#: feed does three times a second.
+_LIVE_TARGETS: list[Any] = []
+
+
+def _live_target_docs() -> list[Any]:
+    global _LIVE_TARGETS
+    if not _LIVE_TARGETS:
+        from c64cast.app import introspect
+
+        _LIVE_TARGETS = introspect.live_targets()
+    return _LIVE_TARGETS
+
+
+def _live_dict(pl: Playlist) -> list[dict[str, Any]]:
+    """The live-tune knobs the *current scene* actually has, with their values.
+
+    Every declared target is tried against the running scene and only the ones
+    that resolve are sent, so a console renders exactly what it can turn — a
+    blank scene has no generator and a PETSCII scene has no dither, and neither
+    should show a slider that writes nowhere. Grouping (`Color pipeline`,
+    `Generator`, …) is ``introspect``'s, the same grouping the ``--midi-setup``
+    picker offers, so the two surfaces name the same knob the same way.
+
+    The per-layer effect knobs are *not* here — those are addressed by layer
+    (``fx2.amount``) and have their own rack in :func:`_effects_dict`, where
+    bypass lives too."""
+    scene = pl.current
+    out: list[dict[str, Any]] = []
+    for doc in _live_target_docs():
+        found = live_tune.resolve(scene, doc.target)
+        if found is None:
+            continue
+        value = live_tune.current(found)
+        row: dict[str, Any] = {
+            "target": doc.target,
+            "group": doc.group,
+            "name": found.name,
+            "kind": found.kind,
+            "value": value,
+        }
+        if found.kind == "scalar":
+            row["min"] = found.lo
+            row["max"] = found.hi
+            row["norm"] = live_tune.norm_of(found, value)
+        else:
+            row["choices"] = list(found.choices)
+        out.append(row)
+    return out
+
+
+def scene_rows(pl: Playlist) -> list[dict[str, Any]]:
+    """The playlist's scenes, for a console that offers a jump.
+
+    Shared with the control plane's ``/scenes`` so the two answers cannot
+    disagree about what is playing. ``duration_s`` is None for a scene that runs
+    until its source ends — VideoScene uses ``math.inf`` for that and JSON
+    cannot carry it."""
+    return [
+        {
+            "index": i,
+            "name": s.name,
+            "duration_s": (None if math.isinf(s.duration_s) else s.duration_s),
+            "is_current": i == pl.index,
+        }
+        for i, s in enumerate(pl.scenes)
+    ]
+
+
 def _clip_state(slot: int, active: int | None, armed: int | None) -> str:
     if slot == active:
         return "active"
@@ -157,11 +243,18 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
     return {
         "name": name,
         "current_scene": cur.name if cur is not None else None,
+        "scene_index": pl.index,
+        "paused": pl.pause_event.is_set(),
+        "scenes": scene_rows(pl),
         "tempo": _tempo_dict(pl),
         "active_slot": active,
         "armed": armed_block,
         "clips": clips,
         "effects": _effects_dict(pl),
+        # The color-pipeline / generator / scope knobs the current scene has.
+        # The same list --midi-setup maps a controller onto, so a phone and a
+        # MIDI box reach the same surface (Live DJ/VJ Phase 7).
+        "live": _live_dict(pl),
         # Saved look slots (Live DJ/VJ Phase 6) — the console lights a recall pad
         # only for a slot that holds a look. Reads the store from disk; cheap at
         # the state-poll cadence.
@@ -244,23 +337,68 @@ class PerfBridge:
 
     def fx_param(self, system: str | None, layer: int, param: str, norm: float) -> bool:
         """Set a declared ``LIVE_PARAMS`` field of layer ``layer`` from a
-        normalized ``0..1`` slider position (scaled into the param's range —
-        mirrors ``midi_control._apply_param``'s ``0..127`` scaling). A silent
-        no-op when the layer / param doesn't exist; no OSD."""
+        normalized ``0..1`` slider position. A silent no-op when the layer /
+        param doesn't exist; no OSD, because this surface exists so a performer
+        has a readout the audience does not."""
+        return self.live(system, f"fx{int(layer)}.{param}", norm=norm)
+
+    def live(
+        self,
+        system: str | None,
+        target: str,
+        *,
+        norm: float | None = None,
+        value: float | str | None = None,
+    ) -> bool:
+        """Turn any live-tune target on the current scene — the color pipeline,
+        a generator, a scope, or one effect layer.
+
+        ``norm`` is a slider position (0..1), ``value`` the real number or the
+        choice by name; a picker sends the latter because a choice list has no
+        meaningful position. Goes through :mod:`live_tune` exactly as the MIDI
+        and WLED surfaces do, so a ``mode.*`` knob turned here records into the
+        live-tune tracker exactly as a MIDI knob's would. (The daemon tears
+        sessions down with ``save_live_tune=False``, so nothing offers to write
+        that back under ``--serve``.) Returns False only for an unknown system: a target the
+        current scene doesn't have is a no-op, not an error, because the scene
+        can change between the frame that offered the control and the tap."""
         pl = self._resolve(system)
         if pl is None:
             return False
-        effects = getattr(pl.current, "effects", None) or []
-        if not 0 <= layer < len(effects):
-            return True
-        eff = effects[layer]
-        live_params: dict[str, tuple[float, float]] = getattr(type(eff), "LIVE_PARAMS", {}) or {}
-        rng = live_params.get(param)
-        if rng is None:
-            return True
-        lo, hi = rng
-        clamped = max(0.0, min(1.0, float(norm)))
-        setattr(eff, param, lo + clamped * (hi - lo))
+        move = (
+            live_tune.Move(position=float(norm), full_scale=1.0, osd=False)
+            if norm is not None
+            else live_tune.Move(value=value, osd=False)
+        )
+        live_tune.apply(pl, target, move)
+        return True
+
+    def transport(self, system: str | None, verb: str) -> bool:
+        """``pause`` / ``resume`` / ``skip`` on the target system.
+
+        Sets the same events the C64's own keys and a MIDI transport button set,
+        so the run loop applies them at its next clean boundary rather than
+        mutating a scene from this thread. ``resume`` on a show that is not
+        paused is harmless — the event is simply never consumed — so unlike the
+        control plane's ``/resume`` there is no conflict to report; a console
+        showing a Pause button that is really a Resume button is the UI's
+        problem, and it has the ``paused`` flag to solve it with."""
+        pl = self._resolve(system)
+        if pl is None or verb not in TRANSPORT_VERBS:
+            return False
+        event = {"pause": pl.pause_event, "resume": pl.resume_event, "skip": pl.skip_event}[verb]
+        event.set()
+        return True
+
+    def jump(self, system: str | None, index: int) -> bool:
+        """Go to scene `index` now. A cut rather than an interstitial: a console
+        jump is a correction ("that one, not this one"), and the transition
+        would put a title card in front of the thing being corrected to."""
+        pl = self._resolve(system)
+        if pl is None:
+            return False
+        if 0 <= index < len(pl.scenes):
+            pl.request_jump(index, skip_interstitial=True)
         return True
 
     def look(self, system: str | None, slot: int, save: bool) -> bool:
@@ -275,9 +413,9 @@ class PerfBridge:
         return True
 
     def apply(self, cmd: Mapping[str, Any]) -> bool:
-        """Dispatch one console command dict (shared by the POST endpoints and,
-        potentially, a WS command frame). ``{"action":
-        "launch"|"tap"|"fx"|"look", ...}``."""
+        """Dispatch one console command dict (shared by the POST endpoints and
+        the WS command frame). ``{"action": "launch"|"tap"|"fx"|"live"|
+        "transport"|"jump"|"look", ...}``."""
         action = cmd.get("action")
         system = cmd.get("system")
         if action == "launch":
@@ -289,6 +427,20 @@ class PerfBridge:
             if "param" in cmd:
                 return self.fx_param(system, layer, str(cmd["param"]), float(cmd.get("value", 0.0)))
             return self.fx_bypass(system, layer, bool(cmd.get("enabled", True)))
+        if action == "live":
+            # A slider sends `norm`, a picker sends `value` — the two are not
+            # interchangeable and the key says which one this is.
+            norm = cmd.get("norm")
+            return self.live(
+                system,
+                str(cmd["target"]),
+                norm=None if norm is None else float(norm),
+                value=cmd.get("value"),
+            )
+        if action == "transport":
+            return self.transport(system, str(cmd.get("verb", "")))
+        if action == "jump":
+            return self.jump(system, int(cmd["index"]))
         if action == "look":
             return self.look(system, int(cmd["slot"]), bool(cmd.get("save", False)))
         return False

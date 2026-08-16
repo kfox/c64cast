@@ -50,6 +50,13 @@ export class Console {
     return this.session?.hardware_wait_s ?? 0;
   }
 
+  /** The supervisor is mid-transition, so a start or a stop would only come
+   *  back as a 409. */
+  get busy(): boolean {
+    const phase = this.session?.state;
+    return phase === "starting" || phase === "stopping";
+  }
+
   /** The performance state of each running system, in ensemble order. Empty
    *  between shows — the bridge answers an idle host with no systems rather
    *  than an error, so the live screen has something honest to render. */
