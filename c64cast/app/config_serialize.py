@@ -13,6 +13,20 @@ across every shipped example config). It's the foundation both deferred config
 UX surfaces need — the wizard writes its result through here, and a future
 "dump the current live state to config" action serializes the running Config.
 
+**What ``minimal`` measures against is the caller's to say** (``baseline``).
+Omitted, it is the dataclass defaults, which is right only when the Config was
+built on nothing else. Every caller that serializes a Config the *loader*
+produced passes ``config.machine_baseline()`` instead, because such a Config
+already carries the machine-settings layer: measured against the dataclass
+defaults, a machine setting that differs from a shipped default gets written
+into the file it was only ever layered under — pinning this machine's capture
+device or connection URL into a show config that is then copied to another
+machine, or overriding it there forever. The rule is one line: **the baseline
+must be the Config the serialized one was built on top of.** Handing in a
+baseline the Config was *not* built on is the mirror-image mistake — a blank
+Config dumped against a machine baseline writes every dataclass default the
+machine layer disagrees with, which is the same bug pointing the other way.
+
 Hand-rolled rather than via a TOML-writer dependency: the value space is small
 and fully controlled (the dataclass field types), comments aren't representable
 by ``tomli-w``, and ``tomlkit`` would be a new runtime dep for output the
@@ -155,6 +169,19 @@ def _comment_lines(help_text: str, choices: tuple[str, ...], indent: str) -> lis
 # ---------------------------------------------------------------------------
 
 
+def _table_rows(
+    section: object, base: object, attr: str, *, minimal: bool
+) -> list[dict[str, object]]:
+    """A section's list-of-tables field, dropped when the baseline already
+    carries it. A list is written whole or not at all — TOML has no way to say
+    "these rows on top of those" — so the only honest minimal answer is to omit
+    it when this layer added nothing to it."""
+    rows = list(getattr(section, attr) or [])
+    if minimal and base is not None and rows == list(getattr(base, attr) or []):
+        return []
+    return rows
+
+
 def _emit_table_array(header: str, rows: list[dict[str, object]], annotate: bool) -> list[str]:
     """Render a list of plain dicts as repeated [[header]] blocks (used for
     [[color.hue_corrections]] and [[scenes.overlays]]). `type` floats to the
@@ -172,9 +199,15 @@ def _emit_table_array(header: str, rows: list[dict[str, object]], annotate: bool
 
 
 def _emit_section(
-    cfg: cfgmod.Config, sd: introspect.SectionDoc, *, annotate: bool, minimal: bool
+    cfg: cfgmod.Config,
+    sd: introspect.SectionDoc,
+    *,
+    annotate: bool,
+    minimal: bool,
+    baseline: cfgmod.Config | None = None,
 ) -> list[str]:
     section = getattr(cfg, sd.name)
+    base = getattr(baseline, sd.name) if baseline is not None else None
     body: list[str] = []
     for fd in sd.fields:
         if (sd.name, fd.name) in SECRET_FIELDS:
@@ -184,7 +217,8 @@ def _emit_section(
         if sd.name == "performance" and fd.name == _PERF_TABLE_ARRAY:
             continue  # emitted as [[performance.clips]] below
         value = getattr(section, fd.name)
-        if not _should_emit(value, fd.default, minimal=minimal):
+        default = fd.default if base is None else getattr(base, fd.name)
+        if not _should_emit(value, default, minimal=minimal):
             continue
         if annotate:
             body += _comment_lines(fd.help, fd.choices, "")
@@ -195,10 +229,10 @@ def _emit_section(
     table_rows: list[dict[str, object]] = []
     table_header = ""
     if sd.name == "color":
-        table_rows = list(getattr(section, _COLOR_TABLE_ARRAY) or [])
+        table_rows = _table_rows(section, base, _COLOR_TABLE_ARRAY, minimal=minimal)
         table_header = "color.hue_corrections"
     elif sd.name == "performance":
-        table_rows = list(getattr(section, _PERF_TABLE_ARRAY) or [])
+        table_rows = _table_rows(section, base, _PERF_TABLE_ARRAY, minimal=minimal)
         table_header = "performance.clips"
 
     if not body and not table_rows:
@@ -256,16 +290,25 @@ def dumps(
     annotate: bool = True,
     minimal: bool = True,
     schema_path: str | None = DEFAULT_SCHEMA_PATH,
+    baseline: cfgmod.Config | None = None,
 ) -> str:
     """Serialize `cfg` to a TOML string.
 
     annotate    — prepend the schema directive + per-section/-field help
                   comments (the authored-config style). False = bare values.
-    minimal     — omit fields equal to their dataclass default (the way a
-                  human writes a config). False = write every set field.
+    minimal     — omit fields equal to the baseline (the way a human writes a
+                  config). False = write every set field.
     schema_path — value for the leading ``#:schema`` directive; None omits it.
+    baseline    — what `minimal` measures a field against. None = the dataclass
+                  defaults; pass `config.machine_baseline()` for any Config the
+                  loader produced, so a value inherited from the machine-settings
+                  layer isn't written into the file that inherited it. It must be
+                  the Config this one was built on top of — see the module
+                  docstring.
 
-    The DMA password is never emitted (see `SECRET_FIELDS`). Raises
+    Scene fields always measure against the dataclass defaults: machine settings
+    hold cross-run defaults, never playlists, so there is no scene layer under a
+    scene. The DMA password is never emitted (see `SECRET_FIELDS`). Raises
     `SerializeError` for ensemble masters or non-finite floats."""
     if cfg.ensemble is not None:
         raise SerializeError(
@@ -280,7 +323,7 @@ def dumps(
         lines.append("")
 
     for sd in introspect.config_sections():
-        lines += _emit_section(cfg, sd, annotate=annotate, minimal=minimal)
+        lines += _emit_section(cfg, sd, annotate=annotate, minimal=minimal, baseline=baseline)
 
     if cfg.scenes:
         field_docs = {st.name: st.fields for st in introspect.scene_types()}
@@ -302,6 +345,6 @@ def dumps(
 
 def dump(cfg: cfgmod.Config, path: str, **kwargs: object) -> None:
     """Serialize `cfg` and write it to `path` (UTF-8). kwargs pass through to
-    `dumps` (annotate / minimal / schema_path)."""
+    `dumps` (annotate / minimal / schema_path / baseline)."""
     with open(path, "w", encoding="utf-8") as f:
         f.write(dumps(cfg, **kwargs))  # type: ignore[arg-type]

@@ -12,6 +12,7 @@ import os
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
@@ -225,6 +226,101 @@ class BehaviorTest(unittest.TestCase):
         cfg.scenes = [cfgmod.SceneCfg(type="webcam", duration_s=float("inf"))]
         with self.assertRaises(ser.SerializeError):
             ser.dumps(cfg)
+
+
+class BaselineTest(unittest.TestCase):
+    """`minimal` measures against the caller's baseline, so a save-back does not
+    write this machine's settings into a show config. The three save-back paths
+    (the web console's form, `--init`, the on-C64 live-tune save) all serialize a
+    Config the loader built on the machine layer; the baseline is how that layer
+    stays where it was authored."""
+
+    def _machine(self, **video: object) -> cfgmod.Config:
+        """A stand-in for `config.machine_baseline()` — the settings file's
+        effect on a Config, without a settings file."""
+        base = cfgmod.Config()
+        for key, value in video.items():
+            setattr(base.video, key, value)
+        return base
+
+    def test_value_inherited_from_the_baseline_is_not_written(self):
+        baseline = self._machine(device=3)
+        cfg = self._machine(device=3)  # the loader's result: file said nothing
+        self.assertNotIn("device", ser.dumps(cfg, baseline=baseline))
+
+    def test_the_same_value_is_written_without_a_baseline(self):
+        # The bug the baseline fixes, kept as a test: measured against the
+        # dataclass defaults, a machine setting lands in the file.
+        cfg = self._machine(device=3)
+        self.assertIn("device = 3", ser.dumps(cfg))
+
+    def test_a_value_the_file_sets_is_still_written(self):
+        baseline = self._machine(device=3)
+        cfg = self._machine(device=3)
+        cfg.video.device = 5  # what this file actually says
+        self.assertIn("device = 5", ser.dumps(cfg, baseline=baseline))
+
+    def test_a_value_back_at_the_dataclass_default_is_written(self):
+        # Overriding a machine setting *with* the shipped default is a real
+        # answer, and the only way to record it is to write it out.
+        baseline = self._machine(device=3)
+        cfg = self._machine(device=3)
+        cfg.video.device = cfgmod.VideoCfg().device
+        self.assertIn(f"device = {cfgmod.VideoCfg().device}", ser.dumps(cfg, baseline=baseline))
+
+    def test_scenes_ignore_the_baseline(self):
+        # Machine settings hold no playlist, so there is no layer under a scene.
+        baseline = self._machine(device=3)
+        cfg = self._machine(device=3)
+        cfg.scenes = [cfgmod.SceneCfg(type="blank", duration_s=9.0)]
+        self.assertIn("duration_s = 9.0", ser.dumps(cfg, baseline=baseline))
+
+    def test_a_list_field_already_in_the_baseline_is_not_rewritten(self):
+        rows = [{"from": 10, "to": 20}]
+        baseline = cfgmod.Config()
+        baseline.color.hue_corrections = list(rows)
+        cfg = cfgmod.Config()
+        cfg.color.hue_corrections = list(rows)
+        self.assertNotIn("hue_corrections", ser.dumps(cfg, baseline=baseline))
+
+    def test_a_list_field_the_file_extends_is_written_whole(self):
+        baseline = cfgmod.Config()
+        baseline.color.hue_corrections = [{"from": 10, "to": 20}]
+        cfg = cfgmod.Config()
+        cfg.color.hue_corrections = [{"from": 10, "to": 20}, {"from": 30, "to": 40}]
+        text = ser.dumps(cfg, baseline=baseline)
+        self.assertEqual(text.count("[[color.hue_corrections]]"), 2)
+
+    def test_round_trip_holds_over_a_baseline(self):
+        # The contract survives the change *because* the loader re-applies the
+        # same layer: what the file omits, the baseline puts back.
+        baseline = self._machine(device=3)
+        cfg = self._machine(device=3)
+        cfg.audio.enabled = False
+        reloaded = _reload(cfg, baseline=baseline)
+        reloaded.video.device = baseline.video.device  # the layer, re-applied
+        self.assertEqual(reloaded, cfg)
+
+
+class MachineBaselineTest(unittest.TestCase):
+    """`config.machine_baseline()` itself — the settings file as a Config."""
+
+    def test_reads_the_settings_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = os.path.join(tmp, "settings.toml")
+            with open(settings, "w", encoding="utf-8") as f:
+                f.write("[video]\ndevice = 7\n")
+            with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings}):
+                self.assertEqual(cfgmod.machine_baseline().video.device, 7)
+
+    def test_a_missing_file_is_the_dataclass_defaults(self):
+        self.assertEqual(cfgmod.machine_baseline(), cfgmod.Config())
+
+    def test_each_call_is_a_fresh_instance(self):
+        # Callers mutate what they are handed (the wizard builds onto it).
+        first = cfgmod.machine_baseline()
+        first.video.device = 99
+        self.assertNotEqual(cfgmod.machine_baseline().video.device, 99)
 
 
 if __name__ == "__main__":

@@ -237,6 +237,7 @@ class PlaylistMenu:
         import os
         import shutil
 
+        from . import config as cfgmod
         from . import config_serialize
 
         pl = self._pl
@@ -245,7 +246,10 @@ class PlaylistMenu:
         try:
             if os.path.exists(pl.config_path):
                 shutil.copy2(pl.config_path, pl.config_path + ".bak")
-            config_serialize.dump(pl.config, pl.config_path)
+            # The running Config was built on the machine-settings layer, so
+            # that is what "unset" means for it — dumping against the dataclass
+            # defaults would write this machine's settings into the show file.
+            config_serialize.dump(pl.config, pl.config_path, baseline=cfgmod.machine_baseline())
             pl.log.info("menu: saved config → %s (backup .bak)", pl.config_path)
             return True
         except Exception:

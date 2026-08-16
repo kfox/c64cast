@@ -41,13 +41,18 @@ round-trip would silently drop a password the operator put there). Both are why
 the raw text editor stays the primary surface and the form is the convenience —
 and why the replaced text is on disk as a sibling before the new one lands.
 
-A third consequence is shared with every other save-back in the project (the
-wizard, the on-C64 menu's live-tune save): what is written is the config the
-loader *resolved*, and ``minimal`` measures against the dataclass defaults — so
-a machine setting that differs from a shipped default is written into the file it
-was only ever layered under. Fixing that means teaching ``config_serialize`` to
-emit against a machine-overlaid baseline, which belongs to all three callers
-rather than to this one.
+What is written is the config the loader *resolved*, which includes the
+machine-settings layer — so every comparison this module makes against "unset"
+is made against :func:`config.machine_baseline`, not a blank ``Config()``.
+That is one decision with three faces. :func:`describe` reports ``is_default``
+against it, so the form's "only what this file changes" means the file and not
+the machine. ``reset`` on an edit puts a field *back* to it, which is how a form
+removes a key rather than pinning a shipped default over a machine setting. And
+``dumps`` measures against it, so a capture device set once on this machine is
+not written into every show config saved from it (and then carried to another
+machine, where it would override that machine's own). The same baseline is what
+the secret check compares against, so a ``dma_password`` living in the machine
+settings — where it is legal — doesn't read as one this file carries.
 
 What a ref bounds is *which files are edited*, not what a config can then
 reach: a saved TOML names media paths and URLs that a session will open. Remote
@@ -182,15 +187,26 @@ def _value(val: object) -> Any:
     return str(val)
 
 
-def describe(cfg: cfgmod.Config) -> dict[str, Any]:
-    """The loaded config as form data: every field's value plus ``is_default``.
+def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[str, Any]:
+    """The loaded config as form data: every field's value, its ``baseline``,
+    and whether the two agree (``is_default``).
 
     ``is_default`` is the same comparison ``config_serialize._should_emit``
     makes when deciding whether a field is worth writing, which is what lets a
-    UI offer "show only what I've changed" without the server deciding for it.
+    UI offer "show only what I've changed" without the server deciding for it —
+    so it must be measured against the same ``baseline`` the save will use, or
+    the form marks a field the file does not contain. None means the dataclass
+    defaults; :meth:`ConfigStore.read` passes the machine baseline.
+
+    ``baseline`` is sent per field rather than left to the client's copy of the
+    introspection document, which carries the *dataclass* default and would
+    therefore promise the wrong thing on a machine whose settings say otherwise:
+    it is what a ``reset`` edit will actually leave behind, so a form can say so
+    before asking for one.
+
     The scene field lists come from ``introspect`` already filtered by
     ``applies_to``, so a scene's form can't offer a knob its type ignores."""
-    blank = cfgmod.Config()
+    blank = baseline if baseline is not None else cfgmod.Config()
     sections: list[dict[str, Any]] = []
     for sd in introspect.config_sections():
         section = getattr(cfg, sd.name)
@@ -200,11 +216,13 @@ def describe(cfg: cfgmod.Config) -> dict[str, Any]:
             if (sd.name, fd.name) in config_serialize.SECRET_FIELDS:
                 continue
             value = getattr(section, fd.name)
+            default = getattr(default_section, fd.name)
             fields.append(
                 {
                     "name": fd.name,
                     "value": _value(value),
-                    "is_default": value == getattr(default_section, fd.name),
+                    "baseline": _value(default),
+                    "is_default": value == default,
                 }
             )
         sections.append({"name": sd.name, "fields": fields})
@@ -219,11 +237,13 @@ def describe(cfg: cfgmod.Config) -> dict[str, Any]:
             if fd.name == "overlays":
                 continue
             value = getattr(sc, fd.name)
+            default = getattr(blank_scene, fd.name)
             fields.append(
                 {
                     "name": fd.name,
                     "value": _value(value),
-                    "is_default": value == getattr(blank_scene, fd.name),
+                    "baseline": _value(default),
+                    "is_default": value == default,
                 }
             )
         scenes.append(
@@ -268,8 +288,13 @@ def _schema_directive(text: str) -> str | None:
     return None
 
 
-def _apply_edit(cfg: cfgmod.Config, edit: object) -> dict[str, Any]:
-    """Set one field on a loaded config, and describe what was set."""
+def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> dict[str, Any]:
+    """Set one field on a loaded config, and describe what was set.
+
+    ``baseline`` is what ``reset`` puts a field back to. The machine-overlaid
+    Config rather than a blank one: reset means "this file stops saying
+    anything about this field", and what shows through then is whatever the
+    layer below already said."""
     if not isinstance(edit, Mapping):
         raise EditRejected(f"an edit is an object, got {type(edit).__name__}")
     field = str(edit.get("field", "")).strip()
@@ -287,7 +312,7 @@ def _apply_edit(cfg: cfgmod.Config, edit: object) -> dict[str, Any]:
         if field not in allowed:
             raise EditRejected(f"[{section}] has no editable field {field!r}")
         target: Any = getattr(cfg, str(section))
-        blank: Any = getattr(cfgmod.Config(), str(section))
+        blank: Any = getattr(baseline, str(section))
         where: dict[str, Any] = {"section": str(section)}
     else:
         if not isinstance(scene, int) or isinstance(scene, bool):
@@ -469,7 +494,7 @@ class ConfigStore:
             out["kind"] = "ensemble"
             out["systems"] = list(loaded.names)
             return out
-        out["form"] = describe(loaded.cfgs[0])
+        out["form"] = describe(loaded.cfgs[0], cfgmod.machine_baseline())
         return out
 
     def _read_text(self, path: Path) -> str:
@@ -580,9 +605,9 @@ class ConfigStore:
         """Set fields on an existing config and write it back.
 
         Each edit names a ``section`` (or a ``scene`` index) and a ``field``,
-        plus either a ``value`` or ``reset = true`` to put the field back to its
-        dataclass default — the only way a form can *remove* a key, and the
-        inverse of the ``is_default`` flag :func:`describe` reports.
+        plus either a ``value`` or ``reset = true`` to put the field back to the
+        baseline — the only way a form can *remove* a key, and the inverse of
+        the ``is_default`` flag :func:`describe` reports.
 
         Fields come from ``introspect``, so an edit can only reach what the form
         actually rendered: a scene's own type's fields, never another type's.
@@ -606,22 +631,26 @@ class ConfigStore:
                 "serializer refuses them by design). Edit the per-system configs."
             )
         cfg = loaded.cfgs[0]
-        blank = cfgmod.Config()
+        # Measured against the machine layer, not a blank Config: a password in
+        # the machine-settings file is legal and is not something *this* file
+        # carries, so it must not block editing this file.
+        baseline = cfgmod.machine_baseline()
         for section, name in sorted(config_serialize.SECRET_FIELDS):
-            if getattr(getattr(cfg, section), name) != getattr(getattr(blank, section), name):
+            if getattr(getattr(cfg, section), name) != getattr(getattr(baseline, section), name):
                 raise EditRejected(
                     f"{ref} carries [{section}].{name}, which is never written back — "
                     "saving the form would drop it. Edit this file as text, or move "
                     "the secret to its environment variable."
                 )
 
-        applied = [_apply_edit(cfg, e) for e in edits]
+        applied = [_apply_edit(cfg, e, baseline) for e in edits]
         try:
             text = config_serialize.dumps(
                 cfg,
                 annotate=False,
                 minimal=True,
                 schema_path=_schema_directive(original),
+                baseline=baseline,
             )
         except config_serialize.SerializeError as e:
             raise EditRejected(f"{ref} can't be written back: {e}") from e

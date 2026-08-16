@@ -14,6 +14,26 @@ the version and stamps it with the date.
 
 ### Fixed
 
+- **A saved configuration no longer absorbs your machine's settings.** Machine
+  settings (`~/.config/c64cast/settings.toml`) are a layer *under* a config
+  file: they say what this machine is, so a show file never has to. But every
+  save-back measured "is this worth writing?" against the shipped defaults
+  instead of against that layer — so saving a show config on the machine with
+  the capture card wrote that machine's `[video] device` into the file, and the
+  file then overrode the *next* machine's own setting. It applied to all three
+  save-backs: the web console's form, the `--init` wizard, and the on-C64
+  menu's live-tune save. They now measure against the machine layer, so a save
+  writes what the *show* says and leaves what the *machine* says where it was
+  set. Overriding a machine setting from a config still works and is still
+  written — including overriding it back to the shipped default, which is a
+  real answer and the only way to record it.
+
+  Two consequences in the console: the Settings view marks a value that comes
+  from your machine settings as unchanged (it shows the resolved value, but the
+  file does not set it), and **Clear** on a field puts the machine's value back
+  rather than the shipped default. A DMA password living in the machine
+  settings, where it is legal, no longer blocks editing an unrelated config.
+
 - **Colors are now matched against the palette your machine actually emits.**
   The 16 C64 colors are fixed, but what they *are* depends on the machine: an
   Ultimate 64's video output and a real VIC-II's are about 25 counts per channel
