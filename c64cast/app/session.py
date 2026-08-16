@@ -1132,7 +1132,7 @@ def run_foreground(sess: Session) -> None:
 def reload_all(sess: Session) -> None:
     """Re-read each system's TOML and hand the playlist a fresh scene list.
 
-    Only [interstitial] + [playlist] + [[scenes]] take effect; [audio],
+    Only [[scenes]] plus `config.RELOADABLE_SECTIONS` take effect; [audio],
     [video] and [ultimate64] are set at startup and reloading them would
     require restarting threads. The master itself isn't re-read (the system
     list + master defaults are set at startup), so add/remove of systems

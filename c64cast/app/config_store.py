@@ -25,6 +25,12 @@ tries. The replaced text goes to a dotfile sibling — invisible to the listing,
 recoverable by hand — because a remote overwrite of a show config otherwise has
 no undo at all.
 
+**A refusal says which file it is about.** Validation runs the whole layered
+load, so a stray value in the machine settings refuses every config on the host
+with an error naming a section that is nowhere in the file on screen.
+:func:`_machine_layer_notes` is the attribution for that case — see its
+docstring for the three conditions it insists on before blaming a layer.
+
 **:meth:`ConfigStore.patch` is how the generated form saves**, and it round-trips
 through the dataclasses rather than editing text: load, set the named fields,
 re-serialise, then hand the result to the same :meth:`ConfigStore.write` a raw
@@ -65,6 +71,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
@@ -185,6 +192,54 @@ def _value(val: object) -> Any:
     if isinstance(val, (str, int, float, bool)) or val is None:
         return val
     return str(val)
+
+
+def _machine_layer_notes(text: str, blame: str) -> list[dict[str, Any]]:
+    """Machine settings that `text` does not set and that `blame` names.
+
+    A config file is validated with the machine-settings layer under it, so a
+    stray value in ``~/.config/c64cast/settings.toml`` makes *every* config on
+    this host refuse to save — with an error naming a section, and nothing
+    saying the value is not in the file on screen. The reflex is to hunt for a
+    key in a file that does not contain it.
+
+    This is the attribution, done structurally rather than by re-loading: a key
+    the machine layer supplies, the edited text is silent about, and the failure
+    mentions by name. All three have to hold, so a machine setting the file
+    overrides is never blamed and neither is one the failure never mentioned —
+    a wrong pointer is worse than none."""
+    try:
+        machine = cfgmod.load_machine_settings()
+    except cfgmod.ConfigError as e:
+        # The settings file itself won't parse. That is worth saying outright:
+        # nothing on this host will load until it is fixed.
+        return [{"path": str(paths.settings_path()), "section": "", "key": "", "error": str(e)}]
+    if not machine:
+        return []
+    try:
+        own = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        own = {}
+    notes: list[dict[str, Any]] = []
+    for section, values in machine.items():
+        if not isinstance(values, dict):
+            continue
+        here = own.get(section)
+        for key, value in values.items():
+            if isinstance(here, dict) and key in here:
+                continue
+            if key not in blame:
+                continue
+            notes.append(
+                {
+                    "path": str(paths.settings_path()),
+                    "section": section,
+                    "key": key,
+                    "value": _value(value),
+                    "error": None,
+                }
+            )
+    return notes
 
 
 def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[str, Any]:
@@ -537,6 +592,9 @@ class ConfigStore:
             "messages": [],
             "unknown_keys": [],
             "systems": [],
+            # Filled only on a failure this file may not be responsible for —
+            # see _machine_layer_notes.
+            "layers": [],
         }
         fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
         tmp = Path(tmp_name)
@@ -557,13 +615,13 @@ class ConfigStore:
                         )
                         report["messages"] = list(messages)
                         report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
-                        return report
+                        return self._blame_layers(report, text)
                 except (cfgmod.ConfigError, ValueError) as e:
                     # The scratch name is an implementation detail; the caller
                     # asked about their file.
                     report["error"] = str(e).replace(str(tmp), ref or "the config")
                     report["messages"] = list(messages)
-                    return report
+                    return self._blame_layers(report, text)
             report["ok"] = True
             report["messages"] = list(messages)
             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
@@ -571,6 +629,15 @@ class ConfigStore:
             return report
         finally:
             tmp.unlink(missing_ok=True)
+
+    @staticmethod
+    def _blame_layers(report: dict[str, Any], text: str) -> dict[str, Any]:
+        """Point a failed report at the layer under the file, when there is one
+        to point at. A no-op on the usual failure, where the file itself is
+        wrong."""
+        blame = " ".join([str(report["error"] or ""), *report["messages"]])
+        report["layers"] = _machine_layer_notes(text, blame)
+        return report
 
     def _scratch_dir(self, ref: str | None) -> Path:
         if ref is not None:

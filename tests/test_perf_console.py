@@ -9,6 +9,7 @@ tests/test_control_plane.py."""
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
+import threading
 import unittest
 import warnings
 from typing import Any
@@ -77,9 +78,31 @@ class _FakePerf:
 
 
 class _FakeScene:
-    def __init__(self, name: str, effects: list[Any] | None = None) -> None:
+    def __init__(self, name: str, effects: list[Any] | None = None, source: Any = None) -> None:
         self.name = name
         self.effects = effects or []
+        self.duration_s = 30.0
+        if source is not None:
+            self.source = source
+
+
+class _FakeSource:
+    """A scene generator declaring one real live-tune target. Named after the
+    range `introspect.live_targets()` reports for `source.scale`, so the panel
+    tests measure the same knob the picker offers."""
+
+    LIVE_PARAMS = {"scale": (0.1, 4.0)}
+
+    def __init__(self) -> None:
+        self.scale = 2.05
+
+
+class _FakeTracker:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, Any, Any]] = []
+
+    def record(self, target: str, old: Any, new: Any) -> None:
+        self.records.append((target, old, new))
 
 
 class _FakePlaylist:
@@ -89,10 +112,25 @@ class _FakePlaylist:
         clips: list[dict[str, Any]] | None = None,
         effects: list[Any] | None = None,
         scene_name: str = "demo",
+        source: Any = None,
     ) -> None:
         self.tempo = _FakeTempo()
         self.performance = _FakePerf(clips)
-        self.current = _FakeScene(scene_name, effects)
+        self.current = _FakeScene(scene_name, effects, source)
+        self.scenes = [self.current]
+        self.index = 0
+        self.pause_event = threading.Event()
+        self.resume_event = threading.Event()
+        self.skip_event = threading.Event()
+        self.live_tracker = _FakeTracker()
+        self.osd: list[str] = []
+        self.jumps: list[tuple[int, bool]] = []
+
+    def post_osd(self, text: str) -> None:
+        self.osd.append(text)
+
+    def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
+        self.jumps.append((index, skip_interstitial))
 
 
 def _bridge(**kw: Any) -> tuple[PerfBridge, _FakePlaylist]:
@@ -220,6 +258,93 @@ class PerfBridgeTest(unittest.TestCase):
         bridge.apply({"action": "look", "slot": 4})  # recall (save defaults False)
         self.assertEqual(pl.performance.look_events, [(4, True), (4, False)])
         self.assertFalse(bridge.apply({"action": "bogus"}))
+
+    def test_live_panel_lists_only_what_the_scene_declares(self):
+        # `source.scale` is a declared live target (introspect.live_targets);
+        # the scene here has a source that declares it, and declares nothing
+        # else — so exactly one row comes back, generated rather than listed.
+        bridge, pl = _bridge(source=_FakeSource())
+        rows = {r["target"]: r for r in bridge.state()["systems"][0]["live"]}
+        self.assertEqual(list(rows), ["source.scale"])
+        row = rows["source.scale"]
+        self.assertEqual(row["group"], "Generator")
+        self.assertEqual(row["kind"], "scalar")
+        self.assertAlmostEqual(row["value"], 2.05, places=3)
+        # norm = (2.05 - 0.1) / (4.0 - 0.1) = 0.5
+        self.assertAlmostEqual(row["norm"], 0.5, places=3)
+
+    def test_live_panel_is_empty_for_a_scene_with_no_knobs(self):
+        bridge, _pl = _bridge()
+        self.assertEqual(bridge.state()["systems"][0]["live"], [])
+
+    def test_live_sets_a_scalar_from_a_slider_position(self):
+        src = _FakeSource()
+        bridge, pl = _bridge(source=src)
+        self.assertTrue(bridge.live(None, "source.scale", norm=0.0))
+        self.assertAlmostEqual(src.scale, 0.1, places=4)
+        self.assertTrue(bridge.live(None, "source.scale", norm=1.0))
+        self.assertAlmostEqual(src.scale, 4.0, places=4)
+
+    def test_live_does_not_reach_the_audience_screen(self):
+        # The console exists so a performer has a readout the audience doesn't,
+        # so unlike the MIDI and WLED surfaces it posts no OSD line.
+        src = _FakeSource()
+        bridge, pl = _bridge(source=src)
+        bridge.live(None, "source.scale", norm=0.75)
+        self.assertEqual(pl.osd, [])
+
+    def test_live_on_a_target_the_scene_lacks_is_a_noop_not_a_refusal(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.live(None, "mode.dither_strength", norm=0.5))
+
+    def test_live_with_no_session_is_refused(self):
+        self.assertFalse(PerfBridge(lambda: []).live(None, "source.scale", norm=0.5))
+
+    def test_transport_sets_the_playlists_own_events(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.transport(None, "pause"))
+        self.assertTrue(pl.pause_event.is_set())
+        self.assertTrue(bridge.transport(None, "resume"))
+        self.assertTrue(pl.resume_event.is_set())
+        self.assertTrue(bridge.transport(None, "skip"))
+        self.assertTrue(pl.skip_event.is_set())
+
+    def test_transport_rejects_a_verb_it_does_not_have(self):
+        bridge, pl = _bridge()
+        self.assertFalse(bridge.transport(None, "rewind"))
+        self.assertFalse(pl.pause_event.is_set())
+
+    def test_paused_and_scenes_are_in_the_state(self):
+        bridge, pl = _bridge(scene_name="opener")
+        state = bridge.state()["systems"][0]
+        self.assertFalse(state["paused"])
+        self.assertEqual(state["scene_index"], 0)
+        self.assertEqual(
+            state["scenes"],
+            [{"index": 0, "name": "opener", "duration_s": 30.0, "is_current": True}],
+        )
+        pl.pause_event.set()
+        self.assertTrue(bridge.state()["systems"][0]["paused"])
+
+    def test_jump_is_a_cut(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.jump(None, 0))
+        self.assertEqual(pl.jumps, [(0, True)])
+
+    def test_jump_off_the_end_is_a_noop_but_addressed(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.jump(None, 9))
+        self.assertEqual(pl.jumps, [])
+
+    def test_apply_dispatches_the_new_actions(self):
+        src = _FakeSource()
+        bridge, pl = _bridge(source=src)
+        bridge.apply({"action": "live", "target": "source.scale", "norm": 1.0})
+        self.assertAlmostEqual(src.scale, 4.0, places=4)
+        bridge.apply({"action": "transport", "verb": "skip"})
+        self.assertTrue(pl.skip_event.is_set())
+        bridge.apply({"action": "jump", "index": 0})
+        self.assertEqual(pl.jumps, [(0, True)])
 
     def test_beats_remaining(self):
         pl = _FakePlaylist()

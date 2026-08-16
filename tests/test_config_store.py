@@ -56,6 +56,9 @@ BROKEN = '[color]\ndither = "atkinson"\n\n[[scenes\n'
 # for the same reason `GOOD` has it off — the audio check runs first, and a
 # fixture that fails for a different reason on CI proves nothing.
 INVALID = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
+# Valid on its own, and silent about `dither` — so a machine setting for it is
+# the last word, which is what makes this the fixture for the layer-blame tests.
+SILENT_ON_DITHER = '[audio]\nenabled = false\n\n[[scenes]]\ntype = "blank"\nduration_s = 1.0\n'
 MASTER = """
 [ensemble]
 systems = [
@@ -581,6 +584,65 @@ class MachineBaselineTest(StoreTestCase):
         )
         self.assertTrue(out["ok"])
         self.assertNotIn("dma_password", self._read())
+
+
+class MachineLayerBlameTest(StoreTestCase):
+    """A refusal has to say which file it is about.
+
+    The trap: validation runs the whole layered load, so one stray value in
+    `~/.config/c64cast/settings.toml` refuses *every* config on the host — with
+    an error naming a section that is nowhere in the file on screen."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.settings = self.tmp / "settings.toml"
+        patch = mock.patch.dict(os.environ, {"C64CAST_SETTINGS": str(self.settings)})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_bad_machine_setting_is_named_as_the_source(self):
+        self.settings.write_text('[color]\ndither = "nonsense"\n', encoding="utf-8")
+        report = self.store.validate_text(SILENT_ON_DITHER, "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(len(report["layers"]), 1)
+        note = report["layers"][0]
+        self.assertEqual(
+            (note["section"], note["key"], note["value"]), ("color", "dither", "nonsense")
+        )
+        self.assertEqual(note["path"], str(self.settings))
+
+    def test_a_machine_setting_the_file_overrides_is_not_blamed(self):
+        # The file says the last word on `dither`, so whatever is wrong is the
+        # file's — pointing at the layer under it would send the reader away.
+        self.settings.write_text('[color]\ndither = "nonsense"\n', encoding="utf-8")
+        report = self.store.validate_text(INVALID, "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["layers"], [])
+
+    def test_a_machine_setting_the_failure_never_mentions_is_not_blamed(self):
+        self.settings.write_text("[video]\ndevice = 3\n", encoding="utf-8")
+        report = self.store.validate_text(INVALID, "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["layers"], [])
+
+    def test_nothing_is_blamed_when_the_config_loads(self):
+        self.settings.write_text("[video]\ndevice = 3\n", encoding="utf-8")
+        report = self.store.validate_text(GOOD, "shows/gig.toml")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["layers"], [])
+
+    def test_a_settings_file_that_will_not_parse_says_so_outright(self):
+        self.settings.write_text("[color\n", encoding="utf-8")
+        report = self.store.validate_text(GOOD, "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(len(report["layers"]), 1)
+        self.assertIn(str(self.settings), report["layers"][0]["error"])
+
+    def test_a_refused_save_carries_the_attribution(self):
+        self.settings.write_text('[color]\ndither = "nonsense"\n', encoding="utf-8")
+        with self.assertRaises(config_store.ConfigInvalid) as caught:
+            self.store.write("shows/other.toml", SILENT_ON_DITHER)
+        self.assertEqual(caught.exception.report["layers"][0]["key"], "dither")
 
 
 if __name__ == "__main__":

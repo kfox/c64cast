@@ -4,7 +4,6 @@
   import { ApiError, api } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
   import ConfigList from "$lib/components/ConfigList.svelte";
-  import LogPane from "$lib/components/LogPane.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
   import type { Console } from "$lib/console.svelte";
   import type { ConfigIndex } from "$lib/types";
@@ -158,8 +157,4 @@
     {/if}
   </section>
 
-  <section class="panel min-w-0 p-5 lg:col-span-2">
-    <h2 class="mb-3 text-lg font-semibold">Log</h2>
-    <LogPane lines={host.log} />
-  </section>
 </div>

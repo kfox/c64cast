@@ -566,17 +566,22 @@ class DisplayMode:
         return label if isinstance(label, str) else f"{name}={value}"
 
     def get_live_choice(self, name: str) -> str | None:
-        """The current value of a LIVE_CHOICES field (so a note/pad can cycle
-        from it). None when this mode doesn't carry that field."""
+        """The current value of a LIVE_CHOICES field. None when this mode
+        doesn't carry that field.
+
+        Two fields are not stored as their own choice string and so are read
+        specially; every other one is the private attribute of the same name.
+        That fallback rather than a case per field on purpose: a mode declares
+        a live choice by adding one entry to ``LIVE_CHOICES``, and a getter
+        that had to be extended in step was extended late — ``cell_pick`` was
+        declared and never read here, which no caller noticed until a UI tried
+        to *show* the current value rather than cycle past it."""
         if name == "color_match":
             return "perceptual" if getattr(self, "_perceptual", False) else "rgb"
         if name == "palette_mode":
             return getattr(self, "palette_mode", None)
-        if name == "dither_method":
-            return getattr(self, "_dither_method", None)
-        if name == "cell_strategy":
-            return getattr(self, "_cell_strategy", None)
-        return None
+        value = getattr(self, f"_{name}", None)
+        return value if isinstance(value, str) else None
 
     def setup(self, api: C64Backend):
         # Anything that changes the meaning of the VIC memory map should

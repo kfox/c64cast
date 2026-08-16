@@ -112,6 +112,15 @@ _COLOR_MODE_CHOICES = ("per_voice", "per_waveform")
 # rebuild, so the menu shows it read-only this cut. Internal-only — not
 # surfaced in the schema, serializer, or example.toml.
 _APPLY_CHOICES = ("live", "rebuild")
+
+#: The config sections a **reload** picks up. A reload re-reads each system's
+#: TOML and hands the playlist a fresh scene list, so `[[scenes]]` (always) plus
+#: these take effect on a running show; everything else — the connection, the
+#: audio and video threads, the control surfaces — is built once at startup and
+#: needs the session restarted. `session.reload_all` is what makes this true and
+#: a test pins the two together; it lives here so the web console can say, at
+#: the moment of saving, which of your changes a reload will actually apply.
+RELOADABLE_SECTIONS: frozenset[str] = frozenset({"interstitial", "playlist"})
 _MIDI_WAVEFORM_CHOICES = ("triangle", "sawtooth", "pulse", "noise")
 _MIDI_FILTER_MODE_CHOICES = ("lowpass", "bandpass", "highpass")
 # Mirrors midi_scene.VOICE_MODES (asserted by tests/test_introspect.py).

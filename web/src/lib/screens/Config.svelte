@@ -7,6 +7,7 @@
   import ConfigList from "$lib/components/ConfigList.svelte";
   import TomlEditor from "$lib/components/TomlEditor.svelte";
   import type { Console } from "$lib/console.svelte";
+  import { drafts } from "$lib/drafts.svelte";
   import { DocIndex, documentation } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
   import type { ConfigDetail, ConfigEdit, ConfigIndex } from "$lib/types";
@@ -25,14 +26,12 @@
   let problem = $state("");
   let view = $state<"form" | "text">("form");
 
-  // Edits survive clicking away to another file and back. The alternative —
-  // a "you have unsaved changes" dialog on every navigation — asks the reader
-  // to defend an edit they may just be comparing against something else. Both
-  // editors get it: the form's staged edits are kept per ref the same way the
-  // raw text is.
-  let drafts = $state<Record<string, string>>({});
+  // Edits survive clicking away to another file — and, because the store is the
+  // app's rather than this screen's, away to another *screen* and back. The
+  // alternative — a "you have unsaved changes" dialog on every navigation —
+  // asks the reader to defend an edit they may just be comparing against
+  // something else.
   let draft = $state("");
-  let staged = $state<Record<string, Record<string, ConfigEdit>>>({});
 
   // A click through a long list starts several loads; only the newest one is
   // allowed to land, or the screen settles on whichever file the network
@@ -40,13 +39,8 @@
   let generation = 0;
 
   const selected = $derived(router.tail);
-  const pending = $derived(staged[selected] ?? {});
-  const edited = $derived([
-    ...new Set([
-      ...Object.keys(drafts),
-      ...Object.keys(staged).filter((ref) => Object.keys(staged[ref]).length > 0),
-    ]),
-  ]);
+  const pending = $derived(drafts.fields(selected));
+  const edited = $derived(drafts.refs);
   const dirty = $derived(
     (detail !== null && draft !== detail.text) || Object.keys(pending).length > 0,
   );
@@ -95,7 +89,7 @@
       const loaded = await api.config(ref);
       if (token !== generation) return;
       detail = loaded;
-      draft = drafts[ref] ?? loaded.text;
+      draft = drafts.text(ref) ?? loaded.text;
     } catch (e) {
       if (token !== generation) return;
       detail = null;
@@ -117,18 +111,11 @@
 
   function edit(text: string): void {
     draft = text;
-    drafts = withDraft(text === (detail?.text ?? "") ? null : text);
-  }
-
-  function withDraft(text: string | null): Record<string, string> {
-    const next = { ...drafts };
-    if (text === null) delete next[selected];
-    else next[selected] = text;
-    return next;
+    drafts.setText(selected, text === (detail?.text ?? "") ? null : text);
   }
 
   function stage(next: Record<string, ConfigEdit>): void {
-    staged = { ...staged, [selected]: next };
+    drafts.setFields(selected, next);
   }
 
   /** A save changes what the file *is*, so the form beside it is re-read
@@ -136,11 +123,19 @@
    *  and both editors drop what they had staged for it, since the file now
    *  says it. */
   async function reread(): Promise<void> {
-    drafts = withDraft(null);
-    stage({});
+    drafts.clear(selected);
     await load(selected);
     await refreshIndex();
   }
+
+  /** Sections of the last save that a reload will not pick up. Cleared when
+   *  the selection changes, because it is a fact about one save of one file. */
+  let heldBack = $state<string[]>([]);
+
+  $effect(() => {
+    selected;
+    untrack(() => (heldBack = []));
+  });
 
   /** Rebuild the running scenes from the file just saved. Only offered for
    *  the config that is actually running: a reload is the supervisor's, not
@@ -150,9 +145,28 @@
     problem = "";
     try {
       await api.reload();
+      heldBack = [];
     } catch (e) {
       problem = describe(e);
     }
+  }
+
+  /** Stop and start the session on this config. What a reload cannot do: the
+   *  connection, the audio threads and the control surfaces are built once,
+   *  and the settings that configure them are read exactly then. */
+  async function restart(): Promise<void> {
+    problem = "";
+    try {
+      await api.switch(selected);
+      heldBack = [];
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function afterSave(held: string[]): Promise<void> {
+    heldBack = held;
+    await reread();
   }
 
   const clock = (t: number) => new Date(t * 1000).toLocaleString();
@@ -205,15 +219,30 @@
       </header>
 
       {#if isRunning}
-        <div
-          class="mb-4 flex flex-wrap items-center gap-3 rounded-lg bg-[var(--panel-alt)] px-3 py-2"
-        >
-          <p class="flex-1 text-sm">
-            This is what the session is running. A save lands on disk; the show picks it up on a
-            reload.
-          </p>
-          {#if !host.readOnly}
-            <Button onclick={reload}>Reload scenes</Button>
+        <div class="mb-4 space-y-2 rounded-lg bg-[var(--panel-alt)] px-3 py-2">
+          <div class="flex flex-wrap items-center gap-3">
+            <p class="flex-1 text-sm">
+              This is what the session is running. A save lands on disk; the show picks it up on a
+              reload.
+            </p>
+            {#if !host.readOnly}
+              <Button onclick={reload}>Reload scenes</Button>
+            {/if}
+          </div>
+          {#if heldBack.length}
+            <!-- A reload re-reads the file and rebuilds the scenes; it does not
+                 rebuild the connection or restart the audio threads. Offering
+                 it alone here would be a button that quietly does nothing for
+                 what was just changed. -->
+            <div class="flex flex-wrap items-center gap-3 border-t border-[var(--edge)] pt-2">
+              <p class="flex-1 text-sm text-c64-yellow">
+                A reload will not pick up {heldBack.map((s) => `[${s}]`).join(", ")} — those are
+                read once, when the session starts.
+              </p>
+              {#if !host.readOnly}
+                <Button variant="primary" onclick={restart}>Restart on this config</Button>
+              {/if}
+            </div>
           {/if}
         </div>
       {/if}
@@ -271,7 +300,7 @@
           readOnly={host.readOnly}
           {pending}
           onpending={stage}
-          onsaved={() => void reread()}
+          onsaved={(_written, held) => void afterSave(held)}
         />
       {:else if detail.kind === "ensemble"}
         <p class="text-sm text-[var(--ink-dim)]">

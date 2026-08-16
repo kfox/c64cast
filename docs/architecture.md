@@ -13,7 +13,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
-* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `control/web_static.py`, `control/midi_control.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
+* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `control/web_static.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/session.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
@@ -72,6 +72,7 @@ the two lists account for every module in the tree.
 | `scenes/interstitial.py` | [Scenes, sources & overlays](architecture/scenes.md#interstitialpy--backgroundspy) |
 | `app/introspect.py` | [Config, CLI & ensemble](architecture/config.md#introspectpy--the-model-and-the-terminal-renderers) |
 | `control/keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
+| `control/live_tune.py` | [Control surfaces & live performance](architecture/control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7) |
 | `control/midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
 | `sid/midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |
 | `control/midi_setup.py` | [Control surfaces & live performance](architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizard-phase-5) |

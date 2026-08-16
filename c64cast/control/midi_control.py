@@ -50,7 +50,6 @@ Requires the `midi` extra (``uv tool install --force 'c64cast[all]'``).
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from collections.abc import Mapping
@@ -61,6 +60,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
 from c64cast._pollthread import PollThread
 
+from . import live_tune
 from .transport import TransportEvent
 
 if TYPE_CHECKING:
@@ -232,28 +232,6 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
             slot=slot,
         )
     return out
-
-
-# A `param` target holder addressing a specific effect-chain layer:
-# `fx<N>` or `effect[<N>]`, 0-based (Live DJ/VJ Phase 3). Kept mirrored with
-# config._FX_LAYER_HOLDER_RE (independent copy so config stays import-light).
-_FX_LAYER_HOLDER_RE = re.compile(r"^(?:fx(\d+)|effect\[(\d+)\])$")
-
-
-def _resolve_param_holder(scene: Any, holder_attr: str) -> Any:
-    """Resolve a `param` target's holder prefix to the object that carries the
-    LIVE_PARAMS/LIVE_CHOICES: a plain attribute (`effect` → scene.effect,
-    `source` → scene.source), or a layer-addressed effect (`fx2`, `effect[2]`)
-    → scene.effects[2]. Returns None for an out-of-range layer or a scene with
-    no such attribute. Mirrors config._is_valid_param_holder's grammar."""
-    m = _FX_LAYER_HOLDER_RE.match(holder_attr)
-    if m is not None:
-        idx = int(m.group(1) if m.group(1) is not None else m.group(2))
-        effects = getattr(scene, "effects", None)
-        if effects and 0 <= idx < len(effects):
-            return effects[idx]
-        return None
-    return getattr(scene, holder_attr, None)
 
 
 def _parse_mmc_sysex(data: tuple[int, ...]) -> int | None:
@@ -1029,66 +1007,21 @@ class MidiControlListener:
         eff.enabled = not getattr(eff, "enabled", True)
         pl.post_osd(f"fx{slot} {'on' if eff.enabled else 'bypass'}")
 
-    def _apply_param(
-        self, pl: Playlist, target: str | None, value_0_127: int, kind: str = "cc"
-    ) -> None:
-        if target is None or pl.current is None:
-            return
-        holder_attr, _, name = target.partition(".")
-        # `scene.<name>` targets the scene itself (scope scenes mix in the
-        # renderer, so the param lives on the scene, not a source/effect holder);
-        # `mode.<name>` targets the scene's display mode (the live color-pipeline
-        # knobs — dither, motion smoothing, auto-fit, and the discrete choices);
-        # `fx<N>` / `effect[<N>]` target a specific effect-chain layer (Phase 3).
-        # Kept mirrored with wled_device._resolve_live_target / _set_live_param.
-        if holder_attr == "scene":
-            holder = pl.current
-        elif holder_attr == "mode":
-            holder = getattr(pl.current, "display_mode", None)
-        else:
-            holder = _resolve_param_holder(pl.current, holder_attr)
-        if holder is None:
-            return
-        live_params = getattr(type(holder), "LIVE_PARAMS", {})
-        live_choices = getattr(type(holder), "LIVE_CHOICES", {})
-        if name in live_params:
-            lo, hi = live_params[name]
-            old = getattr(holder, name, None)
-            new = lo + (value_0_127 / 127.0) * (hi - lo)
-            setattr(holder, name, new)
-            pl.post_osd(f"{name} {new:.2f}")
-            self._record_live_change(pl, holder_attr, name, old, new)
-        elif name in live_choices:
-            # A CC (a knob) bucket-selects across the choice list; a note/pad/PC
-            # (a momentary trigger) cycles to the next choice from the current one.
-            # Only display modes declare LIVE_CHOICES + the set/get helpers, but
-            # resolve via getattr so a Scene holder can't trip an attribute error.
-            set_choice = getattr(holder, "set_live_choice", None)
-            get_choice = getattr(holder, "get_live_choice", None)
-            if set_choice is None:
-                return
-            choices = live_choices[name]
-            cur = get_choice(name) if get_choice is not None else None
-            if kind == "cc":
-                idx = min(len(choices) - 1, value_0_127 * len(choices) // 128)
-            else:
-                cur_idx = choices.index(cur) if cur in choices else -1
-                idx = (cur_idx + 1) % len(choices)
-            chosen = choices[idx]
-            api = getattr(pl.current, "api", None)
-            label = set_choice(api, name, chosen)
-            pl.post_osd(label or f"{name} {chosen}")
-            self._record_live_change(pl, holder_attr, name, cur, chosen)
-        # else: the target declares no such LIVE_PARAM/LIVE_CHOICE — silent no-op.
-
     @staticmethod
-    def _record_live_change(pl: Playlist, holder_attr: str, name: str, old: Any, new: Any) -> None:
-        """Log a `mode.<name>` change into the playlist's live-tune tracker for
-        the exit save-back. Only mode params map to config ([color]) fields;
-        effect/source/scene LIVE_PARAMS are transient runtime state, not config,
-        so they're not tracked."""
-        if holder_attr == "mode":
-            pl.live_tracker.record(f"mode.{name}", old, new)
+    def _apply_param(pl: Playlist, target: str | None, value_0_127: int, kind: str = "cc") -> None:
+        """Turn a mapped `param` knob. Target resolution, range mapping, the OSD
+        line and the live-tune save-back all live in :mod:`live_tune`, shared
+        with the WLED bridge and the web console; what is MIDI's own is the
+        scale (0..127) and the meaning of the message kind — a CC is a position,
+        so it selects across a choice list, while a note or program change is a
+        momentary trigger with no position and so steps to the next choice."""
+        if target is None:
+            return
+        live_tune.apply(
+            pl,
+            target,
+            live_tune.Move(position=value_0_127, full_scale=127.0, cycle=kind != "cc"),
+        )
 
 
 def build_midi_control_listener(

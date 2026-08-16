@@ -2,6 +2,8 @@
   import { onDestroy, onMount } from "svelte";
 
   import { Console } from "$lib/console.svelte";
+  import LogDrawer from "$lib/components/LogDrawer.svelte";
+  import { drafts } from "$lib/drafts.svelte";
   import { Router, type Screen } from "$lib/router.svelte";
   import ConfigScreen from "$lib/screens/Config.svelte";
   import LiveScreen from "$lib/screens/Live.svelte";
@@ -24,6 +26,11 @@
     { screen: "live", label: "Live" },
     { screen: "config", label: "Configs" },
   ];
+
+  // Unsaved edits are marked on the tab, not just inside the screen that holds
+  // them: the file list and the file header both say so, and neither is on
+  // screen once somebody has walked away to watch the show.
+  const unsaved = $derived(drafts.count);
 </script>
 
 <div class="mx-auto flex min-h-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
@@ -57,11 +64,19 @@
           : 'border-transparent text-[var(--ink-dim)] hover:text-[var(--ink)]'}"
       >
         {tab.label}
+        {#if tab.screen === "config" && unsaved > 0}
+          <span
+            class="ms-1 inline-block size-1.5 rounded-full bg-c64-yellow align-middle"
+            title="{unsaved} file{unsaved === 1 ? '' : 's'} with unsaved edits"
+          ></span>
+        {/if}
       </button>
     {/each}
   </nav>
 
-  <main class="flex-1">
+  <!-- `pb-14` clears the log drawer's collapsed bar, which is fixed to the
+       bottom of the viewport and would otherwise sit on the last control. -->
+  <main class="flex-1 pb-14">
     {#if router.screen === "config"}
       <ConfigScreen {host} {router} />
     {:else if router.screen === "live"}
@@ -81,3 +96,5 @@
     >
   </footer>
 </div>
+
+<LogDrawer lines={host.log} />

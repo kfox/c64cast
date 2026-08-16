@@ -494,12 +494,26 @@ setting a value in it.
 
 *Source* is the file itself, editable, with **Check** to load it without saving
 and **Save** to write it back. An edit you have not saved — in either view —
-survives clicking away to another file and is marked in the list, so nothing is
+survives clicking away to another file, and survives leaving the Configs screen
+entirely; it is marked in the file list and on the Configs tab, so nothing is
 lost by looking at something else. A configuration is addressed by its own URL —
 `/config/shows/gig.toml` — which makes it a link worth sending. When the file
 on screen is the one the session is running, the screen says so and offers
 **Reload scenes**, because saving to disk and putting it on the C64 are two
 different acts.
+
+A reload is not always enough, and the console says which of your changes it
+covers. A reload re-reads the file and rebuilds the scenes; `[audio]`, `[video]`
+and `[ultimate64]` are read once when the session starts and their threads are
+already running, so a change to one of those needs the session restarted. The
+save message splits its own count that way, the unsaved-changes line warns
+before you save rather than after, and when a reload would leave something out
+the banner offers **Restart on this config** beside it.
+
+If a save is refused for something you cannot find in the file, look at what the
+refusal names: a configuration is checked with your machine settings underneath
+it, and when the offending value comes from there rather than from the file on
+screen, the console says so and names the file it came from.
 
 > [!NOTE]
 > The form saves the file, not the machine. A value that comes from your machine
@@ -510,18 +524,36 @@ different acts.
 
 **Live** is the performance surface, and it is the screen to have open at a
 gig. Along the top is the beat grid: the tempo, a pulse on the current beat,
-where that tempo came from, and **Tap** to set it by hand. Below it the clip
-grid, one pad per `[[performance.clips]]` entry, lit green for the clip
-playing and amber for one waiting on its quantize boundary — with a count-in
-beside the tempo saying how many beats are left. Pads are pressed and released
-rather than clicked, so a `gate` clip holds for as long as your finger is down.
-The effect rack lists the current scene's chain with a bypass button and a
+where that tempo came from, **Tap** to set it by hand, and the transport —
+**Pause**, **Resume** and **Skip**, which are the same pause and skip the C64's
+own keys give you. Below it the clip grid, one pad per `[[performance.clips]]`
+entry, lit green for the clip playing and amber for one waiting on its quantize
+boundary — with a count-in beside the tempo saying how many beats are left. Pads
+are pressed and released rather than clicked, so a `gate` clip holds for as long
+as your finger is down.
+
+The **effect rack** lists the current scene's chain with a bypass button and a
 slider per knob, generated from what each effect declares, so it cannot offer
-one the effect does not have. The eight look pads at the bottom recall a saved
-look; arm **SAVE** first and a pad stores the current clip and effect chain
+one the effect does not have. **Tune** is the rest of the live surface: the
+colour pipeline (dither strength and method, palette mode, colour matching, cell
+strategy, motion smoothing, auto-fit), the generator's own knobs, and a scope
+scene's gain — the same knobs `--midi-setup` offers a controller, grouped the
+same way. It shows what the *current scene* has and nothing else, so it changes
+shape as the show advances and never offers a slider that does nothing. A
+colour-pipeline change made here is recorded like any other live tune. The host
+does not offer to write that back — it has no terminal to ask on — so a tuning
+worth keeping is one to type into the *Settings* view as well.
+
+**Scenes** lists the playlist with the one playing marked; tapping one jumps
+straight to it, without the interstitial in front. The eight look pads recall a
+saved look; arm **SAVE** first and a pad stores the current clip and effect chain
 instead. Everything here drives the same engine a MIDI controller drives — a
 pad tapped in the browser and a pad tapped on the grid are the same launch —
 and an ensemble puts each machine on its own tab, at its own URL.
+
+The host's **log** sits in a bar along the bottom of every screen, showing the
+last line and opening in place, so a refused save or a scene that failed is
+readable from wherever you were standing when it happened.
 
 It is built and **shipped inside the package**, so there is nothing to install
 and no build step: `uv sync` and `pip install` both give you a console. It is

@@ -72,6 +72,11 @@ export interface FieldDoc {
 export interface SectionDoc {
   name: string;
   help: string;
+  /** Whether a running session's *reload* picks this section up, or it takes a
+   *  restart. `FieldDoc.apply` answers the narrower question of whether a
+   *  change lands without even a scene rebuild; this is the one the form has to
+   *  answer at the moment somebody saves. */
+  reload: boolean;
   fields: FieldDoc[];
 }
 
@@ -96,8 +101,10 @@ export interface OverlayDoc {
   params: ParamDoc[];
 }
 
-/** `GET /api/introspect`. `modes` and `live_targets` arrive too and are left
- *  untyped until a screen reads them — the performance surface will. */
+/** `GET /api/introspect`. `modes` and `live_targets` arrive too and stay
+ *  untyped here: the Tune panel reads the *resolved* knobs off the state feed
+ *  (`LiveKnob`), which is the same registry already filtered to what the
+ *  running scene has, so a screen never needs the unfiltered catalogue. */
 export interface Introspection {
   sections: SectionDoc[];
   scene_types: SceneTypeDoc[];
@@ -162,6 +169,19 @@ export interface ConfigDetail {
   form: ConfigForm | null;
 }
 
+/** A setting that came from a layer *under* the file being edited — the
+ *  machine settings. Present on a failed report only, and only when the failure
+ *  named a key this file does not set, which is the case where the error would
+ *  otherwise send the reader hunting through the wrong file. `error` is set
+ *  instead of `key` when the settings file itself will not parse. */
+export interface LayerNote {
+  path: string;
+  section: string;
+  key: string;
+  value?: unknown;
+  error: string | null;
+}
+
 /** `POST /api/configs/{ref}/validate`, and the body of the 422 a refused save
  *  answers with. */
 export interface ValidationReport {
@@ -170,6 +190,7 @@ export interface ValidationReport {
   messages: string[];
   unknown_keys: UnknownKey[];
   systems: string[];
+  layers: LayerNote[];
 }
 
 /** `PUT /api/configs/{ref}`. `backup` names the dotfile sibling holding what
@@ -237,15 +258,20 @@ export interface ArmedClip {
   beats_remaining: number | null;
 }
 
-/** One declared `LIVE_PARAMS` field. `norm` is the slider position; `value` is
- *  what the layer actually holds. */
-export interface FxParam {
+/** What a slider needs: a named number, its declared range, and where in that
+ *  range it currently sits. Both live-tune surfaces produce it — the effect
+ *  rack from a layer's `LIVE_PARAMS`, the tune panel from a scalar `LiveKnob` —
+ *  so they share one control. */
+export interface Knob {
   name: string;
   value: number;
   min: number;
   max: number;
   norm: number;
 }
+
+/** One declared `LIVE_PARAMS` field of an effect layer. */
+export type FxParam = Knob;
 
 export interface FxLayer {
   index: number;
@@ -255,15 +281,45 @@ export interface FxLayer {
   params: FxParam[];
 }
 
+/** One live-tune knob the *current scene* actually has, from
+ *  `perf_console._live_dict`. The host tries every target
+ *  `introspect.live_targets()` declares against the running scene and sends
+ *  only the ones that resolve, so a rendered control always writes somewhere.
+ *  `min`/`max`/`norm` come with a scalar, `choices` with a choice. */
+export interface LiveKnob {
+  target: string;
+  group: string;
+  name: string;
+  kind: "scalar" | "choice";
+  value: number | string | null;
+  min?: number;
+  max?: number;
+  norm?: number;
+  choices?: string[];
+}
+
+/** One scene in the running playlist, for a console that offers a jump.
+ *  `duration_s` is null for a scene that runs until its source ends. */
+export interface SceneRow {
+  index: number;
+  name: string;
+  duration_s: number | null;
+  is_current: boolean;
+}
+
 /** One system's whole performance state — `perf_console._system_state`. */
 export interface PerfSystem {
   name: string;
   current_scene: string | null;
+  scene_index: number;
+  paused: boolean;
+  scenes: SceneRow[];
   tempo: TempoState;
   active_slot: number | null;
   armed: ArmedClip | null;
   clips: Clip[];
   effects: FxLayer[];
+  live: LiveKnob[];
   /** Slots that hold a saved look, so a recall pad lights only when there is
    *  something to recall. */
   looks: number[];

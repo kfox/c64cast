@@ -100,21 +100,11 @@ def _status_for(pl: Playlist) -> dict[str, Any]:
 
 
 def _scenes_for(pl: Playlist) -> dict[str, Any]:
-    import math
+    # Shared with the web console's state feed, which offers a jump against the
+    # same list — two answers about what is playing would be one too many.
+    from .perf_console import scene_rows
 
-    return {
-        "scenes": [
-            {
-                "index": i,
-                "name": s.name,
-                # VideoScene uses math.inf to mean "runs until the file
-                # ends"; JSON can't carry inf, so surface that as None.
-                "duration_s": (None if math.isinf(s.duration_s) else s.duration_s),
-                "is_current": i == pl.index,
-            }
-            for i, s in enumerate(pl.scenes)
-        ]
-    }
+    return {"scenes": scene_rows(pl)}
 
 
 def build_app_for_registry(
