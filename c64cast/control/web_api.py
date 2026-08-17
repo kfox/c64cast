@@ -57,7 +57,7 @@ skip the injection entirely.
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -77,7 +77,9 @@ from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
 
+from . import screen as screen_mod
 from .auth import LOGIN_PATH, ViewerCredential
+from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
 from .web_static import landing_path
 
 log = logging.getLogger(__name__)
@@ -126,6 +128,28 @@ def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     return {**where, "field": row["field"], "value": row["new"]}
 
 
+async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[bytes]:
+    """Drive a blocking frame generator from the event loop, and stop when the
+    client does.
+
+    Two problems, one adapter. The generator sleeps and encodes, so running it
+    on the loop would stall every other request; and `is_disconnected` is a
+    coroutine, so the generator cannot ask it. Pulling each part in a worker
+    thread and checking between parts solves both — and closing the generator
+    on the way out is what releases the machine's stream, since that unwinds the
+    `watching` block inside it. Without the check, a closed tab would leave the
+    machine sending megabytes a second to a socket nobody reads."""
+    loop = asyncio.get_running_loop()
+    try:
+        while not await request.is_disconnected():
+            part = await loop.run_in_executor(None, lambda: next(frames, None))
+            if part is None:
+                return
+            yield part
+    finally:
+        frames.close()
+
+
 def _opt_index(value: Any, name: str) -> int | None:
     """A scene index from a request body, or None.
 
@@ -164,6 +188,7 @@ def register_web_routes(
     store: ConfigStore,
     log_buffer: Any = None,
     viewer: ViewerCredential | None = None,
+    screen_fps: float = 10.0,
 ) -> None:
     """Register the ``/api/*`` routes on an existing FastAPI ``app``.
 
@@ -176,12 +201,20 @@ def register_web_routes(
     gate holds, so a token issued by ``/api/viewer-link`` is accepted by the
     next request without a restart. ``None`` leaves the route registered and
     answering ``501``, which keeps the console's one code path honest on a host
-    built without one."""
-    from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
+    built without one.
+
+    ``screen_fps`` caps how often a watched screen is encoded, not how fast the
+    machine sends — it is already sending every frame, and the ones not encoded
+    are the ones no longer in the receiver's `latest()`."""
+    from fastapi import HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+    from fastapi.responses import StreamingResponse
 
     from .perf_console import PerfBridge
 
     bridge = PerfBridge(lambda: list(playlists().items()))
+    # One playlist per system, each holding the backend that system's writes go
+    # through — and the screen is a property of that same machine.
+    screen = ScreenFeed(lambda: {name: pl.api for name, pl in playlists().items()})
 
     # Built once: ~150 KB of JSON assembled by walking every config dataclass,
     # every scene type and every overlay. It describes the code, not the run,
@@ -247,6 +280,70 @@ def register_web_routes(
         if not introspection:
             introspection = introspect.as_dict()
         return introspection
+
+    # The screen. All three are GETs, so the read-only role can watch — a
+    # viewer who cannot see the show has been handed a link to nothing. What a
+    # GET here does have is a side effect on the machine (it starts the VIC
+    # stream while somebody is looking), and that is the right trade: it changes
+    # nothing about what the C64 is doing, and every alternative means a viewer
+    # cannot see the screen at all.
+    def _screen_system(system: str | None) -> str:
+        """The system whose screen to show, or the reason there isn't one.
+
+        ``screen_fps = 0`` is the off switch, and it is refused here rather than
+        by leaving the routes unregistered: a console asking a host that has the
+        picture turned off should hear *that*, not a 404 it would read as an
+        older host."""
+        if screen_fps <= 0:
+            raise ScreenUnavailable("this host has the live screen turned off ([web].screen_fps)")
+        return screen.resolve(system)
+
+    @app.get("/api/screen")
+    def api_screen() -> dict[str, Any]:
+        """Which systems can show a picture, without starting anything."""
+        return {
+            "systems": {} if screen_fps <= 0 else screen.available(),
+            "fps": screen_fps,
+        }
+
+    @app.get("/api/screen.png")
+    def api_screen_png(system: str | None = None) -> Response:
+        try:
+            return Response(
+                screen.latest_png(_screen_system(system)),
+                media_type="image/png",
+                # A still is a *now*, and a browser that cached one would show
+                # a screen from before the change that was made to see it.
+                headers={"Cache-Control": "no-store"},
+            )
+        except ScreenUnavailable as e:
+            raise HTTPException(501, str(e)) from e
+
+    @app.get("/api/screen/stream")
+    def api_screen_stream(request: Request, system: str | None = None) -> StreamingResponse:
+        """The machine's screen as `multipart/x-mixed-replace`, which one
+        `<img>` renders with no script and no decoder in the page."""
+        try:
+            name = _screen_system(system)
+        except ScreenUnavailable as e:
+            raise HTTPException(501, str(e)) from e
+
+        def frames() -> Generator[bytes]:
+            # The `watching` context wraps the *generator body* rather than this
+            # function: the response is consumed later, and a stream stopped
+            # before the first byte would send an empty picture. Closing this
+            # generator is what ends the watch — see `_until_gone`.
+            try:
+                with screen.watching(name) as read:
+                    yield from multipart_frames(read, fps=screen_fps)
+            finally:
+                screen.sweep()
+
+        return StreamingResponse(
+            _until_gone(frames(), request),
+            media_type=f"multipart/x-mixed-replace; boundary={screen_mod.BOUNDARY}",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # POST, not GET, for two reasons that point the same way: it may mint a
     # credential, and the auth gate lets a `viewer` token through every GET —
@@ -502,6 +599,11 @@ def register_web_routes(
                 # Same split as `perf_ws`: a frame that raises is our bug, and
                 # swallowing it below would leave the console waiting forever
                 # for a push that is never coming.
+                # Cheap, and the only regular tick this process has: it is what
+                # stops a video stream whose watchers have gone or whose show
+                # has ended. A timer of its own would be a thread paid for at
+                # idle to notice that nothing is happening.
+                screen.sweep()
                 try:
                     frame = bridge.state()
                     frame["role"] = websocket.scope.get("c64cast_role")

@@ -14,6 +14,28 @@ the version and stamps it with the date.
 
 ### Added
 
+- **The C64's screen, in the browser.** The console could author a show, start
+  it, tune it and save it without ever showing you what any of that did —
+  checking meant looking at the television the Commodore is plugged into. The
+  Live screen now shows the picture, and it comes from the machine rather than
+  from c64cast: the Ultimate 64's FPGA taps the VIC's own output and sends it
+  as UDP, taking no C64 cycles and disturbing nothing a show is doing. So it is
+  what the VIC actually painted, not what the render pipeline believes it
+  wrote — and it is right for scenes c64cast does not draw at all, like a game
+  under the launcher or a machine somebody is typing on.
+
+  It runs only while you are watching. Press **Watch** to start it and **Stop**
+  to end it; leaving the screen ends it too. That matters because the stream is
+  a couple of megabytes a second, and the machine is also told to stop by
+  itself if this host goes away without saying so. `[web].screen_fps` sets how
+  often the host encodes a frame — not how fast the machine sends — and `0`
+  turns the picture off entirely.
+
+  Ultimate 64 only, and the console says so rather than showing a blank panel:
+  an Ultimate II+ is a cartridge in someone else's C64 with no VIC of its own,
+  and a TeensyROM+ has no video path at all. The zero-dependency `/perf` page
+  gets the picture too — it is one `<img>`, with no script and no decoder.
+
 - **Add a scene from the console.** Adding or removing a scene meant opening the
   *Source* editor, which made the most common change there is to a show file —
   "another clip like that one" — the one thing the generated form could not do.

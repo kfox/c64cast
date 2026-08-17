@@ -558,7 +558,21 @@ screen, the console says so and names the file it came from.
 > a show file portable: it says what the show is, not what this machine is.
 
 **Live** is the performance surface, and it is the screen to have open at a
-gig. Along the top is the beat grid: the tempo, a pulse on the current beat,
+gig. Above everything else is the **Screen** panel: the Commodore's picture,
+live, in the browser. It is the machine's own video — the Ultimate 64's FPGA
+taps the VIC and sends it out as UDP, without taking a single C64 cycle — so
+what you see is what the VIC is actually painting rather than what c64cast
+believes it wrote, and it is right for scenes c64cast does not draw at all.
+Press **Watch** to start it and **Stop** to end it; it runs only while the
+panel is open, because it is a couple of megabytes a second while it does.
+
+This is the one feature the hardware decides. An Ultimate 64 has it. An
+Ultimate II+ is a cartridge in someone else's C64 and has no VIC of its own to
+tap; a TeensyROM+ has no video path at all. Those say so in the panel rather
+than showing you nothing. `[web].screen_fps` sets how often the host encodes a
+frame (not how fast the machine sends), and `0` turns the screen off.
+
+Along the top is the beat grid: the tempo, a pulse on the current beat,
 where that tempo came from, **Tap** to set it by hand, and the transport —
 **Pause**, **Resume** and **Skip**, which are the same pause and skip the C64's
 own keys give you. Below it the clip grid, one pad per `[[performance.clips]]`

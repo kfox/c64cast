@@ -8,6 +8,7 @@ import type {
   LiveTuneSaved,
   LogLine,
   SceneChanged,
+  ScreenAvailability,
   SessionStatus,
   ValidationReport,
   ViewerLink,
@@ -170,4 +171,9 @@ export const api = {
    *  that made them one. The host answers with a *path* — it may be bound to
    *  `0.0.0.0` and have no idea which of its addresses this browser used. */
   viewerLink: () => request<ViewerLink>("POST", "/api/viewer-link"),
+
+  /** Which systems can show a picture, and how often the host will encode one.
+   *  Asking does not start anything — the stream comes up when an `<img>`
+   *  opens `/api/screen/stream`, and goes down when it closes. */
+  screen: () => request<ScreenAvailability>("GET", "/api/screen"),
 };

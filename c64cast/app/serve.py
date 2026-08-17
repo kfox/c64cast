@@ -802,6 +802,7 @@ def build_daemon_app(
     viewer_token: str | ViewerCredential = "",
     log_buffer: SessionLogBuffer | None = None,
     store: config_store.ConfigStore | None = None,
+    screen_fps: float = 10.0,
 ) -> Any:
     """The host's FastAPI app: the control plane over the *current* session,
     plus the ``/api/*`` routes that create and destroy sessions.
@@ -842,6 +843,7 @@ def build_daemon_app(
         # The very object the gate reads, so a token minted from the console is
         # accepted by the next request rather than by the next restart.
         viewer=viewer_token if isinstance(viewer_token, ViewerCredential) else None,
+        screen_fps=screen_fps,
     )
     # Last: its fallback is a catch-all, so anything registered after it would
     # be unreachable.
@@ -937,6 +939,7 @@ def run_daemon(
             factory,
             token=token,
             viewer_token=viewer_token,
+            screen_fps=web_cfg.screen_fps,
             log_buffer=log_buffer,
             store=store,
         )

@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+
   import { ApiError, api } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
   import ClipGrid from "$lib/components/ClipGrid.svelte";
   import EffectRack from "$lib/components/EffectRack.svelte";
   import LookPads from "$lib/components/LookPads.svelte";
   import SceneList from "$lib/components/SceneList.svelte";
+  import ScreenView from "$lib/components/ScreenView.svelte";
   import TempoBar from "$lib/components/TempoBar.svelte";
   import TunePanel from "$lib/components/TunePanel.svelte";
   import TunedChanges from "$lib/components/TunedChanges.svelte";
@@ -28,6 +31,24 @@
   /** Every control is dead while the socket is down, because a command sent
    *  into a closed socket is dropped without a word — better to show it. */
   const frozen = $derived(host.readOnly || !host.connected);
+
+  /** Which machines can show a picture, asked once per screen mount. It is a
+   *  fact about the hardware, so it cannot change while the host is up — and
+   *  asking starts nothing, since the stream comes up when the `<img>` opens
+   *  and goes down when it closes. */
+  let screens = $state<Record<string, boolean>>({});
+  const screenReady = $derived(current !== null && screens[current.name] === true);
+
+  onMount(async () => {
+    try {
+      screens = (await api.screen()).systems;
+    } catch {
+      // A host too old to know the route, or one that answered badly: the
+      // panel then says the machine cannot show a picture, which is true of
+      // this pairing even if not of the machine.
+      screens = {};
+    }
+  });
 
   function send(cmd: Record<string, unknown>): void {
     if (current === null) return;
@@ -126,6 +147,11 @@
         Reconnecting — the state below is the last frame that arrived.
       </p>
     {/if}
+
+    <!-- Above the controls, because it is what the controls are *for*: every
+         other panel here changes something you could until now only verify by
+         looking at the television. -->
+    <ScreenView system={current.name} available={screenReady} />
 
     <!-- `items-start` so a short clip grid does not stretch to the height of a
          long effect rack, which on a two-effect show is most of the panel. -->

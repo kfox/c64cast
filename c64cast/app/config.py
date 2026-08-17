@@ -2298,6 +2298,16 @@ class WebCfg:
             "rather than waiting for a browser to ask (headless / launchd boxes)."
         },
     )
+    screen_fps: float = field(
+        default=10.0,
+        metadata={
+            "help": "How often the console's live screen picture is refreshed, in "
+            "frames per second (0 turns the screen off entirely). The picture is "
+            "the Ultimate 64's own VIC stream, so this caps how often the host "
+            "encodes a frame, not how fast the machine sends. Ultimate 64 only — "
+            "an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path."
+        },
+    )
     settle_s: float = field(
         default=3.0,
         metadata={

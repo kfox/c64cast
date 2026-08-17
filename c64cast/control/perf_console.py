@@ -492,11 +492,18 @@ class PerfBridge:
 # `PerfBridge.apply` dispatches, which `tests/test_perf_console.py` reads back
 # out of this string and compares against that method's own source.
 #
-# State arrives over /perf/ws; commands go out as POSTs to /perf/*. The one
-# exception is the live-tune save-back, which is a *config write* and posts to
-# /api/session/live-tune for the status code — a route only a --serve host
-# registers, so the page handles its absence rather than assuming it (see
-# `liveTune`). Kept dependency-free so it renders in any phone browser.
+# It also shows the machine's screen, which is not a bridge action at all: one
+# <img> against /api/screen/stream, because `multipart/x-mixed-replace` needs no
+# decoder and no second socket, and a page with no build step cannot afford
+# either. Off until asked — the host holds the machine's video stream up only
+# while somebody is watching.
+#
+# State arrives over /perf/ws; commands go out as POSTs to /perf/*. The two
+# exceptions are both /api routes that only a --serve host registers: the
+# live-tune save-back (a *config write*, which needs a status code) and the
+# screen. Both are handled as absent rather than assumed — this page is served
+# by the control plane, which a plain CLI run has without any of /api. Kept
+# dependency-free so it renders in any phone browser.
 _PERF_HTML = """<!doctype html>
 <html>
 <head>
@@ -563,6 +570,11 @@ _PERF_HTML = """<!doctype html>
   .prow select { flex: 1; font: inherit; color: var(--fg); background: #2a2a33;
                  border: 1px solid var(--line); border-radius: 8px; padding: 0.3em; }
   .empty { color: var(--dim); font-size: 0.9em; }
+  /* 4:3 because that is the shape a television gives a C64 — the stream's own
+     384x272 has no square pixels. `pixelated` so a phone scaling it up shows
+     the cells rather than a smear of them. */
+  #screen { width: 100%; aspect-ratio: 4 / 3; object-fit: fill; background: #000;
+            border-radius: 6px; image-rendering: pixelated; }
   .scene { color: var(--dim); font-size: 0.8em; margin-top: 0.2em; }
   .row { display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }
   .jump { font-size: 0.85em; padding: 0.35em 0.7em; }
@@ -606,6 +618,9 @@ _PERF_HTML = """<!doctype html>
 </header>
 <main>
   <div class="scene" id="scene"></div>
+  <h2>Screen <button id="screenwatch">WATCH</button></h2>
+  <img id="screen" alt="The Commodore's screen, live" hidden>
+  <p class="empty" id="screenmsg"></p>
   <h2>Clips <span class="countin" id="countin"></span></h2>
   <div class="grid" id="clips"></div>
   <h2>Effects</h2>
@@ -1051,6 +1066,51 @@ document.getElementById('looksave').onclick = (ev) => {
   saveMode = !saveMode;
   ev.currentTarget.classList.toggle('arm', saveMode);
 };
+
+// The screen. One <img> against `multipart/x-mixed-replace` is the whole
+// client — no decoder, no second socket — which is what makes it sayable on a
+// page with no build step. Off until asked: the host only holds the machine's
+// video stream up while somebody is watching, so opening this is what starts
+// it, and closing it is what stops it.
+let screenOn = false;
+let screenEpoch = 0;
+
+function setScreen(on) {
+  const img = document.getElementById('screen');
+  const msg = document.getElementById('screenmsg');
+  const button = document.getElementById('screenwatch');
+  screenOn = on;
+  button.textContent = on ? 'STOP' : 'WATCH';
+  img.hidden = !on;
+  if (!on) {
+    // Clearing the src is what closes the connection; leaving it set keeps
+    // the machine streaming to a hidden image.
+    img.removeAttribute('src');
+    msg.textContent = '';
+    return;
+  }
+  const sys = curSys();
+  // A cache-buster per start: to a browser's cache this is an ordinary
+  // response, and reusing the URL can re-serve the last frame of the old
+  // stream instead of opening a new one.
+  screenEpoch += 1;
+  msg.textContent = '';
+  img.src = '/api/screen/stream?system=' + encodeURIComponent(sys ? sys.name : '')
+          + '&t=' + screenEpoch;
+}
+
+document.getElementById('screen').onerror = () => {
+  if (!screenOn) return;
+  setScreen(false);
+  // Two ways to get here and the page cannot tell them apart from an <img>
+  // error, so it names both: this run has no /api at all (the screen route
+  // lives on a --serve host, and this page is served by the control plane),
+  // or it does and this machine has no VIC of its own to stream.
+  document.getElementById('screenmsg').textContent =
+    'No picture — either this run serves no screen, or this machine has no video '
+    + 'stream of its own (an Ultimate 64 taps its VIC; nothing else here can).';
+};
+document.getElementById('screenwatch').onclick = () => setScreen(!screenOn);
 poll();          // initial paint before WS connects
 startWS();
 requestAnimationFrame(animate);

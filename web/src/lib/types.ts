@@ -48,6 +48,15 @@ export interface ConfigIndex {
   truncated: boolean;
 }
 
+/** `GET /api/screen`. `systems` maps a running system's name to whether that
+ *  machine can stream its own VIC output — false on an Ultimate II+, which is
+ *  a cartridge in someone else's C64, and on a TeensyROM+. Empty when nothing
+ *  is running or the host has the screen turned off, which `fps: 0` says. */
+export interface ScreenAvailability {
+  systems: Record<string, boolean>;
+  fps: number;
+}
+
 /** `POST /api/viewer-link`. `path` is origin-relative — the host cannot know
  *  which of its addresses this browser reached it on. `minted` is true the
  *  first time, when the token did not exist until it was asked for. */

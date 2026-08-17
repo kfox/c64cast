@@ -909,7 +909,15 @@ port = 8123
 # startup; prefer the C64CAST_WEB_TOKEN env var over a value here.
 token = ""
 token_file = ""                     # read the token from a file instead
-viewer_token = ""                   # optional read-only token (GET only)
+viewer_token = ""                   # optional read-only token (GET only). You
+                                    #   don't have to set one: the console can
+                                    #   mint a read-only link on request.
+# The console's live picture of the C64, from the Ultimate 64's own VIC stream
+# (its FPGA taps the VIC and sends UDP — no C64 cycles, nothing a show can
+# disturb). This caps how often the host encodes a frame, not how fast the
+# machine sends; the stream runs only while somebody has the panel open. 0
+# turns it off. Ultimate 64 only — a U2+ has no VIC of its own, a TR+ no video.
+screen_fps = 10.0
 autostart = false                   # start this config on launch, rather than
                                     #   waiting for a browser to ask
 settle_s = 3.0                      # hardware cool-off between one session's
