@@ -14,6 +14,28 @@ the version and stamps it with the date.
 
 ### Added
 
+- **Keep what you tuned, from the browser.** A knob turned on a phone changed
+  the show and then ended with it. A run started from the command line asks
+  "save these?" as it exits; the host has no terminal to ask on, and a host that
+  rewrote every show file it stopped would be unusable — so under `--serve` the
+  changes were recorded and nothing ever acted on them.
+
+  The Live screen's Tune panel now shows that record — every colour-pipeline
+  change since the show started, where it began and where it is now — and keeps
+  it in the config the show is running from on one tap. The write is a `[color]`
+  save into the file *on disk*, not a dump of the configuration the run was
+  built from, so a field edited in the Settings view since the show started is
+  still there afterwards; a save that would leave the config unable to load is
+  refused with the file untouched and the changes still held, exactly as any
+  other save from the console is. **Discard** drops the offer and touches
+  nothing that is playing.
+
+  A change no configuration field carries — a palette mode, which belongs to its
+  scene rather than to `[color]` — is listed and marked *runtime only* rather
+  than silently dropped on the way to the file. A
+  quick-playback run has no file to write to and gets the same pasteable
+  `[color]` block the command line prints.
+
 - **A Tune panel on the console's Live screen** — the colour pipeline, the
   generator and the scope, from a phone. A MIDI controller and the C64's own
   menu could always reach these 20-odd knobs; the browser reached the effect
@@ -28,9 +50,7 @@ the version and stamps it with the date.
   because the browser now turns a knob the same way a MIDI CC does, a
   colour-pipeline change made from a phone is recorded like any other live tune
   — the same record a `c64cast --config …` run offers to write back into the
-  config when it ends. (The `--serve` daemon does not make that offer: it has no
-  terminal to prompt on, and rewriting show files on every stop would be the
-  wrong default.)
+  config when it ends, and the console now makes that offer too (below).
 
 - **Pause, resume, skip and jump-to-scene in the console.** The control plane
   has answered these since before the console existed, and the console offered
@@ -86,6 +106,15 @@ the version and stamps it with the date.
   on this config** beside it.
 
 ### Fixed
+
+- **The hires cell picker can be saved.** `cell_pick` is offered as a live knob
+  by every control surface — a MIDI controller, a WLED slider, the C64's own
+  menu and now the browser — but nothing connected it to `[color]
+  hires_cell_pick`, the setting it is the live face of. Turning it worked and
+  the change was recorded; every save-back then quietly skipped it. It is now
+  written like the rest of the colour pipeline, and the mapping is held to the
+  display modes' own registries by a test, so the next live knob cannot ship
+  half-connected.
 
 - **A validation error now says which file it came from.** A configuration is
   checked with your machine settings underneath it, so one stray value in

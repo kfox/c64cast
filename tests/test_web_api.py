@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from _fakes import fake_system_stack
+from _fakes import MachineSettingsIsolation, fake_system_stack
 
 try:
     with warnings.catch_warnings():
@@ -50,6 +50,7 @@ except (ImportError, RuntimeError):
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store, serve, session
 from c64cast.app.serve import SessionState
+from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
 VIEWER = "viewer-token-value"
@@ -69,6 +70,19 @@ BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 # Long enough for a loaded CI box, short enough that a stuck transition fails
 # the run rather than hanging it.
 WAIT = 5.0
+
+# The store composes a saved config against the machine-settings layer, so a
+# developer's own ~/.config/c64cast/settings.toml would otherwise decide what
+# these writes put in the file.
+_iso = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _iso.start()
+
+
+def tearDownModule() -> None:
+    _iso.stop()
 
 
 # --- fakes -----------------------------------------------------------------
@@ -117,7 +131,7 @@ class _FakePlaylist:
     """JSON-serialisable stand-in: the state feed carries the `/perf` payload,
     so a MagicMock playlist would only fail once it reached the encoder."""
 
-    def __init__(self) -> None:
+    def __init__(self, config_path: str = "") -> None:
         self.tempo = _FakeTempo()
         self.performance = _FakePerf()
         self.current = _FakeScene("demo")
@@ -128,6 +142,13 @@ class _FakePlaylist:
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
+        # The real tracker — the save-back route reads and clears it, so a fake
+        # would be testing the fake.
+        self.live_tracker = LiveTuneTracker()
+        self.config_path = config_path
+        # The real Playlist always has one; a save-back brings it up to what it
+        # just wrote, so None here is "this run was built without a Config".
+        self.config: Any = None
 
 
 def _request(*names: str, config_path: str = "show.toml") -> serve.StartRequest:
@@ -151,7 +172,7 @@ def _session(req: serve.StartRequest) -> session.Session:
     stacks = []
     for name in req.loaded.names:
         st = fake_system_stack(name)
-        st.playlist = _FakePlaylist()
+        st.playlist = _FakePlaylist(config_path=req.config_path)
         stacks.append(st)
     return session.Session(
         args=req.args,
@@ -572,6 +593,124 @@ class ConfigFormSaveTest(WebApiTestCase):
                 [{"section": "color", "field": "dither", "value": "ordered"}],
                 headers=VIEWER_AUTH,
             )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+
+class LiveTuneSaveBackTest(WebApiTestCase):
+    """`POST /api/session/live-tune` — the offer a daemon has no exit to make.
+
+    A one-shot run prompts on the terminal at teardown; the host tears sessions
+    down with `save_live_tune=False` and must, so this route is where a knob
+    turned from a phone reaches the file it was tuned against."""
+
+    def _running(self, c) -> Any:
+        """Start the gig config and hand back its (fake) playlist, whose
+        `config_path` is the absolute path the store resolved the ref to."""
+        c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+        self.assertReaches(SessionState.RUNNING)
+        return self.manager.session.stacks[0].playlist
+
+    def test_a_tuned_color_knob_lands_in_the_running_config(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["saved"], ["mode.dither_strength"])
+        self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
+        # …and the offer is withdrawn, because it has been taken.
+        self.assertFalse(pl.live_tracker.has_changes())
+
+    def test_the_rest_of_the_file_survives_the_save(self):
+        # The write is a PATCH of the file on disk, not a dump of the config the
+        # run was built from — so a field edited in the console since the show
+        # started is still there afterwards.
+        with self.client() as c:
+            pl = self._running(c)
+            c.patch(
+                "/api/configs/shows/gig.toml",
+                headers=AUTH,
+                json={"edits": [{"section": "color", "field": "dither", "value": "ordered"}]},
+            )
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        text = (self.root / "gig.toml").read_text(encoding="utf-8")
+        self.assertIn('dither = "ordered"', text)
+        self.assertIn("dither_strength = 0.8", text)
+
+    def test_the_running_config_is_brought_up_to_what_the_file_says(self):
+        # The C64's own menu save dumps the run's Config wholesale, so a stale
+        # one would let somebody at the machine revert this save by accident.
+        with self.client() as c:
+            pl = self._running(c)
+            pl.config = cfgmod.Config()
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertAlmostEqual(pl.config.color.dither_strength, 0.8)
+
+    def test_a_runtime_only_change_is_not_a_save(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("source.scale", 1.0, 2.0)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("config field behind it", r.json()["detail"])
+        self.assertTrue(pl.live_tracker.has_changes())
+
+    def test_a_change_no_config_field_carries_is_left_in_the_record(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            pl.live_tracker.record("source.scale", 1.0, 2.0)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.json()["kept_out"], ["source.scale"])
+        self.assertEqual([row["target"] for row in pl.live_tracker.pending()], ["source.scale"])
+
+    def test_a_save_that_would_break_the_config_keeps_the_record(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_method", "atkinson", "nonsense")
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+        # Still offered: the file is untouched, so the Save button still means
+        # what it said.
+        self.assertTrue(pl.live_tracker.has_changes())
+
+    def test_discard_drops_the_record_and_touches_nothing_else(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "discard"})
+        self.assertEqual(r.json()["discarded"], 1)
+        self.assertFalse(pl.live_tracker.has_changes())
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_nothing_running_is_a_409_not_a_crash(self):
+        with self.client() as c:
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 409)
+
+    def test_an_unknown_system_is_a_404(self):
+        with self.client() as c:
+            self._running(c)
+            r = c.post(
+                "/api/session/live-tune", headers=AUTH, json={"action": "save", "system": "nope"}
+            )
+        self.assertEqual(r.status_code, 404)
+
+    def test_an_unknown_action_is_a_400(self):
+        with self.client() as c:
+            self._running(c)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "melt"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_viewer_cannot_save_the_show_it_is_watching(self):
+        with self.client() as c:
+            pl = self._running(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            r = c.post("/api/session/live-tune", headers=VIEWER_AUTH, json={"action": "save"})
         self.assertEqual(r.status_code, 403)
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 

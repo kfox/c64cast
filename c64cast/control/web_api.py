@@ -38,6 +38,15 @@ through the config dataclasses (the generated form). Every path goes through
 the jail is not repeated here, because a second copy of it is a second thing to
 get wrong.
 
+``/api/session/live-tune`` is where those two halves meet. A one-shot run asks
+"save these knob changes?" at exit; a daemon has no exit and no terminal, and a
+host that rewrote every show file it stopped would be unusable — so under
+``--serve`` the tracker records and nothing acts on it. This route is what acts
+on it, on a tap rather than on a shutdown. It is a config write and lives here
+rather than on the performance socket for that reason: it takes the store's
+refusals, its 422 report and its backup sibling, and a socket frame has nowhere
+to put a status code.
+
 Like :mod:`perf_console` and :mod:`auth`, this module deliberately does **not**
 ``from __future__ import annotations``: the WebSocket route annotates its
 parameter with a name imported inside :func:`register_web_routes`, and
@@ -49,6 +58,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from c64cast.app import introspect
@@ -227,6 +237,81 @@ def register_web_routes(
             raise _busy(e) from e
         return {"ok": True, "generation": manager.generation}
 
+    def _tuned(system: Any) -> Playlist:
+        """The playlist whose live-tune record a save-back acts on."""
+        running = playlists()
+        if not running:
+            raise HTTPException(409, "nothing is running, so nothing has been tuned")
+        if system is None:
+            return next(iter(running.values()))
+        pl = running.get(str(system))
+        if pl is None:
+            raise HTTPException(404, f"no system named {system!r} is running")
+        return pl
+
+    # A performance command goes over the socket; this does not. It *writes a
+    # config file*, so it belongs with the store's other writers: same refusals,
+    # same 422 report, same backup sibling — and a status code, which a socket
+    # frame has nowhere to put.
+    @app.post("/api/session/live-tune")
+    async def api_live_tune(request: Request) -> dict[str, Any]:
+        """Keep (or drop) the knob changes made since the show started.
+
+        The CLI asks this question at exit, on a terminal the daemon does not
+        have. Here it is a tap instead, and the write goes through
+        :meth:`ConfigStore.patch` rather than the menu's whole-config dump for
+        the reason the form's save does: the file is re-read first, so a field
+        edited in the config editor since the show started is still there
+        afterwards, and a patch that would stop the config loading is refused
+        with the file untouched.
+
+        Only what a ``[color]`` field carries can be written; the rest of the
+        record is reported and left alone, so nothing is silently dropped on the
+        way to the file."""
+        body = await _body(request)
+        action = str(body.get("action", "save"))
+        pl = _tuned(body.get("system"))
+        # One snapshot for the whole request: a knob turned between two reads
+        # would make the list disagree with what actually gets written.
+        rows = pl.live_tracker.pending()
+        if action == "discard":
+            return {"ok": True, "discarded": pl.live_tracker.forget(r["target"] for r in rows)}
+        if action != "save":
+            raise HTTPException(400, 'a live-tune command needs action "save" or "discard"')
+        savable = [r for r in rows if r["field"] is not None]
+        if not savable:
+            raise HTTPException(
+                409,
+                "nothing tuned here has a config field behind it"
+                if rows
+                else "nothing has been tuned since this show started",
+            )
+        ref = store.ref_for(Path(pl.config_path)) if pl.config_path else None
+        if ref is None:
+            raise HTTPException(
+                409,
+                f"{pl.config_path or 'this run'} is not a config under a root this host can "
+                "write, so there is no file to keep these in",
+            )
+        edits = [{"section": "color", "field": r["field"], "value": r["new"]} for r in savable]
+        try:
+            out = store.patch(ref, edits)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+        # Only now: a refused patch leaves the record intact, so the console can
+        # show the reason and the same Save button still means something.
+        pl.live_tracker.forget(r["target"] for r in savable)
+        # And bring the run's own Config up to what the file now says. The C64's
+        # menu save-back dumps *that* object wholesale, so leaving it stale would
+        # let somebody at the machine quietly revert what was just saved from the
+        # browser. Only these fields, and only after the file took them.
+        if pl.config is not None:
+            for row in savable:
+                setattr(pl.config.color, row["field"], row["new"])
+        out["saved"] = [r["target"] for r in savable]
+        out["kept_out"] = [r["target"] for r in rows if r["field"] is None]
+        return out
+
     # -- the config browser -------------------------------------------------
 
     @app.get("/api/configs")
@@ -314,9 +399,16 @@ def register_web_routes(
         sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
         try:
             while True:
-                frame = bridge.state()
-                frame["role"] = websocket.scope.get("c64cast_role")
-                frame["session"] = _status_payload(manager.status(), log_buffer)
+                # Same split as `perf_ws`: a frame that raises is our bug, and
+                # swallowing it below would leave the console waiting forever
+                # for a push that is never coming.
+                try:
+                    frame = bridge.state()
+                    frame["role"] = websocket.scope.get("c64cast_role")
+                    frame["session"] = _status_payload(manager.status(), log_buffer)
+                except Exception:
+                    log.exception("web console: could not build a state frame")
+                    break
                 if log_buffer is not None:
                     lines = log_buffer.since(sent_seq)
                     if lines:

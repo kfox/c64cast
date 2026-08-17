@@ -7,6 +7,7 @@
   import SceneList from "$lib/components/SceneList.svelte";
   import TempoBar from "$lib/components/TempoBar.svelte";
   import TunePanel from "$lib/components/TunePanel.svelte";
+  import TunedChanges from "$lib/components/TunedChanges.svelte";
   import type { Console } from "$lib/console.svelte";
   import type { Router } from "$lib/router.svelte";
 
@@ -160,6 +161,7 @@
           onscalar={(target, norm) => send({ action: "live", target, norm })}
           onchoice={(target, value) => send({ action: "live", target, value })}
         />
+        <TunedChanges tuned={current.tuned} system={current.name} readOnly={frozen} />
       </section>
 
       <section class="panel min-w-0 p-5">
