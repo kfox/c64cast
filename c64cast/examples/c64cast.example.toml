@@ -139,7 +139,8 @@ tcp_port = 2112                     # TR TCP listener port (firmware default)
 storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
 
 [ultimate64]
-url = "http://192.168.2.64"         # bare hostname or IP works too
+url = "http://192.168.2.64"         # a bare host, or the u64://HOST form
+                                    # -u/--url takes, reads the same here
 system = "auto"                     # "auto" | NTSC | PAL — the machine's timing
                                     # standard (affects fps, frame_time, CPU
                                     # clock, SID PLAY rate). "auto" reads the

@@ -56,7 +56,7 @@ differently built chain, it applies what it can by layer index.
 
 | Route | Does |
 |---|---|
-| `GET /perf` | The phone console: clips, effect rack, tempo, looks |
+| `GET /perf` | The phone console: clips, rack, tune, tempo, transport, looks, jump |
 | `GET /status` | Scene, index, paused, write latency |
 | `GET /scenes` | The playlist, and which scene is live |
 | `POST /pause`, `/resume`, `/skip` | What the keyboard does |

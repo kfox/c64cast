@@ -86,6 +86,44 @@ U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
 
 #: Cam Link 4K as an OpenCV capture index. Override: C64_DIAG_CV2.
 CAMLINK_CV2_INDEX = int(os.environ.get("C64_DIAG_CV2", "0"))
+#: The capture device the tools open, in the form ``[video].device`` takes: an
+#: OpenCV index, or a camera *name substring* / USB ``VID:PID`` resolved through
+#: :func:`open_capture`. A name is what you want on a rig that hotplugs — the
+#: indices renumber, the Elgato's ``0fd9:0066`` does not. Override:
+#: C64_DIAG_CAMERA (either form), falling back to C64_DIAG_CV2 (index only).
+CAMLINK_DEVICE: int | str = os.environ.get("C64_DIAG_CAMERA") or CAMLINK_CV2_INDEX
+
+
+def open_capture(device: int | str):
+    """Open ``device`` as a cv2 capture, resolving a name / ``VID:PID`` first.
+
+    Returns the opened ``cv2.VideoCapture``; the caller releases it. Resolution
+    goes through the app's own :func:`c64cast.control.camera.resolve_camera_index`
+    rather than a second copy of the matcher, so a diag tool and a
+    ``[video].device`` in a config pick the same stick from the same string —
+    including the **backend** the matched index is only valid against (an
+    AVFoundation index opened with ``CAP_ANY`` is some other camera).
+
+    Raises ``SystemExit`` with the resolver's own message on a device that
+    matches nothing, since every caller here is a command-line tool."""
+    import cv2  # local import: opencv is a hard dep but keep tool import cheap
+
+    from c64cast.control.camera import resolve_camera_index
+
+    try:
+        index, backend = resolve_camera_index(device)
+    except RuntimeError as e:
+        raise SystemExit(str(e)) from e
+    cap = cv2.VideoCapture(index) if backend is None else cv2.VideoCapture(index, backend)
+    if not cap.isOpened():
+        cap.release()
+        raise SystemExit(
+            f"could not open capture device {device!r} (cv2 index {index}). "
+            f"Run `c64cast --list-devices` for names + VID:PID, or set C64_DIAG_CAMERA."
+        )
+    return cap
+
+
 #: Cam Link 4K avfoundation *audio* device. Override: C64_DIAG_AVF_AUDIO.
 #: avfoundation video for the Cam Link is "[0]" but cv2 is more reliable for
 #: frames (direct ffmpeg avfoundation video has thrown I/O errors here).

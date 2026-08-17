@@ -16,12 +16,20 @@ prevent. The behaviour was checked by hand against an exploding playlist."""
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
 
+import inspect
+import re
 import threading
 import unittest
 import warnings
 from typing import Any
 
-from c64cast.control.perf_console import PerfBridge, _beats_remaining, _system_state
+from c64cast.control.perf_console import (
+    _PERF_HTML,
+    TRANSPORT_VERBS,
+    PerfBridge,
+    _beats_remaining,
+    _system_state,
+)
 from c64cast.control.transport import LiveTuneTracker
 from c64cast.scenes.effects import TrailsEffect
 
@@ -479,6 +487,33 @@ class PerfBridgeRegistryTest(unittest.TestCase):
         self.assertEqual(st["systems"], [])
 
 
+class PerfPageControlsTest(unittest.TestCase):
+    """The zero-dependency page and the bridge under it move together.
+
+    The page is hand-written DOM in a Python string, so nothing type-checks the
+    commands it builds. These read the commands back out of it."""
+
+    def _page_actions(self) -> set[str]:
+        return set(re.findall(r"action: '(\w+)'", _PERF_HTML))
+
+    def test_the_page_reaches_every_action_the_bridge_dispatches(self):
+        # Read off `PerfBridge.apply`'s own dispatch rather than a list here: a
+        # bridge action with no control on the page is exactly the gap this
+        # closes, and a second copy of the list would hide the next one.
+        dispatched = set(re.findall(r'action == "(\w+)"', inspect.getsource(PerfBridge.apply)))
+        self.assertEqual(self._page_actions(), dispatched)
+
+    def test_the_page_only_sends_transport_verbs_the_bridge_takes(self):
+        verbs = set(re.findall(r"verb: '(\w+)'", _PERF_HTML))
+        self.assertTrue(verbs)
+        self.assertLessEqual(verbs, set(TRANSPORT_VERBS))
+
+    def test_the_save_back_posts_where_the_write_route_lives(self):
+        # Not on /perf/command: a config write needs a status code, which a
+        # performance command has nowhere to put. See web_api.api_live_tune.
+        self.assertIn("'/api/session/live-tune'", _PERF_HTML)
+
+
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
 class PerfEndpointsTest(unittest.TestCase):
     """Drive the perf routes through the real control-plane app."""
@@ -499,6 +534,12 @@ class PerfEndpointsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("performance", r.text.lower())
         self.assertIn("/perf/ws", r.text)
+
+    def test_the_page_has_a_panel_for_every_part_of_the_payload(self):
+        client, _pl = self._client()
+        text = client.get("/perf").text
+        for panel in ("clips", "fx", "tune", "tuned", "looks", "scenes", "pause", "skip"):
+            self.assertIn(f'id="{panel}"', text)
 
     def test_state_endpoint(self):
         client, _pl = self._client()

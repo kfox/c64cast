@@ -113,7 +113,7 @@
       "properties": {
         "url": {
           "type": "string",
-          "description": "Base URL of the Ultimate 64 (REST + DMA host).",
+          "description": "Base URL of the Ultimate 64 (REST + DMA host). A bare host and the u64://HOST form -u/--url takes both work here and read as http://HOST; a ?query knob does not, because every one of them is a field in this section.",
           "default": "http://192.168.2.64"
         },
         "system": {

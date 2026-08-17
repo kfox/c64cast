@@ -112,7 +112,14 @@ def main() -> int:
         action="store_true",
         help="leave the machine running for inspection (default: reset)",
     )
-    ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
+    ap.add_argument(
+        "-d",
+        "--device",
+        default=d.CAMLINK_DEVICE,
+        help="capture device: a cv2 index, a camera name substring, or a USB "
+        f"VID:PID (default {d.CAMLINK_DEVICE!r}; see `c64cast --list-devices`)",
+    )
+    ap.add_argument("--cv2-index", dest="device", help="alias for --device")
     ap.add_argument("--avf-audio", default=d.CAMLINK_AVF_AUDIO)
     ap.add_argument(
         "--border-flash",
@@ -180,8 +187,6 @@ def main() -> int:
     app = subprocess.Popen(app_argv, stdout=app_log_fh, stderr=subprocess.STDOUT)
 
     # Grab frames spread across the active window (after boot).
-    import cv2
-
     frame_times = []
     if args.frames > 0:
         start = boot_margin
@@ -207,7 +212,7 @@ def main() -> int:
             # ~1 s each, far too coarse for a scene-setup window of a few
             # seconds. cap.read() blocks at the device rate; the deadline loop
             # down-samples that to --burst-fps.
-            cap = cv2.VideoCapture(args.cv2_index)
+            cap = d.open_capture(args.device)
             for _ in range(4):
                 cap.read()  # discard warm-up frames
             n_burst = 0
@@ -234,7 +239,7 @@ def main() -> int:
             if wait > 0:
                 time.sleep(wait)
             fw, fh = (int(v) for v in args.field_burst_size.lower().split("x"))
-            frames, measured = field_burst(args.cv2_index, args.field_burst, size=(fw, fh), fps=60)
+            frames, measured = field_burst(args.device, args.field_burst, size=(fw, fh), fps=60)
             for i, frame in enumerate(frames):
                 p = out / f"{args.label}_field{i:02d}.png"
                 d.save_image(frame, p, max_width=0)  # native: fields differ by a nibble
@@ -247,7 +252,7 @@ def main() -> int:
             wait = ft - (time.time() - t0)
             if wait > 0:
                 time.sleep(wait)
-            cap = cv2.VideoCapture(args.cv2_index)
+            cap = d.open_capture(args.device)
             for _ in range(4):
                 cap.read()
             ok, frame = cap.read()
