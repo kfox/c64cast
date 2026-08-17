@@ -403,8 +403,10 @@ system needs a restart.
 ### The Performance Console
 
 `GET /perf` is a phone-sized touch page served by that same server — no separate
-process, no app to install. It shows the clip grid, an effect rack, the tempo
-with a tap button, and the saved looks, one panel per system.
+process, no app to install. It shows the clip grid, an effect rack, the tune
+knobs the current scene has, the record of what you have already turned, the
+tempo with a tap button, pause and skip, the saved looks and a jump to any scene
+of the show — one panel per system.
 
 It drives the same engine the MIDI surface does, so a launch from a phone and a
 launch from a pad are indistinguishable downstream. A touch sends press on
@@ -412,10 +414,16 @@ contact and release on lift, so momentary clips work by touch exactly as they do
 from a pad, with no per-launch-type handling in the page.
 
 The effect rack's rows are generated from each live layer's own declared
-parameters, so the rack cannot drift from what is actually loaded. State is
-pushed over a WebSocket a few times a second, and the beat indicator is
-extrapolated on the page between pushes, so it animates smoothly without a round
-trip per beat.
+parameters, and the tune panel from the same catalogue `--midi-setup` offers,
+filtered to what the scene on screen actually has — so neither can drift from
+what is loaded, and neither shows a control that writes nowhere. State is pushed
+over a WebSocket a few times a second, and the beat indicator is extrapolated on
+the page between pushes, so it animates smoothly without a round trip per beat.
+
+Under the tune knobs is the record of turning them, and a **Keep** that writes
+them into the configuration the show is running from — the same offer a run
+made from a terminal makes on its way out. A run that has a terminal makes it
+there instead, and says so if you tap.
 
 Nothing on the console writes to the on-screen display. Performance feedback
 stays off the audience's screen.

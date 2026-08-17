@@ -317,7 +317,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `mic_sensitivity` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | microphone | [Generators (3)](04-display-pipeline.md#generators), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone) |
 | `midi` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`midi` (2)](03-vocabulary.md#midi), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `--midi-setup` | [The Console (6)](07-inputs-and-outputs.md#the-console), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control), [`performance` (A)](20-appendix-a-configuration.md#performance) |
+| `--midi-setup` | [The Performance Console (6)](07-inputs-and-outputs.md#the-performance-console), [The Console (6)](07-inputs-and-outputs.md#the-console), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `midi_adsr` | [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `[midi_control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [MIDI In and Out (6)](07-inputs-and-outputs.md#midi-in-and-out), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `midi_feedback` | [MIDI Out — Lighting the Pads (6)](07-inputs-and-outputs.md#midi-out--lighting-the-pads), [`performance` (A)](20-appendix-a-configuration.md#performance) |

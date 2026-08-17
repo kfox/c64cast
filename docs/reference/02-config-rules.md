@@ -181,6 +181,12 @@ Neither form is more correct than the other. A file is the place for a machine
 you drive every day; the flag is the place for a machine you are driving
 today.
 
+`[ultimate64].url` also takes the two shorter ways of writing that same host —
+`u64://192.168.2.64`, and the bare `192.168.2.64` — and reads both as the
+`http://` URL above. What it will not take is a `?query` knob, because in a file
+each of those is a field of its own, and a target for another backend, because
+the section it is in has already named this one.
+
 Four knobs are rare enough to have no flag of their own and ride along as
 query parameters:
 

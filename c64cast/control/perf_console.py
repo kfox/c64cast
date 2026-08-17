@@ -486,9 +486,17 @@ class PerfBridge:
 
 
 # The console page. Self-contained (inline CSS/JS, no CDN), phone-first: a sticky
-# tempo bar with a locally-animated beat pulse, a touch clip grid, and an
-# auto-generated effect rack. State arrives over /perf/ws; commands go out as
-# POSTs to /perf/*. Kept dependency-free so it renders in any phone browser.
+# tempo bar with a locally-animated beat pulse and transport, a touch clip grid,
+# an auto-generated effect rack, the current scene's tune knobs, the record of
+# turning them, the look pads and a scene jump — one control for every action
+# `PerfBridge.apply` dispatches, which `tests/test_perf_console.py` reads back
+# out of this string and compares against that method's own source.
+#
+# State arrives over /perf/ws; commands go out as POSTs to /perf/*. The one
+# exception is the live-tune save-back, which is a *config write* and posts to
+# /api/session/live-tune for the status code — a route only a --serve host
+# registers, so the page handles its absence rather than assuming it (see
+# `liveTune`). Kept dependency-free so it renders in any phone browser.
 _PERF_HTML = """<!doctype html>
 <html>
 <head>
@@ -552,8 +560,25 @@ _PERF_HTML = """<!doctype html>
   .prow input[type=range] { flex: 1; }
   .prow .val { width: 3.4em; text-align: right; font-variant-numeric: tabular-nums;
                font-size: 0.82em; }
+  .prow select { flex: 1; font: inherit; color: var(--fg); background: #2a2a33;
+                 border: 1px solid var(--line); border-radius: 8px; padding: 0.3em; }
   .empty { color: var(--dim); font-size: 0.9em; }
   .scene { color: var(--dim); font-size: 0.8em; margin-top: 0.2em; }
+  .row { display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }
+  .jump { font-size: 0.85em; padding: 0.35em 0.7em; }
+  .jump.sel { border-color: var(--active); color: var(--active); }
+  .group { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em;
+           color: var(--dim); margin: 0.8em 0 0.1em; }
+  .tuned { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+           padding: 0.6em 0.7em; }
+  .trow { display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap;
+          font-size: 0.85em; padding: 0.15em 0; }
+  .trow .was { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .tag { font-size: 0.65em; color: var(--dim); border: 1px solid var(--line);
+         border-radius: 999px; padding: 0.05em 0.45em; }
+  .tmsg { font-size: 0.8em; color: var(--dim); }
+  .snippet { background: #000; border: 1px solid var(--line); border-radius: 8px;
+             padding: 0.6em; overflow-x: auto; font-size: 0.78em; margin: 0.6em 0 0; }
   .looks { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
   .look { aspect-ratio: 1 / 1; border-radius: 10px; border: 1px solid var(--line);
           background: var(--loaded); display: flex; align-items: center;
@@ -573,6 +598,10 @@ _PERF_HTML = """<!doctype html>
     <div class="beats" id="beats"></div>
     <button id="tap">TAP</button>
   </div>
+  <div class="tabs">
+    <button id="pause">PAUSE</button>
+    <button id="skip">SKIP</button>
+  </div>
   <div class="tabs" id="tabs"></div>
 </header>
 <main>
@@ -581,8 +610,14 @@ _PERF_HTML = """<!doctype html>
   <div class="grid" id="clips"></div>
   <h2>Effects</h2>
   <div id="fx"></div>
+  <h2>Tune</h2>
+  <div id="tune"></div>
+  <h2>Tuned</h2>
+  <div class="tuned" id="tuned"></div>
   <h2>Looks <button id="looksave">SAVE</button></h2>
   <div class="grid looks" id="looks"></div>
+  <h2>Scenes</h2>
+  <div class="row" id="scenes"></div>
 </main>
 <script>
 let state = null;      // last full state from the server
@@ -627,7 +662,7 @@ function render() {
   if (!sys) {
     // No session (a host between shows). Clear the grids: leaving the last
     // show's pads up invites a tap that goes nowhere.
-    ['tabs', 'clips', 'fx', 'looks'].forEach((id) => {
+    ['tabs', 'clips', 'fx', 'tune', 'tuned', 'looks', 'scenes'].forEach((id) => {
       document.getElementById(id).innerHTML = '';
     });
     document.getElementById('run').className = 'chip';
@@ -656,10 +691,26 @@ function render() {
   run.className = 'chip' + (sys.tempo.running ? ' run' : '');
   document.getElementById('scene').textContent =
     sys.current_scene ? ('▶ ' + sys.current_scene) : '';
+  document.getElementById('pause').textContent = sys.paused ? 'RESUME' : 'PAUSE';
   renderCountin(sys);
   renderClips(sys);
   renderFx(sys);
+  renderTune(sys);
+  renderTuned(sys);
   renderLooks(sys);
+  renderScenes(sys);
+}
+
+function renderScenes(sys) {
+  const box = document.getElementById('scenes');
+  box.innerHTML = '';
+  sys.scenes.forEach((s) => {
+    const b = document.createElement('button');
+    b.className = 'jump' + (s.is_current ? ' sel' : '');
+    b.textContent = (s.index + 1) + '. ' + s.name;
+    b.onclick = () => post({action: 'jump', index: s.index});
+    box.appendChild(b);
+  });
 }
 
 // Number of look slots the console exposes (1-based pads).
@@ -777,6 +828,172 @@ function renderFx(sys) {
   });
 }
 
+// The knobs of the *current* scene, grouped as introspect groups them. Built
+// the same way the effect rack is, and held still under a finger for the same
+// reason — the state feed echoes the value back at the push cadence, and
+// rebuilding mid-gesture drags the handle out from under it.
+function renderTune(sys) {
+  const box = document.getElementById('tune');
+  const active = document.activeElement;
+  if (active && box.contains(active)) return;
+  box.innerHTML = '';
+  if (!sys.live.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'Current scene has no tunable parameters.';
+    box.appendChild(e);
+    return;
+  }
+  let group = null;
+  sys.live.forEach((k) => {
+    if (k.group !== group) {
+      group = k.group;
+      const h = document.createElement('div');
+      h.className = 'group';
+      h.textContent = group;
+      box.appendChild(h);
+    }
+    box.appendChild(k.kind === 'choice' ? tuneChoice(k) : tuneScalar(k));
+  });
+}
+
+function tuneRow(knob) {
+  const row = document.createElement('div');
+  row.className = 'prow';
+  const l = document.createElement('label');
+  l.textContent = knob.name;
+  row.appendChild(l);
+  return row;
+}
+
+function tuneScalar(knob) {
+  const row = tuneRow(knob);
+  const sl = document.createElement('input');
+  sl.type = 'range'; sl.min = 0; sl.max = 1000; sl.step = 1;
+  sl.value = Math.round(knob.norm * 1000);
+  const val = document.createElement('span');
+  val.className = 'val';
+  val.textContent = Number(knob.value).toFixed(2);
+  sl.oninput = () => {
+    const norm = parseInt(sl.value, 10) / 1000;
+    val.textContent = (knob.min + norm * (knob.max - knob.min)).toFixed(2);
+    post({action: 'live', target: knob.target, norm: norm});
+  };
+  row.appendChild(sl); row.appendChild(val);
+  return row;
+}
+
+function tuneChoice(knob) {
+  const row = tuneRow(knob);
+  const sel = document.createElement('select');
+  knob.choices.forEach((c) => {
+    const o = document.createElement('option');
+    o.value = c; o.textContent = c;
+    if (c === knob.value) o.selected = true;
+    sel.appendChild(o);
+  });
+  // A choice list has no position to drag, so this sends `value`, not `norm`.
+  sel.onchange = () => post({action: 'live', target: knob.target, value: sel.value});
+  row.appendChild(sel);
+  return row;
+}
+
+// What has been turned since the show started, and the offer to keep it. The
+// CLI asks this at exit; a daemon has no exit, so it is a button here. The
+// write is /api/session/live-tune, which only a --serve host registers — on a
+// one-shot run the page still lists the changes (a change about to be lost is
+// what a performer needs told) and the run's own exit prompt makes the offer.
+let tuneMsg = '';
+
+function renderTuned(sys) {
+  const box = document.getElementById('tuned');
+  const tuned = sys.tuned;
+  box.innerHTML = '';
+  if (!tuned.changes.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'Nothing tuned yet this show.';
+    box.appendChild(e);
+    return;
+  }
+  tuned.changes.forEach((c) => {
+    const row = document.createElement('div');
+    row.className = 'trow';
+    const name = document.createElement('span');
+    name.textContent = c.target;
+    const was = document.createElement('span');
+    was.className = 'was';
+    was.textContent = fmt(c.old) + ' → ' + fmt(c.new);
+    row.appendChild(name); row.appendChild(was);
+    if (c.scene !== null) row.appendChild(tag('scene ' + (c.scene + 1)));
+    if (c.field === null) row.appendChild(tag('runtime only'));
+    box.appendChild(row);
+  });
+  box.appendChild(tunedActions(sys, tuned));
+  if (tuned.snippet) {
+    const pre = document.createElement('pre');
+    pre.className = 'snippet';
+    pre.textContent = tuned.snippet;
+    box.appendChild(pre);
+  }
+}
+
+function tag(text) {
+  const el = document.createElement('span');
+  el.className = 'tag';
+  el.textContent = text;
+  return el;
+}
+
+function fmt(v) {
+  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
+}
+
+function tunedActions(sys, tuned) {
+  const acts = document.createElement('div');
+  acts.className = 'tacts row';
+  if (tuned.config_path && tuned.savable) {
+    const save = document.createElement('button');
+    save.textContent = 'KEEP ' + tuned.savable;
+    save.title = 'Write these into ' + tuned.config_path;
+    save.onclick = () => liveTune(sys, 'save');
+    acts.appendChild(save);
+  }
+  const drop = document.createElement('button');
+  drop.textContent = 'DISCARD';
+  drop.onclick = () => liveTune(sys, 'discard');
+  acts.appendChild(drop);
+  const msg = document.createElement('span');
+  msg.className = 'tmsg';
+  msg.textContent = tuneMsg;
+  acts.appendChild(msg);
+  return acts;
+}
+
+async function liveTune(sys, action) {
+  tuneMsg = action === 'save' ? 'saving…' : 'discarding…';
+  render();
+  try {
+    const r = await fetch('/api/session/live-tune', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: action, system: sys.name}),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      tuneMsg = action === 'save' ? ('saved to ' + body.path) : ('discarded ' + body.discarded);
+    } else if (r.status === 404) {
+      // A control-plane-only run: no host to write the file. Nothing is lost —
+      // the run offers the same changes back on its own way out.
+      tuneMsg = 'this run saves at exit, not from here';
+    } else {
+      tuneMsg = body.detail || ('refused (' + r.status + ')');
+    }
+  } catch (e) {
+    tuneMsg = 'could not reach the host';
+  }
+  render();
+}
+
 // Local beat-pulse animation: extrapolate the beat clock between server pushes
 // so the dots move smoothly at the shown BPM without a round-trip per beat.
 function animate() {
@@ -822,6 +1039,14 @@ function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(poll, 1000
 function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 document.getElementById('tap').onclick = () => post({action: 'tap'});
+// One button for both, off the `paused` flag: resume on a running show is a
+// no-op the run loop never consumes, so the worst a stale label costs is a
+// tap. The C64's own keys set these same events.
+document.getElementById('pause').onclick = () => {
+  const sys = curSys();
+  post({action: 'transport', verb: sys && sys.paused ? 'resume' : 'pause'});
+};
+document.getElementById('skip').onclick = () => post({action: 'transport', verb: 'skip'});
 document.getElementById('looksave').onclick = (ev) => {
   saveMode = !saveMode;
   ev.currentTarget.classList.toggle('arm', saveMode);

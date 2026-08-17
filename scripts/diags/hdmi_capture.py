@@ -6,7 +6,9 @@ artifacts).
 
     scripts/diags/hdmi_capture.py                 # one frame -> out/ (downscaled)
     scripts/diags/hdmi_capture.py -n 5 --delay 1  # 5 frames, 1s apart
-    scripts/diags/hdmi_capture.py --index 1       # different cv2 device
+    scripts/diags/hdmi_capture.py -d "Cam Link"   # pick the stick by name
+    scripts/diags/hdmi_capture.py -d 0fd9:0066    # ...or by USB VID:PID
+    scripts/diags/hdmi_capture.py -d 1            # ...or by raw cv2 index
     scripts/diags/hdmi_capture.py -o /tmp/x.png   # explicit path
     scripts/diags/hdmi_capture.py --full          # keep native 1080p (pixel-peek)
     scripts/diags/hdmi_capture.py --width 640      # custom longest-edge
@@ -14,6 +16,13 @@ artifacts).
 
 Prints the written path(s). The capture device warms up slowly, so the first
 few grabbed frames are discarded before the kept one.
+
+``-d/--device`` takes what ``[video].device`` takes — a cv2 index, a camera name
+substring, or a USB ``VID:PID`` — and resolves it through the app's own
+:func:`c64cast.control.camera.resolve_camera_index`. Prefer a name or a VID:PID:
+indices renumber whenever something else on the bus is plugged or unplugged, and
+an index that has drifted onto the webcam grabs a perfectly good frame of the
+wrong thing. ``c64cast --list-devices`` prints the names and IDs.
 
 Frames are downscaled to ``--width`` (default 960px longest edge) before writing
 so a capture read back into an agent's context costs a fraction of the tokens a
@@ -44,47 +53,34 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import _diaglib as d
 
 
-def grab(index: int, warmup: int = 5):
-    import cv2  # local import: opencv is a hard dep but keep tool import cheap
-
-    cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise SystemExit(
-            f"could not open cv2 capture device {index} "
-            f"(Cam Link default is {d.CAMLINK_CV2_INDEX}; "
-            f"override with --index or C64_DIAG_CV2)"
-        )
+def grab(device: int | str, warmup: int = 5):
+    cap = d.open_capture(device)
     try:
         for _ in range(max(0, warmup)):  # let exposure/handshake settle
             cap.read()
         ok, frame = cap.read()
         if not ok or frame is None:
-            raise SystemExit(f"capture device {index} opened but returned no frame")
+            raise SystemExit(f"capture device {device!r} opened but returned no frame")
         return frame
     finally:
         cap.release()
 
 
-def burst(index: int, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12):
+def burst(device: int | str, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12):
     """Grab `count` consecutive frames from one open device.
 
     Returns (frames, measured_fps). The device is asked for `size`/`fps` before
     the warm-up because a UVC stick renegotiates the stream on those calls, and
     frames pulled across that switch are torn or stale.
     """
-    import cv2
+    import cv2  # local import: opencv is a hard dep but keep tool import cheap
 
-    cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise SystemExit(
-            f"could not open cv2 capture device {index} "
-            f"(Cam Link default is {d.CAMLINK_CV2_INDEX}; "
-            f"override with --index or C64_DIAG_CV2)"
-        )
+    cap = d.open_capture(device)
     try:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, size[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, size[1])
@@ -95,7 +91,7 @@ def burst(index: int, count: int, *, size: tuple[int, int], fps: int, warmup: in
         while len(frames) < count:
             ok, frame = cap.read()
             if not ok or frame is None:
-                raise SystemExit(f"capture device {index} returned no frame mid-burst")
+                raise SystemExit(f"capture device {device!r} returned no frame mid-burst")
             frames.append(frame)
             stamps.append(time.perf_counter())
         span = stamps[-1] - stamps[0]
@@ -110,11 +106,16 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument(
-        "--index",
-        type=int,
-        default=d.CAMLINK_CV2_INDEX,
-        help=f"cv2 capture index (default {d.CAMLINK_CV2_INDEX})",
+        "-d",
+        "--device",
+        default=d.CAMLINK_DEVICE,
+        help="capture device: a cv2 index, a camera name substring, or a USB "
+        f"VID:PID (default {d.CAMLINK_DEVICE!r}; see `c64cast --list-devices`)",
     )
+    # Same destination, so the older invocations in the notes and the
+    # hw-visual-verify skill keep working — it only ever took an index, which
+    # --device still accepts.
+    ap.add_argument("--index", dest="device", help="alias for --device")
     ap.add_argument("-n", "--count", type=int, default=1, help="frames to grab")
     ap.add_argument("--delay", type=float, default=0.5, help="seconds between frames when -n > 1")
     ap.add_argument("-o", "--out", default=None, help="explicit output path (only valid with -n 1)")
@@ -146,6 +147,10 @@ def main() -> int:
 
     if args.out and args.count != 1:
         ap.error("--out is only valid with -n 1")
+    # cv2 picks the encoder off the suffix and raises an opaque C++ error
+    # without one, several seconds after the capture it just threw away.
+    if args.out and not Path(args.out).suffix:
+        ap.error(f"--out {args.out!r} needs an image extension (e.g. {args.out}.png)")
 
     max_width = 0 if args.full else args.width
 
@@ -154,7 +159,7 @@ def main() -> int:
             cw, ch = (int(part) for part in args.capture_size.lower().split("x"))
         except ValueError:
             ap.error(f"--capture-size wants WxH, got {args.capture_size!r}")
-        frames, measured = burst(args.index, args.burst, size=(cw, ch), fps=args.capture_fps)
+        frames, measured = burst(args.device, args.burst, size=(cw, ch), fps=args.capture_fps)
         print(f"burst of {len(frames)} frames at {measured:.2f} fps measured")
         for i, frame in enumerate(frames):
             path = str(d.stamped(f"burst_{i:02d}", "png"))
@@ -163,7 +168,7 @@ def main() -> int:
         return 0
 
     for i in range(args.count):
-        frame = grab(args.index)
+        frame = grab(args.device)
         path = args.out if args.out else str(d.stamped(f"hdmi_{i:02d}", "png"))
         w, h = d.save_image(frame, path, max_width=max_width)
         print(f"wrote {path} ({w}x{h})")

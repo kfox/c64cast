@@ -587,6 +587,67 @@ class VideoDeviceTest(unittest.TestCase):
         self.assertEqual(reloaded.video.device, "Cam Link")
 
 
+class UltimateUrlTest(unittest.TestCase):
+    """[ultimate64].url takes the same connection targets -u/--url does."""
+
+    def _load(self, toml: str) -> cfgmod.Config:
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+            f.write(toml)
+            path = f.name
+        try:
+            return cfgmod.load(path)
+        finally:
+            os.unlink(path)
+
+    def _url(self, url: str) -> str:
+        return self._load(f'[ultimate64]\nurl = "{url}"\n').ultimate64.url
+
+    def test_a_plain_base_url_is_left_alone(self):
+        self.assertEqual(self._url("http://10.0.0.5"), "http://10.0.0.5")
+        self.assertEqual(self._url("https://10.0.0.5:8080"), "https://10.0.0.5:8080")
+
+    def test_the_cli_scheme_becomes_the_base_url_it_means(self):
+        self.assertEqual(self._url("u64://10.0.0.5"), "http://10.0.0.5")
+
+    def test_a_port_survives_the_rewrite(self):
+        self.assertEqual(self._url("u64://10.0.0.5:8080"), "http://10.0.0.5:8080")
+
+    def test_a_bare_host_gets_the_scheme_it_can_only_have_meant(self):
+        # The one place this field is right to be looser than -u: inside
+        # [ultimate64] there is no backend left to pick with a scheme.
+        self.assertEqual(self._url("10.0.0.5"), "http://10.0.0.5")
+        self.assertEqual(self._url("c64.local:8080"), "http://c64.local:8080")
+
+    def test_another_backends_target_is_refused_here(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._url("tr:///dev/cu.usbmodem1234")
+        self.assertIn("[hardware].backend", str(ctx.exception))
+
+    def test_a_query_param_points_at_the_field_that_holds_it(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._url("u64://10.0.0.5?dma_port=64")
+        self.assertIn("dma_port = 64", str(ctx.exception))
+
+    def test_an_unknown_scheme_is_refused(self):
+        with self.assertRaises(cfgmod.ConfigError):
+            self._url("ftp://10.0.0.5")
+
+    def test_the_rewritten_url_round_trips_through_serialize(self):
+        from c64cast.app import config_serialize as ser
+
+        cfg = self._load('[ultimate64]\nurl = "u64://10.0.0.5"\n')
+        self.assertEqual(self._load(ser.dumps(cfg)).ultimate64.url, "http://10.0.0.5")
+
+    def test_machine_settings_are_normalized_too(self):
+        # Both layers go through _apply_toml_sections, which is the point of
+        # putting the rewrite there rather than in load().
+        cfg = cfgmod.Config()
+        cfgmod._apply_toml_sections(
+            cfg, {"ultimate64": {"url": "u64://10.0.0.5"}}, source="settings.toml"
+        )
+        self.assertEqual(cfg.ultimate64.url, "http://10.0.0.5")
+
+
 class AudioDeviceTest(unittest.TestCase):
     """[audio].device accepts an int index or a device name substring."""
 

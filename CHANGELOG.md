@@ -75,6 +75,20 @@ the version and stamps it with the date.
   jumps to any of it. A jump is a cut: it goes straight to the scene rather than
   playing the interstitial in front of it.
 
+- **The `/perf` phone console reaches everything the host will take.** It is
+  the zero-dependency page — the one a checkout that never built the browser
+  console still serves, and the one to reach for when the bundle is not there
+  on a gig day. It drew clips, the effect rack, the tempo and the looks, while
+  pause, skip, jump, and every tune knob were things the host would accept and
+  the page had no button for: skipping a scene running long meant a keyboard at
+  the machine.
+
+  It now carries the same panels the browser console does — **Tune** for the
+  current scene's knobs, the record of turning them with a **Keep** that writes
+  them into the running config, **Scenes** with a jump, and pause/skip beside
+  the tap tempo. A run started from a terminal keeps its own exit-time offer,
+  and says so if you tap Keep there.
+
 - **The log follows you.** It lives in a collapsed bar on every screen showing
   the latest line, and opens in place. A save refused or a scene that failed
   mid-show is the host's own account of what happened, and it used to be a tab
@@ -121,6 +135,19 @@ the version and stamps it with the date.
   on this config** beside it.
 
 ### Fixed
+
+- **`[ultimate64].url` takes the address you already know how to write.** The
+  connection target `-u/--url` accepts — `u64://192.168.2.64` — went into a
+  configuration file unchanged and then straight to an HTTP client that has no
+  idea what that scheme is. The run failed with "could not reach the C64
+  hardware", which points at the network, and the real reason sat at debug
+  level. The field now reads `u64://HOST`, and the bare `192.168.2.64` the
+  shipped example has always promised, as the `http://HOST` both of them mean.
+
+  A `?query` knob is refused rather than applied, because in a file each of
+  those is a field of its own and two ways to set `dma_port` in one document
+  is a question about precedence nobody should have to ask; so is a `tr://`
+  target, which names a backend the section it sits in has already named.
 
 - **The hires cell picker can be saved.** `cell_pick` is offered as a live knob
   by every control surface — a MIDI controller, a WLED slider, the C64's own

@@ -41,6 +41,11 @@ identifiable by its Elgato VID rather than by trial-and-error index probing.
 [camera.py](../../../c64cast/control/camera.py) `resolve_camera_index`), so a
 webcam scene can target the capture stick stably.
 
+Both diag tools take the same three forms on `-d/--device` — index, name
+substring, or `VID:PID` — through the same resolver, so `-d 0fd9:0066` opens the
+Cam Link whatever the indices did since the last replug. `$C64_DIAG_CAMERA` sets
+the default for a shell (an index-only `$C64_DIAG_CV2` still works).
+
 ## Scope
 
 Local-only machine specifics (which OpenCV index is the capture device on this

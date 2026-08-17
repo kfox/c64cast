@@ -36,7 +36,7 @@ from c64cast.video.palette import (
     resolve_color,
 )
 
-from . import paths
+from . import connect, paths
 
 log = logging.getLogger(__name__)
 
@@ -393,7 +393,12 @@ class TeensyromCfg:
 class Ultimate64Cfg:
     url: str = field(
         default="http://192.168.2.64",
-        metadata={"help": "Base URL of the Ultimate 64 (REST + DMA host)."},
+        metadata={
+            "help": "Base URL of the Ultimate 64 (REST + DMA host). A bare host and "
+            "the u64://HOST form -u/--url takes both work here and read as "
+            "http://HOST; a ?query knob does not, because every one of them is a "
+            "field in this section."
+        },
     )
     system: str = field(
         default="auto",
@@ -2964,6 +2969,49 @@ def _validate_video_device(video: VideoCfg) -> None:
     camera.parse_camera_device(video.device, field_name="[video].device")
 
 
+def _ultimate_base_url(raw: str) -> str:
+    """The base URL a scheme-carrying ``[ultimate64].url`` names, or a
+    ``ConfigError`` saying which field the value actually belongs in."""
+    try:
+        spec = connect.parse_connection_uri(raw)
+    except connect.ConnectionURIError as e:
+        raise ConfigError(f"[ultimate64].url: {e}") from e
+    if spec.backend != "ultimate":
+        raise ConfigError(
+            f"[ultimate64].url: {raw!r} selects the {spec.backend} backend. In a config "
+            "the backend is [hardware].backend and the endpoint is that backend's own "
+            "section — this field is the Ultimate's base URL."
+        )
+    if spec.dma_port is not None:
+        raise ConfigError(
+            f"[ultimate64].url: {raw!r} carries a query param. Those exist for -u/--url, "
+            "which has nowhere else to put a per-link knob; in a config, set the field "
+            f"itself (dma_port = {spec.dma_port})."
+        )
+    return spec.url or raw
+
+
+def _normalize_ultimate_url(u64: Ultimate64Cfg) -> None:
+    """Accept on ``[ultimate64].url`` every target that can only mean this
+    machine, and rewrite it to the base URL the REST client wants.
+
+    ``u64://192.168.2.64`` and ``http://192.168.2.64`` name the same machine and
+    ``-u/--url`` takes either, but this field went straight to ``requests``,
+    which has no adapter for ``u64://``. That surfaced as a bare "could not reach
+    the hardware" at startup, with the real reason at debug level and the fix a
+    reader reaches for (check the cabling) the wrong one.
+
+    A bare host is taken too — the shipped example has always said so, and it is
+    where the two surfaces are *right* to differ: a scheme is how ``-u`` picks a
+    backend, so it has to insist on one, while a value already inside the
+    ``[ultimate64]`` section has nothing left to pick."""
+    raw = u64.url.strip()
+    resolved = f"http://{raw}" if raw and "://" not in raw else _ultimate_base_url(raw)
+    if resolved != u64.url:
+        log.debug("[ultimate64].url %r reads as %r", u64.url, resolved)
+    u64.url = resolved
+
+
 def _validate_audio_device(audio: AudioCfg) -> None:
     """Offline syntax check for [audio].device — an int index or a string matched
     to a sounddevice input by name substring. PortAudio devices have no USB
@@ -3284,6 +3332,7 @@ def _apply_toml_sections(
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
     _validate_audio_device(cfg.audio)
+    _normalize_ultimate_url(cfg.ultimate64)
     _validate_performance(cfg.performance)
     _validate_sid_panning(cfg.ultimate64)
     _validate_sid_volume(cfg.ultimate64)

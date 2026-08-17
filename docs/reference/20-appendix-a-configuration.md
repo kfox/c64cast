@@ -384,7 +384,7 @@ sid_video_mode = "off"       # off | auto
 <!-- table: fields -->
 | Field | Description |
 |---|---|
-| **`url`**<br>*Type:* `str`<br>*Default:* `'http://192.168.2.64'` | Base URL of the Ultimate 64 (REST + DMA host). |
+| **`url`**<br>*Type:* `str`<br>*Default:* `'http://192.168.2.64'` | Base URL of the Ultimate 64 (REST + DMA host). A bare host and the u64://HOST form `-u/--url` takes both work here and read as http://HOST; a ?query knob does not, because every one of them is a field in this section. |
 | **`system`**<br>*Type:* `str`<br>*Default:* `'auto'` | Machine timing standard (affects frame rate, CPU clock, SID PLAY rate). 'auto' reads it from the Ultimate's live System Mode; on a backend that can't be asked, or under `--skip-probe`, it falls back to NTSC. Choices: `auto`, `NTSC`, `PAL`. |
 | **`sid_play_rate`**<br>*Type:* `str \| float`<br>*Default:* `'auto'` | PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast — the pre-1.9 behaviour); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden. Choices: `auto`, `off`. |
 | **`sid_video_mode`**<br>*Type:* `str`<br>*Default:* `'off'` | Switch the Ultimate's System Mode so the machine's PAL/NTSC timing matches [ultimate64].system, correcting SID pitch (phi2 differs 3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live and volatile, restored at teardown. Changes the HDMI output mode. Choices: `off`, `auto`. |
