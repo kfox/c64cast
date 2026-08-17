@@ -189,9 +189,9 @@ def _probe_environment() -> list[Diagnostic]:
     # First line of any bug report. `__version__` reads installed metadata and
     # falls back to "0+unknown" in a source checkout that was never installed —
     # say so plainly rather than showing a bare sentinel nobody can interpret.
-    from c64cast import __version__
+    from c64cast import UNINSTALLED_VERSION, __version__
 
-    if __version__ == "0+unknown":
+    if __version__ == UNINSTALLED_VERSION:
         detail = f"{__version__} (not installed — running from a source checkout)"
     else:
         detail = __version__

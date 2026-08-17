@@ -19,8 +19,9 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 
-from c64cast import __version__
+from c64cast import UNINSTALLED_VERSION, __version__
 from c64cast.hw.backend import make_backend  # noqa: F401 — re-export (diag scripts)
 
 from . import config as cfgmod
@@ -62,6 +63,12 @@ from .session import (  # noqa: F401 — re-exports; see the module docstring
 
 log = logging.getLogger("c64cast")
 
+# The command's own name, in the parser and in `--version`'s output. Spelled
+# once rather than as argparse's `%(prog)s`, which makes argparse %-format the
+# whole version string — and a `%` in an install path (legal on Windows) would
+# then raise on the way to the screen.
+PROG = "c64cast"
+
 
 class _CliUsageError(Exception):
     """A CLI-usage mistake (conflicting flags, a bad connection target).
@@ -79,6 +86,26 @@ def _device_arg(s: str) -> int | str:
         return s
 
 
+def _version_text() -> str:
+    """`--version` output: the version, and the install it is running from.
+
+    The path is the half that answers the question people actually ask. A
+    release archive unpacked into a directory installs nothing, and
+    ``__version__`` reads installed metadata — so "I upgraded and it still
+    reports the old version" is nearly always the `PATH` command pointing at a
+    different environment than the one that changed. Naming the directory the
+    running code sits in says which environment that is, and names the installer
+    that owns it (`uv/tools/…`, `pipx/venvs/…`) on the way past.
+    """
+    # site-packages, or the repo root for a checkout: two levels above
+    # `c64cast/app/cli.py` is where the `c64cast` package itself sits.
+    home = Path(__file__).resolve().parents[2]
+
+    if __version__ == UNINSTALLED_VERSION:
+        return f"{PROG} {__version__} (source checkout: {home})"
+    return f"{PROG} {__version__} ({home})"
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Pull defaults from the config dataclasses so help text stays in sync
     # with the actual fallback values. CLI options use default=None at the
@@ -94,11 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     web_def = cfgmod.WebCfg()
 
     p = argparse.ArgumentParser(
-        prog="c64cast",
+        prog=PROG,
         description="C64 AV streamer framework (Ultimate 64)",
     )
 
-    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    p.add_argument("--version", action="version", version=_version_text())
     p.add_argument(
         "--config",
         default=None,
