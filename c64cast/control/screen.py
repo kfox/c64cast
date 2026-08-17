@@ -323,7 +323,16 @@ def _stop_quietly(system: str, receiver: Any) -> None:
     try:
         receiver.stop()
     except Exception:
-        log.exception("could not stop %s's video stream", system)
+        # `%r` rather than `%s` because the name reaches here from a `?system=`
+        # query parameter, and the log drawer streams to a browser: a value with
+        # a newline in it would arrive looking like a log line of its own.
+        # `repr` cannot emit one, so the record holds whatever the caller sent.
+        # It is already a validated key of the running-systems map by this point
+        # — `_open` refuses an unknown name, and every other call site reads the
+        # name out of `_live` — so this is the belt to that braces, and the
+        # waiver is for CodeQL not modelling either as a sanitizer.
+        # codeql[py/log-injection]
+        log.exception("could not stop the video stream for %r", system)
 
 
 def _await_frame(read: Callable[[], VicFrame | None]) -> VicFrame | None:

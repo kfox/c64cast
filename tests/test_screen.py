@@ -184,6 +184,33 @@ class LifetimeTest(unittest.TestCase):
         self.assertEqual(feed._live, {})
 
 
+class StopQuietlyTest(unittest.TestCase):
+    def test_a_failure_to_stop_is_logged_and_not_raised(self):
+        # Called from a sweep and from teardown, where there is nothing left to
+        # tell: raising would take the sweeper thread down with it and leak
+        # every other receiver.
+        class _Stuck:
+            def stop(self) -> None:
+                raise OSError("the link went away")
+
+        with self.assertLogs("c64cast.control.screen", level="ERROR"):
+            screen_mod._stop_quietly("c64cast", _Stuck())
+
+    def test_the_system_name_cannot_forge_a_log_line(self):
+        """The name arrives from a `?system=` query parameter and the log drawer
+        streams to a browser, so a newline in it would render as a log line of
+        its own. `repr` cannot emit one — this pins the `%r` that makes that
+        true (CodeQL alert 8 on #300)."""
+
+        class _Stuck:
+            def stop(self) -> None:
+                raise OSError("the link went away")
+
+        with self.assertLogs("c64cast.control.screen", level="ERROR") as caught:
+            screen_mod._stop_quietly("c64cast\nERROR:c64cast: show cancelled", _Stuck())
+        self.assertNotIn("\n", caught.records[0].getMessage())
+
+
 class EncodeTest(unittest.TestCase):
     def test_a_frame_encodes_as_a_png_of_its_own_size(self):
         import cv2
