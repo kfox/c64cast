@@ -17,7 +17,8 @@ from _fakes import FakeAPI
 
 import c64cast
 from c64cast.app import config as cfgmod
-from c64cast.app import doctor
+from c64cast.app import config_serialize as ser
+from c64cast.app import doctor, paths
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 
@@ -1200,6 +1201,104 @@ class UnknownKeyDiagnosticTest(unittest.TestCase):
         loaded = _load('[color]\npalette_mode = "grayscale"\n')
         diags = doctor.validate_load_result(loaded, probe_u64=False)
         self.assertTrue(any(d.category == "config" for d in diags))
+
+
+@contextlib.contextmanager
+def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
+    """A loaded single-system config whose file is still on disk, plus its
+    directory. `_load` deletes the tempdir before returning, which is fine for
+    every check that reads the parsed Config — but the `#:schema` check reads
+    line 1 back off the file, so it needs the file to outlive the load."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "single.toml")
+        _write(path, body)
+        yield cfgmod.load_master(path), tmp
+
+
+class SchemaDirectiveDiagnosticTest(unittest.TestCase):
+    """The `#:schema` first line is the one thing an upgrade can leave behind:
+    nothing reads it at run time, so a config pinned to the version its author
+    installed keeps quietly judging itself by that release's schema."""
+
+    def _rows(self, body: str) -> list[doctor.Diagnostic]:
+        with _loaded_config_file(body) as (loaded, _):
+            return doctor._validate_schema_directive(loaded)
+
+    def test_no_directive_is_not_a_finding(self):
+        # The line is optional. A row for every config lacking one would be an
+        # advertisement in the middle of a diagnostic report.
+        self.assertEqual(self._rows('[color]\ndither = "ordered"\n'), [])
+
+    def test_a_pin_to_another_version_is_flagged_with_the_line_to_paste(self):
+        url = ser._published_schema_url("0.1.0")
+        with mock.patch.object(c64cast, "__version__", "9.9.9"):
+            rows = self._rows(f"#:schema {url}\n")
+        self.assertEqual([r.level for r in rows], ["warn"])
+        self.assertEqual(rows[0].category, "config")
+        self.assertIn("0.1.0", rows[0].message)
+        self.assertIn("9.9.9", rows[0].message)
+        self.assertIn("#:schema ", rows[0].hint or "")
+        self.assertIn("--print-schema-path", rows[0].hint or "")
+
+    def test_a_pin_to_this_version_is_fine(self):
+        with mock.patch.object(c64cast, "__version__", "9.9.9"):
+            rows = self._rows(f"#:schema {ser._published_schema_url('9.9.9')}\n")
+        self.assertEqual([r.level for r in rows], ["ok"])
+
+    def test_the_installed_schema_tracks_this_install(self):
+        # What --init writes, and what --print-schema-path prints: the answer
+        # that needs no maintenance, because an upgrade rewrites that file.
+        with _loaded_config_file("") as (loaded, tmp):
+            path = os.path.join(tmp, "single.toml")
+            _write(path, f"#:schema {ser.schema_directive_for(path)}\n")
+            rows = doctor._validate_schema_directive(loaded)
+        self.assertEqual([r.level for r in rows], ["ok"])
+        self.assertIn("tracks this install", rows[0].message)
+
+    def test_a_schema_that_is_gone_is_flagged(self):
+        # An install that moved, or an upgrade onto a new Python version: the
+        # site-packages path in the line no longer exists.
+        rows = self._rows("#:schema ./gone/c64cast.schema.json\n")
+        self.assertEqual([r.level for r in rows], ["warn"])
+        self.assertIn("isn't there", rows[0].message)
+
+    def test_a_stale_copy_of_our_schema_is_flagged_by_content(self):
+        # A leftover venv still on disk answers the path but describes a
+        # different c64cast — which is exactly the case a path check misses.
+        with _loaded_config_file("#:schema ./c64cast.schema.json\n") as (loaded, tmp):
+            _write(os.path.join(tmp, "c64cast.schema.json"), '{"title": "an older c64cast"}')
+            rows = doctor._validate_schema_directive(loaded)
+        self.assertEqual([r.level for r in rows], ["warn"])
+        self.assertIn("isn't the one this install generates", rows[0].message)
+
+    def test_an_identical_copy_elsewhere_is_fine(self):
+        # Judged by content, not by location: a vendored copy that matches is
+        # doing its job, and nagging about it would train people to ignore this.
+        with _loaded_config_file("#:schema ./c64cast.schema.json\n") as (loaded, tmp):
+            body = paths.packaged_schema_path().read_text(encoding="utf-8")
+            _write(os.path.join(tmp, "c64cast.schema.json"), body)
+            rows = doctor._validate_schema_directive(loaded)
+        self.assertEqual([r.level for r in rows], ["ok"])
+
+    def test_a_hand_picked_schema_is_left_alone(self):
+        # `./house-style.schema.json` is a deliberate choice, not a stale
+        # pointer at ours — the filename is how the two are told apart.
+        self.assertEqual(self._rows("#:schema ./house-style.schema.json\n"), [])
+
+    def test_somebody_elses_url_is_left_alone(self):
+        rows = self._rows(
+            "#:schema https://example.invalid/schemas/c64cast.schema.json\n",
+        )
+        self.assertEqual(rows, [])
+
+    def test_validate_load_result_runs_the_check(self):
+        url = ser._published_schema_url("0.1.0")
+        with (
+            mock.patch.object(c64cast, "__version__", "9.9.9"),
+            _loaded_config_file(f"#:schema {url}\n") as (loaded, _),
+        ):
+            diags = doctor.validate_load_result(loaded, probe_u64=False)
+        self.assertTrue(any("#:schema" in d.message for d in diags))
 
 
 class PrintReportCategoryTest(unittest.TestCase):

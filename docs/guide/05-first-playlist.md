@@ -225,15 +225,25 @@ pointing at the schema — and the easiest way to get it right is to let
 `c64cast --init` write the file for you, because it fills that line in
 automatically.
 
-To add it by hand, the form is:
+To add it to a file you wrote yourself, ask where the schema is:
 
-```toml
-#:schema https://raw.githubusercontent.com/kfox/c64cast/v0.1.0/c64cast/data/c64cast.schema.json
+```bash
+c64cast --print-schema-path
 ```
 
-Replace `v0.1.0` with the version you are running (`c64cast --version`), so
-the editor checks your file against the settings your copy actually
-understands.
+and make that answer your first line, with `#:schema ` in front of it:
+
+```toml
+#:schema /home/you/.local/share/uv/tools/c64cast/lib/python3/site-packages/c64cast/data/c64cast.schema.json
+```
+
+Long and unlovely, and worth it: that is the schema inside the copy of c64cast
+you are running. Upgrading brings a new one with it, at the same place, so the
+line goes on describing what your install actually understands without you ever
+revisiting it. A web address with a version number in it would need editing
+every time you upgraded — and would quietly go on checking your file against the
+old release if you forgot. If you inherited a configuration with one of those on
+line 1, `c64cast --doctor` will say so, and print the line to use instead.
 
 Editors with a TOML extension will then suggest valid settings as you type,
 show the documentation for each, and underline anything that is not real.

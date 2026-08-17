@@ -70,9 +70,32 @@ A JSON Schema for the whole file ships inside the package. A directive on the
 With that line, an editor that speaks the directive offers key and value
 completion, shows each field's documentation on hover, and marks unknown keys
 and out-of-range enumerations as you type. Every packaged example carries one,
-and `c64cast --init` writes one into the file it generates: a local path when
-it can work one out, otherwise the published URL pinned to the version you are
-running. `c64cast --print-schema` prints the same document to standard output.
+and `c64cast --init` writes one into the file it generates.
+`c64cast --print-schema-path` prints the value to use for a configuration of
+your own — relative to the file when the schema sits inside its tree, absolute
+otherwise — and `c64cast --print-schema` prints the schema document itself to
+standard output.
+
+The value names the copy of the schema **inside the running install**, which is
+what makes the line survive upgrades: a new version replaces that file, so the
+directive keeps describing the settings this c64cast actually accepts, with
+nothing to maintain. The one form that does not is a published URL with a version
+number in it — a snapshot, correct on the day it was written and silently behind
+from the next release onward. It is what `--init` falls back to when the packaged
+schema cannot be located at all, and `--doctor` reports a configuration carrying
+one (along with a directive whose path has stopped resolving, which is what an
+upgrade onto a new Python version does to an absolute one).
+
+Pointing an editor at a *newer* schema than the program is worse than pointing it
+at an older one, which is why nothing here offers a "latest" address: it stops
+flagging real mistakes and starts suggesting keys the installed version will
+reject. A schema is only meaningful next to the release it came from.
+
+As an alternative to the directive, most editors can associate a schema with a
+filename pattern instead — `evenBetterToml.schema.associations` in VS Code,
+a catalog entry for Taplo — using the same path. Set once, it covers every
+configuration you own and puts nothing inside the files, at the cost of not
+travelling with a file you hand to someone else.
 
 The schema is generated from the same field metadata as Appendix A, and it is
 strict — a section name it does not know is an error rather than an unknown
@@ -582,7 +605,9 @@ c64cast --doctor --config example:ensemble/master
 It never stops at the first failure — a broken scene 1 does not hide a broken
 scene 5 — and it reports on a whole ensemble system by system. The report is
 grouped: **ENVIRONMENT** (the version, the interpreter, the hard dependencies,
-where settings and data resolved to, which character ROM is in use), **SCENE**
+where settings and data resolved to, which character ROM is in use), **CONFIG**
+(keys no section accepts, and a `#:schema` first line that has stopped
+describing this install), **SCENE**
 (one line per scene, with its resolved display mode and overlay count),
 **AUDIO** (what the `"auto"` backend and DAC-curve fields resolved to),
 **ORCHESTRATOR** for an ensemble, **EXTRAS** (which optional features are

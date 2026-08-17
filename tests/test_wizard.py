@@ -1,9 +1,9 @@
 """Tests for the config wizard's pure helpers.
 
 The questionary I/O shell isn't exercised here (no terminal); these cover the
-buildable logic — config assembly, compat-filtering, asset scanning, type
-classification, and the schema-directive path math — which is where the
-correctness lives.
+buildable logic — config assembly, compat-filtering, asset scanning, and type
+classification — which is where the correctness lives. (The `#:schema` line the
+wizard writes is the serializer's to work out; see test_config_serialize.)
 """
 
 from __future__ import annotations
@@ -11,14 +11,12 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from pathlib import Path
-from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
-from c64cast.app import paths, wizard
+from c64cast.app import wizard
 
 # The round-trip assertions (load(written) == built cfg) must hold independent
 # of any real machine-settings file on the dev's machine (config.load applies
@@ -250,38 +248,6 @@ class SupportedDisplaysTest(unittest.TestCase):
 
     def test_webcam_displays(self):
         self.assertIn("petscii", wizard.supported_displays("webcam"))
-
-
-class SchemaDirectiveTest(unittest.TestCase):
-    def test_points_at_the_packaged_schema(self):
-        # Whatever form it takes, the directive must resolve to the real file
-        # from the output config's own directory — that is the whole contract.
-        with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "c64cast.toml")
-            directive = wizard.schema_directive_for(out)
-            resolved = os.path.normpath(os.path.join(d, directive))
-            self.assertTrue(os.path.isfile(resolved), f"{directive!r} → {resolved}")
-            self.assertEqual(
-                os.path.realpath(resolved), os.path.realpath(paths.packaged_schema_path())
-            )
-
-    def test_relative_when_the_schema_is_inside_the_output_tree(self):
-        # A source checkout (config at the repo root) or a project-local
-        # .venv — the relative form survives moving the tree.
-        pkg_parent = str(paths.packaged_schema_path().parent.parent.parent)
-        directive = wizard.schema_directive_for(os.path.join(pkg_parent, "c64cast.toml"))
-        self.assertEqual(directive, os.path.join(".", "c64cast", "data", "c64cast.schema.json"))
-
-    def test_absolute_as_soon_as_it_would_need_to_climb(self):
-        # A user-level install: the relative form is an unreadable climb out to
-        # site-packages and breaks when the config moves, so go absolute.
-        with tempfile.TemporaryDirectory() as d:
-            directive = wizard.schema_directive_for(os.path.join(d, "c64cast.toml"))
-            self.assertEqual(directive, str(paths.packaged_schema_path()))
-
-    def test_falls_back_when_no_schema(self):
-        with mock.patch.object(paths, "packaged_schema_path", return_value=Path("/nope/x.json")):
-            self.assertEqual(wizard.schema_directive_for("x.toml"), ser.DEFAULT_SCHEMA_PATH)
 
 
 class _Resp:

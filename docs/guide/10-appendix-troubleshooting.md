@@ -166,6 +166,13 @@ uv tool install --force 'c64cast[all]'
 `c64cast --doctor` lists which optional features it can see, which settles the
 question faster than reading the install output.
 
+**Your editor underlines a setting that c64cast accepts happily.** The editor is
+reading a different schema than your install, and the file is fine — nothing
+reads the `#:schema` first line when c64cast runs. The usual cause is a line
+naming a web address with a version number in it, written when an earlier release
+was installed. Run `c64cast --print-schema-path` and put its answer on line 1
+with `#:schema ` in front, or let `c64cast --doctor` tell you. See Chapter 2.
+
 **A configuration file works in one directory and not another.** A relative
 path inside it — `assets/sids` and the like — is resolved from wherever you
 launched c64cast, not from where the file is. Write such paths out in full, or

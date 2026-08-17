@@ -12,10 +12,12 @@ import os
 import tempfile
 import tomllib
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from _fakes import MachineSettingsIsolation
 
+from c64cast import __version__
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
 from c64cast.app import paths
@@ -321,6 +323,75 @@ class MachineBaselineTest(unittest.TestCase):
         first = cfgmod.machine_baseline()
         first.video.device = 99
         self.assertNotEqual(cfgmod.machine_baseline().video.device, 99)
+
+
+class SchemaDirectiveTest(unittest.TestCase):
+    def test_points_at_the_packaged_schema(self):
+        # Whatever form it takes, the directive must resolve to the real file
+        # from the output config's own directory — that is the whole contract,
+        # and it is what makes the line survive an upgrade: the file it names is
+        # the one the next version rewrites.
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "c64cast.toml")
+            directive = ser.schema_directive_for(out)
+            resolved = os.path.normpath(os.path.join(d, directive))
+            self.assertTrue(os.path.isfile(resolved), f"{directive!r} → {resolved}")
+            self.assertEqual(
+                os.path.realpath(resolved), os.path.realpath(paths.packaged_schema_path())
+            )
+
+    def test_relative_when_the_schema_is_inside_the_output_tree(self):
+        # A source checkout (config at the repo root) or a project-local
+        # .venv — the relative form survives moving the tree.
+        pkg_parent = str(paths.packaged_schema_path().parent.parent.parent)
+        directive = ser.schema_directive_for(os.path.join(pkg_parent, "c64cast.toml"))
+        self.assertEqual(directive, os.path.join(".", "c64cast", "data", "c64cast.schema.json"))
+
+    def test_absolute_as_soon_as_it_would_need_to_climb(self):
+        # A user-level install: the relative form is an unreadable climb out to
+        # site-packages and breaks when the config moves, so go absolute.
+        with tempfile.TemporaryDirectory() as d:
+            directive = ser.schema_directive_for(os.path.join(d, "c64cast.toml"))
+            self.assertEqual(directive, str(paths.packaged_schema_path()))
+
+    def test_falls_back_when_no_schema(self):
+        with mock.patch.object(paths, "packaged_schema_path", return_value=Path("/nope/x.json")):
+            self.assertEqual(ser.schema_directive_for("x.toml"), ser.DEFAULT_SCHEMA_PATH)
+
+    def test_never_a_moving_ref(self):
+        # The URL fallback is pinned on purpose: a schema newer than the program
+        # stops flagging real mistakes and starts offering keys this install
+        # rejects. Only an unreleased version may point at a branch.
+        self.assertIn("/v1.2.3/", ser._published_schema_url("1.2.3"))
+        self.assertIn("/main/", ser._published_schema_url("unreleased"))
+
+
+class PinnedUrlVersionTest(unittest.TestCase):
+    def test_a_published_url_reads_back(self):
+        # Pins the regex to the template it has to match — they are spelled
+        # separately for readability, so nothing but this catches a change to
+        # one and not the other.
+        for version in ("0.1.0", "1.2.3", "2.0.0rc1"):
+            self.assertEqual(ser.pinned_url_version(ser._published_schema_url(version)), version)
+
+    def test_this_install_reads_back_as_its_own_version(self):
+        pinned = ser.pinned_url_version(ser.DEFAULT_SCHEMA_PATH)
+        self.assertIn(pinned, (__version__, None), "released → pinned; unreleased → main, so None")
+
+    def test_a_local_path_is_not_a_pin(self):
+        self.assertIsNone(ser.pinned_url_version("./c64cast/data/c64cast.schema.json"))
+        self.assertIsNone(ser.pinned_url_version(str(paths.packaged_schema_path())))
+
+    def test_somebody_elses_url_is_not_a_pin(self):
+        # A fork or a mirror carries no promise about which c64cast it
+        # describes, so it must not be read as one of our version pins.
+        self.assertIsNone(
+            ser.pinned_url_version(
+                "https://raw.githubusercontent.com/someone/c64cast-fork/v9.9.9"
+                "/c64cast/data/c64cast.schema.json"
+            )
+        )
+        self.assertIsNone(ser.pinned_url_version(ser._published_schema_url("1.0.0") + "?raw=1"))
 
 
 if __name__ == "__main__":

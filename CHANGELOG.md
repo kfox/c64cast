@@ -35,6 +35,23 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Without it, `--serve` reports the missing extra instead of starting. `c64cast
   --doctor` lists what the running install can import.
 
+- **If your config's first line is a `#:schema` URL, replace it.** Earlier
+  versions of the User's Guide told you to write one with a version number in
+  it and edit that number when you upgraded — a maintenance task disguised as a
+  one-time setup step. Your editor is otherwise still checking the file against
+  whichever release you first installed: harmless at run time (nothing reads
+  that line) and misleading while you edit, since it underlines settings that
+  work and offers settings that don't. `c64cast --doctor` now reports it and
+  prints the replacement, which you can also get on its own:
+
+  ```bash
+  c64cast --print-schema-path
+  ```
+
+  Put its answer on line 1 with `#:schema ` in front. That one names the schema
+  inside your install, so every future upgrade updates it too and this is the
+  last time you touch the line.
+
 ### Added
 
 - **The C64's screen, in the browser.** The console could author a show, start
@@ -806,6 +823,28 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   section of its own, and the same symptom is answered in both troubleshooting
   appendices. A release's own notes now lead with how to install or upgrade, with
   the wheel and tarball labelled for the installers that fetch them.
+
+- **The `#:schema` line no longer needs maintaining, and says so when it does.**
+  Two new surfaces and one changed instruction. `c64cast --print-schema-path`
+  prints the value for a config's first line — the schema *inside* the running
+  install, worked out for where the config sits — and since an upgrade rewrites
+  that file in place, the line stays true release after release. `c64cast
+  --doctor` reports a directive that has stopped describing this install: pinned
+  to another version, naming a path that no longer resolves, or naming a copy of
+  the schema whose contents differ from the one this build generates (a leftover
+  virtualenv from before a Python-version bump answers the path and describes a
+  different program). It judges a path by content rather than location, so a
+  vendored copy that matches raises nothing, and it never rewrites the file —
+  a shared team schema and a deliberate pin are both legitimate, and neither is
+  distinguishable from staleness by looking. And the User's Guide now tells you
+  to ask for the path rather than to type a version-pinned URL and remember to
+  edit it, which is the instruction that put stale pins in configs in the first
+  place — the URL it printed as the example had itself said `v0.1.0` since 0.1.0.
+
+  Pointing an editor at a *newer* schema than the program would be worse than
+  pointing it at an older one, so nothing offers a moving "latest" address: it
+  would stop flagging real mistakes and start suggesting keys the installed
+  version rejects.
 
 ## [0.3.0] - 2026-08-09
 

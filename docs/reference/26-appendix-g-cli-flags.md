@@ -95,6 +95,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--list-examples`** | List the example configs that ship with c64cast (run one with `--config example:NAME`) and exit |
 | **`--print-example`**<br>`NAME` | Print a packaged example config to stdout and exit — redirect it to a file to make it yours (`--print-example hello > c64cast.toml`) |
 | **`--print-schema`** | Print the JSON Schema for the TOML config and exit (point your editor's `#:schema` at it for autocomplete) |
+| **`--print-schema-path`** | Print where this install's JSON Schema lives — the value for a config's `#:schema` first line, worked out for `--config`'s location (default ./c64cast.toml) — and exit. Naming the installed copy is what makes the line outlive upgrades |
 | **`--suggest-palette`**<br>`FILE` | Analyze an image or video and print the C64 colors that best represent it (ranked, faithful subset) for [color].force_palette_colors, then exit. No hardware. |
 | **`--init`**<br>`PATH` | Interactively build a config file (needs the 'wizard' extra). Optional PATH sets the output file (default ./c64cast.toml) |
 | **`--midi-setup`** | MIDI-learn wizard: press/twist your controller's buttons and knobs, then save a reusable controller profile (needs the 'midi' + 'wizard' extras). A plain run then picks it up via [midi_control].controller_profile = 'auto'. No hardware target needed. |
