@@ -60,6 +60,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from c64cast.app import introspect
 from c64cast.app.config import Config, ConfigError
@@ -75,6 +76,9 @@ from c64cast.app.config_store import (
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
+
+from .auth import LOGIN_PATH, ViewerCredential
+from .web_static import landing_path
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +126,20 @@ def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     return {**where, "field": row["field"], "value": row["new"]}
 
 
+def _opt_index(value: Any, name: str) -> int | None:
+    """A scene index from a request body, or None.
+
+    ``EditRejected`` rather than an ``HTTPException`` so this stays sayable
+    without FastAPI in scope; ``_store_error`` maps it to the 400 it deserves.
+    ``bool`` is rejected because it is an ``int`` in Python, and
+    ``{"copy": true}`` would otherwise read as scene 1."""
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise EditRejected(f"`{name}` is a scene index, got {value!r}")
+    return value
+
+
 def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
     """Put what the file just took back onto the running Config, so the C64
     menu's own whole-config save-back can't quietly revert it.
@@ -145,13 +163,20 @@ def register_web_routes(
     playlists: PlaylistRegistry,
     store: ConfigStore,
     log_buffer: Any = None,
+    viewer: ViewerCredential | None = None,
 ) -> None:
     """Register the ``/api/*`` routes on an existing FastAPI ``app``.
 
     Called by :func:`c64cast.app.serve.run_daemon` after the control-plane
     routes and the auth middleware are already on the app, so everything here
     is gated by the same token — a route added to this module can't ship
-    unauthenticated by omission."""
+    unauthenticated by omission.
+
+    ``viewer`` is the same :class:`~c64cast.control.auth.ViewerCredential` the
+    gate holds, so a token issued by ``/api/viewer-link`` is accepted by the
+    next request without a restart. ``None`` leaves the route registered and
+    answering ``501``, which keeps the console's one code path honest on a host
+    built without one."""
     from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 
     from .perf_console import PerfBridge
@@ -222,6 +247,28 @@ def register_web_routes(
         if not introspection:
             introspection = introspect.as_dict()
         return introspection
+
+    # POST, not GET, for two reasons that point the same way: it may mint a
+    # credential, and the auth gate lets a `viewer` token through every GET —
+    # a read-only guest must not be able to ask for the link that made them one.
+    @app.post("/api/viewer-link")
+    def api_viewer_link() -> dict[str, Any]:
+        """The read-only login link to hand somebody, minting the token on the
+        first ask.
+
+        Returns a *path*: the host may be bound to ``0.0.0.0`` and have no idea
+        which of its addresses the phone in your hand reached it on, whereas the
+        browser asking has that in `location.origin`."""
+        if viewer is None:
+            raise HTTPException(501, "this host was built without a read-only credential")
+        token, minted = viewer.issue()
+        if minted:
+            log.info("web console: issued a read-only token")
+        return {
+            "token": token,
+            "path": f"{LOGIN_PATH}?token={quote(token)}&next={quote(landing_path())}",
+            "minted": minted,
+        }
 
     @app.get("/api/session")
     def api_session(request: Request) -> dict[str, Any]:
@@ -368,6 +415,33 @@ def register_web_routes(
             raise HTTPException(400, 'a config write needs a "text" key')
         try:
             return store.write(ref, str(body["text"]))
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    # Registered before the bare `{ref:path}` route for the same reason
+    # `/validate` is: a config whose name ends in "/scenes" must not swallow it.
+    #
+    # Structural, not a field edit — which is why it is its own route and not
+    # another kind of PATCH body. Adding a clip to a show is the most common
+    # change there is to a show file, and it was the one that still required
+    # opening the text editor.
+    @app.post("/api/configs/{ref:path}/scenes")
+    async def api_scene_add(ref: str, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        try:
+            return store.add_scene(
+                ref,
+                scene_type=str(body.get("type") or ""),
+                copy_of=_opt_index(body.get("copy"), "copy"),
+                after=_opt_index(body.get("after"), "after"),
+            )
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    @app.delete("/api/configs/{ref:path}/scenes/{index}")
+    def api_scene_remove(ref: str, index: int) -> dict[str, Any]:
+        try:
+            return store.remove_scene(ref, index)
         except ConfigStoreError as e:
             raise _store_error(e) from e
 

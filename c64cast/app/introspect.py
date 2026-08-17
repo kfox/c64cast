@@ -56,6 +56,11 @@ class FieldDoc:
     # "rebuild" (default) = needs a scene rebuild, so the menu shows it read-only.
     # Internal — not emitted to schema/serializer/example.toml.
     apply: str = "rebuild"
+    # The named set a field's *string* values are drawn from, when they come
+    # from one small enough to offer whole: "c64color" is the sixteen palette
+    # entries by name. `choices` can't say this, because these fields accept an
+    # index as well and a picker would refuse it. Empty = free text.
+    vocabulary: str = ""
 
 
 @dataclass(frozen=True)
@@ -310,6 +315,7 @@ def _field_docs(dc: type) -> list[FieldDoc]:
                 choices=tuple(md.get("choices", ())),
                 applies_to=tuple(md.get("applies_to", ())),
                 apply=md.get("apply", "rebuild"),
+                vocabulary=md.get("vocabulary", ""),
             )
         )
     return out
@@ -340,6 +346,32 @@ _LIVE_TARGET_GROUPS: tuple[tuple[str, str], ...] = (
     ("source", "Generator"),
     ("scene", "Scope"),
 )
+
+
+def palette_swatches() -> list[dict[str, Any]]:
+    """The sixteen C64 colours as ``{index, name, label, hex}``.
+
+    ``name`` is the spelling a config should be written with and ``label`` the
+    one to show; both round-trip through ``palette.resolve_color``. ``hex`` is
+    read from the *live* table rather than the Pepto constant, so a host that
+    has matched the machine's own palette offers swatches in the colours that
+    machine actually emits. Imported lazily — palette pulls in numpy/cv2, and
+    the ``--describe`` path never asks for this."""
+    from c64cast.video.palette import C64_COLOR_NAMES, C64_COLORS, C64_PALETTE_BGR
+
+    write_names = {index: name for name, index in C64_COLORS.items()}
+    out: list[dict[str, Any]] = []
+    for index, label in enumerate(C64_COLOR_NAMES):
+        blue, green, red = (int(c) for c in C64_PALETTE_BGR[index])
+        out.append(
+            {
+                "index": index,
+                "name": write_names[index],
+                "label": label,
+                "hex": f"#{red:02x}{green:02x}{blue:02x}",
+            }
+        )
+    return out
 
 
 def _iter_live_holders() -> list[tuple[str, str, type]]:
@@ -574,11 +606,16 @@ def as_dict() -> dict[str, Any]:
     """The whole introspection model as JSON-serialisable data.
 
     The web console renders this rather than the committed JSON Schema because
-    the schema deliberately drops the two things a UI needs most: ``apply``
-    (does changing this take effect live, or does it need a rebuild?) and
-    ``applies_to`` (which scene types is this field even meaningful for). A
-    plain ``dataclasses.asdict`` would carry them, but it would also emit the
-    ``REQUIRED`` sentinel, which `json` can't encode."""
+    the schema deliberately drops the three things a UI needs most: ``apply``
+    (does changing this take effect live, or does it need a rebuild?),
+    ``applies_to`` (which scene types is this field even meaningful for), and
+    ``vocabulary`` (what a free-text field's strings are drawn from). A plain
+    ``dataclasses.asdict`` would carry them, but it would also emit the
+    ``REQUIRED`` sentinel, which `json` can't encode.
+
+    ``palette`` rides along for the same reason: a swatch picker over the C64
+    colours needs the colours, and a browser deriving them from a copy of the
+    palette would be a second one to keep in step."""
 
     def field_dict(fd: FieldDoc) -> dict[str, Any]:
         return {
@@ -590,6 +627,7 @@ def as_dict() -> dict[str, Any]:
             "choices": list(fd.choices),
             "applies_to": list(fd.applies_to),
             "apply": fd.apply,
+            "vocabulary": fd.vocabulary,
         }
 
     def param_dict(pd: ParamDoc) -> dict[str, Any]:
@@ -656,6 +694,7 @@ def as_dict() -> dict[str, Any]:
             }
             for t in live_targets()
         ],
+        "palette": palette_swatches(),
     }
 
 

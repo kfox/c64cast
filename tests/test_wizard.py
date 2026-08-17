@@ -451,5 +451,42 @@ class RunInitShellTest(unittest.TestCase):
             wz._ensure_questionary = orig  # type: ignore[assignment]
 
 
+class FieldKindsTest(unittest.TestCase):
+    """`field_kind` answers with one kind because a prompt asks one question.
+    `field_kinds` answers with the whole union because a form has room for it —
+    which is what stops `border` (`int | str`) rendering as a number box under
+    help text that says you may write "light blue"."""
+
+    def test_a_plain_type_is_one_kind(self):
+        self.assertEqual(wizard.field_kinds("float"), ("float",))
+        self.assertEqual(wizard.field_kinds("str"), ("str",))
+
+    def test_a_union_keeps_both_halves_in_declaration_order(self):
+        self.assertEqual(wizard.field_kinds("int | str"), ("int", "str"))
+        self.assertEqual(wizard.field_kinds("str | int"), ("str", "int"))
+
+    def test_a_list_member_does_not_leak_its_element_types(self):
+        # The `str` inside the list is not something the field accepts on its
+        # own, so splitting has to stop at the top level.
+        self.assertEqual(wizard.field_kinds("int | list[int | str]"), ("int", "complex"))
+
+    def test_repeats_collapse(self):
+        self.assertEqual(wizard.field_kinds("int | float | int"), ("int", "float"))
+
+    def test_the_one_question_classifier_is_unchanged(self):
+        # A prompt has to handle the hardest member, and the wizard skips
+        # `complex` in its generic walk — so this must keep saying "complex".
+        self.assertEqual(wizard.field_kind("int | list[int | str]"), "complex")
+        self.assertEqual(wizard.field_kind("int | str"), "int")
+
+    def test_the_real_union_fields_split_as_expected(self):
+        from c64cast.app import introspect
+
+        scene_fields = {f.name: f for st in introspect.scene_types() for f in st.fields}
+        self.assertEqual(wizard.field_kinds(scene_fields["border"].type), ("int", "str"))
+        color = {f.name: f for s in introspect.config_sections() for f in s.fields}
+        self.assertEqual(wizard.field_kinds(color["force_palette_colors"].type), ("int", "complex"))
+
+
 if __name__ == "__main__":
     unittest.main()

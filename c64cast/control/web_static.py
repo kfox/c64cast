@@ -91,6 +91,16 @@ def bundle_dir(directory: Path | None = None) -> Path | None:
     return base if (base / INDEX_NAME).is_file() else None
 
 
+def landing_path() -> str:
+    """Where a successful login should drop somebody: the console when its
+    bundle was built, else the zero-dependency ``/perf`` page.
+
+    One answer, shared by the URL the daemon prints at startup and the
+    read-only link the console hands out — a shared link that landed somewhere
+    else would be a second answer to the same question."""
+    return "/" if bundle_dir() is not None else "/perf"
+
+
 def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
     """Serve the console from ``app``. Returns whether a build was found.
 

@@ -60,6 +60,7 @@ the machine, and closes it before anything else touches the hardware.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -74,6 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from c64cast._pollthread import PollThread
+from c64cast.control.auth import ViewerCredential
 from c64cast.control.transport import atomic_write_text
 from c64cast.video.preview import PreviewWindow
 
@@ -727,8 +729,8 @@ def make_request_factory(
     return factory
 
 
-def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, str]:
-    """Settle the host's credentials: ``(token, viewer_token)``.
+def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, ViewerCredential]:
+    """Settle the host's credentials: ``(token, viewer)``.
 
     Precedence for the full token is env → config → ``token_file`` →
     generated-and-persisted, and the last step is why this never returns an
@@ -748,7 +750,24 @@ def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, str]:
     if not token:
         token = _generated_token()
     viewer = os.environ.get("C64CAST_WEB_VIEWER_TOKEN") or cfg.viewer_token
-    return token, viewer
+    if not viewer:
+        # A previously-issued one, if there is one. Not minted here: see
+        # `ViewerCredential` and `paths.web_viewer_token_path`.
+        with contextlib.suppress(OSError):
+            viewer = paths.web_viewer_token_path().read_text(encoding="utf-8").strip()
+    return token, ViewerCredential(viewer, store=_persist_viewer_token)
+
+
+def _persist_viewer_token(token: str) -> None:
+    """Keep a minted read-only token, ``0600``, beside the full one — so a link
+    handed to a guest still opens after the next restart."""
+    path = paths.web_viewer_token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, token + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        log.warning("could not restrict permissions on %s", path)
 
 
 def _generated_token() -> str:
@@ -780,7 +799,7 @@ def build_daemon_app(
     request_factory: Callable[[str | None], StartRequest],
     *,
     token: str,
-    viewer_token: str = "",
+    viewer_token: str | ViewerCredential = "",
     log_buffer: SessionLogBuffer | None = None,
     store: config_store.ConfigStore | None = None,
 ) -> Any:
@@ -820,6 +839,9 @@ def build_daemon_app(
         playlists=playlists,
         log_buffer=log_buffer,
         store=store if store is not None else config_store.ConfigStore(),
+        # The very object the gate reads, so a token minted from the console is
+        # accepted by the next request rather than by the next restart.
+        viewer=viewer_token if isinstance(viewer_token, ViewerCredential) else None,
     )
     # Last: its fallback is a catch-all, so anything registered after it would
     # be unreachable.
@@ -947,18 +969,19 @@ def run_daemon(
     # Straight to the console when there is one, and to the zero-dependency
     # `/perf` page when the bundle was never built — the printed URL is the
     # only entry point a phone gets, so it has to land somewhere useful.
-    from c64cast.control.web_static import bundle_dir
+    from c64cast.control.web_static import landing_path
 
-    landing = "/" if bundle_dir() is not None else "/perf"
     log.info(
         "web console: open http://%s:%d/api/login?token=%s&next=%s",
         web_cfg.host,
         web_cfg.port,
         token,
-        landing,
+        landing_path(),
     )
     if viewer_token:
         log.info("web console: a read-only token is configured as well")
+    else:
+        log.info("web console: ask it for a read-only link when you want to share the screen")
     log.info(
         "web console: editable config roots: %s",
         ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",

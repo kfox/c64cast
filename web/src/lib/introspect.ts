@@ -6,6 +6,7 @@ import type {
   ParamDoc,
   SceneTypeDoc,
   SectionDoc,
+  Swatch,
 } from "./types";
 
 /** The introspection document, fetched at most once per page load.
@@ -34,6 +35,7 @@ export function documentation(): Promise<DocIndex> {
 export class DocIndex {
   readonly sections: SectionDoc[];
   readonly sceneTypes: SceneTypeDoc[];
+  readonly palette: Swatch[];
 
   readonly #sections = new Map<string, SectionDoc>();
   readonly #sceneTypes = new Map<string, SceneTypeDoc>();
@@ -44,6 +46,7 @@ export class DocIndex {
   constructor(doc: Introspection) {
     this.sections = doc.sections;
     this.sceneTypes = doc.scene_types;
+    this.palette = doc.palette ?? [];
     for (const section of doc.sections) {
       this.#sections.set(section.name, section);
       for (const field of section.fields) this.#fields.set(`${section.name}.${field.name}`, field);
@@ -100,6 +103,35 @@ export function fieldKind(type: string): FieldKind {
   if (t.includes("float")) return "float";
   if (t.includes("int")) return "int";
   return "str";
+}
+
+/** Split a declared type at its top-level `|`, leaving the insides of
+ *  `list[...]` / `dict[...]` alone — `int | list[int | str]` is two members,
+ *  not three. Mirrors `wizard.union_members()`. */
+export function unionMembers(type: string): string[] {
+  const members: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < type.length; i++) {
+    const ch = type[i];
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (ch === "|" && depth === 0) {
+      members.push(type.slice(start, i));
+      start = i + 1;
+    }
+  }
+  members.push(type.slice(start));
+  return members.map((m) => m.trim()).filter((m) => m !== "");
+}
+
+/** Every kind a declared type accepts, in declaration order, without repeats
+ *  (`wizard.field_kinds()`). `fieldKind` classifies the type as a whole, which
+ *  is all a one-question prompt can act on; a form has room for the union, and
+ *  losing half of one is how `border` (`int | str`) ends up a number box under
+ *  help text that says you may write "light blue". */
+export function fieldKinds(type: string): FieldKind[] {
+  return [...new Set(unionMembers(type).map(fieldKind))];
 }
 
 /** A loaded value as one line of text. Lists and tables get JSON rather than

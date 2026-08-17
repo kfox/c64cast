@@ -606,6 +606,107 @@ class ConfigFormSaveTest(WebApiTestCase):
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
 
+class SceneStructureRouteTest(WebApiTestCase):
+    """Adding and removing scenes. The semantics live in
+    tests/test_config_store.py; these are the route's own answers, and the one
+    thing only a route can get wrong — `/scenes` being swallowed by the
+    catch-all `{ref:path}` that sits beside it."""
+
+    def test_a_scene_is_added_and_the_file_is_written(self):
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"type": "video"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["added"], 1)
+        self.assertIn('type = "video"', (self.root / "gig.toml").read_text(encoding="utf-8"))
+
+    def test_a_scene_is_copied(self):
+        with self.client() as c:
+            r = c.post(
+                "/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"copy": 0, "after": 0}
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["copied_from"], 0)
+
+    def test_a_scene_is_removed(self):
+        with self.client() as c:
+            c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"type": "video"})
+            r = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["removed"], 0)
+
+    def test_removing_the_only_scene_is_a_400_not_a_broken_config(self):
+        with self.client() as c:
+            r = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=AUTH)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_a_copy_index_that_is_not_an_index_is_a_400(self):
+        # `true` is an `int` in Python and would otherwise read as scene 1.
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"copy": True})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_viewer_can_change_neither(self):
+        with self.client() as c:
+            add = c.post(
+                "/api/configs/shows/gig.toml/scenes", headers=VIEWER_AUTH, json={"type": "video"}
+            )
+            drop = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=VIEWER_AUTH)
+        self.assertEqual(add.status_code, 403)
+        self.assertEqual(drop.status_code, 403)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+
+class ViewerLinkRouteTest(WebApiTestCase):
+    """`POST /api/viewer-link` — the read-only link to hand somebody.
+
+    A `POST` for a reason worth a test: the gate lets a viewer token through
+    every `GET`, so a read-only guest could otherwise fetch the link that made
+    them one."""
+
+    def _cred(self):
+        from c64cast.control.auth import ViewerCredential
+
+        return ViewerCredential(VIEWER)
+
+    def test_it_answers_an_origin_relative_login_path(self):
+        with self.client(viewer_token=self._cred()) as c:
+            r = c.post("/api/viewer-link", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["token"], VIEWER)
+        self.assertFalse(body["minted"])
+        # A path, not a URL: the host may be bound to 0.0.0.0 and cannot know
+        # which of its addresses the browser asking actually reached it on.
+        self.assertTrue(body["path"].startswith("/api/login?token="))
+        self.assertNotIn("http", body["path"])
+
+    def test_the_first_ask_mints_one(self):
+        cred = self._cred_empty()
+        with self.client(viewer_token=cred) as c:
+            first = c.post("/api/viewer-link", headers=AUTH).json()
+            second = c.post("/api/viewer-link", headers=AUTH).json()
+        self.assertTrue(first["minted"])
+        self.assertFalse(second["minted"])
+        self.assertEqual(first["token"], second["token"])
+        self.assertEqual(cred.token, first["token"])
+
+    def _cred_empty(self):
+        from c64cast.control.auth import ViewerCredential
+
+        return ViewerCredential()
+
+    def test_a_viewer_cannot_ask_for_it(self):
+        with self.client(viewer_token=self._cred()) as c:
+            r = c.post("/api/viewer-link", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_host_built_without_one_says_so_rather_than_pretending(self):
+        with self.client(viewer_token=VIEWER) as c:
+            r = c.post("/api/viewer-link", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+
+
 class LiveTuneSaveBackTest(WebApiTestCase):
     """`POST /api/session/live-tune` — the offer a daemon has no exit to make.
 
@@ -908,7 +1009,9 @@ class TokenResolutionTest(unittest.TestCase):
             os.environ,
             {"C64CAST_WEB_TOKEN": "from-env", "C64CAST_WEB_VIEWER_TOKEN": "viewer-env"},
         ):
-            self.assertEqual(serve.resolve_tokens(cfg), ("from-env", "viewer-env"))
+            token, viewer = serve.resolve_tokens(cfg)
+        self.assertEqual(token, "from-env")
+        self.assertEqual(viewer.token, "viewer-env")
 
     def test_a_token_file_is_read_and_stripped(self):
         path = self.tmp / "secret"
@@ -930,7 +1033,11 @@ class TokenResolutionTest(unittest.TestCase):
 
         first, viewer = serve.resolve_tokens(cfgmod.WebCfg())
         self.assertTrue(first)
-        self.assertEqual(viewer, "")
+        # The read-only one is *not* generated alongside it: nobody asked for a
+        # second credential, and one that exists unasked is one more to leak.
+        self.assertEqual(viewer.token, "")
+        self.assertFalse(viewer)
+        self.assertFalse(paths.web_viewer_token_path().exists())
         stored = paths.web_token_path()
         self.assertEqual(stored.read_text(encoding="utf-8").strip(), first)
         if os.name != "nt":

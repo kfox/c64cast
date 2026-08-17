@@ -1648,6 +1648,7 @@ class SceneCfg:
             "help": "Border color (blank scenes): a C64 color name (fuzzy + "
             'case-insensitive, e.g. "light blue") or a palette index 0..15.',
             "applies_to": ("blank",),
+            "vocabulary": "c64color",
         },
     )
     background: int | str = field(
@@ -1656,6 +1657,7 @@ class SceneCfg:
             "help": "Background color (blank scenes): a C64 color name (fuzzy + "
             'case-insensitive, e.g. "light blue") or a palette index 0..15.',
             "applies_to": ("blank",),
+            "vocabulary": "c64color",
         },
     )
     # Launcher scene kwargs.
@@ -1887,7 +1889,8 @@ class ColorCfg:
             "of distinct colors to spread the source across (2..16), OR an "
             "explicit list of colors to whitelist — each a color name (fuzzy + "
             'case-insensitive, e.g. "light blue", "lgrn", "blk") or an '
-            "index 0..15. A list's length sets the color count."
+            "index 0..15. A list's length sets the color count.",
+            "vocabulary": "c64color",
         },
     )
     dither: str = field(

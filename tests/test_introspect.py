@@ -254,5 +254,60 @@ class ReloadableSectionsTest(unittest.TestCase):
         self.assertIn("RELOADABLE_SECTIONS", reload_all.__doc__ or "")
 
 
+class VocabularyTest(unittest.TestCase):
+    """`FieldDoc.vocabulary` names the small set a field's *string* values come
+    from, which is how a form knows to offer swatches for a colour and a text
+    box for everything else. `choices` cannot say it: these fields take an index
+    as well, and a picker built from `choices` would refuse one."""
+
+    def _scene_field(self, name: str) -> introspect.FieldDoc:
+        fields = {f.name: f for st in introspect.scene_types() for f in st.fields}
+        return fields[name]
+
+    def test_the_colour_fields_declare_it(self):
+        for name in ("border", "background"):
+            self.assertEqual(self._scene_field(name).vocabulary, "c64color", name)
+
+    def test_a_field_that_is_not_a_colour_does_not(self):
+        # `[video].device` is `int | str` too, and its strings are camera names.
+        fields = {f.name: f for s in introspect.config_sections() for f in s.fields}
+        self.assertEqual(fields["device"].vocabulary, "")
+
+    def test_it_reaches_the_document_the_console_renders(self):
+        doc = introspect.as_dict()
+        scene_fields = {f["name"]: f for st in doc["scene_types"] for f in st["fields"]}
+        self.assertEqual(scene_fields["border"]["vocabulary"], "c64color")
+
+
+class PaletteSwatchTest(unittest.TestCase):
+    """The swatch picker's colours are served rather than copied into the
+    browser — a second palette to keep in step with the first is the bug this
+    avoids."""
+
+    def test_sixteen_colours_with_writable_names(self):
+        from c64cast.video.palette import resolve_color
+
+        swatches = introspect.palette_swatches()
+        self.assertEqual(len(swatches), 16)
+        for index, swatch in enumerate(swatches):
+            self.assertEqual(swatch["index"], index)
+            # Both spellings have to survive the loader, because the picker
+            # writes one of them into a config.
+            self.assertEqual(resolve_color(swatch["name"]), index)
+            self.assertEqual(resolve_color(swatch["label"]), index)
+            self.assertRegex(swatch["hex"], r"^#[0-9a-f]{6}$")
+
+    def test_the_hex_is_rgb_not_the_bgr_it_is_stored_as(self):
+        from c64cast.video.palette import C64_PALETTE_BGR
+
+        blue, green, red = (int(c) for c in C64_PALETTE_BGR[2])  # red
+        swatch = introspect.palette_swatches()[2]
+        self.assertEqual(swatch["hex"], f"#{red:02x}{green:02x}{blue:02x}")
+        self.assertGreater(red, blue)
+
+    def test_it_rides_along_in_the_introspection_document(self):
+        self.assertEqual(len(introspect.as_dict()["palette"]), 16)
+
+
 if __name__ == "__main__":
     unittest.main()

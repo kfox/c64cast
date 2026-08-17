@@ -14,6 +14,34 @@ the version and stamps it with the date.
 
 ### Added
 
+- **Add a scene from the console.** Adding or removing a scene meant opening the
+  *Source* editor, which made the most common change there is to a show file —
+  "another clip like that one" — the one thing the generated form could not do.
+  Each scene now has **Duplicate** and **Remove**, and there is an **Add scene**
+  with a type picker under the list. A duplicate is a verbatim copy, name
+  included, so a clip you have already tuned is one tap from a second. Removing
+  the last scene is refused: a show needs one to play. These write immediately,
+  so staged edits have to be saved or discarded first — inserting a scene
+  renumbers the ones after it.
+
+- **Hand somebody a read-only link.** The console has had a viewer role since it
+  had a token, and no way to give one out: sharing the screen meant sharing the
+  credential that can stop the show. The Session screen now asks the host for a
+  read-only link and shows it ready to copy. The token is minted on the first
+  ask rather than at startup — a credential nobody asked for is one more thing
+  to leak — and then kept, so the link still opens after a restart. It follows
+  the show and can do nothing else: no start, no stop, no tuning, no config
+  writes. Setting `[web].viewer_token` yourself still works and is used as-is.
+
+- **A colour field is the sixteen colours.** `border` and `background` accept a
+  C64 colour name *or* an index, and the form only ever offered the number —
+  directly under help text saying you could write "light blue". A field that
+  takes two kinds of value now offers both, with a selector saying which you are
+  writing, and a colour field draws the palette as swatches. The colours come
+  from the host, so one that has matched the machine's own emitted palette shows
+  the colours it really produces. `force_palette_colors` gains the same
+  treatment: a count, or a whitelist picked from the swatches.
+
 - **Keep what you tuned, from the browser.** A knob turned on a phone changed
   the show and then ended with it. A run started from the command line asks
   "save these?" as it exits; the host has no terminal to ask on, and a host that
@@ -135,6 +163,15 @@ the version and stamps it with the date.
   on this config** beside it.
 
 ### Fixed
+
+- **Check says when a scene names media that isn't there.** A `video` scene
+  pointing at a path that does not exist passed both **Check** and **Save**, and
+  failed a few seconds into the run — after the link was open and the C64 had
+  been reset. It is now reported in the same panel the loader's own diagnostics
+  use, on a check and on a save. A warning rather than a refusal, because a file
+  may legitimately arrive before showtime or belong to another machine in an
+  ensemble; URLs and globs are left alone, the first because it is not a local
+  path and the second because an empty glob is already an error.
 
 - **`[ultimate64].url` takes the address you already know how to write.** The
   connection target `-u/--url` accepts — `u64://192.168.2.64` — went into a

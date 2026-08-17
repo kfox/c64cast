@@ -2341,6 +2341,32 @@ def _gather_videos(directory: str) -> list[str]:
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
 
+def missing_media(spec: str) -> list[str]:
+    """The entries of a `file =` spec that name a local path which isn't there.
+
+    :func:`resolve_file_spec` lets a literal path through unchecked on purpose
+    — media can appear between load and playback, and a spec may legitimately
+    name a file on another machine in an ensemble — so nothing notices until
+    the scene builds, seconds into a run with the link open and the C64 already
+    reset. A caller that would rather say so first asks here and *warns*;
+    turning this into a refusal would break the two cases the pass-through
+    exists for.
+
+    URLs are skipped (not local), and so are globs and empty entries, which
+    ``resolve_file_spec`` already fails loudly on."""
+    out: list[str] = []
+    for raw in spec.split(","):
+        entry = raw.strip()
+        if not entry or entry.lower().startswith(("http://", "https://")):
+            continue
+        expanded = paths.expand_user(entry)
+        if _GLOB_CHARS.search(expanded):
+            continue
+        if not os.path.exists(expanded):
+            out.append(entry)
+    return out
+
+
 def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> list[str]:
     """Resolve a comma-separated `file =` spec to a sorted, unique list of
     concrete file paths.

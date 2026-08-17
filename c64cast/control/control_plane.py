@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from c64cast._pollthread import PollThread
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import Scene
+
+if TYPE_CHECKING:
+    from .auth import ViewerCredential
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +116,7 @@ def build_app_for_registry(
     interstitial_factories: InterstitialRegistry,
     *,
     token: str = "",
-    viewer_token: str = "",
+    viewer_token: str | ViewerCredential = "",
 ):
     """Build the FastAPI app over registry providers, consulted per request.
 
@@ -260,7 +263,7 @@ def build_app(
     interstitial_factories: Mapping[str, InterstitialFactory],
     *,
     token: str = "",
-    viewer_token: str = "",
+    viewer_token: str | ViewerCredential = "",
 ):
     """Build the FastAPI app around one session's fixed maps — the one-shot
     CLI's shape, where the app and the session live and die together. Split
@@ -284,7 +287,7 @@ def start_control_server(
     config_loaders: Mapping[str, SceneFactory],
     interstitial_factories: Mapping[str, InterstitialFactory],
     token: str = "",
-    viewer_token: str = "",
+    viewer_token: str | ViewerCredential = "",
 ) -> ControlServer:
     """Build the FastAPI app + start a uvicorn server. Returns the server
     handle (caller calls `.stop()` at shutdown)."""

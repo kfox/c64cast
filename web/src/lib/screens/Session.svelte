@@ -5,6 +5,7 @@
   import Button from "$lib/components/Button.svelte";
   import ConfigList from "$lib/components/ConfigList.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
+  import ViewerLink from "$lib/components/ViewerLink.svelte";
   import type { Console } from "$lib/console.svelte";
   import type { ConfigIndex } from "$lib/types";
 
@@ -141,6 +142,13 @@
             <Button disabled={busy || startable} onclick={() => act(() => api.stop())}>Stop</Button>
           {/if}
         </div>
+      </div>
+
+      <!-- Sharing the console has meant sharing the token that can stop the
+           show; the read-only role existed with no way to hand one out. -->
+      <div class="mt-6 border-t border-[var(--edge)] pt-4">
+        <h3 class="mb-2 text-sm font-semibold tracking-wide uppercase">Share</h3>
+        <ViewerLink />
       </div>
     {/if}
   </section>

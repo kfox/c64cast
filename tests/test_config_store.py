@@ -474,6 +474,129 @@ class PatchTest(StoreTestCase):
         self.assertNotIn("#:schema", self._read())
 
 
+class SceneStructureTest(StoreTestCase):
+    """Adding and removing scenes — the two changes that alter the *shape* of a
+    show file rather than the value of a field, and the last common edit that
+    still meant opening the source."""
+
+    def _scenes(self) -> list[cfgmod.SceneCfg]:
+        return cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0].scenes
+
+    def test_a_blank_scene_is_appended(self):
+        out = self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["scene"], {"added": 1, "type": "video", "copied_from": None})
+        scenes = self._scenes()
+        self.assertEqual([s.type for s in scenes], ["blank", "video"])
+
+    def test_a_copy_carries_the_fields_that_made_it_worth_copying(self):
+        self.store.patch("shows/gig.toml", [{"scene": 0, "field": "name", "value": "opener"}])
+        out = self.store.add_scene("shows/gig.toml", copy_of=0, after=0)
+        self.assertEqual(out["scene"]["added"], 1)
+        scenes = self._scenes()
+        self.assertEqual(len(scenes), 2)
+        # Verbatim, name included: inventing "opener (copy)" would be guessing
+        # at what the show should call it.
+        self.assertEqual([s.name for s in scenes], ["opener", "opener"])
+        self.assertEqual([s.duration_s for s in scenes], [5.0, 5.0])
+
+    def test_after_inserts_rather_than_appends(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.store.add_scene("shows/gig.toml", scene_type="waveform", after=0)
+        self.assertEqual([s.type for s in self._scenes()], ["blank", "waveform", "video"])
+
+    def test_naming_both_a_type_and_a_copy_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.add_scene("shows/gig.toml", scene_type="video", copy_of=0)
+        with self.assertRaises(config_store.EditRejected):
+            self.store.add_scene("shows/gig.toml")
+
+    def test_an_unknown_type_is_refused_by_name(self):
+        with self.assertRaises(config_store.EditRejected) as caught:
+            self.store.add_scene("shows/gig.toml", scene_type="hologram")
+        self.assertIn("hologram", str(caught.exception))
+        self.assertEqual(len(self._scenes()), 1)
+
+    def test_a_copy_of_a_scene_that_is_not_there_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.add_scene("shows/gig.toml", copy_of=7)
+
+    def test_a_scene_can_be_removed(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        out = self.store.remove_scene("shows/gig.toml", 0)
+        self.assertEqual(out["scene"]["removed"], 0)
+        self.assertEqual([s.type for s in self._scenes()], ["video"])
+
+    def test_the_last_scene_stays(self):
+        # A playlist with nothing in it is not a show, and the refusal should
+        # name the reason rather than arriving as a loader error about scenes.
+        with self.assertRaises(config_store.EditRejected) as caught:
+            self.store.remove_scene("shows/gig.toml", 0)
+        self.assertIn("only scene", str(caught.exception))
+        self.assertEqual(len(self._scenes()), 1)
+
+    def test_a_structural_change_keeps_the_previous_text_like_any_other_save(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.assertTrue((self.shows / ".gig.toml.bak").is_file())
+
+    def test_an_ensemble_master_is_refused_the_way_a_patch_is(self):
+        (self.shows / "master.toml").write_text(MASTER, encoding="utf-8")
+        (self.shows / "left.toml").write_text(GOOD, encoding="utf-8")
+        (self.shows / "right.toml").write_text(GOOD, encoding="utf-8")
+        with self.assertRaises(config_store.EditRejected) as caught:
+            self.store.add_scene("shows/master.toml", scene_type="video")
+        self.assertIn("ensemble", str(caught.exception))
+
+
+class MediaWarningTest(StoreTestCase):
+    """A scene naming media that isn't there loads fine and then fails seconds
+    into the run, with the link open and the C64 already reset. A warning is the
+    right shape for it: the loader lets a literal path through on purpose, for
+    media that arrives before showtime and for an ensemble member's own files."""
+
+    def _check(self, text: str) -> list[dict]:
+        return self.store.validate_text(text, "shows/gig.toml")["warnings"]
+
+    def _video(self, spec: str) -> str:
+        return f'[audio]\nenabled = false\n\n[[scenes]]\ntype = "video"\nfile = "{spec}"\n'
+
+    def test_a_missing_file_is_reported_without_refusing_the_config(self):
+        report = self.store.validate_text(self._video("/nope/missing.mp4"), "shows/gig.toml")
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(report["warnings"]), 1)
+        warning = report["warnings"][0]
+        self.assertEqual(warning["scene"], 0)
+        self.assertIn("missing.mp4", warning["detail"])
+
+    def test_a_file_that_is_there_says_nothing(self):
+        clip = self.tmp / "clip.mp4"
+        clip.write_bytes(b"")
+        self.assertEqual(self._check(self._video(str(clip))), [])
+
+    def test_a_url_is_not_a_local_path(self):
+        self.assertEqual(self._check(self._video("https://example.invalid/clip.mp4")), [])
+
+    def test_a_glob_is_left_to_the_loader_which_already_fails_loudly(self):
+        # A glob with no hits is an error, not a warning — so warning about it
+        # here would be a second voice saying the same thing.
+        report = self.store.validate_text(self._video("/nope/*.mp4"), "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["warnings"], [])
+
+    def test_a_save_carries_the_warning_too(self):
+        # The moment somebody stops looking at the check is the moment they save.
+        out = self.store.write("shows/gig.toml", self._video("/nope/missing.mp4"))
+        self.assertEqual(len(out["warnings"]), 1)
+
+    def test_the_resolver_and_the_warning_agree_about_what_an_entry_is(self):
+        from c64cast.app.scene_factory import missing_media
+
+        clip = self.tmp / "clip.mp4"
+        clip.write_bytes(b"")
+        self.assertEqual(missing_media(f"{clip},/nope/gone.mp4"), ["/nope/gone.mp4"])
+        self.assertEqual(missing_media(""), [])
+
+
 class DescribeTest(unittest.TestCase):
     def test_every_section_of_a_blank_config_is_all_defaults(self):
         form = config_store.describe(cfgmod.Config())

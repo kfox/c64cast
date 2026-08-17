@@ -49,7 +49,8 @@ FastAPI mis-read them as query params.
 import hmac
 import html
 import logging
-from collections.abc import Iterable, MutableMapping
+import secrets
+from collections.abc import Callable, Iterable, MutableMapping
 from http.cookies import SimpleCookie
 from typing import Any
 from urllib.parse import parse_qs
@@ -104,6 +105,44 @@ _LOGIN_PAGE = """<!doctype html>
  <button type="submit">Unlock</button>
 </form></body></html>
 """
+
+
+class ViewerCredential:
+    """The read-only token, which may not exist yet.
+
+    Unlike the full token, this one is *not* settled at startup. A configured
+    value is honoured; otherwise nothing exists until somebody asks for a link
+    to hand out, because a credential nobody asked for is one more thing that
+    can leak. :meth:`issue` mints on first ask and persists through ``store``,
+    so a link given to a guest keeps working across restarts the way a
+    bookmarked full-token URL does.
+
+    Shared by reference between the gate and the route that issues links,
+    which is the whole point: a token minted mid-run has to start being
+    accepted without rebuilding the app around the listening socket."""
+
+    def __init__(self, token: str = "", *, store: Callable[[str], None] | None = None) -> None:
+        self._token = token
+        self._store = store
+
+    def __bool__(self) -> bool:
+        """Whether a read-only token exists *yet* — so the callers that used to
+        test a plain string still read correctly."""
+        return bool(self._token)
+
+    @property
+    def token(self) -> str:
+        """The current token, or ``""`` when none has been issued."""
+        return self._token
+
+    def issue(self) -> tuple[str, bool]:
+        """``(token, minted)`` — the existing token, or a fresh one."""
+        if self._token:
+            return self._token, False
+        self._token = secrets.token_urlsafe(32)
+        if self._store is not None:
+            self._store(self._token)
+        return self._token, True
 
 
 def match_role(presented: str | None, token: str, viewer_token: str = "") -> str | None:
@@ -177,21 +216,29 @@ class TokenAuthMiddleware:
     Sets ``scope["c64cast_role"]`` to ``"full"`` or ``"viewer"`` and hands off;
     denies with ``401`` (no/unknown token) or ``403`` (viewer attempting a
     write) without ever reaching the app. Non-``http``/``websocket`` scopes
-    (``lifespan``) pass straight through."""
+    (``lifespan``) pass straight through.
+
+    ``viewer`` is read per request rather than copied at construction: the
+    read-only token can be minted while the host is running, and the app —
+    with its listening socket and every connected console — is built once."""
 
     def __init__(
         self,
         app: Any,
         *,
         token: str,
-        viewer_token: str = "",
+        viewer_token: str | ViewerCredential = "",
         public_paths: Iterable[str] = PUBLIC_PATHS,
     ) -> None:
         if not token:
             raise ValueError("TokenAuthMiddleware needs a non-empty token")
         self.app = app
         self._token = token
-        self._viewer_token = viewer_token
+        self._viewer = (
+            viewer_token
+            if isinstance(viewer_token, ViewerCredential)
+            else ViewerCredential(viewer_token)
+        )
         self._public = frozenset(public_paths)
 
     async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
@@ -199,7 +246,7 @@ class TokenAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        role = match_role(_presented_token(scope), self._token, self._viewer_token)
+        role = match_role(_presented_token(scope), self._token, self._viewer.token)
         if role is None:
             if scope.get("path", "") in self._public:
                 await self.app(scope, receive, send)
@@ -250,12 +297,15 @@ def _safe_next(target: str | None) -> str:
     return target
 
 
-def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
+def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) -> None:
     """Register ``GET``/``POST`` ``/api/login`` — the token → cookie exchange.
 
     Real, non-stringized annotations (see the module note). ``GET`` redirects so
     a phone can be handed one URL with the token in it; ``POST`` answers JSON so
-    a login form doesn't have to put the token in a URL that lands in history."""
+    a login form doesn't have to put the token in a URL that lands in history.
+
+    ``viewer`` is read per request, not captured: a read-only token minted
+    while the host runs has to be able to log in with the routes already up."""
     from fastapi import Request
     from fastapi.responses import JSONResponse, RedirectResponse, Response
 
@@ -268,7 +318,7 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
         reordering can't step around it (CodeQL py/cookie-injection)."""
         response.set_cookie(
             COOKIE_NAME,
-            token if role == "full" else viewer_token,
+            token if role == "full" else viewer.token,
             httponly=True,
             samesite="strict",
             path="/",
@@ -282,7 +332,7 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
     @app.get(LOGIN_PATH)
     def login_get(request: Request) -> Response:
         presented = request.query_params.get("token")
-        role = match_role(presented, token, viewer_token)
+        role = match_role(presented, token, viewer.token)
         if role is None:
             return _denied()
         redirect = RedirectResponse(_safe_next(request.query_params.get("next")), status_code=303)
@@ -299,7 +349,7 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
                 body = None
             if isinstance(body, dict) and isinstance(body.get("token"), str):
                 presented = body["token"]
-        role = match_role(presented, token, viewer_token)
+        role = match_role(presented, token, viewer.token)
         if role is None:
             return _denied()
         ok = JSONResponse({"ok": True, "role": role})
@@ -307,18 +357,29 @@ def _register_login_routes(app: Any, *, token: str, viewer_token: str) -> None:
         return ok
 
 
-def install_auth(app: Any, *, token: str, viewer_token: str = "") -> bool:
+def install_auth(app: Any, *, token: str, viewer_token: str | ViewerCredential = "") -> bool:
     """Gate ``app`` behind a shared token. Returns whether auth is on.
 
     A falsy ``token`` leaves the app wide open — the historical behaviour, and
     the default. A viewer token alone can't gate anything (there would be no
-    way to write at all), so it warns rather than silently half-enabling."""
+    way to write at all), so it warns rather than silently half-enabling.
+
+    A :class:`ViewerCredential` may be passed instead of a string, and then the
+    gate and the login routes both follow it — which is what lets a host mint a
+    read-only token for a guest without a restart. The
+    "must differ from the full token" check runs against whatever it holds now;
+    a minted one is 32 random bytes and cannot collide."""
+    viewer = (
+        viewer_token
+        if isinstance(viewer_token, ViewerCredential)
+        else ViewerCredential(viewer_token)
+    )
     if not token:
-        if viewer_token:
+        if viewer.token:
             log.warning("viewer_token is set but token is not — authentication stays OFF")
         return False
-    if viewer_token and hmac.compare_digest(token.encode("utf-8"), viewer_token.encode("utf-8")):
+    if viewer.token and hmac.compare_digest(token.encode("utf-8"), viewer.token.encode("utf-8")):
         raise ValueError("viewer_token must differ from token")
-    _register_login_routes(app, token=token, viewer_token=viewer_token)
-    app.add_middleware(TokenAuthMiddleware, token=token, viewer_token=viewer_token)
+    _register_login_routes(app, token=token, viewer=viewer)
+    app.add_middleware(TokenAuthMiddleware, token=token, viewer_token=viewer)
     return True

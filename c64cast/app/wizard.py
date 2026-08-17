@@ -79,6 +79,37 @@ def field_kind(type_str: str) -> str:
     return "str"
 
 
+def union_members(type_str: str) -> list[str]:
+    """Split a declared type at its top-level ``|``, leaving the insides of
+    ``list[...]`` / ``dict[...]`` alone — ``int | list[int | str]`` is two
+    members, not three."""
+    members: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(type_str):
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            members.append(type_str[start:i])
+            start = i + 1
+    members.append(type_str[start:])
+    return [m.strip() for m in members if m.strip()]
+
+
+def field_kinds(type_str: str) -> tuple[str, ...]:
+    """Every kind a declared type accepts, in declaration order, without
+    repeats.
+
+    :func:`field_kind` classifies the type *as a whole*, which is all a prompt
+    can act on — it asks one question, so a union has to collapse to its
+    hardest member. A form has room for the whole union, and losing half of
+    what a field accepts is how ``border`` (``int | str``) ends up a number box
+    under help text that says you may write "light blue"."""
+    return tuple(dict.fromkeys(field_kind(m) for m in union_members(type_str)))
+
+
 def scan_assets(default_dir: str, exts: tuple[str, ...]) -> list[str]:
     """List existing files in `default_dir` whose extension is in `exts`,
     sorted. Non-recursive (mirrors the loader's directory specs). Returns []
