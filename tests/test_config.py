@@ -1770,6 +1770,28 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
         names = [s.name for s in built]
         self.assertEqual(names, ["idle"])
 
+    def test_a_scenes_cfg_index_is_its_place_in_the_file(self):
+        # The live-tune save-back writes a per-scene knob by index into a config
+        # it re-reads, so the stamp has to count [[scenes]] blocks — including
+        # the follower-only one, which is in the file and not in the rotation.
+        self.cfg.scenes = [
+            cfgmod.SceneCfg(type="blank", name="idle"),
+            cfgmod.SceneCfg(type="blank", name="hello", follower_only=True),
+            cfgmod.SceneCfg(type="blank", name="outro"),
+        ]
+        built = scene_factory.scenes_from_config(self.cfg, self.api, None, None)
+        self.assertEqual([(s.name, s.cfg_index) for s in built], [("idle", 0), ("outro", 2)])
+
+    def test_a_scene_no_block_named_carries_no_index(self):
+        # The no-scenes fallback is built here and is in no config, so there is
+        # nothing for a save-back to address — and None says so.
+        from c64cast.video.video import WebcamSource
+
+        source = cast(WebcamSource, object())
+        self.cfg.scenes = []
+        built = scene_factory.scenes_from_config(self.cfg, self.api, None, source)
+        self.assertEqual([s.cfg_index for s in built], [None])
+
     def test_follower_only_still_validated(self):
         # A bad cfg in a follower_only scene must surface at load time,
         # not at the moment the broadcast actually fires.

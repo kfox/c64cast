@@ -22,19 +22,34 @@ the version and stamps it with the date.
 
   The Live screen's Tune panel now shows that record — every colour-pipeline
   change since the show started, where it began and where it is now — and keeps
-  it in the config the show is running from on one tap. The write is a `[color]`
-  save into the file *on disk*, not a dump of the configuration the run was
-  built from, so a field edited in the Settings view since the show started is
-  still there afterwards; a save that would leave the config unable to load is
-  refused with the file untouched and the changes still held, exactly as any
-  other save from the console is. **Discard** drops the offer and touches
-  nothing that is playing.
+  it in the config the show is running from on one tap. The write is a patch of
+  the file *on disk*, not a dump of the configuration the run was built from, so
+  a field edited in the Settings view since the show started is still there
+  afterwards; a save that would leave the config unable to load is refused with
+  the file untouched and the changes still held, exactly as any other save from
+  the console is. **Discard** drops the offer and touches nothing that is
+  playing.
 
-  A change no configuration field carries — a palette mode, which belongs to its
-  scene rather than to `[color]` — is listed and marked *runtime only* rather
-  than silently dropped on the way to the file. A
-  quick-playback run has no file to write to and gets the same pasteable
-  `[color]` block the command line prints.
+  A change no configuration field carries is listed and marked *runtime only*
+  rather than silently dropped on the way to the file. A quick-playback run has
+  no file to write to and gets the same pasteable block the command line prints.
+
+- **A palette mode is kept too, in the scene it was tuned on.** `palette_mode`
+  is the one live knob whose home is a `[[scenes]]` block rather than the shared
+  `[color]` section, and for that reason nothing had ever written it back: every
+  surface offered it, every save-back skipped it, and a palette dialled in
+  during a show was gone at the end of it.
+
+  It is now recorded with the scene that was on screen when you turned it, and
+  written into that scene's own block — from the console's Save, from the exit
+  prompt, and from `--overwrite` alike. Turn it during two different scenes and
+  both are kept, separately: they are two settings, not one setting moved twice.
+  A `[color]` knob swept across a scene change is still one change, as before.
+
+  A palette turned on a scene the config never named — a launched clip, or a
+  video the playlist inserted between scenes — has no block to be written into.
+  Those are listed as *runtime only* rather than written into whichever scene
+  happens to sit at that position.
 
 - **A Tune panel on the console's Live screen** — the colour pipeline, the
   generator and the scope, from a phone. A MIDI controller and the C64's own

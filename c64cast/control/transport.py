@@ -9,8 +9,10 @@ performance") shipped the pieces that don't need a transport engine:
   implementation instead of duplicating it.
 - :class:`LiveTuneTracker` — records every live parameter change a performer
   makes (a knob sweep, a choice cycle) so the exit save-back flow can write the
-  final values back into the ``[color]`` section of the run's TOML, or print a
-  pasteable snippet for a quick-playback run that has no file.
+  final values back into the run's TOML — the ``[color]`` section for the knobs
+  the whole show shares, the scene's own ``[[scenes]]`` block for the ones a
+  scene owns — or print a pasteable snippet for a quick-playback run that has no
+  file.
 
 Phase 2 adds the actual transport session — DJ-style control of a playing
 :class:`~c64cast.scenes.scenes.VideoScene` (pause in place, seek/scrub, RW/FF with
@@ -53,7 +55,7 @@ import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from c64cast.app import paths
 
@@ -206,27 +208,67 @@ _MODE_FIELD_TO_COLOR: dict[str, str] = {
     "color_match": "color_match",
 }
 
-# The live-tunable mode params that deliberately have no [color] field, and why.
-# The drift test above allows exactly these; anything else missing from the map
-# is an oversight, not a decision.
-MODE_FIELDS_WITH_NO_CONFIG_HOME: frozenset[str] = frozenset(
-    {
-        # Per-scene ([[scenes]].palette_mode), not in the shared [color] section,
-        # so persisting it needs the scene index. The live change still takes
-        # effect at runtime; it just isn't saved.
-        "palette_mode",
-    }
-)
+# Live-tune targets whose config home is one `[[scenes]]` block rather than the
+# shared [color] section: {mode field: scene field}. These are recorded with the
+# index of the scene that was playing when the knob moved, and a save-back writes
+# that block and no other — the same knob turned during two scenes is two
+# entries, because it is two settings.
+_MODE_FIELD_TO_SCENE: dict[str, str] = {
+    "palette_mode": "palette_mode",
+}
+
+# The live-tunable mode params that deliberately have no config field at all,
+# and why. The drift test above allows exactly these; anything else missing from
+# both maps is an oversight, not a decision. Empty today — `palette_mode` was the
+# only member until it grew the per-scene home above.
+MODE_FIELDS_WITH_NO_CONFIG_HOME: frozenset[str] = frozenset()
+
+
+def _config_home(target: str) -> tuple[str | None, bool]:
+    """Where a live target's value is kept in a config file: the field's name
+    there, and whether that field belongs to a scene rather than to [color].
+
+    (None, False) for a target no config carries — every non-``mode.`` one, since
+    effect and generator knobs are runtime state and writing them would put knob
+    positions in a show file."""
+    holder, _, name = target.partition(".")
+    if holder != "mode":
+        return None, False
+    per_scene = _MODE_FIELD_TO_SCENE.get(name)
+    if per_scene is not None:
+        return per_scene, True
+    return _MODE_FIELD_TO_COLOR.get(name), False
+
+
+def _key(target: str, scene: int | None) -> str:
+    """What identifies a tracked change to a surface that wants to drop it. The
+    target alone for a global, ``target@<scene>`` for a per-scene one — so the
+    same knob on two scenes is two rows a console can discard independently."""
+    return target if scene is None else f"{target}@{scene}"
+
+
+class _Change(NamedTuple):
+    """One tracked movement: what moved, which scene's copy of it (None for a
+    [color] field, and for a per-scene one turned on a scene the config did not
+    name — a launched clip, an interleaved video), and the ends of the move."""
+
+    target: str
+    scene: int | None
+    old: Any
+    new: Any
 
 
 class LiveTuneTracker:
     """Records live parameter changes for the exit save-back flow.
 
     A change is keyed by its live target string (``mode.dither_strength``,
-    ``mode.color_match`` …). Re-tuning the same target keeps the ORIGINAL value
-    as `old` and overwrites `new`, so what's recorded is the net change from the
-    config the run started with — a performer sweeping a knob back and forth ends
-    up with a single (old → final) entry, not a churn of intermediates.
+    ``mode.color_match`` …), plus the scene it was made on when the target's
+    config home is a ``[[scenes]]`` block rather than ``[color]``. Re-tuning the
+    same target keeps the ORIGINAL value as `old` and overwrites `new`, so what's
+    recorded is the net change from the config the run started with — a performer
+    sweeping a knob back and forth ends up with a single (old → final) entry, not
+    a churn of intermediates. A per-scene knob turned on two different scenes is
+    two entries for the same reason: they are two settings, not one moved twice.
 
     Thread-safe: the MIDI reader thread and the WLED server thread both record;
     the exit flow (main thread) reads. `has_changes` / `describe` / `pending` /
@@ -236,89 +278,139 @@ class LiveTuneTracker:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # target -> (old_value, new_value); insertion order preserved.
-        self._changes: dict[str, tuple[Any, Any]] = {}
+        # key (see _key) -> _Change; insertion order preserved.
+        self._changes: dict[str, _Change] = {}
 
-    def record(self, target: str, old: Any, new: Any) -> None:
-        """Note that `target` moved from `old` to `new`. No-op when the value
-        didn't actually change (a knob landing back where it started clears the
-        entry)."""
+    def record(self, target: str, old: Any, new: Any, *, scene: int | None = None) -> None:
+        """Note that `target` moved from `old` to `new` while `scene` was
+        playing. No-op when the value didn't actually change (a knob landing back
+        where it started clears the entry).
+
+        `scene` is the index of the ``[[scenes]]`` block the current scene was
+        built from (None when it came from no block). Callers pass whatever is
+        playing and let this decide whether it matters: it is part of the key
+        only for the per-scene targets, so a ``[color]`` knob swept across a
+        scene change stays one entry."""
+        _, per_scene = _config_home(target)
+        at = scene if per_scene else None
+        key = _key(target, at)
         with self._lock:
-            existing = self._changes.get(target)
-            base = existing[0] if existing is not None else old
+            existing = self._changes.get(key)
+            base = existing.old if existing is not None else old
             if _values_equal(base, new):
                 # Back to where it started (or a no-op write) — drop the entry.
-                self._changes.pop(target, None)
+                self._changes.pop(key, None)
             else:
-                self._changes[target] = (base, new)
+                self._changes[key] = _Change(target, at, base, new)
 
     def has_changes(self) -> bool:
         with self._lock:
             return bool(self._changes)
 
     def describe(self) -> list[str]:
-        """Human-readable ``target: old -> new`` lines, for the exit prompt."""
+        """Human-readable ``target: old -> new`` lines, for the exit prompt.
+        A per-scene target names the scene it belongs to, counted from 1 to match
+        the playlist's own ``scene N/M`` logging."""
         with self._lock:
-            return [f"{t}: {_fmt(o)} -> {_fmt(n)}" for t, (o, n) in self._changes.items()]
+            changes = list(self._changes.values())
+        return [
+            f"{c.target}{'' if c.scene is None else f' (scene {c.scene + 1})'}: "
+            f"{_fmt(c.old)} -> {_fmt(c.new)}"
+            for c in changes
+        ]
 
     def pending(self) -> list[dict[str, Any]]:
         """Every tracked change as a row: the target, where it started, where it
-        is now, and the ``[color]`` field a save-back would write it to.
+        is now, and where a save-back would write it.
 
-        ``field`` is None for a change no config field carries — today only
-        ``mode.palette_mode``, which lives per-scene (see
-        :data:`MODE_FIELDS_WITH_NO_CONFIG_HOME`); only ``mode.*`` targets are
-        recorded at all, effect and generator knobs being runtime state. A surface
-        that offers to save has to say which of the two a row is, so the one
-        snapshot answers both questions; taking it once also means a knob turned
-        between two reads cannot make the list disagree with itself."""
+        ``field`` is the config field's own name and ``scene`` says which file
+        section carries it — None for ``[color]``, otherwise the index of the
+        ``[[scenes]]`` block. ``field`` is None for a change nothing can write:
+        every non-``mode.`` target (effect and generator knobs are runtime state),
+        and a per-scene target turned on a scene the config did not name, which
+        has no block to write to. ``key`` is what :meth:`forget` takes.
+
+        A surface that offers to save has to say which kind a row is, so the one
+        snapshot answers every question about it; taking it once also means a
+        knob turned between two reads cannot make the list disagree with itself."""
         with self._lock:
             items = list(self._changes.items())
         rows: list[dict[str, Any]] = []
-        for target, (old, new) in items:
-            holder, _, name = target.partition(".")
-            field = _MODE_FIELD_TO_COLOR.get(name) if holder == "mode" else None
-            rows.append({"target": target, "old": old, "new": new, "field": field})
+        for key, c in items:
+            field, per_scene = _config_home(c.target)
+            if per_scene and c.scene is None:
+                field = None
+            rows.append(
+                {
+                    "key": key,
+                    "target": c.target,
+                    "old": c.old,
+                    "new": c.new,
+                    "field": field,
+                    "scene": c.scene,
+                }
+            )
         return rows
 
-    def forget(self, targets: Iterable[str]) -> int:
-        """Drop `targets`, returning how many were actually held.
+    def forget(self, keys: Iterable[str]) -> int:
+        """Drop `keys`, returning how many were actually held.
 
         What a surface that has *written* them somewhere calls, so a console
         stops offering to save a change that is now in the file — and what a
-        "discard" is, handed the targets of a :meth:`pending` snapshot."""
+        "discard" is, handed the ``key`` of every :meth:`pending` row."""
         with self._lock:
-            return sum(int(self._changes.pop(t, None) is not None) for t in targets)
+            return sum(int(self._changes.pop(k, None) is not None) for k in keys)
 
-    def _persistable(self) -> list[tuple[str, Any]]:
-        """(color_field, new_value) pairs for targets that map to [color]."""
-        return [(r["field"], r["new"]) for r in self.pending() if r["field"] is not None]
+    def _persistable(self) -> list[dict[str, Any]]:
+        """The :meth:`pending` rows a config file can actually take."""
+        return [r for r in self.pending() if r["field"] is not None]
 
     def apply(self, cfg: Config) -> list[str]:
-        """Write the tracked changes into `cfg`'s [color] section (in place).
-        Returns ``[color].<field> = <value>`` lines for the ones applied (targets
-        that don't map to [color], e.g. palette_mode, are skipped)."""
+        """Write the tracked changes into `cfg` (in place), returning a
+        ``<where>.<field> = <value>`` line for each one applied.
+
+        Changes nothing can carry are skipped, and so is a scene index `cfg` has
+        no block for — a config reloaded with fewer scenes since the knob moved
+        would otherwise write the value into whichever scene inherited the
+        index."""
         applied: list[str] = []
-        for field, new in self._persistable():
-            setattr(cfg.color, field, new)
-            applied.append(f"[color].{field} = {_fmt(new)}")
+        for row in self._persistable():
+            at, field, new = row["scene"], row["field"], row["new"]
+            if at is None:
+                setattr(cfg.color, field, new)
+                applied.append(f"[color].{field} = {_fmt(new)}")
+            elif 0 <= at < len(cfg.scenes):
+                setattr(cfg.scenes[at], field, new)
+                applied.append(f"[[scenes]][{at}].{field} = {_fmt(new)}")
         return applied
 
     def toml_snippet(self) -> str:
         """A pasteable ``[color]`` TOML block for the tracked changes — used for
         quick-playback runs that have no config file to write back to. Empty
-        string when nothing persistable changed."""
-        pairs = self._persistable()
-        if not pairs:
+        string when nothing persistable changed.
+
+        Per-scene changes ride along as comments rather than as TOML: they belong
+        *inside* a ``[[scenes]]`` block, and a pasted ``[[scenes]]`` header would
+        append a scene instead of editing one."""
+        rows = self._persistable()
+        if not rows:
             return ""
         # De-dupe (last write wins) while keeping a stable order.
         merged: dict[str, Any] = {}
-        for field, new in pairs:
-            merged[field] = new
-        lines = ["[color]"]
-        for field, new in merged.items():
-            lines.append(f"{field} = {_toml_value(new)}")
-        return "\n".join(lines)
+        notes: list[str] = []
+        for row in rows:
+            if row["scene"] is None:
+                merged[row["field"]] = row["new"]
+            else:
+                notes.append(
+                    f"# in scene {row['scene'] + 1}'s [[scenes]] block: "
+                    f"{row['field']} = {_toml_value(row['new'])}"
+                )
+        lines: list[str] = []
+        if merged:
+            lines.append("[color]")
+            lines.extend(f"{f} = {_toml_value(v)}" for f, v in merged.items())
+        return "\n".join(lines + notes)
 
 
 def _values_equal(a: Any, b: Any) -> bool:

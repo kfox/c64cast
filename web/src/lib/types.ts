@@ -299,15 +299,20 @@ export interface LiveKnob {
 }
 
 /** One knob change the running show is holding: where it started, where it is
- *  now, and the `[color]` field a save-back would write it to. `field` is null
- *  when no config field carries it — today only a palette mode, which belongs to
- *  its scene rather than to `[color]`. Such a change is still listed: one that
- *  will be lost when the show ends is exactly the one worth saying so about. */
+ *  now, and where a save-back would write it. `field` is the config field's own
+ *  name and `scene` says which part of the file carries it — null for `[color]`,
+ *  otherwise the index of the `[[scenes]]` block. `field` is null when nothing
+ *  carries it at all; such a change is still listed, because one that will be
+ *  lost when the show ends is exactly the one worth saying so about. `key`
+ *  identifies the row to the host, and is not the target: the same per-scene
+ *  knob turned during two scenes is two rows. */
 export interface TuneChange {
+  key: string;
   target: string;
   old: number | string | null;
   new: number | string | null;
   field: string | null;
+  scene: number | null;
 }
 
 /** `LiveKnob[]` is what can be turned; this is what *has* been, from

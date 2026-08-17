@@ -57,12 +57,12 @@ skip the injection entirely.
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from c64cast.app import introspect
-from c64cast.app.config import ConfigError
+from c64cast.app.config import Config, ConfigError
 from c64cast.app.config_store import (
     ConfigInvalid,
     ConfigNotFound,
@@ -110,6 +110,31 @@ def _status_payload(status: SessionStatus, log_buffer: Any) -> dict[str, Any]:
     out = status.as_dict()
     out["log_seq"] = log_buffer.seq if log_buffer is not None else 0
     return out
+
+
+def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One :meth:`LiveTuneTracker.pending` row as a :meth:`ConfigStore.patch`
+    edit. ``scene`` is the row's own answer to where the value lives: an index
+    for a knob a scene owns, None for one the whole show shares."""
+    where: dict[str, Any] = (
+        {"section": "color"} if row["scene"] is None else {"scene": row["scene"]}
+    )
+    return {**where, "field": row["field"], "value": row["new"]}
+
+
+def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Put what the file just took back onto the running Config, so the C64
+    menu's own whole-config save-back can't quietly revert it.
+
+    A scene index the config has no block for is skipped rather than clamped —
+    it can only mean the file changed shape under the run, and writing the value
+    into whichever scene inherited the index would be worse than not writing it."""
+    for row in rows:
+        at = row["scene"]
+        if at is None:
+            setattr(cfg.color, row["field"], row["new"])
+        elif 0 <= at < len(cfg.scenes):
+            setattr(cfg.scenes[at], row["field"], row["new"])
 
 
 def register_web_routes(
@@ -265,9 +290,11 @@ def register_web_routes(
         afterwards, and a patch that would stop the config loading is refused
         with the file untouched.
 
-        Only what a ``[color]`` field carries can be written; the rest of the
-        record is reported and left alone, so nothing is silently dropped on the
-        way to the file."""
+        A change goes to ``[color]`` or to the ``[[scenes]]`` block it was made
+        on, whichever is that knob's home — the tracker's row says which, and the
+        two kinds ride in one patch so a save is one write, one backup and one
+        refusal. What no config carries is reported and left alone, so nothing is
+        silently dropped on the way to the file."""
         body = await _body(request)
         action = str(body.get("action", "save"))
         pl = _tuned(body.get("system"))
@@ -275,7 +302,7 @@ def register_web_routes(
         # would make the list disagree with what actually gets written.
         rows = pl.live_tracker.pending()
         if action == "discard":
-            return {"ok": True, "discarded": pl.live_tracker.forget(r["target"] for r in rows)}
+            return {"ok": True, "discarded": pl.live_tracker.forget(r["key"] for r in rows)}
         if action != "save":
             raise HTTPException(400, 'a live-tune command needs action "save" or "discard"')
         savable = [r for r in rows if r["field"] is not None]
@@ -293,21 +320,20 @@ def register_web_routes(
                 f"{pl.config_path or 'this run'} is not a config under a root this host can "
                 "write, so there is no file to keep these in",
             )
-        edits = [{"section": "color", "field": r["field"], "value": r["new"]} for r in savable]
+        edits = [_live_tune_edit(r) for r in savable]
         try:
             out = store.patch(ref, edits)
         except ConfigStoreError as e:
             raise _store_error(e) from e
         # Only now: a refused patch leaves the record intact, so the console can
         # show the reason and the same Save button still means something.
-        pl.live_tracker.forget(r["target"] for r in savable)
+        pl.live_tracker.forget(r["key"] for r in savable)
         # And bring the run's own Config up to what the file now says. The C64's
         # menu save-back dumps *that* object wholesale, so leaving it stale would
         # let somebody at the machine quietly revert what was just saved from the
         # browser. Only these fields, and only after the file took them.
         if pl.config is not None:
-            for row in savable:
-                setattr(pl.config.color, row["field"], row["new"])
+            _restamp(pl.config, savable)
         out["saved"] = [r["target"] for r in savable]
         out["kept_out"] = [r["target"] for r in rows if r["field"] is None]
         return out

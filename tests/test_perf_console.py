@@ -414,15 +414,30 @@ class TunedBlockTest(unittest.TestCase):
         self.assertEqual(bridge.state()["systems"][0]["tuned"]["changes"][0]["field"], "dither")
 
     def test_a_runtime_only_knob_is_listed_but_not_counted(self):
-        # A generator knob and a per-scene palette mode both end with the show.
-        # Listing them is the point: silence would read as "all saved".
+        # A generator knob has no config home, and a palette mode turned on a
+        # scene the config never named has no block to go in. Both end with the
+        # show; listing them is the point, since silence would read as "saved".
         bridge, pl = _bridge(config_path="/shows/demo.toml")
         pl.live_tracker.record("source.scale", 1.0, 2.0)
-        pl.live_tracker.record("mode.palette_mode", "auto", "vivid")
+        pl.live_tracker.record("mode.palette_mode", "auto", "vivid", scene=None)
         tuned = bridge.state()["systems"][0]["tuned"]
         self.assertEqual(len(tuned["changes"]), 2)
         self.assertEqual(tuned["savable"], 0)
         self.assertEqual([c["field"] for c in tuned["changes"]], [None, None])
+
+    def test_a_per_scene_knob_is_savable_and_says_which_scene(self):
+        # The console renders the scene number, and the save route addresses the
+        # block by it — so it has to be on the feed, not inferred from the name.
+        bridge, pl = _bridge(config_path="/shows/demo.toml")
+        pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=2)
+        tuned = bridge.state()["systems"][0]["tuned"]
+        self.assertEqual(tuned["savable"], 1)
+        (change,) = tuned["changes"]
+        self.assertEqual(change["field"], "palette_mode")
+        self.assertEqual(change["scene"], 2)
+        # `key` is what a discard sends back, and it is not the target: the same
+        # knob on two scenes is two rows.
+        self.assertEqual(change["key"], "mode.palette_mode@2")
 
     def test_a_run_with_no_config_gets_the_pasteable_block(self):
         # Quick playback has no file to write back to; the CLI prints a [color]

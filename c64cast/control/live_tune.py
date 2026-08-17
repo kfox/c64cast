@@ -24,8 +24,10 @@ the point of the extraction:
   a knob turned from the web console must not, because that surface exists
   precisely so a performer has a readout the audience does not see. That is a
   per-surface decision (``Move.osd``), not a per-target one.
-* **The tracker entry.** ``mode.<name>`` targets are the live face of ``[color]``
-  config fields, so changing one records into the playlist's
+* **The tracker entry.** ``mode.<name>`` targets are the live face of config
+  fields — ``[color]`` for the ones a whole show shares, a scene's own
+  ``[[scenes]]`` block for ``palette_mode`` — so changing one records into the
+  playlist's
   :class:`~c64cast.control.transport.LiveTuneTracker`, which a CLI run's exit
   offers to write back into the config. Every surface that reaches a ``mode.``
   target gets that by coming through here rather than by remembering to call it,
@@ -261,8 +263,14 @@ def _chosen(found: LiveTarget, move: Move, old: float | str | None) -> str | Non
 
 def _record(pl: Playlist, found: LiveTarget, old: Any, new: Any) -> None:
     """File a ``mode.<name>`` change into the playlist's live-tune tracker for
-    the exit save-back. Only mode params have a config field behind them
-    (``[color]``); effect / source / scene params are transient runtime state,
-    so tracking them would write knob positions into a show file."""
+    the save-back. Only mode params have a config field behind them; effect /
+    source / scene params are transient runtime state, so tracking them would
+    write knob positions into a show file.
+
+    The scene playing when the knob moved goes in with it, because not every mode
+    field's home is the shared ``[color]`` section — ``palette_mode`` belongs to
+    one ``[[scenes]]`` block. The tracker decides whether that matters for the
+    target at hand; here it is enough to say what was on screen."""
     if found.holder_attr == "mode":
-        pl.live_tracker.record(f"mode.{found.name}", old, new)
+        scene = getattr(pl.current, "cfg_index", None)
+        pl.live_tracker.record(f"mode.{found.name}", old, new, scene=scene)
