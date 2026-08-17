@@ -298,6 +298,37 @@ export interface LiveKnob {
   choices?: string[];
 }
 
+/** One knob change the running show is holding: where it started, where it is
+ *  now, and the `[color]` field a save-back would write it to. `field` is null
+ *  when no config field carries it — today only a palette mode, which belongs to
+ *  its scene rather than to `[color]`. Such a change is still listed: one that
+ *  will be lost when the show ends is exactly the one worth saying so about. */
+export interface TuneChange {
+  target: string;
+  old: number | string | null;
+  new: number | string | null;
+  field: string | null;
+}
+
+/** `LiveKnob[]` is what can be turned; this is what *has* been, from
+ *  `perf_console._tuned_dict`. A one-shot run offers these back at exit, on a
+ *  terminal a daemon does not have — so the browser is where the offer is made
+ *  instead. `snippet` replaces it for a run with no config file to write to. */
+export interface TunedState {
+  changes: TuneChange[];
+  savable: number;
+  config_path: string;
+  snippet?: string;
+}
+
+/** `POST /api/session/live-tune`. The store's own patch report, plus which
+ *  targets went into the file and which were left in the record because no
+ *  config field carries them. */
+export interface LiveTuneSaved extends ConfigPatched {
+  saved: string[];
+  kept_out: string[];
+}
+
 /** One scene in the running playlist, for a console that offers a jump.
  *  `duration_s` is null for a scene that runs until its source ends. */
 export interface SceneRow {
@@ -320,6 +351,7 @@ export interface PerfSystem {
   clips: Clip[];
   effects: FxLayer[];
   live: LiveKnob[];
+  tuned: TunedState;
   /** Slots that hold a saved look, so a recall pad lights only when there is
    *  something to recall. */
   looks: number[];

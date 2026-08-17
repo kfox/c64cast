@@ -21,9 +21,12 @@ a web launch and a pad launch are indistinguishable downstream:
 * **Live tune** goes through :mod:`live_tune`, the one module that resolves a
   target string against the running scene, so a knob turned here is the same
   write a MIDI CC or a WLED slider makes — including the live-tune tracker entry
-  that lets a ``mode.*`` change be saved back into the config. The one thing
-  this surface asks for differently is **no** ``post_osd``: performance feedback
-  stays off the audience screen, which is the whole point of a phone console.
+  that lets a ``mode.*`` change be saved back into the config. That record rides
+  back out in the state frame (:func:`_tuned_dict`), because a daemon has no exit
+  prompt to offer it at; the write itself is an HTTP route in :mod:`web_api`,
+  with the config store's other writers. The one thing this surface asks for
+  differently is **no** ``post_osd``: performance feedback stays off the audience
+  screen, which is the whole point of a phone console.
 * **Transport** (``pause`` / ``resume`` / ``skip``) and **jump** set the same
   playlist events the C64's own keys do, so the run loop applies them at its
   next clean boundary rather than this thread mutating a scene.
@@ -197,6 +200,38 @@ def _live_dict(pl: Playlist) -> list[dict[str, Any]]:
     return out
 
 
+def _tuned_dict(pl: Playlist) -> dict[str, Any]:
+    """What has been *turned* since the show started, and whether it can be kept.
+
+    :func:`_live_dict` is the knobs; this is the record of moving them. Every
+    ``mode.*`` change files into the playlist's
+    :class:`~c64cast.control.transport.LiveTuneTracker` whichever surface made it
+    — a MIDI CC, a WLED slider, the C64's own menu, or this console — and a CLI
+    run's exit is where that record is offered back to the config. A daemon has
+    no exit to prompt at (``serve.teardown`` passes ``save_live_tune=False``, and
+    must: a host that rewrote every show file it stopped would be unusable), so
+    the record is what the browser is shown instead, and saving it is a
+    deliberate tap rather than a question asked at the worst possible moment.
+
+    ``savable`` is the count a Save button acts on, and it is not always
+    ``len(changes)``: ``mode.palette_mode`` lives per-scene rather than in
+    ``[color]``, so nothing here can write it. It is still listed — a change
+    that will be lost at the end of the show is exactly what a performer needs
+    told."""
+    rows = pl.live_tracker.pending()
+    savable = [r for r in rows if r["field"] is not None]
+    out: dict[str, Any] = {
+        "changes": rows,
+        "savable": len(savable),
+        # Whether there is a file to write to at all. A quick-playback run has
+        # no config, and gets the same pasteable [color] block the CLI prints.
+        "config_path": pl.config_path or "",
+    }
+    if savable and not pl.config_path:
+        out["snippet"] = pl.live_tracker.toml_snippet()
+    return out
+
+
 def scene_rows(pl: Playlist) -> list[dict[str, Any]]:
     """The playlist's scenes, for a console that offers a jump.
 
@@ -255,6 +290,8 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         # The same list --midi-setup maps a controller onto, so a phone and a
         # MIDI box reach the same surface (Live DJ/VJ Phase 7).
         "live": _live_dict(pl),
+        # …and what has already been turned, so a console can offer to keep it.
+        "tuned": _tuned_dict(pl),
         # Saved look slots (Live DJ/VJ Phase 6) — the console lights a recall pad
         # only for a slot that holds a look. Reads the store from disk; cheap at
         # the state-poll cadence.
@@ -357,11 +394,12 @@ class PerfBridge:
         choice by name; a picker sends the latter because a choice list has no
         meaningful position. Goes through :mod:`live_tune` exactly as the MIDI
         and WLED surfaces do, so a ``mode.*`` knob turned here records into the
-        live-tune tracker exactly as a MIDI knob's would. (The daemon tears
-        sessions down with ``save_live_tune=False``, so nothing offers to write
-        that back under ``--serve``.) Returns False only for an unknown system: a target the
-        current scene doesn't have is a no-op, not an error, because the scene
-        can change between the frame that offered the control and the tap."""
+        live-tune tracker exactly as a MIDI knob's would — and :func:`_tuned_dict`
+        puts that record back on the wire, which is how a knob turned on a phone
+        reaches the config the daemon has no exit prompt to offer it at. Returns
+        False only for an unknown system: a target the current scene doesn't have
+        is a no-op, not an error, because the scene can change between the frame
+        that offered the control and the tap."""
         pl = self._resolve(system)
         if pl is None:
             return False
@@ -839,7 +877,16 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
             # beat pulse locally in between. A receive with timeout lets a client
             # command frame (if any) through without blocking the push loop.
             while True:
-                await websocket.send_json(_with_role(bridge.state(), websocket.scope))
+                # Split from the socket's own failures below: a state frame that
+                # raises is *our* bug, and swallowing it silently leaves every
+                # connected console waiting forever for a push that will never
+                # come — a hang where an error belongs.
+                try:
+                    frame = _with_role(bridge.state(), websocket.scope)
+                except Exception:
+                    log.exception("performance console: could not build a state frame")
+                    break
+                await websocket.send_json(frame)
                 try:
                     msg = await asyncio.wait_for(websocket.receive_json(), timeout=_PUSH_INTERVAL_S)
                 except TimeoutError:

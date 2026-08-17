@@ -52,6 +52,7 @@ from c64cast.control.auth import (
     login_page,
     match_role,
 )
+from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
 VIEWER = "viewer-token-value"
@@ -125,6 +126,8 @@ class _FakePlaylist:
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
+        self.live_tracker = LiveTuneTracker()
+        self.config_path = ""
 
 
 def _app(*, token: str = TOKEN, viewer_token: str = VIEWER) -> tuple[Any, _FakePlaylist]:

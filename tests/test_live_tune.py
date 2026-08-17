@@ -532,6 +532,87 @@ class LiveTuneTrackerTests(unittest.TestCase):
     def test_empty_snippet(self):
         self.assertEqual(LiveTuneTracker().toml_snippet(), "")
 
+    def test_pending_names_the_config_field_behind_each_change(self):
+        # `describe` is the terminal's line; `pending` is the same record for a
+        # surface that has to render it and offer to write it.
+        t = LiveTuneTracker()
+        t.record("mode.dither_method", "none", "blue_noise")
+        t.record("source.scale", 1.0, 2.0)
+        rows = t.pending()
+        self.assertEqual([r["target"] for r in rows], ["mode.dither_method", "source.scale"])
+        # The mode's name and the config's differ, and it is the config's that
+        # a save-back writes.
+        self.assertEqual(rows[0]["field"], "dither")
+        self.assertEqual(rows[0]["old"], "none")
+        self.assertEqual(rows[0]["new"], "blue_noise")
+        # Nothing in [color] carries a generator knob.
+        self.assertIsNone(rows[1]["field"])
+
+    def test_forget_drops_only_what_was_written(self):
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9)
+        t.record("source.scale", 1.0, 2.0)
+        self.assertEqual(t.forget(["mode.dither_strength"]), 1)
+        self.assertEqual([r["target"] for r in t.pending()], ["source.scale"])
+
+    def test_every_live_mode_param_can_be_saved_or_says_why_not(self):
+        """A `mode.*` knob every surface can turn but no save-back can write is
+        a knob that quietly loses the performer's work. `mode.cell_pick` was
+        exactly that — declared, tunable, and missing from the map — so the map
+        is pinned to the registries rather than maintained by memory."""
+        import dataclasses
+
+        from c64cast.app import introspect
+        from c64cast.control.transport import (
+            _MODE_FIELD_TO_COLOR,
+            MODE_FIELDS_WITH_NO_CONFIG_HOME,
+        )
+
+        color_fields = {f.name for f in dataclasses.fields(Config().color)}
+        for doc in introspect.live_targets():
+            holder, _, name = doc.target.partition(".")
+            if holder != "mode":
+                continue
+            field = _MODE_FIELD_TO_COLOR.get(name)
+            if field is None:
+                self.assertIn(
+                    name,
+                    MODE_FIELDS_WITH_NO_CONFIG_HOME,
+                    f"{doc.target} is live-tunable but nothing saves it, and nothing "
+                    "says that is on purpose",
+                )
+                continue
+            self.assertIn(field, color_fields, f"{doc.target} maps to a [color] field that is gone")
+
+    def test_a_mapped_choice_offers_exactly_what_its_config_field_accepts(self):
+        # A live picker that can pick a value the config rejects turns a save
+        # into a 422 the performer can do nothing about.
+        import dataclasses
+
+        from c64cast.app import introspect
+        from c64cast.control.transport import _MODE_FIELD_TO_COLOR
+
+        meta = {f.name: f.metadata for f in dataclasses.fields(Config().color)}
+        for doc in introspect.live_targets():
+            holder, _, name = doc.target.partition(".")
+            field = _MODE_FIELD_TO_COLOR.get(name) if holder == "mode" else None
+            if field is None or not doc.choices:
+                continue
+            allowed = meta[field].get("choices")
+            if allowed is None:
+                continue
+            self.assertLessEqual(
+                set(doc.choices),
+                set(allowed),
+                f"{doc.target} offers a choice [color].{field} would refuse",
+            )
+
+    def test_forget_reports_only_what_it_held(self):
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9)
+        self.assertEqual(t.forget(["mode.dither_strength", "mode.never_turned"]), 1)
+        self.assertFalse(t.has_changes())
+
 
 class BuildSceneOsdStampTests(unittest.TestCase):
     """config.build_scene stamps [midi_control].osd onto each scene's OsdState."""

@@ -5,6 +5,7 @@ import type {
   ConfigPatched,
   ConfigWritten,
   Introspection,
+  LiveTuneSaved,
   LogLine,
   SessionStatus,
   ValidationReport,
@@ -133,4 +134,19 @@ export const api = {
   switch: (config: string | null) => request<unknown>("POST", "/api/session/switch", { config }),
   stop: () => request<unknown>("POST", "/api/session/stop"),
   reload: () => request<unknown>("POST", "/api/session/reload"),
+
+  /** Keep the knob changes made since the show started — a `PATCH` of the
+   *  running config's `[color]` section under the covers, so it is refused the
+   *  same way any other save is, with the file untouched and the changes still
+   *  held. A one-shot run asks this at exit; a daemon has no exit to ask at. */
+  saveLiveTune: (system: string | null) =>
+    request<LiveTuneSaved>("POST", "/api/session/live-tune", { action: "save", system }),
+
+  /** Drop them instead. Nothing on the machine changes — the show keeps the
+   *  values it is playing; only the offer to keep them goes away. */
+  discardLiveTune: (system: string | null) =>
+    request<{ ok: boolean; discarded: number }>("POST", "/api/session/live-tune", {
+      action: "discard",
+      system,
+    }),
 };

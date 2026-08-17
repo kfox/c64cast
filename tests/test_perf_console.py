@@ -4,7 +4,14 @@ The bridge tests (`PerfBridgeTest`) drive `PerfBridge` directly against a fake
 playlist exposing exactly the surface it reads/writes — no FastAPI needed. The
 end-to-end HTTP tests (`PerfEndpointsTest`) drive the real control-plane app via
 TestClient and skip when fastapi/httpx isn't installed, mirroring
-tests/test_control_plane.py."""
+tests/test_control_plane.py.
+
+Not covered here, and deliberately: `perf_ws`'s guard around the state-frame
+build (a frame that raises logs and closes rather than going quiet, which is how
+a stale fake once turned into a suite that hung instead of failing). Asserting it
+needs the *server* to close an accepted socket, and `TestClient`'s websocket
+teardown blocks on that — the assertion would reintroduce the hang it exists to
+prevent. The behaviour was checked by hand against an exploding playlist."""
 
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations
@@ -15,6 +22,7 @@ import warnings
 from typing import Any
 
 from c64cast.control.perf_console import PerfBridge, _beats_remaining, _system_state
+from c64cast.control.transport import LiveTuneTracker
 from c64cast.scenes.effects import TrailsEffect
 
 try:
@@ -97,14 +105,6 @@ class _FakeSource:
         self.scale = 2.05
 
 
-class _FakeTracker:
-    def __init__(self) -> None:
-        self.records: list[tuple[str, Any, Any]] = []
-
-    def record(self, target: str, old: Any, new: Any) -> None:
-        self.records.append((target, old, new))
-
-
 class _FakePlaylist:
     def __init__(
         self,
@@ -113,6 +113,7 @@ class _FakePlaylist:
         effects: list[Any] | None = None,
         scene_name: str = "demo",
         source: Any = None,
+        config_path: str = "",
     ) -> None:
         self.tempo = _FakeTempo()
         self.performance = _FakePerf(clips)
@@ -122,7 +123,11 @@ class _FakePlaylist:
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
-        self.live_tracker = _FakeTracker()
+        # The real tracker: it is a pure in-memory recorder with no hardware
+        # behind it, and the save-back block the console renders is exactly
+        # what it reports — a fake would only be able to agree with itself.
+        self.live_tracker = LiveTuneTracker()
+        self.config_path = config_path
         self.osd: list[str] = []
         self.jumps: list[tuple[int, bool]] = []
 
@@ -374,6 +379,60 @@ class PerfBridgeTest(unittest.TestCase):
         st = bridge.state()
         self.assertTrue(st["multi"])
         self.assertEqual([s["name"] for s in st["systems"]], ["a", "b"])
+
+
+class TunedBlockTest(unittest.TestCase):
+    """`_tuned_dict` — what the console is shown about knobs already turned.
+
+    A daemon has no exit prompt, so this block is the whole offer: it has to
+    say what changed, which of it a config can hold, and where that config is."""
+
+    def test_nothing_tuned_is_an_empty_offer(self):
+        bridge, _pl = _bridge()
+        tuned = bridge.state()["systems"][0]["tuned"]
+        self.assertEqual(tuned["changes"], [])
+        self.assertEqual(tuned["savable"], 0)
+        self.assertNotIn("snippet", tuned)
+
+    def test_a_color_knob_is_savable_and_names_its_field(self):
+        bridge, pl = _bridge(config_path="/shows/demo.toml")
+        pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+        tuned = bridge.state()["systems"][0]["tuned"]
+        self.assertEqual(tuned["savable"], 1)
+        self.assertEqual(tuned["config_path"], "/shows/demo.toml")
+        self.assertEqual(tuned["changes"][0]["field"], "dither_strength")
+        self.assertEqual(tuned["changes"][0]["old"], 0.5)
+        self.assertEqual(tuned["changes"][0]["new"], 0.8)
+        # A file to write to means no pasteable block — the offer is a button.
+        self.assertNotIn("snippet", tuned)
+
+    def test_a_renamed_field_reports_the_config_name(self):
+        # The mode calls it dither_method; [color] calls it dither, and what the
+        # console shows has to be the name that ends up in the file.
+        bridge, pl = _bridge(config_path="/shows/demo.toml")
+        pl.live_tracker.record("mode.dither_method", "bayer4", "atkinson")
+        self.assertEqual(bridge.state()["systems"][0]["tuned"]["changes"][0]["field"], "dither")
+
+    def test_a_runtime_only_knob_is_listed_but_not_counted(self):
+        # A generator knob and a per-scene palette mode both end with the show.
+        # Listing them is the point: silence would read as "all saved".
+        bridge, pl = _bridge(config_path="/shows/demo.toml")
+        pl.live_tracker.record("source.scale", 1.0, 2.0)
+        pl.live_tracker.record("mode.palette_mode", "auto", "vivid")
+        tuned = bridge.state()["systems"][0]["tuned"]
+        self.assertEqual(len(tuned["changes"]), 2)
+        self.assertEqual(tuned["savable"], 0)
+        self.assertEqual([c["field"] for c in tuned["changes"]], [None, None])
+
+    def test_a_run_with_no_config_gets_the_pasteable_block(self):
+        # Quick playback has no file to write back to; the CLI prints a [color]
+        # snippet in that case and the browser gets the same one.
+        bridge, pl = _bridge()
+        pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+        tuned = bridge.state()["systems"][0]["tuned"]
+        self.assertEqual(tuned["config_path"], "")
+        self.assertIn("[color]", tuned["snippet"])
+        self.assertIn("dither_strength", tuned["snippet"])
 
 
 class PerfBridgeRegistryTest(unittest.TestCase):

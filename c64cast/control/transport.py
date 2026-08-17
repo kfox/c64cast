@@ -50,7 +50,7 @@ import queue
 import re
 import tempfile
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -191,18 +191,32 @@ class JsonSlotStore:
 # to a concrete method — writing the concrete method back is intentional: it
 # pins what the performer actually dialed in).
 #
-# `mode.palette_mode` is deliberately absent: palette_mode lives per-scene
-# ([[scenes]].palette_mode), not in the shared [color] section, so persisting it
-# would need the scene index and is left to a later phase — the live change still
-# takes effect at runtime, it just isn't saved.
+# `mode.cell_pick` is `[color].hires_cell_pick` — a second renaming, and one
+# that went missing for a while: the knob was declared live-tunable, turned fine
+# from every surface, and recorded a change no save-back could ever write.
+# tests/test_live_tune.py's drift test now holds this map to the mode registries
+# so the next such knob can't ship half-connected.
 _MODE_FIELD_TO_COLOR: dict[str, str] = {
     "dither_strength": "dither_strength",
     "motion_smoothing": "motion_smoothing",
     "auto_fit_strength": "auto_fit_strength",
     "dither_method": "dither",
     "cell_strategy": "cell_strategy",
+    "cell_pick": "hires_cell_pick",
     "color_match": "color_match",
 }
+
+# The live-tunable mode params that deliberately have no [color] field, and why.
+# The drift test above allows exactly these; anything else missing from the map
+# is an oversight, not a decision.
+MODE_FIELDS_WITH_NO_CONFIG_HOME: frozenset[str] = frozenset(
+    {
+        # Per-scene ([[scenes]].palette_mode), not in the shared [color] section,
+        # so persisting it needs the scene index. The live change still takes
+        # effect at runtime; it just isn't saved.
+        "palette_mode",
+    }
+)
 
 
 class LiveTuneTracker:
@@ -215,8 +229,10 @@ class LiveTuneTracker:
     up with a single (old → final) entry, not a churn of intermediates.
 
     Thread-safe: the MIDI reader thread and the WLED server thread both record;
-    the exit flow (main thread) reads. `has_changes` / `describe` / `apply` are
-    the read side."""
+    the exit flow (main thread) reads. `has_changes` / `describe` / `pending` /
+    `apply` are the read side, and a web console's HTTP worker is a third
+    reader — `pending` is the structured face of `describe`, for a save-back
+    surface that has to render the changes rather than print them."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -245,19 +261,38 @@ class LiveTuneTracker:
         with self._lock:
             return [f"{t}: {_fmt(o)} -> {_fmt(n)}" for t, (o, n) in self._changes.items()]
 
-    def _persistable(self) -> list[tuple[str, Any]]:
-        """(color_field, new_value) pairs for targets that map to [color]."""
+    def pending(self) -> list[dict[str, Any]]:
+        """Every tracked change as a row: the target, where it started, where it
+        is now, and the ``[color]`` field a save-back would write it to.
+
+        ``field`` is None for a change no config field carries — today only
+        ``mode.palette_mode``, which lives per-scene (see
+        :data:`MODE_FIELDS_WITH_NO_CONFIG_HOME`); only ``mode.*`` targets are
+        recorded at all, effect and generator knobs being runtime state. A surface
+        that offers to save has to say which of the two a row is, so the one
+        snapshot answers both questions; taking it once also means a knob turned
+        between two reads cannot make the list disagree with itself."""
         with self._lock:
             items = list(self._changes.items())
-        out: list[tuple[str, Any]] = []
-        for target, (_, new) in items:
+        rows: list[dict[str, Any]] = []
+        for target, (old, new) in items:
             holder, _, name = target.partition(".")
-            if holder != "mode":
-                continue
-            field = _MODE_FIELD_TO_COLOR.get(name)
-            if field is not None:
-                out.append((field, new))
-        return out
+            field = _MODE_FIELD_TO_COLOR.get(name) if holder == "mode" else None
+            rows.append({"target": target, "old": old, "new": new, "field": field})
+        return rows
+
+    def forget(self, targets: Iterable[str]) -> int:
+        """Drop `targets`, returning how many were actually held.
+
+        What a surface that has *written* them somewhere calls, so a console
+        stops offering to save a change that is now in the file — and what a
+        "discard" is, handed the targets of a :meth:`pending` snapshot."""
+        with self._lock:
+            return sum(int(self._changes.pop(t, None) is not None) for t in targets)
+
+    def _persistable(self) -> list[tuple[str, Any]]:
+        """(color_field, new_value) pairs for targets that map to [color]."""
+        return [(r["field"], r["new"]) for r in self.pending() if r["field"] is not None]
 
     def apply(self, cfg: Config) -> list[str]:
         """Write the tracked changes into `cfg`'s [color] section (in place).

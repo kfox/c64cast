@@ -540,9 +540,17 @@ strategy, motion smoothing, auto-fit), the generator's own knobs, and a scope
 scene's gain — the same knobs `--midi-setup` offers a controller, grouped the
 same way. It shows what the *current scene* has and nothing else, so it changes
 shape as the show advances and never offers a slider that does nothing. A
-colour-pipeline change made here is recorded like any other live tune. The host
-does not offer to write that back — it has no terminal to ask on — so a tuning
-worth keeping is one to type into the *Settings* view as well.
+colour-pipeline change made here is recorded like any other live tune, and the
+record sits under the knobs: every change since the show started, where it began
+and where it is now. One tap keeps them in the file the show is running from — a
+`[color]` save into that file, so anything else you have edited in it survives —
+and **Discard** drops the offer without touching what is playing. A run started
+from the command line asks the same question when it exits; the host has no
+terminal to ask on, so it asks here instead, at a moment you choose rather than
+at a shutdown. A change nothing in a config carries — a palette
+mode, which belongs to its scene rather than to the shared colour settings — is
+marked *runtime only* and ends with the show; and a quick-playback run, which has no file to write to, gets a
+`[color]` block to paste into one.
 
 **Scenes** lists the playlist with the one playing marked; tapping one jumps
 straight to it, without the interstitial in front. The eight look pads recall a
