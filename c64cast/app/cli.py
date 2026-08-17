@@ -332,6 +332,14 @@ def build_parser() -> argparse.ArgumentParser:
         "(point your editor's `#:schema` at it for autocomplete)",
     )
     intro.add_argument(
+        "--print-schema-path",
+        action="store_true",
+        help="Print where this install's JSON Schema lives — the value for a "
+        "config's `#:schema` first line, worked out for `--config`'s location "
+        "(default ./c64cast.toml) — and exit. Naming the installed copy is what "
+        "makes the line outlive upgrades",
+    )
+    intro.add_argument(
         "--suggest-palette",
         metavar="FILE",
         default=None,

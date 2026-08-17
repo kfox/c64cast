@@ -517,6 +517,31 @@ unpacked copy, which does nothing where it is. Walkthrough, including what to do
 about extras: [the User's Guide,
 "Upgrading"](guide/04-setting-up.md#upgrading).
 
+### "My editor underlines a setting that works — or offers one that doesn't"
+
+The editor is reading a different schema than your c64cast. Nothing at run time
+reads the `#:schema` line on the config's first line, so the two can disagree
+indefinitely: the file loads, and the squiggles are wrong.
+
+Almost always the line is a published URL with a version number in it, written
+when a different release was installed (older versions of the User's Guide
+suggested exactly that, so a config written against one likely carries one). The
+other way in is an absolute path into an install that has since moved — which is
+what upgrading onto a new Python version does, since the interpreter version is
+part of the path.
+
+`c64cast --doctor --skip-probe` reports both, under **CONFIG**, and prints the
+line to paste. Or ask directly and put `#:schema ` in front of the answer:
+
+```bash
+c64cast --print-schema-path
+```
+
+That names the schema *inside* your install, which is the form that keeps working
+— the next upgrade replaces the file it points at. Background: [the Programmer's
+Reference Guide, "Editor
+Autocomplete"](reference/02-config-rules.md#editor-autocomplete).
+
 ### "Install fails: error compiling sounddevice / PyAV"
 
 Every dependency ships wheels for macOS, Linux and Windows, so a *compile* means

@@ -267,9 +267,12 @@ release actively needs you to do is at the top of its notes on the
 [releases page](https://github.com/kfox/c64cast/releases), under *Upgrade notes*.
 
 One last thing, if you gave your configuration the `#:schema` line from
-Chapter 2. It names a version, and it does not follow your install: point it at
-the version you upgraded to and your editor will start suggesting the settings
-the new release added.
+Chapter 2. Written the way that chapter recommends, it names the schema *inside*
+your install, so upgrading updates it too and there is nothing to do. Written as
+a web address with a version number in it — the form older versions of this
+guide suggested — it stays behind, and your editor goes on checking the file
+against the release you first installed. `--doctor` reports that, and prints the
+line to replace it with.
 
 ## Choosing Your Connection Target
 

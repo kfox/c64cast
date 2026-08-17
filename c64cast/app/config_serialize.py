@@ -41,23 +41,41 @@ files and aren't what the wizard produces.
 from __future__ import annotations
 
 import math
+import os
 import re
 
 from c64cast import __version__
 
 from . import config as cfgmod
-from . import introspect
+from . import introspect, paths
+
+_PUBLISHED_SCHEMA_URL = (
+    "https://raw.githubusercontent.com/kfox/c64cast/{ref}/c64cast/data/c64cast.schema.json"
+)
+
+# The same URL read the other way: a `#:schema` value of this shape names a
+# *snapshot* of the schema, and `pinned_url_version` says which. Spelled out
+# rather than built from the template above — a regex assembled by escaping a
+# formatted string is unreadable, and `test_a_published_url_reads_back` pins the
+# two spellings to each other instead.
+_PINNED_URL_RE = re.compile(
+    r"https://raw\.githubusercontent\.com/kfox/c64cast/v(?P<version>[^/]+)"
+    r"/c64cast/data/c64cast\.schema\.json\Z"
+)
 
 
 def _published_schema_url(version: str) -> str:
     """URL of the schema as published for `version`, or on `main` if unreleased."""
     ref = f"v{version}" if version and version[0].isdigit() else "main"
-    return f"https://raw.githubusercontent.com/kfox/c64cast/{ref}/c64cast/data/c64cast.schema.json"
+    return _PUBLISHED_SCHEMA_URL.format(ref=ref)
 
 
-# Fallback for the `#:schema` first line. A URL rather than
-# `paths.packaged_schema_path()`, which is nowhere near an arbitrary output file;
-# `wizard.schema_directive_for` substitutes a local path when it can find one.
+# Fallback for the `#:schema` first line, used only when the packaged schema
+# isn't on disk to point at: a URL pinned to *this* version rather than to a
+# moving ref, because a schema newer than the program stops flagging real
+# mistakes and starts offering keys this install will reject. That pin is also
+# why it's the fallback and not the preference — `schema_directive_for` names
+# the installed copy when it can, and that one is rewritten by every upgrade.
 DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 
 # Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
@@ -282,6 +300,57 @@ def _emit_scene(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def schema_directive_for(out_path: str) -> str:
+    """The value that belongs after ``#:schema`` on line 1 of the config at
+    ``out_path`` — what gives a TOML-aware editor key/value completion.
+
+    Names the schema that ships *inside this install*
+    (:func:`paths.packaged_schema_path`) rather than a published URL, which is
+    what makes the line survive upgrades: an upgrade rewrites that file in
+    place, so a config pointing at it is checked against the c64cast actually
+    running, release after release, with nothing for the reader to maintain.
+
+    Relative when the schema sits *inside* the config's own directory tree — a
+    source checkout, or a project-local ``.venv`` — because that survives moving
+    the whole tree. Absolute as soon as it would take a single ``..``: a user- or
+    system-level install turns the relative form into an unreadable climb out to
+    ``site-packages`` that also breaks the moment the config moves. Falls back to
+    :data:`DEFAULT_SCHEMA_PATH` (the version-pinned URL) if the schema somehow
+    isn't on disk.
+
+    Lives here rather than in ``wizard`` (where it started, when ``--init`` was
+    its only caller) because line 1 is this module's to write, and ``doctor``
+    can't reach for the config *builder* just to check a config it loaded."""
+    schema = paths.packaged_schema_path()
+    if not schema.is_file():
+        return DEFAULT_SCHEMA_PATH
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    try:
+        rel = os.path.relpath(schema, out_dir)
+    except ValueError:
+        # Windows only: relpath raises across drives (a config on C:, the
+        # package on D:) since there is no relative path between them at all.
+        # Same predicament as the "would have to climb" case below, so the same
+        # answer — absolute — rather than a crash out of `--init`.
+        return str(schema)
+    if rel.startswith(".."):
+        return str(schema)
+    # Keep "./foo" style for readability.
+    return rel if rel.startswith(os.sep) else f".{os.sep}{rel}"
+
+
+def pinned_url_version(directive: str) -> str | None:
+    """The c64cast version a ``#:schema`` value pins, for one of our own
+    published URLs; None for anything else — a local path, a fork's URL, a
+    team's hand-picked schema.
+
+    A pinned URL is the one directive form an upgrade leaves behind, since it
+    names a snapshot instead of the install. Reading the version back out is how
+    ``--doctor`` can say so (see ``doctor._validate_schema_directive``)."""
+    m = _PINNED_URL_RE.match(directive)
+    return m.group("version") if m else None
 
 
 def dumps(

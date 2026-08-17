@@ -22,8 +22,8 @@ already round-trips N ``[[scenes]]`` + ``[playlist]``/``[interstitial]`` section
 
 The questionary I/O is a thin shell around pure helpers (``make_scene`` /
 ``build_config`` / ``build_multi_config`` / ``validate_all`` /
-``compatible_overlays`` / ``scan_assets`` / ``schema_directive_for``) so the
-buildable logic is unit-testable without a terminal — mirroring how
+``compatible_overlays`` / ``scan_assets``) so the buildable logic is
+unit-testable without a terminal — mirroring how
 ``vision.py`` keeps its pose classifiers pure and camera-free.
 """
 
@@ -33,7 +33,7 @@ import os
 
 from . import config as cfgmod
 from . import config_serialize as ser
-from . import introspect, paths, scene_factory
+from . import introspect, scene_factory
 
 # Scene type -> (default asset dir, accepted extensions) for the file picker.
 # Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so
@@ -299,36 +299,6 @@ def _section_field_docs(section_name: str) -> tuple[introspect.FieldDoc, ...]:
         if sec.name == section_name:
             return sec.fields
     return ()
-
-
-def schema_directive_for(out_path: str) -> str:
-    """Path from the output file's directory to the JSON schema that ships
-    inside the package (:func:`paths.packaged_schema_path`), for the written
-    ``#:schema`` line that gives the new config editor autocomplete.
-
-    Relative when the schema sits *inside* the output file's own directory tree
-    — a source checkout, or a project-local ``.venv`` — because that survives
-    moving the whole tree. Absolute as soon as it would take a single ``..``: a
-    user- or system-level install turns the relative form into an unreadable
-    climb out to ``site-packages`` that also breaks the moment the config moves.
-    Falls back to the serializer default (the published URL) if the schema
-    somehow isn't on disk."""
-    schema = paths.packaged_schema_path()
-    if not schema.is_file():
-        return ser.DEFAULT_SCHEMA_PATH
-    out_dir = os.path.dirname(os.path.abspath(out_path))
-    try:
-        rel = os.path.relpath(schema, out_dir)
-    except ValueError:
-        # Windows only: relpath raises across drives (a config on C:, the
-        # package on D:) since there is no relative path between them at all.
-        # Same predicament as the "would have to climb" case below, so the same
-        # answer — absolute — rather than a crash out of `--init`.
-        return str(schema)
-    if rel.startswith(".."):
-        return str(schema)
-    # Keep "./foo" style for readability.
-    return rel if rel.startswith(os.sep) else f".{os.sep}{rel}"
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +741,7 @@ def _write_and_offer_launch(
     out_path = q.text("Write to", default=out_path).ask()
     if out_path is None:
         return None
-    toml = ser.dumps(cfg, schema_path=schema_directive_for(out_path), baseline=baseline)
+    toml = ser.dumps(cfg, schema_path=ser.schema_directive_for(out_path), baseline=baseline)
     print("\n--- generated config -------------------------------------\n")
     print(toml)
     print("----------------------------------------------------------\n")
@@ -783,7 +753,7 @@ def _write_and_offer_launch(
         return None
     if not q.confirm(f"Write {out_path}?", default=True).ask():
         return None
-    ser.dump(cfg, out_path, schema_path=schema_directive_for(out_path), baseline=baseline)
+    ser.dump(cfg, out_path, schema_path=ser.schema_directive_for(out_path), baseline=baseline)
     print(f"\n✓ wrote {out_path}")
 
     launch = bool(q.confirm("Launch it now?", default=False).ask())

@@ -3,18 +3,26 @@
 The flag→config *mapping* is covered in test_quickcast (asserted against
 CLI_TO_CFG so a newly mapped flag is covered the day it's added); these
 pin the parser-level invariants that everything downstream assumes.
+
+Plus the two commands whose whole job is answering "which install is this?" —
+`--version` and `--print-schema-path`. Both exist because an upgrade is easy to
+believe you have done and hard to see, so what they print is the contract.
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
 import c64cast
 from c64cast import __version__
-from c64cast.app.cli import _version_text, build_parser
+from c64cast.app import config_serialize as ser
+from c64cast.app import paths
+from c64cast.app.cli import _version_text, build_parser, main
 
 # The documented flag groups (CLAUDE.md "Flag groups (-h shows them
 # grouped)"). argparse's default groups are excluded below.
@@ -28,6 +36,13 @@ DOCUMENTED_GROUPS = {
     "introspection",
     "debug",
 }
+
+
+def _run(argv: list[str]) -> tuple[int, str]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(argv)
+    return rc, buf.getvalue()
 
 
 class ParserContractTest(unittest.TestCase):
@@ -98,6 +113,30 @@ class ParserContractTest(unittest.TestCase):
         # "%(prog)", which is why this one spells the program name out: an
         # install path with a literal % in it would otherwise raise here.
         self.assertNotIn("%(prog)", _version_text())
+
+    def test_print_schema_path_names_this_installs_schema(self):
+        # The line an editor is pointed at has to name the schema *this* build
+        # generates — that is what stops it from going stale on the next
+        # upgrade, which rewrites exactly that file.
+        rc, out = _run(["--print-schema-path"])
+        self.assertEqual(rc, 0)
+        resolved = Path(os.path.abspath(out.strip()))
+        self.assertEqual(resolved, paths.packaged_schema_path())
+
+    def test_print_schema_path_answers_for_the_config_it_is_given(self):
+        # Relative-vs-absolute depends on where the config sits (see
+        # config_serialize.schema_directive_for), so the command has to honor
+        # --config rather than assume ./c64cast.toml.
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "show.toml")
+            rc, out = _run(["--config", cfg, "--print-schema-path"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), ser.schema_directive_for(cfg))
+
+    def test_print_schema_path_prints_a_value_not_a_directive(self):
+        # Just the value, so `#:schema ` in front of it is a config's first line
+        # and the bare output is what an editor's schema association wants.
+        self.assertNotIn("#:schema", _run(["--print-schema-path"])[1])
 
     def test_system_choices_are_the_two_video_standards(self):
         self.assertEqual(build_parser().parse_args(["-s", "PAL"]).system, "PAL")

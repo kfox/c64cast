@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 436 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 437 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -137,7 +137,7 @@ Every name c64cast answers to — 436 of them — and the pages that discuss eac
 | `dma_password` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [`--doctor` (1)](02-config-rules.md#--doctor) |
+| `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [`--doctor` (1)](02-config-rules.md#--doctor) |
 | `done_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
 | `dotswarm` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | double buffering | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [The Picture (5)](06-under-the-hood.md#the-picture) |
@@ -380,7 +380,7 @@ Every name c64cast answers to — 436 of them — and the pages that discuss eac
 | `palette_mode` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing) |
 | `palette_mode` (mode) | [Notation](01-introduction.md#notation), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `password` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
-| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host) |
+| `path` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [The Extra Layer (1)](02-config-rules.md#the-extra-layer) |
 | `[performance]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `performance` | [Gestures (6)](07-inputs-and-outputs.md#gestures), [`vision` (A)](20-appendix-a-configuration.md#vision), [The Demos (H)](27-appendix-h-examples.md#the-demos) |
 | `persistence` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
@@ -405,6 +405,7 @@ Every name c64cast answers to — 436 of them — and the pages that discuss eac
 | `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `--print-example` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema` | [What Is In Here](01-introduction.md#what-is-in-here), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
+| `--print-schema-path` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--profile` | [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `profile` | [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [`debug` (A)](20-appendix-a-configuration.md#debug), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `--profile-interval` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |

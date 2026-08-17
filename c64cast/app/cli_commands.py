@@ -284,9 +284,9 @@ def run_suggest_palette(path: str) -> int:
 
 def run_introspection(args: argparse.Namespace) -> int | None:
     """Handle the config-introspection commands (--list-*, --describe,
-    --compat, --print-schema, --suggest-palette). Returns an exit code when one
-    fired, else None so main() continues to the normal run path. These need no
-    config file or hardware."""
+    --compat, --print-schema[-path], --suggest-palette). Returns an exit code
+    when one fired, else None so main() continues to the normal run path. These
+    need no config file or hardware."""
     from . import introspect
 
     if args.list_scenes:
@@ -326,6 +326,15 @@ def run_introspection(args: argparse.Namespace) -> int | None:
         from . import schema
 
         print(json.dumps(schema.build_schema(), indent=2))
+        return 0
+    if args.print_schema_path:
+        # Just the value, so it composes: prefixed with `#:schema ` it is a
+        # config's first line, and on its own it is what an editor's schema
+        # association wants. Worked out for where the config actually is,
+        # because the answer is relative from inside a checkout.
+        from . import config_serialize
+
+        print(config_serialize.schema_directive_for(args.config or "c64cast.toml"))
         return 0
     if args.suggest_palette is not None:
         return run_suggest_palette(args.suggest_palette)

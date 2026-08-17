@@ -140,6 +140,7 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     out.extend(_probe_data_dirs())
     out.extend(_probe_char_rom())
     out.extend(_validate_unknown_keys(loaded))
+    out.extend(_validate_schema_directive(loaded))
     out.extend(_validate_scenes(loaded))
     out.extend(_validate_audio_nmi_rate(loaded))
     out.extend(_validate_dac_curve_cfg(loaded))
@@ -491,6 +492,140 @@ def _validate_unknown_keys(loaded: LoadResult) -> list[Diagnostic]:
             )
         )
     return out
+
+
+def _packaged_schema() -> Path:
+    """This install's committed JSON Schema. Wrapped so both halves of the
+    ``#:schema`` check reach it the same way, and so a test can point them at a
+    fixture without also moving the example configs."""
+    from . import paths
+
+    return paths.packaged_schema_path()
+
+
+def _schema_directive(path: str) -> str | None:
+    """The ``#:schema`` value on line 1 of the config at `path`, or None when
+    there isn't one (the directive is optional) or the file can't be read (the
+    loader already failed louder than this check ever would)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            first = f.readline()
+    except OSError:
+        return None
+    return first[len("#:schema ") :].strip() or None if first.startswith("#:schema ") else None
+
+
+def _validate_schema_directive(loaded: LoadResult) -> list[Diagnostic]:
+    """Report a ``#:schema`` first line that no longer describes this install.
+
+    The line is what gives a TOML-aware editor completion and typo flagging, and
+    it is the one thing an upgrade can leave behind: a config pointing at a
+    *snapshot* of the schema (a version-pinned URL, or a copy inside an install
+    that has since moved) keeps checking against the c64cast the reader had when
+    they wrote it. Nothing breaks — the loader never reads this line — which is
+    exactly why it needs saying out loud: the symptom is an editor quietly
+    underlining a setting that works, or offering one that doesn't.
+
+    Diagnosis only, deliberately. ``config_store`` carries a file's own directive
+    across a save rather than regenerating it, because a team's shared or
+    hand-picked schema is a legitimate answer; so is a pin, for someone holding a
+    config to an older release on purpose. This says what it sees and prints the
+    line to paste, and leaves the file alone.
+
+    A config with **no** directive gets no row: it's an optional line, and a
+    report that names every config lacking one is advertising, not diagnosis."""
+    # Read late (not at module import) so a test can patch either one.
+    from c64cast import __version__
+
+    from . import config_serialize
+
+    out: list[Diagnostic] = []
+    for path in loaded.paths:
+        if path is None:
+            continue
+        value = _schema_directive(path)
+        if value is None:
+            continue
+
+        subject = f"{os.path.basename(path)} line 1"
+        want = config_serialize.schema_directive_for(path)
+        hint = f"Replace line 1 with `#:schema {want}`, or run `c64cast --print-schema-path`."
+
+        pinned = config_serialize.pinned_url_version(value)
+        if pinned is not None and pinned != __version__:
+            out.append(
+                Diagnostic(
+                    level="warn",
+                    category="config",
+                    subject=subject,
+                    message=f"#:schema is pinned to v{pinned} — your editor checks this "
+                    f"file against c64cast {pinned}, not the {__version__} you run",
+                    hint=hint,
+                )
+            )
+            continue
+        if pinned is not None:
+            out.append(
+                Diagnostic(
+                    level="ok",
+                    category="config",
+                    subject=subject,
+                    message=f"#:schema pinned to v{pinned} (this version)",
+                )
+            )
+            continue
+        if value.startswith(("http://", "https://")):
+            # Somebody else's URL — a fork, a mirror, a team's copy. Nothing
+            # here can tell whether it's right, and guessing would be noise.
+            continue
+
+        named = Path(os.path.join(os.path.dirname(os.path.abspath(path)), value))
+        if named.name != _packaged_schema().name:
+            # A deliberately hand-picked schema (`./house-style.schema.json`),
+            # not a stale pointer at ours.
+            continue
+        out.extend(_compare_named_schema(named, subject, hint))
+    return out
+
+
+def _compare_named_schema(named: Path, subject: str, hint: str) -> list[Diagnostic]:
+    """Judge a ``#:schema`` line that names a copy of *our* schema by content
+    rather than by location: any copy identical to the one this install
+    generates is doing its job, whichever tree it sits in, and a copy that
+    differs is describing a different c64cast whatever it is called."""
+    mine = _packaged_schema()
+    try:
+        theirs = named.read_text(encoding="utf-8")
+    except OSError:
+        return [
+            Diagnostic(
+                level="warn",
+                category="config",
+                subject=subject,
+                message=f"#:schema names {named}, which isn't there — an install that "
+                "moved, or an upgrade onto a new Python version",
+                hint=hint,
+            )
+        ]
+    if theirs != mine.read_text(encoding="utf-8"):
+        return [
+            Diagnostic(
+                level="warn",
+                category="config",
+                subject=subject,
+                message=f"#:schema names a schema that isn't the one this install "
+                f"generates ({named}) — an editor will judge this file by it",
+                hint=hint,
+            )
+        ]
+    return [
+        Diagnostic(
+            level="ok",
+            category="config",
+            subject=subject,
+            message="#:schema tracks this install",
+        )
+    ]
 
 
 def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
