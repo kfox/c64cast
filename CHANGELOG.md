@@ -46,6 +46,13 @@ the version and stamps it with the date.
   so staged edits have to be saved or discarded first — inserting a scene
   renumbers the ones after it.
 
+  A new scene has not named its media yet, which is the one thing a show needs
+  before it will start. That saves, with the report saying what is still
+  missing, rather than being refused — the first step of building a show cannot
+  require the show to already run. Anything else that would stop it running is
+  still refused with the file untouched, and a hand-written save in the *Source*
+  editor is held to the old standard: it is a finished statement about the show.
+
 - **Hand somebody a read-only link.** The console has had a viewer role since it
   had a token, and no way to give one out: sharing the screen meant sharing the
   credential that can stop the show. The Session screen now asks the host for a

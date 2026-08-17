@@ -421,6 +421,19 @@ def _attach_overlays(
 _AUDIO_SENTINEL: Any = object()
 
 
+class MediaNotChosen(ValueError):
+    """A scene that names no media at all, on a host whose default directory
+    for that media is empty or absent.
+
+    Fatal to a run like any other resolve failure — a scene with nothing to
+    play cannot play. It carries its own type because it is the one failure
+    that means *not yet* rather than *wrong*: it is the exact state a scene is
+    in the moment the console adds it, before there is a form to name the file
+    on. `config_store` excuses it while a show is being built, and nothing
+    else. Anything the user actually typed — a bad glob, a path with a typo —
+    stays a plain ValueError and stays fatal everywhere."""
+
+
 def _resolve_file_spec_or_explain(
     s: SceneCfg, default_dir: str, exts: tuple[str, ...], *, label: str, drop_hint: str
 ) -> None:
@@ -442,7 +455,7 @@ def _resolve_file_spec_or_explain(
         resolve_file_spec(s.file, exts, label=label)
     except ValueError as e:
         if s.file == default_dir:
-            raise ValueError(
+            raise MediaNotChosen(
                 f"{label} scene: no `file =` set and the default directory "
                 f"{default_dir!r} is missing or empty. Drop {drop_hint} into "
                 f'{default_dir}/ or set `file = "path"` on the scene '

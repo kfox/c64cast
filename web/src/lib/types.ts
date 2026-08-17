@@ -230,11 +230,13 @@ export interface ValidationReport {
 
 /** Something that loads but will bite — media a scene names that isn't on this
  *  host. Never a refusal: a path may be filled in before showtime, or name a
- *  file on another machine in an ensemble. */
+ *  file on another machine in an ensemble. `scene` and `field` are null on a
+ *  warning about the show rather than about one place in it, which is what a
+ *  scene added before its media is. */
 export interface Warning {
   system: string;
-  scene: number;
-  field: string;
+  scene: number | null;
+  field: string | null;
   detail: string;
 }
 

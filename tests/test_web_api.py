@@ -649,7 +649,18 @@ class SceneStructureRouteTest(WebApiTestCase):
     """Adding and removing scenes. The semantics live in
     tests/test_config_store.py; these are the route's own answers, and the one
     thing only a route can get wrong — `/scenes` being swallowed by the
-    catch-all `{ref:path}` that sits beside it."""
+    catch-all `{ref:path}` that sits beside it.
+
+    Runs from a directory with no `assets/` in it for the same reason its
+    counterpart in tests/test_config_store.py does: a new video scene names no
+    file, and the project's own populated `assets/videos` under the working
+    directory is what makes this pass on a developer's machine and nowhere
+    else."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.root.parent)
 
     def test_a_scene_is_added_and_the_file_is_written(self):
         with self.client() as c:

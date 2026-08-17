@@ -194,6 +194,23 @@ def _value(val: object) -> Any:
     return str(val)
 
 
+def _unplayable_warning(detail: str) -> dict[str, Any]:
+    """A scene with no media chosen yet, carried as a warning instead of the
+    refusal it is during a run.
+
+    Only reachable from a structured edit — see
+    :meth:`ConfigStore.validate_text`. Same shape as a media warning so the
+    console renders it in the list it already has, with no scene to point at:
+    the pre-flight stops at the first scene that fails and speaks about the
+    show, not about one field."""
+    return {
+        "system": "",
+        "scene": None,
+        "field": None,
+        "detail": f"saved, but this will not start until it names its media: {detail}",
+    }
+
+
 def _media_warnings(cfgs: Sequence[cfgmod.Config], names: Sequence[str]) -> list[dict[str, Any]]:
     """Scenes whose `file =` names local media that isn't there.
 
@@ -608,13 +625,26 @@ class ConfigStore:
 
     # -- validate + write ---------------------------------------------------
 
-    def validate_text(self, text: str, ref: str | None = None) -> dict[str, Any]:
+    def validate_text(
+        self, text: str, ref: str | None = None, *, partial: bool = False
+    ) -> dict[str, Any]:
         """Load `text` as if it were saved, without saving it.
 
         The scratch file goes in the *target's own directory* rather than a temp
         dir: an ensemble master resolves its per-system paths relative to
         itself, so validating one anywhere else would report missing files that
-        are not missing."""
+        are not missing.
+
+        `partial` says this text is a show part-way through being built rather
+        than a finished statement about one, and excuses exactly one refusal:
+        :class:`scene_factory.MediaNotChosen`, a scene that names no media on a
+        host with none to default to. That is the state every scene is in the
+        instant the console adds it, so refusing it makes the first step of
+        building a show impossible — and the refusal would name `assets/videos`
+        while the button said *add a scene*. It comes back as a warning in the
+        same report instead. Every other failure still refuses, including a bad
+        value the form itself produced: that one is wrong now and wrong later,
+        and the save is the last chance to say so."""
         directory = self._scratch_dir(ref)
         report: dict[str, Any] = {
             "ok": False,
@@ -631,24 +661,33 @@ class ConfigStore:
         }
         fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
         tmp = Path(tmp_name)
+        unplayable: list[dict[str, Any]] = []
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             with _capture_errors() as messages:
                 try:
                     loaded = cfgmod.load_master(str(tmp))
+                    from .scene_factory import MediaNotChosen
                     from .session import SessionConfigError, validate_configs
 
                     try:
                         validate_configs(loaded, loaded.cfgs)
                     except SessionConfigError as e:
-                        report["error"] = (
+                        detail = (
                             "; ".join(messages)
                             or f"config did not validate (exit code {e.exit_code})"
                         )
-                        report["messages"] = list(messages)
-                        report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
-                        return self._blame_layers(report, text)
+                        # `from e` all the way down, so the pre-flight's own
+                        # cause is the question — asked of the type rather than
+                        # of the prose, which is a user-facing string and moves.
+                        if partial and isinstance(e.__cause__, MediaNotChosen):
+                            unplayable = [_unplayable_warning(detail)]
+                        else:
+                            report["error"] = detail
+                            report["messages"] = list(messages)
+                            report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
+                            return self._blame_layers(report, text)
                 except (cfgmod.ConfigError, ValueError) as e:
                     # The scratch name is an implementation detail; the caller
                     # asked about their file.
@@ -659,7 +698,7 @@ class ConfigStore:
             report["messages"] = list(messages)
             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
             report["systems"] = list(loaded.names)
-            report["warnings"] = _media_warnings(loaded.cfgs, loaded.names)
+            report["warnings"] = unplayable + _media_warnings(loaded.cfgs, loaded.names)
             return report
         finally:
             tmp.unlink(missing_ok=True)
@@ -684,14 +723,16 @@ class ConfigStore:
             raise PathRejected(f"{directory} does not exist")
         return directory
 
-    def write(self, ref: str, text: str) -> dict[str, Any]:
-        """Validate, back up whatever is there, then replace it atomically."""
+    def write(self, ref: str, text: str, *, partial: bool = False) -> dict[str, Any]:
+        """Validate, back up whatever is there, then replace it atomically.
+
+        `partial` is :meth:`validate_text`'s, and reaches it unchanged."""
         path = self.resolve(ref)
         if len(text.encode("utf-8")) > MAX_BYTES:
             raise ConfigTooLarge(f"config is larger than {MAX_BYTES} bytes")
         if not path.parent.is_dir():
             raise PathRejected(f"{ref}: {path.parent} does not exist")
-        report = self.validate_text(text, ref)
+        report = self.validate_text(text, ref, partial=partial)
         if not report["ok"]:
             raise ConfigInvalid(report)
         backup: str | None = None
@@ -817,7 +858,12 @@ class ConfigStore:
         reported, which arrives as ``result``. Everything around it — the
         refusals below, the re-serialise, and :meth:`write`'s validate-then-back-
         up-then-replace — is the same for a field edit and for a scene added or
-        removed, and having it in one place is what keeps them that way."""
+        removed, and having it in one place is what keeps them that way.
+
+        Writes `partial`: every edit that arrives here is one step of building a
+        show, so a scene that has not named its media yet is a warning rather
+        than a refusal. See :meth:`validate_text` for what that does and does
+        not excuse."""
         path = self.resolve(ref)
         original = self._read_text(path)
         try:
@@ -855,7 +901,7 @@ class ConfigStore:
             )
         except config_serialize.SerializeError as e:
             raise EditRejected(f"{ref} can't be written back: {e}") from e
-        out = self.write(ref, text)
+        out = self.write(ref, text, partial=True)
         out["result"] = result
         out["text"] = text
         return out

@@ -477,7 +477,19 @@ class PatchTest(StoreTestCase):
 class SceneStructureTest(StoreTestCase):
     """Adding and removing scenes — the two changes that alter the *shape* of a
     show file rather than the value of a field, and the last common edit that
-    still meant opening the source."""
+    still meant opening the source.
+
+    Every test here runs from a directory with no `assets/` in it, which is the
+    state a fresh install is in and the one a developer's checkout never is. A
+    blank video scene names no file, so it falls back to the default media
+    directory; with the project's own populated one under the working
+    directory these tests would pass on the machine they were written on and
+    nowhere else."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.tmp)
 
     def _scenes(self) -> list[cfgmod.SceneCfg]:
         return cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0].scenes
@@ -488,6 +500,26 @@ class SceneStructureTest(StoreTestCase):
         self.assertEqual(out["scene"], {"added": 1, "type": "video", "copied_from": None})
         scenes = self._scenes()
         self.assertEqual([s.type for s in scenes], ["blank", "video"])
+
+    def test_a_scene_can_be_added_before_the_media_it_will_name(self):
+        """The half of this feature that only CI saw: a new video scene names
+        no file yet, so the start-up pre-flight refused the write — and the
+        refusal talked about `assets/videos` while the button said *add a
+        scene*. The first step of building a show cannot require the show to
+        already run. It saves, and the report says what is still missing."""
+        out = self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.assertTrue(out["ok"])
+        details = [w["detail"] for w in out["warnings"]]
+        self.assertTrue(any("until it names its media" in d for d in details), details)
+        self.assertTrue(any("assets/videos" in d for d in details), details)
+
+    def test_the_text_editor_still_refuses_what_will_not_run(self):
+        """The relaxation is the structured edits' alone. A hand-written save
+        is a finished statement about the show, and the pre-flight is the only
+        thing standing between it and a failure seconds into a run."""
+        text = (self.shows / "gig.toml").read_text(encoding="utf-8")
+        with self.assertRaises(config_store.ConfigInvalid):
+            self.store.write("shows/gig.toml", text + '\n[[scenes]]\ntype = "video"\n')
 
     def test_a_copy_carries_the_fields_that_made_it_worth_copying(self):
         self.store.patch("shows/gig.toml", [{"scene": 0, "field": "name", "value": "opener"}])
