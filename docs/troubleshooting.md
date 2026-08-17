@@ -496,6 +496,27 @@ The install worked but its directory isn't on `PATH`. `uv tool update-shell`
 then open a new shell. `uv tool run c64cast` works
 meanwhile.
 
+### "I upgraded, but `--version` still reports the old version"
+
+Nothing was upgraded. `__version__` reads the *installed* distribution's
+metadata, so it cannot move unless an installer moved it — unpacking a release
+archive (or a git checkout) into a directory installs nothing and rewrites no
+metadata. The `c64cast` on your `PATH` is a shim into whichever environment
+installed it, and it never consults the working directory you run from.
+
+`--version` prints that environment after the number:
+
+```bash
+$ c64cast --version
+c64cast 0.3.0 (/home/you/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)
+```
+
+Upgrade the install it names — `uv tool upgrade c64cast`, `pipx upgrade
+c64cast`, or `pip install --upgrade c64cast` inside that venv — then delete the
+unpacked copy, which does nothing where it is. Walkthrough, including what to do
+about extras: [the User's Guide,
+"Upgrading"](guide/04-setting-up.md#upgrading).
+
 ### "Install fails: error compiling sounddevice / PyAV"
 
 Every dependency ships wheels for macOS, Linux and Windows, so a *compile* means

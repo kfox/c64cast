@@ -195,12 +195,6 @@ narrow it later, or add features one at a time:
 uv tool install 'c64cast[video,midi]'
 ```
 
-### Keeping It Up To Date
-
-```bash
-uv tool upgrade c64cast
-```
-
 > [!NOTE]
 > Everything in this guide is written for `uv`. If you would rather not install
 > it, [pipx](https://pipx.pypa.io/) is an equivalent fallback for anyone who
@@ -216,6 +210,66 @@ uv tool upgrade c64cast
 > [`CONTRIBUTING.md`](https://github.com/kfox/c64cast/blob/main/CONTRIBUTING.md).
 > You do not need any of it to use c64cast, and this guide assumes you have
 > not done it.
+
+## Upgrading
+
+```bash
+uv tool upgrade c64cast
+```
+
+That is the whole thing, nearly always. The rest of this section is about the
+one way it goes wrong.
+
+c64cast is not a folder you keep up to date. It is a command that lives in its
+own private environment, and the `c64cast` on your `PATH` points into that
+environment from wherever you happen to be standing. So downloading a release
+and unpacking it into your working directory upgrades nothing at all: it leaves
+a copy of the source sitting next to your configuration, and the command goes on
+running the version it was already running. `c64cast --version` will go on
+reporting the old number, correctly, because it reads the version of the
+*installed* package and not of whatever files happen to be nearby.
+
+Which is why `--version` tells you where that install is, as well as which
+version it is:
+
+```
+c64cast 0.3.0 (/home/you/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)
+```
+
+If the number did not move after an upgrade, that path is your answer. It names
+the environment the command actually runs from, and on the way past it names the
+tool that owns it — `uv/tools/` here, `pipx/venvs/` if you installed that way.
+Upgrade *that*, and the number moves.
+
+**Optional features do not accumulate.** If a release adds one you want and you
+installed a narrow set, name every extra you want in a single command and let it
+overwrite what is there:
+
+```bash
+uv tool install --force 'c64cast[all]'
+```
+
+The quotes are for the shell's benefit, not c64cast's — some shells treat square
+brackets as a pattern to match against filenames. Quoted, the line is safe to
+paste into any of them.
+
+Then check what you got, before any hardware is involved:
+
+```bash
+c64cast --version
+c64cast --doctor --skip-probe
+```
+
+Doctor reads your configuration and reports which optional features the running
+install can import, without touching the C64 — the quickest way to see both that
+the upgrade landed and that your existing configuration still loads. Anything a
+release actively needs you to do is at the top of its notes on the
+[releases page](https://github.com/kfox/c64cast/releases), under *Upgrade notes*.
+
+One last thing, if you gave your configuration the `#:schema` line from
+Chapter 2. It names a version, and it does not follow your install: point it at
+the version you upgraded to and your editor will start suggesting the settings
+the new release added.
 
 ## Choosing Your Connection Target
 

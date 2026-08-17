@@ -10,7 +10,30 @@ is `0.x`.
 Work lands under `## [Unreleased]`; cutting a release renames that section to
 the version and stamps it with the date.
 
+A version that needs the reader to *do* something — reinstall to pick up a new
+extra, re-measure a calibration, rename a setting — opens with an
+**Upgrade notes** subsection, above the Keep a Changelog ones. A version's
+section is lifted verbatim into its GitHub release body, so that block is the
+first thing anyone upgrading reads, and an instruction anywhere further down is
+in practice not read at all. Releases that ask nothing of anyone leave it out.
+
 ## [Unreleased]
+
+### Upgrade notes
+
+- **The browser console needs the new `web` extra**, which did not exist in
+  0.3.0. `uv tool upgrade c64cast` keeps the extras you installed *with*, and
+  re-reads what each of them now contains — so a `c64cast[all]` install picks
+  the console up on a plain upgrade with nothing to do. A narrower install does
+  not: extras don't accumulate, so add `web` to the set and name every one you
+  want in a single command.
+
+  ```bash
+  uv tool install --force 'c64cast[video,midi,web]'
+  ```
+
+  Without it, `--serve` reports the missing extra instead of starting. `c64cast
+  --doctor` lists what the running install can import.
 
 ### Added
 
@@ -761,6 +784,28 @@ the version and stamps it with the date.
   between runs, and `192.168.2.64` is the Ultimate's factory default that any
   number of units answer to. It also makes a U64-versus-U2+ mismatch legible from
   a log alone, which a bare HTTP 404 against a config URL is not.
+
+### Changed
+
+- **`--version` now says which install it is.** It reports the directory the
+  running code sits in after the number —
+  `c64cast 0.3.0 (~/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)`
+  — because the number alone cannot answer the question people actually bring to
+  it. `__version__` reads the *installed* distribution's metadata, so unpacking a
+  release archive into a working directory moves nothing and the old number keeps
+  being correct; the reader is then looking at a true statement about a different
+  install than the one they changed. The path names the environment, and the tool
+  that owns it: `uv/tools/`, `pipx/venvs/`, or a checkout.
+
+- **The User's Guide says what an upgrade is.** "Keeping It Up To Date" was
+  `uv tool upgrade c64cast` and nothing else — no way to check that it worked, no
+  mention that extras don't accumulate, and no answer for the one mistake the
+  three-line version invites, which is to treat c64cast as a folder of files and
+  unpack a release over it. It is now an
+  [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading)
+  section of its own, and the same symptom is answered in both troubleshooting
+  appendices. A release's own notes now lead with how to install or upgrade, with
+  the wheel and tarball labelled for the installers that fetch them.
 
 ## [0.3.0] - 2026-08-09
 
