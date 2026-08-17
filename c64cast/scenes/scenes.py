@@ -366,6 +366,13 @@ class Scene:
         # imports would create cycles; the consumers (overlays, playlist)
         # know the real types.
         self._cfg: Any = None
+        # Which `[[scenes]]` block of the config this scene came from, or None
+        # when no block named it (an interleaved video, a launched clip, the
+        # no-scenes-configured fallback). Set by scene_factory.scenes_from_config
+        # — an index rather than the SceneCfg above because the live-tune
+        # save-back edits the config *file*, which it re-reads first, so what it
+        # needs is the address of the block and not the object this run loaded.
+        self.cfg_index: int | None = None
         self._orchestrator: Any = None
         self._is_conductor: bool = False
         self._system_index: int = 0

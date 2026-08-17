@@ -67,11 +67,22 @@
     </h3>
 
     <ul class="space-y-1">
-      {#each tuned.changes as change (change.target)}
+      {#each tuned.changes as change (change.key)}
         <li class="flex items-baseline gap-2 font-mono text-xs">
           <span class="flex-1 truncate {change.field === null ? 'text-[var(--ink-dim)]' : ''}">
             {knob(change)}
           </span>
+          {#if change.scene !== null}
+            <!-- Counted over the config's own blocks, which is not always the
+                 running order (a follower-only scene is in the file and not in
+                 the show), so the label says which numbering it means. -->
+            <span
+              class="text-[0.65rem] text-[var(--ink-dim)]"
+              title="belongs to the {change.scene + 1}. [[scenes]] block of this config"
+            >
+              scene {change.scene + 1}
+            </span>
+          {/if}
           <span class="text-[var(--ink-dim)]">{show(change.old)} →</span>
           <span class="tabular-nums">{show(change.new)}</span>
           {#if change.field === null}
@@ -84,15 +95,16 @@
     {#if lost > 0}
       <p class="mt-2 text-xs text-[var(--ink-dim)]">
         {lost}
-        {lost === 1 ? "change has" : "changes have"} no config field behind
-        {lost === 1 ? "it" : "them"} — a palette mode belongs to its scene rather than to
-        <code class="font-mono">[color]</code>, so {lost === 1 ? "it ends" : "they end"} with the show.
+        {lost === 1 ? "change belongs" : "changes belong"} to a scene this config does not
+        contain — a launched clip, or a video the playlist inserted — so there is no block to
+        keep {lost === 1 ? "it" : "them"} in and {lost === 1 ? "it ends" : "they end"} with the
+        show.
       </p>
     {/if}
 
     {#if tuned.snippet}
       <p class="mt-2 text-xs text-[var(--ink-dim)]">
-        This run has no config file to keep them in. Paste this into one:
+        This run has no config file to keep them in. Paste these into one:
       </p>
       <pre
         class="mt-1 overflow-x-auto rounded border border-[var(--edge)] p-2 font-mono text-xs">{tuned.snippet}</pre>
@@ -107,7 +119,7 @@
           <Button
             variant="primary"
             disabled={busy}
-            title="Write [color] into {file}"
+            title="Write these into {file}"
             onclick={() => run(true)}
           >
             Keep {tuned.savable} in {file}

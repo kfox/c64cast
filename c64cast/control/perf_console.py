@@ -214,10 +214,11 @@ def _tuned_dict(pl: Playlist) -> dict[str, Any]:
     deliberate tap rather than a question asked at the worst possible moment.
 
     ``savable`` is the count a Save button acts on, and it is not always
-    ``len(changes)``: ``mode.palette_mode`` lives per-scene rather than in
-    ``[color]``, so nothing here can write it. It is still listed — a change
-    that will be lost at the end of the show is exactly what a performer needs
-    told."""
+    ``len(changes)``: a knob no config field carries has nowhere to be written,
+    and so does ``mode.palette_mode`` turned on a scene the config never named (a
+    launched clip, an interleaved video) — its home is one ``[[scenes]]`` block
+    and that scene has none. Those rows are still listed, because a change that
+    will be lost at the end of the show is exactly what a performer needs told."""
     rows = pl.live_tracker.pending()
     savable = [r for r in rows if r["field"] is not None]
     out: dict[str, Any] = {

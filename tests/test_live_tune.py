@@ -254,10 +254,11 @@ class LiveChoiceReadbackTests(unittest.TestCase):
 # -------------------------------------- MIDI mode.<name> holder ----------------
 class _FakeMode:
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
-    LIVE_CHOICES = {"dither_method": DITHER_METHODS}
+    LIVE_CHOICES = {"dither_method": DITHER_METHODS, "palette_mode": _PALETTE_MODE_CHOICES}
 
     def __init__(self):
         self._dither_method = DITHER_METHODS[0]
+        self.palette_mode = _PALETTE_MODE_CHOICES[0]
 
     @property
     def dither_strength(self):
@@ -268,10 +269,15 @@ class _FakeMode:
         self._dither_strength = float(v)
 
     def get_live_choice(self, name):
-        return self._dither_method if name == "dither_method" else None
+        if name == "dither_method":
+            return self._dither_method
+        return self.palette_mode if name == "palette_mode" else None
 
     def set_live_choice(self, api, name, value):
-        self._dither_method = value
+        if name == "palette_mode":
+            self.palette_mode = value
+        else:
+            self._dither_method = value
         return f"{name}={value}"
 
 
@@ -351,20 +357,22 @@ class _RichScene:
 
     LIVE_PARAMS = {"gain": (0.25, 3.0)}
 
-    def __init__(self, mode):
+    def __init__(self, mode, cfg_index=None):
         self.display_mode = mode
         self.api = object()
         self.gain = 1.0
         self.source = _FakeSource()
         self.effects = [_FakeEffect(), _FakeEffect()]
+        # Which [[scenes]] block built this scene, as scene_factory stamps it.
+        self.cfg_index = cfg_index
 
 
-def _rich() -> tuple[Any, _FakeMode, _RichScene]:
+def _rich(cfg_index=None) -> tuple[Any, _FakeMode, _RichScene]:
     """A playlist standing in for the real one. The fake exposes exactly what
     `live_tune` touches — `current`, `post_osd`, `live_tracker` — which is most
     of what makes the module worth having as one."""
     mode = _FakeMode()
-    scene = _RichScene(mode)
+    scene = _RichScene(mode, cfg_index)
     return _FakePlaylist(scene), mode, scene
 
 
@@ -470,6 +478,30 @@ class LiveTuneApplyTests(unittest.TestCase):
         lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
         self.assertEqual(pl.live_tracker.describe(), ["mode.dither_strength: None -> 1.5"])
 
+    def test_a_per_scene_knob_records_the_scene_that_was_playing(self):
+        # The save-back writes one [[scenes]] block, so the record has to know
+        # which — and the only moment that is knowable is the move itself.
+        pl, _mode, _scene = _rich(cfg_index=3)
+        lt.apply(pl, "mode.palette_mode", lt.Move(value="vivid"))
+        (row,) = pl.live_tracker.pending()
+        self.assertEqual((row["field"], row["scene"]), ("palette_mode", 3))
+
+    def test_a_shared_knob_ignores_the_scene_that_was_playing(self):
+        # Every move passes the scene in; only a per-scene target may key on it.
+        pl, _mode, _scene = _rich(cfg_index=3)
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        (row,) = pl.live_tracker.pending()
+        self.assertIsNone(row["scene"])
+
+    def test_a_scene_the_config_never_named_records_no_index(self):
+        # A launched clip carries no cfg_index, so its palette change is listed
+        # and unsavable rather than written into whatever scene 0 happens to be.
+        pl, _mode, _scene = _rich()
+        lt.apply(pl, "mode.palette_mode", lt.Move(value="vivid"))
+        (row,) = pl.live_tracker.pending()
+        self.assertIsNone(row["scene"])
+        self.assertIsNone(row["field"])
+
     def test_a_target_that_does_not_resolve_writes_nothing(self):
         pl, _mode, _scene = _rich()
         self.assertFalse(lt.apply(pl, "mode.nonexistent", lt.Move(value=1.0)))
@@ -545,7 +577,9 @@ class LiveTuneTrackerTests(unittest.TestCase):
         self.assertEqual(rows[0]["field"], "dither")
         self.assertEqual(rows[0]["old"], "none")
         self.assertEqual(rows[0]["new"], "blue_noise")
-        # Nothing in [color] carries a generator knob.
+        # A [color] field belongs to the whole show, not to a scene.
+        self.assertIsNone(rows[0]["scene"])
+        # Nothing in a config carries a generator knob.
         self.assertIsNone(rows[1]["field"])
 
     def test_forget_drops_only_what_was_written(self):
@@ -555,26 +589,114 @@ class LiveTuneTrackerTests(unittest.TestCase):
         self.assertEqual(t.forget(["mode.dither_strength"]), 1)
         self.assertEqual([r["target"] for r in t.pending()], ["source.scale"])
 
+    def test_a_per_scene_knob_is_recorded_against_the_scene_it_was_turned_on(self):
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=2)
+        (row,) = t.pending()
+        self.assertEqual(row["field"], "palette_mode")
+        self.assertEqual(row["scene"], 2)
+        # `[color]` has no palette_mode, so the save has to name the block.
+        self.assertEqual(row["key"], "mode.palette_mode@2")
+
+    def test_the_same_per_scene_knob_on_two_scenes_is_two_settings(self):
+        # Collapsing these would write one scene's palette into both, which is
+        # the opposite of what per-scene means.
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=0)
+        t.record("mode.palette_mode", "cheap", "grayscale", scene=3)
+        rows = t.pending()
+        self.assertEqual([(r["scene"], r["new"]) for r in rows], [(0, "vivid"), (3, "grayscale")])
+        # And each can be dropped without touching the other.
+        self.assertEqual(t.forget(["mode.palette_mode@0"]), 1)
+        self.assertEqual([r["scene"] for r in t.pending()], [3])
+
+    def test_a_shared_knob_swept_across_a_scene_change_stays_one_entry(self):
+        # The scene rides in on every record; only a per-scene target may key on
+        # it, or a [color] sweep would fragment into an entry per scene.
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9, scene=0)
+        t.record("mode.dither_strength", 0.9, 1.4, scene=1)
+        (row,) = t.pending()
+        self.assertEqual((row["old"], row["new"], row["scene"]), (0.5, 1.4, None))
+
+    def test_a_per_scene_knob_off_the_config_has_nowhere_to_go(self):
+        # A launched clip or an auto-inserted video is in the show and not in the
+        # file, so there is no block to write — and saying so is the point.
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=None)
+        (row,) = t.pending()
+        self.assertIsNone(row["field"])
+        self.assertEqual(row["key"], "mode.palette_mode")
+
+    def test_apply_writes_each_change_to_the_section_that_owns_it(self):
+        cfg = Config()
+        cfg.scenes = [SceneCfg(type="blank"), SceneCfg(type="blank")]
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9)
+        t.record("mode.palette_mode", "percell", "vivid", scene=1)
+        applied = t.apply(cfg)
+        self.assertEqual(cfg.color.dither_strength, 0.9)
+        self.assertEqual(cfg.scenes[1].palette_mode, "vivid")
+        self.assertEqual(cfg.scenes[0].palette_mode, SceneCfg().palette_mode)
+        self.assertEqual(
+            applied, ["[color].dither_strength = 0.9", "[[scenes]][1].palette_mode = vivid"]
+        )
+
+    def test_apply_skips_a_scene_the_config_no_longer_has(self):
+        # A config reloaded shorter since the knob moved; writing into whichever
+        # scene inherited the index would be worse than not writing at all.
+        cfg = Config()
+        cfg.scenes = [SceneCfg(type="blank")]
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=4)
+        self.assertEqual(t.apply(cfg), [])
+        self.assertEqual(cfg.scenes[0].palette_mode, SceneCfg().palette_mode)
+
+    def test_describe_names_the_scene_a_per_scene_change_belongs_to(self):
+        t = LiveTuneTracker()
+        t.record("mode.palette_mode", "percell", "vivid", scene=2)
+        t.record("mode.dither_strength", 0.5, 0.9)
+        # 1-based, matching the playlist's own "scene N/M" logging.
+        self.assertEqual(
+            t.describe(),
+            ["mode.palette_mode (scene 3): percell -> vivid", "mode.dither_strength: 0.5 -> 0.9"],
+        )
+
+    def test_the_snippet_keeps_a_per_scene_change_out_of_pasteable_toml(self):
+        # A pasted `[[scenes]]` header appends a scene rather than editing one,
+        # so this one rides along as a comment naming where it goes.
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9)
+        t.record("mode.palette_mode", "percell", "vivid", scene=1)
+        snippet = t.toml_snippet()
+        self.assertNotIn("[[scenes]]\n", snippet)
+        self.assertIn("[color]\ndither_strength = 0.9", snippet)
+        self.assertIn('# in scene 2\'s [[scenes]] block: palette_mode = "vivid"', snippet)
+
     def test_every_live_mode_param_can_be_saved_or_says_why_not(self):
         """A `mode.*` knob every surface can turn but no save-back can write is
         a knob that quietly loses the performer's work. `mode.cell_pick` was
-        exactly that — declared, tunable, and missing from the map — so the map
-        is pinned to the registries rather than maintained by memory."""
+        exactly that — declared, tunable, and missing from the map — so the maps
+        are pinned to the registries rather than maintained by memory."""
         import dataclasses
 
         from c64cast.app import introspect
         from c64cast.control.transport import (
             _MODE_FIELD_TO_COLOR,
+            _MODE_FIELD_TO_SCENE,
             MODE_FIELDS_WITH_NO_CONFIG_HOME,
         )
 
-        color_fields = {f.name for f in dataclasses.fields(Config().color)}
+        homes = {
+            "[color]": (_MODE_FIELD_TO_COLOR, {f.name for f in dataclasses.fields(Config().color)}),
+            "[[scenes]]": (_MODE_FIELD_TO_SCENE, {f.name for f in dataclasses.fields(SceneCfg())}),
+        }
         for doc in introspect.live_targets():
             holder, _, name = doc.target.partition(".")
             if holder != "mode":
                 continue
-            field = _MODE_FIELD_TO_COLOR.get(name)
-            if field is None:
+            found = [(w, m[name], fields) for w, (m, fields) in homes.items() if name in m]
+            if not found:
                 self.assertIn(
                     name,
                     MODE_FIELDS_WITH_NO_CONFIG_HOME,
@@ -582,7 +704,11 @@ class LiveTuneTrackerTests(unittest.TestCase):
                     "says that is on purpose",
                 )
                 continue
-            self.assertIn(field, color_fields, f"{doc.target} maps to a [color] field that is gone")
+            # Two homes for one knob would make the save-back's answer depend on
+            # which map it consulted first.
+            self.assertEqual(len(found), 1, f"{doc.target} claims more than one config home")
+            where, field, fields = found[0]
+            self.assertIn(field, fields, f"{doc.target} maps to a {where} field that is gone")
 
     def test_a_mapped_choice_offers_exactly_what_its_config_field_accepts(self):
         # A live picker that can pick a value the config rejects turns a save
@@ -590,21 +716,36 @@ class LiveTuneTrackerTests(unittest.TestCase):
         import dataclasses
 
         from c64cast.app import introspect
-        from c64cast.control.transport import _MODE_FIELD_TO_COLOR
+        from c64cast.control.transport import _MODE_FIELD_TO_COLOR, _MODE_FIELD_TO_SCENE
 
-        meta = {f.name: f.metadata for f in dataclasses.fields(Config().color)}
+        meta = {
+            **{f"[color].{f.name}": f.metadata for f in dataclasses.fields(Config().color)},
+            **{f"[[scenes]].{f.name}": f.metadata for f in dataclasses.fields(SceneCfg())},
+        }
         for doc in introspect.live_targets():
             holder, _, name = doc.target.partition(".")
-            field = _MODE_FIELD_TO_COLOR.get(name) if holder == "mode" else None
-            if field is None or not doc.choices:
+            if holder != "mode" or not doc.choices:
                 continue
-            allowed = meta[field].get("choices")
+            key = next(
+                (
+                    f"{where}.{m[name]}"
+                    for where, m in (
+                        ("[color]", _MODE_FIELD_TO_COLOR),
+                        ("[[scenes]]", _MODE_FIELD_TO_SCENE),
+                    )
+                    if name in m
+                ),
+                None,
+            )
+            if key is None:
+                continue
+            allowed = meta[key].get("choices")
             if allowed is None:
                 continue
             self.assertLessEqual(
                 set(doc.choices),
                 set(allowed),
-                f"{doc.target} offers a choice [color].{field} would refuse",
+                f"{doc.target} offers a choice {key} would refuse",
             )
 
     def test_forget_reports_only_what_it_held(self):

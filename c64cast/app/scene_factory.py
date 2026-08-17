@@ -2199,8 +2199,11 @@ def scenes_from_config(
         if s.follower_only:
             validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
 
-    base: list[Scene] = [
-        build_scene(
+    base: list[Scene] = []
+    for index, s in enumerate(cfg.scenes):
+        if s.follower_only:
+            continue
+        scene = build_scene(
             s,
             cfg,
             api,
@@ -2210,9 +2213,13 @@ def scenes_from_config(
             reu_available=reu_available,
             sampler_available=sampler_available,
         )
-        for s in cfg.scenes
-        if not s.follower_only
-    ]
+        # The scene's address in the *file*, so a live-tune save-back can write a
+        # per-scene knob (palette_mode) into the block it came from. Counted over
+        # cfg.scenes rather than over this list, so a follower-only scene earlier
+        # in the file doesn't shift everything after it — and stamped only here,
+        # which leaves it None on every scene the config did not name.
+        scene.cfg_index = index
+        base.append(scene)
 
     if not base:
         # Sensible default if user gave us no scenes at all. No audio —

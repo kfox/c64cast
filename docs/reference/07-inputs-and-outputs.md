@@ -87,16 +87,23 @@ What happens at exit depends on what the run had:
 | A configuration file, on a terminal | The changes are listed and you are asked whether to save them |
 | A configuration file, with `--overwrite` | They are applied and saved, with no prompt |
 | A configuration file, with no terminal to ask on | They are listed, nothing is written, and you are told to re-run with `--overwrite` |
-| No configuration file — quick playback | There is nothing to write to, so a pasteable `[color]` block is printed instead |
+| No configuration file — quick playback | There is nothing to write to, so a pasteable block is printed instead |
 
 It runs after a normal exit and after an interrupt at the terminal alike, and
 in an ensemble each system is offered separately, tagged with its name.
 
-Only the six parameters that have a `[color]` field to land in are ever
-written: `dither_strength`, `dither_method`, `color_match`, `cell_strategy`,
-`motion_smoothing` and `auto_fit_strength`. A scene's `palette_mode`, a
-generator's `speed`, an effect's `decay` — all of them move live, and none of
-them is configuration the `[color]` section can hold, so none is offered back.
+Every parameter that has a configuration field to land in is written, and each
+goes to the section that owns it. Seven do: `dither_strength`, `dither_method`,
+`color_match`, `cell_strategy`, `cell_pick`, `motion_smoothing` and
+`auto_fit_strength` are `[color]`, which the whole show shares; `palette_mode`
+belongs to one scene, so it is written into the `[[scenes]]` block of the scene
+that was playing when you turned it — turn it during two scenes and both are
+kept, separately. A generator's `speed`, an effect's `decay` and the rest of the
+runtime knobs are not configuration at all, so none of them is offered back.
+
+A palette mode turned on a scene the file does not contain — a launched clip, or
+a video the playlist inserted between scenes — has no block to be written into.
+It is still listed, so you know it will not survive the show.
 
 > [!WARNING]
 > Saving rewrites the whole configuration file from the settings in memory,
@@ -542,15 +549,18 @@ same way. It shows what the *current scene* has and nothing else, so it changes
 shape as the show advances and never offers a slider that does nothing. A
 colour-pipeline change made here is recorded like any other live tune, and the
 record sits under the knobs: every change since the show started, where it began
-and where it is now. One tap keeps them in the file the show is running from — a
-`[color]` save into that file, so anything else you have edited in it survives —
-and **Discard** drops the offer without touching what is playing. A run started
-from the command line asks the same question when it exits; the host has no
-terminal to ask on, so it asks here instead, at a moment you choose rather than
-at a shutdown. A change nothing in a config carries — a palette
-mode, which belongs to its scene rather than to the shared colour settings — is
-marked *runtime only* and ends with the show; and a quick-playback run, which has no file to write to, gets a
-`[color]` block to paste into one.
+and where it is now. One tap keeps them in the file the show is running from —
+a patch of that file rather than a rewrite of it, so anything else you have
+edited there survives — and **Discard** drops the offer without touching what is
+playing. A run started from the command line asks the same question when it
+exits; the host has no terminal to ask on, so it asks here instead, at a moment
+you choose rather than at a shutdown. Each change goes to the part of the file
+that owns it: the shared `[color]` settings, or — for a palette mode, which
+belongs to a scene — that scene's own block, tagged in the list with the scene
+it will be written to. A change with nowhere to go, such as a palette mode
+turned on a launched clip the file does not contain, is marked *runtime only*
+and ends with the show; and a quick-playback run, which has no file to write to,
+gets a block to paste into one.
 
 **Scenes** lists the playlist with the one playing marked; tapping one jumps
 straight to it, without the interstitial in front. The eight look pads recall a

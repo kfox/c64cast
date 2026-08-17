@@ -799,10 +799,12 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
 
     For each system whose playlist recorded changes (a MIDI/WLED knob sweep or a
     mode change during the run): with `overwrite`, silently apply them to the
-    config's [color] section and save (keeping a .bak); otherwise, on an
-    interactive terminal, prompt with a plain input() (works without the wizard
-    extra). A quick-playback run (no config file) can't be written back — print a
-    pasteable [color] TOML snippet instead. Runs on a normal exit and on Ctrl+C."""
+    config — [color] for the knobs a whole show shares, the scene's own
+    [[scenes]] block for the ones a scene owns — and save (keeping a .bak);
+    otherwise, on an interactive terminal, prompt with a plain input() (works
+    without the wizard extra). A quick-playback run (no config file) can't be
+    written back — print a pasteable TOML snippet instead. Runs on a normal exit
+    and on Ctrl+C."""
     for st in stacks:
         pl = st.playlist
         tracker = getattr(pl, "live_tracker", None)
@@ -845,8 +847,8 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
             snippet = tracker.toml_snippet()
             if snippet:
                 print(
-                    f"\n{tag}Live-tune changes (no config file — paste into a config's "
-                    f"[color] section to keep them):\n{snippet}"
+                    f"\n{tag}Live-tune changes (no config file — paste these into a "
+                    f"config to keep them):\n{snippet}"
                 )
 
 

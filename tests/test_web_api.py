@@ -63,6 +63,15 @@ GIG_TOML = (
     '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
     '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
 )
+# Two scenes of a type that accepts `palette_mode` — a knob whose config home is
+# the scene's own block, so a save-back has to reach one of these and not the
+# other. (A `blank` scene has no display mode to tune, and the store refuses a
+# field the scene's type doesn't declare.)
+PAIR_TOML = (
+    "[audio]\nenabled = false\n\n"
+    '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n\n'
+    '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n'
+)
 # Refused by `validate_configs`, not by the TOML parser — audio off so the
 # audio check (which runs first) can't be what fails instead.
 BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
@@ -648,6 +657,85 @@ class LiveTuneSaveBackTest(WebApiTestCase):
             pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
             c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
         self.assertAlmostEqual(pl.config.color.dither_strength, 0.8)
+
+    def _running_two_scene(self, c) -> Any:
+        """Start a config with two scenes whose type accepts `palette_mode`, so a
+        per-scene save has a block to land in and a neighbour to leave alone."""
+        (self.root / "pair.toml").write_text(PAIR_TOML, encoding="utf-8")
+        c.post("/api/session/start", headers=AUTH, json={"config": "shows/pair.toml"})
+        self.assertReaches(SessionState.RUNNING)
+        return self.manager.session.stacks[0].playlist
+
+    def test_a_tuned_palette_lands_in_the_scene_it_was_tuned_on(self):
+        # palette_mode has no [color] home: the save has to reach one [[scenes]]
+        # block and leave the other alone.
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=1)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["saved"], ["mode.palette_mode"])
+        loaded = cfgmod.load(str(self.root / "pair.toml"))
+        self.assertEqual(loaded.scenes[1].palette_mode, "vivid")
+        self.assertEqual(loaded.scenes[0].palette_mode, cfgmod.SceneCfg().palette_mode)
+        self.assertFalse(pl.live_tracker.has_changes())
+
+    def test_a_shared_knob_and_a_per_scene_one_save_together(self):
+        # One patch, one backup, one refusal — the two homes are not two writes.
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
+            pl.live_tracker.record("mode.palette_mode", "percell", "grayscale", scene=0)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        loaded = cfgmod.load(str(self.root / "pair.toml"))
+        self.assertAlmostEqual(loaded.color.dither_strength, 0.8)
+        self.assertEqual(loaded.scenes[0].palette_mode, "grayscale")
+
+    def test_the_running_config_learns_the_scene_it_just_saved(self):
+        # Same reason the [color] fields are re-stamped: the C64 menu's own save
+        # dumps this object wholesale.
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.config = cfgmod.load(str(self.root / "pair.toml"))
+            pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=1)
+            c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(pl.config.scenes[1].palette_mode, "vivid")
+
+    def test_a_palette_tuned_on_a_scene_the_config_never_named_is_not_a_save(self):
+        # A launched clip or an auto-inserted video is in the show and not in the
+        # file, so the row has no block to be written to.
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=None)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual((self.root / "pair.toml").read_text(encoding="utf-8"), PAIR_TOML)
+        self.assertTrue(pl.live_tracker.has_changes())
+
+    def test_a_palette_tuned_on_a_scene_that_is_gone_keeps_the_record(self):
+        # The store refuses an index the file has no block for, and a refused
+        # patch leaves the file and the offer exactly as they were.
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=7)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual((self.root / "pair.toml").read_text(encoding="utf-8"), PAIR_TOML)
+        self.assertTrue(pl.live_tracker.has_changes())
+
+    def test_the_same_palette_on_two_scenes_is_two_saves_in_one_write(self):
+        with self.client() as c:
+            pl = self._running_two_scene(c)
+            pl.live_tracker.record("mode.palette_mode", "percell", "vivid", scene=0)
+            pl.live_tracker.record("mode.palette_mode", "percell", "cheap", scene=1)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        loaded = cfgmod.load(str(self.root / "pair.toml"))
+        self.assertEqual(
+            [s.palette_mode for s in loaded.scenes[:2]],
+            ["vivid", "cheap"],
+        )
 
     def test_a_runtime_only_change_is_not_a_save(self):
         with self.client() as c:
