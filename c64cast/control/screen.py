@@ -330,9 +330,10 @@ def _stop_quietly(system: str, receiver: Any) -> None:
         # It is already a validated key of the running-systems map by this point
         # — `_open` refuses an unknown name, and every other call site reads the
         # name out of `_live` — so this is the belt to that braces, and the
-        # waiver is for CodeQL not modelling either as a sanitizer.
-        # codeql[py/log-injection]
-        log.exception("could not stop the video stream for %r", system)
+        # waiver is for CodeQL modelling neither as a sanitizer. The marker sits
+        # on the line it reports — the argument's own — because a suppression on
+        # the line above is not one, which cost this alert a second number.
+        log.exception("could not stop the stream for %r", system)  # codeql[py/log-injection]
 
 
 def _await_frame(read: Callable[[], VicFrame | None]) -> VicFrame | None:
