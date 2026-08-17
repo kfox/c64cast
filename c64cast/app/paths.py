@@ -165,6 +165,18 @@ def web_token_path() -> Path:
     return data_root() / "web_token"
 
 
+def web_viewer_token_path() -> Path:
+    """The web console's generated read-only token
+    (``<data root>/web_viewer_token``).
+
+    Its sibling above is minted at startup because the host cannot run without
+    one; this one is minted only when somebody asks for a link to share, since
+    a credential nobody asked for is one more thing that can leak. Persisted
+    for the same reason the full one is: a link handed to a guest should
+    survive the next restart."""
+    return data_root() / "web_viewer_token"
+
+
 # ---------------------------------------------------------------------------
 # Packaged (read-only) resources
 # ---------------------------------------------------------------------------

@@ -48,6 +48,24 @@ export interface ConfigIndex {
   truncated: boolean;
 }
 
+/** `GET /api/screen`. `systems` maps a running system's name to whether that
+ *  machine can stream its own VIC output — false on an Ultimate II+, which is
+ *  a cartridge in someone else's C64, and on a TeensyROM+. Empty when nothing
+ *  is running or the host has the screen turned off, which `fps: 0` says. */
+export interface ScreenAvailability {
+  systems: Record<string, boolean>;
+  fps: number;
+}
+
+/** `POST /api/viewer-link`. `path` is origin-relative — the host cannot know
+ *  which of its addresses this browser reached it on. `minted` is true the
+ *  first time, when the token did not exist until it was asked for. */
+export interface ViewerLink {
+  token: string;
+  path: string;
+  minted: boolean;
+}
+
 /** `"full"` may write; `"viewer"` may only watch. Null when the host runs
  *  without authentication, which `[web]` never does. */
 export type Role = "full" | "viewer" | null;
@@ -67,6 +85,19 @@ export interface FieldDoc {
   /** Scene types this field means anything for; empty is "all of them". */
   applies_to: string[];
   apply: "live" | "rebuild";
+  /** The named set this field's string values come from, when it is small
+   *  enough to offer whole. `"c64color"` is the sixteen palette entries, which
+   *  `choices` cannot say because the field takes an index as well. */
+  vocabulary: string;
+}
+
+/** One C64 colour, from `introspect.palette_swatches()`. `name` is the
+ *  spelling to write into a config; `label` the one to show. */
+export interface Swatch {
+  index: number;
+  name: string;
+  label: string;
+  hex: string;
 }
 
 export interface SectionDoc {
@@ -109,6 +140,9 @@ export interface Introspection {
   sections: SectionDoc[];
   scene_types: SceneTypeDoc[];
   overlays: OverlayDoc[];
+  /** The sixteen C64 colours, in the host's *live* table — a host that has
+   *  matched the machine's own palette offers the colours it really emits. */
+  palette: Swatch[];
 }
 
 // -- one config file: what it *does* contain --------------------------------
@@ -191,6 +225,19 @@ export interface ValidationReport {
   unknown_keys: UnknownKey[];
   systems: string[];
   layers: LayerNote[];
+  warnings: Warning[];
+}
+
+/** Something that loads but will bite — media a scene names that isn't on this
+ *  host. Never a refusal: a path may be filled in before showtime, or name a
+ *  file on another machine in an ensemble. `scene` and `field` are null on a
+ *  warning about the show rather than about one place in it, which is what a
+ *  scene added before its media is. */
+export interface Warning {
+  system: string;
+  scene: number | null;
+  field: string | null;
+  detail: string;
 }
 
 /** `PUT /api/configs/{ref}`. `backup` names the dotfile sibling holding what
@@ -203,6 +250,7 @@ export interface ConfigWritten {
   backup: string | null;
   unknown_keys: UnknownKey[];
   systems: string[];
+  warnings: Warning[];
 }
 
 /** One field edit for `PATCH /api/configs/{ref}`. Names a `section` or a
@@ -221,6 +269,20 @@ export interface ConfigEdit {
  *  edits and the text it composed from them. */
 export interface ConfigPatched extends ConfigWritten {
   edits: ConfigEdit[];
+  text: string;
+}
+
+/** A scene added or removed — a structural change to the file rather than a
+ *  new value for a field, so it reports which index moved rather than a list
+ *  of edits. `scene.added` is where the new one landed. */
+export interface SceneChanged extends ConfigWritten {
+  scene: {
+    added?: number;
+    removed?: number;
+    type: string;
+    name?: string | null;
+    copied_from?: number | null;
+  };
   text: string;
 }
 

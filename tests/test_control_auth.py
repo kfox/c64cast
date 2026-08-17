@@ -130,7 +130,7 @@ class _FakePlaylist:
         self.config_path = ""
 
 
-def _app(*, token: str = TOKEN, viewer_token: str = VIEWER) -> tuple[Any, _FakePlaylist]:
+def _app(*, token: str = TOKEN, viewer_token: Any = VIEWER) -> tuple[Any, _FakePlaylist]:
     from c64cast.control.control_plane import build_app
 
     pl = _FakePlaylist()
@@ -519,6 +519,78 @@ class EveryRouteIsProtectedTest(unittest.TestCase):
         # Guard against the loop silently checking nothing (a routing change
         # that renames `path` would otherwise make this test vacuously pass).
         self.assertGreaterEqual(checked, 8)
+
+
+class ViewerCredentialTest(unittest.TestCase):
+    """The read-only token exists only once somebody asks for a link to share.
+
+    Two properties matter. It is not minted at startup — a credential nobody
+    asked for is one more thing that can leak. And once minted it is honoured
+    *immediately*: the app is built once, around a listening socket and every
+    connected console, so "restart to use the token you just made" would make
+    the feature useless at the moment it is wanted."""
+
+    def test_nothing_exists_until_it_is_asked_for(self):
+        from c64cast.control.auth import ViewerCredential
+
+        cred = ViewerCredential()
+        self.assertEqual(cred.token, "")
+        self.assertFalse(cred)
+
+    def test_issuing_mints_once_and_persists_it(self):
+        from c64cast.control.auth import ViewerCredential
+
+        kept: list[str] = []
+        cred = ViewerCredential(store=kept.append)
+        token, minted = cred.issue()
+        self.assertTrue(minted)
+        self.assertTrue(token)
+        self.assertEqual(kept, [token])
+        # Asking twice is one credential, not two.
+        self.assertEqual(cred.issue(), (token, False))
+        self.assertEqual(kept, [token])
+
+    def test_a_configured_token_is_never_replaced(self):
+        from c64cast.control.auth import ViewerCredential
+
+        kept: list[str] = []
+        cred = ViewerCredential("from-config", store=kept.append)
+        self.assertEqual(cred.issue(), ("from-config", False))
+        self.assertEqual(kept, [])
+
+    def test_the_gate_honours_a_token_minted_after_the_app_was_built(self):
+        from starlette.testclient import TestClient
+
+        from c64cast.control.auth import ViewerCredential
+
+        cred = ViewerCredential()
+        app, _pl = _app(viewer_token=cred)
+        client = TestClient(app)
+
+        token, _ = cred.issue()
+        # A read the viewer role is allowed…
+        self.assertEqual(client.get("/status", params={"token": token}).status_code, 200)
+        # …and a write it is not, on the same freshly-minted token.
+        self.assertEqual(client.post("/pause", params={"token": token}).status_code, 403)
+
+    def test_the_get_login_a_shared_link_uses_honours_it_too(self):
+        # `GET`, not `POST`: the gate lets a viewer through read methods only,
+        # so `POST /api/login` is a 403 for a viewer token however valid it is.
+        # That is why the link handed out is the redirect form.
+        from starlette.testclient import TestClient
+
+        from c64cast.control.auth import COOKIE_NAME, ViewerCredential
+
+        cred = ViewerCredential()
+        app, _pl = _app(viewer_token=cred)
+        client = TestClient(app)
+        token, _ = cred.issue()
+        answer = client.get(
+            "/api/login", params={"token": token, "next": "/perf"}, follow_redirects=False
+        )
+        self.assertEqual(answer.status_code, 303)
+        self.assertEqual(answer.headers["location"], "/perf")
+        self.assertEqual(answer.cookies[COOKIE_NAME], token)
 
 
 if __name__ == "__main__":

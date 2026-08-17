@@ -1,6 +1,7 @@
 <script lang="ts">
   import FieldInput from "$lib/components/FieldInput.svelte";
-  import { fieldKind, showValue } from "$lib/introspect";
+  import { fieldKinds, showValue } from "$lib/introspect";
+  import type { Swatch } from "$lib/types";
 
   interface Props {
     name: string;
@@ -13,6 +14,10 @@
      *  a table gets a block of its own rather than being crushed onto a line. */
     type?: string;
     choices?: string[];
+    /** `FieldDoc.vocabulary` — with the palette, turns a colour field into the
+     *  swatches the value means anyway. */
+    vocabulary?: string;
+    palette?: Swatch[];
     /** True for a field that takes effect without a restart. Not shown for the
      *  others: every top-level config field needs a rebuild, so a badge on
      *  each of them would be 167 badges saying nothing. */
@@ -46,6 +51,8 @@
     help = "",
     type = "",
     choices = [],
+    vocabulary = "",
+    palette = [],
     live = false,
     editable = false,
     locked = "",
@@ -62,8 +69,11 @@
   // expanded by asking — which is also where the choices and the declared type
   // go, so the resting row stays one line.
   let open = $state(false);
-  const kind = $derived(fieldKind(type));
-  const complex = $derived(kind === "complex");
+  const kinds = $derived(fieldKinds(type));
+  // Whether *this* value needs a block of its own, not whether the type could
+  // ever produce one: `force_palette_colors` is `int | list`, and the int is a
+  // number that belongs on the line beside its name.
+  const complex = $derived(typeof value === "object" && value !== null);
   // Nothing to clear when the file already says nothing about the field.
   const clearable = $derived(changed || dirty);
 
@@ -111,8 +121,10 @@
       <div class="min-w-40 flex-1">
         <FieldInput
           label={name}
-          {kind}
+          {kinds}
           {choices}
+          {vocabulary}
+          {palette}
           {value}
           onedit={(v, e) => onedit?.(v, e)}
         />

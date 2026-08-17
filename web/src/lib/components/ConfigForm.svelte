@@ -3,15 +3,17 @@
   import Button from "$lib/components/Button.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
   import LayerBlame from "$lib/components/LayerBlame.svelte";
+  import MediaWarnings from "$lib/components/MediaWarnings.svelte";
   import type { DocIndex } from "$lib/introspect";
   import type {
     ConfigEdit,
     ConfigForm,
-    ConfigPatched,
+    ConfigWritten,
     FormField,
     FormScene,
     FormSection,
     ValidationReport,
+    Warning,
   } from "$lib/types";
 
   interface Props {
@@ -26,8 +28,9 @@
     onpending: (next: Record<string, ConfigEdit>) => void;
     /** `restart` names the sections a reload will *not* pick up, so the screen
      *  can stop offering a reload as if it were enough. Empty on a save that a
-     *  reload covers in full. */
-    onsaved: (written: ConfigPatched, restart: string[]) => void;
+     *  reload covers in full — which includes every structural change, since
+     *  adding or removing a scene is exactly what a reload is for. */
+    onsaved: (written: ConfigWritten, restart: string[]) => void;
   }
 
   let { form, docs, path, readOnly, pending, onpending, onsaved }: Props = $props();
@@ -46,6 +49,9 @@
   // isn't one yet is a state of this screen, not something worth carrying to
   // another file and back.
   let invalid = $state<Record<string, string>>({});
+  // Carried out of the last save so a green "Saved" can't stand alone over a
+  // config that names media this host hasn't got.
+  let warnings = $state<Warning[]>([]);
 
   const edits = $derived(Object.values(pending));
   const blocked = $derived(Object.values(invalid).some(Boolean));
@@ -179,6 +185,7 @@
     report = null;
     problem = "";
     saved = "";
+    warnings = [];
     onpending({});
   }
 
@@ -193,10 +200,46 @@
     return `${named} ${verb} the session restarted; the rest apply on a reload.`;
   }
 
+  /** Which scene type a new blank scene gets. The options come from the host's
+   *  own list rather than a copy kept here. */
+  let newType = $state("video");
+
+  const chip = `min-h-9 rounded-md border border-[var(--edge)] px-2 text-xs
+                text-[var(--ink-dim)] hover:text-[var(--ink)] disabled:opacity-40`;
+
+  /** Adding or removing a scene renumbers the ones after it, and every staged
+   *  edit is keyed by index — so the two cannot be in flight at once. Refusing
+   *  is better than renumbering the staged edits, which would silently move an
+   *  unsaved change onto a different scene. */
+  const structuralBlocked = $derived(edits.length > 0);
+
+  async function structural(act: () => Promise<ConfigWritten>): Promise<void> {
+    report = null;
+    problem = "";
+    saved = "";
+    warnings = [];
+    busy = true;
+    try {
+      const written = await act();
+      saved = `Saved. ${written.backup ? `The previous version is in ${written.backup}.` : ""}`;
+      warnings = written.warnings ?? [];
+      // No sections held back: a scene list is exactly what a reload re-reads.
+      onsaved(written, []);
+    } catch (e) {
+      const refused = reportOf(e);
+      if (refused) report = refused;
+      else if (e instanceof ApiError) problem = e.message;
+      else problem = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function save(): Promise<void> {
     report = null;
     problem = "";
     saved = "";
+    warnings = [];
     busy = true;
     // Read before the save: `onsaved` re-reads the file, which clears the
     // staged edits these were derived from.
@@ -208,6 +251,7 @@
       const what = count === 1 ? "1 change" : `${count} changes`;
       const kept = written.backup ? ` The previous version is in ${written.backup}.` : "";
       saved = `Saved ${what}. ${applies(count, held, needsRestart)}${kept}`;
+      warnings = written.warnings ?? [];
       invalid = {};
       onsaved(written, needsRestart);
     } catch (e) {
@@ -261,15 +305,43 @@
       {#each scenes as row (row.index)}
         {@const doc = docs.sceneType(row.scene.type)}
         <article class="rounded-lg border border-[var(--edge)] p-3">
-          <header class="mb-2">
-            <h4 class="text-sm font-medium">
-              <span class="font-mono">{row.scene.type}</span>
-              {#if row.scene.name}
-                <span class="text-[var(--ink-dim)]">— {row.scene.name}</span>
+          <header class="mb-2 flex flex-wrap items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+              <h4 class="text-sm font-medium">
+                <span class="text-[var(--ink-dim)]">{row.index + 1}.</span>
+                <span class="font-mono">{row.scene.type}</span>
+                {#if row.scene.name}
+                  <span class="text-[var(--ink-dim)]">— {row.scene.name}</span>
+                {/if}
+              </h4>
+              {#if doc?.help}
+                <p class="mt-0.5 text-xs text-[var(--ink-dim)]">{doc.help}</p>
               {/if}
-            </h4>
-            {#if doc?.help}
-              <p class="mt-0.5 text-xs text-[var(--ink-dim)]">{doc.help}</p>
+            </div>
+            {#if !readOnly}
+              <div class="flex gap-1">
+                <button
+                  class={chip}
+                  disabled={busy || structuralBlocked}
+                  title={structuralBlocked
+                    ? "Save or discard the staged edits first — adding a scene renumbers the rest"
+                    : "Add a copy of this scene straight after it"}
+                  onclick={() =>
+                    void structural(() => api.addScene(path, { copy: row.index, after: row.index }))}
+                >
+                  Duplicate
+                </button>
+                <button
+                  class={chip}
+                  disabled={busy || structuralBlocked || scenes.length < 2}
+                  title={scenes.length < 2
+                    ? "A show needs a scene to play"
+                    : "Remove this scene from the file"}
+                  onclick={() => void structural(() => api.removeScene(path, row.index))}
+                >
+                  Remove
+                </button>
+              </div>
             {/if}
           </header>
 
@@ -291,6 +363,8 @@
               help={fd?.help ?? ""}
               type={fd?.type ?? ""}
               choices={fd?.choices ?? []}
+              vocabulary={fd?.vocabulary ?? ""}
+              palette={docs.palette}
               live={fd?.apply === "live"}
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}
@@ -320,6 +394,37 @@
         </article>
       {/each}
     </div>
+
+    {#if !readOnly}
+      <!-- "Add another clip to this show" is the most common structural edit
+           there is, and it was the one that still meant opening the source. -->
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <label class="sr-only" for="new-scene-type">Type of scene to add</label>
+        <select
+          id="new-scene-type"
+          bind:value={newType}
+          disabled={busy || structuralBlocked}
+          class="min-h-11 rounded-lg border border-[var(--edge)] bg-[var(--panel-alt)] px-2 py-1
+                 font-mono text-sm disabled:opacity-40
+                 focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        >
+          {#each docs.sceneTypes as st (st.name)}
+            <option value={st.name}>{st.name}</option>
+          {/each}
+        </select>
+        <Button
+          disabled={busy || structuralBlocked}
+          onclick={() => void structural(() => api.addScene(path, { type: newType }))}
+        >
+          Add scene
+        </Button>
+        {#if structuralBlocked}
+          <span class="text-xs text-c64-yellow">
+            Save or discard the staged edits first — adding a scene renumbers the rest.
+          </span>
+        {/if}
+      </div>
+    {/if}
   </section>
 
   <section>
@@ -356,6 +461,8 @@
               help={fd?.help ?? ""}
               type={fd?.type ?? ""}
               choices={fd?.choices ?? []}
+              vocabulary={fd?.vocabulary ?? ""}
+              palette={docs.palette}
               live={fd?.apply === "live"}
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}
@@ -395,7 +502,10 @@
   {/if}
 
   {#if saved}
-    <p class="rounded-lg border border-c64-green/50 px-3 py-2 text-sm text-c64-green">{saved}</p>
+    <div class="rounded-lg border border-c64-green/50 px-3 py-2 text-sm text-c64-green">
+      <p>{saved}</p>
+      <MediaWarnings {warnings} heading="It is saved, but:" />
+    </div>
   {/if}
 
   {#if problem}

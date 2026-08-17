@@ -57,9 +57,10 @@ skip the injection entirely.
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from c64cast.app import introspect
 from c64cast.app.config import Config, ConfigError
@@ -75,6 +76,11 @@ from c64cast.app.config_store import (
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
+
+from . import screen as screen_mod
+from .auth import LOGIN_PATH, ViewerCredential
+from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
+from .web_static import landing_path
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +128,46 @@ def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     return {**where, "field": row["field"], "value": row["new"]}
 
 
+async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[bytes]:
+    """Drive a blocking frame generator from the event loop, and stop when the
+    client does.
+
+    Two problems, one adapter. The generator sleeps and encodes, so running it
+    on the loop would stall every other request; and `is_disconnected` is a
+    coroutine, so the generator cannot ask it. Pulling each part in a worker
+    thread and checking between parts solves both. Without the check, a closed
+    tab would leave a thread encoding frames nobody reads.
+
+    Nothing here closes the generator, which is the correction to the first
+    version of this: a disconnect cancels this coroutine *while the worker
+    thread is inside* `next()`, and closing a running generator raises
+    `ValueError: generator already executing` — so the `finally` that was
+    supposed to release the machine's stream never completed. The stream's
+    lifetime belongs to the response instead (`ScreenFeed.release` as a
+    background task); an abandoned generator is suspended at a yield, holds
+    nothing, and is collected."""
+    loop = asyncio.get_running_loop()
+    while not await request.is_disconnected():
+        part = await loop.run_in_executor(None, lambda: next(frames, None))
+        if part is None:
+            return
+        yield part
+
+
+def _opt_index(value: Any, name: str) -> int | None:
+    """A scene index from a request body, or None.
+
+    ``EditRejected`` rather than an ``HTTPException`` so this stays sayable
+    without FastAPI in scope; ``_store_error`` maps it to the 400 it deserves.
+    ``bool`` is rejected because it is an ``int`` in Python, and
+    ``{"copy": true}`` would otherwise read as scene 1."""
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise EditRejected(f"`{name}` is a scene index, got {value!r}")
+    return value
+
+
 def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
     """Put what the file just took back onto the running Config, so the C64
     menu's own whole-config save-back can't quietly revert it.
@@ -145,18 +191,35 @@ def register_web_routes(
     playlists: PlaylistRegistry,
     store: ConfigStore,
     log_buffer: Any = None,
+    viewer: ViewerCredential | None = None,
+    screen_fps: float = 10.0,
 ) -> None:
     """Register the ``/api/*`` routes on an existing FastAPI ``app``.
 
     Called by :func:`c64cast.app.serve.run_daemon` after the control-plane
     routes and the auth middleware are already on the app, so everything here
     is gated by the same token — a route added to this module can't ship
-    unauthenticated by omission."""
-    from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
+    unauthenticated by omission.
+
+    ``viewer`` is the same :class:`~c64cast.control.auth.ViewerCredential` the
+    gate holds, so a token issued by ``/api/viewer-link`` is accepted by the
+    next request without a restart. ``None`` leaves the route registered and
+    answering ``501``, which keeps the console's one code path honest on a host
+    built without one.
+
+    ``screen_fps`` caps how often a watched screen is encoded, not how fast the
+    machine sends — it is already sending every frame, and the ones not encoded
+    are the ones no longer in the receiver's `latest()`."""
+    from fastapi import HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+    from fastapi.responses import StreamingResponse
+    from starlette.background import BackgroundTask
 
     from .perf_console import PerfBridge
 
     bridge = PerfBridge(lambda: list(playlists().items()))
+    # One playlist per system, each holding the backend that system's writes go
+    # through — and the screen is a property of that same machine.
+    screen = ScreenFeed(lambda: {name: pl.api for name, pl in playlists().items()})
 
     # Built once: ~150 KB of JSON assembled by walking every config dataclass,
     # every scene type and every overlay. It describes the code, not the run,
@@ -222,6 +285,90 @@ def register_web_routes(
         if not introspection:
             introspection = introspect.as_dict()
         return introspection
+
+    # The screen. All three are GETs, so the read-only role can watch — a
+    # viewer who cannot see the show has been handed a link to nothing. What a
+    # GET here does have is a side effect on the machine (it starts the VIC
+    # stream while somebody is looking), and that is the right trade: it changes
+    # nothing about what the C64 is doing, and every alternative means a viewer
+    # cannot see the screen at all.
+    def _screen_system(system: str | None) -> str:
+        """The system whose screen to show, or the reason there isn't one.
+
+        ``screen_fps = 0`` is the off switch, and it is refused here rather than
+        by leaving the routes unregistered: a console asking a host that has the
+        picture turned off should hear *that*, not a 404 it would read as an
+        older host."""
+        if screen_fps <= 0:
+            raise ScreenUnavailable("this host has the live screen turned off ([web].screen_fps)")
+        return screen.resolve(system)
+
+    @app.get("/api/screen")
+    def api_screen() -> dict[str, Any]:
+        """Which systems can show a picture, without starting anything."""
+        return {
+            "systems": {} if screen_fps <= 0 else screen.available(),
+            "fps": screen_fps,
+        }
+
+    @app.get("/api/screen.png")
+    def api_screen_png(system: str | None = None) -> Response:
+        try:
+            return Response(
+                screen.latest_png(_screen_system(system)),
+                media_type="image/png",
+                # A still is a *now*, and a browser that cached one would show
+                # a screen from before the change that was made to see it.
+                headers={"Cache-Control": "no-store"},
+            )
+        except ScreenUnavailable as e:
+            raise HTTPException(501, str(e)) from e
+
+    @app.get("/api/screen/stream")
+    def api_screen_stream(request: Request, system: str | None = None) -> StreamingResponse:
+        """The machine's screen as `multipart/x-mixed-replace`, which one
+        `<img>` renders with no script and no decoder in the page."""
+        try:
+            name = _screen_system(system)
+        except ScreenUnavailable as e:
+            raise HTTPException(501, str(e)) from e
+
+        # The watch is held by the *response*, not by the generator: acquired
+        # here and released by a background task, which Starlette runs once the
+        # body is done however it ended. Putting the release in the generator's
+        # own `finally` is the obvious thing and it does not work — the
+        # generator runs on a worker thread, a disconnect cancels the async task
+        # while that thread is inside it, and closing it from there raises
+        # rather than unwinding. See `ScreenFeed.release`.
+        read = screen.acquire(name)
+        return StreamingResponse(
+            _until_gone(multipart_frames(read, fps=screen_fps), request),
+            media_type=f"multipart/x-mixed-replace; boundary={screen_mod.BOUNDARY}",
+            headers={"Cache-Control": "no-store"},
+            background=BackgroundTask(screen.release, name),
+        )
+
+    # POST, not GET, for two reasons that point the same way: it may mint a
+    # credential, and the auth gate lets a `viewer` token through every GET —
+    # a read-only guest must not be able to ask for the link that made them one.
+    @app.post("/api/viewer-link")
+    def api_viewer_link() -> dict[str, Any]:
+        """The read-only login link to hand somebody, minting the token on the
+        first ask.
+
+        Returns a *path*: the host may be bound to ``0.0.0.0`` and have no idea
+        which of its addresses the phone in your hand reached it on, whereas the
+        browser asking has that in `location.origin`."""
+        if viewer is None:
+            raise HTTPException(501, "this host was built without a read-only credential")
+        token, minted = viewer.issue()
+        if minted:
+            log.info("web console: issued a read-only token")
+        return {
+            "token": token,
+            "path": f"{LOGIN_PATH}?token={quote(token)}&next={quote(landing_path())}",
+            "minted": minted,
+        }
 
     @app.get("/api/session")
     def api_session(request: Request) -> dict[str, Any]:
@@ -371,6 +518,33 @@ def register_web_routes(
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
+    # Registered before the bare `{ref:path}` route for the same reason
+    # `/validate` is: a config whose name ends in "/scenes" must not swallow it.
+    #
+    # Structural, not a field edit — which is why it is its own route and not
+    # another kind of PATCH body. Adding a clip to a show is the most common
+    # change there is to a show file, and it was the one that still required
+    # opening the text editor.
+    @app.post("/api/configs/{ref:path}/scenes")
+    async def api_scene_add(ref: str, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        try:
+            return store.add_scene(
+                ref,
+                scene_type=str(body.get("type") or ""),
+                copy_of=_opt_index(body.get("copy"), "copy"),
+                after=_opt_index(body.get("after"), "after"),
+            )
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
+    @app.delete("/api/configs/{ref:path}/scenes/{index}")
+    def api_scene_remove(ref: str, index: int) -> dict[str, Any]:
+        try:
+            return store.remove_scene(ref, index)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
     # The generated form's save. PUT replaces the file with the text a client
     # composed; PATCH names fields and lets the *server* compose the text, so a
     # form never has to know how a TOML is written — and two consoles editing
@@ -428,6 +602,11 @@ def register_web_routes(
                 # Same split as `perf_ws`: a frame that raises is our bug, and
                 # swallowing it below would leave the console waiting forever
                 # for a push that is never coming.
+                # Cheap, and the only regular tick this process has: it is what
+                # stops a video stream whose watchers have gone or whose show
+                # has ended. A timer of its own would be a thread paid for at
+                # idle to notice that nothing is happening.
+                screen.sweep()
                 try:
                     frame = bridge.state()
                     frame["role"] = websocket.scope.get("c64cast_role")

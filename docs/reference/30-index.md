@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 435 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 436 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -44,7 +44,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `backend` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
 | `backend` (audio) | [Notation](01-introduction.md#notation), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Two Ways Out (4)](05-sound-and-music.md#two-ways-out) |
 | `backend` (hardware) | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
-| `background` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial), [`blank` (B)](21-appendix-b-scene-types.md#blank) |
+| `background` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [The Console (6)](07-inputs-and-outputs.md#the-console), [`interstitial` (A)](20-appendix-a-configuration.md#interstitial) |
 | `bands` | [Listening Back (4)](05-sound-and-music.md#listening-back), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `baud` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | beat grid | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [The Beat Grid (6)](07-inputs-and-outputs.md#the-beat-grid) |
@@ -53,7 +53,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `big_text` | [What Ends a Scene (2)](03-vocabulary.md#what-ends-a-scene), [`big_text` Wants the Scene to Itself (2)](03-vocabulary.md#big_text-wants-the-scene-to-itself), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
 | `blank` | [`blank` (2)](03-vocabulary.md#blank), [`video` (2)](03-vocabulary.md#video), [`blank` (B)](21-appendix-b-scene-types.md#blank) |
 | `blur` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
-| `border` | [`blank` (B)](21-appendix-b-scene-types.md#blank) |
+| `border` | [The Console (6)](07-inputs-and-outputs.md#the-console), [`blank` (B)](21-appendix-b-scene-types.md#blank) |
 | `bpm` | [Listening Back (4)](05-sound-and-music.md#listening-back), [The Beat Grid (6)](07-inputs-and-outputs.md#the-beat-grid), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `broadcast` | [WLED (6)](07-inputs-and-outputs.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `broadcast_channel` | [One Surface for the Whole Ensemble (6)](07-inputs-and-outputs.md#one-surface-for-the-whole-ensemble), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
@@ -191,7 +191,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
-| `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [The Console (6)](07-inputs-and-outputs.md#the-console), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `format` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
 | `fourcc` | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `fps` | [Recording (6)](07-inputs-and-outputs.md#recording), [`preview` (A)](20-appendix-a-configuration.md#preview), [`recording` (A)](20-appendix-a-configuration.md#recording) |
@@ -458,6 +458,7 @@ Every name c64cast answers to — 435 of them — and the pages that discuss eac
 | `scale` (recording) | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `scale` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | screen RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |
+| `screen_fps` | [The Console (6)](07-inputs-and-outputs.md#the-console), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `scroll_columns` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `scroll_speed` (source) | [What Ships Mapped (6)](07-inputs-and-outputs.md#what-ships-mapped), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `scrolling_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |

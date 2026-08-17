@@ -1648,6 +1648,7 @@ class SceneCfg:
             "help": "Border color (blank scenes): a C64 color name (fuzzy + "
             'case-insensitive, e.g. "light blue") or a palette index 0..15.',
             "applies_to": ("blank",),
+            "vocabulary": "c64color",
         },
     )
     background: int | str = field(
@@ -1656,6 +1657,7 @@ class SceneCfg:
             "help": "Background color (blank scenes): a C64 color name (fuzzy + "
             'case-insensitive, e.g. "light blue") or a palette index 0..15.',
             "applies_to": ("blank",),
+            "vocabulary": "c64color",
         },
     )
     # Launcher scene kwargs.
@@ -1887,7 +1889,8 @@ class ColorCfg:
             "of distinct colors to spread the source across (2..16), OR an "
             "explicit list of colors to whitelist — each a color name (fuzzy + "
             'case-insensitive, e.g. "light blue", "lgrn", "blk") or an '
-            "index 0..15. A list's length sets the color count."
+            "index 0..15. A list's length sets the color count.",
+            "vocabulary": "c64color",
         },
     )
     dither: str = field(
@@ -2293,6 +2296,16 @@ class WebCfg:
         metadata={
             "help": "Start the config the host was launched with as soon as it comes up, "
             "rather than waiting for a browser to ask (headless / launchd boxes)."
+        },
+    )
+    screen_fps: float = field(
+        default=10.0,
+        metadata={
+            "help": "How often the console's live screen picture is refreshed, in "
+            "frames per second (0 turns the screen off entirely). The picture is "
+            "the Ultimate 64's own VIC stream, so this caps how often the host "
+            "encodes a frame, not how fast the machine sends. Ultimate 64 only — "
+            "an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path."
         },
     )
     settle_s: float = field(

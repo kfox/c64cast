@@ -66,6 +66,7 @@ from .c64 import (
     kernal_cia1_latch,
 )
 from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
+from .vic_stream import VicStreamReceiver
 
 __all__ = ["Ultimate64API", "SocketDMAError", "ParsedPsid", "parse_psid_for_player"]
 
@@ -1800,9 +1801,18 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if has_emusid != self.profile.supports_emusid_mixer:
             self.profile = replace(self.profile, supports_emusid_mixer=has_emusid)
 
+        # One category, two capabilities. The System Mode enum and the VIC
+        # stream are both compiled under the firmware's `#ifdef U64`, so a
+        # device that registers this category is an Ultimate 64 with a VIC of
+        # its own and one that doesn't is an Ultimate II+ with neither. Reading
+        # the same answer twice would only create a way for them to disagree.
         has_system_mode = SYSTEM_MODE_CATEGORY in categories
         if has_system_mode != self.profile.supports_system_mode:
-            self.profile = replace(self.profile, supports_system_mode=has_system_mode)
+            self.profile = replace(
+                self.profile,
+                supports_system_mode=has_system_mode,
+                supports_video_stream=has_system_mode,
+            )
 
         missing = [c for c in SID_CONFIG_CATEGORIES if c not in categories]
         if not missing or not self.profile.supports_sid_config:
@@ -2038,6 +2048,25 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         existing audio/video REU paths still reach `self.socket_dma.reuwrite`
         directly, this is the backend-agnostic entry point."""
         self.socket_dma.reuwrite(reu_offset, data)
+
+    def open_video_stream(self) -> VicStreamReceiver:
+        """A stopped receiver for this machine's own VIC output.
+
+        Shares the render path's socket-DMA client, which is not an
+        optimisation but the only option: the U64's DMA service is
+        single-connection, so a second socket for two commands would lock out
+        the one every write goes through. The commands themselves are two
+        control frames on that link and nothing more — the pixels never touch
+        it, they come back out of the FPGA's own MAC as UDP."""
+        if not self.profile.supports_video_stream:
+            raise BackendCapabilityError(
+                "open_video_stream: this device has no VIC of its own to stream "
+                "(the firmware's stream commands are Ultimate 64 only)"
+            )
+        host = urlparse(self.base_url).hostname
+        if not host:
+            raise BackendCapabilityError(f"open_video_stream: no host in {self.base_url!r}")
+        return VicStreamReceiver(self.socket_dma, machine_host=host)
 
     def close(self) -> None:
         self.socket_dma.close()

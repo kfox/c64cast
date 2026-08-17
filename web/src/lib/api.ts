@@ -7,8 +7,11 @@ import type {
   Introspection,
   LiveTuneSaved,
   LogLine,
+  SceneChanged,
+  ScreenAvailability,
   SessionStatus,
   ValidationReport,
+  ViewerLink,
 } from "./types";
 
 /** A non-2xx answer, carrying the status so a caller can tell "you may not"
@@ -127,6 +130,18 @@ export const api = {
   patchConfig: (ref: string, edits: ConfigEdit[]) =>
     request<ConfigPatched>("PATCH", `/api/configs/${refPath(ref)}`, { edits }),
 
+  /** Add a scene — a blank one of `type`, or a copy of the scene at `copy`.
+   *  Structural rather than a field edit, which is why it is its own route:
+   *  it changes which scenes exist, not what one of them says. Written and
+   *  validated immediately, like every other save. */
+  addScene: (ref: string, body: { type?: string; copy?: number; after?: number }) =>
+    request<SceneChanged>("POST", `/api/configs/${refPath(ref)}/scenes`, body),
+
+  /** Its pair — a console that could add and not remove would be a one-way
+   *  door back to the text editor. Refused for the last scene. */
+  removeScene: (ref: string, index: number) =>
+    request<SceneChanged>("DELETE", `/api/configs/${refPath(ref)}/scenes/${index}`),
+
   /** `start`, `switch` and `stop` all answer 202: the supervisor has claimed
    *  the transition, not finished it. What actually happened arrives on the
    *  state feed, which is why nothing here waits for a result. */
@@ -149,4 +164,16 @@ export const api = {
       action: "discard",
       system,
     }),
+
+  /** The read-only login link to hand somebody, minting the token on the first
+   *  ask. A `POST` even though it reads like a read: the gate lets a viewer
+   *  token through every `GET`, and a guest must not be able to fetch the link
+   *  that made them one. The host answers with a *path* — it may be bound to
+   *  `0.0.0.0` and have no idea which of its addresses this browser used. */
+  viewerLink: () => request<ViewerLink>("POST", "/api/viewer-link"),
+
+  /** Which systems can show a picture, and how often the host will encode one.
+   *  Asking does not start anything — the stream comes up when an `<img>`
+   *  opens `/api/screen/stream`, and goes down when it closes. */
+  screen: () => request<ScreenAvailability>("GET", "/api/screen"),
 };

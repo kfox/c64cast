@@ -502,10 +502,30 @@ a table — and an edited row is marked, counted, and saved in one go by **Save*
 direction: it stops the file setting a field at all, and the row shows what will
 apply instead. Nothing is written until you save, and a save that would produce
 a file that cannot run is refused with the loader's own reason, the file
-untouched and the edits still on screen. What the form cannot do is structural:
-adding or removing a scene, changing a scene's `type`, and editing an overlay
-are the *Source* editor's, because each of them rewrites the block rather than
-setting a value in it.
+untouched and the edits still on screen.
+
+A setting that accepts two kinds of value offers both, with a small selector
+above the control saying which you are writing. A colour is the case that
+matters: `border` and `background` take a name *or* an index `0..15`, so they
+get the sixteen C64 colours as swatches, and `force_palette_colors` takes either
+a count or a list of them. Picking a swatch writes the colour's name. A spelling
+the picker cannot place — the short forms the loader also accepts, like `lgrn` —
+is left exactly as it is, and said to be unrecognised, rather than quietly
+changed to something else.
+
+Scenes can be added and removed here too. **Add scene** under the list makes a
+blank one of the type you pick; **Duplicate** on a scene makes a copy of it
+right after it, which is the quick way to add another clip like the one you
+already tuned; **Remove** drops one, except the last, since a show needs a scene
+to play. Those write the file straight away, so save or discard your staged
+edits first — the console says so, because inserting a scene renumbers the ones
+after it. Changing a scene's `type` and editing an overlay are still the
+*Source* editor's: each rewrites the block rather than setting a value in it.
+
+**Check** and **Save** also warn about media. A scene naming a file that is not
+on this host still loads — the file may arrive before showtime, or belong to
+another machine in an ensemble — so it is a warning and not a refusal, but it is
+said before the C64 is opened rather than seconds into the run.
 
 *Source* is the file itself, editable, with **Check** to load it without saving
 and **Save** to write it back. An edit you have not saved — in either view —
@@ -538,7 +558,21 @@ screen, the console says so and names the file it came from.
 > a show file portable: it says what the show is, not what this machine is.
 
 **Live** is the performance surface, and it is the screen to have open at a
-gig. Along the top is the beat grid: the tempo, a pulse on the current beat,
+gig. Above everything else is the **Screen** panel: the Commodore's picture,
+live, in the browser. It is the machine's own video — the Ultimate 64's FPGA
+taps the VIC and sends it out as UDP, without taking a single C64 cycle — so
+what you see is what the VIC is actually painting rather than what c64cast
+believes it wrote, and it is right for scenes c64cast does not draw at all.
+Press **Watch** to start it and **Stop** to end it; it runs only while the
+panel is open, because it is a couple of megabytes a second while it does.
+
+This is the one feature the hardware decides. An Ultimate 64 has it. An
+Ultimate II+ is a cartridge in someone else's C64 and has no VIC of its own to
+tap; a TeensyROM+ has no video path at all. Those say so in the panel rather
+than showing you nothing. `[web].screen_fps` sets how often the host encodes a
+frame (not how fast the machine sends), and `0` turns the screen off.
+
+Along the top is the beat grid: the tempo, a pulse on the current beat,
 where that tempo came from, **Tap** to set it by hand, and the transport —
 **Pause**, **Resume** and **Skip**, which are the same pause and skip the C64's
 own keys give you. Below it the clip grid, one pad per `[[performance.clips]]`
@@ -656,6 +690,11 @@ Set `[web].token` (or `$C64CAST_WEB_TOKEN`, which wins) to choose your own, or
 `token_file` to keep it out of the configuration entirely. `viewer_token` grants
 the same read-only role the control plane's does: watch the state feed, but
 never start, stop or edit.
+
+You do not have to configure that one to use it. The Session screen's **Share**
+block asks the host for a read-only link and shows it ready to copy; the first
+ask mints the token and keeps it, so the link still opens after a restart. Hand
+that out rather than the address you are using — yours can stop the show.
 
 ### Living Through a Crash
 

@@ -541,6 +541,33 @@ class PerfEndpointsTest(unittest.TestCase):
         for panel in ("clips", "fx", "tune", "tuned", "looks", "scenes", "pause", "skip"):
             self.assertIn(f'id="{panel}"', text)
 
+    def test_the_screen_is_an_img_against_the_stream_route(self):
+        # Not a bridge action — an /api route this page reaches without a
+        # decoder or a second socket, which is what makes it sayable on a page
+        # with no build step. The route only exists on a --serve host, so the
+        # page has to handle its absence (test below).
+        client, _pl = self._client()
+        text = client.get("/perf").text
+        self.assertIn('id="screen"', text)
+        self.assertIn("/api/screen/stream", text)
+
+    def test_the_screen_starts_off_rather_than_on_page_load(self):
+        # Opening it is what starts a couple of megabytes a second moving, so
+        # it is a tap and not something every idle console does.
+        client, _pl = self._client()
+        text = client.get("/perf").text
+        self.assertRegex(text, r'<img id="screen"[^>]*\bhidden\b')
+        self.assertIn("screenOn = false", text)
+
+    def test_the_page_names_both_reasons_there_might_be_no_picture(self):
+        # An <img> error cannot tell "this run has no /api" from "this machine
+        # has no VIC", and the page is served by the control plane, which a
+        # plain CLI run has without any of /api.
+        client, _pl = self._client()
+        text = client.get("/perf").text
+        self.assertIn("serves no screen", text)
+        self.assertIn("no video", text)
+
     def test_state_endpoint(self):
         client, _pl = self._client()
         r = client.get("/perf/state")

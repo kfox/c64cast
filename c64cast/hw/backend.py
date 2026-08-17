@@ -43,7 +43,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -125,6 +125,13 @@ class HardwareProfile:
     #   Ultimate II+ has no such category. Granted by refine_capabilities from
     #   the device's category list, so it stays False on an unprobed run.
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
+    supports_video_stream: bool = False  # the machine's own VIC-out UDP stream
+    #   (socket-DMA 0xFF20/0xFF30 — see hw/vic_stream.py). Ultimate 64 only:
+    #   the firmware compiles both commands under `#ifdef U64`, and an Ultimate
+    #   II+ is a cartridge in someone else's C64 with no VIC of its own to tap.
+    #   Optimistic on the Ultimate family and revoked by refine_capabilities
+    #   alongside supports_system_mode, which is the same #ifdef seen from the
+    #   config API — so an unprobed run behaves as it did before the flag.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -253,6 +260,9 @@ ULTIMATE_PROFILE = HardwareProfile(
     #   without the categories (U2+). Optimistic so an unprobed run (--skip-probe,
     #   probe failure) behaves exactly as before this flag existed.
     supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
+    supports_video_stream=True,  # optimistic like supports_sid_config above;
+    #   revoked on a U2+ by refine_capabilities, which learns from the config
+    #   API which side of the firmware's `#ifdef U64` this device is on.
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
     kernal_irq_intact=True,
@@ -481,6 +491,15 @@ class C64Backend(ABC):
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:
         raise BackendCapabilityError("reu_write")
+
+    def open_video_stream(self) -> Any:
+        """A stopped :class:`~c64cast.hw.vic_stream.VicStreamReceiver` for this
+        machine's own VIC output — the caller starts and stops it.
+
+        Gated by `supports_video_stream` (Ultimate 64 only). Returned rather
+        than started so the caller owns the lifetime: the stream is megabytes a
+        second and must not outlive whoever is watching it."""
+        raise BackendCapabilityError("open_video_stream")
 
     def put_config_item(
         self, category: str, item: str, value: str, *, timeout: float = 3.0

@@ -8,12 +8,12 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
-* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `control/web_static.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
+* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `control/web_static.py`, `control/screen.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/session.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
@@ -81,6 +81,7 @@ the two lists account for every module in the tree.
 | `control/tempo.py` | [Control surfaces & live performance](architecture/control.md#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1) |
 | `control/performance.py` | [Control surfaces & live performance](architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2) |
 | `control/perf_console.py` | [Control surfaces & live performance](architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5) |
+| `control/screen.py` | [Control surfaces & live performance](architecture/control.md#screenpy--the-c64s-screen-in-the-browser) |
 | `control/web_api.py` | [Control surfaces & live performance](architecture/control.md#web_apipy--the-web-consoles-api--the-host---serve) |
 | `app/config_store.py` | [Control surfaces & live performance](architecture/control.md#config_storepy--the-config-browser-and-its-root-jail) |
 | `control/web_static.py` | [Control surfaces & live performance](architecture/control.md#web_staticpy--the-consoles-built-ui-committed-and-served) |
@@ -116,6 +117,7 @@ the two lists account for every module in the tree.
 | `sid/sid_volume.py` | [SID playback & the oscilloscope](architecture/sid.md#sid-volume) |
 | `sid/sidemu.py` | [SID playback & the oscilloscope](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene) |
 | `hw/socket_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
+| `hw/vic_stream.py` | [Hardware I/O & transports](architecture/hardware-io.md#vic_streampy--the-machines-own-vic-output) |
 | `sid/songlengths.py` | [SID playback & the oscilloscope](architecture/sid.md#songlengthspy--hvsc-songlengths-lookup) |
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `hw/teensyrom_api.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend) |

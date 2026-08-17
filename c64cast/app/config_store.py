@@ -72,7 +72,7 @@ import logging
 import os
 import tempfile
 import tomllib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -192,6 +192,53 @@ def _value(val: object) -> Any:
     if isinstance(val, (str, int, float, bool)) or val is None:
         return val
     return str(val)
+
+
+def _unplayable_warning(detail: str) -> dict[str, Any]:
+    """A scene with no media chosen yet, carried as a warning instead of the
+    refusal it is during a run.
+
+    Only reachable from a structured edit — see
+    :meth:`ConfigStore.validate_text`. Same shape as a media warning so the
+    console renders it in the list it already has, with no scene to point at:
+    the pre-flight stops at the first scene that fails and speaks about the
+    show, not about one field."""
+    return {
+        "system": "",
+        "scene": None,
+        "field": None,
+        "detail": f"saved, but this will not start until it names its media: {detail}",
+    }
+
+
+def _media_warnings(cfgs: Sequence[cfgmod.Config], names: Sequence[str]) -> list[dict[str, Any]]:
+    """Scenes whose `file =` names local media that isn't there.
+
+    A warning rather than a refusal, because :func:`scene_factory.missing_media`
+    is reporting exactly the case the loader lets through on purpose — a path
+    that will exist by showtime, or one that names media on another machine in
+    an ensemble. Reported in the same report the console already renders, so
+    the answer arrives before the C64 is opened and reset rather than seconds
+    into the run."""
+    from .scene_factory import missing_media
+
+    out: list[dict[str, Any]] = []
+    for cfg, system in zip(cfgs, list(names) + [""] * len(cfgs), strict=False):
+        for index, scene in enumerate(cfg.scenes):
+            for entry in missing_media(scene.file or ""):
+                out.append(
+                    {
+                        "system": system,
+                        "scene": index,
+                        "field": "file",
+                        "detail": (
+                            f"scene {index + 1} ({scene.type}) names {entry!r}, "
+                            "which is not on this host — the scene will fail when it "
+                            "starts unless the file is there by then."
+                        ),
+                    }
+                )
+    return out
 
 
 def _machine_layer_notes(text: str, blame: str) -> list[dict[str, Any]]:
@@ -578,13 +625,26 @@ class ConfigStore:
 
     # -- validate + write ---------------------------------------------------
 
-    def validate_text(self, text: str, ref: str | None = None) -> dict[str, Any]:
+    def validate_text(
+        self, text: str, ref: str | None = None, *, partial: bool = False
+    ) -> dict[str, Any]:
         """Load `text` as if it were saved, without saving it.
 
         The scratch file goes in the *target's own directory* rather than a temp
         dir: an ensemble master resolves its per-system paths relative to
         itself, so validating one anywhere else would report missing files that
-        are not missing."""
+        are not missing.
+
+        `partial` says this text is a show part-way through being built rather
+        than a finished statement about one, and excuses exactly one refusal:
+        :class:`scene_factory.MediaNotChosen`, a scene that names no media on a
+        host with none to default to. That is the state every scene is in the
+        instant the console adds it, so refusing it makes the first step of
+        building a show impossible — and the refusal would name `assets/videos`
+        while the button said *add a scene*. It comes back as a warning in the
+        same report instead. Every other failure still refuses, including a bad
+        value the form itself produced: that one is wrong now and wrong later,
+        and the save is the last chance to say so."""
         directory = self._scratch_dir(ref)
         report: dict[str, Any] = {
             "ok": False,
@@ -592,30 +652,42 @@ class ConfigStore:
             "messages": [],
             "unknown_keys": [],
             "systems": [],
+            # Things that load but will bite. Only filled on success: a config
+            # that doesn't load has no scenes to look at.
+            "warnings": [],
             # Filled only on a failure this file may not be responsible for —
             # see _machine_layer_notes.
             "layers": [],
         }
         fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
         tmp = Path(tmp_name)
+        unplayable: list[dict[str, Any]] = []
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             with _capture_errors() as messages:
                 try:
                     loaded = cfgmod.load_master(str(tmp))
+                    from .scene_factory import MediaNotChosen
                     from .session import SessionConfigError, validate_configs
 
                     try:
                         validate_configs(loaded, loaded.cfgs)
                     except SessionConfigError as e:
-                        report["error"] = (
+                        detail = (
                             "; ".join(messages)
                             or f"config did not validate (exit code {e.exit_code})"
                         )
-                        report["messages"] = list(messages)
-                        report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
-                        return self._blame_layers(report, text)
+                        # `from e` all the way down, so the pre-flight's own
+                        # cause is the question — asked of the type rather than
+                        # of the prose, which is a user-facing string and moves.
+                        if partial and isinstance(e.__cause__, MediaNotChosen):
+                            unplayable = [_unplayable_warning(detail)]
+                        else:
+                            report["error"] = detail
+                            report["messages"] = list(messages)
+                            report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
+                            return self._blame_layers(report, text)
                 except (cfgmod.ConfigError, ValueError) as e:
                     # The scratch name is an implementation detail; the caller
                     # asked about their file.
@@ -626,6 +698,7 @@ class ConfigStore:
             report["messages"] = list(messages)
             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
             report["systems"] = list(loaded.names)
+            report["warnings"] = unplayable + _media_warnings(loaded.cfgs, loaded.names)
             return report
         finally:
             tmp.unlink(missing_ok=True)
@@ -650,14 +723,16 @@ class ConfigStore:
             raise PathRejected(f"{directory} does not exist")
         return directory
 
-    def write(self, ref: str, text: str) -> dict[str, Any]:
-        """Validate, back up whatever is there, then replace it atomically."""
+    def write(self, ref: str, text: str, *, partial: bool = False) -> dict[str, Any]:
+        """Validate, back up whatever is there, then replace it atomically.
+
+        `partial` is :meth:`validate_text`'s, and reaches it unchanged."""
         path = self.resolve(ref)
         if len(text.encode("utf-8")) > MAX_BYTES:
             raise ConfigTooLarge(f"config is larger than {MAX_BYTES} bytes")
         if not path.parent.is_dir():
             raise PathRejected(f"{ref}: {path.parent} does not exist")
-        report = self.validate_text(text, ref)
+        report = self.validate_text(text, ref, partial=partial)
         if not report["ok"]:
             raise ConfigInvalid(report)
         backup: str | None = None
@@ -678,6 +753,10 @@ class ConfigStore:
             "backup": backup,
             "unknown_keys": report["unknown_keys"],
             "systems": report["systems"],
+            # Carried through a save as well as a check: the answer to "will
+            # this run?" is the same either way, and a save is the moment
+            # somebody stops looking at the check.
+            "warnings": report["warnings"],
         }
 
     def patch(self, ref: str, edits: Sequence[Any]) -> dict[str, Any]:
@@ -690,12 +769,101 @@ class ConfigStore:
 
         Fields come from ``introspect``, so an edit can only reach what the form
         actually rendered: a scene's own type's fields, never another type's.
-        Adding or removing scenes is not an edit — that is a structural change,
-        and the raw text editor owns it.
+        *Which* scenes exist is not an edit — see :meth:`add_scene` and
+        :meth:`remove_scene`, which change the shape of the file rather than the
+        value of a field, and are the two structural moves worth a button.
 
         Everything after the last edit is :meth:`write`: the result is validated
         as a whole, the previous text is kept as a sibling, and a config that no
         longer runs is refused with the file untouched."""
+        out = self._rewrite(
+            ref, lambda cfg, baseline: [_apply_edit(cfg, e, baseline) for e in edits]
+        )
+        out["edits"] = out.pop("result")
+        return out
+
+    def add_scene(
+        self,
+        ref: str,
+        *,
+        scene_type: str = "",
+        copy_of: int | None = None,
+        after: int | None = None,
+    ) -> dict[str, Any]:
+        """Append or insert a scene, and write the file back.
+
+        Either a blank scene of ``scene_type`` or a copy of the scene at
+        ``copy_of`` — "add another clip like that one" is the common ask, and
+        re-typing a dozen fields to get it is what sent people back to the text
+        editor. ``after`` is the index to insert behind; ``None`` appends.
+
+        A copy is taken verbatim, name included. Inventing "name (copy)" would
+        be guessing at what the show should call it, and a duplicate name is
+        visible in the very list this was reached from."""
+        if (scene_type == "") == (copy_of is None):
+            raise EditRejected("adding a scene names either a `type` or a `copy` index, not both")
+        known = {st.name for st in introspect.scene_types()}
+        if scene_type and scene_type not in known:
+            raise EditRejected(f"unknown scene type {scene_type!r}; known: {sorted(known)}")
+
+        def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
+            if copy_of is not None and not 0 <= copy_of < len(cfg.scenes):
+                raise EditRejected(
+                    f"no scene at index {copy_of} (the config has {len(cfg.scenes)})"
+                )
+            if after is not None and not -1 <= after < len(cfg.scenes):
+                raise EditRejected(f"cannot insert after index {after}")
+            scene = (
+                deepcopy(cfg.scenes[copy_of])
+                if copy_of is not None
+                else cfgmod.SceneCfg(type=scene_type)
+            )
+            at = len(cfg.scenes) if after is None else after + 1
+            cfg.scenes.insert(at, scene)
+            return {"added": at, "type": scene.type, "copied_from": copy_of}
+
+        out = self._rewrite(ref, mutate)
+        out["scene"] = out.pop("result")
+        return out
+
+    def remove_scene(self, ref: str, index: int) -> dict[str, Any]:
+        """Drop a scene and write the file back.
+
+        The pair to :meth:`add_scene`: a console that can add and not remove is
+        a one-way door, and the way back would be the text editor this exists to
+        avoid. The last scene stays — a playlist with nothing in it is not a
+        show, and the loader would refuse the write anyway with a message about
+        scenes rather than about the button that was pressed."""
+
+        def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
+            if not 0 <= index < len(cfg.scenes):
+                raise EditRejected(f"no scene at index {index} (the config has {len(cfg.scenes)})")
+            if len(cfg.scenes) == 1:
+                raise EditRejected("this is the only scene — a show needs one to play")
+            gone = cfg.scenes.pop(index)
+            return {"removed": index, "type": gone.type, "name": gone.name}
+
+        out = self._rewrite(ref, mutate)
+        out["scene"] = out.pop("result")
+        return out
+
+    def _rewrite(
+        self, ref: str, mutate: Callable[[cfgmod.Config, cfgmod.Config], Any]
+    ) -> dict[str, Any]:
+        """Load ``ref``, let ``mutate`` change the loaded Config, and write the
+        re-serialised result back.
+
+        The shared spine of every structured write. ``mutate`` is handed the
+        config and the machine baseline and returns whatever the caller wants
+        reported, which arrives as ``result``. Everything around it — the
+        refusals below, the re-serialise, and :meth:`write`'s validate-then-back-
+        up-then-replace — is the same for a field edit and for a scene added or
+        removed, and having it in one place is what keeps them that way.
+
+        Writes `partial`: every edit that arrives here is one step of building a
+        show, so a scene that has not named its media yet is a warning rather
+        than a refusal. See :meth:`validate_text` for what that does and does
+        not excuse."""
         path = self.resolve(ref)
         original = self._read_text(path)
         try:
@@ -722,7 +890,7 @@ class ConfigStore:
                     "the secret to its environment variable."
                 )
 
-        applied = [_apply_edit(cfg, e, baseline) for e in edits]
+        result = mutate(cfg, baseline)
         try:
             text = config_serialize.dumps(
                 cfg,
@@ -733,7 +901,7 @@ class ConfigStore:
             )
         except config_serialize.SerializeError as e:
             raise EditRejected(f"{ref} can't be written back: {e}") from e
-        out = self.write(ref, text)
-        out["edits"] = applied
+        out = self.write(ref, text, partial=True)
+        out["result"] = result
         out["text"] = text
         return out

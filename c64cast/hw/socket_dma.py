@@ -45,6 +45,15 @@ CMD_DMAWRITE = 0xFF06
 CMD_REUWRITE = 0xFF07
 CMD_IDENTIFY = 0xFF0E
 CMD_AUTHENTICATE = 0xFF1F
+# `#ifdef U64` in the firmware: these exist on an Ultimate 64 and not on an
+# Ultimate II+, which has no VIC of its own to stream.
+CMD_VICSTREAM_ON = 0xFF20
+CMD_VICSTREAM_OFF = 0xFF30
+
+#: The firmware's FreeRTOS tick, from its `configTICK_RATE_HZ` — the unit the
+#: VIC stream's auto-stop duration is counted in. 5 ms, so the uint16 the
+#: command carries tops out a little over five minutes.
+STREAM_TICK_S = 1.0 / 200.0
 
 
 class SocketDMAError(Exception):
@@ -273,6 +282,35 @@ class SocketDMAClient:
         injection. Up to 10 bytes (the kernal buffer size); the server
         clamps."""
         self._send_with_reconnect(CMD_KEYB, ascii_bytes)
+
+    def vicstream_on(self, destination: str, *, stop_after_s: float = 0.0) -> None:
+        """Start the machine's own VIC stream to ``destination`` (``host:port``).
+
+        The FPGA sends the composite pixel stream straight out of the Ethernet
+        MAC as UDP — no C64 cycles, no bus contention, and nothing on the C64
+        side that a running show could disturb. See
+        :mod:`c64cast.hw.vic_stream` for the packet format.
+
+        ``stop_after_s`` arms the firmware's own timer, which is why it is worth
+        passing: this stream is a couple of megabytes a second, and a host that
+        is SIGKILLed never gets to send the OFF. A watchdog that the *machine*
+        counts down is the only kind that survives its listener dying, so
+        callers re-arm it while somebody is still watching rather than asking
+        for an unbounded stream. 0 means unbounded.
+
+        Only an Ultimate 64 answers this (the firmware compiles it under
+        ``#ifdef U64``); an Ultimate II+ has no VIC to stream and ignores the
+        command, so the caller checks ``profile.supports_video_stream``."""
+        ticks = min(0xFFFF, max(0, round(stop_after_s / STREAM_TICK_S)))
+        # The firmware NUL-terminates the name itself at the command length, so
+        # the destination goes on the wire bare.
+        payload = struct.pack("<H", ticks) + destination.encode("ascii")
+        self._send_with_reconnect(CMD_VICSTREAM_ON, payload)
+
+    def vicstream_off(self) -> None:
+        """Stop the VIC stream. Idempotent — the firmware clears an already
+        clear enable bit without complaint."""
+        self._send_with_reconnect(CMD_VICSTREAM_OFF, b"")
 
     def flush(self) -> None:
         """Wait for the server to drain every previously-issued command.

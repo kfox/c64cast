@@ -50,6 +50,7 @@ except (ImportError, RuntimeError):
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store, serve, session
 from c64cast.app.serve import SessionState
+from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
@@ -129,11 +130,49 @@ class _FakeScene:
         self.duration_s = 10.0
 
 
+class _FakeScreenProfile:
+    """Just enough profile for the screen routes' capability check."""
+
+    name = "Ultimate 64"
+
+    def __init__(self, streams: bool = True) -> None:
+        self.supports_video_stream = streams
+
+
+class _FakeReceiver:
+    """A machine that streams one unchanging frame, so a route test can assert
+    a picture came back without a socket or a real C64."""
+
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def latest(self) -> Any:
+        import numpy as np
+
+        from c64cast.hw.vic_stream import VicFrame
+
+        return VicFrame(np.full((8, 16), 6, dtype=np.uint8), 1, 0.0)
+
+
 class _FakeApi:
     stats = {"writes": 1}
 
+    def __init__(self, streams: bool = True) -> None:
+        self.profile = _FakeScreenProfile(streams)
+        self.receiver = _FakeReceiver()
+
     def format_write_latency(self) -> str:
         return "lat 5ms"
+
+    def open_video_stream(self) -> _FakeReceiver:
+        return self.receiver
 
 
 class _FakePlaylist:
@@ -606,6 +645,250 @@ class ConfigFormSaveTest(WebApiTestCase):
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
 
+class SceneStructureRouteTest(WebApiTestCase):
+    """Adding and removing scenes. The semantics live in
+    tests/test_config_store.py; these are the route's own answers, and the one
+    thing only a route can get wrong — `/scenes` being swallowed by the
+    catch-all `{ref:path}` that sits beside it.
+
+    Runs from a directory with no `assets/` in it for the same reason its
+    counterpart in tests/test_config_store.py does: a new video scene names no
+    file, and the project's own populated `assets/videos` under the working
+    directory is what makes this pass on a developer's machine and nowhere
+    else."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.root.parent)
+
+    def test_a_scene_is_added_and_the_file_is_written(self):
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"type": "video"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["added"], 1)
+        self.assertIn('type = "video"', (self.root / "gig.toml").read_text(encoding="utf-8"))
+
+    def test_a_scene_is_copied(self):
+        with self.client() as c:
+            r = c.post(
+                "/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"copy": 0, "after": 0}
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["copied_from"], 0)
+
+    def test_a_scene_is_removed(self):
+        with self.client() as c:
+            c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"type": "video"})
+            r = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"]["removed"], 0)
+
+    def test_removing_the_only_scene_is_a_400_not_a_broken_config(self):
+        with self.client() as c:
+            r = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=AUTH)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_a_copy_index_that_is_not_an_index_is_a_400(self):
+        # `true` is an `int` in Python and would otherwise read as scene 1.
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"copy": True})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_viewer_can_change_neither(self):
+        with self.client() as c:
+            add = c.post(
+                "/api/configs/shows/gig.toml/scenes", headers=VIEWER_AUTH, json={"type": "video"}
+            )
+            drop = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=VIEWER_AUTH)
+        self.assertEqual(add.status_code, 403)
+        self.assertEqual(drop.status_code, 403)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+
+class ScreenRouteTest(WebApiTestCase):
+    """The C64's screen. All three routes are GETs so the read-only role can
+    watch; the stream's own lifetime is tested in tests/test_screen.py."""
+
+    def _api(self) -> Any:
+        sess = self.manager.session
+        assert sess is not None
+        return sess.stacks[0].playlist.api
+
+    def _running(self, c) -> None:
+        c.post("/api/session/start", headers=AUTH)
+        self.assertReaches(SessionState.RUNNING)
+
+    def test_nothing_running_answers_a_501_rather_than_a_blank_picture(self):
+        with self.client() as c:
+            r = c.get("/api/screen.png", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+        self.assertIn("nothing is running", r.json()["detail"])
+
+    def test_availability_starts_nothing(self):
+        with self.client() as c:
+            self._running(c)
+            r = c.get("/api/screen", headers=AUTH)
+            self.assertEqual(r.json()["systems"], {"a": True})
+            self.assertEqual(self._api().receiver.started, 0)
+
+    def test_a_still_comes_back_as_a_png(self):
+        with self.client() as c:
+            self._running(c)
+            r = c.get("/api/screen.png", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "image/png")
+        self.assertEqual(r.content[:8], b"\x89PNG\r\n\x1a\n")
+        # A still is a *now*; a cached one would show the screen from before
+        # the change that was made to look at it.
+        self.assertEqual(r.headers["cache-control"], "no-store")
+
+    def test_a_machine_without_a_vic_of_its_own_says_which(self):
+        with self.client() as c:
+            self._running(c)
+            self._api().profile.supports_video_stream = False
+            r = c.get("/api/screen.png", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+        self.assertIn("no video stream of its own", r.json()["detail"])
+        self.assertEqual(c.get("/api/screen", headers=AUTH).json()["systems"], {"a": False})
+
+    def test_a_viewer_may_watch(self):
+        # The point of a read-only link is seeing the show. A GET with a side
+        # effect on the machine is the accepted trade — it changes nothing
+        # about what the C64 is doing.
+        with self.client() as c:
+            self._running(c)
+            r = c.get("/api/screen.png", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 200)
+
+    def test_the_off_switch_is_answered_rather_than_unrouted(self):
+        # A console asking a host with the picture turned off should hear that,
+        # not a 404 it would read as an older host.
+        with self.client(screen_fps=0.0) as c:
+            self._running(c)
+            self.assertEqual(c.get("/api/screen", headers=AUTH).json(), {"systems": {}, "fps": 0.0})
+            r = c.get("/api/screen.png", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+        self.assertIn("turned off", r.json()["detail"])
+
+    def test_the_stream_route_refuses_before_it_opens_anything(self):
+        # The 501 checks above go through the same helper the stream route
+        # uses, and this is the one that proves the *stream* route consults it
+        # rather than answering 200 and then failing inside the body — where a
+        # browser would see a broken image and no reason.
+        with self.client() as c:
+            r = c.get("/api/screen/stream", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+
+    def test_the_streaming_adapter_stops_when_the_client_goes(self):
+        """`_until_gone` is where a departed client is noticed, and it cannot be
+        driven through TestClient — its transport never delivers the ASGI
+        `http.disconnect` that a real server sends, so a route-level test of
+        this would hang rather than fail. Driven directly instead."""
+        import asyncio
+
+        parts: list[bytes] = []
+        closed: list[bool] = []
+
+        def source():
+            try:
+                for i in range(1000):
+                    yield f"part{i}".encode()
+            finally:
+                closed.append(True)
+
+        class _Gone:
+            def __init__(self) -> None:
+                self.asked = 0
+
+            async def is_disconnected(self) -> bool:
+                self.asked += 1
+                return self.asked > 3
+
+        async def drive() -> None:
+            request = _Gone()
+            async for part in web_api._until_gone(source(), request):
+                parts.append(part)
+
+        asyncio.run(drive())
+        # Three checks passed, three parts; the fourth check ended it — and the
+        # generator was closed, which is what releases the machine's stream.
+        self.assertEqual(parts, [b"part0", b"part1", b"part2"])
+        self.assertEqual(closed, [True])
+
+    def test_the_adapter_closes_the_generator_even_when_it_runs_out(self):
+        import asyncio
+
+        closed: list[bool] = []
+
+        def source():
+            try:
+                yield b"only"
+            finally:
+                closed.append(True)
+
+        class _Here:
+            async def is_disconnected(self) -> bool:
+                return False
+
+        async def drive() -> list[bytes]:
+            return [part async for part in web_api._until_gone(source(), _Here())]
+
+        self.assertEqual(asyncio.run(drive()), [b"only"])
+        self.assertEqual(closed, [True])
+
+
+class ViewerLinkRouteTest(WebApiTestCase):
+    """`POST /api/viewer-link` — the read-only link to hand somebody.
+
+    A `POST` for a reason worth a test: the gate lets a viewer token through
+    every `GET`, so a read-only guest could otherwise fetch the link that made
+    them one."""
+
+    def _cred(self):
+        from c64cast.control.auth import ViewerCredential
+
+        return ViewerCredential(VIEWER)
+
+    def test_it_answers_an_origin_relative_login_path(self):
+        with self.client(viewer_token=self._cred()) as c:
+            r = c.post("/api/viewer-link", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["token"], VIEWER)
+        self.assertFalse(body["minted"])
+        # A path, not a URL: the host may be bound to 0.0.0.0 and cannot know
+        # which of its addresses the browser asking actually reached it on.
+        self.assertTrue(body["path"].startswith("/api/login?token="))
+        self.assertNotIn("http", body["path"])
+
+    def test_the_first_ask_mints_one(self):
+        cred = self._cred_empty()
+        with self.client(viewer_token=cred) as c:
+            first = c.post("/api/viewer-link", headers=AUTH).json()
+            second = c.post("/api/viewer-link", headers=AUTH).json()
+        self.assertTrue(first["minted"])
+        self.assertFalse(second["minted"])
+        self.assertEqual(first["token"], second["token"])
+        self.assertEqual(cred.token, first["token"])
+
+    def _cred_empty(self):
+        from c64cast.control.auth import ViewerCredential
+
+        return ViewerCredential()
+
+    def test_a_viewer_cannot_ask_for_it(self):
+        with self.client(viewer_token=self._cred()) as c:
+            r = c.post("/api/viewer-link", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_host_built_without_one_says_so_rather_than_pretending(self):
+        with self.client(viewer_token=VIEWER) as c:
+            r = c.post("/api/viewer-link", headers=AUTH)
+        self.assertEqual(r.status_code, 501)
+
+
 class LiveTuneSaveBackTest(WebApiTestCase):
     """`POST /api/session/live-tune` — the offer a daemon has no exit to make.
 
@@ -908,7 +1191,9 @@ class TokenResolutionTest(unittest.TestCase):
             os.environ,
             {"C64CAST_WEB_TOKEN": "from-env", "C64CAST_WEB_VIEWER_TOKEN": "viewer-env"},
         ):
-            self.assertEqual(serve.resolve_tokens(cfg), ("from-env", "viewer-env"))
+            token, viewer = serve.resolve_tokens(cfg)
+        self.assertEqual(token, "from-env")
+        self.assertEqual(viewer.token, "viewer-env")
 
     def test_a_token_file_is_read_and_stripped(self):
         path = self.tmp / "secret"
@@ -930,7 +1215,11 @@ class TokenResolutionTest(unittest.TestCase):
 
         first, viewer = serve.resolve_tokens(cfgmod.WebCfg())
         self.assertTrue(first)
-        self.assertEqual(viewer, "")
+        # The read-only one is *not* generated alongside it: nobody asked for a
+        # second credential, and one that exists unasked is one more to leak.
+        self.assertEqual(viewer.token, "")
+        self.assertFalse(viewer)
+        self.assertFalse(paths.web_viewer_token_path().exists())
         stored = paths.web_token_path()
         self.assertEqual(stored.read_text(encoding="utf-8").strip(), first)
         if os.name != "nt":
