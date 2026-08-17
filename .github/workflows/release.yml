@@ -197,14 +197,35 @@ jobs:
       # Version-stamped URLs, not the `releases/latest/download/…` ones the
       # README uses: these notes are the record of one release and still name
       # its files after the next one lands.
+      #
+      # The install commands lead, and the distributions are labelled for the
+      # installer rather than the reader. A page whose first move is a list of
+      # files to download teaches that upgrading means downloading files, and
+      # the one thing that cannot upgrade an install is unpacking an archive
+      # next to it -- so the notes say so where the archives are.
       - name: Compose the release notes
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$VERSION"
+          tree="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/v$VERSION"
           {
-            echo "### Downloads"
+            echo "### Install or upgrade"
+            echo
+            echo '```bash'
+            echo "uv tool install 'c64cast[all]'   # first time"
+            echo "uv tool upgrade c64cast          # already installed"
+            echo '```'
+            echo
+            echo "Or \`pipx install 'c64cast[all]'\` / \`pipx upgrade c64cast\`."
+            echo "Nothing on this page has to be downloaded to upgrade —"
+            echo "and unpacking these files into a directory installs nothing,"
+            echo "so \`c64cast --version\` would go on reporting the version you"
+            echo "already had. It prints the install it runs from, after the"
+            echo "number. See [Upgrading]($tree/docs/guide/04-setting-up.md#upgrading)."
+            echo
+            echo "### Books"
             echo
             echo "* 📘 **[c64cast User's Guide $VERSION (PDF)]($base/c64cast-users-guide-$VERSION.pdf)**"
             echo "  — 10 chapters, read in order, starting from nothing."
@@ -212,9 +233,13 @@ jobs:
             echo "  — every scene, knob and register, with nine generated appendices."
             echo "* 🎛️ [c64cast Performance Card $VERSION (PDF)]($base/c64cast-performance-card-$VERSION.pdf)"
             echo "  — two pages for the desk next to the controller."
+            echo
+            echo "### Distributions"
+            echo
+            echo "For installers and offline mirrors — the commands above fetch these for you."
+            echo
             echo "* 📦 [\`c64cast-$VERSION-py3-none-any.whl\`]($base/c64cast-$VERSION-py3-none-any.whl)"
             echo "  · [\`c64cast-$VERSION.tar.gz\`]($base/c64cast-$VERSION.tar.gz)"
-            echo "  — or just \`uv tool install 'c64cast[all]'\`"
             echo "  ([PyPI](https://pypi.org/project/c64cast/$VERSION/))."
             echo
             echo "---"

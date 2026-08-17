@@ -147,6 +147,13 @@ Commodore's memory, which needs the Web Remote Control Service.
 not on your `PATH`. Run `uv tool update-shell`, then open a new terminal.
 Until you do, `uv tool run c64cast` works regardless.
 
+**You upgraded, and `c64cast --version` still shows the old version.** Then
+nothing was upgraded. c64cast is a command living in its own environment, not a
+folder of files, so unpacking a release archive into a directory leaves a copy of
+the source and changes no install at all. `--version` prints the directory the
+running code sits in, after the number: upgrade the install it names, then delete
+the unpacked copy. See [Upgrading](04-setting-up.md#upgrading).
+
 **A feature says it needs an extra you thought you installed.** You most
 likely installed plain `c64cast` rather than `c64cast[all]`. Installing an
 extra replaces the whole set rather than adding to it, so name every extra you

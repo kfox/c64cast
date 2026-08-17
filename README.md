@@ -49,6 +49,11 @@ bitmap rendering, SID playback, and overlays; add extras à la carte later
 (`uv tool install 'c64cast[video,midi]'`). Extras don't accumulate, so name
 every one you want in a single command.
 
+Later, `uv tool upgrade c64cast` (or `pipx upgrade c64cast`) is the upgrade —
+unpacking a release archive over a directory installs nothing, which is why
+`c64cast --version` also prints the install it runs from. See
+[Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading).
+
 You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is
 no emulator path for the streaming side. An Ultimate ships with the three
 firmware services c64cast needs switched off; [Hardware

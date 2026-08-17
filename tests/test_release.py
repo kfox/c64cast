@@ -110,6 +110,50 @@ class TestChangelogIsReleasable(unittest.TestCase):
         self.assertRegex(_read("CHANGELOG.md"), r"(?m)^## \[Unreleased\][ \t]*$")
 
 
+class TestUpgradeNotesConvention(unittest.TestCase):
+    """`### Upgrade notes` leads a version's section, or is absent entirely.
+
+    A version's section becomes its GitHub release body verbatim, so the block
+    only does its job -- being read before anyone downloads anything -- while it
+    sits at the top. One spelling, because a reader who learns to look for it in
+    one release has to find it in the next.
+    """
+
+    HEADING = "### Upgrade notes"
+
+    def test_the_preamble_documents_the_convention(self) -> None:
+        # Split on the first heading at line start: the preamble names
+        # `## [Unreleased]` inline, above the heading itself.
+        preamble = re.split(r"(?m)^## \[", _read("CHANGELOG.md"), maxsplit=1)[0]
+        self.assertIn(
+            "Upgrade notes",
+            preamble,
+            "the changelog no longer explains its own Upgrade notes convention",
+        )
+
+    def test_it_is_spelled_one_way(self) -> None:
+        strays = [
+            line
+            for line in _read("CHANGELOG.md").splitlines()
+            if re.match(r"^#+\s+upgrad", line, re.I) and line != self.HEADING
+        ]
+        self.assertEqual(strays, [], f"spell the heading exactly {self.HEADING!r}")
+
+    def test_it_leads_the_section_it_appears_in(self) -> None:
+        changelog = _read("CHANGELOG.md")
+        for version, _ in bv.sections(changelog):
+            subsections = re.findall(r"(?m)^### .+$", bv.section_body(changelog, version))
+            if self.HEADING not in subsections:
+                continue
+            with self.subTest(version=version):
+                self.assertEqual(
+                    subsections[0],
+                    self.HEADING,
+                    f"[{version}] buries its upgrade notes under "
+                    f"{subsections[0]!r} -- they have to lead the release body",
+                )
+
+
 class TestBumpRewrites(unittest.TestCase):
     def test_pyproject_version_is_replaced(self) -> None:
         before = _read("pyproject.toml")
@@ -283,6 +327,28 @@ class TestReleaseWorkflow(unittest.TestCase):
         # Versioned filenames, so a "latest" download URL cannot serve them.
         self.assertNotIn("releases/latest/download", self.code)
         self.assertIn("--notes-file body.md", self.code)
+
+    def test_the_body_leads_with_how_to_install_and_upgrade(self) -> None:
+        # A page that opens with a list of files teaches that upgrading means
+        # downloading files, which is the one thing that cannot upgrade an
+        # install. The order is the point, so it is the thing asserted.
+        for needle in ("### Install or upgrade", "uv tool upgrade c64cast"):
+            self.assertIn(needle, self.code, f"the release body no longer says {needle!r}")
+        self.assertLess(
+            self.code.index("### Install or upgrade"),
+            self.code.index("### Distributions"),
+            "the distributions are listed above the commands that fetch them",
+        )
+
+    def test_the_body_links_a_guide_section_that_exists(self) -> None:
+        # The notes point at the User's Guide by anchor, which github.com
+        # resolves silently to the top of the page when it is wrong.
+        self.assertIn("docs/guide/04-setting-up.md#upgrading", self.code)
+        self.assertIn(
+            "\n## Upgrading\n",
+            _read(os.path.join("docs", "guide", "04-setting-up.md")),
+            "the release body links a guide section that is gone",
+        )
 
     def test_every_action_is_pinned_to_a_digest(self) -> None:
         """Across every workflow, not only this one.
