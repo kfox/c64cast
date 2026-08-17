@@ -135,19 +135,23 @@ async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[b
     Two problems, one adapter. The generator sleeps and encodes, so running it
     on the loop would stall every other request; and `is_disconnected` is a
     coroutine, so the generator cannot ask it. Pulling each part in a worker
-    thread and checking between parts solves both — and closing the generator
-    on the way out is what releases the machine's stream, since that unwinds the
-    `watching` block inside it. Without the check, a closed tab would leave the
-    machine sending megabytes a second to a socket nobody reads."""
+    thread and checking between parts solves both. Without the check, a closed
+    tab would leave a thread encoding frames nobody reads.
+
+    Nothing here closes the generator, which is the correction to the first
+    version of this: a disconnect cancels this coroutine *while the worker
+    thread is inside* `next()`, and closing a running generator raises
+    `ValueError: generator already executing` — so the `finally` that was
+    supposed to release the machine's stream never completed. The stream's
+    lifetime belongs to the response instead (`ScreenFeed.release` as a
+    background task); an abandoned generator is suspended at a yield, holds
+    nothing, and is collected."""
     loop = asyncio.get_running_loop()
-    try:
-        while not await request.is_disconnected():
-            part = await loop.run_in_executor(None, lambda: next(frames, None))
-            if part is None:
-                return
-            yield part
-    finally:
-        frames.close()
+    while not await request.is_disconnected():
+        part = await loop.run_in_executor(None, lambda: next(frames, None))
+        if part is None:
+            return
+        yield part
 
 
 def _opt_index(value: Any, name: str) -> int | None:
@@ -208,6 +212,7 @@ def register_web_routes(
     are the ones no longer in the receiver's `latest()`."""
     from fastapi import HTTPException, Request, Response, WebSocket, WebSocketDisconnect
     from fastapi.responses import StreamingResponse
+    from starlette.background import BackgroundTask
 
     from .perf_console import PerfBridge
 
@@ -328,21 +333,19 @@ def register_web_routes(
         except ScreenUnavailable as e:
             raise HTTPException(501, str(e)) from e
 
-        def frames() -> Generator[bytes]:
-            # The `watching` context wraps the *generator body* rather than this
-            # function: the response is consumed later, and a stream stopped
-            # before the first byte would send an empty picture. Closing this
-            # generator is what ends the watch — see `_until_gone`.
-            try:
-                with screen.watching(name) as read:
-                    yield from multipart_frames(read, fps=screen_fps)
-            finally:
-                screen.sweep()
-
+        # The watch is held by the *response*, not by the generator: acquired
+        # here and released by a background task, which Starlette runs once the
+        # body is done however it ended. Putting the release in the generator's
+        # own `finally` is the obvious thing and it does not work — the
+        # generator runs on a worker thread, a disconnect cancels the async task
+        # while that thread is inside it, and closing it from there raises
+        # rather than unwinding. See `ScreenFeed.release`.
+        read = screen.acquire(name)
         return StreamingResponse(
-            _until_gone(frames(), request),
+            _until_gone(multipart_frames(read, fps=screen_fps), request),
             media_type=f"multipart/x-mixed-replace; boundary={screen_mod.BOUNDARY}",
             headers={"Cache-Control": "no-store"},
+            background=BackgroundTask(screen.release, name),
         )
 
     # POST, not GET, for two reasons that point the same way: it may mint a

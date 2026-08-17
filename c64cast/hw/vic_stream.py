@@ -112,6 +112,16 @@ _RECV_BYTES = 2048
 WATCHDOG_S = 20.0
 REARM_EVERY_S = 7.0
 
+#: How soon after starting to re-issue the ON once, which doubles as the retry
+#: for a cold ARP table. Before the firmware can stream to a unicast address it
+#: resolves the destination's MAC by sending it up to ten two-byte probes and
+#: watching its own ARP table; if the entry does not appear in time it gives up
+#: and the stream never starts. Those probes are exactly what *populates* the
+#: table, so the attempt that failed has left the next one ready to succeed —
+#: observed on a real machine as "nothing at all, then instant on the retry".
+#: One early renewal turns that into a delay instead of a dead panel.
+PRIME_AFTER_S = 1.5
+
 #: Give up on the frame in hand after this long without a packet — the machine
 #: was stopped, or the network dropped the last packet of a frame and the
 #: `line & 0x8000` that would have finished it is never coming.
@@ -212,7 +222,7 @@ class VicStreamReceiver:
             sock.close()
             raise
         self._sock = sock
-        self._rearm_at = time.monotonic() + REARM_EVERY_S
+        self._rearm_at = time.monotonic() + PRIME_AFTER_S
         self._poll = PollThread(self._run, name="vic-stream", manual=True, join_timeout=1.0)
         self._poll.start()
         log.info("vic stream: %s -> %s", self._machine_host, self._destination)

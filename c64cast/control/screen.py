@@ -66,6 +66,8 @@ from typing import TYPE_CHECKING, Any
 import cv2
 import numpy as np
 
+from c64cast._pollthread import PollThread
+
 if TYPE_CHECKING:
     from c64cast.hw.vic_stream import VicFrame
 
@@ -85,9 +87,12 @@ LINGER_S = 5.0
 _PNG_LEVEL = 1
 
 #: How long a fresh stream is given to produce a frame before the caller is told
-#: nothing arrived. Two frames of slack over the ARP resolution the firmware
-#: does when it first learns the destination.
-_FIRST_FRAME_S = 2.5
+#: nothing arrived. Long enough to cover the firmware's destination resolution
+#: *and* the receiver's early re-issue of the ON, which is the retry for a cold
+#: ARP table — see `vic_stream.PRIME_AFTER_S`. A still asked for before that has
+#: elapsed would report "not sending frames yet" about a stream that was one
+#: second from working.
+_FIRST_FRAME_S = 4.0
 
 #: Re-send the current frame after this long with nothing new. Two reasons, and
 #: both are load-bearing. A browser that connects to a *static* screen — a
@@ -97,6 +102,10 @@ _FIRST_FRAME_S = 2.5
 #: block it indefinitely and a client that had gone away would never be
 #: noticed, leaving the machine streaming to nobody.
 KEEPALIVE_S = 2.0
+
+#: How often the sweeper looks for receivers to retire. Well under `LINGER_S`,
+#: so the linger is what decides when a stream ends rather than the polling.
+_SWEEP_EVERY_S = 1.0
 
 
 class ScreenUnavailable(RuntimeError):
@@ -124,6 +133,7 @@ class ScreenFeed:
     backends: Callable[[], Mapping[str, Any]]
     _live: dict[str, _Watched] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _sweeper: Any = None
 
     # ---- what a caller can ask for ---------------------------------------
 
@@ -158,19 +168,38 @@ class ScreenFeed:
             )
         return name
 
+    def acquire(self, system: str) -> Callable[[], VicFrame | None]:
+        """Hold the stream up, and return a way to read frames. Pair with
+        :meth:`release` — and prefer :meth:`watching`, which pairs them for you.
+
+        The raw pair exists for one caller: a streaming HTTP response, whose end
+        is not the end of any Python block. Tying the release to a `finally`
+        inside the frame generator was the first design and was wrong in a way
+        that only shows up under a real disconnect — see :meth:`release`."""
+        return self._acquire(system).latest
+
+    def release(self, system: str) -> None:
+        """Stop wanting the stream. Safe to call more than once per acquire
+        only in the sense that the count floors at zero; callers pair it.
+
+        This is what a streaming route hands to Starlette as a background task
+        rather than running in the generator's own `finally`. The generator
+        runs on a worker thread (it sleeps and encodes), and a client
+        disconnecting cancels the async task *while that thread is inside it* —
+        closing the generator from there raises `ValueError: generator already
+        executing`, the `finally` never runs, and the machine goes on streaming
+        to nobody. Found on hardware, by watching it keep streaming."""
+        self._release(system)
+
     @contextmanager
     def watching(self, system: str) -> Iterator[Callable[[], VicFrame | None]]:
-        """Hold the stream up for the body, and yield a way to read frames.
-
-        A context manager rather than acquire/release, because the two getting
-        out of step is how a machine ends up streaming megabytes a second at
-        nobody — and an HTTP client vanishing mid-response is the normal case
-        here, not the exceptional one."""
-        receiver = self._acquire(system)
+        """:meth:`acquire` and :meth:`release` around a block, for every caller
+        whose use of the stream *is* a block."""
+        read = self.acquire(system)
         try:
-            yield receiver.latest
+            yield read
         finally:
-            self._release(system)
+            self.release(system)
 
     def latest_png(self, system: str) -> bytes:
         """One frame, PNG-encoded — for a caller that wants a still rather than
@@ -187,6 +216,9 @@ class ScreenFeed:
         machine that has been torn down cannot be told to stop later."""
         with self._lock:
             live, self._live = self._live, {}
+            sweeper, self._sweeper = self._sweeper, None
+        if sweeper is not None:
+            sweeper.stop()
         for name, watched in live.items():
             _stop_quietly(name, watched.receiver)
 
@@ -200,9 +232,9 @@ class ScreenFeed:
         watchdog against a link that no longer exists. So "is this system still
         running?" is asked here rather than only "does anyone want it?".
 
-        Driven by whoever else is already ticking rather than by a thread of
-        its own: a timer whose only job is to notice that nothing is happening
-        is a thread the process pays for at idle."""
+        Called both by :meth:`_sweep_forever` and by anything else already
+        ticking (the state feed's push loop) — extra calls are free and the one
+        that matters is whichever happens first."""
         now = time.monotonic()
         running = set(self.backends())
         expired = []
@@ -234,7 +266,37 @@ class ScreenFeed:
                 _stop_quietly(system, receiver)
                 return existing.receiver
             self._live[system] = _Watched(receiver, watchers=1)
+        self._start_sweeper()
         return receiver
+
+    def _start_sweeper(self) -> None:
+        """Bring up the thread that expires idle receivers, if it isn't up.
+
+        It has to be a thread of this module's own. The first design leaned on
+        the state feed's push loop, on the reasoning that a timer whose only job
+        is to notice nothing is happening is a thread paid for at idle — and it
+        was wrong in the one case that matters: `/perf` and a bare `<img>` do
+        not open a WebSocket, so nothing ticked, nothing swept, and the machine
+        went on sending 2.6 MB/s after the last watcher closed the tab. (Found
+        on hardware, by watching it keep sending.) Costing nothing at idle is
+        preserved by *lifetime* instead: the sweeper exists only while a
+        receiver does, and ends itself when the last one goes."""
+        with self._lock:
+            if self._sweeper is not None:
+                return
+            self._sweeper = PollThread(
+                self._sweep_forever, name="screen-sweeper", manual=True, join_timeout=2.0
+            )
+        self._sweeper.start()
+
+    def _sweep_forever(self, stop: threading.Event) -> None:
+        while not stop.wait(_SWEEP_EVERY_S):
+            self.sweep()
+            with self._lock:
+                if self._live:
+                    continue
+                self._sweeper = None
+            return
 
     def _open(self, system: str) -> Any:
         api = self.backends().get(system)

@@ -13,7 +13,9 @@ Not covered here: the HTTP routes (tests/test_web_api.py) and the wire format
 
 from __future__ import annotations
 
+import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -133,6 +135,33 @@ class LifetimeTest(unittest.TestCase):
         with self.feed.watching("c64cast"):
             self.feed.close()
         self.assertEqual(self.api.stops, 1)
+
+    def test_the_stream_ends_on_its_own_with_nothing_else_ticking(self):
+        """The leak this feature shipped with for an afternoon, found on
+        hardware: the sweep was driven by the state feed's push loop, and
+        `/perf` (or a bare `<img>`) opens no WebSocket — so nothing ticked,
+        nothing swept, and the machine went on sending 2.6 MB/s after the tab
+        closed. Nothing in this test calls `sweep`."""
+        with (
+            mock.patch.object(screen_mod, "LINGER_S", 0.05),
+            mock.patch.object(screen_mod, "_SWEEP_EVERY_S", 0.02),
+        ):
+            with self.feed.watching("c64cast"):
+                self.assertEqual(self.api.starts, 1)
+            deadline = time.monotonic() + 3.0
+            while self.api.stops == 0 and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertEqual(self.api.stops, 1)
+        # And the sweeper ends with the last receiver rather than idling on.
+        deadline = time.monotonic() + 2.0
+        while self.feed._sweeper is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertIsNone(self.feed._sweeper)
+
+    def test_no_thread_exists_until_something_is_watched(self):
+        self.assertIsNone(self.feed._sweeper)
+        self.feed.available()
+        self.assertIsNone(self.feed._sweeper)
 
     def test_a_receiver_does_not_outlive_the_show_it_belongs_to(self):
         # A watcher still holding the stream open would otherwise keep a
