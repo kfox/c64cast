@@ -261,6 +261,23 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **Double-buffered bitmap video no longer tears when the link is busy.** The
+  bank swap is committed by a raster IRQ at line 248, which is inside vblank —
+  but a host DMA write halts the C64's CPU for about a microsecond per byte, so
+  an 8 KB bitmap push stalls it through roughly 128 raster lines. A swap IRQ
+  that fired during one of those halts did not run until the halt ended, and by
+  then the raster was deep into the visible picture: the top band kept showing
+  the previous frame while the rest showed the new one. Measured over HDMI while
+  sustaining ~231 KiB/s, 1.2% of frames were split this way, with the seam
+  around a third of the way down.
+
+  The handler now checks where the raster actually is before committing, and if
+  it has been pushed past the safe window it leaves the frame staged and commits
+  on a later field instead. A late frame is held one field longer rather than
+  torn in half, and the frame rate is unchanged — capping write size also stops
+  the tearing, but costs roughly 26 fps down to 15, so that is not what this
+  does.
+
 - **The console's token no longer travels further than the terminal.** The host
   logs its login URL with the token in it, because that URL is the only way a
   phone gets in. Two destinations carried the same line and should not have:

@@ -369,6 +369,13 @@ class KEYBUF:
 # VIC register changes here without tearing visible scan lines.
 RASTER_VBLANK_LINE: Final = 0xF8
 
+# Last raster line on which a bank/page commit is still invisible. The VIC
+# starts fetching a frame's video matrix on its first badline (51 with the
+# default YSCROLL=3), so anything committed at or before this line is fetched
+# consistently for the whole picture. Kept below 51 rather than at it because
+# the commit runs a few instructions after the compare.
+RASTER_COMMIT_LAST_SAFE_LINE: Final = 45
+
 
 # ---------------------------------------------------------------------------
 # Ultimate-64 REST API endpoints (relative to base URL)

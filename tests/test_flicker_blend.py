@@ -297,7 +297,7 @@ class FlickerHandlerTest(unittest.TestCase):
         targets, last = [], None
         while pc < end:
             length, text = dis.instruction_at(pc)
-            if text.split()[0] in ("BEQ", "BNE"):
+            if text.split()[0] in ("BEQ", "BNE", "BCS"):
                 targets.append(int(text.split("$")[1], 16))
             last = text
             pc += length
