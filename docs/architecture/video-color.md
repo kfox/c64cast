@@ -365,22 +365,26 @@ Off by default, hires `"normal"` style only. Holds **two** screen pages over one
 
 **The frame rate does not come from the link.** This is the thing that makes it practical: the alternation is owned by a C64-side raster IRQ and free-runs at the VIC field rate no matter how slowly the host pushes. The host only uploads the *pair*. Both fields share one bitmap — the fg/bg mask must be identical or the flicker would be geometry rather than colour — so a frame costs one extra 1000-byte page, not a second frame: **≈26.0 ms vs 20.8 ms** on the Ultimate link (`HardwareProfile.write_cost_s`), comfortably inside the 30 fps bitmap cap. Compose adds ≈1.3 ms. No REU and no sampler involved; it works on the TeensyROM too.
 
-#### Eligibility, and why the cap is a safety control
+#### Eligibility: a safety cap and a colour rule, doing different jobs
 
-`flicker.blend_pairs(max_luma_delta)` admits a pair when the **absolute difference in linear luminance** between its two colours is under the cap and its fused colour lands ≥4 Lab from all 16 solids (below that it duplicates a solid and costs a page write for nothing).
+`flicker.blend_pairs(max_luma_delta, exclude_warm=)` admits a pair when three things hold: the **absolute difference in linear luminance** between its two colours is under the cap, neither colour is in `WARM_FLICKER_COLORS` (unless the caller opts out), and the fused colour lands ≥4 Lab from all 16 solids — below that it duplicates a solid and costs a page write for nothing.
 
-The cap is a photosensitivity control as much as a quality one. A pair is seen at 25 Hz (PAL) / 30 Hz (NTSC), inside the ITU-R BT.1702 risk band, and what makes that dangerous is luminance modulation depth — the same quantity that decides whether it reads as colour or as flicker. Hence `flicker_max_luma_delta = 0.075` by default, a hard `MAX_ALLOWED_LUMA_DELTA = 0.12` clamp, a warning past `WARN_LUMA_DELTA = 0.10`, and the feature opt-in.
+**The cap is a photosensitivity control, and that is all it is.** A pair is seen at 25 Hz (PAL) / 30 Hz (NTSC), inside the ITU-R BT.1702 risk band, where the hazard scales with luminance modulation depth. Hence `flicker_max_luma_delta = 0.075` by default, a hard `MAX_ALLOWED_LUMA_DELTA = 0.12` clamp set below the 20%-of-peak-white level the guidance is written around, a warning past `WARN_LUMA_DELTA = 0.10`, and the feature opt-in.
 
-**Where 0.075 comes from.** Six candidate pairs were rendered as full-width flat bands and judged by eye on a 1702 CRT driven by an Ultimate 64. Everything up to ΔY 0.0155 read as a solid colour; the first visible flicker — and it was slight — was at 0.1214. Any threshold inside that gap classifies all six correctly, so the default sits mid-gap and the hard clamp sits just under the onset, which keeps the knob's entire range below the lowest delta actually observed to flicker.
+**It does not predict fusion, and the branch originally claimed it did.** The first version of this section derived 0.075 from six flat bands that bracketed a solid/flicker transition between ΔY 0.0155 and 0.1214 — a 0.106-wide unsampled hole, and the interesting behaviour turned out to live inside it. Scoring **all 21** pairs the default admits, on the same 1702, put ΔY's correlation with the verdicts at **r=+0.33**, with two clean refutations:
 
 | pair | ΔY | on the CRT |
 |---|---|---|
-| Blue + Dark Gray | 0.0155 | solid |
-| Medium Gray + Light Blue | 0.0002 | solid |
-| Red + Dark Gray | 0.0110 | solid |
-| White + Yellow | 0.1214 | flickers a little |
-| Light Green + Light Gray | 0.2669 | flickers most |
-| Orange + Light Gray | 0.3229 | flickers |
+| Black + Dark Gray | 0.0685 | almost none — near the top of the admitted range |
+| Medium Gray + Light Blue | 0.0002 | mild — the smallest separation the palette offers |
+
+No pairwise distance did better: ΔY·√(meanY) reached r=+0.47, Δchroma +0.18, Michelson −0.13, and the best three-term fit an adjusted R² of 0.25 over n=21. Blue+Brown and Blue+Orange differ in Δchroma by 0.2 counts (112.6 vs 112.4) and land at *none* against *intense*. So a lower `flicker_max_luma_delta` is not "less flicker" and should not be documented or recommended as such.
+
+**What did separate them is which colours are in the pair.** Every pair containing Red (2), Purple (4), Orange (8) or Light Red (10) scored high, on flat patches and in motion alike. Dropping all of them — `[color].flicker_exclude_warm`, on by default — is what made a real clip settle down, at 21 pairs down to 7 on an Ultimate 64.
+
+`WARM_FLICKER_COLORS` is an explicit four-index set and not a hue band, because Brown is as warm by name and reads as *solid* against both Blue and Black. Two things about it are still open, and both are eyes-on questions rather than code ones: whether the four fail to *fuse* or are a composite-NTSC chroma artifact of the 1702 the scoring was done on — which decides whether the rule belongs to the display rather than the palette — and whether the boundary is really those four, since the untested colours were never in an admitted pair to be judged.
+
+**The scoring run this rests on has a known flaw.** The 21 patches were laid out sorted by ΔY, which confounds screen position with the variable perfectly; row means ran 1.29 → 2.00 → 2.36 top to bottom, which a position effect alone would also produce. It is evidence against ΔY (a *predictor* that fails under a confound favouring it is not rescued by removing the confound) but it is weak evidence *for* the warm rule. Re-scoring with randomised patch positions is the outstanding work.
 
 **Why absolute ΔY and not a contrast ratio.** Michelson contrast was the first rule and it is wrong in the one place it matters. Dividing by the pair's own mean luminance makes the metric maximally pessimistic where the eye is least sensitive: black against anything scores 1.0 by construction, so Black+Blue, Black+Brown and Black+Dark Gray — all under 0.07 ΔY, all of which fuse cleanly — could never qualify at any setting. In the other direction it admitted Cyan+Yellow, which on an Ultimate 64 is 0.26 ΔY, as hard a flicker as anything on the test chart. Against the emitted palette the two rules agree on only 9 of ~20 pairs. Weber contrast and a Ferry-Porter frequency term were tried against the same six bands and both degraded the separation; a chroma-swing term did too, which is the expected result — chroma flicker fuses at a far lower rate than luminance flicker, so it is not the binding constraint.
 
@@ -388,12 +392,16 @@ The 8-bit `PALETTE_LUMA` delta is also wrong here, for a different reason: it is
 
 **Eligibility is per machine.** ΔY is measured against the active palette, so this follows [`host_palette`](#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette) — what fuses is a statement about the light one machine emits, not about "the C64 palette". `flicker.py` registers an `on_palette_change` listener rather than computing its tables at import, because a stale table would admit pairs that flicker on the machine in front of you, which is the single failure this module exists to prevent.
 
-| cap | eligible pairs (VIC-II) | eligible pairs (Ultimate 64) | effective palette |
+Eligible pairs by cap, before the warm exclusion → after it:
+
+| cap | VIC-II | Ultimate 64 | effective palette |
 |---|---|---|---|
-| 0.05 | 12 | 12 | 28 |
-| **0.075 (default)** | **18** | **21** | **34–37** |
-| 0.10 (warns above) | 20 | 28 | 36–44 |
-| 0.12 (clamp) | 23 | 33 | 39–49 |
+| 0.05 | 12 → 6 | 12 → 4 | 20–22 |
+| **0.075 (default)** | **18 → 11** | **21 → 7** | **23–27** |
+| 0.10 (warns above) | 20 → 11 | 28 → 9 | 25–27 |
+| 0.12 (clamp) | 23 → 12 | 33 → 10 | 26–28 |
+
+Note what the exclusion does to the cap's leverage: past 0.075 the pairs it would newly admit are almost all warm ones, so raising the cap with the exclusion on buys 2–3 colours on a U64 rather than 12. Raising it is therefore close to pure photosensitivity risk for close to no gamut, which is the opposite of how the knob reads.
 
 Fusion is the **linear-light** average, not the sRGB one — the eye integrates emitted light over the two fields, so mixing the encoded values instead makes every blend read too dark, worst where the gamma curve is steepest.
 

@@ -62,9 +62,39 @@ class BlendTableTest(unittest.TestCase):
         # The numbers the default rests on, against the VIC-II rendering that
         # is the process palette here. A change is a change to how much flicker
         # the default admits, which is a safety decision.
-        self.assertEqual(len(flicker.blend_pairs(0.05)), 12)
-        self.assertEqual(len(flicker.blend_pairs(DEFAULT_LUMA_DELTA)), 18)
-        self.assertEqual(len(flicker.blend_pairs(0.10)), 20)
+        for cap, without_warm, with_warm in (
+            (0.05, 6, 12),
+            (DEFAULT_LUMA_DELTA, 11, 18),
+            (0.10, 11, 20),
+        ):
+            self.assertEqual(len(flicker.blend_pairs(cap)), without_warm)
+            self.assertEqual(len(flicker.blend_pairs(cap, exclude_warm=False)), with_warm)
+
+    def test_warm_colours_are_excluded_by_default(self):
+        for a, b in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA):
+            self.assertNotIn(a, flicker.WARM_FLICKER_COLORS)
+            self.assertNotIn(b, flicker.WARM_FLICKER_COLORS)
+
+    def test_the_exclusion_only_ever_removes_pairs(self):
+        """It is a filter over the capped set, not a different rule — so the
+        cap alone still bounds every pair that can reach the screen."""
+        for cap in (0.05, DEFAULT_LUMA_DELTA, 0.10):
+            kept = set(flicker.blend_pairs(cap))
+            self.assertLess(kept, set(flicker.blend_pairs(cap, exclude_warm=False)))
+
+    def test_brown_survives_the_exclusion(self):
+        """Warm by name and deliberately not in the set — it read as solid where
+        the four listed colours did not, so a hue band would be the wrong rule."""
+        pairs = flicker.blend_pairs(DEFAULT_LUMA_DELTA)
+        self.assertTrue(any(9 in pair for pair in pairs))
+
+    def test_the_two_settings_get_separate_cache_entries(self):
+        strict = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        loose = flicker.build_blend_table(DEFAULT_LUMA_DELTA, exclude_warm=False)
+        self.assertTrue(strict.exclude_warm)
+        self.assertFalse(loose.exclude_warm)
+        self.assertLess(strict.size, loose.size)
+        self.assertIs(strict, flicker.build_blend_table(DEFAULT_LUMA_DELTA))
 
     def test_luma_cap_is_clamped(self):
         """Above MAX_ALLOWED_LUMA_DELTA is refused whatever the config asks."""
@@ -194,10 +224,13 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
     def test_the_eligible_pair_set_changes(self):
         """Not a rescaling — a different machine has a different answer about
         which two colours fuse, which is why this cannot be computed once."""
+        # Over the full capped set, not the warm-excluded one: the exclusion
+        # removes the same four colours on every machine, so filtering first
+        # would test how much of the disagreement it happens to have deleted.
         palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
-        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA))
+        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, exclude_warm=False))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
-        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA))
+        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, exclude_warm=False))
         self.assertNotEqual(pepto, u64)
         self.assertLess(len(pepto & u64), min(len(pepto), len(u64)))
 

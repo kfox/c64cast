@@ -733,8 +733,13 @@
         },
         "flicker_max_luma_delta": {
           "type": "number",
-          "description": "How far apart in brightness the two colors of a flicker pair may be, 0..0.12, as a fraction of peak white in linear light. This is a photosensitivity control as much as a quality one \u2014 what makes alternation dangerous, and what makes it read as flicker rather than color, is luminance modulation depth. Measured on a CRT, pairs up to 0.0155 read as solid and the first visible flicker was at 0.1214, so 0.075 (default) sits mid-gap and admits ~21 of the 120 pairs. Above 0.10 warns; above 0.12 is refused. Which pairs qualify depends on [hardware].host_palette, since it is the emitted light that fuses.",
+          "description": "How far apart in brightness the two colors of a flicker pair may be, 0..0.12, as a fraction of peak white in linear light. This is a photosensitivity control, not a quality knob: alternation at the field rate is hazardous in proportion to luminance modulation depth, and 0.12 is the ceiling because 20% of peak white is what the guidance is written around. Do not read a lower value as less flicker \u2014 scored by eye, \u0394Y predicts fusion barely at all (r=+0.33), which is what flicker_exclude_warm is for. 0.075 (default) admits ~21 of the 120 pairs before that exclusion. Above 0.10 warns; above 0.12 is refused. Which pairs qualify depends on [hardware].host_palette, since it is the emitted light that fuses.",
           "default": 0.075
+        },
+        "flicker_exclude_warm": {
+          "type": "boolean",
+          "description": "Refuse any flicker pair containing red, purple, orange or light red. Those four were seen to flicker whatever they were paired with and however close in brightness, while pairs further apart built from the rest of the palette sat still \u2014 so this removes far more visible flicker than lowering flicker_max_luma_delta does. Costs gamut: on an Ultimate 64 it takes the widened palette from 37 colors to 23. Turn it off to trade steadiness for reach. No effect unless flicker_blend is on.",
+          "default": true
         },
         "motion_smoothing": {
           "type": "number",

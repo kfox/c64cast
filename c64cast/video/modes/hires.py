@@ -137,6 +137,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         cell_pick: str = "error-min",
         flicker_blend: bool = False,
         flicker_max_luma_delta: float = 0.075,
+        flicker_exclude_warm: bool = True,
     ):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
@@ -146,7 +147,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         # running the 16-entry quantizer it always did. Only the "normal" style
         # picks colour, so blending is a no-op on the edges styles.
         self._blend_table: BlendTable | None = (
-            build_blend_table(flicker_max_luma_delta)
+            build_blend_table(flicker_max_luma_delta, exclude_warm=flicker_exclude_warm)
             if flicker_blend and style == "normal"
             else None
         )
@@ -323,10 +324,11 @@ class HiresDisplayMode(BitmapDisplayMode):
             table = self._blend_table
             self._setup_flicker_doublebuffer(api)
             log.info(
-                "hires: flicker blend armed — %d blend pairs at ΔY <= %.3f "
+                "hires: flicker blend armed — %d blend pairs at ΔY <= %.3f%s "
                 "(%d effective colours), pages $%04X/$%04X, IRQ @ $%04X",
                 table.blend_count,
                 table.max_luma_delta,
+                "" if table.exclude_warm else ", warm colours allowed",
                 table.size,
                 VIC_BANK_0.SCREEN,
                 VIC_BANK_0.SCREEN_ALT,

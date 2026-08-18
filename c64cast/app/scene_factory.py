@@ -313,6 +313,7 @@ def _build_display_mode(
             cell_pick=color.hires_cell_pick,
             flicker_blend=flicker_blend,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
+            flicker_exclude_warm=color.flicker_exclude_warm,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(

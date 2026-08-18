@@ -516,15 +516,24 @@ region alternates at **25 Hz on PAL and 30 Hz on NTSC** — inside the frequency
 band recognized as a photosensitive-seizure risk (ITU-R BT.1702). What makes
 alternation hazardous is luminance modulation depth, which is exactly the same
 quantity that decides whether a pair reads as a *color* or as *flicker*. So
-`[color].flicker_max_luma_delta` is a safety control, not a quality knob: at the
-0.075 default only ~21 of the 120 possible pairs qualify, all of them close
-enough in brightness to fuse rather than strobe. That number is not a guess —
-candidate pairs were shown as flat bands on a CRT and judged by eye, and
-everything up to ΔY 0.0155 read as a solid color while the first visible flicker
-was at 0.1214. The default sits between the two, and c64cast refuses anything
-above 0.12 outright. NTSC's 30 Hz fuses noticeably better than PAL's 25 Hz. Don't
-point this at an audience without knowing that, and leave the cap alone unless
-you have a reason.
+`[color].flicker_max_luma_delta` is a safety control and nothing else: at the
+0.075 default only ~21 of the 120 possible pairs clear it, and c64cast refuses
+anything above 0.12 outright because that is where modulation depth approaches
+the level the guidance is written around. NTSC's 30 Hz fuses noticeably better
+than PAL's 25 Hz. Don't point this at an audience without knowing that, and
+leave the cap alone unless you have a reason.
+
+**A lower cap is not less flicker.** Brightness distance turned out to be a poor
+predictor of whether a pair actually fuses — scored by eye over every admitted
+pair it correlates at r=+0.33, and the pair with the *smallest possible*
+separation visibly flickers while one near the top of the range reads as almost
+nothing. The knob that buys steadiness is `[color].flicker_exclude_warm` (on by
+default), which refuses any pair containing red, purple, orange or light red:
+those four flickered wherever they appeared regardless of what they were paired
+with. It costs gamut — 37 effective colors down to 23 on an Ultimate 64 — and
+it is provisional, since whether those colors fail to fuse or are an artifact of
+composite video has not been settled. On a component or HDMI display, turning it
+off may look fine.
 
 **It does not survive being filmed.** A capture card records individual fields,
 so it captures the flicker rather than the fusion — a 30 fps capture of a
