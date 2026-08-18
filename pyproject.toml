@@ -210,6 +210,16 @@ dev = [
     # declares it optional, so the `control` extra doesn't pull it; without it
     # those 13 tests skip. Dev-only; the runtime never imports it.
     "httpx==0.28.1",
+    # Satisfies every @skipUnless(HAVE_MIDI) gate, which tests `import mido`
+    # and nothing else. Named here rather than pulled via the `midi` extra
+    # because that extra also carries python-rtmidi, which has no wheels past
+    # cp312 and so builds from a C++/meson sdist needing the ALSA dev headers —
+    # minutes of CI per leg, and the step that intermittently hung the Linux
+    # legs outright. No test needs it: they patch `c64cast._midi.mido` or use
+    # scripted ports, and never open a real one. mido itself is pure Python and
+    # declares rtmidi only under its optional `ports-rtmidi` extra. Users who
+    # want real MIDI still get both from the `midi` extra, unchanged.
+    "mido>=1.3.3,<2",
     # Draws the reference guide's diagrams in scripts/make_reference_diagrams.py.
     # Already resolved transitively through matplotlib, but named here because
     # that script imports it directly. Dev-only; the runtime never imports it.
