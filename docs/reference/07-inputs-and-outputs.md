@@ -624,10 +624,13 @@ printed and it is remembered, on that browser, until you clear its cookies.
 If you are working on the console's own source, that lives in `web/` in the
 repository and `make web` rebuilds it; only that needs Node.
 
-The older `/perf` performance console is still there, on the same host, and
-still has no dependencies of its own. If a bundle was never built — a checkout
-that has not run `make web` — the host says so at startup and serves `/perf`
-instead.
+The `/perf` performance console is still there, on the same host, and still has
+no dependencies of its own. It is the older page but not the lesser one: it
+carries the same panels this console does — tune, the record and its **Keep**,
+scenes with a jump, transport beside the tap tempo — so it is the one to reach
+for on a gig day when the bundle is not there. If a bundle was never built — a
+checkout that has not run `make web` — the host says so at startup and serves
+`/perf` instead.
 
 ### Browsing And Editing Configurations
 
@@ -706,8 +709,12 @@ the Commodore, and closes it again. That makes a host under `launchd` or
 at that reset.
 
 A preview window under `--serve` works from a terminal but is not a supported
-way to run one; a preview in the console is the intended answer and is still to
-come.
+way to run one. What the console offers instead is the **Screen** panel above —
+which is a better answer on an Ultimate 64, being the VIC's own output rather
+than the host's idea of it, and no answer at all on the other two backends,
+which have no video to tap. A preview of what the *render path* produced, which
+is what `[preview]` shows locally and what would work on every backend, is still
+to come in the console.
 
 ## Performing
 

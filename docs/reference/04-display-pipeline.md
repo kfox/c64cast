@@ -8,10 +8,13 @@ A frame arrives as ordinary color pixels and leaves as bytes the VIC-II can
 render. Between those two states it is cropped, filtered, downscaled, shaped,
 dithered, matched against sixteen colors, and packed into whatever memory
 layout the display mode uses. This chapter is that path in order, and where
-each `[color]` setting sits on it.
+each setting that shapes it sits on it — nearly all of them `[color]`, plus
+`[hardware].host_palette`, which says which sixteen colors the match is aiming
+at in the first place.
 
-The settings themselves are `[color]` in Appendix A, `palette_mode` and
-`display` in Appendix B, and the generators and effects in Appendix E.
+The settings themselves are `[color]` and `[hardware]` in Appendix A,
+`palette_mode` and `display` in Appendix B, and the generators and effects in
+Appendix E.
 
 ## From Frame to Screen
 
@@ -53,7 +56,8 @@ error-diffusion family instead replaces the final per-pixel decision, pushing
 each pixel's error onto its neighbors.
 
 **8. Every pixel is matched to the palette,** in weighted BGR or in CIE-Lab,
-with the shaping biases folded into the distance.
+with the shaping biases folded into the distance. *Which* sixteen colors it is
+matched against depends on the machine — see "Near To What" below.
 
 **9. The mode allocates its color slots and packs its buffers** — which is
 the part that differs per mode, and the subject of the next two sections.
@@ -127,8 +131,9 @@ with real color and no glyph character.
 
 **`hires`** is a genuine 320×200 bitmap, one bit per pixel, where the bit
 selects between two colors held in the nibbles of that 8×8 cell's screen
-byte. c64cast picks those two by luma. It is the sharpest mode and the most
-expensive: 8000 bytes of bitmap for every frame that changes.
+byte. One of the two is the global background, so the other one decides most of
+the frame; `hires_cell_pick` below is how it is chosen. It is the sharpest mode
+and the most expensive: 8000 bytes of bitmap for every frame that changes.
 
 **`hires_edges`** runs Canny edge detection first and draws the edges. It is
 the default for a live camera, and the reason is motion: an edge picture reads
@@ -160,13 +165,14 @@ being forced into a palette chosen for the subject in the middle.
 
 ## Quantizing a Cell
 
-Three settings decide what a cell ends up looking like, and they are
-orthogonal: one picks *which* colors a cell may use, one picks *how near* is
-measured, and one decides which of the available colors each pixel takes.
+Four settings decide what a cell ends up looking like, and they are orthogonal:
+two pick *which* colors a cell may use — one for `mhires`, one for `hires` —
+one picks *how near* is measured, and one decides which of the available colors
+each pixel takes.
 
 ### Which Colors — `cell_strategy`
 
-Only `mhires` with `palette_mode = "percell"` has this question to answer:
+`mhires` with `palette_mode = "percell"` is the mode this question belongs to:
 given every color present in a 4×8 cell, which three fill its slots?
 
 | `cell_strategy` | Picks |
@@ -187,6 +193,31 @@ They separate on busy, high-detail images. `luminance` and `contrast` can
 speckle a near-flat region by forcing a tonal extreme onto a lone outlier
 pixel, which is why `"auto"` never selects them.
 
+### Which Color on a Hires Cell — `hires_cell_pick`
+
+`hires` faces a narrower version of the same question. It gets two colors per
+8×8 cell and one of them is the global background, so the only real choice is
+the other one — which means this single decision sets most of the frame.
+
+| `hires_cell_pick` | Picks |
+|---|---|
+| `error-min` | The default. The color that minimizes that cell's own reconstruction error, fitting all 64 pixels |
+| `sample` | Reads one pixel per cell and takes its nearest color |
+
+`error-min` reuses the distance matrix the quantizer has already built, so it
+costs about 0.8 ms a frame. It buys roughly a quarter less reconstruction error
+on photographic content — about −24 % mean Lab, holding across every `dither`
+setting — and the gain tracks how much a cell's own pixels disagree: nothing on
+a smooth gradient, around −32 % on high-frequency detail.
+
+It is also the *stabler* of the two, which is the opposite of the trade
+one-pixel sampling looks like it is making. A single read follows sensor noise
+directly, so a static subject under a noisy camera rewrites cells that no human
+would call changed; fitting the whole cell averages that noise out, and the same
+subject stops writing to the screen at all. `sample` is therefore for a tight
+CPU budget and nothing else. Neither applies to the `hires_edges` styles, which
+are fixed at two colors by construction.
+
 ### How Near — `color_match`
 
 The default distance is a brightness-weighted BGR metric: fast, but it
@@ -202,6 +233,39 @@ Perceptual matching swaps the distance space and nothing else. The shaping —
 `channel_boost` and the bias that keeps borderline pixels off the gray axis —
 still applies, and that is deliberate: an accurate but unbiased match
 fragments flat desaturated regions, a pale sky, into drab gray.
+
+### Near To What — `[hardware].host_palette`
+
+Both metrics measure distance to the sixteen C64 colors, which raises a question
+neither of them answers: sixteen colors *as rendered by what?* The palette is
+fixed as an idea and not as a set of RGB triples. An Ultimate 64's video output
+and a real VIC-II's are about 25 counts per channel apart, and 60 apart on
+orange.
+
+That is not a tint the eye discounts and then forgives, because the quantizer
+picks by distance: aim at the wrong table and pixels are sent to the wrong color
+outright. Measured on an Ultimate 64 against the VIC-II rendering, that was
+**18.8 % of pixels** and **+12.9 % mean perceptual error**, worst on the grays,
+the browns and orange.
+
+| `host_palette` | Means |
+|---|---|
+| `auto` | The default, and needs no configuration. Ask the machine: an Ultimate 64 reports its own palette, and anything else is driving a real C64, so assume a VIC-II |
+| `u64` | The Ultimate 64's own table, stated outright |
+| `pepto` | The classic VIC-II rendering — right for a real C64, so for an Ultimate II+ and for a TeensyROM+ in a breadbin |
+| *a path* | A VICE `.vpl` file, which is how to describe a machine running a custom palette |
+
+`auto` is right on every stock setup, and this is a setting most configurations
+should never contain. Reach for it when the machine's palette is not the one its
+backend implies: a `.vpl` loaded on the Ultimate, or a display whose own
+processing you have already characterized. Point a path at a local copy of the
+`.vpl` — an Ultimate will not serve its own over the network.
+
+Note that this is a `[hardware]` setting rather than a `[color]` one, and
+deliberately: it says what the *machine* emits, not what the show should look
+like. It belongs with the other machine declarations, and a show file carried to
+a second Commodore should not be the thing that describes the first one's video
+output.
 
 ### Which Pixel Takes Which — `dither`
 

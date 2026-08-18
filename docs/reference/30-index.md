@@ -127,7 +127,7 @@ Every name c64cast answers to — 437 of them — and the pages that discuss eac
 | `--display` | [Quick Playback (With Media Args) (G)](26-appendix-g-cli-flags.md#quick-playback-with-media-args) |
 | `display` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [`asid` (2)](03-vocabulary.md#asid) |
 | display mode | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes) |
-| `dither` | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither), [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve) |
+| `dither` | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [Which Color on a Hires Cell — `hires_cell_pick` (3)](04-display-pipeline.md#which-color-on-a-hires-cell--hires_cell_pick), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither) |
 | `dither` (audio) | [Companding — `dac_curve` (4)](05-sound-and-music.md#companding--dac_curve), [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `dither` (color) | [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `dither_method` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
@@ -221,7 +221,7 @@ Every name c64cast answers to — 437 of them — and the pages that discuss eac
 | Term | See |
 |---|---|
 | `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `hdmi_scan_resolution` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
@@ -230,7 +230,7 @@ Every name c64cast answers to — 437 of them — and the pages that discuss eac
 | `--help` | [Options (G)](26-appendix-g-cli-flags.md#options) |
 | `hiphotic` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `hires` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
-| `hires_cell_pick` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `hires_cell_pick` | [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [Which Color on a Hires Cell — `hires_cell_pick` (3)](04-display-pipeline.md#which-color-on-a-hires-cell--hires_cell_pick), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hires_edges` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow) |
 | `hold_threshold_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `hopalong` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
@@ -239,7 +239,7 @@ Every name c64cast answers to — 437 of them — and the pages that discuss eac
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_palette` | [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_palette` | [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
 | `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
@@ -402,7 +402,7 @@ Every name c64cast answers to — 437 of them — and the pages that discuss eac
 | `port` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `posterize` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `pre_emphasis` | [`dsp` (A)](20-appendix-a-configuration.md#dsp), [`blank` (B)](21-appendix-b-scene-types.md#blank), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
-| `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`preview` (A)](20-appendix-a-configuration.md#preview) |
+| `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `--print-example` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema` | [What Is In Here](01-introduction.md#what-is-in-here), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema-path` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |

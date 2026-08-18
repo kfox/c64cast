@@ -47,6 +47,7 @@ remembering:
 | `-D INDEX`, `-D NAME` | Choose the audio input |
 | `--no-audio` | Mute |
 | `--loop` / `--no-loop` | Repeat the playlist, or stop after one pass |
+| `--serve` | Run as a host with a browser console instead of playing once |
 | `--doctor` | Check everything and report |
 | `--skip-probe` | Run checks without touching the Commodore |
 | `--init` | Build a configuration interactively |
@@ -121,17 +122,21 @@ paths it actually resolved, which is the quickest way to settle any doubt.
 | `[audio]` | Audio on or off, backend, sample rate |
 | `[dsp]` | Signal shaping before audio reaches the Commodore |
 | `[color]` | Dithering, palette, color matching |
+| `[audio_features]` | Reacting to live audio input |
 | `[interstitial]` | The card shown between scenes |
 | `[playlist]` | Looping, and video interleaving |
 | `[preview]` | The local mirror window |
 | `[recording]` | Recording to a video file |
 | `[control]` | The web control service |
+| `[web]` | The browser console host (`--serve`) |
 | `[midi_control]` | Live control from a MIDI device |
+| `[performance]` | The clip grid, the beat grid, and saved looks |
 | `[menu]` | The on-screen menu on the Commodore |
 | `[vision]` | Hand-gesture control |
 | `[wled]` | The LED bridge |
 | `[[scenes]]` | One per scene, in playing order |
 | `[[scenes.overlays]]` | One per overlay, within a scene |
 | `[ensemble]` | Several Commodores driven together |
+| `[debug]` | Diagnostics and profiling |
 
 Run `--describe section:NAME` for the full contents of any of them.

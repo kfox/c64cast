@@ -52,7 +52,8 @@ differently built chain, it applies what it can by layer index.
 
 ## The Console
 
-`[control].enabled` and the `control` extra serve `127.0.0.1:8765`.
+Two pages, both served by c64cast. `[control].enabled` and the `control` extra
+serve `127.0.0.1:8765`.
 
 | Route | Does |
 |---|---|
@@ -64,6 +65,22 @@ differently built chain, it applies what it can by layer index.
 
 Every route takes `?system=` naming one system, or `all`. Nothing on the console
 reaches the audience's screen.
+
+`c64cast --serve` and the `web` extra serve the full browser console on
+`127.0.0.1:8123` instead — a host that holds the Commodore across shows.
+
+| On the Live screen | Does |
+|---|---|
+| **Screen** | The C64's own picture, tapped off the VIC by the U64's FPGA. **Watch** starts it, **Stop** ends it. U64 only |
+| Tempo bar | Tap tempo, pause, resume, skip |
+| **Scenes** | The playlist, with a tap to jump — a cut, no interstitial |
+| **Tune** | The running scene's colour, generator and scope knobs |
+| **Keep** | Writes what you tuned into the config the show is running from |
+
+It prints a login URL holding its own token at startup; that token can stop the
+show, so hand out the read-only link from **Session** instead. `[web].screen_fps
+= 0` turns the picture off. `/perf` needs no bundle — reach for it if `make web`
+was never run.
 
 ## WLED
 
