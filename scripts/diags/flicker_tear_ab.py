@@ -12,9 +12,16 @@ PREVIOUS frame while the rest shows the new one.
 This is the acceptance test for the $D012 window gate in modes_irq's two
 host-DMA swap handlers, which declines to commit outside vblank rather than
 committing late. A pre-gate build measured 5.3% of flicker frames torn and 1.2%
-of plain ones; both should now read ~0% at unchanged throughput. Throughput is
-the other half of the result: a fix that trades frame rate for cleanliness is
-not the fix this is checking for, so read the fps in the phase logs too.
+of plain ones. With the gate, over 1796 scored frames per phase: plain 0 of
+1796, flicker 0.28% with the seams scattered rather than at a fixed line, at
+unchanged throughput (~235 KiB/s, clock/wall 1.0000). Throughput is the other
+half of the result: a fix that trades frame rate for cleanliness is not the fix
+this is checking for, so read the fps in the phase logs too.
+
+The residual is flicker-only, which is what identifies it — the handler checks
+$D012 and writes $DD00 a few cycles later, and a halt beginning in that gap
+passes the check and commits late anyway. Expect roughly that, not zero, until
+the staging path stops halting the bus.
 
 Method. A synthetic video cycles 8 states. Colors alternate every frame so
 consecutive displayed frames are always tellable apart, while the stripe phase

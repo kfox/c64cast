@@ -276,7 +276,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   on a later field instead. A late frame is held one field longer rather than
   torn in half, and the frame rate is unchanged — capping write size also stops
   the tearing, but costs roughly 26 fps down to 15, so that is not what this
-  does.
+  does. Re-measured the same way afterwards: plain double-buffer split zero
+  frames out of 1796, `flicker_blend` 0.28%, at unchanged throughput.
 
 - **The console's token no longer travels further than the terminal.** The host
   logs its login URL with the token in it, because that URL is the only way a
