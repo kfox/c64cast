@@ -43,10 +43,11 @@ uvx --from 'c64cast[all]' c64cast clip.mp4 -u u64://192.168.2.64
 
 `[all]` pulls in every optional feature — video files and YouTube URLs, mic
 capture, MIDI, webcam gestures, the WLED bridge, the HTTP control plane, the
-config wizard. Plain `uv tool install c64cast` gets a much smaller core install
-(no mediapipe, no yt-dlp) that still covers every generative scene, PETSCII/
-bitmap rendering, SID playback, and overlays; add extras à la carte later
-(`uv tool install 'c64cast[video,midi]'`). Extras don't accumulate, so name
+browser console (the `web` extra), the config wizard. Plain
+`uv tool install c64cast` gets a much smaller core install (no mediapipe, no
+yt-dlp) that still covers every generative scene, PETSCII/bitmap rendering, SID
+playback, and overlays; add extras à la carte later
+(`uv tool install 'c64cast[video,midi,web]'`). Extras don't accumulate, so name
 every one you want in a single command.
 
 Later, `uv tool upgrade c64cast` (or `pipx upgrade c64cast`) is the upgrade —
@@ -109,8 +110,14 @@ with `c64cast --list-examples` (one demo per scene type and per overlay).
 * **Pixel effects** — eight of them (trails, pulse, RGB shift, blur, strobe,
   invert, mirror, posterize), layerable into an ordered chain, each tunable
   and bypass-toggleable live, and lockable to the music or the beat grid.
-* **Live performance** — a MIDI controller or a phone drives the whole show;
-  see [Live control](#live-control).
+* **Live performance** — a MIDI controller, a phone or a browser drives the
+  whole show; see [Live control](#live-control).
+* **Browser console** — `c64cast --serve` turns the program into a host that
+  holds the Commodore and starts, stops and switches shows on request. Author a
+  configuration in a generated form, watch the C64's own screen live in the
+  browser (the U64's FPGA taps the VIC), tune the colour pipeline from a phone
+  and keep what you tuned, and hand out a read-only link. Ships inside the
+  package — nothing to install, no separate service.
 * **Ensemble mode** — one process drives **N systems at once** as a video
   wall, with cross-system orchestration.
 * **WLED bridge** — interoperate with the [WLED](https://kno.wled.ge/) LED
@@ -213,9 +220,16 @@ While the show is running you can drive it from the C64's own keyboard (pause,
 skip, cycle styles, an on-C64 menu of live knobs), a MIDI controller (a
 clip-launch grid quantized to a beat grid, CC knobs mapped to live parameters,
 pad LEDs driven from actual state, saved *looks* that recall a scene and its
-whole effect chain in one press), a phone or laptop (`GET /perf` on the
-control-plane server serves a touch console), webcam gestures, or plain HTTP +
+whole effect chain in one press), a browser, webcam gestures, or plain HTTP +
 signals with `[control] enabled = true`.
+
+The browser gets two pages, both served by c64cast itself. **`GET /perf`** is
+the zero-dependency phone console — clips, the effect rack, the current scene's
+tune knobs, tempo, transport, looks and a jump to any scene — and needs only
+`[control] enabled = true`. **`c64cast --serve`** (the `web` extra) is the full
+console: the same performance surface plus the C64's live screen, a form that
+edits and validates a configuration, save-back of anything you tuned, and a
+read-only link to hand out.
 
 [Inputs and Outputs](https://github.com/kfox/c64cast/blob/main/docs/reference/07-inputs-and-outputs.md)
 documents every surface in full, and the

@@ -182,18 +182,25 @@ uvx --from 'c64cast[all]' c64cast \
 
 The `[all]` part asks for every optional feature: video file decoding, links
 to video sites, microphone capture, MIDI, hand gestures, the LED bridge, the
-web control service and the configuration wizard. Some of those are large, so
-plain `c64cast` without the brackets installs a much smaller core that still
-covers every generative scene, both bitmap and character rendering, SID
-playback and all the overlays.
+web control service, the browser console and the configuration wizard. Some of
+those are large, so plain `c64cast` without the brackets installs a much smaller
+core that still covers every generative scene, both bitmap and character
+rendering, SID playback and all the overlays.
 
 While you are finding out what c64cast does, take `[all]`. It saves a great
 deal of confusion about why a feature appears to be missing. You can always
 narrow it later, or add features one at a time:
 
 ```bash
-uv tool install 'c64cast[video,midi]'
+uv tool install 'c64cast[video,midi,web]'
 ```
+
+> [!IMPORTANT]
+> If you narrow the list, name every feature you want in that one command.
+> Extras do not accumulate: a second `uv tool install` replaces the set rather
+> than adding to it. The one people miss is `web`, which is the browser console
+> in [Chapter 5](08-going-further.md#the-browser-console) — without it
+> `--serve` reports the missing feature instead of starting.
 
 > [!NOTE]
 > Everything in this guide is written for `uv`. If you would rather not install

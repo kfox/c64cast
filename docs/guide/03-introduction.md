@@ -81,8 +81,8 @@ simple ones.
 modes, color, dithering, and how to stack overlays on top.
 
 **Chapter 5** covers the ambitious end: driving several Commodores at once as
-one video wall, playing c64cast live from a MIDI controller, and connecting
-it to LED lighting.
+one video wall, playing c64cast live from a MIDI controller, running it as a
+host you drive from a browser, and connecting it to LED lighting.
 
 The appendices are for looking things up once you know what you are looking
 for.

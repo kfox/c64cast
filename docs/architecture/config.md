@@ -25,9 +25,10 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`playlist_support.py` — playlist collaborators](#playlist_supportpy--playlist-collaborators)
 * [`profiler.py` — per-frame timing](#profilerpy--per-frame-timing)
 * [`recording_metadata.py` — per-scene SCENE_CONFIG_JSON logging](#recording_metadatapy--per-scene-scene_config_json-logging)
-* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy)
+* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy-_redactpy)
   * [`_pollthread.py` — the background-loop idiom](#_pollthreadpy--the-background-loop-idiom)
   * [`_midi.py` — the guarded mido import](#_midipy--the-guarded-mido-import)
+  * [`_redact.py` — keeping the console token off the durable log paths](#_redactpy--keeping-the-console-token-off-the-durable-log-paths)
   * [`_native_io.py` — fd-level stderr muting](#_native_iopy--fd-level-stderr-muting)
 
 ---
@@ -288,9 +289,9 @@ The `source` block is scene-type-specific. For `video`, `config.build_scene` (se
 
 `extract_scene_configs(log_text)` pulls every `SCENE_CONFIG_JSON` payload back out of a `--log-file` run (formatter-agnostic — it searches for the marker substring, not a fixed line format), and `render_description(payload)` renders one entry as a human, paste-ready text block; both are pure functions so [scripts/scene_config_to_description.py](../../scripts/scene_config_to_description.py) is a thin argparse+file-I/O shell around them (default: render the last entry; `--all`/`--index N` for the rest).
 
-## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`
+## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`
 
-The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these three: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
+The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these four: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
 
 ### `_pollthread.py` — the background-loop idiom
 
@@ -299,6 +300,12 @@ Every background loop in the tree is a `PollThread` — 21 consumer modules, fro
 ### `_midi.py` — the guarded mido import
 
 mido (+ python-rtmidi) is the optional `midi` extra, so every MIDI consumer needs the same import guard — it had been copied into three modules (one copy's comment promised it mirrored another "exactly"), each with its own 19-line port resolver, until #249 folded them here. Beyond what the docstring says (`mido` typed `Any` to keep pyright off the `None` fallback, `MIDI_AVAILABLE` as the runtime guard), the part that bites is the patch point: consumers re-import `mido` under their own module name, so patching `<consumer>.mido` still works for code *in that module* — but port resolution reads this module's copy, so tests that fake ports patch `c64cast._midi.mido`. `open_input_port` matches a case-insensitive substring of the available names, so nobody has to paste an exact rtmidi port string.
+
+### `_redact.py` — keeping the console token off the durable log paths
+
+The web console's token is logged as a ready-to-open login URL, because that URL is the only entry point a phone gets — so the *terminal* has to keep it. Two other destinations carried the same line and should not have, and they are different enough in kind to be worth naming: `--log-file` writes a file that outlives the run and is not created `0600` (the token's own store deliberately is), and `SessionLogBuffer` is served over the state feed to every client — **including a read-only viewer**, which is the one that actually escalates. A viewer link exists so somebody can watch without being able to stop the show; handing it the admin token in a log tail defeats exactly that. `_LOG_BACKLOG` is 200 and the startup line lands at line ~3, so a viewer connecting to a fresh host received it. The host persists its token across restarts, so neither leak aged out on its own.
+
+The split — terminal keeps, everything durable or shared redacts — is why this is applied at the point of **output** rather than at the `log.info` call. Two consequences worth not re-deriving. First, the file half is a `logging.Formatter` subclass (`cli_commands.RedactingFormatter`) and *not* a `logging.Filter`: a filter mutates the record, which every handler shares, so redacting there would blank the URL out of the terminal too — the formatter belongs to one handler, which is the whole point. Second, the buffer half redacts in `emit`, on the way *in*, so the secret never exists in the deque to be served; a redact-on-read would leave it sitting in memory behind whatever the next reader turns out to be. The pattern is keyed on the `token=` suffix rather than each parameter's full name, so `viewer_token` and any later `…_token` are covered without touching this file. `tests/test_redact.py` pins both halves, including an assertion that the terminal handler is *not* redacting — the split regresses in either direction otherwise.
 
 ### `_native_io.py` — fd-level stderr muting
 

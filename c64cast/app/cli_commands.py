@@ -23,6 +23,7 @@ import sys
 import time
 
 from c64cast._native_io import silence_native_stderr
+from c64cast._redact import redact_secrets
 from c64cast.audio import dac_calibration
 from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
 from c64cast.audio.dac_capture_device import CaptureUnavailableError
@@ -34,6 +35,18 @@ from . import config as cfgmod
 from . import paths
 
 log = logging.getLogger("c64cast")
+
+
+class RedactingFormatter(logging.Formatter):
+    """A formatter that strips secrets out of the line it produces.
+
+    A `logging.Filter` is the obvious hook and the wrong one: a filter mutates
+    the record, which every handler shares, so redacting there would also blank
+    the login URL out of the terminal the operator is reading it from. A
+    formatter belongs to one handler. See `c64cast._redact`."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets(super().format(record))
 
 
 def configure_logging(verbosity: int, log_file: str | None = None) -> None:
@@ -84,8 +97,10 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             log.warning("could not open log file %s: %s", log_file, e)
         else:
             fh.setLevel(level)
+            # Redacting: a log file outlives the run, is not created 0600, and
+            # may be pasted into a bug report. The terminal keeps the token.
             fh.setFormatter(
-                logging.Formatter(
+                RedactingFormatter(
                     "%(asctime)s %(name)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
                 )
             )

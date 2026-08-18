@@ -558,6 +558,22 @@ class SessionLogBufferTest(unittest.TestCase):
             log.info("line %d", i)
         self.assertEqual([r["message"] for r in buf.tail()], ["line 7", "line 8", "line 9"])
 
+    def test_a_token_never_reaches_the_buffer(self):
+        """The buffer is served to every client on the state feed, read-only
+        viewers included, so the login URL's token must not survive into it —
+        a viewer handed the admin token could stop the show."""
+        import logging
+
+        buf = self._buffer("c64cast.test-buffer-secret")
+        log = logging.getLogger("c64cast.test-buffer-secret")
+        log.info("web console: open http://127.0.0.1:8123/api/login?token=s3cr3t-abc&next=/")
+        message = buf.tail(limit=1)[0]["message"]
+        self.assertNotIn("s3cr3t-abc", message)
+        self.assertIn("token=REDACTED", message)
+        # Still diagnostic: the reader can tell which URL was printed.
+        self.assertIn("127.0.0.1:8123", message)
+        self.assertIn("next=/", message)
+
     def test_the_supervisor_tags_the_buffer_with_each_new_generation(self):
         buf = serve.SessionLogBuffer()
         mgr = serve.SessionManager(
