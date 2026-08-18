@@ -25,6 +25,7 @@ jobs:
   pre-commit:
     name: pre-commit (lint + format + hygiene)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The interpreter the hooks' own virtualenvs are built from. uv (below)
@@ -59,6 +60,7 @@ jobs:
   docs:
     name: docs (books + site render)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
@@ -82,6 +84,7 @@ jobs:
   web:
     name: web console (bundle matches its sources)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -96,9 +99,64 @@ jobs:
       - name: The committed bundle is current
         run: git diff --exit-code -- c64cast/web/dist
 
+  # Both type checkers, over three platform views, on three runners instead of
+  # the twelve they used to ride along with.
+  #
+  # Both pin their *version* in pyproject (`[tool.pyright] pythonVersion` and
+  # `[tool.mypy] python_version`, both 3.11), so the interpreter a runner
+  # installs never changed the answer — the twelve legs recomputed one result
+  # twelve times, pyright at ~25s a leg being the largest step in the job.
+  #
+  # Neither pins its *platform*, though, and both default to the host OS. So the
+  # OS matrix was checking the Linux, Darwin and Windows views as a side effect
+  # nobody had written down, and simply collapsing to one job would quietly drop
+  # two of them. That matters here: `getattr(signal, "SIGHUP", None)` in cli.py
+  # and serve.py is spelled that way *because* Windows has no SIGHUP, and
+  # paths.py branches on `os.name == "nt"`. A direct `signal.SIGHUP` would pass
+  # a Linux-only check and break on Windows.
+  #
+  # So the platform is named explicitly and the matrix is over platforms rather
+  # than over runners — all three on ubuntu, since the flag decides the analysis
+  # and the host no longer does. Coverage is the same as before, now on purpose.
+  types:
+    name: types (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            pyright: Linux
+            mypy: linux
+          - name: macOS
+            pyright: Darwin
+            mypy: darwin
+          - name: Windows
+            pyright: Windows
+            mypy: win32
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+          # The primary toolchain version (matches mise.toml). Any would do —
+          # the checkers pin their own target — so this tracks what devs run.
+          python-version: "3.14"
+      - name: Install runtime + dev deps
+        # The same sync the test legs use, so the imports the checkers resolve
+        # are the ones a developer sees locally.
+        run: uv sync --frozen --no-default-groups --group dev --extra web
+      - name: Pyright (basic, whole tree)
+        run: uv run pyright --pythonplatform ${{ matrix.pyright }}
+      - name: Mypy --strict (hot modules)
+        run: uv run mypy --strict --platform ${{ matrix.mypy }}
+
   lint-and-test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       # The full grid: every supported interpreter on every OS the package
@@ -128,42 +186,28 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
-      - name: Install MIDI build deps (python-rtmidi)
-        # python-rtmidi has no wheel for every interpreter (there are none past
-        # cp312), so uv builds it from sdist; the meson build needs the ALSA dev
-        # headers or it errors with "Dependency alsa not found". Cheap apt
-        # install. Linux-only: the equivalent backends elsewhere are CoreMIDI
-        # and WinMM, which ship with the runner's own SDK — nothing to install.
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-
       - name: Install runtime + dev deps
         # Skip the [all] extras here — most pull in heavy native libs
         # (PyAV, sounddevice) that aren't needed for the
         # unittest suite, which mocks all hardware paths. Add specific
         # extras here if you start testing them.
-        # `midi` (mido + python-rtmidi) IS included: the MidiScene suite is
-        # gated `@skipUnless(HAVE_MIDI)`, so without it those tests silently
-        # skip and the module reads as uncovered. The tests never open a real
-        # port (they patch mido / use scripted ports), so they run headless.
-        # `web` (fastapi + uvicorn + websockets) is included for the same
-        # reason: every HTTP-surface suite is gated
-        # `@skipUnless(HAVE_TESTCLIENT)`, so without it the control plane, the
-        # token gate, the config browser and the web console all read as
-        # covered while running nothing. Three pure-Python wheels.
+        # The `midi` extra is deliberately NOT here, even though the MidiScene
+        # suite is gated `@skipUnless(HAVE_MIDI)`: that gate tests `import mido`
+        # alone, and mido is in the `dev` group for exactly this reason. The
+        # extra would additionally build python-rtmidi from a C++/meson sdist
+        # (no wheels past cp312) and need the ALSA dev headers — minutes per leg
+        # for a library no test touches. See the note on `mido` in pyproject.
+        # `web` (fastapi + uvicorn + websockets) IS included: every HTTP-surface
+        # suite is gated `@skipUnless(HAVE_TESTCLIENT)`, so without it the
+        # control plane, the token gate, the config browser and the web console
+        # all read as covered while running nothing. Three pure-Python wheels.
         # --frozen: use uv.lock exactly, error if it's out of date
         # --no-default-groups: skip [tool.uv] default-groups (which is [dev])
         # --group dev: pull in the dev dependency group
-        run: uv sync --frozen --no-default-groups --group dev --extra midi --extra web
+        run: uv sync --frozen --no-default-groups --group dev --extra web
 
       # Ruff lint + format are enforced in the `pre-commit` job above (single
       # style gate), so they're intentionally not repeated here.
-      - name: Mypy --strict (hot modules)
-        run: uv run mypy c64cast/hw/api.py c64cast/audio/audio.py c64cast/app/playlist.py
-
-      - name: Pyright (basic, whole tree)
-        run: uv run pyright
-
       # unittest_parallel forks one process per test module (still stdlib
       # unittest; default --level=module keeps each module's shared state
       # isolated). The suite is mostly blocked on socket/thread waits, so
@@ -178,6 +222,7 @@ jobs:
   coverage:
     name: coverage (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     needs: lint-and-test
     strategy:
       fail-fast: false
@@ -202,16 +247,13 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
-      - name: Install MIDI build deps (python-rtmidi)
-        # See lint-and-test: rtmidi's sdist build needs the ALSA dev headers.
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-
       - name: Install dev deps
-        # Include the `midi` and `web` extras so the @skipUnless(HAVE_MIDI) and
-        # @skipUnless(HAVE_TESTCLIENT) suites run here — otherwise midi_scene.py
-        # and every HTTP surface read as uncovered and tank the codecov
-        # patch/project gates. See the lint-and-test job.
-        run: uv sync --frozen --no-default-groups --group dev --extra midi --extra web
+        # Include the `web` extra so the @skipUnless(HAVE_TESTCLIENT) suites run
+        # here — otherwise every HTTP surface reads as uncovered and tanks the
+        # codecov patch/project gates. The @skipUnless(HAVE_MIDI) suites are
+        # covered by `mido` in the `dev` group; the `midi` extra is left out so
+        # this leg doesn't build python-rtmidi from sdist. See lint-and-test.
+        run: uv sync --frozen --no-default-groups --group dev --extra web
 
       - name: Coverage
         # `make coverage` (scripts/coverage.sh) is the single source of truth:
