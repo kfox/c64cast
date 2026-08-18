@@ -233,6 +233,26 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The console's token no longer travels further than the terminal.** The host
+  logs its login URL with the token in it, because that URL is the only way a
+  phone gets in. Two destinations carried the same line and should not have:
+  `--log-file` wrote it to a file that outlives the run and is not created
+  `0600` — while the token's own store deliberately is — and the console's log
+  buffer is served over the state feed to *every* client, a **read-only viewer
+  included**. That second one was the worse of the two: a viewer link exists
+  precisely so somebody can watch without being able to stop the show, and a
+  token sitting in the log tail it receives handed it the ability to do exactly
+  that. Since the host keeps its token across restarts, neither leak aged out.
+
+  Both destinations now redact to `token=REDACTED`, keyed on the parameter's
+  `token=` suffix so `viewer_token` and anything added later are covered too.
+  The rest of the line survives, so the log still says which address was
+  printed. The terminal is unchanged and still prints a URL you can open: it is
+  the operator's own screen, and it is the one place the token has to work.
+
+  If you have logs or bug reports from an earlier version, treat any token in
+  them as public and restart the host to mint a fresh one.
+
 - **Check says when a scene names media that isn't there.** A `video` scene
   pointing at a path that does not exist passed both **Check** and **Save**, and
   failed a few seconds into the run — after the link was open and the C64 had

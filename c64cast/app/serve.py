@@ -75,6 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from c64cast._pollthread import PollThread
+from c64cast._redact import redact_secrets
 from c64cast.control.auth import ViewerCredential
 from c64cast.control.transport import atomic_write_text
 from c64cast.video.preview import PreviewWindow
@@ -253,7 +254,11 @@ class SessionLogBuffer(logging.Handler):
                     "t": record.created,
                     "level": record.levelname,
                     "name": record.name,
-                    "message": record.getMessage(),
+                    # Redacted on the way *in*, because this buffer is served to
+                    # every client on the state feed — including a read-only
+                    # viewer, who must not be handed the token that would let it
+                    # stop the show. See `c64cast._redact`.
+                    "message": redact_secrets(record.getMessage()),
                     "generation": self.generation,
                 }
             )
