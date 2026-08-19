@@ -148,7 +148,7 @@ names, data-directory layout. See
 The version and the edition answer different questions. `VERSION X.Y.Z` on a
 book's cover, in its PDF metadata and in the card's header says *which build of
 the software this text describes*; it derives from the bump and is never a
-judgement call. The **edition** in `colophon.md` says *which book this is*, so
+judgment call. The **edition** in `colophon.md` says *which book this is*, so
 that someone holding a detached PDF can tell whether their copy is the one you
 are citing.
 

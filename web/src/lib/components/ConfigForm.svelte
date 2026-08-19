@@ -76,7 +76,7 @@
 
   /** Whether *any* field is named like the query. Names are searched first and
    *  alone, because matching help text on "color" pulls in everything that
-   *  mentions colour — but a reader who does not know a setting is called
+   *  mentions color — but a reader who does not know a setting is called
    *  `cell_strategy` has no way in at all, so a query that names nothing falls
    *  through to the descriptions and the form says that is what happened. */
   const byName = $derived(

@@ -14,7 +14,7 @@
      *  a table gets a block of its own rather than being crushed onto a line. */
     type?: string;
     choices?: string[];
-    /** `FieldDoc.vocabulary` — with the palette, turns a colour field into the
+    /** `FieldDoc.vocabulary` — with the palette, turns a color field into the
      *  swatches the value means anyway. */
     vocabulary?: string;
     palette?: Swatch[];

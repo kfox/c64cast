@@ -170,8 +170,8 @@ wherever you launched the host from.
 **Configs** is an editor, and this is the part that saves the most typing. Pick
 a file and you get a form: every setting the file changes, with the same
 one-line explanation `--describe` prints, a control suited to its type — a
-switch, a picker of exactly the values it accepts, a colour field that draws the
-sixteen C64 colours as swatches — and a `live` mark on the ones a running show
+switch, a picker of exactly the values it accepts, a color field that draws the
+sixteen C64 colors as swatches — and a `live` mark on the ones a running show
 would pick up without restarting. Nothing is written until you press **Save**,
 and a save that would produce a file that will not run is refused, with the
 reason, and the file untouched.
@@ -198,7 +198,7 @@ while it runs.
 
 Below it: the tempo with a **Tap** button, pause, resume and skip, the clip
 grid, the effect rack, the playlist with a tap to jump straight to any scene,
-and **Tune** — the colour pipeline, the generator's knobs, a scope's gain. Tune
+and **Tune** — the color pipeline, the generator's knobs, a scope's gain. Tune
 shows what the *current scene* actually has, so it changes shape as the show
 advances and never offers you a slider that does nothing.
 
@@ -206,7 +206,7 @@ advances and never offers you a slider that does nothing.
 
 A run started from a terminal asks "save these changes?" as it exits. A host has
 no terminal to ask on, so it asks here instead: under the Tune knobs is a record
-of every colour change since the show started, where it began and where it is
+of every color change since the show started, where it began and where it is
 now, and one tap writes them into the configuration the show is running from.
 **Discard** drops the offer and leaves the show alone.
 

@@ -80,6 +80,33 @@ where relative paths 404. **Releasing** is [RELEASING.md](RELEASING.md), guarded
 [tests/test_release.py](tests/test_release.py). Visual verification on real hardware
 is the `hw-visual-verify` skill.
 
+## Spelling
+
+**Everything in this repository is written in American English — prose, code,
+comments, docstrings, identifiers, log messages, and commit messages.** British
+spellings are forbidden: write `color`, `behavior`, `serialize`, `normalize`,
+`recognize`, `analyzer`, `catalog`, `artifact`, `judgment`, `center`,
+`optimization`, `labeled`, `modeled`, `traveling`, `license`, `defense`. The
+program has always named itself that way — `color_match`, `grayscale`,
+`palette_mode` — so British prose puts the text at odds with the keys it is
+telling the reader to type.
+
+Two variants are interchangeable in American English and both are accepted:
+`grey`/`gray` and `canceled`/`cancelled`. Neither is a defect to fix.
+
+Three places keep a British spelling on purpose, and none of them is prose:
+
+- [`palette.py`](c64cast/video/palette.py) resolves `grey` as an alias for
+  `gray`, so a user can type either — the alias is a feature, not a typo.
+- `cancelled()` in [.github/workflows/](.github/workflows) is a GitHub Actions
+  expression function.
+- The `{"colour": "red"}` fixture in
+  [tests/test_fuzzy_suggestions.py](tests/test_fuzzy_suggestions.py) is a
+  plausible user typo the fuzzy matcher has to answer with `fg_color`.
+
+The changelog is a record: an entry that quotes a spelling it changed keeps the
+quote as written.
+
 ## Tests
 
 Stdlib `unittest`, one module per subject under `tests/`, no hardware — run it

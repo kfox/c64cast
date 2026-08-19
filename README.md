@@ -115,7 +115,7 @@ with `c64cast --list-examples` (one demo per scene type and per overlay).
 * **Browser console** — `c64cast --serve` turns the program into a host that
   holds the Commodore and starts, stops and switches shows on request. Author a
   configuration in a generated form, watch the C64's own screen live in the
-  browser (the U64's FPGA taps the VIC), tune the colour pipeline from a phone
+  browser (the U64's FPGA taps the VIC), tune the color pipeline from a phone
   and keep what you tuned, and hand out a read-only link. Ships inside the
   package — nothing to install, no separate service.
 * **Ensemble mode** — one process drives **N systems at once** as a video

@@ -349,12 +349,12 @@ _LIVE_TARGET_GROUPS: tuple[tuple[str, str], ...] = (
 
 
 def palette_swatches() -> list[dict[str, Any]]:
-    """The sixteen C64 colours as ``{index, name, label, hex}``.
+    """The sixteen C64 colors as ``{index, name, label, hex}``.
 
     ``name`` is the spelling a config should be written with and ``label`` the
     one to show; both round-trip through ``palette.resolve_color``. ``hex`` is
     read from the *live* table rather than the Pepto constant, so a host that
-    has matched the machine's own palette offers swatches in the colours that
+    has matched the machine's own palette offers swatches in the colors that
     machine actually emits. Imported lazily — palette pulls in numpy/cv2, and
     the ``--describe`` path never asks for this."""
     from c64cast.video.palette import C64_COLOR_NAMES, C64_COLORS, C64_PALETTE_BGR
@@ -603,7 +603,7 @@ def _jsonable(val: object) -> object:
 
 
 def as_dict() -> dict[str, Any]:
-    """The whole introspection model as JSON-serialisable data.
+    """The whole introspection model as JSON-serializable data.
 
     The web console renders this rather than the committed JSON Schema because
     the schema deliberately drops the three things a UI needs most: ``apply``
@@ -614,7 +614,7 @@ def as_dict() -> dict[str, Any]:
     ``REQUIRED`` sentinel, which `json` can't encode.
 
     ``palette`` rides along for the same reason: a swatch picker over the C64
-    colours needs the colours, and a browser deriving them from a copy of the
+    colors needs the colors, and a browser deriving them from a copy of the
     palette would be a second one to keep in step."""
 
     def field_dict(fd: FieldDoc) -> dict[str, Any]:

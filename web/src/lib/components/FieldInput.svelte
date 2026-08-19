@@ -66,9 +66,9 @@
   const kindLabel = (k: FieldKind) =>
     swatches
       ? k === "str"
-        ? "colour"
+        ? "color"
         : k === "complex"
-          ? "colours"
+          ? "colors"
           : KIND_LABELS[k]
       : KIND_LABELS[k];
 

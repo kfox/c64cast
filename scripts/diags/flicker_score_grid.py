@@ -29,7 +29,7 @@ exist to fix that:
     The seed is printed and can be pinned with --seed, so a disagreement between
     two sittings can be replayed rather than argued about.
   * Pairs already scored loud never share a page with pairs already scored quiet.
-    A violently alternating patch makes its neighbours much harder to judge, so
+    A violently alternating patch makes its neighbors much harder to judge, so
     mixing the pools would put the loudest patches next to the quietest ones and
     contaminate exactly the readings that matter most. A pair with no tier yet
     is dealt with the loud pool: an unknown among the quiet patches could be
@@ -300,7 +300,7 @@ def interleave(
 ) -> list[list[Entry | None]]:
     """Alternate the two pools page by page.
 
-    Pages cannot mix pools — a loud patch makes its neighbours unjudgeable — but
+    Pages cannot mix pools — a loud patch makes its neighbors unjudgeable — but
     a fully shuffled page order can still deal five all-loud pages in a row,
     which walks the scorer's sense of scale in one direction with nothing to
     re-anchor against.
@@ -349,7 +349,7 @@ def verify_page(entries: list[Entry | None]) -> list[str]:
 
     A patch is only evidence about its pair if the renderer actually picks that
     blend entry for it. Painting the fused color is not the same as getting it
-    back — a neighbouring entry can win, and the failure is invisible on screen.
+    back — a neighboring entry can win, and the failure is invisible on screen.
     """
     from c64cast.video import flicker
 

@@ -11,7 +11,7 @@ re-created as ``/tmp/run_and_capture.sh`` — committed here so it stops driftin
 
 ``--field-burst`` grabs N *consecutive* frames mid-run via hdmi_capture.burst,
 for anything that changes between video fields rather than between seconds — a
-raster split, a $D018 page flip, a two-field colour alternation. ``--burst``
+raster split, a $D018 page flip, a two-field color alternation. ``--burst``
 cannot resolve those: it deliberately down-samples to --burst-fps to cover a
 multi-second window, and it inherits the device's 1080p default, whose 25 fps
 aliases onto a 25 Hz alternation. The two answer different questions, so a

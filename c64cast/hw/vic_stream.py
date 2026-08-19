@@ -34,7 +34,7 @@ UDP, one packet per few scanlines, 12-byte header then packed pixels:
 ```
 
 The payload is 4 bits per pixel, two pixels per byte, **low nibble first** —
-so byte 0 is pixels 0 and 1, and each nibble indexes the sixteen C64 colours
+so byte 0 is pixels 0 and 1, and each nibble indexes the sixteen C64 colors
 directly. At 384 pixels that is 192 bytes a line.
 
 Two things are read from the wire rather than assumed, because they are the two
@@ -130,10 +130,10 @@ _STALE_FRAME_S = 1.0
 
 @dataclass(frozen=True)
 class VicFrame:
-    """One reassembled frame: C64 colour indices, one byte per pixel.
+    """One reassembled frame: C64 color indices, one byte per pixel.
 
     ``indices`` is ``(height, width)`` uint8 in 0..15 — palette indices, not
-    colour. Keeping it that way is the point: it is what the VIC actually
+    color. Keeping it that way is the point: it is what the VIC actually
     selected per pixel, so a caller comparing against what c64cast *meant* to
     draw compares indices with indices, and a caller displaying it maps through
     whichever palette it believes in."""

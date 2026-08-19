@@ -409,7 +409,7 @@ def analyze(mono: np.ndarray, sr: int, expected: float, cadence_hz: float) -> An
     x = mono - mono.mean()
     peak = carrier_hz(x, sr, expected * 0.6, expected * 1.4)
     # Half-width has to admit the sidebands we are trying to measure without
-    # letting the neighbouring harmonic in; the carrier's own harmonic sits at
+    # letting the neighboring harmonic in; the carrier's own harmonic sits at
     # 2*f0, so f0/2 is the widest safe window.
     analytic = analytic_band(x, sr, peak, half_width=peak / 2)
     phase = np.unwrap(np.angle(analytic))

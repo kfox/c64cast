@@ -338,7 +338,7 @@ class PersistenceTest(DataDirIsolated):
         self.save(cfg, {"default": dcs.CalibrationResult(list(range(256)), {}, None, raw)})
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(range(256)))
 
-    def test_save_honours_a_path_profile_and_loads_back(self):
+    def test_save_honors_a_path_profile_and_loads_back(self):
         # --calibrate-dac and playback must agree on where the file lives, so a
         # path profile has to steer the write as well as the read.
         cfg = _u64_cfg()

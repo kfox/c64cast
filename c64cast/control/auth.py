@@ -111,7 +111,7 @@ class ViewerCredential:
     """The read-only token, which may not exist yet.
 
     Unlike the full token, this one is *not* settled at startup. A configured
-    value is honoured; otherwise nothing exists until somebody asks for a link
+    value is honored; otherwise nothing exists until somebody asks for a link
     to hand out, because a credential nobody asked for is one more thing that
     can leak. :meth:`issue` mints on first ask and persists through ``store``,
     so a link given to a guest keeps working across restarts the way a
@@ -313,7 +313,7 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
         """Write the cookie from the **configured** secret the role names, not
         from the string the caller sent. The two are byte-equal by the time
         this runs — `match_role` is what decided the role — so this changes no
-        behaviour; it moves the guarantee from an equality check a few lines
+        behavior; it moves the guarantee from an equality check a few lines
         up into the statement that actually builds the header, where a later
         reordering can't step around it (CodeQL py/cookie-injection)."""
         response.set_cookie(
@@ -360,7 +360,7 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
 def install_auth(app: Any, *, token: str, viewer_token: str | ViewerCredential = "") -> bool:
     """Gate ``app`` behind a shared token. Returns whether auth is on.
 
-    A falsy ``token`` leaves the app wide open — the historical behaviour, and
+    A falsy ``token`` leaves the app wide open — the historical behavior, and
     the default. A viewer token alone can't gate anything (there would be no
     way to write at all), so it warns rather than silently half-enabling.
 

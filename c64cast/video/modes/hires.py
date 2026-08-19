@@ -97,7 +97,7 @@ class HiresDisplayMode(BitmapDisplayMode):
       "edges_inverted"  — Canny edges in black on white (negative print).
 
     cell_pick: how the "normal" style chooses each cell's foreground.
-      "error-min" (default) minimises the cell's own error; "sample" reads
+      "error-min" (default) minimizes the cell's own error; "sample" reads
       one pixel per cell. See _errmin_fg for why the accurate pick is also
       the stabler one.
 
@@ -244,7 +244,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         challenger beats it by BG0_HYSTERESIS_MARGIN.
 
         Blend-only. bg fills every %0 pixel, so under blending a bg flip does not
-        merely recolour the field — it can switch the whole background between
+        merely recolor the field — it can switch the whole background between
         steady and alternating, which reads far harder than the color change
         itself. The margin is the one mhires uses on $D021, for the same reason:
         track a sustained shift, ignore a near-tie."""
@@ -260,7 +260,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         return best
 
     def _errmin_fg(self, dist: np.ndarray, bg: int) -> tuple[np.ndarray, np.ndarray]:
-        """Pick each cell's foreground by minimising that cell's own error, and
+        """Pick each cell's foreground by minimizing that cell's own error, and
         return (per-cell fg (25, 40), per-pixel fg mask (200, 320)).
 
         Every pixel ends up showing whichever of {bg, fg} is nearer, so a

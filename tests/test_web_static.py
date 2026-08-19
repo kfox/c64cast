@@ -145,7 +145,7 @@ class MountTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_the_catalog_is_a_snapshot_taken_at_mount(self) -> None:
-        # The consequence of cataloguing rather than resolving: a rebuild under
+        # The consequence of cataloging rather than resolving: a rebuild under
         # a running host needs a restart. That is the dev-server's job, and it
         # is the price of the route never touching a client-supplied path.
         client = self._client()

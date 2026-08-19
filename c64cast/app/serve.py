@@ -6,7 +6,7 @@ long-lived host has to answer it: a browser asks for a show, the machine is
 handed over, a different show replaces it, and the daemon outlives all of them.
 
 :class:`SessionManager` is that state machine. It owns exactly one
-:class:`~c64cast.app.session.Session` at a time and serialises every transition
+:class:`~c64cast.app.session.Session` at a time and serializes every transition
 behind one lock:
 
 .. code-block:: text
@@ -113,7 +113,7 @@ STARTABLE = (SessionState.IDLE, SessionState.ERROR)
 
 
 class SupervisorBusy(RuntimeError):
-    """The supervisor can't honour the request from the state it is in.
+    """The supervisor can't honor the request from the state it is in.
 
     Carries the state it was in so a caller can say which — an HTTP route maps
     this to ``409``."""
@@ -145,7 +145,7 @@ class StartRequest:
 
 @dataclass(frozen=True)
 class SessionStatus:
-    """A snapshot of the supervisor, safe to serialise and to hand to a
+    """A snapshot of the supervisor, safe to serialize and to hand to a
     callback. Immutable on purpose: a state push that could be mutated after
     the fact by the next transition would be worse than useless."""
 
@@ -435,7 +435,7 @@ class SessionManager:
         stop unconditionally.
 
         A stop during ``starting`` cancels: the build is not interruptible
-        (opening a backend blocks), so the flag is honoured at the next
+        (opening a backend blocks), so the flag is honored at the next
         checkpoint and, failing that, immediately after the build lands."""
         with self._lock:
             if self._state == SessionState.STARTING:
@@ -450,7 +450,7 @@ class SessionManager:
             return True
 
     def switch(self, req: StartRequest, *, timeout: float = 60.0) -> int:
-        """Replace the running show: stop, wait for idle, honour the cooldown,
+        """Replace the running show: stop, wait for idle, honor the cooldown,
         start. Returns the generation the new session will have.
 
         One endpoint rather than making every caller sequence it, because the

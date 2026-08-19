@@ -87,14 +87,14 @@ cross-checked by measuring φ2 and the VIC raster line count on a real unit:
 
 The **suffix selects the machine timing**; the **prefix selects only the analog
 chroma encoding** (`VIDEO_FMT_NTSC_ENCODING`). So `NTSC-50` is a PAL-timed
-machine emitting NTSC colour, and `PAL-60` is an NTSC-timed machine emitting PAL
-colour — over HDMI the pairs are the same picture.
+machine emitting NTSC color, and `PAL-60` is an NTSC-timed machine emitting PAL
+color — over HDMI the pairs are the same picture.
 
 ### What retiming does to the composite output
 
 Over HDMI the prefix is invisible: the upscaler emits RGB either way, and the
 only thing a capture device notices is 576p50 vs 480p60. On composite/S-Video
-the prefix is the whole colour signal, so the hybrids are the classic
+the prefix is the whole color signal, so the hybrids are the classic
 non-standard combinations:
 
 | Mode | chroma | field rate | subcarrier |
@@ -107,19 +107,19 @@ non-standard combinations:
 | `NTSC-50/L` | NTSC | 50 Hz | locked, 228.5 (`c_ntsc_50_228_5`) |
 
 `_switch_system_mode` preserves the chroma prefix deliberately, so a set that
-could decode colour before still can. But **the field rate changes underneath
+could decode color before still can. But **the field rate changes underneath
 it**, and that is what a single-standard analog display may refuse to lock. In
 practice `PAL-60` (what a PAL machine becomes when retimed to NTSC) is widely
 tolerated by multi-standard sets and capture hardware; `NTSC-50` is rarer and
 more likely to come out monochrome or unstable. A pure NTSC set fed `PAL-60`
-usually locks sync and loses colour.
+usually locks sync and loses color.
 
 Audio is unaffected as a signal path — the SID's output leaves by the same AV
 connector regardless of video mode. What does change is *pitch*, because φ2
 changed, and that is the entire point of the switch. It is identical on HDMI
 and composite.
 
-The `/L` variants lock the colour subcarrier to an exact line ratio rather than
+The `/L` variants lock the color subcarrier to an exact line ratio rather than
 free-running it, and the firmware's own comment calls them the "best timing
 match to original C64". Their periods are slightly *longer* (84422 / 81385 vs
 84372 / 81300), so it is the plain hybrids that run ~0.1% fast. c64cast makes no

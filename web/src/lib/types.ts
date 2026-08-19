@@ -91,7 +91,7 @@ export interface FieldDoc {
   vocabulary: string;
 }
 
-/** One C64 colour, from `introspect.palette_swatches()`. `name` is the
+/** One C64 color, from `introspect.palette_swatches()`. `name` is the
  *  spelling to write into a config; `label` the one to show. */
 export interface Swatch {
   index: number;
@@ -135,13 +135,13 @@ export interface OverlayDoc {
 /** `GET /api/introspect`. `modes` and `live_targets` arrive too and stay
  *  untyped here: the Tune panel reads the *resolved* knobs off the state feed
  *  (`LiveKnob`), which is the same registry already filtered to what the
- *  running scene has, so a screen never needs the unfiltered catalogue. */
+ *  running scene has, so a screen never needs the unfiltered catalog. */
 export interface Introspection {
   sections: SectionDoc[];
   scene_types: SceneTypeDoc[];
   overlays: OverlayDoc[];
-  /** The sixteen C64 colours, in the host's *live* table — a host that has
-   *  matched the machine's own palette offers the colours it really emits. */
+  /** The sixteen C64 colors, in the host's *live* table — a host that has
+   *  matched the machine's own palette offers the colors it really emits. */
   palette: Swatch[];
 }
 
@@ -178,7 +178,7 @@ export interface ConfigForm {
   scenes: FormScene[];
 }
 
-/** A key the loader did not recognise — a typo, or a field from a newer
+/** A key the loader did not recognize — a typo, or a field from a newer
  *  version. `hint` carries the loader's own suggestion when it has one, and is
  *  null when all it can say is that the key is unknown. */
 export interface UnknownKey {

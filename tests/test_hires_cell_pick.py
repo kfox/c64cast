@@ -45,7 +45,7 @@ def textured_frame(seed: int = 4) -> np.ndarray:
 
     The pick strategies only diverge where a cell's own pixels disagree — the
     advantage tracks intra-cell standard deviation almost exactly, from a tie at
-    sd≈1 (a smooth ramp, where the centre pixel already represents the cell) to
+    sd≈1 (a smooth ramp, where the center pixel already represents the cell) to
     ≈-32 % at sd≈73. Real frames sit high on that curve, so a flat or smoothly
     graded fixture would assert nothing.
     """
@@ -125,7 +125,7 @@ class CellPickTest(unittest.TestCase):
         self.assertEqual(HiresDisplayMode.LIVE_CHOICES["cell_pick"], HIRES_CELL_PICKS)
 
     def test_edges_styles_ignore_the_pick(self):
-        """Fixed 2-colour styles pick no colour, so the knob must be inert."""
+        """Fixed 2-color styles pick no color, so the knob must be inert."""
         src = textured_frame()
         for style in ("edges", "edges_inverted"):
             with self.subTest(style=style):

@@ -13,7 +13,7 @@ and the target owns its own loop and pacing:
     self._poll = PollThread(self._worker, name="obs-status", manual=True)
     # worker signature: def _worker(stop: threading.Event) -> None
 
-`start()` and `stop()` are serialised against each other, because they are not
+`start()` and `stop()` are serialized against each other, because they are not
 always called from the same thread: the session supervisor starts its reaper
 from a build worker and stops it from whoever is shutting the host down.
 Without that, a `stop()` landing between the moment `start()` publishes the

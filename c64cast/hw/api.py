@@ -1029,7 +1029,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
 
           * None / "off" — leave the KERNAL's jiffy latch alone. That is ~60 Hz
             on BOTH standards, so a PAL tune plays ~19.7% fast. This was the
-            only behaviour before the option existed.
+            only behavior before the option existed.
           * "auto" — the frame rate of the tune's own PSID clock flag, so a PAL
             tune plays at ~50.12 Hz on either machine.
           * a float — that rate in Hz, for every vsync tune regardless of flag.
@@ -1247,7 +1247,7 @@ class _SidPlayerMixin(BufferedWriteBackend):
         wrote one, else the KERNAL's own jiffy rate.
 
         Note the fallback is ~60 Hz on BOTH standards: the jiffy IRQ is a
-        wall-clock service, not a frame interrupt. Anything modelling the
+        wall-clock service, not a frame interrupt. Anything modeling the
         tune's progress (the scope's host emulator) has to tick at this, not at
         the video frame rate."""
         if self._sid_vsync_play_rate_hz is not None:
@@ -2053,7 +2053,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """A stopped receiver for this machine's own VIC output.
 
         Shares the render path's socket-DMA client, which is not an
-        optimisation but the only option: the U64's DMA service is
+        optimization but the only option: the U64's DMA service is
         single-connection, so a second socket for two commands would lock out
         the one every write goes through. The commands themselves are two
         control frames on that link and nothing more — the pixels never touch

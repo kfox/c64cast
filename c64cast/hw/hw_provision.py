@@ -469,9 +469,9 @@ def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
 #   PAL, NTSC-50, NTSC-50/L  -> 63 cycles/line, 312 lines, phi2 985248  (PAL)
 #   NTSC, PAL-60, PAL-60/L   -> 65 cycles/line, 263 lines, phi2 1022727 (NTSC)
 #
-# So "NTSC-50" is a PAL-timed machine emitting NTSC colour, and "PAL-60" is an
-# NTSC-timed machine emitting PAL colour. Over HDMI the pairs are
-# indistinguishable. The "/L" variants differ only in the colour-burst phase
+# So "NTSC-50" is a PAL-timed machine emitting NTSC color, and "PAL-60" is an
+# NTSC-timed machine emitting PAL color. Over HDMI the pairs are
+# indistinguishable. The "/L" variants differ only in the color-burst phase
 # table (~0.1% fast) and matter to analog output alone.
 #
 # The mapping therefore looks backwards on purpose — do not "fix" it.
@@ -493,7 +493,7 @@ SYSTEM_MODE_TIMING: dict[str, str] = {
 # On composite the four hybrids are the classic non-standard combinations
 # (color_timings.cc): "PAL-60" is PAL chroma at a 60 Hz field rate (c_pal_60_*,
 # no VIDEO_FMT_NTSC_ENCODING), "NTSC-50" is NTSC chroma at 50 Hz
-# (c_ntsc_50_*). Preserving the chroma keeps a set able to DECODE COLOUR, but
+# (c_ntsc_50_*). Preserving the chroma keeps a set able to DECODE COLOR, but
 # the field rate still changes underneath it — a single-standard analog display
 # may simply not lock. PAL-60 is the more widely tolerated of the two.
 SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
@@ -503,7 +503,7 @@ SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
     ("NTSC", "ntsc"): "NTSC",
 }
 
-# The "/L" hybrids lock the colour subcarrier to an exact line ratio instead of
+# The "/L" hybrids lock the color subcarrier to an exact line ratio instead of
 # free-running it, and the firmware calls them the "best timing match to
 # original C64" — c_pal_60_281_5 / c_ntsc_50_228_5 carry slightly LONGER
 # periods (84422 / 81385) than their free-running siblings (84372 / 81300), so

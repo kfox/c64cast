@@ -235,7 +235,7 @@ class ReloadableSectionsTest(unittest.TestCase):
     """`RELOADABLE_SECTIONS` is what the web console reads to say, at the moment
     of saving, which changes a reload will apply and which need a restart. It is
     a claim about `session.reload_all`, so it has to name real sections and the
-    docstring that describes the behaviour has to point at it."""
+    docstring that describes the behavior has to point at it."""
 
     def test_every_named_section_exists(self):
         known = {s.name for s in introspect.config_sections()}
@@ -256,7 +256,7 @@ class ReloadableSectionsTest(unittest.TestCase):
 
 class VocabularyTest(unittest.TestCase):
     """`FieldDoc.vocabulary` names the small set a field's *string* values come
-    from, which is how a form knows to offer swatches for a colour and a text
+    from, which is how a form knows to offer swatches for a color and a text
     box for everything else. `choices` cannot say it: these fields take an index
     as well, and a picker built from `choices` would refuse one."""
 
@@ -264,11 +264,11 @@ class VocabularyTest(unittest.TestCase):
         fields = {f.name: f for st in introspect.scene_types() for f in st.fields}
         return fields[name]
 
-    def test_the_colour_fields_declare_it(self):
+    def test_the_color_fields_declare_it(self):
         for name in ("border", "background"):
             self.assertEqual(self._scene_field(name).vocabulary, "c64color", name)
 
-    def test_a_field_that_is_not_a_colour_does_not(self):
+    def test_a_field_that_is_not_a_color_does_not(self):
         # `[video].device` is `int | str` too, and its strings are camera names.
         fields = {f.name: f for s in introspect.config_sections() for f in s.fields}
         self.assertEqual(fields["device"].vocabulary, "")
@@ -280,11 +280,11 @@ class VocabularyTest(unittest.TestCase):
 
 
 class PaletteSwatchTest(unittest.TestCase):
-    """The swatch picker's colours are served rather than copied into the
+    """The swatch picker's colors are served rather than copied into the
     browser — a second palette to keep in step with the first is the bug this
     avoids."""
 
-    def test_sixteen_colours_with_writable_names(self):
+    def test_sixteen_colors_with_writable_names(self):
         from c64cast.video.palette import resolve_color
 
         swatches = introspect.palette_swatches()

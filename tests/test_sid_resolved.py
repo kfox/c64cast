@@ -436,7 +436,7 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
             sr.log_resolved_audio(self._api(host_model="8580", curve="8580"), (0xD400,), ("8580",))
         self.assertNotIn("not a failing SID", " ".join(r.getMessage() for r in cm.records))
 
-    def test_host_route_is_labelled_as_a_group(self):
+    def test_host_route_is_labeled_as_a_group(self):
         # The phrase must introduce the host fragments, not trail them: as a
         # suffix it reads as if only the last chip were on that output.
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:

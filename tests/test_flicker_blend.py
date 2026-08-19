@@ -511,7 +511,7 @@ class FlickerComposeTest(unittest.TestCase):
             (b["screen"] != b["screen_b"]).any(), "no cell blends on a chromatic gradient"
         )
 
-    def test_the_two_pages_differ_only_in_colour(self):
+    def test_the_two_pages_differ_only_in_color(self):
         """A differing mask would flicker geometry rather than color."""
         mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         b = cast(FlickerComposeBuffers, mode.compose(gradient()))
@@ -724,7 +724,7 @@ class FlickerMirrorTest(unittest.TestCase):
         fb.on_write(VECTORS.IRQ, bytes([0x31, 0xEA]))
         self.assertIsNone(fb._flicker_page_b(bytes(fb.ram)))
 
-    def test_renders_the_fused_colour_in_linear_light(self):
+    def test_renders_the_fused_color_in_linear_light(self):
         # page A white-on-black, page B black-on-white → fuses to mid grey.
         fb = self._armed_framebuffer(0x10, 0x01)
         fb.on_write(

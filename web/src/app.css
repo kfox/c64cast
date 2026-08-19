@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* One token layer, defined light-first and swapped under `.dark`, so a
-   component never spells a raw colour. The accents are the VIC-II's own blues
+   component never spells a raw color. The accents are the VIC-II's own blues
    (`C64_PALETTE_BGR` entries 6 and 14 read back as RGB) — the console sits
    next to the machine it drives and may as well look like it. */
 @theme {

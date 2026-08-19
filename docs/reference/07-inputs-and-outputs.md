@@ -354,7 +354,7 @@ http://HOST:8765/api/login?token=a-long-random-string
 
 once: it stores the token in a cookie and drops you on the console, and
 everything the page does from then on is authenticated. The token defaults to
-empty, which is the historical behaviour — open. Prefer the environment variable
+empty, which is the historical behavior — open. Prefer the environment variable
 to a value in a file you might commit or share.
 
 A `viewer_token` is the same page with the writes removed: reads succeed, pause,
@@ -414,7 +414,7 @@ contact and release on lift, so momentary clips work by touch exactly as they do
 from a pad, with no per-launch-type handling in the page.
 
 The effect rack's rows are generated from each live layer's own declared
-parameters, and the tune panel from the same catalogue `--midi-setup` offers,
+parameters, and the tune panel from the same catalog `--midi-setup` offers,
 filtered to what the scene on screen actually has — so neither can drift from
 what is loaded, and neither shows a control that writes nowhere. State is pushed
 over a WebSocket a few times a second, and the beat indicator is extrapolated on
@@ -505,12 +505,12 @@ a file that cannot run is refused with the loader's own reason, the file
 untouched and the edits still on screen.
 
 A setting that accepts two kinds of value offers both, with a small selector
-above the control saying which you are writing. A colour is the case that
+above the control saying which you are writing. A color is the case that
 matters: `border` and `background` take a name *or* an index `0..15`, so they
-get the sixteen C64 colours as swatches, and `force_palette_colors` takes either
-a count or a list of them. Picking a swatch writes the colour's name. A spelling
+get the sixteen C64 colors as swatches, and `force_palette_colors` takes either
+a count or a list of them. Picking a swatch writes the color's name. A spelling
 the picker cannot place — the short forms the loader also accepts, like `lgrn` —
-is left exactly as it is, and said to be unrecognised, rather than quietly
+is left exactly as it is, and said to be unrecognized, rather than quietly
 changed to something else.
 
 Scenes can be added and removed here too. **Add scene** under the list makes a
@@ -584,12 +584,12 @@ as your finger is down.
 The **effect rack** lists the current scene's chain with a bypass button and a
 slider per knob, generated from what each effect declares, so it cannot offer
 one the effect does not have. **Tune** is the rest of the live surface: the
-colour pipeline (dither strength and method, palette mode, colour matching, cell
+color pipeline (dither strength and method, palette mode, color matching, cell
 strategy, motion smoothing, auto-fit), the generator's own knobs, and a scope
 scene's gain — the same knobs `--midi-setup` offers a controller, grouped the
 same way. It shows what the *current scene* has and nothing else, so it changes
 shape as the show advances and never offers a slider that does nothing. A
-colour-pipeline change made here is recorded like any other live tune, and the
+color-pipeline change made here is recorded like any other live tune, and the
 record sits under the knobs: every change since the show started, where it began
 and where it is now. One tap keeps them in the file the show is running from —
 a patch of that file rather than a rewrite of it, so anything else you have

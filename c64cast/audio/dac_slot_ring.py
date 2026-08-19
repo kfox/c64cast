@@ -683,7 +683,7 @@ def merge_measurements(
       rescaled onto the mean anchor. That is what lets several rings stand in
       for the one 256-code ring that does not fit.
     * **Round average.** Each code is measured once per rotation
-      (:func:`plan_capture_rounds`); averaging equalises the context bias
+      (:func:`plan_capture_rounds`); averaging equalizes the context bias
       described at :data:`MEASURE_ROUNDS`.
 
     ``context_spread_frac`` — how far a code's readings move between rotations,

@@ -42,7 +42,7 @@ def trace(index: int, seconds: float, *, size: tuple[int, int], fps: int, tol: f
     `states` holds one full frame per distinct display state; `assign[i]` is the
     state index of sample i. Signatures are a 32x20 mean-pooled thumbnail, which
     is coarse enough to ignore capture noise and fine enough that a single
-    changed cell colour still moves it well past `tol`.
+    changed cell color still moves it well past `tol`.
     """
     import cv2
 

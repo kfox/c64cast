@@ -30,7 +30,7 @@ set to.
 - `"auto"` (default) — PLAY at the tune's own frame rate, read from its
   PSID clock flag. PAL tunes play at PAL tempo.
 - `"off"` — leave the kernal rate alone. This is exactly the old
-  behaviour; use it if you have been listening to PAL tunes at NTSC speed
+  behavior; use it if you have been listening to PAL tunes at NTSC speed
   and prefer them that way.
 - a number — pin every vsync tune to that rate in Hz. `59.826` is the NTSC
   frame rate, `50.125` is PAL.
