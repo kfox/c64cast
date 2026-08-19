@@ -4,10 +4,20 @@ bring-up choreography) + BitmapDisplayMode."""
 from __future__ import annotations
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, SCREEN, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import (
+    CIA2,
+    D018_HIRES_PAGE_A,
+    D018_HIRES_PAGE_B,
+    SCREEN,
+    VIC_BANK_0,
+    VIC_BANK_2,
+    RegionID,
+)
 from c64cast.video.modes_irq import (
     DD00_BANK_0,
     DD00_BANK_2,
+    FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_TRACKER_LEN,
     FRAME_TRACKER_ADDR,
     HOSTDMA_SWAP_IRQ_HANDLER,
     HOSTDMA_TRACKER_LEN,
@@ -167,6 +177,88 @@ class BitmapDisplayMode(DisplayMode):
         bg0 atomically with the swap — for hires $D021 is unused, harmless)."""
         tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+
+    # --- Flicker blend ([color].flicker_tolerance) ------------------------------
+    # The double-buffer above, plus a second screen page per bank. Both pages
+    # go into the off-screen bank each frame over the same host-DMA path; the
+    # $C500 handler alternates $D018 between them every field so the eye fuses
+    # each cell's color pair. See modes_irq.FLICKER_SWAP_IRQ_HANDLER and
+    # video/flicker.py.
+    def _flicker_swap_target(self) -> tuple[int, int, int, int, int, int, int, int]:
+        """Resolve the current off-screen bank to (target_bank, bitmap_addr,
+        page_a_addr, page_b_addr, bitmap_region, page_a_region, page_b_region,
+        dd00_value). The caller toggles self._displayed_bank after the writes."""
+        if 1 - self._displayed_bank == 0:
+            return (
+                0,
+                VIC_BANK_0.BITMAP,
+                VIC_BANK_0.SCREEN,
+                VIC_BANK_0.SCREEN_ALT,
+                RegionID.BITMAP,
+                RegionID.SCREEN,
+                RegionID.SCREEN_ALT,
+                DD00_BANK_0,
+            )
+        return (
+            1,
+            VIC_BANK_2.BITMAP,
+            VIC_BANK_2.SCREEN,
+            VIC_BANK_2.SCREEN_ALT,
+            RegionID.BITMAP_BANK2,
+            RegionID.SCREEN_BANK2,
+            RegionID.SCREEN_ALT_BANK2,
+            DD00_BANK_2,
+        )
+
+    def _flicker_tracker(self, bg0: int, dd00_value: int, *, ready: bool) -> bytes:
+        """The 6-byte flicker tracker. `phase` is seeded 0 and thereafter owned
+        by the handler — re-arming must not reset it, or the field alternation
+        would restart from page A on every staged frame and stall the blend."""
+        return bytes(
+            [
+                bg0 & 0x0F,
+                dd00_value & 0xFF,
+                0x01 if ready else 0x00,
+                0x00,
+                D018_HIRES_PAGE_A,
+                D018_HIRES_PAGE_B,
+            ]
+        )
+
+    def _arm_flicker_swap(self, api: C64Backend, bg0: int, dd00_value: int) -> None:
+        """Arm a staged flicker frame. Only the first three tracker bytes are
+        written: the handler owns $C703 (phase) and the page pair at $C704 is
+        constant for the scene, so re-sending them would fight the alternation."""
+        tracker = self._flicker_tracker(bg0, dd00_value, ready=True)[:3]
+        api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
+
+    def _setup_flicker_doublebuffer(self, api: C64Backend) -> None:
+        """Zero both banks' bitmap + both screen pages, pin bank 0, and install
+        the flicker swap IRQ with its page pair pre-seeded (see
+        install_bank_swap_irq's tracker_init)."""
+        zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
+        zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
+        for addr in (
+            VIC_BANK_0.BITMAP,
+            VIC_BANK_2.BITMAP,
+        ):
+            api.write_memory_file(f"{addr:04X}", zeros_bitmap)
+        for addr in (
+            VIC_BANK_0.SCREEN,
+            VIC_BANK_0.SCREEN_ALT,
+            VIC_BANK_2.SCREEN,
+            VIC_BANK_2.SCREEN_ALT,
+        ):
+            api.write_memory_file(f"{addr:04X}", zeros_screen)
+        api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
+        self._displayed_bank = 0
+        install_bank_swap_irq(
+            api,
+            FLICKER_SWAP_IRQ_HANDLER,
+            FLICKER_TRACKER_LEN,
+            audio_pump_active=False,
+            tracker_init=self._flicker_tracker(0, DD00_BANK_0, ready=False),
+        )
 
     def _setup_hostdma_doublebuffer(self, api: C64Backend) -> None:
         """Zero both VIC banks' bitmap+screen, pin bank 0, and install the

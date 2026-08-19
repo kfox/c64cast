@@ -82,6 +82,19 @@ class MHiresComposeBuffers(BitmapComposeBuffers):
     color: np.ndarray
 
 
+class FlickerComposeBuffers(BitmapComposeBuffers):
+    """Flicker blending ([color].flicker_tolerance) adds ``screen_b``: the second
+    1000-byte screen matrix, alternated with ``screen`` at the VIC field rate so
+    each cell's color pair fuses in the eye.
+
+    The two pages differ only in their color nibbles — ``bitmap`` is shared,
+    which is both what keeps the shapes stable (a differing mask would flicker
+    geometry, not color) and what holds the cost to one extra 1000-byte write
+    rather than a second full frame."""
+
+    screen_b: np.ndarray
+
+
 # grayscale palette_mode uses fixed slot assignments (no per-frame picking)
 # in luminance order. Two reasons:
 #   1. Slot 0..N maps to ascending luminance, so the bitmap stays a stable

@@ -29,6 +29,7 @@ from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES
 from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -419,7 +420,7 @@ class Ultimate64Cfg:
             "help": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's "
             "native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); "
             "'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so "
-            "PAL tunes run ~20% fast — the pre-1.9 behaviour); a number pins every "
+            "PAL tunes run ~20% fast — the pre-1.9 behavior); a number pins every "
             "vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always "
             "self-time and are never overridden.",
             "choices": SID_PLAY_RATE_CHOICES,
@@ -1964,6 +1965,68 @@ class ColorCfg:
             "apply": "live",
         },
     )
+    flicker_tolerance: str = field(
+        default=DEFAULT_TOLERANCE,
+        metadata={
+            "help": "Temporal color blending for hires, and how much visible "
+            "flicker you'll accept to get it: hold two screen pages and "
+            "alternate them at the VIC field rate, so the eye fuses each cell's "
+            "pair of hardware colors into a shade the VIC cannot draw. Targets "
+            "gradient banding — spatial dither already synthesizes intermediate "
+            "colors wherever there is texture to hide them in. Every candidate "
+            "pair was scored by eye, blind, and this picks how far down that "
+            "scale to go: 'off' (default) no blending, 16 colors; 'clean' only "
+            "pairs that fused, 24 colors on an Ultimate 64; 'subtle' adds mildly "
+            "unsteady pairs, 30; 'visible' adds pairs that visibly flicker, 39. "
+            "Pairs scored worse than that are recorded but offered by no setting "
+            "— they reconstruct no better than 'visible' does, so they would "
+            "trade flicker for nothing. 'visible' is itself inside the "
+            "photosensitive-seizure band: treat it as an effect you chose, not a "
+            "palette upgrade. Blending does not survive a 30 fps capture at any "
+            "setting. Hires 'normal' style only.",
+            "choices": tuple(FLICKER_TOLERANCES),
+            "applies_to": ("hires",),
+        },
+    )
+    flicker_max_luma_delta: float = field(
+        default=0.075,
+        metadata={
+            "help": "How far apart in brightness the two colors of a flicker pair "
+            "may be, as a fraction of peak white in linear light. This is a "
+            "photosensitivity control, not a quality knob: alternation at the "
+            "field rate is hazardous in proportion to luminance modulation "
+            "depth. WARNS above 0.10, and again above 0.12 where modulation "
+            "approaches the 20%-of-peak-white flash criterion the guidance is "
+            "written around — but does not refuse, because a pair you have "
+            "looked at and accepted outranks the number. Nothing unscored can "
+            "get in however wide it is set. Do not read a lower value as less "
+            "flicker — scored by eye, ΔY predicts fusion barely at all "
+            "(r=+0.26), which is what flicker_tolerance is for. It does bound "
+            "what that setting can reach: 0.075 (default) holds "
+            "flicker_tolerance = 'clean' to 5 of its 8 pairs on an Ultimate 64, "
+            "and to 3 of 8 on the VIC-II rendering, whose luminances put five "
+            "cleanly-fusing pairs above 0.12. Which pairs qualify depends on "
+            "[hardware].host_palette, since it is the emitted light that fuses.",
+            "applies_to": ("hires",),
+        },
+    )
+    flicker_score_pairs: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "DIAGNOSTIC. Replace the flicker blend set with exactly these "
+            'color pairs, written as "Blue+Brown" or "6+9" — the same shape the '
+            "arming log prints. Ignores both the scored tiers and "
+            "flicker_max_luma_delta, so it can put pairs on screen that no "
+            "flicker_tolerance admits and no safety cap allows. That is the point: "
+            "it exists so scripts/diags/flicker_score_grid.py can score the pairs "
+            "the tier table is built from, which it could not do if it were "
+            "restricted by that same table. Not a tuning knob — a pair reachable "
+            "only this way was excluded on evidence. Cannot switch blending on by "
+            "itself: flicker_tolerance must still be set, and every structural gate "
+            "still applies. Empty (default) uses the scored set.",
+            "applies_to": ("hires",),
+        },
+    )
     motion_smoothing: float = field(
         default=0.25,
         metadata={
@@ -2229,7 +2292,7 @@ class ControlPlaneCfg:
         metadata={
             "help": "Shared token required on every control-plane request, including "
             "the /perf console and its WebSocket. Empty = no authentication (the "
-            "historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var."
+            "historical behavior). Prefer the C64CAST_CONTROL_TOKEN env var."
         },
     )
     viewer_token: str = field(

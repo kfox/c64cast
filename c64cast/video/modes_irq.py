@@ -27,6 +27,7 @@ from c64cast.hw.c64 import (
     CIA1,
     CIA2,
     KERNAL,
+    RASTER_COMMIT_LAST_SAFE_LINE,
     RASTER_VBLANK_LINE,
     REU,
     SCREEN,
@@ -779,12 +780,47 @@ assert _PUMP_BODY_HI == ((REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF)
 #   $C702 : ready flag (1 = frame staged) — host arms, handler clears
 #
 # A/X/Y survive: kernal $FF48 saved them before vectoring through $0314, and we
-# only touch A (restored by $EA81's PLA). Offsets must be exact: both BEQs target
-# the JMP $EA31 chain at offset 32. The assert below catches length drift.
+# only touch A (restored by $EA81's PLA). Offsets must be exact: every branch
+# targets the JMP $EA31 chain at offset 42. The assert below catches length
+# drift.
 HOSTDMA_TRACKER_OFF_BG0 = 0  # $C700
 HOSTDMA_TRACKER_OFF_BANK = 1  # $C701
 HOSTDMA_TRACKER_OFF_READY = 2  # $C702
 HOSTDMA_TRACKER_LEN = 3
+
+
+# --- The raster window gate, shared by both host-DMA swap handlers ----------
+# A host DMA write halts the 6510 for ~1.02 us/byte, so an 8000-byte bitmap
+# push stalls it ~8.2 ms ≈ 128 raster lines. A raster IRQ that falls inside a
+# halt does not run until the halt ends, and its $DD00 lands deep in the
+# visible picture — the top band still shows the previous frame while the rest
+# shows the new one. Measured on an Ultimate 64 over HDMI: 5.3% of flicker
+# frames torn, seam at a median 30% of picture height.
+#
+# The host cannot avoid this by scheduling its writes, because it cannot learn
+# where the raster is: polling $D012 over REST wedges the machine during
+# playback, and extrapolating from a clock drifts past a whole field within
+# seconds. So the decision is made on the C64, by the handler, from the one
+# reading that is always current — $D012 at the moment it actually runs.
+#
+# Out of window the handler acks the IRQ and returns WITHOUT clearing the
+# ready flag, so the staged frame simply commits on a later field. A deferred
+# frame holds the previous one a field longer; it never shows two at once.
+#
+# Committing is invisible from the IRQ line through RASTER_COMMIT_LAST_SAFE_LINE,
+# i.e. $D012 in [248, 255] u [0, 45]. Adding 8 rotates that split range into a
+# contiguous 0..53, which is why the check costs one compare and one branch
+# instead of two of each.
+_RASTER_GATE_BIAS = (0x100 - RASTER_VBLANK_LINE) & 0xFF  # $08
+_RASTER_GATE_LIMIT = _RASTER_GATE_BIAS + RASTER_COMMIT_LAST_SAFE_LINE + 1  # $36
+assert _RASTER_GATE_LIMIT <= 0xFF
+
+# $D012 is 8 bits and cannot tell line n from line n+256, but every line that
+# aliases lands in the safe set on both systems: NTSC 256-261 and PAL 256-301
+# read back as 0-45, and all of them really are in vblank. PAL 302-311 alias
+# onto 46-55 and are conservatively rejected, which only forgoes a commit
+# opportunity. No genuinely unsafe line (46-247) can alias into the window,
+# since none of them exceed 255. One formulation is correct for PAL and NTSC.
 
 HOSTDMA_SWAP_IRQ_HANDLER = bytes(
     [
@@ -794,7 +830,7 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0x29,
         0x01,  # 3  AND #$01          ; raster bit
         0xF0,
-        0x19,  # 5  BEQ +25 → 32      ; not raster → chain
+        0x23,  # 5  BEQ +35 → 42      ; not raster → chain
         0x8D,
         0x19,
         0xD0,  # 7  STA $D019         ; ack raster (A = $01)
@@ -802,33 +838,158 @@ HOSTDMA_SWAP_IRQ_HANDLER = bytes(
         0x02,
         0xC7,  # 10 LDA $C702         ; ready flag
         0xF0,
-        0x11,  # 13 BEQ +17 → 32      ; no new frame → chain
+        0x1B,  # 13 BEQ +27 → 42      ; no new frame → chain
+        0xAD,
+        0x12,
+        0xD0,  # 15 LDA $D012         ; where is the raster NOW?
+        0x18,  # 18 CLC
+        0x69,
+        _RASTER_GATE_BIAS,  # 19 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        0xC9,
+        _RASTER_GATE_LIMIT,  # 21 CMP #$36
+        0xB0,
+        0x11,  # 23 BCS +17 → 42      ; past the window → leave staged, chain
         0xAD,
         0x00,
-        0xC7,  # 15 LDA $C700         ; bg0
+        0xC7,  # 25 LDA $C700         ; bg0
         0x8D,
         0x21,
-        0xD0,  # 18 STA $D021         ; set bg0
+        0xD0,  # 28 STA $D021         ; set bg0
         0xAD,
         0x01,
-        0xC7,  # 21 LDA $C701         ; pending bank value
+        0xC7,  # 31 LDA $C701         ; pending bank value
         0x8D,
         0x00,
-        0xDD,  # 24 STA $DD00         ; swap bank (tear-free at vblank)
+        0xDD,  # 34 STA $DD00         ; swap bank (tear-free at vblank)
         0xA9,
-        0x00,  # 27 LDA #$00
+        0x00,  # 37 LDA #$00
         0x8D,
         0x02,
-        0xC7,  # 29 STA $C702         ; clear ready flag
+        0xC7,  # 39 STA $C702         ; clear ready flag
         0x4C,
         0x31,
-        0xEA,  # 32 JMP $EA31         ; chain to kernal
+        0xEA,  # 42 JMP $EA31         ; chain to kernal
     ]
 )
-assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 35, (
-    "HOSTDMA_SWAP_IRQ_HANDLER length changed — the two BEQ offsets (+25 and "
-    "+17, both targeting the JMP $EA31 chain at offset 32) must be recomputed "
-    "before changing. See the offsets in the byte-comment column."
+assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
+    "HOSTDMA_SWAP_IRQ_HANDLER length changed — the three branch offsets (+35, "
+    "+27 and +17, all targeting the JMP $EA31 chain at offset 42) must be "
+    "recomputed before changing. See the offsets in the byte-comment column."
+)
+
+
+# ---------------------------------------------------------------------------
+# Flicker blend ([color].flicker_tolerance) — page-flip every field
+# ---------------------------------------------------------------------------
+# The host-DMA sibling above, plus an unconditional per-field toggle of the
+# $D018 screen-matrix nibble between the two page offsets (c64.D018_HIRES_PAGE_A
+# / _B). Two screen pages holding different color nibbles over one shared
+# bitmap therefore alternate at the VIC field rate, and the eye fuses each cell's
+# pair into a color the VIC cannot draw. See video/flicker.py for which pairs
+# are eligible and why.
+#
+# The toggle is deliberately ahead of the ready-flag check, and ahead of the
+# raster gate: the alternation is the C64's job and must free-run at the field
+# rate whatever the host is doing, which is the whole reason this does not need
+# 50-60 fps over the link. Gating it would drop fields out of the fusion cadence
+# — a worse artifact than a late page flip, which only mistimes the blended
+# cells' colors rather than showing two frames of bitmap at once. Only the
+# double-buffer commit ($DD00 + $D021) waits on a staged frame and a safe raster.
+#
+# That commit is additionally gated on landing in phase 0, so a bank swap can
+# never transpose the A/B page roles — without it a swap arriving on an odd
+# field would put field A's nibbles on field B's slot for the rest of the scene,
+# which is invisible on a still frame and reads as a color shift on motion.
+#
+# X is used as the page index and is NOT saved here: kernal $FF48 pushed A/X/Y
+# before vectoring through $0314 and $EA81 pulls them back, the same reason the
+# handler above gets away with clobbering A.
+#
+# Tracker at $C700 (FRAME_TRACKER_ADDR), 6 bytes:
+#   $C700 : bg0 value to write to $D021
+#   $C701 : pending bank value ($97 = bank 0, $95 = bank 2)
+#   $C702 : ready flag (1 = frame staged) — host arms, handler clears
+#   $C703 : field phase, handler-owned (toggles 0/1 every raster IRQ)
+#   $C704 : $D018 for phase 0 (page A)
+#   $C705 : $D018 for phase 1 (page B)
+FLICKER_TRACKER_OFF_BG0 = 0  # $C700
+FLICKER_TRACKER_OFF_BANK = 1  # $C701
+FLICKER_TRACKER_OFF_READY = 2  # $C702
+FLICKER_TRACKER_OFF_PHASE = 3  # $C703
+FLICKER_TRACKER_OFF_D018 = 4  # $C704 / $C705, indexed by phase
+FLICKER_TRACKER_LEN = 6
+
+FLICKER_SWAP_IRQ_HANDLER = bytes(
+    [
+        0xAD,
+        0x19,
+        0xD0,  # 0  LDA $D019         ; VIC IRQ status
+        0x29,
+        0x01,  # 3  AND #$01          ; raster bit
+        0xF0,
+        0x35,  # 5  BEQ +53 → 60      ; not raster → chain
+        0x8D,
+        0x19,
+        0xD0,  # 7  STA $D019         ; ack raster (A = $01)
+        0xAD,
+        0x03,
+        0xC7,  # 10 LDA $C703         ; field phase
+        0x49,
+        0x01,  # 13 EOR #$01          ; flip it
+        0x8D,
+        0x03,
+        0xC7,  # 15 STA $C703
+        0xAA,  # 18 TAX               ; X = new phase (0 or 1)
+        0xBD,
+        0x04,
+        0xC7,  # 19 LDA $C704,X       ; that phase's $D018
+        0x8D,
+        0x18,
+        0xD0,  # 22 STA $D018         ; commit in vblank — page flip, no tear
+        0xAD,
+        0x02,
+        0xC7,  # 25 LDA $C702         ; ready flag
+        0xF0,
+        0x1E,  # 28 BEQ +30 → 60      ; no new frame → chain
+        0x8A,  # 30 TXA               ; phase back into A (sets Z)
+        0xD0,
+        0x1B,  # 31 BNE +27 → 60      ; commit only on phase 0 → chain
+        0xAD,
+        0x12,
+        0xD0,  # 33 LDA $D012         ; where is the raster NOW?
+        0x18,  # 36 CLC
+        0x69,
+        _RASTER_GATE_BIAS,  # 37 ADC #$08         ; 248..255 → 0..7, 0..45 → 8..53
+        0xC9,
+        _RASTER_GATE_LIMIT,  # 39 CMP #$36
+        0xB0,
+        0x11,  # 41 BCS +17 → 60      ; past the window → leave staged, chain
+        0xAD,
+        0x00,
+        0xC7,  # 43 LDA $C700         ; bg0
+        0x8D,
+        0x21,
+        0xD0,  # 46 STA $D021
+        0xAD,
+        0x01,
+        0xC7,  # 49 LDA $C701         ; pending bank value
+        0x8D,
+        0x00,
+        0xDD,  # 52 STA $DD00         ; swap bank (tear-free at vblank)
+        0xA9,
+        0x00,  # 55 LDA #$00
+        0x8D,
+        0x02,
+        0xC7,  # 57 STA $C702         ; clear ready flag
+        0x4C,
+        0x31,
+        0xEA,  # 60 JMP $EA31         ; chain to kernal
+    ]
+)
+assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
+    "FLICKER_SWAP_IRQ_HANDLER length changed — the four branch offsets (+53, "
+    "+30, +27, +17, all targeting the JMP $EA31 chain at offset 60) must be "
+    "recomputed before changing. See the offsets in the byte-comment column."
 )
 
 
@@ -852,6 +1013,7 @@ def install_bank_swap_irq(
     tracker_len: int = FRAME_TRACKER_LEN,
     *,
     audio_pump_active: bool = False,
+    tracker_init: bytes | None = None,
 ) -> None:
     """Bring up the bank-swap raster IRQ.
 
@@ -888,7 +1050,16 @@ def install_bank_swap_irq(
     # Zero the frame tracker — ready flag (last byte) = 0 means the first
     # IRQ after install skips the DMA path until the host stages a real
     # frame.
-    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", bytes(tracker_len))
+    #
+    # `tracker_init` overrides those zeros for handlers with a field the IRQ
+    # *reads* unconditionally rather than only behind the ready flag — the
+    # flicker handler's $D018 page pair. Zeros there would point VIC at the
+    # $0000 matrix offset for the field or two before the first frame stages,
+    # so the seed has to be in place before step 5 arms the raster source.
+    tracker = bytes(tracker_len) if tracker_init is None else tracker_init
+    if len(tracker) != tracker_len:
+        raise ValueError(f"tracker_init must be {tracker_len} bytes, got {len(tracker)}")
+    api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
     # 1) Mask CIA #1 (jiffy IRQ would otherwise vector through $0314 mid-install).
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
     # 2) Disable VIC IRQ sources (raster + sprite collisions + light pen).

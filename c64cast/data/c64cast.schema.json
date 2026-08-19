@@ -131,7 +131,7 @@
             "string",
             "number"
           ],
-          "description": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast \u2014 the pre-1.9 behaviour); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden.",
+          "description": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast \u2014 the pre-1.9 behavior); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden.",
           "enum": [
             "auto",
             "off"
@@ -726,6 +726,27 @@
           ],
           "default": "error-min"
         },
+        "flicker_tolerance": {
+          "type": "string",
+          "description": "Temporal color blending for hires, and how much visible flicker you'll accept to get it: hold two screen pages and alternate them at the VIC field rate, so the eye fuses each cell's pair of hardware colors into a shade the VIC cannot draw. Targets gradient banding \u2014 spatial dither already synthesizes intermediate colors wherever there is texture to hide them in. Every candidate pair was scored by eye, blind, and this picks how far down that scale to go: 'off' (default) no blending, 16 colors; 'clean' only pairs that fused, 24 colors on an Ultimate 64; 'subtle' adds mildly unsteady pairs, 30; 'visible' adds pairs that visibly flicker, 39. Pairs scored worse than that are recorded but offered by no setting \u2014 they reconstruct no better than 'visible' does, so they would trade flicker for nothing. 'visible' is itself inside the photosensitive-seizure band: treat it as an effect you chose, not a palette upgrade. Blending does not survive a 30 fps capture at any setting. Hires 'normal' style only.",
+          "enum": [
+            "off",
+            "clean",
+            "subtle",
+            "visible"
+          ],
+          "default": "off"
+        },
+        "flicker_max_luma_delta": {
+          "type": "number",
+          "description": "How far apart in brightness the two colors of a flicker pair may be, as a fraction of peak white in linear light. This is a photosensitivity control, not a quality knob: alternation at the field rate is hazardous in proportion to luminance modulation depth. WARNS above 0.10, and again above 0.12 where modulation approaches the 20%-of-peak-white flash criterion the guidance is written around \u2014 but does not refuse, because a pair you have looked at and accepted outranks the number. Nothing unscored can get in however wide it is set. Do not read a lower value as less flicker \u2014 scored by eye, \u0394Y predicts fusion barely at all (r=+0.26), which is what flicker_tolerance is for. It does bound what that setting can reach: 0.075 (default) holds flicker_tolerance = 'clean' to 5 of its 8 pairs on an Ultimate 64, and to 3 of 8 on the VIC-II rendering, whose luminances put five cleanly-fusing pairs above 0.12. Which pairs qualify depends on [hardware].host_palette, since it is the emitted light that fuses.",
+          "default": 0.075
+        },
+        "flicker_score_pairs": {
+          "type": "array",
+          "description": "DIAGNOSTIC. Replace the flicker blend set with exactly these color pairs, written as \"Blue+Brown\" or \"6+9\" \u2014 the same shape the arming log prints. Ignores both the scored tiers and flicker_max_luma_delta, so it can put pairs on screen that no flicker_tolerance admits and no safety cap allows. That is the point: it exists so scripts/diags/flicker_score_grid.py can score the pairs the tier table is built from, which it could not do if it were restricted by that same table. Not a tuning knob \u2014 a pair reachable only this way was excluded on evidence. Cannot switch blending on by itself: flicker_tolerance must still be set, and every structural gate still applies. Empty (default) uses the scored set.",
+          "default": []
+        },
         "motion_smoothing": {
           "type": "number",
           "description": "Temporal smoothing for mhires percell mode, 0..1. The percell path smooths its per-cell color choices over time (an EMA over color counts plus per-pixel/per-cell decision hysteresis) to suppress frame-to-frame flicker on noisy video. That smoothing trades motion-tracking for stability, so on a hard shot cut an outline from the previous shot lingers as an after-image for a moment. 1.0 (full smoothing) is the most stable but ghostiest; 0.0 tracks the source exactly (no after-image) but can flicker on grainy content. The default 0.25 was picked by hardware A/B as the best ghost/flicker balance. Lower it if after-images still bother you, raise it if motion shimmers. No effect on other modes or palette_modes.",
@@ -921,7 +942,7 @@
         },
         "token": {
           "type": "string",
-          "description": "Shared token required on every control-plane request, including the /perf console and its WebSocket. Empty = no authentication (the historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var.",
+          "description": "Shared token required on every control-plane request, including the /perf console and its WebSocket. Empty = no authentication (the historical behavior). Prefer the C64CAST_CONTROL_TOKEN env var.",
           "default": ""
         },
         "viewer_token": {

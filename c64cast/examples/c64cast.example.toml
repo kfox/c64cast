@@ -756,6 +756,98 @@ cell_strategy = "auto"
 # average filters it out — so it is only worth choosing under a tight CPU budget.
 hires_cell_pick = "error-min"
 #
+# flicker_tolerance: temporal color blending for hires, and how much visible
+# flicker you will accept in exchange (hires "normal" style only). Holds two
+# screen pages over one shared bitmap and alternates them at the VIC field rate,
+# so the eye fuses each cell's pair of hardware colors into a shade the VIC
+# cannot draw — the trick Dragon Breed and Mayhem in Monsterland used. The
+# alternation is driven by the C64 itself, so it does NOT need a fast link: the
+# host just uploads the pair, costing one extra 1000-byte page per frame.
+#
+# What it fixes is GRADIENT BANDING, not the palette generally — spatial dither
+# already makes intermediate colors wherever there is texture to hide them in,
+# so a chromatic gradient improves 27-34% while a photograph improves ~1%.
+#
+# Not every pair actually fuses, and nothing computed from the two colors
+# predicts which ones do — brightness distance, chroma distance and a red-orange
+# "warmth" axis were all tried and all failed against the eye. So every pair the
+# safety cap allows was instead SCORED by eye, blind, on real hardware, and this
+# setting picks how far down that scale to go:
+#
+#   "off"     (default) no blending at all — the 16 hardware colors.
+#   "clean"   only pairs that fused. 24 colors on an Ultimate 64 at the 0.12
+#             cap, 21 at the 0.075 default (three of the eight sit above it).
+#   "subtle"  adds pairs scored mildly unsteady. 30 colors.
+#   "visible" adds pairs that visibly flicker. 39 colors.
+#
+# Pairs scored worse than "visible" are kept in the table as a record of what was
+# seen, but no setting offers them: measured against the plain palette they
+# reconstruct no better than "visible" does, so they would trade flicker for
+# nothing at all.
+#
+# At "visible" you are choosing flicker, not tolerating it. It is seen at 25 Hz
+# (PAL) / 30 Hz (NTSC), inside the recognized photosensitive-seizure band — do
+# not use that setting for a stream other people will watch. PAL's 25 Hz fuses
+# noticeably worse than NTSC's 30 Hz throughout.
+#
+# At NO setting does blending survive a 30 fps capture: a capture card records
+# the flicker rather than the fusion. c64cast's own preview and [recording] show
+# the fused result correctly, because they reconstruct from the write stream
+# rather than filming the screen.
+#
+# The scoring was done on an Ultimate 64. Pairs the VIC-II rendering allows but
+# that sitting never judged are excluded rather than guessed at, so that palette
+# gets a smaller set.
+flicker_tolerance = "off"
+#
+# flicker_max_luma_delta: how far apart in brightness the two colors of a pair
+# may be, as a fraction of peak white in linear light. Treat this as the SAFETY
+# control and not a quality knob: alternation at the field rate is a seizure risk
+# in proportion to luminance modulation depth.
+#
+# !! WARNING !! It advises, it does not refuse. Above 0.10 it warns that pairs
+# start reading as luminance flicker; above 0.12 it warns again, because that is
+# where a blended area's modulation approaches the 20%-of-peak-white flash
+# criterion the photosensitive-seizure guidance is written around. Both let the
+# run proceed. Raising this past 0.12 is a decision to show a flashing image at
+# a depth the guidance cautions against — do not do it for a stream anyone else
+# will watch. It is set up this way because a pair someone has looked at and
+# accepted outranks a computed threshold; nothing unscored gets in regardless of
+# how wide it is set.
+#
+# Do NOT read a lower value as "less flicker" — that is flicker_tolerance's job.
+# Every pair this cap admits was scored by eye, and brightness distance barely
+# tracked the verdicts (r=+0.26): the pair with the smallest possible separation
+# visibly flickered, while one near the top of the range read as almost nothing.
+#
+# It does bound what flicker_tolerance can reach, though. At the 0.075 default
+# "clean" gets 5 of its 8 pairs on an Ultimate 64, and only 3 of 8 on the VIC-II
+# rendering, whose luminances put five cleanly-fusing pairs above 0.12. Widening
+# it is how you get the rest, with the warnings above in mind.
+#
+# Which pairs qualify depends on [hardware].host_palette, because what fuses is
+# the light the machine emits: the VIC-II rendering and an Ultimate 64 agree on
+# only about half the eligible set.
+flicker_max_luma_delta = 0.075
+#
+# flicker_score_pairs: DIAGNOSTIC, and almost certainly not for you. Replaces the
+# blend set with exactly these pairs, written the way the arming log prints them
+# ("Blue+Brown") or as indices ("6+9"). It ignores the scored tiers AND
+# flicker_max_luma_delta, so it will happily put pairs on screen that no
+# flicker_tolerance admits and no safety cap allows — including ones that flicker
+# hard enough that they were excluded on the evidence of someone watching them.
+#
+# It exists because the tool that BUILDS the tier table cannot be restricted by
+# that table: a pair scored "intense", or one a different host_palette brings
+# into range that nobody has scored yet, is in no blend table and so could never
+# be rendered to be judged. That would make a wrong tier permanent.
+# scripts/diags/flicker_score_grid.py writes this key per page.
+#
+# It cannot switch blending on by itself — flicker_tolerance must still be set to
+# something other than "off", and every structural gate still applies. Leave it
+# empty for anything that is not a scoring run.
+flicker_score_pairs = []
+#
 # motion_smoothing: temporal smoothing for mhires percell mode, 0..1 (mhires +
 # palette_mode=percell only). The percell path smooths its per-cell color
 # choices over time — an EMA over per-cell color counts plus per-pixel/per-cell
@@ -889,7 +981,7 @@ enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
 # Shared-token auth. Empty = open to anything that can reach the port (the
-# historical behaviour, fine on loopback). Set it before binding `host` to a
+# historical behavior, fine on loopback). Set it before binding `host` to a
 # LAN address; prefer the C64CAST_CONTROL_TOKEN env var over a value here.
 # Browsers trade the token for a cookie at /api/login?token=…&next=/perf.
 token = ""

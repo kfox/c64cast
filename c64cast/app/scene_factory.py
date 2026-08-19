@@ -62,6 +62,7 @@ from c64cast.sid.voice_scope import BITMAP_W as _SCOPE_BITMAP_W
 from c64cast.sid.voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
 from c64cast.sid.waveform import WaveformScene
 from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.modes import (
     BitmapDisplayMode,
     BlankDisplayMode,
@@ -189,6 +190,44 @@ def resolve_double_buffer(
     return bool(setting)
 
 
+def resolve_flicker_tolerance(
+    setting: str,
+    display: str,
+    *,
+    has_buffer_overlays: bool = False,
+    audio_reu_pump_active: bool = False,
+) -> str:
+    """Resolve [color].flicker_tolerance for one scene's display mode (the
+    field-alternating page flip — see modes_irq.FLICKER_SWAP_IRQ_HANDLER),
+    returning "off" where blending cannot be honoured.
+
+    Opt-in, so there is no "auto" to resolve; this only decides where an
+    explicit tolerance can actually be honoured. Three gates, all structural:
+
+      * hires only. mhires' third color lives in color RAM at $D800, which is
+        not VIC-banked and not selected by $D018, so only part of its picture
+        could alternate; the char modes keep per-cell color there too. This
+        also excludes the fixed-2-color edges styling, which picks no color to
+        blend: _build_display_mode reaches it through the separate
+        "hires_edges" display name, never through "hires".
+      * no buffer-painting text overlay. The second screen page sits at the
+        $0C00 offset, which is also where overlays/big_text.py page-flips its
+        own strip; the two cannot both own it.
+      * not while the REU mic pump is running, which owns $0314.
+
+    Blending brings its own bank-swapping double-buffer, so the caller clears
+    both use_reu_staged and double_buffer when this returns anything but
+    "off" — neither of those handlers carries the $D018 phase toggle, and all
+    three want $0314."""
+    if setting not in FLICKER_TOLERANCES:
+        raise ValueError(
+            f"[color].flicker_tolerance must be one of {tuple(FLICKER_TOLERANCES)}, got {setting!r}"
+        )
+    if setting == "off" or display != "hires":
+        return "off"
+    return setting if not (has_buffer_overlays or audio_reu_pump_active) else "off"
+
+
 def resolve_audio_backend(
     setting: str,
     *,
@@ -236,6 +275,7 @@ def _build_display_mode(
     text_double_height: bool = False,
     dither_method: str = "none",
     cell_strategy: str = "frequency",
+    flicker_tolerance: str = DEFAULT_TOLERANCE,
 ) -> DisplayMode:
     # border/background may be a C64 color name or an index; resolve to a plain
     # index here — the single point every scene's border/background flows
@@ -276,6 +316,9 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             cell_pick=color.hires_cell_pick,
+            flicker_tolerance=flicker_tolerance,
+            flicker_max_luma_delta=color.flicker_max_luma_delta,
+            flicker_score_pairs=color.flicker_score_pairs,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(
@@ -546,6 +589,24 @@ def _display_mode_for_scene(
             audio_reu_pump_active=cfg.audio.use_reu_pump,
         )
     )
+    # Flicker blend needs the $D018 phase toggle, which neither of the other two
+    # swap handlers carries — so where it engages it takes over the double-buffer
+    # slot and pushes REU staging aside, extending the mutual exclusion those two
+    # already have. force_host_dma gates it for the same reason it gates the
+    # others: a SID-audio scene's player owns $0314.
+    flicker_tolerance = (
+        "off"
+        if force_host_dma
+        else resolve_flicker_tolerance(
+            cfg.color.flicker_tolerance,
+            display,
+            has_buffer_overlays=has_buffer_overlays,
+            audio_reu_pump_active=cfg.audio.use_reu_pump,
+        )
+    )
+    if flicker_tolerance != "off":
+        use_reu_staged = False
+        double_buffer = False
     return _build_display_mode(
         display,
         palette_mode=s.palette_mode,
@@ -559,6 +620,7 @@ def _display_mode_for_scene(
         text_double_height=s.text_double_height,
         dither_method=resolve_dither_method(cfg.color.dither, s.type),
         cell_strategy=resolve_cell_strategy(cfg.color.cell_strategy, s.type),
+        flicker_tolerance=flicker_tolerance,
     )
 
 
@@ -657,7 +719,7 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
     _validate_scope_knobs(s, "waveform")
     # WaveformScene is bitmap-only — the SceneCfg `display` field is
-    # ignored for this scene type. Synthesise a hires display_mode so
+    # ignored for this scene type. Synthesize a hires display_mode so
     # overlay compatibility checks fire against what the scene will
     # actually paint.
     return _build_display_mode("hires")
@@ -696,7 +758,7 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
             )
     _validate_scope_knobs(s, "midi")
     # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
-    # field is ignored. Synthesise a hires display_mode so overlay
+    # field is ignored. Synthesize a hires display_mode so overlay
     # compatibility validates against what the scene will actually paint
     # (and PETSCII overlays are rejected, as on a waveform scene).
     return _build_display_mode("hires")
@@ -705,7 +767,7 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
 def _validate_asid(s: SceneCfg) -> DisplayMode:
     # AsidScene carries the SID state in the stream, so it has no synth knobs
     # to validate — only the shared oscilloscope knobs. Like MidiScene it's
-    # bitmap-only (hires), so synthesise a hires display_mode for overlay
+    # bitmap-only (hires), so synthesize a hires display_mode for overlay
     # compatibility (PETSCII overlays rejected).
     _validate_scope_knobs(s, "asid")
     if not (1 <= s.asid_max_sids <= 8):

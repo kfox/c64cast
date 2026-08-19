@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from typing import cast
 
 import cv2
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import CIA2, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
+from c64cast.video.flicker import (
+    DEFAULT_TOLERANCE,
+    FLASH_CRITERION_LUMA_DELTA,
+    FLICKER_TOLERANCES,
+    WARN_LUMA_DELTA,
+    BlendTable,
+    blend_distances_for,
+    build_blend_table,
+    parse_scoring_pairs,
+)
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER,
     BANK_SWAP_IRQ_HANDLER_ADDR,
@@ -31,7 +43,12 @@ from c64cast.video.palette import (
     quantize_distances_for,
 )
 
-from .base import ORDERED_DITHER_OFFSET_FNS, BitmapComposeBuffers
+from .base import (
+    BG0_HYSTERESIS_MARGIN,
+    ORDERED_DITHER_OFFSET_FNS,
+    BitmapComposeBuffers,
+    FlickerComposeBuffers,
+)
 from .bitmap import BitmapDisplayMode, engage_bitmap_mode
 
 log = logging.getLogger(__name__)
@@ -123,19 +140,50 @@ class HiresDisplayMode(BitmapDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         cell_pick: str = "error-min",
+        flicker_tolerance: str = DEFAULT_TOLERANCE,
+        flicker_max_luma_delta: float = 0.075,
+        flicker_score_pairs: Sequence[str] | None = None,
     ):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
         self.style = style
-        # Which colour each cell's foreground takes ([color].hires_cell_pick).
-        # Only the "normal" style picks colour at all — the edges styles are
-        # fixed 2-colour, so this is a no-op there, same as _perceptual.
+        # Flicker blend ([color].flicker_tolerance). None = off, and every
+        # blend branch is keyed on that rather than a bool so the plain path
+        # keeps running the 16-entry quantizer it always did. Only the "normal"
+        # style picks color, so blending is a no-op on the edges styles.
+        _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
+        # Parsed here rather than at the call site so a malformed entry raises
+        # where the mode is built, alongside the tolerance's own validation.
+        _scored = parse_scoring_pairs(flicker_score_pairs) if flicker_score_pairs else None
+        self._blend_table: BlendTable | None = (
+            build_blend_table(
+                flicker_max_luma_delta, tolerance=flicker_tolerance, score_pairs=_scored
+            )
+            if _blending and style == "normal"
+            else None
+        )
+        self._last_bg_index: int | None = None
+        # Which color each cell's foreground takes ([color].hires_cell_pick).
+        # Only the "normal" style picks color at all — the edges styles are
+        # fixed 2-color, so this is a no-op there, same as _perceptual.
         self._cell_pick = cell_pick
         self._last_fg: np.ndarray | None = None
         # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
         # Only the "normal" style quantizes color (bg + per-cell fg samples); the
         # edges styles are fixed 2-color, so this is a no-op there.
         self._perceptual = bool(perceptual)
+        if self._blend_table is not None and not self._perceptual:
+            # Blending is defined perceptually — a pair's fused color is a
+            # linear-light average and its eligibility is a Lab gap — so fitting
+            # in weighted-BGR optimizes a different space than the one the extra
+            # entries live in. Measured, that mismatch is enough to make the
+            # widened palette score WORSE than the 16 solids on photographic
+            # content (+2.5%) and on a luminance ramp (+6.3%), where under the
+            # Lab metric the same frames improve by 2-3%. Forced rather than
+            # refused: color_match's own default already resolves here, so this
+            # only fires when a config explicitly asked for "rgb".
+            log.info("hires: flicker blend forces color_match=perceptual (blends are Lab-defined)")
+            self._perceptual = True
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._last_bg: int | None = None
@@ -172,7 +220,12 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def set_color_match(self, value: str) -> str:
         """Live-swap the nearest-palette metric (no-op on the fixed 2-color
-        edges styles). Hires carries no d²-space penalty to rescale."""
+        edges styles). Hires carries no d²-space penalty to rescale.
+
+        Pinned while blending, for the reason __init__ gives: the widened
+        palette is Lab-defined and measurably regresses under weighted-BGR."""
+        if self._blend_table is not None:
+            return "color_match=perceptual (pinned by flicker_tolerance)"
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
 
@@ -185,6 +238,26 @@ class HiresDisplayMode(BitmapDisplayMode):
         self._cell_pick = value
         self._last_fg = None
         return f"cell_pick={value}"
+
+    def _sticky_bg(self, counts: np.ndarray) -> int:
+        """Pick the global background entry, holding the previous one unless a
+        challenger beats it by BG0_HYSTERESIS_MARGIN.
+
+        Blend-only. bg fills every %0 pixel, so under blending a bg flip does not
+        merely recolour the field — it can switch the whole background between
+        steady and alternating, which reads far harder than the color change
+        itself. The margin is the one mhires uses on $D021, for the same reason:
+        track a sustained shift, ignore a near-tie."""
+        best = int(counts.argmax())
+        prev = self._last_bg_index
+        if (
+            prev is not None
+            and prev < counts.shape[0]
+            and counts[prev] >= counts[best] * (1.0 - BG0_HYSTERESIS_MARGIN)
+        ):
+            best = prev
+        self._last_bg_index = best
+        return best
 
     def _errmin_fg(self, dist: np.ndarray, bg: int) -> tuple[np.ndarray, np.ndarray]:
         """Pick each cell's foreground by minimising that cell's own error, and
@@ -252,7 +325,69 @@ class HiresDisplayMode(BitmapDisplayMode):
         # push() also touches $D021 (unused in hires, but other code/tests
         # treat the pair as atomic), which the setup-time write above doesn't.
         self._last_bg = None
-        if self.double_buffer:
+        self._last_fg = None
+        self._last_bg_index = None
+        if self._blend_table is not None:
+            # Bank-swapping double-buffer with a second screen page per bank and
+            # the field-alternating swap IRQ. self.double_buffer stays False for
+            # this: the plain host-DMA path installs a swap handler with no $D018
+            # phase toggle, and the two cannot share $0314.
+            table = self._blend_table
+            self._setup_flicker_doublebuffer(api)
+            log.info(
+                "hires: flicker blend armed — %d blend pairs from %s, "
+                "ΔY <= %.3f (%d effective colors), pages $%04X/$%04X, "
+                "IRQ @ $%04X",
+                table.blend_count,
+                "an explicit flicker_score_pairs list"
+                if table.scoring
+                else f"tolerance {table.tolerance!r}",
+                table.max_luma_delta,
+                table.size,
+                VIC_BANK_0.SCREEN,
+                VIC_BANK_0.SCREEN_ALT,
+                BANK_SWAP_IRQ_HANDLER_ADDR,
+            )
+            if table.max_luma_delta > FLASH_CRITERION_LUMA_DELTA:
+                log.warning(
+                    "hires: flicker_max_luma_delta = %.3f is past %.2f, where a blended "
+                    "area's luminance modulation approaches the 20%%-of-peak-white flash "
+                    "criterion the photosensitive-seizure guidance is written around (it "
+                    "alternates at 25 Hz PAL / 30 Hz NTSC, inside the risk band). Allowed "
+                    "rather than refused, because a pair you have looked at and accepted "
+                    "outranks this number — but don't raise it for a stream anyone else "
+                    "will watch without knowing that.",
+                    table.max_luma_delta,
+                    FLASH_CRITERION_LUMA_DELTA,
+                )
+            elif table.max_luma_delta > WARN_LUMA_DELTA:
+                log.warning(
+                    "hires: flicker_max_luma_delta = %.3f is above %.2f, where pairs "
+                    "start to read as luminance flicker rather than color.",
+                    table.max_luma_delta,
+                    WARN_LUMA_DELTA,
+                )
+            if table.scoring:
+                log.warning(
+                    "hires: flicker_score_pairs is set — the blend set is this explicit "
+                    "list, not the scored one, so neither flicker_tolerance nor "
+                    "flicker_max_luma_delta is filtering it. This is the scoring path; "
+                    "a pair reachable only this way was excluded on evidence, and some "
+                    "of them flicker hard. Don't leave it set for anything but scoring.",
+                )
+            elif table.tolerance == "visible":
+                log.warning(
+                    "hires: flicker_tolerance = %r admits pairs scored as visibly "
+                    "flickering rather than fusing. A blended area alternates at the "
+                    "video field rate (25 Hz PAL / 30 Hz NTSC), inside the recognized "
+                    "photosensitive-seizure band — don't use this for a stream anyone "
+                    "else will watch.",
+                    table.tolerance,
+                )
+            # Which pairs specifically — the thing you want when deciding
+            # whether flicker_max_luma_delta is set where you meant it.
+            log.debug("hires: flicker pairs = %s", ", ".join(table.describe()))
+        elif self.double_buffer:
             # Host-DMA double-buffer: zero both banks + install the minimal
             # vblank swap IRQ (no REU). See _setup_hostdma_doublebuffer.
             self._setup_hostdma_doublebuffer(api)
@@ -294,8 +429,15 @@ class HiresDisplayMode(BitmapDisplayMode):
             )
 
     def teardown(self, api):
-        if self.use_reu_staged or self.double_buffer:
+        if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
             uninstall_bank_swap_irq(api)
+            if self._blend_table is not None:
+                # uninstall restores $DD00 but not $D018, and the flicker handler
+                # may have left it on the $0C00 page. Nothing else re-asserts it
+                # on the way into a char scene, which would then read its matrix
+                # from the wrong offset. Safe only after uninstall — before it,
+                # the next field's IRQ would put the page value straight back.
+                api.write_memory(f"{VIC.D018_MEMORY:04X}", "14")
             api.invalidate_cache()
 
     def cycle_style(self, api):
@@ -309,6 +451,7 @@ class HiresDisplayMode(BitmapDisplayMode):
     def compose(self, frame) -> BitmapComposeBuffers:
         assert self.frame_target_size is not None
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
+        table = self._blend_table
 
         if self.style == "normal":
             flat = np.clip(img.reshape(-1, 3).astype(np.float32), 0, 255)
@@ -316,11 +459,24 @@ class HiresDisplayMode(BitmapDisplayMode):
             if offset_fn is not None:
                 offset = offset_fn(200, 320, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            dist = quantize_distances_for(flat, perceptual=self._perceptual)  # (64000, 16)
+            # Blending only swaps the candidate set: a blend entry is the pair
+            # (a, b) and a solid is (c, c), so every index below is just an
+            # entry, and picking, dithering and bit-packing are shared verbatim.
+            # Only the final nibble split cares which kind an entry is.
+            if table is None:
+                dist = quantize_distances_for(flat, perceptual=self._perceptual)
+            else:
+                dist = blend_distances_for(flat, table, perceptual=self._perceptual)
+            entry_bgr = C64_PALETTE_BGR if table is None else table.bgr
             quantized = dist.argmin(axis=1).reshape(200, 320)
-            counts = np.bincount(quantized.ravel(), minlength=16)
-            bg = int(counts.argmax())
-            if self._cell_pick == "error-min":
+            counts = np.bincount(quantized.ravel(), minlength=dist.shape[1])
+            bg = int(counts.argmax()) if table is None else self._sticky_bg(counts)
+            if self._cell_pick == "error-min" or table is not None:
+                # Blending forces the cell fit regardless of cell_pick: a blend
+                # entry sits between its two solids, so a single sample lands on
+                # one of them more or less at random and the widened palette
+                # then measures WORSE than the 16 solids. The fit is what makes
+                # the second screen page pay for itself.
                 sample_fg, is_fg = self._errmin_fg(dist, bg)
             else:
                 sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
@@ -328,7 +484,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             if self._dither_method in ("floyd-steinberg", "atkinson"):
                 # Re-dither each 8×8 cell's own pixels against its 2-color set
                 # {bg, cell fg}, replacing the nearest-of-two assignment above.
-                # Only the per-pixel fill dithers — the cell's two colours are
+                # Only the per-pixel fill dithers — the cell's two colors are
                 # already fixed by this point, whichever way they were picked.
                 pixels_cell = (
                     flat.reshape(200, 320, 3)
@@ -338,8 +494,8 @@ class HiresDisplayMode(BitmapDisplayMode):
                 )
                 cand_bgr = np.stack(
                     [
-                        np.broadcast_to(C64_PALETTE_BGR[bg], (1000, 3)),
-                        C64_PALETTE_BGR[sample_fg.ravel()],
+                        np.broadcast_to(entry_bgr[bg], (1000, 3)),
+                        entry_bgr[sample_fg.ravel()],
                     ],
                     axis=1,
                 )  # (1000, 2, 3)
@@ -365,17 +521,38 @@ class HiresDisplayMode(BitmapDisplayMode):
         packed = np.packbits(is_fg.astype(np.uint8), axis=1)  # (200, 40)
         bitmap_ram = packed.reshape(25, 8, 40).transpose(0, 2, 1).reshape(-1)
 
-        if fg_const is not None:
-            screen_ram = np.full(1000, (fg_const << 4) | bg, dtype=np.uint8)
-        else:
-            screen_ram = _pack_screen(sample_fg, bg)
+        if fg_const is not None or table is None:
+            if fg_const is not None:
+                screen_ram = np.full(1000, (fg_const << 4) | bg, dtype=np.uint8)
+            else:
+                screen_ram = _pack_screen(sample_fg, bg)
+            plain: BitmapComposeBuffers = {
+                "bitmap": bitmap_ram,
+                "screen": screen_ram,
+                "bg": bg,
+                "text": HiresTextSurface(bitmap_ram, screen_ram),
+            }
+            return plain
 
-        return {
+        # Split each entry into the palette index its field shows. The two pages
+        # share the bitmap, so a cell whose entry is a solid writes the same byte
+        # to both and simply doesn't alternate.
+        fg_a, fg_b = table.field_pages(sample_fg)
+        bg_a, bg_b = (int(v) for v in table.pairs[bg])
+        screen_ram = _pack_screen(fg_a, bg_a)
+        screen_b = _pack_screen(fg_b, bg_b)
+        flicker: FlickerComposeBuffers = {
             "bitmap": bitmap_ram,
             "screen": screen_ram,
-            "bg": bg,
+            "screen_b": screen_b,
+            # $D020 is a single register the field IRQ doesn't manage, so the
+            # border can't blend — it takes the field-A component. Widening the
+            # handler to alternate it too would buy a blended frame around the
+            # picture and cost bytes in the one routine that must fit in vblank.
+            "bg": bg_a,
             "text": HiresTextSurface(bitmap_ram, screen_ram),
         }
+        return flicker
 
     def push(self, api: C64Backend, buffers: BitmapComposeBuffers) -> None:
         bg = buffers["bg"]
@@ -387,6 +564,28 @@ class HiresDisplayMode(BitmapDisplayMode):
             self._last_bg = bg
         bitmap_bytes = buffers["bitmap"].tobytes()
         screen_bytes = buffers["screen"].tobytes()
+        if self._blend_table is not None:
+            # Both pages plus the shared bitmap into the off-screen bank, then
+            # arm. The field alternation is already free-running against the
+            # displayed bank, so this stages a whole new pair set and the next
+            # phase-0 vblank brings it up in one piece.
+            (
+                target,
+                bm_addr,
+                page_a,
+                page_b,
+                bm_id,
+                page_a_id,
+                page_b_id,
+                dd00,
+            ) = self._flicker_swap_target()
+            page_b_bytes = cast(FlickerComposeBuffers, buffers)["screen_b"].tobytes()
+            api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
+            api.write_region(page_a, screen_bytes, region_id=page_a_id)
+            api.write_region(page_b, page_b_bytes, region_id=page_b_id)
+            self._arm_flicker_swap(api, bg, dd00)
+            self._displayed_bank = target
+            return
         if self.use_reu_staged:
             # Drop into the off-screen bank, then cue a vblank swap.
             target_bank = 1 - self._displayed_bank
