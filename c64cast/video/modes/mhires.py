@@ -280,6 +280,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             log.info("mhires: flicker blend forces color_match=perceptual (blends are Lab-defined)")
             self._perceptual = True
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
+        # Cached rather than recomputed in compose()'s per-frame hot path: it
+        # depends only on _gray_penalty and the (immutable once built) blend
+        # table, so it only needs to change when set_palette_mode re-derives
+        # _gray_penalty.
+        self._entry_penalty_cache: np.ndarray | None = (
+            self._entry_penalty(self._blend_table) if self._blend_table is not None else None
+        )
         # Temporal-smoothing knob ([color].motion_smoothing, 0..1). The percell
         # path carries two flicker-suppression buffers that trade motion-tracking
         # for frame-to-frame stability: the per-cell color-count EMA and the
@@ -375,6 +382,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if force_palette is not None:
             self._force_palette = force_palette
         self._sat_factor, self._gray_penalty = palette_mode_settings(palette_mode)
+        self._entry_penalty_cache = (
+            self._entry_penalty(self._blend_table) if self._blend_table is not None else None
+        )
         self._apply_grayscale_fixed_slots()
         self._smoothed_counts = None
         self._smoothed_cell_counts = None
@@ -425,6 +435,11 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # there is no motion cost to scale away. Scaling it by `s` anyway left
         # it at ~0.06 under the config default (motion_smoothing 0.25), too
         # weak to suppress the near-tie flicker it exists for.
+        #
+        # Gating this to blend-armed scenes lives at the _compose_percell call
+        # site, not here — that's the single place the value is used, and
+        # keeping the gate there avoids two copies of the same condition
+        # drifting apart.
         s = min(1.0, max(0.0, float(value)))
         self._motion_smoothing = s
         self._ema_alpha = 1.0 - s * (1.0 - base.PERCELL_PICK_EMA_ALPHA)
@@ -619,7 +634,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 d += self._gray_penalty * self._penalty_scale
             else:
                 d = blend_distances_for(flat, table, perceptual=self._perceptual)
-                d += self._entry_penalty(table) * self._penalty_scale
+                assert self._entry_penalty_cache is not None
+                d += self._entry_penalty_cache * self._penalty_scale
 
         if self.palette_mode == "percell":
             bitmap_ram, screen_ram, color_ram, bg0, screen_b = self._compose_percell(d, flat, table)
@@ -887,14 +903,27 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # _cell_strategy decides WHICH 3 present colors fill c1/c2/c3 (frequency
         # / luminance / contrast / error-min — see pick_cell_colors). All keep
         # the absent→bg0 poison-filler guard above.
+        #
+        # prev_trio/margin are gated on blending explicitly here, not just via
+        # _error_min_margin defaulting to 0.0 in the motion_smoothing setter:
+        # the near-tie rate that justifies the hysteresis (ERROR_MIN_HYSTERESIS_MARGIN's
+        # comment) was only ever measured for a blend pair's fused color sitting
+        # close to a solid or another pair. Plain error-min (a user-selected
+        # cell_strategy with no blend armed) was never profiled for the same
+        # near-tie rate, so it keeps the old raw per-frame argmin outright
+        # rather than inheriting stickiness through an unenforced margin=0.0
+        # coincidence that a future pool-size or metric change could quietly
+        # break.
+        blend_prev_trio = self._last_error_trio if self._blend_table is not None else None
+        blend_margin = self._error_min_margin if self._blend_table is not None else 0.0
         top3 = pick_cell_colors(
             cell_counts,
             d_cell,
             bg0,
             self._cell_strategy,
             PALETTE_LUMA if table is None else table.luma,
-            self._last_error_trio,
-            self._error_min_margin,
+            blend_prev_trio,
+            blend_margin,
         )
         # error-min's own temporal hysteresis (see base.ERROR_MIN_HYSTERESIS_MARGIN)
         # needs this frame's winning trio for next frame's comparison; harmless to

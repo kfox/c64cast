@@ -95,15 +95,14 @@ class FlickerComposeBuffers(BitmapComposeBuffers):
     screen_b: np.ndarray
 
 
-class MHiresFlickerComposeBuffers(MHiresComposeBuffers):
-    """MultiHires under flicker blending: ``color`` plus the second screen page.
+class MHiresFlickerComposeBuffers(MHiresComposeBuffers, FlickerComposeBuffers):
+    """MultiHires under flicker blending: ``color`` plus the second screen page
+    (inherited from ``FlickerComposeBuffers`` rather than redeclared).
 
     Only the screen nibbles alternate, so only c1 and c2 can be blends. c3 lives
     in color RAM at $D800, which is neither VIC-banked nor selected by $D018 —
     one copy, both fields — and bg0 is the single $D021 register. Both stay real
     palette indices, which is why ``color`` has no B-page sibling here."""
-
-    screen_b: np.ndarray
 
 
 # grayscale palette_mode uses fixed slot assignments (no per-frame picking)

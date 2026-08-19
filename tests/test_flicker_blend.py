@@ -15,6 +15,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 import numpy as np
 
@@ -34,8 +35,10 @@ from c64cast.video import flicker, palette  # noqa: E402
 from c64cast.video.flicker import FLICKER_TOLERANCES  # noqa: E402
 from c64cast.video.framebuffer import Framebuffer  # noqa: E402
 from c64cast.video.modes.base import (  # noqa: E402
+    ERROR_MIN_HYSTERESIS_MARGIN,
     FlickerComposeBuffers,
     MHiresFlickerComposeBuffers,
+    pick_cell_colors,
 )
 from c64cast.video.modes.hires import HiresDisplayMode  # noqa: E402
 from c64cast.video.modes.mhires import MultiHiresDisplayMode, _solid_last  # noqa: E402
@@ -789,6 +792,42 @@ class MHiresFlickerSlotTest(unittest.TestCase):
         self.assertTrue(mode._perceptual)
 
 
+class ErrorMinHysteresisGateTest(unittest.TestCase):
+    """ERROR_MIN_HYSTERESIS_MARGIN's justification (base.py's comment on the
+    constant) is blend-specific: a blend pair's fused color sitting
+    deliberately close to a solid or another pair is what makes near-ties
+    common enough to need it. Plain error-min (a user-selected cell_strategy
+    with no flicker_tolerance armed) was never profiled for the same near-tie
+    rate, so _compose_percell must not pass it through to pick_cell_colors
+    when self._blend_table is None — asserted directly on the call rather
+    than inferred from output, since a wrong gate here is easy for pixel-level
+    output to hide."""
+
+    def setUp(self):
+        self.enterContext(quiet_logging())
+
+    def test_non_blend_error_min_gets_no_hysteresis(self):
+        mode = MultiHiresDisplayMode(cell_strategy="error-min")
+        mode.frame_target_size = (160, 200)
+        with mock.patch(
+            "c64cast.video.modes.mhires.pick_cell_colors", wraps=pick_cell_colors
+        ) as spy:
+            mode.compose(gradient())
+        prev_trio, margin = spy.call_args.args[-2:]
+        self.assertIsNone(prev_trio, "plain error-min must not see a previous trio")
+        self.assertEqual(margin, 0.0, "plain error-min must not get the blend margin")
+
+    def test_blend_armed_error_min_gets_the_margin(self):
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS)
+        mode.frame_target_size = (160, 200)
+        with mock.patch(
+            "c64cast.video.modes.mhires.pick_cell_colors", wraps=pick_cell_colors
+        ) as spy:
+            mode.compose(gradient())
+        _prev_trio, margin = spy.call_args.args[-2:]
+        self.assertEqual(margin, ERROR_MIN_HYSTERESIS_MARGIN)
+
+
 class MHiresFlickerPushTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(quiet_logging())
@@ -817,17 +856,25 @@ class FlickerMirrorTest(unittest.TestCase):
     """The mirror shows the fused blend, which no capture of the real display
     can do — see caveats.md."""
 
-    def _armed_framebuffer(self, page_a: int, page_b: int):
-        from c64cast.hw.c64 import SCREEN, VIC
+    def _base_flicker_fb(self, d016: int):
+        """The handler/tracker/mode-register setup every armed framebuffer in
+        this class needs, shared so hires and mhires don't each hand-roll it."""
+        from c64cast.hw.c64 import VIC
 
         fb = Framebuffer()
         fb.on_write(VIC.D011_CONTROL_1, bytes([0x3B]))
-        fb.on_write(VIC.D016_CONTROL_2, bytes([0x08]))
+        fb.on_write(VIC.D016_CONTROL_2, bytes([d016]))
+        fb.on_write(BANK_SWAP_IRQ_HANDLER_ADDR, FLICKER_SWAP_IRQ_HANDLER)
+        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018, bytes([0x18, 0x38]))
+        return fb
+
+    def _armed_framebuffer(self, page_a: int, page_b: int):
+        from c64cast.hw.c64 import SCREEN
+
+        fb = self._base_flicker_fb(0x08)
         fb.on_write(SCREEN.BITMAP, bytes([0xFF]) * 8000)  # every pixel foreground
         fb.on_write(VIC_BANK_0.SCREEN, bytes([page_a]) * 1000)
         fb.on_write(VIC_BANK_0.SCREEN_ALT, bytes([page_b]) * 1000)
-        fb.on_write(BANK_SWAP_IRQ_HANDLER_ADDR, FLICKER_SWAP_IRQ_HANDLER)
-        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018, bytes([0x18, 0x38]))
         return fb
 
     def test_detects_the_second_page_only_when_the_vector_is_hooked(self):
@@ -870,16 +917,12 @@ class FlickerMirrorTest(unittest.TestCase):
     def _armed_mhires(self, bitmap_byte: int, page_a: int, page_b: int, color: int):
         from c64cast.hw.c64 import SCREEN, VIC
 
-        fb = Framebuffer()
-        fb.on_write(VIC.D011_CONTROL_1, bytes([0x3B]))
-        fb.on_write(VIC.D016_CONTROL_2, bytes([0x18]))  # bitmap + multicolor
+        fb = self._base_flicker_fb(0x18)  # bitmap + multicolor
         fb.on_write(VIC.D021_BG0, bytes([0x00]))
         fb.on_write(SCREEN.BITMAP, bytes([bitmap_byte]) * 8000)
         fb.on_write(VIC_BANK_0.SCREEN, bytes([page_a]) * 1000)
         fb.on_write(VIC_BANK_0.SCREEN_ALT, bytes([page_b]) * 1000)
         fb.on_write(SCREEN.COLOR_RAM, bytes([color]) * 1000)
-        fb.on_write(BANK_SWAP_IRQ_HANDLER_ADDR, FLICKER_SWAP_IRQ_HANDLER)
-        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018, bytes([0x18, 0x38]))
         fb.on_write(
             VECTORS.IRQ,
             bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
