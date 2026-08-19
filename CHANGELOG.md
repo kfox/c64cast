@@ -70,12 +70,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
   30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
   `[color].flicker_max_luma_delta` (default 0.075, hard-capped at 0.12) limits
-  how far apart in brightness a pair may be — the quantity that governs both the
-  hazard and whether a pair reads as color rather than flicker. The threshold is
-  measured rather than assumed: pairs were shown as flat bands on a CRT, and
-  everything up to ΔY 0.0155 read as a solid color while the first visible
-  flicker was at 0.1214, so the default sits mid-gap. Which pairs qualify
-  follows `[hardware].host_palette`, because what fuses is the light a
+  how far apart in brightness a pair may be, which is the quantity that governs
+  the hazard. It is not, however, a quality knob: scored by eye across every
+  admitted pair, brightness distance barely predicts whether a pair fuses
+  (r=+0.33). What does is which colors are in it — red, purple, orange and light
+  red flickered wherever they appeared, on a CRT over composite, on an HDMI
+  monitor and through a capture card alike. So `[color].flicker_max_warmth`
+  (default 0.26) caps how far along the red-orange axis either color of a pair
+  may sit, which costs gamut: 37 effective colors down to 23 on an Ultimate 64.
+  Raise it past ~0.3 to take all 37 and the flicker with them. Which pairs
+  qualify follows `[hardware].host_palette`, because what fuses is the light a
   particular machine emits. It also does not
   survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
   own preview and `[recording]` do show the fused result correctly, because they

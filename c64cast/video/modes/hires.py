@@ -13,6 +13,7 @@ from c64cast.hw.c64 import CIA2, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
+    DEFAULT_MAX_WARMTH,
     WARN_LUMA_DELTA,
     BlendTable,
     blend_distances_for,
@@ -137,7 +138,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         cell_pick: str = "error-min",
         flicker_blend: bool = False,
         flicker_max_luma_delta: float = 0.075,
-        flicker_exclude_warm: bool = True,
+        flicker_max_warmth: float = DEFAULT_MAX_WARMTH,
     ):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
@@ -147,7 +148,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         # running the 16-entry quantizer it always did. Only the "normal" style
         # picks colour, so blending is a no-op on the edges styles.
         self._blend_table: BlendTable | None = (
-            build_blend_table(flicker_max_luma_delta, exclude_warm=flicker_exclude_warm)
+            build_blend_table(flicker_max_luma_delta, max_warmth=flicker_max_warmth)
             if flicker_blend and style == "normal"
             else None
         )
@@ -324,11 +325,12 @@ class HiresDisplayMode(BitmapDisplayMode):
             table = self._blend_table
             self._setup_flicker_doublebuffer(api)
             log.info(
-                "hires: flicker blend armed — %d blend pairs at ΔY <= %.3f%s "
-                "(%d effective colours), pages $%04X/$%04X, IRQ @ $%04X",
+                "hires: flicker blend armed — %d blend pairs at ΔY <= %.3f, "
+                "warmth <= %.2f (%d effective colours), pages $%04X/$%04X, "
+                "IRQ @ $%04X",
                 table.blend_count,
                 table.max_luma_delta,
-                "" if table.exclude_warm else ", warm colours allowed",
+                table.max_warmth,
                 table.size,
                 VIC_BANK_0.SCREEN,
                 VIC_BANK_0.SCREEN_ALT,

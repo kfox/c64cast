@@ -39,14 +39,23 @@ and the best three-term fit an adjusted R² of 0.25 over n=21.
 **Which colours are in the pair predicts it far better than how far apart they
 are.** Every pair containing Red, Purple, Orange or Light Red scored high, on
 flat patches and in motion alike, and excluding all of them is what made a real
-clip settle down — same clip, same threshold, 21 pairs down to 7.
-`[color].flicker_exclude_warm` is that rule and it defaults to on.
-`WARM_FLICKER_COLORS` is an explicit set of four observed colours rather than a
-hue band, because Brown is every bit as warm by name and stays: it read as solid
-against both Blue and Black. Whether the four fail to fuse or are a
-composite-NTSC chroma artifact is untested, and that is the distinction which
-decides whether the rule ought to depend on the display and not just on the
-palette.
+clip settle down — same clip, same threshold, 21 pairs down to 7. The same four
+flickered on a 1702 over composite, on an HDMI monitor and through the capture
+path, with no perceptible difference between them, so this is not an artifact of
+one display's chroma decoding and the rule follows the palette rather than the
+output.
+
+`[color].flicker_max_warmth` is that rule: a cap on how far along the red-orange
+axis *either* colour of a pair may sit, `color_warmth` measuring it. Be clear
+about what the default is, though — 0.26 is the midpoint of the gap the four
+observed colours leave above the rest of the palette, and `_WARM_AXIS_DEG` is
+the rotation that opens that gap widest. Both are fitted to 4 positives against
+12 negatives. The metric restates the observation in a form that extends to
+untested colours and to palettes nobody has scored; it does not independently
+predict it, and it will not until a run that was not used to fit it agrees. What
+can be said is that the fit is not delicate: the same 20° axis ranks the same
+four on top with a clear gap under them on *both* shipped palettes, and the
+default reproduces the observed set at every cap on each.
 
 ΔY is measured against the *active* palette, so this follows `host_palette`:
 which two colours fuse is a statement about the light a particular machine
@@ -60,11 +69,11 @@ integrates emitted light over the two fields, so the mix has to happen after
 sRGB decode. Averaging the encoded values instead makes every blend read too
 dark, worst on the high-contrast pairs where the gamma curve is steepest.
 
-At the 0.075 default, 21 of the 120 mixed pairs clear the cap on an Ultimate 64
-and every one lands >=4 Lab from all 16 solids; the warm exclusion takes that to
-7, a 23-colour palette that gains a blue-charcoal ramp rather than crowding the
-greys. Turning the exclusion off restores the 37-colour set, which is worth more
-of the gamut and visibly less steady.
+At the 0.075 default, 21 of the 120 mixed pairs clear the luma cap on an
+Ultimate 64 and every one lands >=4 Lab from all 16 solids; the 0.26 warmth cap
+takes that to 7, a 23-colour palette that gains a blue-charcoal ramp rather than
+crowding the greys. Raising the warmth cap past ~0.3 restores the 37-colour set,
+which is worth more of the gamut and visibly less steady.
 """
 
 from __future__ import annotations
@@ -99,12 +108,21 @@ MAX_ALLOWED_LUMA_DELTA = 0.12
 # arming path says so rather than letting it through silently.
 WARN_LUMA_DELTA = 0.10
 
-# Palette indices that no pair may contain while `flicker_exclude_warm` is on:
-# Red, Purple, Orange, Light Red. Not a hue band — Brown is as warm by name and
-# is deliberately absent, having read as solid against both Blue and Black — and
-# not a threshold that was merely set too high, since pairs of larger ΔY built
-# from the rest of the palette sat still while every one of these four moved.
+# The four colours observed to flicker whatever they were paired with: Red,
+# Purple, Orange, Light Red. Not itself the rule — `flicker_max_warmth` is — but
+# kept because it is the observation the rule is fitted to, and the default is
+# only defensible for as long as it still reproduces exactly this set.
 WARM_FLICKER_COLORS = frozenset({2, 4, 8, 10})
+
+# Lab hue direction warmth is measured along, and the threshold on it. Rotated
+# off a* toward yellow because a* alone lands Blue (a*=+46 on an Ultimate 64)
+# between Purple and Orange and would drop it with them, and a plain hue band
+# was rejected in turn for ignoring chroma — it would exclude a near-grey whose
+# hue happens to be red, which cannot modulate a chromatic channel enough to
+# matter. Both constants are fitted to 4 positives against 12 negatives, so they
+# parameterize the observation rather than predict it; see the module docstring.
+_WARM_AXIS_DEG = 20.0
+DEFAULT_MAX_WARMTH = 0.26
 
 # Below this the pair fuses to something a solid colour already covers, so it
 # costs a page write and buys nothing. In OpenCV 8-bit Lab units.
@@ -165,20 +183,45 @@ def _to_lab(bgr: np.ndarray) -> np.ndarray:
 _PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
 
 
-def blend_pairs(max_luma_delta: float, *, exclude_warm: bool = True) -> list[tuple[int, int]]:
-    """Eligible flicker pairs at `max_luma_delta`, ordered by descending gain.
+def _palette_warmth() -> np.ndarray:
+    """(16,) warmth of each palette entry, 0..1. See `_WARM_AXIS_DEG`."""
+    theta = np.radians(_WARM_AXIS_DEG)
+    a = _PALETTE_LAB[:, 1] - 128.0
+    b = _PALETTE_LAB[:, 2] - 128.0
+    projected = a * np.cos(theta) + b * np.sin(theta)
+    return np.clip(projected / 128.0, 0.0, 1.0).astype(np.float32)
 
-    A pair qualifies when it modulates gently enough to be safe, contains no
-    colour observed to flicker whatever its partner (unless `exclude_warm` is
-    off), and lands far enough from all 16 solids to be worth a second screen
-    page.
+
+_PALETTE_WARMTH = _palette_warmth()
+
+
+def color_warmth(c: int) -> float:
+    """How far palette index `c` lies along the red-orange axis, 0.0 (neutral or
+    cool — every grey, and anything from yellow round to blue) to 1.0.
+
+    Chroma-weighted, so a desaturated colour scores low whatever its hue: what a
+    pair can modulate is bounded by how much colour either half of it carries.
+    Measured against the *active* palette, like `pair_luma_delta`.
+    """
+    return float(_PALETTE_WARMTH[c])
+
+
+def blend_pairs(
+    max_luma_delta: float, *, max_warmth: float = DEFAULT_MAX_WARMTH
+) -> list[tuple[int, int]]:
+    """Eligible flicker pairs at these two caps, ordered by descending gain.
+
+    A pair qualifies when it modulates luminance gently enough to be safe,
+    neither of its colours is warmer than `max_warmth`, and its fused colour
+    lands far enough from all 16 solids to be worth a second screen page.
     """
     cap = min(float(max_luma_delta), MAX_ALLOWED_LUMA_DELTA)
+    warmth_cap = float(max_warmth)
     scored: list[tuple[float, tuple[int, int]]] = []
     for a, b in itertools.combinations(range(16), 2):
         if pair_luma_delta(a, b) > cap:
             continue
-        if exclude_warm and (a in WARM_FLICKER_COLORS or b in WARM_FLICKER_COLORS):
+        if max(_PALETTE_WARMTH[a], _PALETTE_WARMTH[b]) > warmth_cap:
             continue
         gain = float(np.min(np.linalg.norm(_PALETTE_LAB - _to_lab(fuse(a, b)[None, :]), axis=1)))
         if gain >= MIN_BLEND_LAB_GAIN:
@@ -200,7 +243,7 @@ class BlendTable:
     pairs: np.ndarray  # (N, 2) uint8
     bgr: np.ndarray  # (N, 3) float32 — the fused colour
     max_luma_delta: float
-    exclude_warm: bool = True
+    max_warmth: float = DEFAULT_MAX_WARMTH
 
     @property
     def size(self) -> int:
@@ -225,7 +268,7 @@ class BlendTable:
 
 # Table construction costs a few hundred Lab conversions, and a live-tuned
 # max_luma_delta would otherwise rebuild it every frame.
-_TABLE_CACHE: dict[tuple[float, bool], BlendTable] = {}
+_TABLE_CACHE: dict[tuple[float, float], BlendTable] = {}
 
 
 def _rebuild_palette_tables() -> None:
@@ -237,27 +280,31 @@ def _rebuild_palette_tables() -> None:
     flicker on that machine, which is the one failure this module exists to
     prevent, hence the registration rather than a lazily-checked cache key.
     """
-    global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB
+    global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB, _PALETTE_WARMTH
     _PALETTE_LINEAR = _srgb_to_linear(C64_PALETTE_BGR)
     _PALETTE_Y = _PALETTE_LINEAR @ _LUMA_WEIGHTS_BGR
     _PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
+    _PALETTE_WARMTH = _palette_warmth()
     _TABLE_CACHE.clear()
 
 
 on_palette_change(_rebuild_palette_tables)
 
 
-def build_blend_table(max_luma_delta: float, *, exclude_warm: bool = True) -> BlendTable:
-    """The widened palette at `max_luma_delta`. Cached per settings pair."""
+def build_blend_table(
+    max_luma_delta: float, *, max_warmth: float = DEFAULT_MAX_WARMTH
+) -> BlendTable:
+    """The widened palette at these caps. Cached per settings pair."""
     delta = round(float(max_luma_delta), 4)
-    key = (delta, bool(exclude_warm))
+    warmth = round(float(max_warmth), 4)
+    key = (delta, warmth)
     cached = _TABLE_CACHE.get(key)
     if cached is not None:
         return cached
-    extra = blend_pairs(delta, exclude_warm=exclude_warm)
+    extra = blend_pairs(delta, max_warmth=warmth)
     pairs = np.array([(i, i) for i in range(16)] + extra, dtype=np.uint8)
     bgr = np.stack([fuse(int(a), int(b)) for a, b in pairs]).astype(np.float32)
-    table = BlendTable(pairs=pairs, bgr=bgr, max_luma_delta=delta, exclude_warm=bool(exclude_warm))
+    table = BlendTable(pairs=pairs, bgr=bgr, max_luma_delta=delta, max_warmth=warmth)
     _TABLE_CACHE[key] = table
     return table
 

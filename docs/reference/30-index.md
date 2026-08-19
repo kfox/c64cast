@@ -190,8 +190,8 @@ Every name c64cast answers to — 440 of them — and the pages that discuss eac
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `flicker_blend` | [`color` (A)](20-appendix-a-configuration.md#color) |
-| `flicker_exclude_warm` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_max_luma_delta` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_max_warmth` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [The Console (6)](07-inputs-and-outputs.md#the-console), [`color` (A)](20-appendix-a-configuration.md#color) |

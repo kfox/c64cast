@@ -367,7 +367,7 @@ Off by default, hires `"normal"` style only. Holds **two** screen pages over one
 
 #### Eligibility: a safety cap and a colour rule, doing different jobs
 
-`flicker.blend_pairs(max_luma_delta, exclude_warm=)` admits a pair when three things hold: the **absolute difference in linear luminance** between its two colours is under the cap, neither colour is in `WARM_FLICKER_COLORS` (unless the caller opts out), and the fused colour lands ≥4 Lab from all 16 solids — below that it duplicates a solid and costs a page write for nothing.
+`flicker.blend_pairs(max_luma_delta, max_warmth=)` admits a pair when three things hold: the **absolute difference in linear luminance** between its two colours is under the luma cap, neither colour's `color_warmth` exceeds the warmth cap, and the fused colour lands ≥4 Lab from all 16 solids — below that it duplicates a solid and costs a page write for nothing.
 
 **The cap is a photosensitivity control, and that is all it is.** A pair is seen at 25 Hz (PAL) / 30 Hz (NTSC), inside the ITU-R BT.1702 risk band, where the hazard scales with luminance modulation depth. Hence `flicker_max_luma_delta = 0.075` by default, a hard `MAX_ALLOWED_LUMA_DELTA = 0.12` clamp set below the 20%-of-peak-white level the guidance is written around, a warning past `WARN_LUMA_DELTA = 0.10`, and the feature opt-in.
 
@@ -380,11 +380,20 @@ Off by default, hires `"normal"` style only. Holds **two** screen pages over one
 
 No pairwise distance did better: ΔY·√(meanY) reached r=+0.47, Δchroma +0.18, Michelson −0.13, and the best three-term fit an adjusted R² of 0.25 over n=21. Blue+Brown and Blue+Orange differ in Δchroma by 0.2 counts (112.6 vs 112.4) and land at *none* against *intense*. So a lower `flicker_max_luma_delta` is not "less flicker" and should not be documented or recommended as such.
 
-**What did separate them is which colours are in the pair.** Every pair containing Red (2), Purple (4), Orange (8) or Light Red (10) scored high, on flat patches and in motion alike. Dropping all of them — `[color].flicker_exclude_warm`, on by default — is what made a real clip settle down, at 21 pairs down to 7 on an Ultimate 64.
+**What did separate them is which colours are in the pair.** Every pair containing Red (2), Purple (4), Orange (8) or Light Red (10) scored high, on flat patches and in motion alike. Dropping all of them is what made a real clip settle down, at 21 pairs down to 7 on an Ultimate 64. The same four did it on a 1702 over composite, on an HDMI monitor and through the capture path with no perceptible difference between them, so it is a property of the colours and the rule keys off the palette rather than off the output.
 
-`WARM_FLICKER_COLORS` is an explicit four-index set and not a hue band, because Brown is as warm by name and reads as *solid* against both Blue and Black. Two things about it are still open, and both are eyes-on questions rather than code ones: whether the four fail to *fuse* or are a composite-NTSC chroma artifact of the 1702 the scoring was done on — which decides whether the rule belongs to the display rather than the palette — and whether the boundary is really those four, since the untested colours were never in an admitted pair to be judged.
+**How the rule generalises that.** `[color].flicker_max_warmth` caps `color_warmth(c)`, the projection of a colour's Lab chroma onto a red-orange axis 20° off `a*`, normalised to 0..1. Neutrals score 0. Two alternatives were rejected on the way: `a*` alone lands Blue at +46 on a U64, between Purple and Orange, and would drop it with them; a plain hue band ignores chroma, so it would exclude a near-grey whose hue happens to be red, which cannot modulate a chromatic channel enough to matter.
 
-**The scoring run this rests on has a known flaw.** The 21 patches were laid out sorted by ΔY, which confounds screen position with the variable perfectly; row means ran 1.29 → 2.00 → 2.36 top to bottom, which a position effect alone would also produce. It is evidence against ΔY (a *predictor* that fails under a confound favouring it is not rescued by removing the confound) but it is weak evidence *for* the warm rule. Re-scoring with randomised patch positions is the outstanding work.
+`_WARM_AXIS_DEG = 20` and `DEFAULT_MAX_WARMTH = 0.26` are both **fitted to 4 positives against 12 negatives** — the metric restates the observation in a form that extends to untested colours and unscored palettes, and does not independently predict it. What can be checked is that the fit is not delicate, and `tests/test_flicker_blend.py` checks it: the same axis ranks the same four on top with a clear gap under them on *both* shipped palettes, and the default reproduces the observed set at every cap on each.
+
+| palette | warmest non-warm colour | coolest warm colour | default sits |
+|---|---|---|---|
+| Ultimate 64 | Brown 0.177 | Purple 0.304 | mid-gap |
+| VIC-II | Blue 0.219 | Orange 0.315 | mid-gap |
+
+**It is the strong signal, not a complete account.** Medium Gray + Light Blue was scored as mildly flickering and neither cap excludes it — it is in the default's 7 on a U64. A test pins that so the rule does not get mistaken for a full explanation.
+
+**And the scoring run it rests on has a known flaw.** The 21 patches were laid out sorted by ΔY, which confounds screen position with the variable perfectly; row means ran 1.29 → 2.00 → 2.36 top to bottom, which a position effect alone would also produce. It is evidence against ΔY (a *predictor* that fails under a confound favouring it is not rescued by removing the confound) but it is weak evidence *for* the warm rule. Re-scoring with randomised patch positions, and blind, is the outstanding work.
 
 **Why absolute ΔY and not a contrast ratio.** Michelson contrast was the first rule and it is wrong in the one place it matters. Dividing by the pair's own mean luminance makes the metric maximally pessimistic where the eye is least sensitive: black against anything scores 1.0 by construction, so Black+Blue, Black+Brown and Black+Dark Gray — all under 0.07 ΔY, all of which fuse cleanly — could never qualify at any setting. In the other direction it admitted Cyan+Yellow, which on an Ultimate 64 is 0.26 ΔY, as hard a flicker as anything on the test chart. Against the emitted palette the two rules agree on only 9 of ~20 pairs. Weber contrast and a Ferry-Porter frequency term were tried against the same six bands and both degraded the separation; a chroma-swing term did too, which is the expected result — chroma flicker fuses at a far lower rate than luminance flicker, so it is not the binding constraint.
 
@@ -392,7 +401,7 @@ The 8-bit `PALETTE_LUMA` delta is also wrong here, for a different reason: it is
 
 **Eligibility is per machine.** ΔY is measured against the active palette, so this follows [`host_palette`](#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette) — what fuses is a statement about the light one machine emits, not about "the C64 palette". `flicker.py` registers an `on_palette_change` listener rather than computing its tables at import, because a stale table would admit pairs that flicker on the machine in front of you, which is the single failure this module exists to prevent.
 
-Eligible pairs by cap, before the warm exclusion → after it:
+Eligible pairs by luma cap, before the warmth cap → after it at the 0.26 default:
 
 | cap | VIC-II | Ultimate 64 | effective palette |
 |---|---|---|---|
@@ -401,7 +410,7 @@ Eligible pairs by cap, before the warm exclusion → after it:
 | 0.10 (warns above) | 20 → 11 | 28 → 9 | 25–27 |
 | 0.12 (clamp) | 23 → 12 | 33 → 10 | 26–28 |
 
-Note what the exclusion does to the cap's leverage: past 0.075 the pairs it would newly admit are almost all warm ones, so raising the cap with the exclusion on buys 2–3 colours on a U64 rather than 12. Raising it is therefore close to pure photosensitivity risk for close to no gamut, which is the opposite of how the knob reads.
+Note what the warmth cap does to the luma cap's leverage: past 0.075 the pairs the luma cap would newly admit are almost all warm ones, so raising it buys 2–3 colours on a U64 rather than 12. Raising the luma cap is therefore close to pure photosensitivity risk for close to no gamut, which is the opposite of how the knob reads.
 
 Fusion is the **linear-light** average, not the sRGB one — the eye integrates emitted light over the two fields, so mixing the encoded values instead makes every blend read too dark, worst where the gamma curve is steepest.
 

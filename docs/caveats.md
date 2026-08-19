@@ -527,13 +527,17 @@ leave the cap alone unless you have a reason.
 predictor of whether a pair actually fuses — scored by eye over every admitted
 pair it correlates at r=+0.33, and the pair with the *smallest possible*
 separation visibly flickers while one near the top of the range reads as almost
-nothing. The knob that buys steadiness is `[color].flicker_exclude_warm` (on by
-default), which refuses any pair containing red, purple, orange or light red:
-those four flickered wherever they appeared regardless of what they were paired
-with. It costs gamut — 37 effective colors down to 23 on an Ultimate 64 — and
-it is provisional, since whether those colors fail to fuse or are an artifact of
-composite video has not been settled. On a component or HDMI display, turning it
-off may look fine.
+nothing. The knob that buys steadiness is `[color].flicker_max_warmth` (default
+0.26), which caps how far along the red-orange axis either color of a pair may
+sit: red, purple, orange and light red flickered wherever they appeared,
+regardless of what they were paired with, and the same four did it on a CRT over
+composite, on an HDMI monitor and through a capture card alike — so this is a
+property of the colors, not of one display's chroma decoding.
+
+It costs gamut: 37 effective colors down to 23 on an Ultimate 64. Raise it past
+~0.3 to take all 37 and the flicker with them. It is also **not a complete
+account** — medium gray + light blue was scored as mildly flickering and no cap
+here excludes it, so expect the odd unsteady pair even at the default.
 
 **It does not survive being filmed.** A capture card records individual fields,
 so it captures the flicker rather than the fusion — a 30 fps capture of a

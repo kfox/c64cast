@@ -788,7 +788,7 @@ flicker_blend = false
 # the verdicts (r=+0.33): the pair with the smallest possible separation
 # visibly flickered, while one near the top of the range read as almost
 # nothing. Which colors are in the pair matters far more — see
-# flicker_exclude_warm below, which is the knob that actually buys steadiness.
+# flicker_max_warmth below, which is the knob that actually buys steadiness.
 #
 # Which pairs qualify depends on [hardware].host_palette, because what fuses is
 # the light the machine emits: the VIC-II rendering and an Ultimate 64 agree on
@@ -796,18 +796,24 @@ flicker_blend = false
 # NTSC's 30 Hz, so treat the default as the ceiling there.
 flicker_max_luma_delta = 0.075
 #
-# flicker_exclude_warm: refuse any pair containing red, purple, orange or light
-# red. Those four flickered wherever they appeared, whatever they were paired
-# with and however close in brightness, while pairs further apart built from
-# the rest of the palette sat still — so this removes far more visible flicker
-# than lowering flicker_max_luma_delta does.
+# flicker_max_warmth: how far along the red-orange axis either color of a pair
+# may sit, 0..1. THIS is the quality control. Red, purple, orange and light red
+# flickered wherever they appeared, whatever they were paired with and however
+# close in brightness, while pairs further apart built from the rest of the
+# palette sat still — so capping warmth removes far more visible flicker than
+# lowering flicker_max_luma_delta does. The same four did it on a CRT over
+# composite, on an HDMI monitor and through a capture card, so it is the colors
+# and not the display.
 #
-# It costs gamut: on an Ultimate 64 the widened palette goes from 37 colors to
-# 23, keeping a blue-charcoal ramp and losing the salmons and olives. Set false
-# to trade steadiness back for reach. Whether those four fail to fuse or are an
-# artifact of composite video is not settled, so on a component or HDMI display
-# the off setting may well look fine.
-flicker_exclude_warm = true
+# 0.26 (default) sits mid-gap between those four and the rest of the palette,
+# on both the VIC-II and Ultimate 64 tables. It costs gamut: on an Ultimate 64
+# the widened palette goes from 37 colors to 23, keeping a blue-charcoal ramp
+# and losing the salmons and olives. Raise past ~0.3 to take all 37 back along
+# with the flicker; 0 blends only neutrals.
+#
+# Not a complete account of what flickers: medium gray + light blue reads as
+# mildly unsteady and no cap here excludes it.
+flicker_max_warmth = 0.26
 #
 # motion_smoothing: temporal smoothing for mhires percell mode, 0..1 (mhires +
 # palette_mode=percell only). The percell path smooths its per-cell color

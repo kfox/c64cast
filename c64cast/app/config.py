@@ -1988,24 +1988,27 @@ class ColorCfg:
             "depth, and 0.12 is the ceiling because 20% of peak white is what "
             "the guidance is written around. Do not read a lower value as less "
             "flicker — scored by eye, ΔY predicts fusion barely at all "
-            "(r=+0.33), which is what flicker_exclude_warm is for. 0.075 "
-            "(default) admits ~21 of the 120 pairs before that exclusion. Above "
+            "(r=+0.33), which is what flicker_max_warmth is for. 0.075 "
+            "(default) admits ~21 of the 120 pairs before that cap. Above "
             "0.10 warns; above 0.12 is refused. Which pairs qualify depends on "
             "[hardware].host_palette, since it is the emitted light that fuses.",
             "applies_to": ("hires",),
         },
     )
-    flicker_exclude_warm: bool = field(
-        default=True,
+    flicker_max_warmth: float = field(
+        default=0.26,
         metadata={
-            "help": "Refuse any flicker pair containing red, purple, orange or "
-            "light red. Those four were seen to flicker whatever they were "
-            "paired with and however close in brightness, while pairs further "
-            "apart built from the rest of the palette sat still — so this "
-            "removes far more visible flicker than lowering "
-            "flicker_max_luma_delta does. Costs gamut: on an Ultimate 64 it "
-            "takes the widened palette from 37 colors to 23. Turn it off to "
-            "trade steadiness for reach. No effect unless flicker_blend is on.",
+            "help": "How far along the red-orange axis either color of a flicker "
+            "pair may sit, 0..1. This is the quality control — red, purple, "
+            "orange and light red flickered wherever they appeared, whatever "
+            "they were paired with and however close in brightness, so capping "
+            "warmth removes far more visible flicker than lowering "
+            "flicker_max_luma_delta does. 0.26 (default) is mid-gap between "
+            "those four and the rest of the palette on both shipped palettes, "
+            "and admits 7 of the 21 pairs the luma cap allows on an Ultimate 64 "
+            "— a 23-color palette. Raise past ~0.3 to take all 37 colors and "
+            "the flicker with them; 0 restricts blending to neutrals. No effect "
+            "unless flicker_blend is on.",
             "applies_to": ("hires",),
         },
     )

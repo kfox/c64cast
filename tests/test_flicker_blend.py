@@ -58,41 +58,75 @@ DEFAULT_LUMA_DELTA = 0.075
 
 
 class BlendTableTest(unittest.TestCase):
+    def setUp(self):
+        # Several cases below swap the palette to check the rule follows it.
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+
     def test_pair_yield_at_each_luma_cap(self):
         # The numbers the default rests on, against the VIC-II rendering that
         # is the process palette here. A change is a change to how much flicker
         # the default admits, which is a safety decision.
-        for cap, without_warm, with_warm in (
+        for cap, capped, uncapped in (
             (0.05, 6, 12),
             (DEFAULT_LUMA_DELTA, 11, 18),
             (0.10, 11, 20),
         ):
-            self.assertEqual(len(flicker.blend_pairs(cap)), without_warm)
-            self.assertEqual(len(flicker.blend_pairs(cap, exclude_warm=False)), with_warm)
+            self.assertEqual(len(flicker.blend_pairs(cap)), capped)
+            self.assertEqual(len(flicker.blend_pairs(cap, max_warmth=1.0)), uncapped)
 
-    def test_warm_colours_are_excluded_by_default(self):
-        for a, b in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA):
-            self.assertNotIn(a, flicker.WARM_FLICKER_COLORS)
-            self.assertNotIn(b, flicker.WARM_FLICKER_COLORS)
+    def test_the_default_warmth_cap_reproduces_the_observed_set(self):
+        """The default is only defensible while it excludes exactly the four
+        colours that were scored as flickering, no more and no fewer — on every
+        palette, since warmth is measured against whichever one is active."""
+        for table, name in (
+            (palette.PEPTO_PALETTE_BGR, "pepto"),
+            (palette.U64_PALETTE_BGR, "u64"),
+        ):
+            palette.set_host_palette(table, name=name)
+            with self.subTest(palette=name):
+                admitted = set()
+                for pair in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, max_warmth=1.0):
+                    admitted.update(pair)
+                kept = set()
+                for pair in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA):
+                    kept.update(pair)
+                self.assertEqual(admitted - kept, set(flicker.WARM_FLICKER_COLORS) & admitted)
 
-    def test_the_exclusion_only_ever_removes_pairs(self):
-        """It is a filter over the capped set, not a different rule — so the
-        cap alone still bounds every pair that can reach the screen."""
+    def test_the_warmth_default_is_not_on_a_knife_edge(self):
+        """A default fitted to 4 positives is worth little if a nudge either way
+        changes the set — this is the margin claimed in the docstring."""
+        for name, table in (("pepto", palette.PEPTO_PALETTE_BGR), ("u64", palette.U64_PALETTE_BGR)):
+            palette.set_host_palette(table, name=name)
+            baseline = flicker.blend_pairs(DEFAULT_LUMA_DELTA)
+            for nudged in (0.24, 0.28):
+                with self.subTest(palette=name, max_warmth=nudged):
+                    self.assertEqual(
+                        flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=nudged), baseline
+                    )
+
+    def test_brown_survives_the_warmth_cap(self):
+        """Warm by name and under the cap by measurement — it read as solid where
+        the four listed colours did not, so a hue band would be the wrong rule."""
+        self.assertLess(flicker.color_warmth(9), flicker.DEFAULT_MAX_WARMTH)
+        self.assertTrue(any(9 in pair for pair in flicker.blend_pairs(DEFAULT_LUMA_DELTA)))
+
+    def test_warmth_is_chroma_weighted_not_hue_alone(self):
+        """Every neutral scores zero however the axis is rotated, which is what
+        keeps the cap from excluding greys."""
+        for neutral in (0, 11, 12, 15, 1):
+            self.assertEqual(flicker.color_warmth(neutral), 0.0)
+
+    def test_the_cap_only_ever_removes_pairs(self):
         for cap in (0.05, DEFAULT_LUMA_DELTA, 0.10):
             kept = set(flicker.blend_pairs(cap))
-            self.assertLess(kept, set(flicker.blend_pairs(cap, exclude_warm=False)))
-
-    def test_brown_survives_the_exclusion(self):
-        """Warm by name and deliberately not in the set — it read as solid where
-        the four listed colours did not, so a hue band would be the wrong rule."""
-        pairs = flicker.blend_pairs(DEFAULT_LUMA_DELTA)
-        self.assertTrue(any(9 in pair for pair in pairs))
+            self.assertLess(kept, set(flicker.blend_pairs(cap, max_warmth=1.0)))
 
     def test_the_two_settings_get_separate_cache_entries(self):
         strict = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
-        loose = flicker.build_blend_table(DEFAULT_LUMA_DELTA, exclude_warm=False)
-        self.assertTrue(strict.exclude_warm)
-        self.assertFalse(loose.exclude_warm)
+        loose = flicker.build_blend_table(DEFAULT_LUMA_DELTA, max_warmth=1.0)
+        self.assertEqual(strict.max_warmth, flicker.DEFAULT_MAX_WARMTH)
+        self.assertEqual(loose.max_warmth, 1.0)
         self.assertLess(strict.size, loose.size)
         self.assertIs(strict, flicker.build_blend_table(DEFAULT_LUMA_DELTA))
 
@@ -155,19 +189,21 @@ class BlendTableTest(unittest.TestCase):
         np.testing.assert_array_equal(idx, np.arange(16))
 
 
-class MeasuredThresholdTest(unittest.TestCase):
-    """The threshold is not a taste setting — it came off six pairs rendered as
-    flat bands and judged by eye on a CRT. These are those pairs, and the rule
-    has to keep agreeing with what the display did."""
+class ObservedFlickerTest(unittest.TestCase):
+    """What the display actually did, and which rule accounts for it.
 
-    # (pair, flickered) as observed on a 1702 driven by an Ultimate 64.
-    BANDS = (
-        ((6, 11), False),  # Blue + Dark Gray
-        ((1, 7), True),  # White + Yellow — the mildest flicker seen
-        ((12, 14), False),  # Medium Gray + Light Blue
-        ((8, 15), True),  # Orange + Light Gray
-        ((2, 11), False),  # Red + Dark Gray
-        ((13, 15), True),  # Light Green + Light Gray
+    An earlier version of this class asserted that ΔY classifies six flat bands
+    correctly, which it does — those six are what the threshold was fitted to.
+    Scoring all 21 pairs the default admits refuted the generalization, so the
+    cases kept here are the ones that discriminate between candidate rules
+    rather than the ones any rule would get right."""
+
+    # (pair, flickered) as scored by eye on a 1702 driven by an Ultimate 64.
+    OBSERVED = (
+        ((12, 14), True),  # Medium Gray + Light Blue — ΔY 0.0002, the smallest possible
+        ((0, 11), False),  # Black + Dark Gray — ΔY 0.0685, near the top of the range
+        ((6, 9), False),  # Blue + Brown
+        ((6, 8), True),  # Blue + Orange — Δchroma within 0.2 of Blue + Brown
     )
 
     def setUp(self):
@@ -177,27 +213,31 @@ class MeasuredThresholdTest(unittest.TestCase):
         self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
 
-    def test_the_rule_classifies_every_measured_band(self):
-        for (a, b), flickered in self.BANDS:
-            with self.subTest(pair=(a, b)):
-                delta = flicker.pair_luma_delta(a, b)
-                self.assertEqual(
-                    delta > DEFAULT_LUMA_DELTA,
-                    flickered,
-                    f"ΔY {delta:.4f} disagrees with the display",
-                )
+    def test_no_luma_threshold_can_classify_these(self):
+        """The refutation, held in code so the ΔY rule cannot quietly come back:
+        a flickering pair sits below a solid one, so no cut on ΔY separates
+        them and no default is the 'right' one."""
+        flickered = flicker.pair_luma_delta(12, 14)
+        solid = flicker.pair_luma_delta(0, 11)
+        self.assertLess(flickered, solid)
 
-    def test_the_default_sits_between_the_two_groups(self):
-        solid = max(flicker.pair_luma_delta(a, b) for (a, b), f in self.BANDS if not f)
-        flickers = min(flicker.pair_luma_delta(a, b) for (a, b), f in self.BANDS if f)
-        self.assertLess(solid, DEFAULT_LUMA_DELTA)
-        self.assertLess(DEFAULT_LUMA_DELTA, flickers)
+    def test_warmth_accounts_for_the_chroma_pair(self):
+        """Blue+Brown and Blue+Orange differ by 0.2 in Δchroma and by a whole
+        verdict, so a chroma distance cannot split them. Warmth can."""
+        self.assertLessEqual(flicker.color_warmth(9), flicker.DEFAULT_MAX_WARMTH)
+        self.assertGreater(flicker.color_warmth(8), flicker.DEFAULT_MAX_WARMTH)
 
-    def test_nothing_eligible_reaches_the_observed_flicker_onset(self):
-        """MAX_ALLOWED_LUMA_DELTA exists to keep the knob's whole range below
-        the lowest delta that was actually seen to flicker."""
-        onset = min(flicker.pair_luma_delta(a, b) for (a, b), f in self.BANDS if f)
-        self.assertLess(flicker.MAX_ALLOWED_LUMA_DELTA, onset)
+    def test_the_known_false_negative_is_still_admitted(self):
+        """Medium Gray + Light Blue was scored as mildly flickering and neither
+        cap excludes it. Kept as a test so the rule is not mistaken for a
+        complete account of the observations — it is the strong signal only."""
+        self.assertIn((12, 14), flicker.blend_pairs(DEFAULT_LUMA_DELTA))
+
+    def test_the_luma_cap_stays_under_the_flash_criterion(self):
+        """MAX_ALLOWED_LUMA_DELTA is set from photosensitivity guidance, which
+        is the one justification for it that survived."""
+        self.assertLess(flicker.MAX_ALLOWED_LUMA_DELTA, 0.20)
+        self.assertLess(flicker.WARN_LUMA_DELTA, flicker.MAX_ALLOWED_LUMA_DELTA)
 
 
 class FlickerFollowsPaletteTest(unittest.TestCase):
@@ -228,9 +268,9 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
         # removes the same four colours on every machine, so filtering first
         # would test how much of the disagreement it happens to have deleted.
         palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
-        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, exclude_warm=False))
+        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=1.0))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
-        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, exclude_warm=False))
+        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=1.0))
         self.assertNotEqual(pepto, u64)
         self.assertLess(len(pepto & u64), min(len(pepto), len(u64)))
 
