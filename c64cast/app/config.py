@@ -29,6 +29,7 @@ from c64cast.sid.sid_autoconfig import SID_MODEL_CHOICES
 from c64cast.sid.sid_panning import MAX_PANNED_SOURCES, normalize_pan_spec
 from c64cast.sid.sid_volume import MAX_VOLUME_SOURCES, normalize_volume_spec
 from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
@@ -1964,17 +1965,24 @@ class ColorCfg:
             "apply": "live",
         },
     )
-    flicker_blend: bool = field(
-        default=False,
+    flicker_tolerance: str = field(
+        default=DEFAULT_TOLERANCE,
         metadata={
-            "help": "Temporal color blending for hires: hold two screen pages and "
+            "help": "Temporal color blending for hires, and how much visible "
+            "flicker you'll accept to get it: hold two screen pages and "
             "alternate them at the VIC field rate, so the eye fuses each cell's "
             "pair of hardware colors into a shade the VIC cannot draw. Targets "
-            "gradient banding — a chromatic gradient improves 27-34%, a photo ~1% — "
-            "because spatial dither already synthesizes intermediate colors where "
-            "there is texture to hide them in. OFF by default: the alternation is "
-            "seen at 25 Hz (PAL) / 30 Hz (NTSC), and it does not survive a 30 fps "
-            "capture. Hires 'normal' style only.",
+            "gradient banding — spatial dither already synthesizes intermediate "
+            "colors wherever there is texture to hide them in. Every candidate "
+            "pair was scored by eye, blind, and this picks how far down that "
+            "scale to go: 'off' (default) no blending, 16 colors; 'clean' only "
+            "pairs that fused, 24 colors on an Ultimate 64; 'subtle' adds mildly "
+            "unsteady pairs, 30; 'visible' 39; 'strobe' takes all 49 and the "
+            "flicker with them. Past 'subtle' the alternation is meant to be "
+            "seen — it is inside the photosensitive-seizure band, so treat it as "
+            "an effect you chose, not a palette upgrade. Blending does not "
+            "survive a 30 fps capture at any setting. Hires 'normal' style only.",
+            "choices": tuple(FLICKER_TOLERANCES),
             "applies_to": ("hires",),
         },
     )
@@ -1988,27 +1996,11 @@ class ColorCfg:
             "depth, and 0.12 is the ceiling because 20% of peak white is what "
             "the guidance is written around. Do not read a lower value as less "
             "flicker — scored by eye, ΔY predicts fusion barely at all "
-            "(r=+0.33), which is what flicker_max_warmth is for. 0.075 "
-            "(default) admits ~21 of the 120 pairs before that cap. Above "
+            "(r=+0.26), which is what flicker_tolerance is for. 0.075 "
+            "(default) admits ~21 of the 120 pairs before that cap, and holds "
+            "flicker_tolerance = 'clean' to 5 of its 8 pairs. Above "
             "0.10 warns; above 0.12 is refused. Which pairs qualify depends on "
             "[hardware].host_palette, since it is the emitted light that fuses.",
-            "applies_to": ("hires",),
-        },
-    )
-    flicker_max_warmth: float = field(
-        default=0.26,
-        metadata={
-            "help": "How far along the red-orange axis either color of a flicker "
-            "pair may sit, 0..1. This is the quality control — red, purple, "
-            "orange and light red flickered wherever they appeared, whatever "
-            "they were paired with and however close in brightness, so capping "
-            "warmth removes far more visible flicker than lowering "
-            "flicker_max_luma_delta does. 0.26 (default) is mid-gap between "
-            "those four and the rest of the palette on both shipped palettes, "
-            "and admits 7 of the 21 pairs the luma cap allows on an Ultimate 64 "
-            "— a 23-color palette. Raise past ~0.3 to take all 37 colors and "
-            "the flicker with them; 0 restricts blending to neutrals. No effect "
-            "unless flicker_blend is on.",
             "applies_to": ("hires",),
         },
     )

@@ -13,7 +13,8 @@ from c64cast.hw.c64 import CIA2, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
-    DEFAULT_MAX_WARMTH,
+    DEFAULT_TOLERANCE,
+    FLICKER_TOLERANCES,
     WARN_LUMA_DELTA,
     BlendTable,
     blend_distances_for,
@@ -136,20 +137,20 @@ class HiresDisplayMode(BitmapDisplayMode):
         dither_strength: float = 0.5,
         perceptual: bool = False,
         cell_pick: str = "error-min",
-        flicker_blend: bool = False,
+        flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
-        flicker_max_warmth: float = DEFAULT_MAX_WARMTH,
     ):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
         self.style = style
-        # Flicker blend ([color].flicker_blend). None = off, and every blend
-        # branch is keyed on that rather than a bool so the plain path keeps
-        # running the 16-entry quantizer it always did. Only the "normal" style
-        # picks colour, so blending is a no-op on the edges styles.
+        # Flicker blend ([color].flicker_tolerance). None = off, and every
+        # blend branch is keyed on that rather than a bool so the plain path
+        # keeps running the 16-entry quantizer it always did. Only the "normal"
+        # style picks colour, so blending is a no-op on the edges styles.
+        _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
         self._blend_table: BlendTable | None = (
-            build_blend_table(flicker_max_luma_delta, max_warmth=flicker_max_warmth)
-            if flicker_blend and style == "normal"
+            build_blend_table(flicker_max_luma_delta, tolerance=flicker_tolerance)
+            if _blending and style == "normal"
             else None
         )
         self._last_bg_index: int | None = None
@@ -215,7 +216,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         Pinned while blending, for the reason __init__ gives: the widened
         palette is Lab-defined and measurably regresses under weighted-BGR."""
         if self._blend_table is not None:
-            return "color_match=perceptual (pinned by flicker_blend)"
+            return "color_match=perceptual (pinned by flicker_tolerance)"
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
 
@@ -325,12 +326,12 @@ class HiresDisplayMode(BitmapDisplayMode):
             table = self._blend_table
             self._setup_flicker_doublebuffer(api)
             log.info(
-                "hires: flicker blend armed — %d blend pairs at ΔY <= %.3f, "
-                "warmth <= %.2f (%d effective colours), pages $%04X/$%04X, "
+                "hires: flicker blend armed — %d blend pairs at tolerance %r, "
+                "ΔY <= %.3f (%d effective colours), pages $%04X/$%04X, "
                 "IRQ @ $%04X",
                 table.blend_count,
+                table.tolerance,
                 table.max_luma_delta,
-                table.max_warmth,
                 table.size,
                 VIC_BANK_0.SCREEN,
                 VIC_BANK_0.SCREEN_ALT,
@@ -345,6 +346,15 @@ class HiresDisplayMode(BitmapDisplayMode):
                     "don't raise this for a stream anyone else will watch.",
                     table.max_luma_delta,
                     WARN_LUMA_DELTA,
+                )
+            if table.tolerance in ("visible", "strobe"):
+                log.warning(
+                    "hires: flicker_tolerance = %r admits pairs scored as visibly "
+                    "flickering rather than fusing. A blended area alternates at the "
+                    "video field rate (25 Hz PAL / 30 Hz NTSC), inside the recognized "
+                    "photosensitive-seizure band — don't use this for a stream anyone "
+                    "else will watch.",
+                    table.tolerance,
                 )
             # Which pairs specifically — the thing you want when deciding
             # whether flicker_max_luma_delta is set where you meant it.

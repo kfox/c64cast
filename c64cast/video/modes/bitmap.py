@@ -178,7 +178,7 @@ class BitmapDisplayMode(DisplayMode):
         tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 
-    # --- Flicker blend ([color].flicker_blend) ------------------------------
+    # --- Flicker blend ([color].flicker_tolerance) ------------------------------
     # The double-buffer above, plus a second screen page per bank. Both pages
     # go into the off-screen bank each frame over the same host-DMA path; the
     # $C500 handler alternates $D018 between them every field so the eye fuses

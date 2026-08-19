@@ -83,7 +83,7 @@ class MHiresComposeBuffers(BitmapComposeBuffers):
 
 
 class FlickerComposeBuffers(BitmapComposeBuffers):
-    """Flicker blending ([color].flicker_blend) adds ``screen_b``: the second
+    """Flicker blending ([color].flicker_tolerance) adds ``screen_b``: the second
     1000-byte screen matrix, alternated with ``screen`` at the VIC field rate so
     each cell's colour pair fuses in the eye.
 

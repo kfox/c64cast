@@ -62,6 +62,7 @@ from c64cast.sid.voice_scope import BITMAP_W as _SCOPE_BITMAP_W
 from c64cast.sid.voice_scope import PERSISTENCE_NAMES, TIME_BASE_NAMES
 from c64cast.sid.waveform import WaveformScene
 from c64cast.video.dither import DITHER_METHODS
+from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.modes import (
     BitmapDisplayMode,
     BlankDisplayMode,
@@ -189,18 +190,19 @@ def resolve_double_buffer(
     return bool(setting)
 
 
-def resolve_flicker_blend(
-    setting: bool,
+def resolve_flicker_tolerance(
+    setting: str,
     display: str,
     *,
     has_buffer_overlays: bool = False,
     audio_reu_pump_active: bool = False,
-) -> bool:
-    """Resolve [color].flicker_blend for one scene's display mode (the
-    field-alternating page flip — see modes_irq.FLICKER_SWAP_IRQ_HANDLER).
+) -> str:
+    """Resolve [color].flicker_tolerance for one scene's display mode (the
+    field-alternating page flip — see modes_irq.FLICKER_SWAP_IRQ_HANDLER),
+    returning "off" where blending cannot be honoured.
 
     Opt-in, so there is no "auto" to resolve; this only decides where an
-    explicit true can actually be honoured. Three gates, all structural:
+    explicit tolerance can actually be honoured. Three gates, all structural:
 
       * hires only. mhires' third color lives in color RAM at $D800, which is
         not VIC-banked and not selected by $D018, so only part of its picture
@@ -214,13 +216,16 @@ def resolve_flicker_blend(
       * not while the REU mic pump is running, which owns $0314.
 
     Blending brings its own bank-swapping double-buffer, so the caller clears
-    both use_reu_staged and double_buffer when this returns True — neither of
-    those handlers carries the $D018 phase toggle, and all three want $0314."""
-    if not setting:
-        return False
-    if display != "hires":
-        return False
-    return not (has_buffer_overlays or audio_reu_pump_active)
+    both use_reu_staged and double_buffer when this returns anything but
+    "off" — neither of those handlers carries the $D018 phase toggle, and all
+    three want $0314."""
+    if setting not in FLICKER_TOLERANCES:
+        raise ValueError(
+            f"[color].flicker_tolerance must be one of {tuple(FLICKER_TOLERANCES)}, got {setting!r}"
+        )
+    if setting == "off" or display != "hires":
+        return "off"
+    return setting if not (has_buffer_overlays or audio_reu_pump_active) else "off"
 
 
 def resolve_audio_backend(
@@ -270,7 +275,7 @@ def _build_display_mode(
     text_double_height: bool = False,
     dither_method: str = "none",
     cell_strategy: str = "frequency",
-    flicker_blend: bool = False,
+    flicker_tolerance: str = DEFAULT_TOLERANCE,
 ) -> DisplayMode:
     # border/background may be a C64 color name or an index; resolve to a plain
     # index here — the single point every scene's border/background flows
@@ -311,9 +316,8 @@ def _build_display_mode(
             dither_strength=dither_strength,
             perceptual=perceptual,
             cell_pick=color.hires_cell_pick,
-            flicker_blend=flicker_blend,
+            flicker_tolerance=flicker_tolerance,
             flicker_max_luma_delta=color.flicker_max_luma_delta,
-            flicker_max_warmth=color.flicker_max_warmth,
         )
     if name == "petscii":
         return PETSCIIDisplayMode(
@@ -589,17 +593,17 @@ def _display_mode_for_scene(
     # slot and pushes REU staging aside, extending the mutual exclusion those two
     # already have. force_host_dma gates it for the same reason it gates the
     # others: a SID-audio scene's player owns $0314.
-    flicker_blend = (
-        False
+    flicker_tolerance = (
+        "off"
         if force_host_dma
-        else resolve_flicker_blend(
-            cfg.color.flicker_blend,
+        else resolve_flicker_tolerance(
+            cfg.color.flicker_tolerance,
             display,
             has_buffer_overlays=has_buffer_overlays,
             audio_reu_pump_active=cfg.audio.use_reu_pump,
         )
     )
-    if flicker_blend:
+    if flicker_tolerance != "off":
         use_reu_staged = False
         double_buffer = False
     return _build_display_mode(
@@ -615,7 +619,7 @@ def _display_mode_for_scene(
         text_double_height=s.text_double_height,
         dither_method=resolve_dither_method(cfg.color.dither, s.type),
         cell_strategy=resolve_cell_strategy(cfg.color.cell_strategy, s.type),
-        flicker_blend=flicker_blend,
+        flicker_tolerance=flicker_tolerance,
     )
 
 

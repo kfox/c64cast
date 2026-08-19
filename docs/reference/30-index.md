@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 440 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 439 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -189,9 +189,8 @@ Every name c64cast answers to — 440 of them — and the pages that discuss eac
 | `file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value) |
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
-| `flicker_blend` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_max_luma_delta` | [`color` (A)](20-appendix-a-configuration.md#color) |
-| `flicker_max_warmth` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_tolerance` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [The Console (6)](07-inputs-and-outputs.md#the-console), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -498,7 +497,7 @@ Every name c64cast answers to — 440 of them — and the pages that discuss eac
 | `speed_cells_per_s` | [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`marquee` (C)](22-appendix-c-overlays.md#marquee), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `start_s` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `storage` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
-| `strobe` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
+| `strobe` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `style` | [`webcam` (2)](03-vocabulary.md#webcam), [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | subtune | [`waveform` (2)](03-vocabulary.md#waveform), [The Player (4)](05-sound-and-music.md#the-player), [Duration and Subtunes (4)](05-sound-and-music.md#duration-and-subtunes) |
 | `--suggest-palette` | [`color` (A)](20-appendix-a-configuration.md#color), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |

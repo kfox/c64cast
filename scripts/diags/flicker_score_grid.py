@@ -2,12 +2,16 @@
 """Which blend pairs actually flicker? Score them by eye, blind, one page at a
 time, with the positions randomized.
 
-This is the run `[color].flicker_max_warmth` is waiting on. The rule it ships
-with — cap how far along the red-orange axis either colour of a pair may sit —
-was fitted to a session that scored 21 pairs on a display and then generalized
-from four of them. Both the axis angle and the default threshold come out of
-that fit, so they parameterize the observation rather than predicting it. This
-script produces a set of verdicts the fit has never seen.
+This IS `flicker.SCORED_FLICKER`: the tier table `[color].flicker_tolerance`
+cuts across is a recording of a sitting with this script, not a rule. Two fitted
+rules came before it — a ΔY threshold and a red-orange "warmth" axis — and both
+were refuted the first time a run they had not been fitted to was scored. So
+there is nothing left to predict with, and the table only grows by looking.
+
+Run this to re-score the table, to settle a pair whose tier is in doubt, or to
+score pairs a different `host_palette` brings under the safety clamp that the
+Ultimate 64 sitting never had to judge (those carry no tier and are never
+admitted, whatever the tolerance).
 
 WHY THE OLD LADDER CANNOT BE REUSED. It laid its patches out sorted by ΔY, so
 screen position was perfectly confounded with the variable under test: row means
@@ -18,10 +22,12 @@ exist to fix that:
   * Positions are shuffled inside each page, and page order is shuffled too.
     The seed is printed and can be pinned with --seed, so a disagreement between
     two sittings can be replayed rather than argued about.
-  * Pairs predicted to flicker never share a page with pairs predicted not to.
+  * Pairs already scored loud never share a page with pairs already scored quiet.
     A violently alternating patch makes its neighbours much harder to judge, so
     mixing the pools would put the loudest patches next to the quietest ones and
-    contaminate exactly the readings that decide the threshold.
+    contaminate exactly the readings that matter most. A pair with no tier yet
+    is dealt with the loud pool: an unknown among the quiet patches could be
+    anything, and that is the pool whose readings are easiest to spoil.
   * Every page carries one SOLID patch, placed at random and never announced.
     A solid cannot flicker — both fields hold the same colour — so calling one
     unsteady says the reading is picking up something other than fusion (the
@@ -40,15 +46,15 @@ CALIBRATION FIRST. One page comes up before any scoring, with its three patches
 named: the loudest pair the safety clamp allows, a solid that cannot flicker at
 all, and a real blend that reads as near-still. Without it the first scored page
 is judged against nothing, and which page that is depends on the shuffle — a
-scorer who opens on an all-cool page sees a still picture and has no way to tell
+scorer who opens on an all-quiet page sees a still picture and has no way to tell
 "nothing here is flickering" apart from "I do not know what I am looking for".
 The two pools are also dealt alternately rather than shuffled outright, so a run
-of five all-warm pages cannot walk the scale in one direction unchecked.
+of five all-loud pages cannot walk the scale in one direction unchecked.
 
 BLIND after that. The script prints patch numbers and nothing else while you
-score. Which pair sits in which slot, and which side of the threshold it was
-predicted to fall on, is revealed only after the last page. Scoring a patch
-already labelled "predicted to flicker" is not scoring it.
+score. Which pair sits in which slot, and what it was scored at last time, is
+revealed only after the last page. Scoring a patch already labelled "this one
+flickers" is not scoring it.
 
 PACE. It waits on Enter between pages, with no timer anywhere. Take as long as a
 page needs — the picture is still up while you type, and the machine is doing
@@ -67,7 +73,7 @@ working), and note whether any shimmer sits still or crawls, because a crawl is
 the display's chroma decoding and not fusion.
 
     scripts/diags/flicker_score_grid.py                 # every pair, ~6 pages
-    scripts/diags/flicker_score_grid.py --pool cool     # only the ones the
+    scripts/diags/flicker_score_grid.py --pool quiet    # only the ones already
                                                         # default admits
     scripts/diags/flicker_score_grid.py --seed 1234     # replay a sitting
 
@@ -103,7 +109,7 @@ class Entry:
     name: str
     bgr: tuple[float, float, float]
     luma_delta: float
-    warmth: float
+    prior: str
     predicted: str
 
 
@@ -115,7 +121,7 @@ HOST_PALETTE = "u64"
 # still get judged. MAX_ALLOWED_LUMA_DELTA is the photosensitivity ceiling and
 # is not raised here: a pair past it is refused by the renderer whatever this
 # script asks for, and it is the one limit that should not be probed by eye.
-SCORE_WARMTH_CAP = 1.0
+SCORE_TOLERANCE = "strobe"
 
 # 320x200, all offsets multiples of 8. A patch that straddled a character cell
 # would put two blend entries in one cell, which hires resolves by picking one —
@@ -158,8 +164,31 @@ def build_page(entries: list[Entry | None], gutter: tuple[int, ...]) -> np.ndarr
     return img
 
 
+def candidate_pairs(cap: float) -> list[tuple[int, int]]:
+    """Every pair worth putting on the chart: under the safety cap and far
+    enough from a solid to be worth a page, whatever its tier is.
+
+    Not flicker.blend_pairs — that one drops unscored pairs, which are the ones
+    a re-score most needs to reach."""
+    import itertools
+
+    import numpy as np
+
+    from c64cast.video import flicker
+
+    out = []
+    for a, b in itertools.combinations(range(16), 2):
+        if flicker.pair_luma_delta(a, b) > cap:
+            continue
+        fused = flicker._to_lab(flicker.fuse(a, b)[None, :])
+        gain = float(np.min(np.linalg.norm(flicker._PALETTE_LAB - fused, axis=1)))
+        if gain >= flicker.MIN_BLEND_LAB_GAIN:
+            out.append((a, b))
+    return out
+
+
 def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
-    """Every scorable pair, split into the two pools the rule predicts."""
+    """Every scorable pair, split into the two pools by how it scored last time."""
     from c64cast.video import flicker
     from c64cast.video.palette import (
         C64_PALETTE_BGR,
@@ -170,21 +199,22 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
 
     set_host_palette(HOST_PALETTES[HOST_PALETTE], name=HOST_PALETTE)
     cap = flicker.MAX_ALLOWED_LUMA_DELTA
-    warm: list[Entry] = []
-    cool: list[Entry] = []
-    for a, b in flicker.blend_pairs(cap, max_warmth=SCORE_WARMTH_CAP):
+    loud: list[Entry] = []
+    quiet: list[Entry] = []
+    for a, b in candidate_pairs(cap):
         b0, g0, r0 = (float(v) for v in flicker.fuse(a, b))
-        warmth = round(max(flicker.color_warmth(a), flicker.color_warmth(b)), 4)
+        tier = flicker.pair_flicker_tier(a, b)
         entry = Entry(
             kind="blend",
             pair=(int(a), int(b)),
             name=f"{color_display_name(a)}+{color_display_name(b)}",
             bgr=(b0, g0, r0),
             luma_delta=round(flicker.pair_luma_delta(a, b), 4),
-            warmth=warmth,
-            predicted="flickers" if warmth > flicker.DEFAULT_MAX_WARMTH else "steady",
+            prior=tier or "unscored",
+            predicted="unscored" if tier is None else tier,
         )
-        (warm if entry.predicted == "flickers" else cool).append(entry)
+        is_quiet = tier is not None and flicker.FLICKER_TIERS.index(tier) <= 2
+        (quiet if is_quiet else loud).append(entry)
 
     # Solid controls drawn from whatever the pool's pairs are built out of, so a
     # control never introduces a colour the page would not otherwise show.
@@ -197,15 +227,15 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
                 name=f"{color_display_name(c)} (solid control)",
                 bgr=tuple(float(v) for v in C64_PALETTE_BGR[c]),  # type: ignore[arg-type]
                 luma_delta=0.0,
-                warmth=round(flicker.color_warmth(c), 4),
+                prior="n/a",
                 predicted="cannot flicker",
             )
             for c in used
         ]
 
-    rng.shuffle(warm)
-    rng.shuffle(cool)
-    return (warm, solids_for(warm)), (cool, solids_for(cool))
+    rng.shuffle(loud)
+    rng.shuffle(quiet)
+    return (loud, solids_for(loud)), (quiet, solids_for(quiet))
 
 
 # Anchors for the calibration page, both from the earlier scoring session and
@@ -213,14 +243,14 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
 # the top of the scale better and is deliberately unreachable, since
 # MAX_ALLOWED_LUMA_DELTA is the one limit that should not be probed by eye.
 CALIBRATION_LOUD = (6, 8)  # Blue + Orange — scored "intense"
-CALIBRATION_QUIET = (0, 11)  # Black + Dark Gray — scored "almost none"
+CALIBRATION_QUIET = (6, 9)  # Blue + Brown — the one pair scored "none"
 
 
 def calibration_page() -> list[Entry | None]:
     """A page with its answers given away, shown before any scoring starts.
 
     Without it the first scored page is judged against nothing, and which page
-    that is depends on the shuffle. Opening on an all-cool page shows a still
+    that is depends on the shuffle. Opening on an all-quiet page shows a still
     picture, no reference for what the artifact looks like, and no way to tell
     "nothing here is flickering" apart from "I do not know what I am looking
     for". Not scored, and not in the key.
@@ -237,7 +267,7 @@ def calibration_page() -> list[Entry | None]:
             name=f"{color_display_name(a)}+{color_display_name(b)}",
             bgr=(b0, g0, r0),
             luma_delta=round(flicker.pair_luma_delta(a, b), 4),
-            warmth=round(max(flicker.color_warmth(a), flicker.color_warmth(b)), 4),
+            prior=flicker.pair_flicker_tier(a, b) or "unscored",
             predicted=label,
         )
 
@@ -248,7 +278,7 @@ def calibration_page() -> list[Entry | None]:
         name=f"{color_display_name(solid_idx)}",
         bgr=tuple(float(v) for v in C64_PALETTE_BGR[solid_idx]),  # type: ignore[arg-type]
         luma_delta=0.0,
-        warmth=round(flicker.color_warmth(solid_idx), 4),
+        prior="n/a",
         predicted="a solid — cannot flicker",
     )
     return [
@@ -262,21 +292,21 @@ def calibration_page() -> list[Entry | None]:
 
 
 def interleave(
-    cool: list[list[Entry | None]], warm: list[list[Entry | None]]
+    quiet: list[list[Entry | None]], loud: list[list[Entry | None]]
 ) -> list[list[Entry | None]]:
     """Alternate the two pools page by page.
 
     Pages cannot mix pools — a loud patch makes its neighbours unjudgeable — but
-    a fully shuffled page order can still deal five all-warm pages in a row,
+    a fully shuffled page order can still deal five all-loud pages in a row,
     which walks the scorer's sense of scale in one direction with nothing to
     re-anchor against.
     """
     out: list[list[Entry | None]] = []
-    for i in range(max(len(cool), len(warm))):
-        if i < len(cool):
-            out.append(cool[i])
-        if i < len(warm):
-            out.append(warm[i])
+    for i in range(max(len(quiet), len(loud))):
+        if i < len(quiet):
+            out.append(quiet[i])
+        if i < len(loud):
+            out.append(loud[i])
     return out
 
 
@@ -304,7 +334,7 @@ def verify_page(entries: list[Entry | None]) -> list[str]:
     """
     from c64cast.video import flicker
 
-    table = flicker.build_blend_table(flicker.MAX_ALLOWED_LUMA_DELTA, max_warmth=SCORE_WARMTH_CAP)
+    table = flicker.build_blend_table(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=SCORE_TOLERANCE)
     problems = []
     for slot, entry in enumerate(entries):
         if entry is None:
@@ -331,11 +361,10 @@ host_palette = "{HOST_PALETTE}"
 # patch would stop being the pair it is labelled as. Same for dither.
 auto_fit = false
 dither = "none"
-flicker_blend = true
 flicker_max_luma_delta = {0.12}
 # Wide open on purpose: the point is to score pairs the shipping default
 # refuses, so the default cannot be what decides what gets looked at.
-flicker_max_warmth = {SCORE_WARMTH_CAP}
+flicker_tolerance = "{SCORE_TOLERANCE}"
 
 [video]
 use_reu_staged = false
@@ -471,9 +500,9 @@ def main() -> None:
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument(
         "--pool",
-        choices=("all", "warm", "cool"),
+        choices=("all", "loud", "quiet"),
         default="all",
-        help="'cool' is the set the shipping default admits; 'warm' is what it refuses.",
+        help="'quiet' is what scored none/verymild/mild last time; 'loud' is the rest, plus anything unscored.",
     )
     ap.add_argument("--seed", type=int, default=None, help="pin the layout to replay a sitting")
     ap.add_argument(
@@ -500,10 +529,10 @@ def main() -> None:
     out = d.out_dir() / "flickergrid"
     out.mkdir(parents=True, exist_ok=True)
 
-    (warm, warm_solids), (cool, cool_solids) = collect_entries(rng)
-    cool_pages = paginate(cool, cool_solids, rng) if args.pool in ("all", "cool") else []
-    warm_pages = paginate(warm, warm_solids, rng) if args.pool in ("all", "warm") else []
-    pages = interleave(cool_pages, warm_pages)
+    (loud, loud_solids), (quiet, quiet_solids) = collect_entries(rng)
+    quiet_pages = paginate(quiet, quiet_solids, rng) if args.pool in ("all", "cool") else []
+    loud_pages = paginate(loud, loud_solids, rng) if args.pool in ("all", "warm") else []
+    pages = interleave(quiet_pages, loud_pages)
 
     from c64cast.video.palette import C64_PALETTE_BGR
 
@@ -588,7 +617,7 @@ def main() -> None:
                     "name": entry.name,
                     "kind": entry.kind,
                     "luma_delta": entry.luma_delta,
-                    "warmth": entry.warmth,
+                    "prior": entry.prior,
                     "predicted": entry.predicted,
                 }
             )
@@ -601,7 +630,7 @@ def main() -> None:
         for row in sorted(page["patches"], key=lambda r: r["slot"]):
             print(
                 f"  {row['slot']}  {row['name']:32s} ΔY {row['luma_delta']:.4f}  "
-                f"warmth {row['warmth']:.3f}  predicted {row['predicted']}"
+                f"previously {row['prior']}"
             )
     print(f"\nkey + pages + configs + logs: {out}")
 

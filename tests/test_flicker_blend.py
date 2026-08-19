@@ -1,4 +1,4 @@
-"""Temporal colour blending ([color].flicker_blend).
+"""Temporal colour blending ([color].flicker_tolerance).
 
 Three layers: the blend-pair vocabulary in video/flicker.py, the 6502 handler
 that alternates the pages (verified by executing it, not just comparing bytes),
@@ -10,6 +10,7 @@ and the compose/push wiring that produces and uploads a second screen page.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
+import collections
 import sys
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
-from c64cast.app.scene_factory import resolve_flicker_blend  # noqa: E402
+from c64cast.app.scene_factory import resolve_flicker_tolerance  # noqa: E402
 from c64cast.hw.c64 import (  # noqa: E402
     D018_HIRES_PAGE_A,
     D018_HIRES_PAGE_B,
@@ -30,6 +31,7 @@ from c64cast.hw.c64 import (  # noqa: E402
     RegionID,
 )
 from c64cast.video import flicker, palette  # noqa: E402
+from c64cast.video.flicker import FLICKER_TOLERANCES  # noqa: E402
 from c64cast.video.framebuffer import Framebuffer  # noqa: E402
 from c64cast.video.modes.base import FlickerComposeBuffers  # noqa: E402
 from c64cast.video.modes.hires import HiresDisplayMode  # noqa: E402
@@ -56,6 +58,10 @@ def gradient(c0=(136, 0, 0), c1=(238, 238, 119)) -> np.ndarray:
 
 DEFAULT_LUMA_DELTA = 0.075
 
+# Structural cases just need a populated table; the tier is the point only
+# where a test says so.
+ALL_TIERS = "strobe"
+
 
 class BlendTableTest(unittest.TestCase):
     def setUp(self):
@@ -63,96 +69,105 @@ class BlendTableTest(unittest.TestCase):
         before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
         self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
 
-    def test_pair_yield_at_each_luma_cap(self):
-        # The numbers the default rests on, against the VIC-II rendering that
-        # is the process palette here. A change is a change to how much flicker
-        # the default admits, which is a safety decision.
-        for cap, capped, uncapped in (
-            (0.05, 6, 12),
-            (DEFAULT_LUMA_DELTA, 11, 18),
-            (0.10, 11, 20),
+    def test_pair_yield_at_each_tier(self):
+        # The numbers each tolerance rests on, against the VIC-II rendering that
+        # is the process palette here. A change to the middle columns is a
+        # change to how much scored flicker the setting admits.
+        for cap, clean, subtle, visible, strobe in (
+            (0.05, 3, 6, 9, 11),
+            (DEFAULT_LUMA_DELTA, 3, 8, 12, 15),
+            (0.10, 3, 9, 14, 17),
         ):
-            self.assertEqual(len(flicker.blend_pairs(cap)), capped)
-            self.assertEqual(len(flicker.blend_pairs(cap, max_warmth=1.0)), uncapped)
+            with self.subTest(cap=cap):
+                counts = {t: len(flicker.blend_pairs(cap, tolerance=t)) for t in FLICKER_TOLERANCES}
+                self.assertEqual(
+                    counts,
+                    {
+                        "off": 0,
+                        "clean": clean,
+                        "subtle": subtle,
+                        "visible": visible,
+                        "strobe": strobe,
+                    },
+                )
 
-    def test_the_default_warmth_cap_reproduces_the_observed_set(self):
-        """The default is only defensible while it excludes exactly the four
-        colours that were scored as flickering, no more and no fewer — on every
-        palette, since warmth is measured against whichever one is active."""
-        for table, name in (
-            (palette.PEPTO_PALETTE_BGR, "pepto"),
-            (palette.U64_PALETTE_BGR, "u64"),
-        ):
-            palette.set_host_palette(table, name=name)
-            with self.subTest(palette=name):
-                admitted = set()
-                for pair in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, max_warmth=1.0):
-                    admitted.update(pair)
-                kept = set()
-                for pair in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA):
-                    kept.update(pair)
-                self.assertEqual(admitted - kept, set(flicker.WARM_FLICKER_COLORS) & admitted)
+    def test_the_table_is_the_scoring_run_as_recorded(self):
+        """The tiers are data, so the assertion is that they still say what the
+        sitting said — 33 pairs in the distribution it produced."""
+        counts = collections.Counter(flicker.SCORED_FLICKER.values())
+        self.assertEqual(
+            {t: counts[t] for t in flicker.FLICKER_TIERS},
+            {"none": 1, "verymild": 7, "mild": 6, "moderate": 9, "intense": 10},
+        )
+        self.assertTrue(all(a < b for a, b in flicker.SCORED_FLICKER), "keys must be ordered")
 
-    def test_the_warmth_default_is_not_on_a_knife_edge(self):
-        """A default fitted to 4 positives is worth little if a nudge either way
-        changes the set — this is the margin claimed in the docstring."""
-        for name, table in (("pepto", palette.PEPTO_PALETTE_BGR), ("u64", palette.U64_PALETTE_BGR)):
-            palette.set_host_palette(table, name=name)
-            baseline = flicker.blend_pairs(DEFAULT_LUMA_DELTA)
-            for nudged in (0.24, 0.28):
-                with self.subTest(palette=name, max_warmth=nudged):
-                    self.assertEqual(
-                        flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=nudged), baseline
-                    )
+    def test_an_unscored_pair_is_never_admitted(self):
+        """The VIC-II rendering brings pairs under the clamp that the Ultimate
+        64 sitting never had to judge, Cyan+Yellow among them — which ΔY
+        refused there and which the docstring calls as violent as anything on
+        the chart. Nothing unscored may ride in on a palette swap."""
+        for tolerance in ("clean", "subtle", "visible", "strobe"):
+            for pair in flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=tolerance):
+                self.assertIsNotNone(flicker.pair_flicker_tier(*pair), f"{pair} unscored")
+        self.assertLessEqual(flicker.pair_luma_delta(3, 7), flicker.MAX_ALLOWED_LUMA_DELTA)
+        self.assertIsNone(flicker.pair_flicker_tier(3, 7))
+        self.assertNotIn(
+            (3, 7), flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance="strobe")
+        )
 
-    def test_brown_survives_the_warmth_cap(self):
-        """Warm by name and under the cap by measurement — it read as solid where
-        the four listed colours did not, so a hue band would be the wrong rule."""
-        self.assertLess(flicker.color_warmth(9), flicker.DEFAULT_MAX_WARMTH)
-        self.assertTrue(any(9 in pair for pair in flicker.blend_pairs(DEFAULT_LUMA_DELTA)))
+    def test_off_admits_nothing(self):
+        self.assertEqual(flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance="off"), [])
+        self.assertEqual(flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="off").size, 16)
 
-    def test_warmth_is_chroma_weighted_not_hue_alone(self):
-        """Every neutral scores zero however the axis is rotated, which is what
-        keeps the cap from excluding greys."""
-        for neutral in (0, 11, 12, 15, 1):
-            self.assertEqual(flicker.color_warmth(neutral), 0.0)
+    def test_each_tier_contains_the_quieter_ones(self):
+        """A tolerance is a cut down an ordered scale, so loosening it may only
+        add — otherwise raising it could silently drop a pair already in use."""
+        previous: set[tuple[int, int]] = set()
+        for tolerance in FLICKER_TOLERANCES:
+            current = set(flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=tolerance))
+            with self.subTest(tolerance=tolerance):
+                self.assertLessEqual(previous, current)
+            previous = current
 
-    def test_the_cap_only_ever_removes_pairs(self):
+    def test_the_luma_cap_only_ever_removes_pairs(self):
         for cap in (0.05, DEFAULT_LUMA_DELTA, 0.10):
-            kept = set(flicker.blend_pairs(cap))
-            self.assertLess(kept, set(flicker.blend_pairs(cap, max_warmth=1.0)))
+            self.assertLessEqual(
+                set(flicker.blend_pairs(cap, tolerance=ALL_TIERS)),
+                set(flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=ALL_TIERS)),
+            )
 
     def test_the_two_settings_get_separate_cache_entries(self):
-        strict = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
-        loose = flicker.build_blend_table(DEFAULT_LUMA_DELTA, max_warmth=1.0)
-        self.assertEqual(strict.max_warmth, flicker.DEFAULT_MAX_WARMTH)
-        self.assertEqual(loose.max_warmth, 1.0)
+        strict = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="clean")
+        loose = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
+        self.assertEqual(strict.tolerance, "clean")
+        self.assertEqual(loose.tolerance, ALL_TIERS)
         self.assertLess(strict.size, loose.size)
-        self.assertIs(strict, flicker.build_blend_table(DEFAULT_LUMA_DELTA))
+        self.assertIs(strict, flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="clean"))
 
     def test_luma_cap_is_clamped(self):
         """Above MAX_ALLOWED_LUMA_DELTA is refused whatever the config asks."""
         self.assertEqual(
-            flicker.blend_pairs(1.0), flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA)
+            flicker.blend_pairs(1.0, tolerance=ALL_TIERS),
+            flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=ALL_TIERS),
         )
 
     def test_every_eligible_pair_respects_the_cap(self):
         for cap in (0.05, DEFAULT_LUMA_DELTA, 0.10):
-            for a, b in flicker.blend_pairs(cap):
+            for a, b in flicker.blend_pairs(cap, tolerance=ALL_TIERS):
                 self.assertLessEqual(flicker.pair_luma_delta(a, b), cap)
 
     def test_the_dark_end_is_eligible(self):
         """The regression that retired Michelson contrast: a ratio divides by
         the pair's own brightness, so black against anything scored 1.0 and the
         darkest pairs — which fuse best of all — could never qualify."""
-        pairs = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA))
+        pairs = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
         black = sorted(b for a, b in pairs if a == 0)
         self.assertTrue(black, "no pair with black is eligible")
         for other in black:
             self.assertLess(flicker.pair_luma_delta(0, other), DEFAULT_LUMA_DELTA)
 
     def test_a_solid_is_the_pair_c_c(self):
-        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         for i in range(16):
             self.assertEqual(tuple(table.pairs[i]), (i, i))
 
@@ -161,7 +176,7 @@ class BlendTableTest(unittest.TestCase):
         round-trip is lossy and every solid drifts."""
         from c64cast.video.palette import C64_PALETTE_BGR
 
-        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         np.testing.assert_allclose(table.bgr[:16], C64_PALETTE_BGR, atol=1e-3)
 
     def test_fusion_is_linear_light_not_srgb(self):
@@ -171,7 +186,7 @@ class BlendTableTest(unittest.TestCase):
         self.assertTrue(np.all(mid > 180), f"too dark, looks like an sRGB average: {mid}")
 
     def test_blends_are_distinct_from_every_solid(self):
-        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         for entry in range(16, table.size):
             gain = np.min(
                 np.linalg.norm(
@@ -184,7 +199,7 @@ class BlendTableTest(unittest.TestCase):
     def test_quantizing_the_pure_palette_returns_the_solids(self):
         from c64cast.video.palette import C64_PALETTE_BGR
 
-        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         idx = flicker.quantize_flat_blend(C64_PALETTE_BGR, table, perceptual=True)
         np.testing.assert_array_equal(idx, np.arange(16))
 
@@ -192,11 +207,10 @@ class BlendTableTest(unittest.TestCase):
 class ObservedFlickerTest(unittest.TestCase):
     """What the display actually did, and which rule accounts for it.
 
-    An earlier version of this class asserted that ΔY classifies six flat bands
-    correctly, which it does — those six are what the threshold was fitted to.
-    Scoring all 21 pairs the default admits refuted the generalization, so the
-    cases kept here are the ones that discriminate between candidate rules
-    rather than the ones any rule would get right."""
+    Two rules were fitted here and both were refuted by a run they had not seen:
+    a ΔY threshold (six flat bands, then r=+0.26 over the full set) and a warmth
+    axis (four colours, then r=+0.32). The cases kept here are the ones that
+    discriminate, not the ones any rule would get right."""
 
     # (pair, flickered) as scored by eye on a 1702 driven by an Ultimate 64.
     OBSERVED = (
@@ -221,17 +235,34 @@ class ObservedFlickerTest(unittest.TestCase):
         solid = flicker.pair_luma_delta(0, 11)
         self.assertLess(flickered, solid)
 
-    def test_warmth_accounts_for_the_chroma_pair(self):
-        """Blue+Brown and Blue+Orange differ by 0.2 in Δchroma and by a whole
-        verdict, so a chroma distance cannot split them. Warmth can."""
-        self.assertLessEqual(flicker.color_warmth(9), flicker.DEFAULT_MAX_WARMTH)
-        self.assertGreater(flicker.color_warmth(8), flicker.DEFAULT_MAX_WARMTH)
+    def test_no_chroma_distance_can_classify_these_either(self):
+        """Blue+Brown and Blue+Orange differ by 0.2 counts in Δchroma and by the
+        whole scale, none against intense — so a chroma distance cannot split
+        them any more than ΔY can."""
+        lab = flicker._PALETTE_LAB
+        import numpy as _np
 
-    def test_the_known_false_negative_is_still_admitted(self):
-        """Medium Gray + Light Blue was scored as mildly flickering and neither
-        cap excludes it. Kept as a test so the rule is not mistaken for a
-        complete account of the observations — it is the strong signal only."""
-        self.assertIn((12, 14), flicker.blend_pairs(DEFAULT_LUMA_DELTA))
+        quiet = float(_np.linalg.norm(lab[6][1:] - lab[9][1:]))
+        loud = float(_np.linalg.norm(lab[6][1:] - lab[8][1:]))
+        self.assertLess(abs(quiet - loud), 1.0)
+        self.assertEqual(flicker.pair_flicker_tier(6, 9), "none")
+        self.assertEqual(flicker.pair_flicker_tier(6, 8), "intense")
+
+    def test_warm_against_warm_is_what_retired_the_warmth_rule(self):
+        """The warmth cap excluded Red, Purple and Orange wherever they appeared.
+        Paired with each other they are among the steadiest pairs scored, so the
+        rule was dropping the quiet end of its own evidence."""
+        clean = set(flicker.blend_pairs(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance="clean"))
+        for pair in ((2, 4), (2, 8), (4, 8)):
+            self.assertIn(pair, clean)
+
+    def test_a_mildly_flickering_pair_needs_the_tier_above_clean(self):
+        """Medium Gray + Light Blue has the smallest ΔY the palette offers and
+        was still scored mild, so no luma cut reaches it — only the tier does."""
+        cap = flicker.MAX_ALLOWED_LUMA_DELTA
+        self.assertEqual(flicker.pair_flicker_tier(12, 14), "mild")
+        self.assertNotIn((12, 14), flicker.blend_pairs(cap, tolerance="clean"))
+        self.assertIn((12, 14), flicker.blend_pairs(cap, tolerance="subtle"))
 
     def test_the_luma_cap_stays_under_the_flash_criterion(self):
         """MAX_ALLOWED_LUMA_DELTA is set from photosensitivity guidance, which
@@ -256,9 +287,9 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
         self.assertFalse(np.array_equal(before, flicker._PALETTE_Y))
 
     def test_the_blend_table_cache_is_dropped(self):
-        before = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        before = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
-        after = flicker.build_blend_table(DEFAULT_LUMA_DELTA)
+        after = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
         self.assertIsNot(before, after)
 
     def test_the_eligible_pair_set_changes(self):
@@ -268,9 +299,9 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
         # removes the same four colours on every machine, so filtering first
         # would test how much of the disagreement it happens to have deleted.
         palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
-        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=1.0))
+        pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
-        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, max_warmth=1.0))
+        u64 = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
         self.assertNotEqual(pepto, u64)
         self.assertLess(len(pepto & u64), min(len(pepto), len(u64)))
 
@@ -387,7 +418,7 @@ class FlickerComposeTest(unittest.TestCase):
         self.assertNotIn("screen_b", HiresDisplayMode("normal").compose(gradient()))
 
     def test_emits_a_second_page_that_shares_the_bitmap(self):
-        mode = HiresDisplayMode("normal", flicker_blend=True)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         b = cast(FlickerComposeBuffers, mode.compose(gradient()))
         self.assertEqual(b["screen"].shape, (1000,))
         self.assertEqual(b["screen_b"].shape, (1000,))
@@ -398,7 +429,7 @@ class FlickerComposeTest(unittest.TestCase):
 
     def test_the_two_pages_differ_only_in_colour(self):
         """A differing mask would flicker geometry rather than colour."""
-        mode = HiresDisplayMode("normal", flicker_blend=True)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         b = cast(FlickerComposeBuffers, mode.compose(gradient()))
         # Every differing cell must still be a legal screen byte pair; the
         # bitmap is a single array, so shape equality IS mask equality.
@@ -410,7 +441,8 @@ class FlickerComposeTest(unittest.TestCase):
         """Nothing to gain, so it must not pay the flicker cost."""
         flat = np.zeros((200, 320, 3), np.uint8)
         b = cast(
-            FlickerComposeBuffers, HiresDisplayMode("normal", flicker_blend=True).compose(flat)
+            FlickerComposeBuffers,
+            HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS).compose(flat),
         )
         np.testing.assert_array_equal(b["screen"], b["screen_b"])
 
@@ -440,7 +472,7 @@ class FlickerComposeTest(unittest.TestCase):
             return np.where(mask[..., None], f, g).astype(np.float32)
 
         plain = HiresDisplayMode("normal", perceptual=True)
-        blend = HiresDisplayMode("normal", flicker_blend=True)
+        blend = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         e_plain = float(
             np.linalg.norm(lab(src) - lab(shown(plain.compose(src), None)), axis=1).mean()
         )
@@ -454,7 +486,7 @@ class FlickerComposeTest(unittest.TestCase):
     def test_blending_forces_the_perceptual_metric(self):
         """The widened palette is Lab-defined; under weighted-BGR it measurably
         regresses below the 16 solids."""
-        mode = HiresDisplayMode("normal", flicker_blend=True, perceptual=False)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS, perceptual=False)
         self.assertTrue(mode._perceptual)
         self.assertIn("pinned", mode.set_color_match("rgb"))
         self.assertTrue(mode._perceptual)
@@ -462,14 +494,14 @@ class FlickerComposeTest(unittest.TestCase):
     def test_edges_styles_never_blend(self):
         for style in ("edges", "edges_inverted"):
             with self.subTest(style=style):
-                mode = HiresDisplayMode(style, flicker_blend=True)
+                mode = HiresDisplayMode(style, flicker_tolerance=ALL_TIERS)
                 self.assertIsNone(mode._blend_table)
 
 
 class FlickerPushTest(unittest.TestCase):
     def test_setup_installs_the_flicker_handler_and_seeds_the_pages(self):
         api = FakeAPI()
-        HiresDisplayMode("normal", flicker_blend=True).setup(api)
+        HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS).setup(api)
         handler = api.mem_files.get(f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}")
         self.assertEqual(handler, FLICKER_SWAP_IRQ_HANDLER)
         tracker = api.mem_files.get(f"{FRAME_TRACKER_ADDR:04X}")
@@ -481,7 +513,7 @@ class FlickerPushTest(unittest.TestCase):
 
     def test_push_writes_both_pages_into_the_offscreen_bank(self):
         api = FakeAPI()
-        mode = HiresDisplayMode("normal", flicker_blend=True)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         mode.setup(api)
         api.regions.clear()
         mode.push(api, mode.compose(gradient()))
@@ -494,7 +526,7 @@ class FlickerPushTest(unittest.TestCase):
         """Sharing an ID would make every frame look fully dirty on both, since
         the pages differ by construction — that difference IS the blend."""
         api = FakeAPI()
-        mode = HiresDisplayMode("normal", flicker_blend=True)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         mode.setup(api)
         api.ops.clear()
         mode.push(api, mode.compose(gradient()))
@@ -507,7 +539,7 @@ class FlickerPushTest(unittest.TestCase):
         """Nothing else re-asserts it, so a following char scene would read its
         matrix from the $0C00 offset."""
         api = FakeAPI()
-        mode = HiresDisplayMode("normal", flicker_blend=True)
+        mode = HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS)
         mode.setup(api)
         api.memories.clear()
         mode.teardown(api)
@@ -516,20 +548,24 @@ class FlickerPushTest(unittest.TestCase):
 
 class FlickerResolveTest(unittest.TestCase):
     def test_opt_in(self):
-        self.assertFalse(resolve_flicker_blend(False, "hires"))
-        self.assertTrue(resolve_flicker_blend(True, "hires"))
+        self.assertEqual("off", resolve_flicker_tolerance("off", "hires"))
+        self.assertEqual("clean", resolve_flicker_tolerance("clean", "hires"))
 
     def test_hires_normal_only(self):
-        self.assertFalse(resolve_flicker_blend(True, "mhires"))
-        self.assertFalse(resolve_flicker_blend(True, "mcm"))
-        self.assertFalse(resolve_flicker_blend(True, "petscii"))
-        self.assertFalse(resolve_flicker_blend(True, "hires_edges"))
+        self.assertEqual("off", resolve_flicker_tolerance("clean", "mhires"))
+        self.assertEqual("off", resolve_flicker_tolerance("clean", "mcm"))
+        self.assertEqual("off", resolve_flicker_tolerance("clean", "petscii"))
+        self.assertEqual("off", resolve_flicker_tolerance("clean", "hires_edges"))
 
     def test_refused_when_a_buffer_overlay_owns_the_second_page(self):
-        self.assertFalse(resolve_flicker_blend(True, "hires", has_buffer_overlays=True))
+        self.assertEqual(
+            "off", resolve_flicker_tolerance("clean", "hires", has_buffer_overlays=True)
+        )
 
     def test_refused_while_the_reu_pump_owns_the_irq_vector(self):
-        self.assertFalse(resolve_flicker_blend(True, "hires", audio_reu_pump_active=True))
+        self.assertEqual(
+            "off", resolve_flicker_tolerance("clean", "hires", audio_reu_pump_active=True)
+        )
 
     def test_a_plain_hires_scene_actually_gets_a_blend_table(self):
         """End-to-end through the factory, because the gate agreeing in
@@ -538,7 +574,7 @@ class FlickerResolveTest(unittest.TestCase):
         from c64cast.app.scene_factory import _display_mode_for_scene
 
         cfg = Config()
-        cfg.color.flicker_blend = True
+        cfg.color.flicker_tolerance = "clean"
         scene = SceneCfg(type="slideshow", display="hires")
         mode = _display_mode_for_scene("hires", scene, cfg)
         assert isinstance(mode, HiresDisplayMode)

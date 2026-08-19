@@ -7,19 +7,18 @@ owns the *colour* half of that: which pairs are eligible, what they look like
 fused, and how to quantize a frame against the widened palette. The C64-side
 alternation lives in `modes_irq.FLICKER_SWAP_IRQ_HANDLER`.
 
-Two questions decide the eligible set, and they are answered by different rules.
+Two gates decide the eligible set, and they answer different questions.
 
 **ΔY is the safety cap, and only that.** `[color].flicker_max_luma_delta` bounds
 the *absolute* difference in linear luminance — not a contrast ratio, and not the
-8-bit `PALETTE_LUMA` delta. A ratio was the first attempt
-and it fails in the one place it matters. Michelson divides by the pair's mean
-luminance, so it is maximally wrong where the eye is least sensitive: black
-against anything scores 1.0 by construction, which categorically refused
-Black+Blue, Black+Brown and Black+Dark Gray (all under 0.07 ΔY, all of which
-fuse cleanly), while admitting Cyan+Yellow at 0.26 ΔY on an Ultimate 64 — as
-violent a flicker as anything on the test chart. The 8-bit delta is wrong for a
-different reason: it is Rec.601 on gamma-encoded values, so it misreads the
-dark end in the opposite direction.
+8-bit `PALETTE_LUMA` delta. A ratio was the first attempt and it fails in the one
+place it matters. Michelson divides by the pair's mean luminance, so it is
+maximally wrong where the eye is least sensitive: black against anything scores
+1.0 by construction, which categorically refused Black+Blue, Black+Brown and
+Black+Dark Gray (all under 0.07 ΔY, all of which fuse cleanly), while admitting
+Cyan+Yellow at 0.26 ΔY on an Ultimate 64 — as violent a flicker as anything on
+the test chart. The 8-bit delta is wrong for a different reason: it is Rec.601 on
+gamma-encoded values, so it misreads the dark end in the opposite direction.
 
 What the cap is *for* is photosensitivity, and that justification stands by
 itself: a blended area alternates at 25 Hz (PAL) / 30 Hz (NTSC), inside the
@@ -27,53 +26,48 @@ ITU-R BT.1702 risk band, where the hazard is governed by luminance modulation
 depth. `MAX_ALLOWED_LUMA_DELTA` keeps every admitted pair well under the
 20%-of-peak-white flash criterion.
 
-What the cap is **not** is a predictor of whether a pair fuses, and a lower
-setting should not be read as "less flicker". All 21 pairs admitted at 0.075
-were scored by eye on a 1702, and ΔY correlates with the verdicts at r=+0.33:
-Black+Dark Gray, at ΔY 0.0685 near the top of the admitted range, reads as
-almost nothing, while Medium Gray+Light Blue at 0.0002 — the smallest separation
-the palette can offer — visibly flickers. No pairwise distance did better. The
-strongest single term tried was ΔY·√(meanY) at r=+0.47, Δchroma reached +0.18,
-and the best three-term fit an adjusted R² of 0.25 over n=21.
+What the cap is **not** is a predictor of whether a pair fuses — and neither is
+anything else derived from the two colours. Every pair the hard clamp admits was
+scored by eye, blind, and against those verdicts ΔY reaches r=+0.26, Δchroma
++0.04, mean luminance −0.04, and the best multi-term fit an adjusted R² of 0.18
+over n=33. A warmth axis was tried and removed: fitted to an earlier, smaller run
+in which Red, Purple, Orange and Light Red all scored high, it reached r=+0.32 on
+the blind run — no better than the ΔY rule it replaced — while excluding five of
+the eight steadiest pairs. Warm *solids* do not flicker (all seven hidden solid
+controls scored none, Red and Orange among them) and warm+warm pairs fuse well;
+what the earlier run had actually picked up was warm against neutral.
 
-**Which colours are in the pair predicts it far better than how far apart they
-are.** Every pair containing Red, Purple, Orange or Light Red scored high, on
-flat patches and in motion alike, and excluding all of them is what made a real
-clip settle down — same clip, same threshold, 21 pairs down to 7. The same four
-flickered on a 1702 over composite, on an HDMI monitor and through the capture
-path, with no perceptible difference between them, so this is not an artifact of
-one display's chroma decoding and the rule follows the palette rather than the
-output.
+**So eligibility is measured rather than modelled.** `SCORED_FLICKER` is that
+blind run, one tier per pair, and `[color].flicker_tolerance` is a cut across it.
+A pair with no entry is never admitted at any tolerance. On the Ultimate 64
+table that costs nothing — the scored set is exactly what the hard clamp allows
+— but the VIC-II rendering shifts luminances enough to bring five unscored pairs
+under the clamp, Cyan+Yellow among them, which the U64 run never had to judge
+because ΔY refused it there. `scripts/diags/flicker_score_grid.py` is how the
+table grows.
 
-`[color].flicker_max_warmth` is that rule: a cap on how far along the red-orange
-axis *either* colour of a pair may sit, `color_warmth` measuring it. Be clear
-about what the default is, though — 0.26 is the midpoint of the gap the four
-observed colours leave above the rest of the palette, and `_WARM_AXIS_DEG` is
-the rotation that opens that gap widest. Both are fitted to 4 positives against
-12 negatives. The metric restates the observation in a form that extends to
-untested colours and to palettes nobody has scored; it does not independently
-predict it, and it will not until a run that was not used to fit it agrees. What
-can be said is that the fit is not delicate: the same 20° axis ranks the same
-four on top with a clear gap under them on *both* shipped palettes, and the
-default reproduces the observed set at every cap on each.
+The tiers are one observer, one sitting, who placed the mild/moderate and
+moderate/intense boundaries at ±1. `"clean"` is the cut that does not rest on
+either boundary.
 
-ΔY is measured against the *active* palette, so this follows `host_palette`:
-which two colours fuse is a statement about the light a particular machine
-emits, not a property of "the C64 palette". The two shipped tables disagree
-about half the time — 18 eligible pairs against the VIC-II rendering, 21 on an
-Ultimate 64, agreeing on 10 — which is why the tables here are rebuilt on a
-palette swap rather than computed once at import.
+**Tiers travel across palettes; ΔY does not.** ΔY is measured against the
+*active* palette, so which pairs are even candidates follows `host_palette` —
+what fuses is a statement about the light one machine emits, not a property of
+"the C64 palette", which is why the tables here are rebuilt on a palette swap
+rather than computed once at import. The scored tiers are then applied to
+whatever palette is active, which is an extrapolation: they were collected on an
+Ultimate 64, and a custom `host_palette` far from either shipped table
+invalidates them.
 
 **Fused colour is the linear-light average, not the sRGB average.** The eye
 integrates emitted light over the two fields, so the mix has to happen after
 sRGB decode. Averaging the encoded values instead makes every blend read too
 dark, worst on the high-contrast pairs where the gamma curve is steepest.
 
-At the 0.075 default, 21 of the 120 mixed pairs clear the luma cap on an
-Ultimate 64 and every one lands >=4 Lab from all 16 solids; the 0.26 warmth cap
-takes that to 7, a 23-colour palette that gains a blue-charcoal ramp rather than
-crowding the greys. Raising the warmth cap past ~0.3 restores the 37-colour set,
-which is worth more of the gamut and visibly less steady.
+Note that the safety cap binds before the tolerance does: at the 0.075 default
+on an Ultimate 64, `"clean"` admits 5 of its 8 pairs, the other 3 sitting between
+0.075 and the 0.12 clamp. Widening the cap to reach them is a photosensitivity
+decision, not a quality one.
 """
 
 from __future__ import annotations
@@ -108,21 +102,60 @@ MAX_ALLOWED_LUMA_DELTA = 0.12
 # arming path says so rather than letting it through silently.
 WARN_LUMA_DELTA = 0.10
 
-# The four colours observed to flicker whatever they were paired with: Red,
-# Purple, Orange, Light Red. Not itself the rule — `flicker_max_warmth` is — but
-# kept because it is the observation the rule is fitted to, and the default is
-# only defensible for as long as it still reproduces exactly this set.
-WARM_FLICKER_COLORS = frozenset({2, 4, 8, 10})
+# The blind scoring run: every pair the hard clamp admits on an Ultimate 64,
+# rated by eye with positions shuffled, pools separated, and hidden solid
+# negative controls. Keys are (lower index, higher index). This is data, not a
+# rule — an earlier fitted metric is why it exists; see the module docstring.
+SCORED_FLICKER: dict[tuple[int, int], str] = {
+    (6, 9): "none",
+    (2, 4): "verymild",
+    (2, 8): "verymild",
+    (3, 15): "verymild",
+    (4, 8): "verymild",
+    (4, 12): "verymild",
+    (8, 12): "verymild",
+    (9, 11): "verymild",
+    (0, 9): "mild",
+    (0, 11): "mild",
+    (4, 14): "mild",
+    (6, 11): "mild",
+    (8, 14): "mild",
+    (12, 14): "mild",
+    (0, 6): "moderate",
+    (2, 9): "moderate",
+    (2, 12): "moderate",
+    (2, 14): "moderate",
+    (4, 6): "moderate",
+    (4, 11): "moderate",
+    (5, 10): "moderate",
+    (5, 15): "moderate",
+    (7, 13): "moderate",
+    (0, 2): "intense",
+    (2, 6): "intense",
+    (0, 4): "intense",
+    (2, 11): "intense",
+    (4, 9): "intense",
+    (6, 8): "intense",
+    (8, 9): "intense",
+    (8, 11): "intense",
+    (10, 12): "intense",
+    (10, 14): "intense",
+}
 
-# Lab hue direction warmth is measured along, and the threshold on it. Rotated
-# off a* toward yellow because a* alone lands Blue (a*=+46 on an Ultimate 64)
-# between Purple and Orange and would drop it with them, and a plain hue band
-# was rejected in turn for ignoring chroma — it would exclude a near-grey whose
-# hue happens to be red, which cannot modulate a chromatic channel enough to
-# matter. Both constants are fitted to 4 positives against 12 negatives, so they
-# parameterize the observation rather than predict it; see the module docstring.
-_WARM_AXIS_DEG = 20.0
-DEFAULT_MAX_WARMTH = 0.26
+# The scale the run was scored on, quietest first.
+FLICKER_TIERS = ("none", "verymild", "mild", "moderate", "intense")
+
+# `[color].flicker_tolerance` values, and the worst tier each one admits.
+# Named apart from the tiers because one pair scored "none", which a tolerance
+# called "none" would have to exclude and include at the same time.
+FLICKER_TOLERANCES: dict[str, int] = {
+    "off": -1,
+    "clean": 1,  # none + very mild
+    "subtle": 2,  # + mild
+    "visible": 3,  # + moderate
+    "strobe": 4,  # + intense
+}
+DEFAULT_TOLERANCE = "off"
 
 # Below this the pair fuses to something a solid colour already covers, so it
 # costs a page write and buys nothing. In OpenCV 8-bit Lab units.
@@ -183,45 +216,31 @@ def _to_lab(bgr: np.ndarray) -> np.ndarray:
 _PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
 
 
-def _palette_warmth() -> np.ndarray:
-    """(16,) warmth of each palette entry, 0..1. See `_WARM_AXIS_DEG`."""
-    theta = np.radians(_WARM_AXIS_DEG)
-    a = _PALETTE_LAB[:, 1] - 128.0
-    b = _PALETTE_LAB[:, 2] - 128.0
-    projected = a * np.cos(theta) + b * np.sin(theta)
-    return np.clip(projected / 128.0, 0.0, 1.0).astype(np.float32)
-
-
-_PALETTE_WARMTH = _palette_warmth()
-
-
-def color_warmth(c: int) -> float:
-    """How far palette index `c` lies along the red-orange axis, 0.0 (neutral or
-    cool — every grey, and anything from yellow round to blue) to 1.0.
-
-    Chroma-weighted, so a desaturated colour scores low whatever its hue: what a
-    pair can modulate is bounded by how much colour either half of it carries.
-    Measured against the *active* palette, like `pair_luma_delta`.
-    """
-    return float(_PALETTE_WARMTH[c])
+def pair_flicker_tier(a: int, b: int) -> str | None:
+    """How much flicker this pair was scored at, or None if it was never scored."""
+    return SCORED_FLICKER.get((a, b) if a <= b else (b, a))
 
 
 def blend_pairs(
-    max_luma_delta: float, *, max_warmth: float = DEFAULT_MAX_WARMTH
+    max_luma_delta: float, *, tolerance: str = DEFAULT_TOLERANCE
 ) -> list[tuple[int, int]]:
-    """Eligible flicker pairs at these two caps, ordered by descending gain.
+    """Eligible flicker pairs at this safety cap and tolerance, ordered by
+    descending gain over the nearest solid.
 
-    A pair qualifies when it modulates luminance gently enough to be safe,
-    neither of its colours is warmer than `max_warmth`, and its fused colour
-    lands far enough from all 16 solids to be worth a second screen page.
+    A pair qualifies when it modulates luminance gently enough to be safe, it
+    was scored no worse than the tolerance allows, and its fused colour lands
+    far enough from all 16 solids to be worth a second screen page.
     """
+    worst = FLICKER_TOLERANCES.get(tolerance, -1)
+    if worst < 0:
+        return []
     cap = min(float(max_luma_delta), MAX_ALLOWED_LUMA_DELTA)
-    warmth_cap = float(max_warmth)
     scored: list[tuple[float, tuple[int, int]]] = []
     for a, b in itertools.combinations(range(16), 2):
         if pair_luma_delta(a, b) > cap:
             continue
-        if max(_PALETTE_WARMTH[a], _PALETTE_WARMTH[b]) > warmth_cap:
+        tier = SCORED_FLICKER.get((a, b))
+        if tier is None or FLICKER_TIERS.index(tier) > worst:
             continue
         gain = float(np.min(np.linalg.norm(_PALETTE_LAB - _to_lab(fuse(a, b)[None, :]), axis=1)))
         if gain >= MIN_BLEND_LAB_GAIN:
@@ -243,7 +262,7 @@ class BlendTable:
     pairs: np.ndarray  # (N, 2) uint8
     bgr: np.ndarray  # (N, 3) float32 — the fused colour
     max_luma_delta: float
-    max_warmth: float = DEFAULT_MAX_WARMTH
+    tolerance: str = DEFAULT_TOLERANCE
 
     @property
     def size(self) -> int:
@@ -268,7 +287,7 @@ class BlendTable:
 
 # Table construction costs a few hundred Lab conversions, and a live-tuned
 # max_luma_delta would otherwise rebuild it every frame.
-_TABLE_CACHE: dict[tuple[float, float], BlendTable] = {}
+_TABLE_CACHE: dict[tuple[float, str], BlendTable] = {}
 
 
 def _rebuild_palette_tables() -> None:
@@ -280,31 +299,27 @@ def _rebuild_palette_tables() -> None:
     flicker on that machine, which is the one failure this module exists to
     prevent, hence the registration rather than a lazily-checked cache key.
     """
-    global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB, _PALETTE_WARMTH
+    global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB
     _PALETTE_LINEAR = _srgb_to_linear(C64_PALETTE_BGR)
     _PALETTE_Y = _PALETTE_LINEAR @ _LUMA_WEIGHTS_BGR
     _PALETTE_LAB = _to_lab(C64_PALETTE_BGR)
-    _PALETTE_WARMTH = _palette_warmth()
     _TABLE_CACHE.clear()
 
 
 on_palette_change(_rebuild_palette_tables)
 
 
-def build_blend_table(
-    max_luma_delta: float, *, max_warmth: float = DEFAULT_MAX_WARMTH
-) -> BlendTable:
-    """The widened palette at these caps. Cached per settings pair."""
+def build_blend_table(max_luma_delta: float, *, tolerance: str = DEFAULT_TOLERANCE) -> BlendTable:
+    """The widened palette at this cap and tolerance. Cached per settings pair."""
     delta = round(float(max_luma_delta), 4)
-    warmth = round(float(max_warmth), 4)
-    key = (delta, warmth)
+    key = (delta, tolerance)
     cached = _TABLE_CACHE.get(key)
     if cached is not None:
         return cached
-    extra = blend_pairs(delta, max_warmth=warmth)
+    extra = blend_pairs(delta, tolerance=tolerance)
     pairs = np.array([(i, i) for i in range(16)] + extra, dtype=np.uint8)
     bgr = np.stack([fuse(int(a), int(b)) for a, b in pairs]).astype(np.float32)
-    table = BlendTable(pairs=pairs, bgr=bgr, max_luma_delta=delta, max_warmth=warmth)
+    table = BlendTable(pairs=pairs, bgr=bgr, max_luma_delta=delta, tolerance=tolerance)
     _TABLE_CACHE[key] = table
     return table
 

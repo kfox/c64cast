@@ -506,9 +506,9 @@ reports the same.)
 
 ## Flicker blending flashes at 25/30 Hz, and cameras can't see it
 
-`[color].flicker_blend = true` makes hires hold two screen pages and alternate
+`[color].flicker_tolerance` makes hires hold two screen pages and alternate
 them at the VIC field rate, so the eye fuses each cell's pair of hardware colors
-into a shade the machine cannot draw. It is off by default, and there are two
+into a shade the machine cannot draw. It is `"off"` by default, and there are two
 reasons worth reading before turning it on.
 
 **It is a flashing image.** Each color is shown every other field, so a blended
@@ -525,19 +525,25 @@ leave the cap alone unless you have a reason.
 
 **A lower cap is not less flicker.** Brightness distance turned out to be a poor
 predictor of whether a pair actually fuses — scored by eye over every admitted
-pair it correlates at r=+0.33, and the pair with the *smallest possible*
+pair it correlates at r=+0.26, and the pair with the *smallest possible*
 separation visibly flickers while one near the top of the range reads as almost
-nothing. The knob that buys steadiness is `[color].flicker_max_warmth` (default
-0.26), which caps how far along the red-orange axis either color of a pair may
-sit: red, purple, orange and light red flickered wherever they appeared,
-regardless of what they were paired with, and the same four did it on a CRT over
-composite, on an HDMI monitor and through a capture card alike — so this is a
-property of the colors, not of one display's chroma decoding.
+nothing. Nothing else computed from the two colors did better; a red-orange
+"warmth" axis, fitted to an earlier run, reached r=+0.32 and was removed when a
+blind sitting showed it excluding five of the eight steadiest pairs.
 
-It costs gamut: 37 effective colors down to 23 on an Ultimate 64. Raise it past
-~0.3 to take all 37 and the flicker with them. It is also **not a complete
-account** — medium gray + light blue was scored as mildly flickering and no cap
-here excludes it, so expect the odd unsteady pair even at the default.
+So the knob that buys steadiness is `[color].flicker_tolerance`, and it is not a
+metric at all — every pair the safety cap allows was scored by eye, blind, and
+the setting picks how far down that scale to go. `"clean"` takes only the pairs
+that fused, `"subtle"` adds mildly unsteady ones, `"visible"` and `"strobe"`
+take pairs that are *meant* to be seen flickering. Treat those last two as an
+effect you chose, not as a palette upgrade, and not for an audience.
+
+Expect a smaller widened palette than the raw pair count suggests: of the 33
+pairs the hard cap admits on an Ultimate 64, only 8 read as fused — 24 effective
+colors at `"clean"`, and 21 of those at the default luma cap, since three of the
+eight need it raised toward 0.12. The scoring was done on an Ultimate 64, so
+pairs another `host_palette` brings under the cap but that sitting never judged
+are excluded rather than guessed at.
 
 **It does not survive being filmed.** A capture card records individual fields,
 so it captures the flicker rather than the fusion — a 30 fps capture of a

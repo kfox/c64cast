@@ -36,12 +36,12 @@ normally rides with.
 
 The staging path is pinned, not left on auto — push() tests use_reu_staged
 before double_buffer, so on auto the control runs the REU pipeline and
-flicker_blend stops being the only variable between the phases. The REU path
+flicker_tolerance stops being the only variable between the phases. The REU path
 has its own, unrelated swap-timing defect; this script does not measure it.
 
 Two phases:
 
-  * flicker   — flicker_blend on. Commits only on phase 0, so it gets half as
+  * flicker   — flicker_tolerance on. Commits only on phase 0, so it gets half as
                 many commit opportunities and was the louder of the two.
   * plain     — flicker OFF, plain hires double-buffer. Control: that path
                 swaps banks from the same line-248 IRQ, so if it tears too the
@@ -188,7 +188,7 @@ host_palette = "{HOST_PALETTE}"
 
 [color]
 dither = "none"
-flicker_blend = {"true" if flicker else "false"}
+flicker_tolerance = "{"strobe" if flicker else "off"}"
 flicker_max_luma_delta = 0.075
 
 [video]
@@ -196,7 +196,7 @@ double_buffer = true
 # Pinned, not left on auto. On auto this resolves to REU staging, and push()
 # tests use_reu_staged before double_buffer — so the "plain" control silently
 # ran the REU bank-swap pipeline instead of the host-DMA swap it is meant to
-# be the control for, leaving flicker_blend not the only variable between them.
+# be the control for, leaving flicker_tolerance not the only variable between them.
 use_reu_staged = false
 
 [playlist]

@@ -54,8 +54,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
-- **`[color].flicker_blend` — colors the C64 cannot draw, by alternating two of
-  the ones it can.** Hires holds two screen pages over one shared bitmap and
+- **`[color].flicker_tolerance` — colors the C64 cannot draw, by alternating two
+  of the ones it can.** Hires holds two screen pages over one shared bitmap and
   flips between them every video field, so the eye fuses each cell's pair into an
   intermediate shade — the trick Dragon Breed and Mayhem in Monsterland used. The
   alternation is driven by a C64-side raster IRQ and free-runs at the VIC field
@@ -67,18 +67,27 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   27-34% — how much depends on which pairs the machine's palette makes
   eligible — while a photograph improves ~1%.
 
+  **Which pairs fuse was measured, not derived.** Nothing computed from the two
+  colors predicts it: brightness distance correlates with scored verdicts at
+  r=+0.26, chroma distance at +0.04, and a red-orange "warmth" axis fitted to an
+  earlier session reached +0.32 before a blind re-score showed it excluding five
+  of the eight steadiest pairs. So every pair the safety cap admits was scored
+  by eye, blind, with shuffled positions and hidden solid controls, and
+  `flicker_tolerance` is a cut across that table: `"off"` (default), `"clean"`
+  (only pairs that fused — 24 colors on an Ultimate 64), `"subtle"` (30),
+  `"visible"` (39), `"strobe"` (all 49). Past `"subtle"` the flicker is the
+  point rather than a side effect. Pairs another `host_palette` brings under the
+  cap that the sitting never judged are excluded rather than guessed at, and
+  `scripts/diags/flicker_score_grid.py` is how the table grows.
+
   **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
   30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
   `[color].flicker_max_luma_delta` (default 0.075, hard-capped at 0.12) limits
   how far apart in brightness a pair may be, which is the quantity that governs
-  the hazard. It is not, however, a quality knob: scored by eye across every
-  admitted pair, brightness distance barely predicts whether a pair fuses
-  (r=+0.33). What does is which colors are in it — red, purple, orange and light
-  red flickered wherever they appeared, on a CRT over composite, on an HDMI
-  monitor and through a capture card alike. So `[color].flicker_max_warmth`
-  (default 0.26) caps how far along the red-orange axis either color of a pair
-  may sit, which costs gamut: 37 effective colors down to 23 on an Ultimate 64.
-  Raise it past ~0.3 to take all 37 and the flicker with them. Which pairs
+  the hazard. It is a safety control only, not a quality knob — see above for
+  what decides whether a pair fuses — though it does bound what `flicker_tolerance`
+  can reach: at the 0.075 default `"clean"` gets 5 of its 8 pairs, the rest
+  needing the cap raised toward 0.12. Which pairs
   qualify follows `[hardware].host_palette`, because what fuses is the light a
   particular machine emits. It also does not
   survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
@@ -281,7 +290,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   torn in half, and the frame rate is unchanged — capping write size also stops
   the tearing, but costs roughly 26 fps down to 15, so that is not what this
   does. Re-measured the same way afterwards: plain double-buffer split zero
-  frames out of 1796, `flicker_blend` 0.28%, at unchanged throughput.
+  frames out of 1796, flicker blending 0.28%, at unchanged throughput.
 
 - **The console's token no longer travels further than the terminal.** The host
   logs its login URL with the token in it, because that URL is the only way a

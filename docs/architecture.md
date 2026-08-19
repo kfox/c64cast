@@ -62,7 +62,7 @@ the two lists account for every module in the tree.
 | `audio/dac_slot_ring.py` | [Audio output](architecture/audio.md#the-slot-ring-reading-signed-levels-directly) |
 | `app/doctor.py` | [Config, CLI & ensemble](architecture/config.md#doctorpy--config-and-environment-diagnostics) |
 | `video/dither.py` | [Video input & the color pipeline](architecture/video-color.md#colordither--spatial-dither) |
-| `video/flicker.py` | [Video input & the color pipeline](architecture/video-color.md#colorflicker_blend--temporal-colour-blending) |
+| `video/flicker.py` | [Video input & the color pipeline](architecture/video-color.md#colorflicker_tolerance--temporal-colour-blending) |
 | `audio/dsp.py` | [Audio output](architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path) |
 | `scenes/effects.py` | [Scenes, sources & overlays](architecture/scenes.md#effectspy--the-frameeffect-registry) |
 | `app/ensemble.py` | [Config, CLI & ensemble](architecture/config.md#ensemblepy--audio-slot-coordination) |

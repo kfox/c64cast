@@ -879,7 +879,7 @@ assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
 
 
 # ---------------------------------------------------------------------------
-# Flicker blend ([color].flicker_blend) — page-flip every field
+# Flicker blend ([color].flicker_tolerance) — page-flip every field
 # ---------------------------------------------------------------------------
 # The host-DMA sibling above, plus an unconditional per-field toggle of the
 # $D018 screen-matrix nibble between the two page offsets (c64.D018_HIRES_PAGE_A

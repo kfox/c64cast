@@ -205,7 +205,7 @@ class VIC_BANK_2:
 # $0C00 rather than $0800: $0801 is where run_prg drops a PRG, so a screen page
 # there would be shot through by the clear-loop / SID player upload. It is the
 # same page overlays/big_text.py picked, for the same reason — which is why the
-# two cannot be live at once (resolve_flicker_blend gates on buffer overlays).
+# two cannot be live at once (resolve_flicker_tolerance gates on buffer overlays).
 D018_HIRES_PAGE_A: Final = 0x18  # matrix offset $0400, bitmap offset $2000
 D018_HIRES_PAGE_B: Final = 0x38  # matrix offset $0C00, bitmap offset $2000
 
@@ -611,7 +611,7 @@ class RegionID:
     BITMAP_BANK2: Final = 6000  # $A000 (8000 bytes), VIC bank 2
     SCREEN_BANK2: Final = 6001  # $8400 (1000 bytes), VIC bank 2
 
-    # Flicker blend ([color].flicker_blend). The field-B screen page is a
+    # Flicker blend ([color].flicker_tolerance). The field-B screen page is a
     # second 1000-byte matrix per bank, alternating with the field-A page
     # above at the VIC field rate. Same reasoning as the bank-2 split: each
     # page must diff against its own prior content, and the two pages differ
