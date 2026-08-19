@@ -95,6 +95,17 @@ class FlickerComposeBuffers(BitmapComposeBuffers):
     screen_b: np.ndarray
 
 
+class MHiresFlickerComposeBuffers(MHiresComposeBuffers):
+    """MultiHires under flicker blending: ``color`` plus the second screen page.
+
+    Only the screen nibbles alternate, so only c1 and c2 can be blends. c3 lives
+    in color RAM at $D800, which is neither VIC-banked nor selected by $D018 —
+    one copy, both fields — and bg0 is the single $D021 register. Both stay real
+    palette indices, which is why ``color`` has no B-page sibling here."""
+
+    screen_b: np.ndarray
+
+
 # grayscale palette_mode uses fixed slot assignments (no per-frame picking)
 # in luminance order. Two reasons:
 #   1. Slot 0..N maps to ascending luminance, so the bitmap stays a stable
@@ -228,19 +239,26 @@ def pick_cell_colors(
     d_cell: np.ndarray,
     bg0: int,
     strategy: str,
+    luma: np.ndarray = PALETTE_LUMA,
 ) -> np.ndarray:
     """Choose each cell's 3 non-bg0 color slots (c1/c2/c3) by `strategy`.
 
-    `cell_counts` is the (1000, 16) smoothed per-cell palette histogram with the
+    `cell_counts` is the (1000, N) smoothed per-cell palette histogram with the
     bg0 entry already masked to -1 (so bg0 is never picked). `d_cell` is the
-    (1000, 32, 16) per-cell-pixel distance to all 16 palette entries (only the
-    error-min strategy uses it). Returns a (1000, 3) int64 array of palette
-    indices; any slot the cell can't fill from a genuinely-present color is set
-    to `bg0` — the same poison-filler guard the frequency path has always used
-    (a duplicate bg0 is harmless: the %00 code already reaches bg0, and it keeps
-    the absent slots deterministic so present colors don't churn screen/color
-    RAM frame-to-frame). The caller sorts the result by palette index for
+    (1000, 32, N) per-cell-pixel distance to all N entries (only the error-min
+    strategy uses it). Returns a (1000, 3) int64 array of palette indices; any
+    slot the cell can't fill from a genuinely-present color is set to `bg0` —
+    the same poison-filler guard the frequency path has always used (a duplicate
+    bg0 is harmless: the %00 code already reaches bg0, and it keeps the absent
+    slots deterministic so present colors don't churn screen/color RAM
+    frame-to-frame). The caller sorts the result by palette index for
     delta-cache stability.
+
+    N is 16 for the plain palette and larger under flicker blending, where the
+    trailing entries are color pairs rather than colors ([color].flicker_tolerance,
+    video/flicker.py). `luma` orders that same entry space dark→light for the
+    luminance/contrast strategies, so it has to be the blend table's own vector
+    when one is in play — the default is the 16-entry palette.
     """
     if strategy == "frequency":
         top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
@@ -253,24 +271,25 @@ def pick_cell_colors(
     # luminance / contrast both order the cell's present colors dark→light and
     # pick the extremes; they differ only in the 3rd slot.
     rows = np.arange(cell_counts.shape[0])
-    present = cell_counts > 0.0  # (1000, 16) bool; bg0 masked out via -1
+    last = cell_counts.shape[1] - 1  # highest valid entry index
+    present = cell_counts > 0.0  # (1000, N) bool; bg0 masked out via -1
     n = present.sum(axis=1)  # (1000,) present color count per cell
     # Sort present colors by luma; absent entries → +inf so they sort last and
     # never get gathered for a valid slot.
-    luma_masked = np.where(present, PALETTE_LUMA[None, :], np.inf)
-    order = np.argsort(luma_masked, axis=1)  # (1000, 16) ascending by luma
+    luma_masked = np.where(present, luma[None, :], np.inf)
+    order = np.argsort(luma_masked, axis=1)  # (1000, N) ascending by luma
     darkest = order[:, 0]
-    brightest = order[rows, np.clip(n - 1, 0, 15)]
+    brightest = order[rows, np.clip(n - 1, 0, last)]
     pick0 = np.where(n >= 1, darkest, bg0)
     pick1 = np.where(n >= 2, brightest, bg0)
 
     if strategy == "luminance":
-        median = order[rows, np.clip(n // 2, 0, 15)]  # middle of the sorted span
+        median = order[rows, np.clip(n // 2, 0, last)]  # middle of the sorted span
         pick2 = np.where(n >= 3, median, bg0)
     else:  # contrast: farthest present color (in luma) from both extremes
-        d_dark = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[darkest][:, None])
-        d_bright = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[brightest][:, None])
-        spread = np.minimum(d_dark, d_bright)  # (1000, 16)
+        d_dark = np.abs(luma[None, :] - luma[darkest][:, None])
+        d_bright = np.abs(luma[None, :] - luma[brightest][:, None])
+        spread = np.minimum(d_dark, d_bright)  # (1000, N)
         eligible = present.copy()
         eligible[rows, darkest] = False
         eligible[rows, brightest] = False
@@ -318,9 +337,9 @@ def _pick_cell_colors_error_min(
     return np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
 
 
-def ema_counts(mode, per_pixel: np.ndarray) -> np.ndarray:
-    """EMA-smoothed (16,) palette counts. Mode must have `_smoothed_counts`."""
-    counts = np.bincount(per_pixel, minlength=16).astype(np.float32)
+def ema_counts(mode, per_pixel: np.ndarray, n_entries: int = 16) -> np.ndarray:
+    """EMA-smoothed (n_entries,) palette counts. Mode must have `_smoothed_counts`."""
+    counts = np.bincount(per_pixel, minlength=n_entries).astype(np.float32)
     if mode._smoothed_counts is None:
         mode._smoothed_counts = counts
     else:

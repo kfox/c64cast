@@ -33,8 +33,12 @@ from c64cast.hw.c64 import (  # noqa: E402
 from c64cast.video import flicker, palette  # noqa: E402
 from c64cast.video.flicker import FLICKER_TOLERANCES  # noqa: E402
 from c64cast.video.framebuffer import Framebuffer  # noqa: E402
-from c64cast.video.modes.base import FlickerComposeBuffers  # noqa: E402
+from c64cast.video.modes.base import (  # noqa: E402
+    FlickerComposeBuffers,
+    MHiresFlickerComposeBuffers,
+)
 from c64cast.video.modes.hires import HiresDisplayMode  # noqa: E402
+from c64cast.video.modes.mhires import MultiHiresDisplayMode, _solid_last  # noqa: E402
 from c64cast.video.modes_irq import (  # noqa: E402
     BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_0,
@@ -588,13 +592,19 @@ class FlickerSetupWarningTest(unittest.TestCase):
     the warning as incidental — this is where it gets asserted instead."""
 
     def test_the_loosest_tier_warns_about_the_seizure_band(self):
-        with self.assertLogs("c64cast.video.modes.hires", level="WARNING") as cm:
-            HiresDisplayMode("normal", flicker_tolerance="visible").setup(FakeAPI())
-        self.assertIn("photosensitive-seizure band", cm.records[0].getMessage())
+        for cls, logger in (
+            (HiresDisplayMode, "c64cast.video.modes.hires"),
+            (MultiHiresDisplayMode, "c64cast.video.modes.mhires"),
+        ):
+            with self.subTest(mode=cls.name), self.assertLogs(logger, level="WARNING") as cm:
+                cls(flicker_tolerance="visible").setup(FakeAPI())
+            self.assertIn("photosensitive-seizure band", cm.records[0].getMessage())
 
     def test_a_fusing_tier_warns_about_nothing(self):
         with self.assertNoLogs("c64cast.video.modes.hires", level="WARNING"):
             HiresDisplayMode("normal", flicker_tolerance="clean").setup(FakeAPI())
+        with self.assertNoLogs("c64cast.video.modes.mhires", level="WARNING"):
+            MultiHiresDisplayMode(flicker_tolerance="clean").setup(FakeAPI())
 
 
 class FlickerPushTest(unittest.TestCase):
@@ -655,8 +665,10 @@ class FlickerResolveTest(unittest.TestCase):
         self.assertEqual("off", resolve_flicker_tolerance("off", "hires"))
         self.assertEqual("clean", resolve_flicker_tolerance("clean", "hires"))
 
-    def test_hires_normal_only(self):
-        self.assertEqual("off", resolve_flicker_tolerance("clean", "mhires"))
+    def test_the_two_bitmap_modes_only(self):
+        """A mode blends only if its per-cell color lives in the screen matrix,
+        which is the one thing the field flip re-points."""
+        self.assertEqual("clean", resolve_flicker_tolerance("clean", "mhires"))
         self.assertEqual("off", resolve_flicker_tolerance("clean", "mcm"))
         self.assertEqual("off", resolve_flicker_tolerance("clean", "petscii"))
         self.assertEqual("off", resolve_flicker_tolerance("clean", "hires_edges"))
@@ -685,6 +697,120 @@ class FlickerResolveTest(unittest.TestCase):
         self.assertIsNotNone(mode._blend_table)
         self.assertFalse(mode.use_reu_staged)
         self.assertFalse(mode.double_buffer)
+
+
+class MHiresFlickerSlotTest(unittest.TestCase):
+    """mhires can only alternate two of its four color slots, so the rules the
+    compose path has to keep are about which entry may land where."""
+
+    def setUp(self):
+        self.enterContext(quiet_logging())
+
+    def _composed(self, **kwargs):
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS, **kwargs)
+        mode.frame_target_size = (160, 200)
+        return mode, cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+
+    def test_color_ram_never_carries_a_blend(self):
+        """c3 is $D800 — one copy, read by both fields. A pair parked there
+        would show only half of itself and mis-render the cell."""
+        _mode, buffers = self._composed()
+        self.assertTrue(
+            bool((buffers["color"] < 16).all()),
+            "color RAM carried an entry outside the 16 real colors",
+        )
+
+    def test_bg0_never_carries_a_blend(self):
+        """bg0 is the single $D021 register the swap handler writes once per
+        committed frame, not per field."""
+        _mode, buffers = self._composed()
+        self.assertLess(buffers["bg"], 16)
+
+    def test_both_pages_are_produced_and_actually_differ(self):
+        _mode, buffers = self._composed()
+        self.assertEqual(buffers["screen"].shape, buffers["screen_b"].shape)
+        self.assertTrue(
+            bool((buffers["screen"] != buffers["screen_b"]).any()),
+            "the two pages are identical, so nothing blends",
+        )
+
+    def test_a_global_palette_mode_holds_the_pages_identical(self):
+        """The global-4 modes pick one set for the frame and do not blend, but
+        the handler alternates the pages regardless — so page B still has to be
+        a real copy rather than the last blended frame's."""
+        for palette_mode in ("cheap", "vivid", "grayscale"):
+            with self.subTest(palette_mode=palette_mode):
+                _mode, buffers = self._composed(palette_mode=palette_mode)
+                np.testing.assert_array_equal(buffers["screen"], buffers["screen_b"])
+
+    def test_the_forced_palette_remap_holds_the_pages_identical(self):
+        """force_palette exists to emit exactly the colors it was given, and a
+        blend is not one of them."""
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS, force_palette=True)
+        mode.frame_target_size = (160, 200)
+        # A hand-built remap onto four exact colors — the contents don't matter,
+        # only that the forced-palette branch is the one that runs.
+        bins = np.indices((8, 8, 8)).sum(axis=0) % 4
+        forced = (0, 2, 6, 14)
+        mode.set_color_map(
+            palette.ColorMap(lut=np.array(forced, dtype=np.uint8)[bins], shift=5, indices=forced)
+        )
+        buffers = cast(MHiresFlickerComposeBuffers, mode.compose(gradient()))
+        np.testing.assert_array_equal(buffers["screen"], buffers["screen_b"])
+
+    def test_solid_last_rotates_rather_than_demoting_when_a_solid_was_picked(self):
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
+        first_blend, last_blend = 16, table.size - 1
+        top3 = np.array([[3, first_blend, last_blend]], dtype=np.int64)
+        out = _solid_last(top3, table)
+        self.assertEqual(out[0, 2], 3, "the solid should have moved to c3")
+        self.assertEqual(sorted(out[0]), [3, first_blend, last_blend], "the set changed")
+
+    def test_solid_last_gives_up_the_pair_that_was_buying_the_least(self):
+        """All three picks are pairs, so one has to go. The cheapest is the one
+        whose fused color was closest to a real color anyway."""
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS)
+        picks = [16, 17, table.size - 1]
+        out = _solid_last(np.array([picks], dtype=np.int64), table)
+        given_up = picks[int(np.argmin(table.demotion_cost[picks]))]
+        self.assertEqual(out[0, 2], table.nearest_solid[given_up])
+        self.assertNotIn(given_up, out[0, :2].tolist())
+
+    def test_the_cell_fit_and_the_lab_metric_are_pinned(self):
+        """Both were forced for the same measured reason — a frequency pick over
+        the widened palette, or a weighted-BGR fit of it, can measure worse than
+        the 16 solids."""
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS, cell_strategy="frequency")
+        self.assertEqual(mode._cell_strategy, "error-min")
+        self.assertTrue(mode._perceptual)
+        self.assertIn("pinned", mode.set_cell_strategy("luminance"))
+        self.assertEqual(mode._cell_strategy, "error-min")
+        self.assertIn("pinned", mode.set_color_match("rgb"))
+        self.assertTrue(mode._perceptual)
+
+
+class MHiresFlickerPushTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(quiet_logging())
+
+    def test_push_writes_both_pages_the_bitmap_and_the_shared_color_ram(self):
+        api = FakeAPI()
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS)
+        mode.frame_target_size = (160, 200)
+        mode.setup(api)
+        api.regions.clear()
+        mode.push(api, mode.compose(gradient()))
+        written = set(api.regions)
+        for addr in (VIC_BANK_2.SCREEN, VIC_BANK_2.SCREEN_ALT, VIC_BANK_2.BITMAP, 0xD800):
+            self.assertIn(addr, written)
+
+    def test_teardown_restores_d018(self):
+        api = FakeAPI()
+        mode = MultiHiresDisplayMode(flicker_tolerance=ALL_TIERS)
+        mode.setup(api)
+        api.memories.clear()
+        mode.teardown(api)
+        self.assertEqual(api.memories.get("D018"), "14")
 
 
 class FlickerMirrorTest(unittest.TestCase):
@@ -740,6 +866,40 @@ class FlickerMirrorTest(unittest.TestCase):
     def test_falls_back_to_page_a_with_no_flicker(self):
         fb = self._armed_framebuffer(0x10, 0x01)
         np.testing.assert_array_equal(fb.render()[100, 160], [255, 255, 255])
+
+    def _armed_mhires(self, bitmap_byte: int, page_a: int, page_b: int, color: int):
+        from c64cast.hw.c64 import SCREEN, VIC
+
+        fb = Framebuffer()
+        fb.on_write(VIC.D011_CONTROL_1, bytes([0x3B]))
+        fb.on_write(VIC.D016_CONTROL_2, bytes([0x18]))  # bitmap + multicolor
+        fb.on_write(VIC.D021_BG0, bytes([0x00]))
+        fb.on_write(SCREEN.BITMAP, bytes([bitmap_byte]) * 8000)
+        fb.on_write(VIC_BANK_0.SCREEN, bytes([page_a]) * 1000)
+        fb.on_write(VIC_BANK_0.SCREEN_ALT, bytes([page_b]) * 1000)
+        fb.on_write(SCREEN.COLOR_RAM, bytes([color]) * 1000)
+        fb.on_write(BANK_SWAP_IRQ_HANDLER_ADDR, FLICKER_SWAP_IRQ_HANDLER)
+        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018, bytes([0x18, 0x38]))
+        fb.on_write(
+            VECTORS.IRQ,
+            bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
+        )
+        return fb
+
+    def test_mhires_fuses_c1_across_the_two_pages(self):
+        # %01 everywhere; c1 is white on page A and black on page B.
+        fb = self._armed_mhires(0x55, page_a=0x10, page_b=0x00, color=0x02)
+        pixel = fb.render()[100, 160]
+        self.assertTrue(
+            np.all(pixel > 180) and np.all(pixel < 200),
+            f"expected the linear-light fusion of black and white, got {pixel}",
+        )
+
+    def test_mhires_leaves_color_ram_unfused(self):
+        """c3 is the un-banked $D800: both fields read the one value, so the
+        mirror must show it as the solid color it is."""
+        fb = self._armed_mhires(0xFF, page_a=0x10, page_b=0x00, color=0x02)
+        np.testing.assert_array_equal(fb.render()[100, 160], palette.C64_PALETTE_BGR[2])
 
 
 if __name__ == "__main__":

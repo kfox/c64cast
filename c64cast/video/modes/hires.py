@@ -15,9 +15,7 @@ from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
     DEFAULT_TOLERANCE,
-    FLASH_CRITERION_LUMA_DELTA,
     FLICKER_TOLERANCES,
-    WARN_LUMA_DELTA,
     BlendTable,
     blend_distances_for,
     build_blend_table,
@@ -332,61 +330,10 @@ class HiresDisplayMode(BitmapDisplayMode):
             # the field-alternating swap IRQ. self.double_buffer stays False for
             # this: the plain host-DMA path installs a swap handler with no $D018
             # phase toggle, and the two cannot share $0314.
-            table = self._blend_table
             self._setup_flicker_doublebuffer(api)
-            log.info(
-                "hires: flicker blend armed — %d blend pairs from %s, "
-                "ΔY <= %.3f (%d effective colors), pages $%04X/$%04X, "
-                "IRQ @ $%04X",
-                table.blend_count,
-                "an explicit flicker_score_pairs list"
-                if table.scoring
-                else f"tolerance {table.tolerance!r}",
-                table.max_luma_delta,
-                table.size,
-                VIC_BANK_0.SCREEN,
-                VIC_BANK_0.SCREEN_ALT,
-                BANK_SWAP_IRQ_HANDLER_ADDR,
-            )
-            if table.max_luma_delta > FLASH_CRITERION_LUMA_DELTA:
-                log.warning(
-                    "hires: flicker_max_luma_delta = %.3f is past %.2f, where a blended "
-                    "area's luminance modulation approaches the 20%%-of-peak-white flash "
-                    "criterion the photosensitive-seizure guidance is written around (it "
-                    "alternates at 25 Hz PAL / 30 Hz NTSC, inside the risk band). Allowed "
-                    "rather than refused, because a pair you have looked at and accepted "
-                    "outranks this number — but don't raise it for a stream anyone else "
-                    "will watch without knowing that.",
-                    table.max_luma_delta,
-                    FLASH_CRITERION_LUMA_DELTA,
-                )
-            elif table.max_luma_delta > WARN_LUMA_DELTA:
-                log.warning(
-                    "hires: flicker_max_luma_delta = %.3f is above %.2f, where pairs "
-                    "start to read as luminance flicker rather than color.",
-                    table.max_luma_delta,
-                    WARN_LUMA_DELTA,
-                )
-            if table.scoring:
-                log.warning(
-                    "hires: flicker_score_pairs is set — the blend set is this explicit "
-                    "list, not the scored one, so neither flicker_tolerance nor "
-                    "flicker_max_luma_delta is filtering it. This is the scoring path; "
-                    "a pair reachable only this way was excluded on evidence, and some "
-                    "of them flicker hard. Don't leave it set for anything but scoring.",
-                )
-            elif table.tolerance == "visible":
-                log.warning(
-                    "hires: flicker_tolerance = %r admits pairs scored as visibly "
-                    "flickering rather than fusing. A blended area alternates at the "
-                    "video field rate (25 Hz PAL / 30 Hz NTSC), inside the recognized "
-                    "photosensitive-seizure band — don't use this for a stream anyone "
-                    "else will watch.",
-                    table.tolerance,
-                )
-            # Which pairs specifically — the thing you want when deciding
-            # whether flicker_max_luma_delta is set where you meant it.
-            log.debug("hires: flicker pairs = %s", ", ".join(table.describe()))
+            # Hires puts both of a cell's colors in the screen byte, so the page
+            # flip reaches every color the mode has.
+            self._log_flicker_arming(self._blend_table, blendable="fg + bg (both screen nibbles)")
         elif self.double_buffer:
             # Host-DMA double-buffer: zero both banks + install the minimal
             # vblank swap IRQ (no REU). See _setup_hostdma_doublebuffer.

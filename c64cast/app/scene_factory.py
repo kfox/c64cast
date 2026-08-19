@@ -190,6 +190,12 @@ def resolve_double_buffer(
     return bool(setting)
 
 
+# Display modes whose per-cell color lives in the screen matrix, which is the
+# only memory the field-alternating page flip can re-point ($D018). See
+# resolve_flicker_tolerance.
+_FLICKER_DISPLAY_MODES = ("hires", "mhires")
+
+
 def resolve_flicker_tolerance(
     setting: str,
     display: str,
@@ -204,10 +210,14 @@ def resolve_flicker_tolerance(
     Opt-in, so there is no "auto" to resolve; this only decides where an
     explicit tolerance can actually be honored. Three gates, all structural:
 
-      * hires only. mhires' third color lives in color RAM at $D800, which is
-        not VIC-banked and not selected by $D018, so only part of its picture
-        could alternate; the char modes keep per-cell color there too. This
-        also excludes the fixed-2-color edges styling, which picks no color to
+      * the two bitmap modes only. What alternates is the screen matrix, which
+        $D018 re-points every field, so a mode blends exactly the colors it
+        keeps there: hires both nibbles of every cell, mhires its c1 and c2.
+        mhires' c3 lives in color RAM at $D800 — not VIC-banked, not selected
+        by $D018 — and its bg0 is the single $D021 register, so those two stay
+        real colors (see modes/mhires.py). The char modes keep all their
+        per-cell color in $D800 and so have nothing to alternate. This also
+        excludes the fixed-2-color edges styling, which picks no color to
         blend: _build_display_mode reaches it through the separate
         "hires_edges" display name, never through "hires".
       * no buffer-painting text overlay. The second screen page sits at the
@@ -223,7 +233,7 @@ def resolve_flicker_tolerance(
         raise ValueError(
             f"[color].flicker_tolerance must be one of {tuple(FLICKER_TOLERANCES)}, got {setting!r}"
         )
-    if setting == "off" or display != "hires":
+    if setting == "off" or display not in _FLICKER_DISPLAY_MODES:
         return "off"
     return setting if not (has_buffer_overlays or audio_reu_pump_active) else "off"
 
@@ -359,6 +369,9 @@ def _build_display_mode(
             cell_strategy=cell_strategy,
             motion_smoothing=color.motion_smoothing,
             auto_fit_strength=auto_fit_strength,
+            flicker_tolerance=flicker_tolerance,
+            flicker_max_luma_delta=color.flicker_max_luma_delta,
+            flicker_score_pairs=color.flicker_score_pairs,
         )
     if name == "blank":
         return BlankDisplayMode(border=border, background=background, use_reu_staged=use_reu_staged)

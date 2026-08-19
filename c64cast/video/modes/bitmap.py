@@ -3,6 +3,9 @@ bring-up choreography) + BitmapDisplayMode."""
 
 from __future__ import annotations
 
+import logging
+from typing import cast
+
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA2,
@@ -13,7 +16,13 @@ from c64cast.hw.c64 import (
     VIC_BANK_2,
     RegionID,
 )
+from c64cast.video.flicker import (
+    FLASH_CRITERION_LUMA_DELTA,
+    WARN_LUMA_DELTA,
+    BlendTable,
+)
 from c64cast.video.modes_irq import (
+    BANK_SWAP_IRQ_HANDLER_ADDR,
     DD00_BANK_0,
     DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
@@ -27,7 +36,9 @@ from c64cast.video.modes_irq import (
 )
 from c64cast.video.palette import build_fade_lut
 
-from .base import BitmapComposeBuffers, DisplayMode, fade_nibbles
+from .base import BitmapComposeBuffers, DisplayMode, FlickerComposeBuffers, fade_nibbles
+
+log = logging.getLogger(__name__)
 
 
 def engage_bitmap_mode(
@@ -260,6 +271,78 @@ class BitmapDisplayMode(DisplayMode):
             tracker_init=self._flicker_tracker(0, DD00_BANK_0, ready=False),
         )
 
+    def _log_flicker_arming(self, table: BlendTable, *, blendable: str) -> None:
+        """The arming line for a blended scene, plus the warnings that go with
+        settings a reader should not reach by accident.
+
+        `blendable` names which of the mode's color slots can actually hold a
+        pair, which differs by mode and is the thing a reader most needs: hires
+        alternates both nibbles of every screen byte, mhires only two of its
+        four slots."""
+        # Logged against the concrete mode's own module so `hires:`/`mhires:`
+        # lines keep arriving on the logger a reader filters for, rather than on
+        # this shared base's.
+        log = logging.getLogger(type(self).__module__)
+        log.info(
+            "%s: flicker blend armed — %d blend pairs from %s, "
+            "ΔY <= %.3f (%d effective colors), blendable slots: %s, "
+            "pages $%04X/$%04X, IRQ @ $%04X",
+            self.name,
+            table.blend_count,
+            "an explicit flicker_score_pairs list"
+            if table.scoring
+            else f"tolerance {table.tolerance!r}",
+            table.max_luma_delta,
+            table.size,
+            blendable,
+            VIC_BANK_0.SCREEN,
+            VIC_BANK_0.SCREEN_ALT,
+            BANK_SWAP_IRQ_HANDLER_ADDR,
+        )
+        if table.max_luma_delta > FLASH_CRITERION_LUMA_DELTA:
+            log.warning(
+                "%s: flicker_max_luma_delta = %.3f is past %.2f, where a blended "
+                "area's luminance modulation approaches the 20%%-of-peak-white flash "
+                "criterion the photosensitive-seizure guidance is written around (it "
+                "alternates at 25 Hz PAL / 30 Hz NTSC, inside the risk band). Allowed "
+                "rather than refused, because a pair you have looked at and accepted "
+                "outranks this number — but don't raise it for a stream anyone else "
+                "will watch without knowing that.",
+                self.name,
+                table.max_luma_delta,
+                FLASH_CRITERION_LUMA_DELTA,
+            )
+        elif table.max_luma_delta > WARN_LUMA_DELTA:
+            log.warning(
+                "%s: flicker_max_luma_delta = %.3f is above %.2f, where pairs "
+                "start to read as luminance flicker rather than color.",
+                self.name,
+                table.max_luma_delta,
+                WARN_LUMA_DELTA,
+            )
+        if table.scoring:
+            log.warning(
+                "%s: flicker_score_pairs is set — the blend set is this explicit "
+                "list, not the scored one, so neither flicker_tolerance nor "
+                "flicker_max_luma_delta is filtering it. This is the scoring path; "
+                "a pair reachable only this way was excluded on evidence, and some "
+                "of them flicker hard. Don't leave it set for anything but scoring.",
+                self.name,
+            )
+        elif table.tolerance == "visible":
+            log.warning(
+                "%s: flicker_tolerance = %r admits pairs scored as visibly "
+                "flickering rather than fusing. A blended area alternates at the "
+                "video field rate (25 Hz PAL / 30 Hz NTSC), inside the recognized "
+                "photosensitive-seizure band — don't use this for a stream anyone "
+                "else will watch.",
+                self.name,
+                table.tolerance,
+            )
+        # Which pairs specifically — the thing you want when deciding whether
+        # flicker_max_luma_delta is set where you meant it.
+        log.debug("%s: flicker pairs = %s", self.name, ", ".join(table.describe()))
+
     def _setup_hostdma_doublebuffer(self, api: C64Backend) -> None:
         """Zero both VIC banks' bitmap+screen, pin bank 0, and install the
         minimal vblank swap IRQ. Mirrors the REU setup minus the REU staging —
@@ -287,4 +370,13 @@ class BitmapDisplayMode(DisplayMode):
         lut = build_fade_lut(self._fade_lut_alpha)
         out["screen"] = fade_nibbles(buffers["screen"], lut)
         out["bg"] = int(lut[buffers["bg"]])
+        if "screen_b" in buffers:
+            # Under flicker blending the second page holds the same kind of
+            # packed nibble pair. Dimming only page A would turn every blended
+            # cell into an alternation between a dimmed color and an undimmed
+            # one — a fade that introduces flicker instead of removing it.
+            flicker = cast(FlickerComposeBuffers, out)
+            flicker["screen_b"] = fade_nibbles(
+                cast(FlickerComposeBuffers, buffers)["screen_b"], lut
+            )
         return out

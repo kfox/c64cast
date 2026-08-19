@@ -848,7 +848,7 @@ class DisplayModePaletteTest(unittest.TestCase):
         d[np.arange(32000), quantized] = 0.0
 
         flat = np.zeros((32000, 3), dtype=np.float32)  # unused: dither_method="none"
-        _bitmap, screen, color, bg0 = m._compose_percell(d, flat)
+        _bitmap, screen, color, bg0, _b = m._compose_percell(d, flat)
         self.assertEqual(bg0, 0)
         for i in range(1000):
             slots = {(screen[i] >> 4) & 0x0F, screen[i] & 0x0F, color[i] & 0x0F}

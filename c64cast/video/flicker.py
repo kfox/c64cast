@@ -96,6 +96,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 
 import cv2
 import numpy as np
@@ -324,6 +325,45 @@ class BlendTable:
         """Split extended indices into their field-A and field-B palette indices."""
         table = self.pairs[indices]
         return table[..., 0], table[..., 1]
+
+    @cached_property
+    def luma(self) -> np.ndarray:
+        """(N,) Rec.601 luma of each entry's fused color, on encoded sRGB.
+
+        Deliberately the same formula palette.PALETTE_LUMA uses rather than the
+        linear-light Rec.709 one above: this orders a cell's colors dark→light
+        for the luminance/contrast cell strategies, and those have to rank
+        blends and solids on one scale.
+        """
+        return (self.bgr @ np.array([0.114, 0.587, 0.299], dtype=np.float32)).astype(np.float32)
+
+    @cached_property
+    def nearest_solid(self) -> np.ndarray:
+        """(N,) index of the closest of the 16 solids to each entry's fused color.
+
+        Identity over the first 16. What a slot that cannot alternate falls back
+        to — mhires' c3 lives in color RAM at $D800, which is neither VIC-banked
+        nor selected by $D018, so a blend picked there has to be demoted to a
+        real color rather than dropped.
+        """
+        ent = _to_lab(self.bgr)
+        sol = _to_lab(self.bgr[:16])
+        return np.argmin(((ent[:, None, :] - sol[None, :, :]) ** 2).sum(axis=2), axis=1).astype(
+            np.uint8
+        )
+
+    @cached_property
+    def demotion_cost(self) -> np.ndarray:
+        """(N,) Lab distance from each entry to the solid it would fall back to.
+
+        Zero over the first 16. Ranks which of a cell's blends to give up when a
+        slot that cannot alternate has to be filled from them: the cheapest is
+        the blend that was closest to a real color anyway, so it was buying the
+        least. Content-independent, which is the point — ranking by pixel count
+        instead would let EMA jitter reshuffle the slots on a static cell.
+        """
+        ent = _to_lab(self.bgr)
+        return np.linalg.norm(ent - ent[self.nearest_solid], axis=1).astype(np.float32)
 
     def describe(self) -> list[str]:
         """Human-readable names of the blend entries, for logging."""

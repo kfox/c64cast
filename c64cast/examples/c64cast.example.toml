@@ -756,17 +756,25 @@ cell_strategy = "auto"
 # average filters it out — so it is only worth choosing under a tight CPU budget.
 hires_cell_pick = "error-min"
 #
-# flicker_tolerance: temporal color blending for hires, and how much visible
-# flicker you will accept in exchange (hires "normal" style only). Holds two
+# flicker_tolerance: temporal color blending for the bitmap modes, and how much
+# visible flicker you will accept in exchange (hires "normal" style, or mhires
+# with palette_mode = "percell"). Holds two
 # screen pages over one shared bitmap and alternates them at the VIC field rate,
 # so the eye fuses each cell's pair of hardware colors into a shade the VIC
 # cannot draw — the trick Dragon Breed and Mayhem in Monsterland used. The
 # alternation is driven by the C64 itself, so it does NOT need a fast link: the
 # host just uploads the pair, costing one extra 1000-byte page per frame.
 #
-# What it fixes is GRADIENT BANDING, not the palette generally — spatial dither
-# already makes intermediate colors wherever there is texture to hide them in,
-# so a chromatic gradient improves 27-34% while a photograph improves ~1%.
+# What it fixes in hires is GRADIENT BANDING, not the palette generally — spatial
+# dither already makes intermediate colors wherever there is texture to hide them
+# in, so a chromatic gradient improves 27-34% while a photograph improves ~1%.
+#
+# In mhires it is worth much more, and on ordinary content: four colors across a
+# 4-pixel-wide cell leave dither far less room, so a photograph improves 4-32%
+# depending on palette and setting. Only two of a cell's four colors can blend
+# there — the two the screen byte carries. Its third color lives in color RAM,
+# which both fields read from the one copy, and its background is a single
+# register; both stay real hardware colors.
 #
 # Not every pair actually fuses, and nothing computed from the two colors
 # predicts which ones do — brightness distance, chroma distance and a red-orange
