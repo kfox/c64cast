@@ -95,9 +95,11 @@ class ValidateConfigsTest(unittest.TestCase):
         loaded = _loaded(["a"])
         loaded.cfgs[0].audio.enabled = True
         with mock.patch.object(session, "AUDIO_AVAILABLE", False):
-            with self.assertRaises(session.SessionConfigError) as cm:
-                session.validate_configs(loaded, loaded.cfgs)
+            with self.assertLogs("c64cast", level="ERROR") as logged:
+                with self.assertRaises(session.SessionConfigError) as cm:
+                    session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 3)
+        self.assertIn("sounddevice is not installed", logged.output[0])
 
     def test_a_config_error_from_any_validator_is_exit_5(self):
         loaded = _loaded(["a"])
@@ -106,9 +108,11 @@ class ValidateConfigsTest(unittest.TestCase):
             "validate_dither_cfg",
             side_effect=cfgmod.ConfigError("bad dither"),
         ):
-            with self.assertRaises(session.SessionConfigError) as cm:
-                session.validate_configs(loaded, loaded.cfgs)
+            with self.assertLogs("c64cast", level="ERROR") as logged:
+                with self.assertRaises(session.SessionConfigError) as cm:
+                    session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 5)
+        self.assertIn("bad dither", logged.output[0])
 
     def test_clean_configs_pass(self):
         loaded = _loaded(["a", "b"])
@@ -120,8 +124,9 @@ class ValidateConfigsTest(unittest.TestCase):
         # CLI's answer to a bad scene identical.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", duration_s=5.0)]
-        with self.assertRaises(session.SessionConfigError) as cm:
-            session.validate_configs(loaded, loaded.cfgs)
+        with self.assertLogs("c64cast", level="ERROR"):
+            with self.assertRaises(session.SessionConfigError) as cm:
+                session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 3)
 
     def test_the_diagnostic_names_the_scene_that_failed(self):
@@ -140,8 +145,9 @@ class ValidateConfigsTest(unittest.TestCase):
         # surface mid-show rather than before the run.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", follower_only=True, duration_s=5.0)]
-        with self.assertRaises(session.SessionConfigError):
-            session.validate_configs(loaded, loaded.cfgs)
+        with self.assertLogs("c64cast", level="ERROR"):
+            with self.assertRaises(session.SessionConfigError):
+                session.validate_configs(loaded, loaded.cfgs)
 
     def test_transport_coercion_runs_before_any_stack_is_built(self):
         # [audio].use_reu_pump has no seek/splice support, so a transport.*
@@ -220,7 +226,9 @@ class StartServicesTest(unittest.TestCase):
             "c64cast.control.control_plane.start_control_server",
             side_effect=RuntimeError("port in use"),
         ):
-            session.start_services(sess)  # no raise
+            with self.assertLogs("c64cast", level="ERROR") as logged:
+                session.start_services(sess)  # no raise
+        self.assertIn("control plane disabled: port in use", logged.output[0])
         self.assertIsNone(sess.control_server)
 
     def test_a_non_interactive_session_skips_the_in_session_control_plane(self):

@@ -217,7 +217,10 @@ class SidFileAudioSourceTest(unittest.TestCase):
             path,
             display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
         )
-        src.setup()
+        # setup warns that $D420 is undeclared on this machine (covered in
+        # test_sid_resolved) — assertLogs keeps it off the console.
+        with self.assertLogs("c64cast.sid.sid_resolved", level="WARNING"):
+            src.setup()
         api.ops.clear()  # only the teardown ordering is under test
         src.teardown()
 

@@ -235,14 +235,21 @@ def _session(req: serve.StartRequest) -> session.Session:
 
 class _Build:
     """Publishes a fake session, optionally waiting on a gate first so a test
-    can hold the supervisor in `starting` and drive the routes against it."""
+    can hold the supervisor in `starting` and drive the routes against it.
+
+    `entered` fires as the build begins. A gated test needs it: the route
+    answers as soon as the supervisor flips to `starting`, which is before the
+    worker thread has reached the build at all, so `calls` is racing that
+    thread until this is set."""
 
     def __init__(self) -> None:
         self.gate: threading.Event | None = None
+        self.entered = threading.Event()
         self.calls = 0
 
     def __call__(self, req, generation, publish):
         self.calls += 1
+        self.entered.set()
         if self.gate is not None:
             self.gate.wait(WAIT)
         sess = _session(req)
@@ -329,6 +336,7 @@ class SessionLifecycleTest(WebApiTestCase):
         self.addCleanup(self.build.gate.set)
         with self.client() as c:
             self.assertEqual(c.post("/api/session/start", headers=AUTH).status_code, 202)
+            self.assertTrue(self.build.entered.wait(WAIT), "the build never started")
             r = c.post("/api/session/start", headers=AUTH)
             self.assertEqual(r.status_code, 409)
             self.assertIn("starting", r.json()["detail"])

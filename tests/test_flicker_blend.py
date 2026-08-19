@@ -19,7 +19,7 @@ from typing import cast
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, quiet_logging  # noqa: E402
 
 from c64cast.app.scene_factory import resolve_flicker_tolerance  # noqa: E402
 from c64cast.hw.c64 import (  # noqa: E402
@@ -582,7 +582,27 @@ class FlickerComposeTest(unittest.TestCase):
                 self.assertIsNone(mode._blend_table)
 
 
+class FlickerSetupWarningTest(unittest.TestCase):
+    """The loosest tier is the one nobody should stream, so setup says so.
+    The structural tests below run at that tier for its pair yield and treat
+    the warning as incidental — this is where it gets asserted instead."""
+
+    def test_the_loosest_tier_warns_about_the_seizure_band(self):
+        with self.assertLogs("c64cast.video.modes.hires", level="WARNING") as cm:
+            HiresDisplayMode("normal", flicker_tolerance="visible").setup(FakeAPI())
+        self.assertIn("photosensitive-seizure band", cm.records[0].getMessage())
+
+    def test_a_fusing_tier_warns_about_nothing(self):
+        with self.assertNoLogs("c64cast.video.modes.hires", level="WARNING"):
+            HiresDisplayMode("normal", flicker_tolerance="clean").setup(FakeAPI())
+
+
 class FlickerPushTest(unittest.TestCase):
+    def setUp(self):
+        # ALL_TIERS makes every setup() here emit the seizure-band warning;
+        # FlickerSetupWarningTest owns that assertion.
+        self.enterContext(quiet_logging())
+
     def test_setup_installs_the_flicker_handler_and_seeds_the_pages(self):
         api = FakeAPI()
         HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS).setup(api)

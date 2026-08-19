@@ -80,6 +80,31 @@ where relative paths 404. **Releasing** is [RELEASING.md](RELEASING.md), guarded
 [tests/test_release.py](tests/test_release.py). Visual verification on real hardware
 is the `hw-visual-verify` skill.
 
+## Tests
+
+Stdlib `unittest`, one module per subject under `tests/`, no hardware — run it
+with `make test` (never a raw runner; see ["Tests"](CONTRIBUTING.md#tests) for
+the full conventions).
+
+**A test run must print only pass/fail/skip indicators, and committing a test
+that leaks anything else is forbidden.** Expected output buries real failures,
+so every by-product gets wrapped where it fires:
+
+- Raises → `assertRaises`. Logs → `self.assertLogs("c64cast.<module>", …)`.
+  Writes to stdout → `redirect_stdout` (plus an assertion on the buffer).
+- When a call both logs and raises, nest `assertLogs` *outside* `assertRaises`,
+  or the records go unverified.
+- Where the message is incidental — a warning from a subsystem the test only
+  had to set up — use `quiet_logging()` from [tests/_fakes.py](tests/_fakes.py)
+  instead, and make sure some *other* test asserts that message. It also
+  restores the root logger, which anything driving `cli.main()` needs.
+- `logging.disable` outranks `assertLogs`, so `quiet_logging()` and
+  `assertLogs` must never nest — put the asserting tests in their own class.
+- `patch.object(...).start()` with no matching `stop()` leaks past the test
+  into its whole worker process. Use a `with` block or `addCleanup`.
+
+Check with `make test` and read the output: anything between the dots is a leak.
+
 ## Quirks worth knowing
 
 Cross-cutting traps that belong to no single module. **Per-subsystem design rationale
