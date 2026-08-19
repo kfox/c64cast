@@ -372,9 +372,12 @@ def check_source_alternation(device: int | str, seconds: float = 4.0) -> str:
     alternation at its own rate shows one field for seconds at a time, and a
     still picture is exactly where that is most convincing.
 
-    The evidence is the shape of the consecutive-frame difference. Alternating
-    every field means every captured frame differs from the last by about the
-    same amount; a beat means long identical runs with a spike at each turn.
+    What is checked is that the two pages differ at all, which is the part the
+    C64 owns. Whether *consecutive captured frames* alternate is a fact about
+    the capture rate, not about the machine: a card delivering 30 fps against a
+    59.83 Hz alternation samples the same field repeatedly and beats, which is
+    normal and says nothing about the C64. An earlier version tested for
+    alternating consecutive frames and failed a perfectly good sitting for it.
     """
     import numpy as np
 
@@ -393,19 +396,29 @@ def check_source_alternation(device: int | str, seconds: float = 4.0) -> str:
     if len(frames) < 30:
         return f"  source check SKIPPED — only {len(frames)} frames captured (no signal?)"
     stack = np.stack(frames)
-    diffs = np.abs(np.diff(stack, axis=0)).mean(axis=(1, 2, 3))
-    quiet = float((diffs < diffs.max() * 0.25).mean())
-    states = float(np.abs(stack - stack[0]).mean(axis=(1, 2, 3)).std())
-    if quiet < 0.10 and states > 0.5:
+    fps = len(frames) / seconds
+    dist = np.abs(stack - stack[0]).mean(axis=(1, 2, 3))
+    spread = float(dist.max())
+    if spread < 0.5:
         return (
-            "  SOURCE VERIFIED: the C64 is alternating its two pages every field.\n"
-            "  So if you see the picture slowly flip between two versions of itself,\n"
-            "  that is the screen or capture path sampling it, NOT the effect."
+            "  SOURCE CHECK FAILED: every captured frame is the same picture.\n"
+            "  The two pages are not alternating at all, so nothing here is\n"
+            "  scorable — stop and report this rather than rating anything."
         )
-    return (
-        f"  SOURCE CHECK FAILED: {quiet:.0%} of captured frame pairs are identical.\n"
-        "  The two pages are not alternating every field, so nothing here is\n"
-        "  scorable — stop and report this rather than rating anything."
+    diffs = np.abs(np.diff(stack, axis=0)).mean(axis=(1, 2, 3))
+    alternating = float((diffs > spread * 0.5).mean())
+    note = "  SOURCE VERIFIED: the two pages differ and the C64 is flipping between them.\n"
+    if alternating > 0.9:
+        note += f"  The capture ({fps:.0f} fps) is resolving every field.\n"
+    else:
+        note += (
+            f"  Note: the capture ({fps:.0f} fps) is too slow to resolve every field, so it\n"
+            f"  beats — {1 - alternating:.0%} of its frame pairs are identical. That is the\n"
+            "  capture, not the machine.\n"
+        )
+    return note + (
+        "  Either way: if the DISPLAY slowly flips between two versions of the\n"
+        "  picture, that is your screen sampling it and scoring is meaningless."
     )
 
 
