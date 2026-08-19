@@ -89,8 +89,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   routinely near-ties frame to frame. Fixed before this shipped: the pick now
   keeps the previous frame's trio unless a challenger's error is at least 25%
   lower, so a near-tie stops flip-flopping while a genuine color change still
-  wins on a single frame, scaled by `motion_smoothing` like the mode's other
-  temporal smoothing.
+  wins on a single frame. Unscaled by `motion_smoothing` — unlike the mode's
+  other temporal smoothing, a genuinely-better trio's error improvement clears
+  the margin on a single frame regardless, so there's no responsiveness cost
+  to buy back by scaling it down.
 
   **Which pairs fuse was measured, not derived.** Nothing computed from the two
   colors predicts it: brightness distance correlates with scored verdicts at
