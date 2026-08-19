@@ -379,7 +379,9 @@ class SystemModeTimingTest(unittest.TestCase):
         )
 
     def test_read_system_timing_none_on_unknown_label(self):
-        self.assertIsNone(hw_provision.read_system_timing(_FakeVideoApi(system_mode="SECAM")))
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            self.assertIsNone(hw_provision.read_system_timing(_FakeVideoApi(system_mode="SECAM")))
+        self.assertIn("unrecognized System Mode", logs.output[0])
 
     def test_read_video_output_reports_both_fields(self):
         api = _FakeVideoApi(system_mode="PAL", scan_resolution="HD (720p)")
@@ -492,18 +494,22 @@ class ProvisionVideoOutputTest(unittest.TestCase):
 
     def test_unreadable_mode_leaves_the_machine_alone(self):
         api = _FakeVideoApi(system_mode=None, scan_resolution="SD (480p/576p)")
-        self.assertIsNone(
-            hw_provision.provision_video_output(api, _video_cfg("PAL", sid_video_mode="auto"))
-        )
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            self.assertIsNone(
+                hw_provision.provision_video_output(api, _video_cfg("PAL", sid_video_mode="auto"))
+            )
+        self.assertIn("could not be read", logs.output[0])
         self.assertEqual(api.put_calls, [])
 
     def test_a_failed_put_degrades_instead_of_raising(self):
         import requests
 
         api = _FakeVideoApi(put_error=requests.RequestException("boom"))
-        self.assertIsNone(
-            hw_provision.provision_video_output(api, _video_cfg("PAL", sid_video_mode="auto"))
-        )
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            self.assertIsNone(
+                hw_provision.provision_video_output(api, _video_cfg("PAL", sid_video_mode="auto"))
+            )
+        self.assertIn("could not set System Mode", logs.output[0])
 
 
 class RestoreVideoOutputTest(unittest.TestCase):
@@ -529,7 +535,9 @@ class RestoreVideoOutputTest(unittest.TestCase):
         import requests
 
         api = _FakeVideoApi(put_error=requests.RequestException("boom"))
-        hw_provision.restore_video_output(api, {"System Mode": "NTSC"})
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+            hw_provision.restore_video_output(api, {"System Mode": "NTSC"})
+        self.assertIn("could not restore U64 System Mode", logs.output[0])
 
 
 class ResolveSystemTest(unittest.TestCase):

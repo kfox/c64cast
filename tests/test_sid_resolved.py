@@ -686,7 +686,9 @@ class UnplaceableChipsOnEmuSurfaceTest(unittest.TestCase):
     def test_a_later_model_mismatch_still_gets_the_split_warning(self):
         # Suppression is per tune, not a global mute: the sentinel is only
         # spent when the split warning actually fires.
-        sr.log_resolved_audio(self._api(host_model="6581"), (0xD400, 0xD420), ("6581", "6581"))
+        with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as first:
+            sr.log_resolved_audio(self._api(host_model="6581"), (0xD400, 0xD420), ("6581", "6581"))
+        self.assertIn("drives 2 SID chips", " ".join(r.getMessage() for r in first.records))
         later = self._api(host_model="6581", curve="8580")
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(later, (0xD400,), ("8580",))

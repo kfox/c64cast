@@ -1475,8 +1475,12 @@ class SidPlayRateTest(unittest.TestCase):
 
     def test_a_failed_write_degrades_instead_of_raising(self):
         self._load(clock="PAL")
-        patch.object(self.api, "write_memory", side_effect=RuntimeError("boom")).start()
-        self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+        with (
+            patch.object(self.api, "write_memory", side_effect=RuntimeError("boom")),
+            self.assertLogs("c64cast.hw.api", level="WARNING") as cm,
+        ):
+            self.assertIsNone(self.api._apply_play_rate(self._kernal_sample()))
+        self.assertIn("could not set the PLAY rate", cm.records[0].getMessage())
 
     def test_teardown_only_writes_back_over_a_latch_we_set(self):
         self._load(clock="PAL")
