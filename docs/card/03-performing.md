@@ -74,7 +74,7 @@ reaches the audience's screen.
 | **Screen** | The C64's own picture, tapped off the VIC by the U64's FPGA. **Watch** starts it, **Stop** ends it. U64 only |
 | Tempo bar | Tap tempo, pause, resume, skip |
 | **Scenes** | The playlist, with a tap to jump — a cut, no interstitial |
-| **Tune** | The running scene's colour, generator and scope knobs |
+| **Tune** | The running scene's color, generator and scope knobs |
 | **Keep** | Writes what you tuned into the config the show is running from |
 
 It prints a login URL holding its own token at startup; that token can stop the

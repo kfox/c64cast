@@ -73,10 +73,10 @@ The capture device sees the Ultimate's upscaler, not the C64's own timing, and
 
 **I use the composite output and retiming made it worse.** Over HDMI the
 Ultimate's scaler hides the difference; over composite it does not. c64cast
-keeps your colour encoding, but the field rate changes with the timing, and a
+keeps your color encoding, but the field rate changes with the timing, and a
 television built for one standard may not lock to the other's rate. A PAL
-machine retimed to NTSC sends PAL colour at 60 Hz, which most modern sets cope
-with; an NTSC machine retimed to PAL sends NTSC colour at 50 Hz, which is
+machine retimed to NTSC sends PAL color at 60 Hz, which most modern sets cope
+with; an NTSC machine retimed to PAL sends NTSC color at 50 Hz, which is
 fussier and often comes out in black and white. The sound is unaffected, other
 than the pitch change you were after.
 

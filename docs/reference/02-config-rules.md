@@ -95,7 +95,7 @@ As an alternative to the directive, most editors can associate a schema with a
 filename pattern instead — `evenBetterToml.schema.associations` in VS Code,
 a catalog entry for Taplo — using the same path. Set once, it covers every
 configuration you own and puts nothing inside the files, at the cost of not
-travelling with a file you hand to someone else.
+traveling with a file you hand to someone else.
 
 The schema is generated from the same field metadata as Appendix A, and it is
 strict — a section name it does not know is an error rather than an unknown

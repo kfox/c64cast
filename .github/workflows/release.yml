@@ -198,7 +198,7 @@ jobs:
       # README uses: these notes are the record of one release and still name
       # its files after the next one lands.
       #
-      # The install commands lead, and the distributions are labelled for the
+      # The install commands lead, and the distributions are labeled for the
       # installer rather than the reader. A page whose first move is a list of
       # files to download teaches that upgrading means downloading files, and
       # the one thing that cannot upgrade an install is unpacking an archive

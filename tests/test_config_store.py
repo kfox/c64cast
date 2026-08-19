@@ -12,7 +12,7 @@ tested — and reused — without a server. The route-level mapping onto status
 codes lives in tests/test_web_api.py.
 
 Not covered: a root on a case-insensitive filesystem where two labels collide
-only after normalisation, and concurrent writes to the same file from two
+only after normalization, and concurrent writes to the same file from two
 consoles (last writer wins, by design — the backup sibling is the recovery)."""
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class StoreTestCase(unittest.TestCase):
 
 
 class RootsTest(StoreTestCase):
-    def test_roots_are_labelled_by_their_own_basename(self):
+    def test_roots_are_labeled_by_their_own_basename(self):
         self.assertEqual([r.label for r in self.store.roots], ["shows"])
         self.assertEqual(self.store.roots[0].path, self.shows)
 
@@ -332,7 +332,7 @@ class WriteTest(StoreTestCase):
 
 
 class PatchTest(StoreTestCase):
-    """The generated form's save path: load, set, re-serialise, write.
+    """The generated form's save path: load, set, re-serialize, write.
 
     What these pin down is that a patch can only reach what the form rendered,
     and that the file it produces still loads — the round-trip itself
@@ -353,7 +353,7 @@ class PatchTest(StoreTestCase):
 
     def test_a_scenes_type_is_not_a_field_edit(self):
         # Changing it would reinterpret every other field in the block, and the
-        # re-serialise would then drop the ones the new type has no use for —
+        # re-serialize would then drop the ones the new type has no use for —
         # a save that quietly loses what the scene said. Text editor's job.
         with self.assertRaises(config_store.EditRejected) as caught:
             self.store.patch("shows/gig.toml", [{"scene": 0, "field": "type", "value": "video"}])
@@ -649,7 +649,7 @@ class DescribeTest(unittest.TestCase):
         self.assertIn("sink_width", names)
         self.assertNotIn("file", names)
 
-    def test_the_form_is_json_serialisable(self):
+    def test_the_form_is_json_serializable(self):
         cfg = cfgmod.Config()
         cfg.scenes.append(cfgmod.SceneCfg(type="blank"))
         json.dumps(config_store.describe(cfg))

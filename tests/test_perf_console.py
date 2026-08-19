@@ -11,7 +11,7 @@ build (a frame that raises logs and closes rather than going quiet, which is how
 a stale fake once turned into a suite that hung instead of failing). Asserting it
 needs the *server* to close an accepted socket, and `TestClient`'s websocket
 teardown blocks on that — the assertion would reintroduce the hang it exists to
-prevent. The behaviour was checked by hand against an exploding playlist."""
+prevent. The behavior was checked by hand against an exploding playlist."""
 
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportArgumentType=false, reportOptionalCall=false
 from __future__ import annotations

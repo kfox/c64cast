@@ -185,6 +185,10 @@ a follow-up. Concretely, when you change functionality:
 - Write documentation in the present tense, describing what the code does now.
   It is not a record of what changed; that is what the changelog and git history
   are for.
+- Write in American English — `color`, `behavior`, `serialize`, `center` — in
+  prose, code, comments and identifiers alike. The config keys the reader types
+  are spelled that way, so British prose disagrees with its own examples.
+  `grey`/`gray` and `canceled`/`cancelled` are interchangeable and both fine.
 
 [`docs/extending.md`](docs/extending.md) is the starting point for adding a new
 Scene, Overlay, DisplayMode, or interstitial Background.

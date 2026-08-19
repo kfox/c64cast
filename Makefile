@@ -12,7 +12,7 @@
 #   make doctor     # offline env + config diagnostics (catches a desynced .venv)
 #   make bench      # async write-pipeline benchmark
 #   make check      # lint + typecheck + test (pre-PR gate)
-#   make clean      # remove build artefacts
+#   make clean      # remove build artifacts
 #
 # Everything runs through `uv run`, so the synced project env is used regardless
 # of whether direnv/mise has activated `.venv` in the current shell. That's the
@@ -42,7 +42,7 @@ SYNC := $(if $(CI),,sync)
 BOOK_FONTS  := docs/shared/fonts
 TYPST_FLAGS  = --root . --font-path $(BOOK_FONTS)
 
-# Each book is a directory plus the artefact basename its book.toml declares.
+# Each book is a directory plus the artifact basename its book.toml declares.
 # The basename is spelled in both places rather than parsed out of the TOML
 # here: `clean` has to know the filenames without running Python, and a sed
 # that silently matched nothing would render `docs/card/.pdf`. The two
@@ -60,7 +60,7 @@ CARD_BOOK   := c64cast-performance-card
 BOOK_ARTS   := $(GUIDE_DIR)/$(GUIDE_BOOK) $(REF_DIR)/$(REF_BOOK) $(CARD_DIR)/$(CARD_BOOK)
 
 # Markdown -> Typst -> PDF for one book: $(1) is its directory, $(2) the
-# artefact basename its book.toml declares. Typst is not a Python dependency,
+# artifact basename its book.toml declares. Typst is not a Python dependency,
 # so say so plainly rather than failing with "command not found".
 define render-book
 	@command -v typst >/dev/null 2>&1 || { \

@@ -5,14 +5,14 @@
     /** Labels the group for a screen reader — the visible name is in the row. */
     label: string;
     palette: Swatch[];
-    /** Whitelist rather than one colour: every swatch toggles, and the value is
+    /** Whitelist rather than one color: every swatch toggles, and the value is
      *  the list. */
     multi?: boolean;
     value: unknown;
     disabled?: boolean;
-    /** A colour name, or the list of them. Names rather than indices because a
+    /** A color name, or the list of them. Names rather than indices because a
      *  name is the half of `int | str` the form could not reach before, and it
-     *  is the half that still reads as a colour a year later. */
+     *  is the half that still reads as a color a year later. */
     onpick: (value: unknown) => void;
   }
 
@@ -21,7 +21,7 @@
   /** Which swatch a written value names, or -1. Indices and the two canonical
    *  spellings are matched here; the fuzzy forms the loader also accepts
    *  ("lgrn", "blk") are resolved on the host, so the picker says it does not
-   *  recognise them rather than quietly selecting the wrong one. */
+   *  recognize them rather than quietly selecting the wrong one. */
   function indexOf(v: unknown): number {
     if (typeof v === "number") return Number.isInteger(v) && v >= 0 && v < palette.length ? v : -1;
     if (typeof v !== "string") return -1;
@@ -44,7 +44,7 @@
     const on = new Set(picked);
     if (on.has(swatch.index)) on.delete(swatch.index);
     else on.add(swatch.index);
-    // Palette order, not click order: the value is a set of allowed colours,
+    // Palette order, not click order: the value is a set of allowed colors,
     // and a stable order keeps the saved file from churning on a re-pick.
     onpick(palette.filter((s) => on.has(s.index)).map((s) => s.name));
   }
@@ -88,8 +88,8 @@
     </span>
   {:else if multi}
     {picked.length === 0
-      ? "No colours chosen yet."
-      : `${picked.length} colour${picked.length === 1 ? "" : "s"}: ${picked.map((i) => palette[i].label).join(", ")}`}
+      ? "No colors chosen yet."
+      : `${picked.length} color${picked.length === 1 ? "" : "s"}: ${picked.map((i) => palette[i].label).join(", ")}`}
   {:else if picked.length}
     {palette[picked[0]].label}
   {/if}

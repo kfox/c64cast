@@ -419,6 +419,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **British spellings are gone from the prose, the code and the console.** The
+  0.3.0 pass spelled the books in American English; everything written since had
+  drifted back — `colour` in the web console's own field labels and swatch
+  summary, `serialise`/`normalise`/`recognise` through the config store and the
+  control plane, `behaviour`, `honours`, `artefact`, `judgement`, `catalogue`,
+  `analyser`, `centre` across the architecture notes and the Reference. American
+  English is now the rule for prose, code, comments, identifiers and commit
+  messages alike, written down in CLAUDE.md and CONTRIBUTING.md so it stops
+  drifting. `grey`/`gray` and `canceled`/`cancelled` are interchangeable and both
+  stay; the `grey` color alias still resolves, as it always has.
+
 - **Hires picks each cell's color by fitting the whole cell, not by sampling one
   pixel of it.** A hires cell gets two colors and one is the global background,
   so the remaining choice decides most of the frame — and it was being made by
@@ -1196,7 +1207,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 - **Quick playback obeys every CLI flag again.** Playing media by positional
   argument (`c64cast clip.mp4`) built its config from a hand-picked handful of
-  flags, so twelve of the twenty-one that the same command honours with
+  flags, so twelve of the twenty-one that the same command honors with
   `--config` were accepted and then silently ignored — among them
   `--frame-numbers`, `-D/--audio-device`, `--sample-rate`,
   `--dac-calibration-profile`, `--vision` and `--heartbeat`, plus the

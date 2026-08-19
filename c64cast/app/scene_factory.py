@@ -199,10 +199,10 @@ def resolve_flicker_tolerance(
 ) -> str:
     """Resolve [color].flicker_tolerance for one scene's display mode (the
     field-alternating page flip — see modes_irq.FLICKER_SWAP_IRQ_HANDLER),
-    returning "off" where blending cannot be honoured.
+    returning "off" where blending cannot be honored.
 
     Opt-in, so there is no "auto" to resolve; this only decides where an
-    explicit tolerance can actually be honoured. Three gates, all structural:
+    explicit tolerance can actually be honored. Three gates, all structural:
 
       * hires only. mhires' third color lives in color RAM at $D800, which is
         not VIC-banked and not selected by $D018, so only part of its picture

@@ -252,7 +252,7 @@ physical chip in the machine has no such register to ask.
 So it guesses, from the oldest rule of thumb there is: NTSC machines usually
 have the 6581, PAL machines usually the 8580. That rule is often right and
 easily wrong — plenty of NTSC machines carry an 8580 — so c64cast prints a
-warning saying it is guessing, and every judgement it makes about that chip
+warning saying it is guessing, and every judgment it makes about that chip
 rests on the guess.
 
 Tell it once and the warning goes away:
@@ -329,7 +329,7 @@ Addresses are hexadecimal, with or without a leading `$`. Every chip gets its
 own verdict against the tune, so a tune wanting an 8580 on its second chip is
 judged against the chip that actually answers there. A chip whose model you do
 not know can be written `"unknown"` — c64cast will note it is there and pass no
-judgement on it.
+judgment on it.
 
 This setting replaces `host_sid_model` rather than adding to it: once you have
 listed the chips, the machine is described and the NTSC/PAL guess has nothing
@@ -367,7 +367,7 @@ one chip answers everywhere in `$D400`–`$D7FF`. A tune written for two chips
 sends one stream of notes to `$D400` and another to `$D420`, and on a machine
 with a single SID *both* land on it. Six voices' worth of instructions arrive
 at a chip that has three, each one overwriting the last. What you hear is a
-recognisable tune with something badly wrong in it, which is why it reads as a
+recognizable tune with something badly wrong in it, which is why it reads as a
 broken chip rather than a wrong tune.
 
 The two outputs never mix inside the equipment. The Ultimate's emulated SIDs
@@ -397,7 +397,7 @@ none of the tunes fit, one plays anyway, because a directory with nothing in it
 that suits your machine is still better than a silent scene.
 
 `"require"` is the stricter version — non-fitting tunes are dropped from the
-pool rather than merely deprioritised. It still falls back to the whole
+pool rather than merely deprioritized. It still falls back to the whole
 directory when nothing at all fits, and says so in the log, so a mistyped chip
 table shows up as a warning instead of a scene that never starts.
 

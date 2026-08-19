@@ -176,7 +176,7 @@ class _FakeApi:
 
 
 class _FakePlaylist:
-    """JSON-serialisable stand-in: the state feed carries the `/perf` payload,
+    """JSON-serializable stand-in: the state feed carries the `/perf` payload,
     so a MagicMock playlist would only fail once it reached the encoder."""
 
     def __init__(self, config_path: str = "") -> None:
@@ -951,7 +951,7 @@ class LiveTuneSaveBackTest(WebApiTestCase):
 
     def _running_two_scene(self, c) -> Any:
         """Start a config with two scenes whose type accepts `palette_mode`, so a
-        per-scene save has a block to land in and a neighbour to leave alone."""
+        per-scene save has a block to land in and a neighbor to leave alone."""
         (self.root / "pair.toml").write_text(PAIR_TOML, encoding="utf-8")
         c.post("/api/session/start", headers=AUTH, json={"config": "shows/pair.toml"})
         self.assertReaches(SessionState.RUNNING)

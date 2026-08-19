@@ -244,7 +244,7 @@ class ProfileGateTest(unittest.TestCase):
         source = inspect.getsource(Ultimate64API.refine_capabilities)
         self.assertIn("supports_video_stream=has_system_mode", source)
 
-    def test_a_frame_is_indices_rather_than_colour(self):
+    def test_a_frame_is_indices_rather_than_color(self):
         # So a caller comparing against what c64cast meant to draw compares
         # indices with indices, and a caller displaying it picks the palette.
         frame = vic_stream.VicFrame(np.zeros((2, 4), dtype=np.uint8), 1, 0.0)

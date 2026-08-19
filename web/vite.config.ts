@@ -11,7 +11,7 @@ import { defineConfig } from "vite";
 //     the build must be told it is allowed to clear a path outside `web/`.
 //   * fixed asset names — content-hashed filenames would add a new file to git
 //     on every build and leave the old one behind. Fixed names make a rebuild
-//     one diff on one file, which is the only way a committed artefact stays
+//     one diff on one file, which is the only way a committed artifact stays
 //     reviewable. The console is a LAN page served by a process that restarts
 //     with the assets, so the cache-busting the hashes buy is worth nothing.
 export default defineConfig({

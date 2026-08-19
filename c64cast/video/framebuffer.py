@@ -153,7 +153,7 @@ class Framebuffer:
 
         Detected purely from the outbound write stream — the IRQ vector points
         at the swap handler AND the handler bytes at that address are the flicker
-        flavour — so the mirror keeps reconstructing rather than being told
+        flavor — so the mirror keeps reconstructing rather than being told
         anything out of band. Checking the vector matters: teardown unhooks
         $0314 but leaves both the handler and its tracker in RAM, so the page
         bytes alone would keep reporting a blend into the next scene."""

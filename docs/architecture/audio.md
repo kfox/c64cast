@@ -93,7 +93,7 @@ After `PREBUFFER_CHUNKS * chunk_size` bytes of prebuffer it starts the CIA #2 ti
 
 Step 3 is not one write. A host `DMAWRITE` halts the 6510 for the whole transfer, and CIA #2 is **edge-triggered** through the NMI line: when one halt spans two Timer A underflows the ICR latches once and the second sample is never fetched at all. So the payload size of a ring write is not a throughput question, it is how many NMIs that write destroys.
 
-The halt costs **≈1 cycle per byte**. That is HW-measured, not modelled — `scripts/diags/audio_fm_probe.py` fills the ring with a tone that tiles it exactly, arms the NMI, and then issues background writes of a controlled size while capturing off HDMI, so nothing can underrun and contaminate the reading. It measured 1.02 µs/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from 32 to 1024 bytes.
+The halt costs **≈1 cycle per byte**. That is HW-measured, not modeled — `scripts/diags/audio_fm_probe.py` fills the ring with a tone that tiles it exactly, arms the NMI, and then issues background writes of a controlled size while capturing off HDMI, so nothing can underrun and contaminate the reading. It measured 1.02 µs/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from 32 to 1024 bytes.
 
 At the 12 kHz NTSC default the NMI period is 85 cycles ≈ 83 µs, so the old single 1024-byte write froze the CPU for ≈1064 µs — **12.8 NMI periods, ~12 times a second**. `c64.halt_quantum_bytes` sizes each piece from the live latch (`period_cycles − HALT_QUANTUM_MARGIN_CYCLES`, ≈65 B at that default) so a write can never swallow a second underflow, and `_drip_chunk` spreads the pieces evenly across the chunk period.
 

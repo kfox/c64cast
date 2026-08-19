@@ -233,13 +233,13 @@ class EncodeTest(unittest.TestCase):
 
     def test_png_rather_than_jpeg_is_the_smaller_one_on_this_content(self):
         # The reason for the choice, asserted rather than left in a comment:
-        # flat 16-colour art with hard edges is PNG's best case and a DCT's
+        # flat 16-color art with hard edges is PNG's best case and a DCT's
         # worst, so the usual "JPEG for video" advice inverts here.
         import cv2
 
         from c64cast.video.palette import C64_PALETTE_BGR
 
-        # A full PAL frame of 8x8 cells in alternating colours — the hard edges
+        # A full PAL frame of 8x8 cells in alternating colors — the hard edges
         # every character cell has, at the size a real one is.
         cells = np.indices((272 // 8, 384 // 8)).sum(axis=0) % 16
         indices = np.kron(cells, np.ones((8, 8), dtype=np.uint8)).astype(np.uint8)

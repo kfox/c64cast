@@ -232,7 +232,7 @@ class StartStopTest(SupervisorTestCase):
 
     def test_a_stop_during_starting_cancels_the_run(self):
         # The build isn't interruptible (opening a backend blocks), so the
-        # cancel has to be honoured on the far side of it.
+        # cancel has to be honored on the far side of it.
         build = _Build()
         build.gate = threading.Event()
         down = _Teardown()

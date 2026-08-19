@@ -33,7 +33,7 @@ docstring for the three conditions it insists on before blaming a layer.
 
 **:meth:`ConfigStore.patch` is how the generated form saves**, and it round-trips
 through the dataclasses rather than editing text: load, set the named fields,
-re-serialise, then hand the result to the same :meth:`ConfigStore.write` a raw
+re-serialize, then hand the result to the same :meth:`ConfigStore.write` a raw
 save goes through. Splicing values into the TOML text was the alternative and is
 worse in every direction — it needs a writer that understands where a key lives
 (and where to put one that isn't there yet), and it can produce a file whose text
@@ -41,7 +41,7 @@ no longer means what the form showed. Going through the loader means a form save
 is exactly a load-modify-dump, and the round-trip is already property-tested.
 
 What that costs is the file's *prose*: comments and hand-authored layout do not
-survive a re-serialise, and a config carrying a secret is refused outright rather
+survive a re-serialize, and a config carrying a secret is refused outright rather
 than saved back without it (the serializer never emits ``SECRET_FIELDS``, so a
 round-trip would silently drop a password the operator put there). Both are why
 the raw text editor stays the primary surface and the form is the convenience —
@@ -380,7 +380,7 @@ def _editable_scene_fields(scene_type: str) -> frozenset[str]:
             # `type` is *not* editable, and it is the one field that has to be
             # named to say so. It decides which of the other fields mean
             # anything, so changing it here doesn't edit the scene — it
-            # reinterprets it, and the re-serialise then drops every field the
+            # reinterprets it, and the re-serialize then drops every field the
             # new type has no use for. That is a structural change and belongs
             # with the text editor, next to adding and removing scenes.
             return frozenset({fd.name for fd in st.fields} | {"overlays"}) - {"type"}
@@ -851,12 +851,12 @@ class ConfigStore:
         self, ref: str, mutate: Callable[[cfgmod.Config, cfgmod.Config], Any]
     ) -> dict[str, Any]:
         """Load ``ref``, let ``mutate`` change the loaded Config, and write the
-        re-serialised result back.
+        re-serialized result back.
 
         The shared spine of every structured write. ``mutate`` is handed the
         config and the machine baseline and returns whatever the caller wants
         reported, which arrives as ``result``. Everything around it — the
-        refusals below, the re-serialise, and :meth:`write`'s validate-then-back-
+        refusals below, the re-serialize, and :meth:`write`'s validate-then-back-
         up-then-replace — is the same for a field edit and for a scene added or
         removed, and having it in one place is what keeps them that way.
 

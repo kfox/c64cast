@@ -341,7 +341,7 @@ class LoginTest(unittest.TestCase):
         )
         self.assertEqual(r.headers["location"], "/perf")
 
-    def test_next_honours_a_relative_path(self):
+    def test_next_honors_a_relative_path(self):
         app, _pl = _app()
         r = TestClient(app).get(
             "/api/login", params={"token": TOKEN, "next": "/scenes"}, follow_redirects=False
@@ -525,7 +525,7 @@ class ViewerCredentialTest(unittest.TestCase):
     """The read-only token exists only once somebody asks for a link to share.
 
     Two properties matter. It is not minted at startup — a credential nobody
-    asked for is one more thing that can leak. And once minted it is honoured
+    asked for is one more thing that can leak. And once minted it is honored
     *immediately*: the app is built once, around a listening socket and every
     connected console, so "restart to use the token you just made" would make
     the feature useless at the moment it is wanted."""
@@ -558,7 +558,7 @@ class ViewerCredentialTest(unittest.TestCase):
         self.assertEqual(cred.issue(), ("from-config", False))
         self.assertEqual(kept, [])
 
-    def test_the_gate_honours_a_token_minted_after_the_app_was_built(self):
+    def test_the_gate_honors_a_token_minted_after_the_app_was_built(self):
         from starlette.testclient import TestClient
 
         from c64cast.control.auth import ViewerCredential
@@ -573,7 +573,7 @@ class ViewerCredentialTest(unittest.TestCase):
         # …and a write it is not, on the same freshly-minted token.
         self.assertEqual(client.post("/pause", params={"token": token}).status_code, 403)
 
-    def test_the_get_login_a_shared_link_uses_honours_it_too(self):
+    def test_the_get_login_a_shared_link_uses_honors_it_too(self):
         # `GET`, not `POST`: the gate lets a viewer through read methods only,
         # so `POST /api/login` is a 403 for a viewer token however valid it is.
         # That is why the link handed out is the redirect form.

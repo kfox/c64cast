@@ -22,13 +22,13 @@ browser that cached one across an upgrade would run the old console against the
 new API. ``no-cache`` on every response makes each load revalidate, which on a
 LAN costs a round trip and buys correctness. Content-hashed names would be the
 other answer, and were rejected: they add a file to git on every rebuild and
-leave the old one behind, which makes a committed artefact unreviewable.
+leave the old one behind, which makes a committed artifact unreviewable.
 
 Serving by hand means owning the traversal question, and the answer here is to
-not have one: the bundle's files are **catalogued at mount time** and a request
+not have one: the bundle's files are **cataloged at mount time** and a request
 looks its name up as a dictionary key. Nothing a client sends ever becomes a
-path component, so there is no ``..`` to normalise and no containment check to
-get subtly wrong — and no static analyser has to be persuaded that the check
+path component, so there is no ``..`` to normalize and no containment check to
+get subtly wrong — and no static analyzer has to be persuaded that the check
 was correct.
 
 Nothing here is behind its own auth check. The app is mounted onto an app the
@@ -121,7 +121,7 @@ def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
 
     index = dist / INDEX_NAME
     assets = (dist / ASSETS_NAME).resolve()
-    # Catalogued once at mount rather than resolved per request, so a request
+    # Cataloged once at mount rather than resolved per request, so a request
     # *names a key* and never contributes a path component: there is no
     # traversal question to answer, and no `is_relative_to` check standing
     # between a user string and the filesystem. The bundle is a handful of

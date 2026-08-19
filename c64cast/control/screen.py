@@ -42,7 +42,7 @@ The alternative — binary frames on the existing WebSocket into a canvas — bu
 control the screen does not need and costs a decoder in the page.
 
 **PNG rather than JPEG**, which is the opposite of the usual advice for video
-and right here for one reason: this is flat sixteen-colour art with hard edges,
+and right here for one reason: this is flat sixteen-color art with hard edges,
 which is the best case for PNG's filters and the worst case for a DCT. A C64
 screen is 5-15 KB as PNG, *smaller* than the JPEG that would have ringing
 around every character cell.
@@ -82,7 +82,7 @@ BOUNDARY = "c64cast-frame"
 #: you are still looking at the tab you closed it from.
 LINGER_S = 5.0
 
-#: PNG compression effort. 1 is nearly as small as 9 on flat 16-colour art and
+#: PNG compression effort. 1 is nearly as small as 9 on flat 16-color art and
 #: several times faster, which is the trade a per-frame encode wants.
 _PNG_LEVEL = 1
 
@@ -330,7 +330,7 @@ def _stop_quietly(system: str, receiver: Any) -> None:
         # It is already a validated key of the running-systems map by this point
         # — `_open` refuses an unknown name, and every other call site reads the
         # name out of `_live` — so this is the belt to that braces, and the
-        # waiver is for CodeQL modelling neither as a sanitizer. The marker sits
+        # waiver is for CodeQL modeling neither as a sanitizer. The marker sits
         # on the line it reports — the argument's own — because a suppression on
         # the line above is not one, which cost this alert a second number.
         log.exception("could not stop the stream for %r", system)  # codeql[py/log-injection]
@@ -353,10 +353,10 @@ def _await_frame(read: Callable[[], VicFrame | None]) -> VicFrame | None:
 
 
 def encode_png(frame: VicFrame, palette: np.ndarray | None = None) -> bytes:
-    """A frame's colour indices as a PNG.
+    """A frame's color indices as a PNG.
 
-    ``palette`` is BGR rows indexed by colour, defaulting to the host's live
-    table — so a host matched to its machine renders the colours that machine
+    ``palette`` is BGR rows indexed by color, defaulting to the host's live
+    table — so a host matched to its machine renders the colors that machine
     emits, the same table the swatch picker draws from."""
     if palette is None:
         from c64cast.video.palette import C64_PALETTE_BGR

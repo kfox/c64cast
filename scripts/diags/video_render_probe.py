@@ -15,7 +15,7 @@ SocketDMA path would push.
     scripts/diags/video_render_probe.py path.mp4 --threads 1        # board benchmark
 
 It also times the *host* side of each frame — decode and the CPU render path —
-against the modelled link cost, which makes it the portable benchmark for
+against the modeled link cost, which makes it the portable benchmark for
 deciding whether a candidate machine can drive c64cast. Whichever of the two is
 larger is what bounds the frame rate; on every link measured so far it is the
 link, and the host has headroom to spare. Pin `--threads 1` to compare two
@@ -240,7 +240,7 @@ def main() -> int:
         f"p95 {np.percentile(w_arr, 95):.0f}  max {w_arr.max()}"
     )
     print(
-        f"modelled frame cost: mean {c_arr.mean() * 1000:.1f} ms  "
+        f"modeled frame cost: mean {c_arr.mean() * 1000:.1f} ms  "
         f"median {np.median(c_arr) * 1000:.1f} ms  "
         f"p95 {np.percentile(c_arr, 95) * 1000:.1f} ms  "
         f"max {c_arr.max() * 1000:.1f} ms"

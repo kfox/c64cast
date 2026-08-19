@@ -287,7 +287,7 @@ def host_chip_fit(
     required_models: Sequence[str | None] = (),
 ) -> bool | None:
     """Whether the machine's *own* SID chips can play a tune driving chips at
-    `addresses` as authored — the same judgement :func:`log_resolved_audio`
+    `addresses` as authored — the same judgment :func:`log_resolved_audio`
     renders after the fact, asked ahead of time so a multi-file pool can pick a
     tune that will pass it.
 

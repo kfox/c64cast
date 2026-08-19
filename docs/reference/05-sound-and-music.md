@@ -314,7 +314,7 @@ an NTSC one.
 | `"off"` | Leave the kernal rate alone — every vsync tune plays at ~60 Hz |
 | a number | Pin every vsync tune to that rate in Hz |
 
-`"off"` is the behaviour that predates the setting, and it is a legitimate
+`"off"` is the behavior that predates the setting, and it is a legitimate
 preference: a great many people know these tunes at the speed an NTSC machine
 played them. An explicit number is the same choice made deliberately —
 `59.826` is the NTSC frame rate, `50.125` is PAL.
@@ -349,12 +349,12 @@ If a video mode ever leaves you looking at nothing, hold **C= and P** or
 
 One asymmetry worth knowing before you turn it on: over HDMI, retiming costs
 you a re-lock and nothing else, because the Ultimate's upscaler emits RGB and
-the standard's colour encoding never reaches the cable. Over composite it costs
-more. c64cast keeps the colour encoding the machine was set for, so a television
-that decoded colour still can, but the field rate changes underneath it — and a
+the standard's color encoding never reaches the cable. Over composite it costs
+more. c64cast keeps the color encoding the machine was set for, so a television
+that decoded color still can, but the field rate changes underneath it — and a
 television built for one standard may not lock to the other's rate at all. A PAL
-machine retimed to NTSC emits PAL colour at 60 Hz, which most multi-standard
-sets tolerate; an NTSC machine retimed to PAL emits NTSC colour at 50 Hz, which
+machine retimed to NTSC emits PAL color at 60 Hz, which most multi-standard
+sets tolerate; an NTSC machine retimed to PAL emits NTSC color at 50 Hz, which
 is rarer and more often comes out monochrome. Audio is unaffected either way,
 apart from the pitch change you asked for.
 

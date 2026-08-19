@@ -126,7 +126,7 @@ def build_app_for_registry(
     console) on each show change.
 
     `token` gates the whole app (see `auth.install_auth`); empty leaves it
-    open, which is the historical behaviour. The gate is installed here rather
+    open, which is the historical behavior. The gate is installed here rather
     than by the caller so an app built somewhere new can't ship unauthenticated
     by omission."""
     try:

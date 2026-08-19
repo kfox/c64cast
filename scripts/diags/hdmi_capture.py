@@ -31,7 +31,7 @@ native resolution when you need to pixel-peep (e.g. fine bottom-row glyph shimme
 
 ``--burst`` keeps the device open and grabs frames back-to-back, for anything
 that changes *between* fields rather than between seconds — a raster split, a
-$D018 page flip, a two-field colour alternation. ``-n`` cannot do this: it
+$D018 page flip, a two-field color alternation. ``-n`` cannot do this: it
 reopens the device per frame and eats a fresh warm-up each time, so its floor
 is around a second per frame however small ``--delay`` gets.
 
