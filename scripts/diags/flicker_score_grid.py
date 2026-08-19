@@ -28,21 +28,35 @@ exist to fix that:
     bank-swap residual, a capture beat, the room's lighting) and the page should
     be discounted. It is the only negative control available here.
 
-BLIND. The script prints patch numbers and nothing else while you score. Which
-pair sits in which slot, and which side of the threshold it was predicted to
-fall on, is revealed only after the last page. Scoring a patch already labelled
-"predicted to flicker" is not scoring it.
+CALIBRATION FIRST. One page comes up before any scoring, with its three patches
+named: the loudest pair the safety clamp allows, a solid that cannot flicker at
+all, and a real blend that reads as near-still. Without it the first scored page
+is judged against nothing, and which page that is depends on the shuffle — a
+scorer who opens on an all-cool page sees a still picture and has no way to tell
+"nothing here is flickering" apart from "I do not know what I am looking for".
+The two pools are also dealt alternately rather than shuffled outright, so a run
+of five all-warm pages cannot walk the scale in one direction unchecked.
+
+BLIND after that. The script prints patch numbers and nothing else while you
+score. Which pair sits in which slot, and which side of the threshold it was
+predicted to fall on, is revealed only after the last page. Scoring a patch
+already labelled "predicted to flicker" is not scoring it.
 
 PACE. It waits on Enter between pages, with no timer anywhere. Take as long as a
 page needs — the picture is still up while you type, and the machine is doing
 nothing but holding it.
 
-WHAT TO WRITE DOWN. Per patch, the thing that matters is a rating you apply
-consistently, not a precise one: none / very mild / mild / moderate / intense.
-Two extras are worth more than precision on the scale: note if a patch reads as
-a colour you cannot name from the 16 (the blend working), and note whether the
-flicker sits still or crawls, because a crawl is the display's chroma decoding
-and not fusion.
+WHAT YOU ARE LOOKING FOR. A patch that shimmers in place: a fine, fast
+unsteadiness over the whole patch, continuous for as long as you look at it. It
+is not an event, and it has nothing to do with the page changing — the picture
+settling as a page comes up is the scene starting, so ignore the first second.
+
+WHAT TO WRITE DOWN. Per patch, a rating applied consistently matters more than a
+precise one: none / very mild / mild / moderate / intense, printed with a gloss
+on each before every page. Two extras are worth more than precision on the
+scale: note if a patch reads as a colour you cannot name from the 16 (the blend
+working), and note whether any shimmer sits still or crawls, because a crawl is
+the display's chroma decoding and not fusion.
 
     scripts/diags/flicker_score_grid.py                 # every pair, ~6 pages
     scripts/diags/flicker_score_grid.py --pool cool     # only the ones the
@@ -185,6 +199,78 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
     return (warm, solids_for(warm)), (cool, solids_for(cool))
 
 
+# Anchors for the calibration page, both from the earlier scoring session and
+# both inside the photosensitivity clamp — a genuinely violent pair would anchor
+# the top of the scale better and is deliberately unreachable, since
+# MAX_ALLOWED_LUMA_DELTA is the one limit that should not be probed by eye.
+CALIBRATION_LOUD = (6, 8)  # Blue + Orange — scored "intense"
+CALIBRATION_QUIET = (0, 11)  # Black + Dark Gray — scored "almost none"
+
+
+def calibration_page() -> list[Entry | None]:
+    """A page with its answers given away, shown before any scoring starts.
+
+    Without it the first scored page is judged against nothing, and which page
+    that is depends on the shuffle. Opening on an all-cool page shows a still
+    picture, no reference for what the artifact looks like, and no way to tell
+    "nothing here is flickering" apart from "I do not know what I am looking
+    for". Not scored, and not in the key.
+    """
+    from c64cast.video import flicker
+    from c64cast.video.palette import C64_PALETTE_BGR, color_display_name
+
+    def blend(pair: tuple[int, int], label: str) -> Entry:
+        a, b = pair
+        b0, g0, r0 = (float(v) for v in flicker.fuse(a, b))
+        return Entry(
+            kind="calibration",
+            pair=(a, b),
+            name=f"{color_display_name(a)}+{color_display_name(b)}",
+            bgr=(b0, g0, r0),
+            luma_delta=round(flicker.pair_luma_delta(a, b), 4),
+            warmth=round(max(flicker.color_warmth(a), flicker.color_warmth(b)), 4),
+            predicted=label,
+        )
+
+    solid_idx = 12
+    solid = Entry(
+        kind="calibration",
+        pair=(solid_idx, solid_idx),
+        name=f"{color_display_name(solid_idx)}",
+        bgr=tuple(float(v) for v in C64_PALETTE_BGR[solid_idx]),  # type: ignore[arg-type]
+        luma_delta=0.0,
+        warmth=round(flicker.color_warmth(solid_idx), 4),
+        predicted="a solid — cannot flicker",
+    )
+    return [
+        blend(CALIBRATION_LOUD, "loudest available"),
+        solid,
+        blend(CALIBRATION_QUIET, "quietest"),
+        None,
+        None,
+        None,
+    ]
+
+
+def interleave(
+    cool: list[list[Entry | None]], warm: list[list[Entry | None]]
+) -> list[list[Entry | None]]:
+    """Alternate the two pools page by page.
+
+    Pages cannot mix pools — a loud patch makes its neighbours unjudgeable — but
+    a fully shuffled page order can still deal five all-warm pages in a row,
+    which walks the scorer's sense of scale in one direction with nothing to
+    re-anchor against.
+    """
+    out: list[list[Entry | None]] = []
+    for i in range(max(len(cool), len(warm))):
+        if i < len(cool):
+            out.append(cool[i])
+        if i < len(warm):
+            out.append(warm[i])
+    return out
+
+
 def paginate(
     pool: list[Entry], solids: list[Entry], rng: random.Random
 ) -> list[list[Entry | None]]:
@@ -258,8 +344,18 @@ aspect_mode = "stretch"
     )
 
 
-def show_page(n: int, total: int, cfg: Path, url: str, log: Path) -> None:
-    print(f"\n[page {n}/{total}] launching …")
+SCALE = (
+    "  none        sits perfectly still — a flat colour, nothing moving in it",
+    "  very mild   you have to look for it; only obvious against a still patch",
+    "  mild        clearly unsteady once you notice, easy to stop noticing",
+    "  moderate    obviously shimmering the whole time you look at it",
+    "  intense     unpleasant; you would not put this on screen",
+)
+
+
+def show_page(n: int, total: int, cfg: Path, url: str, log: Path, *, banner: str = "") -> None:
+    label = "calibration" if n == 0 else f"page {n}/{total}"
+    print(f"\n[{label}] launching …")
     with open(log, "w") as lf:
         proc = subprocess.Popen(
             [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"],
@@ -269,9 +365,18 @@ def show_page(n: int, total: int, cfg: Path, url: str, log: Path) -> None:
         )
         try:
             time.sleep(9.0)  # boot + first rendered frame
-            print(f"[page {n}/{total}] up. Patches are numbered on screen, 1-6.")
-            print("             Score every numbered patch, then press Enter for the next page.")
-            input("             > ")
+            print(f"[{label}] up.")
+            if banner:
+                print(banner)
+            else:
+                print("  Numbered patches, 1-6. Ignore the first second — the picture settling")
+                print("  as the page comes up is the scene starting, not the effect.")
+                print("  Rate each numbered patch:")
+                print("\n".join(SCALE))
+                print("  Also: does it read as a colour outside the C64's 16, and does any")
+                print("  shimmer sit still or crawl sideways?")
+            print("  Take as long as you need, then press Enter.")
+            input("  > ")
         finally:
             proc.terminate()
             try:
@@ -306,12 +411,9 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     (warm, warm_solids), (cool, cool_solids) = collect_entries(rng)
-    pages: list[list[Entry | None]] = []
-    if args.pool in ("all", "cool"):
-        pages += paginate(cool, cool_solids, rng)
-    if args.pool in ("all", "warm"):
-        pages += paginate(warm, warm_solids, rng)
-    rng.shuffle(pages)
+    cool_pages = paginate(cool, cool_solids, rng) if args.pool in ("all", "cool") else []
+    warm_pages = paginate(warm, warm_solids, rng) if args.pool in ("all", "warm") else []
+    pages = interleave(cool_pages, warm_pages)
 
     from c64cast.video.palette import C64_PALETTE_BGR
 
@@ -335,13 +437,33 @@ def main() -> None:
             {"page": n, "image": str(img_path), "slots": [e and e.name for e in entries]}
         )
 
+    calib = calibration_page()
+    loud, solid, quiet = (e for e in calib[:3] if e is not None)
+    calib_img = out / "page00.png"
+    cv2.imwrite(str(calib_img), build_page(calib, gutter))
+    write_config(out / "page00.toml", calib_img)
+
     print(f"seed {seed} — pass --seed {seed} to lay this out again")
     print(f"{len(pages)} pages, {sum(1 for pg in pages for e in pg if e)} patches")
-    print("\nRate every numbered patch: none / very mild / mild / moderate / intense.")
-    print("Also worth noting: does it read as a colour outside the 16, and does any")
-    print("flicker sit still or crawl? Nothing is timed — take as long as you need.\n")
+    print("\nWhat you are looking for: a patch that SHIMMERS IN PLACE — a fine, fast")
+    print("unsteadiness across the whole patch, continuous for as long as you look at")
+    print("it. It is not an event and has nothing to do with the page changing.\n")
+    print("Rate each numbered patch:")
+    print("\n".join(SCALE))
+    print("\nA calibration page comes first, with its answers given away, so you can")
+    print("see the two ends of that scale before anything is scored blind.\n")
+
+    banner = (
+        "  CALIBRATION — not scored, and the only page whose contents you are told.\n"
+        f"    1  {loud.name}  — the loudest pair the safety clamp allows\n"
+        f"    2  {solid.name}  — a solid: two identical fields, so it CANNOT flicker\n"
+        f"    3  {quiet.name}  — a real blend that reads as near-still\n"
+        "  Look until 1 and 3 are clearly different to you, and until 2 looks like\n"
+        "  nothing at all. That is the range every later patch is rated against."
+    )
 
     try:
+        show_page(0, len(pages), out / "page00.toml", args.url, out / "page00.log", banner=banner)
         for n in range(1, len(pages) + 1):
             show_page(n, len(pages), out / f"page{n:02d}.toml", args.url, out / f"page{n:02d}.log")
     finally:
