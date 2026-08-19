@@ -830,6 +830,24 @@ flicker_tolerance = "off"
 # only about half the eligible set.
 flicker_max_luma_delta = 0.075
 #
+# flicker_score_pairs: DIAGNOSTIC, and almost certainly not for you. Replaces the
+# blend set with exactly these pairs, written the way the arming log prints them
+# ("Blue+Brown") or as indices ("6+9"). It ignores the scored tiers AND
+# flicker_max_luma_delta, so it will happily put pairs on screen that no
+# flicker_tolerance admits and no safety cap allows — including ones that flicker
+# hard enough that they were excluded on the evidence of someone watching them.
+#
+# It exists because the tool that BUILDS the tier table cannot be restricted by
+# that table: a pair scored "intense", or one a different host_palette brings
+# into range that nobody has scored yet, is in no blend table and so could never
+# be rendered to be judged. That would make a wrong tier permanent.
+# scripts/diags/flicker_score_grid.py writes this key per page.
+#
+# It cannot switch blending on by itself — flicker_tolerance must still be set to
+# something other than "off", and every structural gate still applies. Leave it
+# empty for anything that is not a scoring run.
+flicker_score_pairs = []
+#
 # motion_smoothing: temporal smoothing for mhires percell mode, 0..1 (mhires +
 # palette_mode=percell only). The percell path smooths its per-cell color
 # choices over time — an EMA over per-cell color counts plus per-pixel/per-cell

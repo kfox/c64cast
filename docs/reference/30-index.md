@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 439 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 440 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -190,6 +190,7 @@ Every name c64cast answers to — 439 of them — and the pages that discuss eac
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `flicker_max_luma_delta` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_score_pairs` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_tolerance` | [`color` (A)](20-appendix-a-configuration.md#color) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |

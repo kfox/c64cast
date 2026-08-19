@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import cast
 
 import cv2
@@ -20,6 +21,7 @@ from c64cast.video.flicker import (
     BlendTable,
     blend_distances_for,
     build_blend_table,
+    parse_scoring_pairs,
 )
 from c64cast.video.modes_irq import (
     BANK_SWAP_IRQ_HANDLER,
@@ -140,6 +142,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         cell_pick: str = "error-min",
         flicker_tolerance: str = DEFAULT_TOLERANCE,
         flicker_max_luma_delta: float = 0.075,
+        flicker_score_pairs: Sequence[str] | None = None,
     ):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
@@ -149,8 +152,13 @@ class HiresDisplayMode(BitmapDisplayMode):
         # keeps running the 16-entry quantizer it always did. Only the "normal"
         # style picks color, so blending is a no-op on the edges styles.
         _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
+        # Parsed here rather than at the call site so a malformed entry raises
+        # where the mode is built, alongside the tolerance's own validation.
+        _scored = parse_scoring_pairs(flicker_score_pairs) if flicker_score_pairs else None
         self._blend_table: BlendTable | None = (
-            build_blend_table(flicker_max_luma_delta, tolerance=flicker_tolerance)
+            build_blend_table(
+                flicker_max_luma_delta, tolerance=flicker_tolerance, score_pairs=_scored
+            )
             if _blending and style == "normal"
             else None
         )
@@ -327,11 +335,13 @@ class HiresDisplayMode(BitmapDisplayMode):
             table = self._blend_table
             self._setup_flicker_doublebuffer(api)
             log.info(
-                "hires: flicker blend armed — %d blend pairs at tolerance %r, "
+                "hires: flicker blend armed — %d blend pairs from %s, "
                 "ΔY <= %.3f (%d effective colors), pages $%04X/$%04X, "
                 "IRQ @ $%04X",
                 table.blend_count,
-                table.tolerance,
+                "an explicit flicker_score_pairs list"
+                if table.scoring
+                else f"tolerance {table.tolerance!r}",
                 table.max_luma_delta,
                 table.size,
                 VIC_BANK_0.SCREEN,
@@ -357,7 +367,15 @@ class HiresDisplayMode(BitmapDisplayMode):
                     table.max_luma_delta,
                     WARN_LUMA_DELTA,
                 )
-            if table.tolerance == "visible":
+            if table.scoring:
+                log.warning(
+                    "hires: flicker_score_pairs is set — the blend set is this explicit "
+                    "list, not the scored one, so neither flicker_tolerance nor "
+                    "flicker_max_luma_delta is filtering it. This is the scoring path; "
+                    "a pair reachable only this way was excluded on evidence, and some "
+                    "of them flicker hard. Don't leave it set for anything but scoring.",
+                )
+            elif table.tolerance == "visible":
                 log.warning(
                     "hires: flicker_tolerance = %r admits pairs scored as visibly "
                     "flickering rather than fusing. A blended area alternates at the "

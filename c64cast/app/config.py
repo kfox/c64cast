@@ -2010,6 +2010,23 @@ class ColorCfg:
             "applies_to": ("hires",),
         },
     )
+    flicker_score_pairs: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "DIAGNOSTIC. Replace the flicker blend set with exactly these "
+            'color pairs, written as "Blue+Brown" or "6+9" — the same shape the '
+            "arming log prints. Ignores both the scored tiers and "
+            "flicker_max_luma_delta, so it can put pairs on screen that no "
+            "flicker_tolerance admits and no safety cap allows. That is the point: "
+            "it exists so scripts/diags/flicker_score_grid.py can score the pairs "
+            "the tier table is built from, which it could not do if it were "
+            "restricted by that same table. Not a tuning knob — a pair reachable "
+            "only this way was excluded on evidence. Cannot switch blending on by "
+            "itself: flicker_tolerance must still be set, and every structural gate "
+            "still applies. Empty (default) uses the scored set.",
+            "applies_to": ("hires",),
+        },
+    )
     motion_smoothing: float = field(
         default=0.25,
         metadata={

@@ -57,6 +57,16 @@ The tiers are one observer, one sitting, who placed the mild/moderate and
 moderate/intense boundaries at ±1. `"clean"` is the cut that does not rest on
 either boundary.
 
+**The scoring path is not bounded by the table it feeds.** Filtering by tier is
+right for playback and exactly wrong for the tool that produces the tiers: a
+pair scored `intense`, or never scored at all, is in no table and so cannot be
+put on screen to be judged, which would make a wrong tier permanent and a new
+palette unscorable. `[color].flicker_score_pairs` replaces the pair set outright
+with an explicit list, ignoring both the tier data and the luma cap. It is a
+diagnostic input rather than a tuning knob — `scripts/diags/flicker_score_grid.py`
+writes it per page — and it cannot switch blending on by itself, so reaching it
+still means passing every structural gate.
+
 **Tiers travel across palettes; ΔY does not.** ΔY is measured against the
 *active* palette, so which pairs are even candidates follows `host_palette` —
 what fuses is a statement about the light one machine emits, not a property of
@@ -84,6 +94,7 @@ sitting between 0.075 and 0.12.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -94,6 +105,7 @@ from c64cast.video.palette import (
     DISTANCE_WEIGHTS,
     color_display_name,
     on_palette_change,
+    resolve_color,
 )
 
 # Rec.709 luminance weights in OpenCV's BGR channel order, applied to
@@ -231,6 +243,26 @@ def pair_flicker_tier(a: int, b: int) -> str | None:
     return SCORED_FLICKER.get((a, b) if a <= b else (b, a))
 
 
+def parse_scoring_pairs(specs: Sequence[str]) -> list[tuple[int, int]]:
+    """`["Blue+Brown", "2+8"]` -> `[(6, 9), (2, 8)]`, for flicker_score_pairs.
+
+    Takes the same "NAME+NAME" shape the arming log prints, so a pair can be
+    copied out of a log and scored without translating it by hand.
+    """
+    out: list[tuple[int, int]] = []
+    for spec in specs:
+        halves = str(spec).split("+")
+        if len(halves) != 2:
+            raise ValueError(f"flicker_score_pairs entry must be 'A+B', got {spec!r}")
+        a, b = (resolve_color(h.strip()) for h in halves)
+        if a == b:
+            raise ValueError(f"flicker_score_pairs entry pairs a color with itself: {spec!r}")
+        pair = (a, b) if a < b else (b, a)
+        if pair not in out:
+            out.append(pair)
+    return out
+
+
 def blend_pairs(
     max_luma_delta: float, *, tolerance: str = DEFAULT_TOLERANCE
 ) -> list[tuple[int, int]]:
@@ -277,6 +309,7 @@ class BlendTable:
     bgr: np.ndarray  # (N, 3) float32 — the fused color
     max_luma_delta: float
     tolerance: str = DEFAULT_TOLERANCE
+    scoring: bool = False
 
     @property
     def size(self) -> int:
@@ -301,7 +334,7 @@ class BlendTable:
 
 # Table construction costs a few hundred Lab conversions, and a live-tuned
 # max_luma_delta would otherwise rebuild it every frame.
-_TABLE_CACHE: dict[tuple[float, str], BlendTable] = {}
+_TABLE_CACHE: dict[tuple[float, str, tuple[tuple[int, int], ...] | None], BlendTable] = {}
 
 
 def _rebuild_palette_tables() -> None:
@@ -323,17 +356,34 @@ def _rebuild_palette_tables() -> None:
 on_palette_change(_rebuild_palette_tables)
 
 
-def build_blend_table(max_luma_delta: float, *, tolerance: str = DEFAULT_TOLERANCE) -> BlendTable:
-    """The widened palette at this cap and tolerance. Cached per settings pair."""
+def build_blend_table(
+    max_luma_delta: float,
+    *,
+    tolerance: str = DEFAULT_TOLERANCE,
+    score_pairs: Sequence[tuple[int, int]] | None = None,
+) -> BlendTable:
+    """The widened palette at this cap and tolerance. Cached per settings pair.
+
+    `score_pairs` replaces the eligible set outright — no tier filter, no luma
+    cap, no gain floor. Only the scoring grid passes it; see the module
+    docstring for why that tool must not be bounded by the table it feeds.
+    """
     delta = round(float(max_luma_delta), 4)
-    key = (delta, tolerance)
+    override = tuple(score_pairs) if score_pairs is not None else None
+    key = (delta, tolerance, override)
     cached = _TABLE_CACHE.get(key)
     if cached is not None:
         return cached
-    extra = blend_pairs(delta, tolerance=tolerance)
+    extra = list(override) if override is not None else blend_pairs(delta, tolerance=tolerance)
     pairs = np.array([(i, i) for i in range(16)] + extra, dtype=np.uint8)
     bgr = np.stack([fuse(int(a), int(b)) for a, b in pairs]).astype(np.float32)
-    table = BlendTable(pairs=pairs, bgr=bgr, max_luma_delta=delta, tolerance=tolerance)
+    table = BlendTable(
+        pairs=pairs,
+        bgr=bgr,
+        max_luma_delta=delta,
+        tolerance=tolerance,
+        scoring=override is not None,
+    )
     _TABLE_CACHE[key] = table
     return table
 

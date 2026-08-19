@@ -8,13 +8,16 @@ rules came before it — a ΔY threshold and a red-orange "warmth" axis — and 
 were refuted the first time a run they had not been fitted to was scored. So
 there is nothing left to predict with, and the table only changes by looking.
 
-Run this to re-score the admitted set, or to settle a pair whose tier is in
-doubt. What it CANNOT reach is anything no tolerance admits — a pair scored
-`intense`, or one another `host_palette` brings under the cap that has never
-been scored — because the renderer builds its blend table from this same data,
-so an unadmitted pair is in no table and cannot be put on screen. Those are
-printed at startup rather than dropped; widening the tolerance vocabulary is
-what it would take to score them.
+Run this to re-score the table, to settle a pair whose tier is in doubt, or to
+score pairs another `host_palette` brings into range that nobody has judged yet.
+
+NOTHING HERE IS FILTERED BY THE TABLE IT FEEDS. Each page's config sets
+`[color].flicker_score_pairs` to exactly that page's pairs, which replaces the
+blend set outright — no tier filter, no luma cap. Being bounded by the tiers
+would make a wrong one permanent (a pair scored `intense` is in no blend table,
+so it could never be rendered to be re-judged) and would leave an unscored
+palette unscorable. Consequently this script can and does put pairs on screen
+that no `flicker_tolerance` will ever admit.
 
 WHY THE OLD LADDER CANNOT BE REUSED. It laid its patches out sorted by ΔY, so
 screen position was perfectly confounded with the variable under test: row means
@@ -46,7 +49,7 @@ calibration page runs a capture-based check that the C64 really is alternating
 every field, so a slow flip after that check passes is known to be downstream.
 
 CALIBRATION FIRST. One page comes up before any scoring, with its three patches
-named: the loudest pair the safety clamp allows, a solid that cannot flicker at
+named: the loudest pair ever scored, a solid that cannot flicker at
 all, and a real blend that reads as near-still. Without it the first scored page
 is judged against nothing, and which page that is depends on the shuffle — a
 scorer who opens on an all-quiet page sees a still picture and has no way to tell
@@ -120,13 +123,9 @@ Pool = tuple[list[Entry], list[Entry]]
 
 HOST_PALETTE = "u64"
 
-# The widest tolerance there is, so pairs no shipping default lets through still
-# get judged. Note what this CANNOT reach: the renderer builds its blend table
-# from the same tier data, so a pair scored `intense` — or never scored at all —
-# is in no table and cannot be put on screen. Scoring those needs the tolerance
-# vocabulary widened first; `unscorable_pairs` reports them rather than letting
-# them go missing quietly.
-SCORE_TOLERANCE = "visible"
+# Only has to be something other than "off": flicker_score_pairs supplies the
+# actual set, and cannot switch blending on by itself.
+SCORE_TOLERANCE = "clean"
 
 # 320x200, all offsets multiples of 8. A patch that straddled a character cell
 # would put two blend entries in one cell, which hires resolves by picking one —
@@ -169,29 +168,12 @@ def build_page(entries: list[Entry | None], gutter: tuple[int, ...]) -> np.ndarr
     return img
 
 
-def flicker_mod():
-    from c64cast.video import flicker
-
-    return flicker
-
-
 def candidate_pairs(cap: float) -> list[tuple[int, int]]:
-    """Every pair this script can actually put on screen.
+    """Every pair worth putting on the chart: under the cap and far enough from
+    a solid to be worth a page, whatever its tier is or is not.
 
-    Exactly what the renderer will build its blend table from, so a patch can
-    never be painted as a pair the machine will then quantize to something
-    else — verify_page() would catch that, but only after a run."""
-    from c64cast.video import flicker
-
-    return flicker.blend_pairs(cap, tolerance=SCORE_TOLERANCE)
-
-
-def unscorable_pairs(cap: float) -> list[tuple[tuple[int, int], str]]:
-    """Pairs under the cap that no tolerance admits, and why.
-
-    Reported rather than skipped silently: these are the ones a sitting cannot
-    settle, and a table that quietly stopped covering part of its own range
-    would look identical to one that covers all of it."""
+    Deliberately not flicker.blend_pairs — that applies the tier filter this
+    script exists to produce."""
     import itertools
 
     import numpy as np
@@ -199,16 +181,13 @@ def unscorable_pairs(cap: float) -> list[tuple[tuple[int, int], str]]:
     from c64cast.video import flicker
 
     out = []
-    admissible = set(candidate_pairs(cap))
     for a, b in itertools.combinations(range(16), 2):
-        if flicker.pair_luma_delta(a, b) > cap or (a, b) in admissible:
+        if flicker.pair_luma_delta(a, b) > cap:
             continue
         fused = flicker._to_lab(flicker.fuse(a, b)[None, :])
         gain = float(np.min(np.linalg.norm(flicker._PALETTE_LAB - fused, axis=1)))
-        if gain < flicker.MIN_BLEND_LAB_GAIN:
-            continue  # duplicates a solid; not a blend anyone would want
-        tier = flicker.pair_flicker_tier(a, b)
-        out.append(((a, b), tier or "unscored"))
+        if gain >= flicker.MIN_BLEND_LAB_GAIN:
+            out.append((a, b))
     return out
 
 
@@ -264,11 +243,10 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
 
 
 # Anchors for the calibration page, both from the previous scoring run. The loud
-# end is the loudest pair a tolerance still admits rather than the loudest pair
-# there is: Blue+Orange would anchor the top of the scale better, but it scored
-# `intense` and no tolerance builds it into a table any more, so it cannot be
-# rendered to anchor anything.
-CALIBRATION_LOUD = (5, 10)  # Green + Light Red — scored "moderate"
+# end is a pair no flicker_tolerance admits, which is exactly what it should be:
+# the top of the scale has to be shown to be a reference, and flicker_score_pairs
+# is what makes showing it possible.
+CALIBRATION_LOUD = (6, 8)  # Blue + Orange — scored "intense"
 CALIBRATION_QUIET = (6, 9)  # Blue + Brown — the one pair scored "none"
 
 
@@ -351,6 +329,21 @@ def paginate(
     return pages
 
 
+def page_pairs(entries: list[Entry | None]) -> list[tuple[int, int]]:
+    """The blend pairs on one page, for that page's flicker_score_pairs.
+
+    Solid controls are excluded — a solid is the pair (c, c), which is already
+    entry c of any table and would only collide with it."""
+    seen: list[tuple[int, int]] = []
+    for entry in entries:
+        if entry is None or entry.pair[0] == entry.pair[1]:
+            continue
+        pair = (min(entry.pair), max(entry.pair))
+        if pair not in seen:
+            seen.append(pair)
+    return seen
+
+
 def verify_page(entries: list[Entry | None]) -> list[str]:
     """Check each patch quantizes to the pair it is labeled as.
 
@@ -360,7 +353,11 @@ def verify_page(entries: list[Entry | None]) -> list[str]:
     """
     from c64cast.video import flicker
 
-    table = flicker.build_blend_table(flicker.FLASH_CRITERION_LUMA_DELTA, tolerance=SCORE_TOLERANCE)
+    table = flicker.build_blend_table(
+        flicker.FLASH_CRITERION_LUMA_DELTA,
+        tolerance=SCORE_TOLERANCE,
+        score_pairs=page_pairs(entries),
+    )
     problems = []
     for slot, entry in enumerate(entries):
         if entry is None:
@@ -373,7 +370,7 @@ def verify_page(entries: list[Entry | None]) -> list[str]:
     return problems
 
 
-def write_config(cfg_path: Path, image: Path) -> None:
+def write_config(cfg_path: Path, image: Path, entries: list[Entry | None]) -> None:
     cfg_path.write_text(
         f"""
 [audio]
@@ -391,6 +388,9 @@ flicker_max_luma_delta = {0.12}
 # Wide open on purpose: the point is to score pairs the shipping default
 # refuses, so the default cannot be what decides what gets looked at.
 flicker_tolerance = "{SCORE_TOLERANCE}"
+# The page's own pairs, verbatim. Bypasses the tier table and the luma cap —
+# this script has to be able to render what it is being asked to judge.
+flicker_score_pairs = {[f"{a}+{b}" for a, b in page_pairs(entries)]}
 
 [video]
 use_reu_staged = false
@@ -556,16 +556,6 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     (loud, loud_solids), (quiet, quiet_solids) = collect_entries(rng)
-    blocked = unscorable_pairs(flicker_mod().FLASH_CRITERION_LUMA_DELTA)
-    if blocked:
-        from c64cast.video.palette import color_display_name
-
-        print(
-            f"[grid] {len(blocked)} pair(s) under the cap cannot be rendered at "
-            f"tolerance {SCORE_TOLERANCE!r} and are NOT in this sitting:"
-        )
-        for (a_i, b_i), why in blocked:
-            print(f"[grid]   {color_display_name(a_i)}+{color_display_name(b_i)} ({why})")
     quiet_pages = paginate(quiet, quiet_solids, rng) if args.pool in ("all", "quiet") else []
     loud_pages = paginate(loud, loud_solids, rng) if args.pool in ("all", "loud") else []
     pages = interleave(quiet_pages, loud_pages)
@@ -587,7 +577,7 @@ def main() -> None:
         img_path = out / f"page{n:02d}.png"
         cv2.imwrite(str(img_path), build_page(entries, gutter))
         cfg = out / f"page{n:02d}.toml"
-        write_config(cfg, img_path)
+        write_config(cfg, img_path, entries)
         manifest["pages"].append(
             {"page": n, "image": str(img_path), "slots": [e and e.name for e in entries]}
         )
@@ -596,7 +586,7 @@ def main() -> None:
     loud, solid, quiet = (e for e in calib[:3] if e is not None)
     calib_img = out / "page00.png"
     cv2.imwrite(str(calib_img), build_page(calib, gutter))
-    write_config(out / "page00.toml", calib_img)
+    write_config(out / "page00.toml", calib_img, calib)
 
     print(f"seed {seed} — pass --seed {seed} to lay this out again")
     print(f"{len(pages)} pages, {sum(1 for pg in pages for e in pg if e)} patches")
@@ -615,7 +605,7 @@ def main() -> None:
 
     banner = (
         "  CALIBRATION — not scored, and the only page whose contents you are told.\n"
-        f"    1  {loud.name}  — the loudest pair the safety clamp allows\n"
+        f"    1  {loud.name}  — the loudest pair scored, admitted by no setting\n"
         f"    2  {solid.name}  — a solid: two identical fields, so it CANNOT flicker\n"
         f"    3  {quiet.name}  — a real blend that reads as near-still\n"
         "  Look until 1 and 3 are clearly different to you, and until 2 looks like\n"

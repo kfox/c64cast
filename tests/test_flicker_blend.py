@@ -228,6 +228,66 @@ class BlendTableTest(unittest.TestCase):
         np.testing.assert_array_equal(idx, np.arange(16))
 
 
+class ScoringPairsTest(unittest.TestCase):
+    """[color].flicker_score_pairs — the escape hatch the scoring grid needs.
+
+    Filtering by tier is right for playback and wrong for the tool that produces
+    the tiers: a pair scored `intense` is in no blend table, so without this it
+    could never be rendered to be re-judged and a wrong tier would be permanent.
+    """
+
+    def setUp(self):
+        before = palette.C64_PALETTE_BGR.copy(), palette.active_host_palette_name()
+        self.addCleanup(lambda: palette.set_host_palette(before[0], name=before[1]))
+        palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
+
+    def test_it_reaches_a_pair_no_tolerance_admits(self):
+        loud = (6, 8)  # Blue + Orange, scored intense
+        self.assertEqual(flicker.pair_flicker_tier(*loud), "intense")
+        for tolerance in FLICKER_TOLERANCES:
+            self.assertNotIn(loud, flicker.blend_pairs(1.0, tolerance=tolerance))
+        table = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="clean", score_pairs=[loud])
+        self.assertEqual([tuple(p) for p in table.pairs[16:]], [loud])
+        self.assertTrue(table.scoring)
+
+    def test_it_ignores_the_luma_cap_too(self):
+        """Black+White is the widest ΔY there is. The cap only warns now, but
+        the scoring path must not be subject to it at all."""
+        table = flicker.build_blend_table(0.001, tolerance="clean", score_pairs=[(0, 1)])
+        self.assertEqual([tuple(p) for p in table.pairs[16:]], [(0, 1)])
+        self.assertGreater(flicker.pair_luma_delta(0, 1), flicker.FLASH_CRITERION_LUMA_DELTA)
+
+    def test_it_cannot_switch_blending_on_by_itself(self):
+        """Otherwise a stray diagnostic key in a config would start alternating
+        the screen with no tolerance ever having been set."""
+        mode = HiresDisplayMode("normal", flicker_score_pairs=["Blue+Orange"])
+        self.assertIsNone(mode._blend_table)
+        mode = HiresDisplayMode(
+            "normal", flicker_tolerance="clean", flicker_score_pairs=["Blue+Orange"]
+        )
+        self.assertIsNotNone(mode._blend_table)
+
+    def test_specs_take_names_or_indices_and_normalize(self):
+        self.assertEqual(flicker.parse_scoring_pairs(["Blue+Brown"]), [(6, 9)])
+        self.assertEqual(flicker.parse_scoring_pairs(["9+6"]), [(6, 9)])
+        self.assertEqual(flicker.parse_scoring_pairs([" orange + blue "]), [(6, 8)])
+        self.assertEqual(flicker.parse_scoring_pairs(["6+9", "Blue+Brown"]), [(6, 9)])
+
+    def test_a_malformed_spec_raises(self):
+        for bad in ("bogus", "6", "6+9+11", "6+6", "6+nosuchcolor"):
+            with self.subTest(spec=bad), self.assertRaises(ValueError):
+                flicker.parse_scoring_pairs([bad])
+
+    def test_a_scoring_table_does_not_collide_with_a_normal_one(self):
+        plain = flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="clean")
+        scored = flicker.build_blend_table(
+            DEFAULT_LUMA_DELTA, tolerance="clean", score_pairs=[(6, 8)]
+        )
+        self.assertIsNot(plain, scored)
+        self.assertFalse(plain.scoring)
+        self.assertIs(plain, flicker.build_blend_table(DEFAULT_LUMA_DELTA, tolerance="clean"))
+
+
 class ObservedFlickerTest(unittest.TestCase):
     """What the display actually did, and which rule accounts for it.
 

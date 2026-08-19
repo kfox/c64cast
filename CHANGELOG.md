@@ -80,7 +80,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   setting — measured, they reconstruct no better than `"visible"` does, so a
   setting for them would trade flicker for nothing. Pairs another `host_palette` brings under the
   cap that the sitting never judged are excluded rather than guessed at, and
-  `scripts/diags/flicker_score_grid.py` is how the table grows.
+  `scripts/diags/flicker_score_grid.py` is how the table grows — via
+  `[color].flicker_score_pairs`, a diagnostic key that replaces the blend set
+  with an explicit list, ignoring both the tiers and the luma cap. The tool that
+  produces the table cannot be restricted by it, or a wrong tier would be
+  permanent: a pair scored as flickering is in no blend table, so it could never
+  be rendered to be re-judged. It cannot switch blending on by itself.
 
   **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
   30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
