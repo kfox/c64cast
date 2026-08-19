@@ -24,6 +24,9 @@ from .base import (
     DEFAULT_SAT_FACTOR as DEFAULT_SAT_FACTOR,
 )
 from .base import (
+    ERROR_MIN_HYSTERESIS_MARGIN as ERROR_MIN_HYSTERESIS_MARGIN,
+)
+from .base import (
     ERROR_MIN_POOL_SIZE as ERROR_MIN_POOL_SIZE,
 )
 from .base import (

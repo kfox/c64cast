@@ -330,6 +330,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # Per-pixel previous-frame palette index for the percell path. See
         # base.PERCELL_QUANT_HYSTERESIS_BONUS. Shape (32000,) int64.
         self._last_quantized: np.ndarray | None = None
+        # Previous frame's error-min trio (see base.ERROR_MIN_HYSTERESIS_MARGIN).
+        # Only error-min consumes it; other strategies leave it unread. Shape
+        # (1000, 3) int64.
+        self._last_error_trio: np.ndarray | None = None
         # Sticky bg0 for the percell path (see BG0_HYSTERESIS_MARGIN). None =
         # no prior pick, so the first frame takes the raw argmax.
         self._bg0: int | None = None
@@ -377,6 +381,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_cand = None
         self._last_codes = None
         self._last_quantized = None
+        self._last_error_trio = None
         self._bg0 = None
         self._last_bg = None
         api.invalidate_cache()
@@ -403,16 +408,29 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     @motion_smoothing.setter
     def motion_smoothing(self, value: float) -> None:
-        # Re-derive the two temporal flicker-suppression buffers from the dial:
-        # the per-cell color-count EMA weight and the per-pixel/per-cell decision
-        # hysteresis (the latter in d² space, so × _penalty_scale). 1.0 = full
-        # (legacy) smoothing; 0.0 = none. Identical math to __init__ (which calls
-        # this) so the live knob and the config path stay in lockstep.
+        # Re-derive the temporal flicker-suppression buffers from the dial: the
+        # per-cell color-count EMA weight and the per-pixel/per-cell decision
+        # hysteresis (in d² space, so × _penalty_scale). 1.0 = full (legacy)
+        # smoothing; 0.0 = none. Identical math to __init__ (which calls this)
+        # so the live knob and the config path stay in lockstep.
+        #
+        # base.ERROR_MIN_HYSTERESIS_MARGIN is deliberately NOT scaled by `s`
+        # here, unlike the three above. Those trade motion-tracking speed for
+        # stability — an EMA/hysteresis smooths across real frame-to-frame
+        # change too, not just noise, hence "0.0 tracks the source exactly."
+        # The error-min margin only breaks near-ties between two candidate
+        # trios that already score almost identically; a genuinely better
+        # trio's error improvement clears even a much larger margin on a
+        # single frame (measured offline — see that constant's comment), so
+        # there is no motion cost to scale away. Scaling it by `s` anyway left
+        # it at ~0.06 under the config default (motion_smoothing 0.25), too
+        # weak to suppress the near-tie flicker it exists for.
         s = min(1.0, max(0.0, float(value)))
         self._motion_smoothing = s
         self._ema_alpha = 1.0 - s * (1.0 - base.PERCELL_PICK_EMA_ALPHA)
         self._quant_hysteresis = base.PERCELL_QUANT_HYSTERESIS_BONUS * s * self._penalty_scale
         self._code_hysteresis = base.PERCELL_CODE_HYSTERESIS_BONUS * s * self._penalty_scale
+        self._error_min_margin = base.ERROR_MIN_HYSTERESIS_MARGIN
 
     def set_dither_method(self, value: str) -> str:
         self._dither_method = value
@@ -473,6 +491,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_cand = None
         self._last_codes = None
         self._last_quantized = None
+        self._last_error_trio = None
         self._bg0 = None
         if not self.use_reu_staged:
             # _last_bg tracks the host-written $D021 (single-buffer only — the
@@ -874,7 +893,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             bg0,
             self._cell_strategy,
             PALETTE_LUMA if table is None else table.luma,
+            self._last_error_trio,
+            self._error_min_margin,
         )
+        # error-min's own temporal hysteresis (see base.ERROR_MIN_HYSTERESIS_MARGIN)
+        # needs this frame's winning trio for next frame's comparison; harmless to
+        # store unconditionally since other strategies never read it back.
+        self._last_error_trio = top3
         # Sort by palette index for delta-cache stability (otherwise the slot
         # order would flip even when the chosen SET is identical).
         top3 = np.sort(top3, axis=1)

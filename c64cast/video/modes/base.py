@@ -228,6 +228,26 @@ BG0_HYSTERESIS_MARGIN = 0.25
 # vectorized and realtime-capable. C(6,3) = 20 trios.
 ERROR_MIN_POOL_SIZE = 6
 
+# Relative-margin hysteresis for the error-min trio pick. Every other
+# selection stage in this module (bg0, frequency's top-3) picks off the
+# EMA-smoothed cell_counts, so temporal stability comes for free. error-min
+# instead scores candidate trios by summed reconstruction error against this
+# frame's raw (unsmoothed) per-pixel distances — the pool of colors it
+# searches is smoothed, but the winning trio is not. Under flicker blending, a
+# pair's fused color is deliberately close to a solid or another pair (that's
+# what makes it worth blending), so two trios routinely land within noise of
+# each other, and ordinary per-frame sensor/video noise flips the argmin every
+# frame — reproduced offline at ~500 of 1000 cells/frame on a synthetic
+# near-tied cell, versus 0 for the same noise under frequency/16-solid. Keep
+# the previous frame's trio unless a challenger's summed error is at least
+# this fraction lower, mirroring BG0_HYSTERESIS_MARGIN's keep-unless-beaten
+# shape for a minimization instead of a maximization — same value as that
+# constant, and an offline sweep against the reproduction above found no
+# measurable cost to a real (large, single-frame) color change: a genuine
+# jump clears even a much larger margin immediately, since the challenger's
+# error improvement is overwhelming rather than a near-tie.
+ERROR_MIN_HYSTERESIS_MARGIN = 0.25
+
 
 def validate_cell_strategy(strategy: str) -> None:
     if strategy not in CELL_STRATEGIES:
@@ -240,6 +260,8 @@ def pick_cell_colors(
     bg0: int,
     strategy: str,
     luma: np.ndarray = PALETTE_LUMA,
+    prev_trio: np.ndarray | None = None,
+    error_min_margin: float = ERROR_MIN_HYSTERESIS_MARGIN,
 ) -> np.ndarray:
     """Choose each cell's 3 non-bg0 color slots (c1/c2/c3) by `strategy`.
 
@@ -259,6 +281,10 @@ def pick_cell_colors(
     video/flicker.py). `luma` orders that same entry space dark→light for the
     luminance/contrast strategies, so it has to be the blend table's own vector
     when one is in play — the default is the 16-entry palette.
+
+    `prev_trio` (only the error-min strategy uses it) is the previous frame's
+    (1000, 3) winning trio, for the temporal hysteresis ERROR_MIN_HYSTERESIS_MARGIN
+    documents; None disables it (first frame, or a caller that doesn't track it).
     """
     if strategy == "frequency":
         top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
@@ -266,7 +292,7 @@ def pick_cell_colors(
         return np.where(absent, bg0, top3)
 
     if strategy == "error-min":
-        return _pick_cell_colors_error_min(cell_counts, d_cell, bg0)
+        return _pick_cell_colors_error_min(cell_counts, d_cell, bg0, prev_trio, error_min_margin)
 
     # luminance / contrast both order the cell's present colors dark→light and
     # pick the extremes; they differ only in the 3rd slot.
@@ -300,7 +326,11 @@ def pick_cell_colors(
 
 
 def _pick_cell_colors_error_min(
-    cell_counts: np.ndarray, d_cell: np.ndarray, bg0: int
+    cell_counts: np.ndarray,
+    d_cell: np.ndarray,
+    bg0: int,
+    prev_trio: np.ndarray | None = None,
+    margin: float = ERROR_MIN_HYSTERESIS_MARGIN,
 ) -> np.ndarray:
     """error-min strategy: for each cell pick the trio of present colors that
     minimizes the summed per-pixel quantization error against {bg0, c1, c2, c3}.
@@ -311,6 +341,11 @@ def _pick_cell_colors_error_min(
     meaningfully-populated colors). Pool slots a cell can't fill are set to bg0,
     so a trio drawing on them simply re-uses bg0 (a no-op against the fixed bg0
     candidate) — which naturally handles cells with fewer than 3 present colors.
+
+    `prev_trio` + `margin` apply ERROR_MIN_HYSTERESIS_MARGIN's keep-unless-beaten
+    rule: the pool search's winner only replaces the previous frame's trio when
+    its summed error is at least `margin` lower, since scoring against this
+    frame's raw d_cell (see that constant's comment) has no smoothing of its own.
     """
     n_cells = cell_counts.shape[0]
     k = ERROR_MIN_POOL_SIZE
@@ -334,7 +369,20 @@ def _pick_cell_colors_error_min(
         better = err < best_err
         best_err = np.where(better, err, best_err)
         best_trio[better] = (i, j, m)
-    return np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
+    challenger = np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
+    if prev_trio is None:
+        return challenger
+
+    # prev_trio's error against *this* frame's d_cell — not last frame's pool
+    # search, since the pool (and even the trio's own poolk positions) may have
+    # shifted; the trio's actual entry indices still index d_cell directly.
+    d_prev = np.take_along_axis(d_cell, prev_trio[:, None, :], axis=2)  # (n, 32, 3)
+    prev_min = np.minimum(
+        d_bg0, np.minimum(d_prev[:, :, 0], np.minimum(d_prev[:, :, 1], d_prev[:, :, 2]))
+    )
+    prev_err = prev_min.sum(axis=1)  # (n,)
+    keep = best_err >= prev_err * (1.0 - margin)
+    return np.where(keep[:, None], prev_trio, challenger)
 
 
 def ema_counts(mode, per_pixel: np.ndarray, n_entries: int = 16) -> np.ndarray:

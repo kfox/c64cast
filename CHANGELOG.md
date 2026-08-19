@@ -82,6 +82,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   choose one color set for the whole frame, so no cell has a decision for a pair
   to win, and arming says so.
 
+  Widening the palette also forces the per-cell pick onto `error-min` (see
+  `cell_strategy` below), which scores each frame's own reconstruction error
+  rather than a temporally-smoothed histogram — and a pair's fused color sits
+  deliberately close to a solid or another pair, so on video that pick
+  routinely near-ties frame to frame. Fixed before this shipped: the pick now
+  keeps the previous frame's trio unless a challenger's error is at least 25%
+  lower, so a near-tie stops flip-flopping while a genuine color change still
+  wins on a single frame, scaled by `motion_smoothing` like the mode's other
+  temporal smoothing.
+
   **Which pairs fuse was measured, not derived.** Nothing computed from the two
   colors predicts it: brightness distance correlates with scored verdicts at
   r=+0.26, chroma distance at +0.04, and a red-orange "warmth" axis fitted to an

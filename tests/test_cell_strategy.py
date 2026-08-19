@@ -16,6 +16,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 
 from c64cast.video.modes import (  # noqa: E402
+    ERROR_MIN_HYSTERESIS_MARGIN,
     ERROR_MIN_POOL_SIZE,
     MultiHiresDisplayMode,
     pick_cell_colors,
@@ -123,6 +124,120 @@ class ErrorMinInvariantTest(unittest.TestCase):
 
     def test_pool_size_covers_frequency_top3(self):
         self.assertGreaterEqual(ERROR_MIN_POOL_SIZE, 3)
+
+
+class ErrorMinHysteresisTest(unittest.TestCase):
+    """error-min is the only strategy that scores its pick against this
+    frame's raw d_cell rather than the EMA-smoothed cell_counts (the pool it
+    searches is smoothed, but the winning trio is not) — see
+    base.ERROR_MIN_HYSTERESIS_MARGIN. Two near-tied trios (as flicker blend
+    routinely produces: a pair's fused color sits deliberately close to a
+    solid or another pair) must not flip the winner on ordinary per-frame
+    noise once prev_trio + a margin are supplied, but a genuinely better
+    trio must still win immediately regardless of the margin."""
+
+    def _near_tied_cell(self) -> tuple[np.ndarray, np.ndarray]:
+        # 32 pixels split into 3 groups: A (0:12) only entry 1 fits, B (12:24)
+        # only entry 2 fits, C (24:32) neither fits — entries 3 and 4 both
+        # residually near-fit C, 4 very slightly better. So trio {1,2,3} and
+        # {1,2,4} both cover A+B perfectly and differ only on C's residual:
+        # near-tied overall (80.8 vs 80.0), not an exact tie (which leaves the
+        # 3rd slot's winner to arbitrary trio-enumeration order).
+        d_cell = np.full((1, 32, 16), 500.0, dtype=np.float32)
+        d_cell[:, :12, 1] = 0.0
+        d_cell[:, 12:24, 2] = 0.0
+        d_cell[:, 24:, 3] = 10.1
+        d_cell[:, 24:, 4] = 10.0
+        counts = _cell_counts_from_present({1: 10, 2: 10, 3: 6, 4: 5}, bg0=0)
+        return counts, d_cell
+
+    def test_prev_trio_kept_when_challenger_barely_wins(self):
+        counts, d_cell = self._near_tied_cell()
+        prev_trio = np.array([[1, 2, 3]], dtype=np.int64)
+        picks = pick_cell_colors(
+            counts, d_cell, 0, "error-min", prev_trio=prev_trio, error_min_margin=0.25
+        )
+        self.assertEqual(set(picks[0].tolist()), {1, 2, 3})
+
+    def test_no_hysteresis_without_prev_trio_or_margin(self):
+        # Baseline: with no prior state (first frame) or margin=0, the pool
+        # search's raw winner is returned even though it's a near-tie —
+        # this is the pre-fix behavior the regression above guards against.
+        counts, d_cell = self._near_tied_cell()
+        picks = pick_cell_colors(counts, d_cell, 0, "error-min")
+        self.assertEqual(set(picks[0].tolist()), {1, 2, 4})
+        prev_trio = np.array([[1, 2, 3]], dtype=np.int64)
+        picks = pick_cell_colors(
+            counts, d_cell, 0, "error-min", prev_trio=prev_trio, error_min_margin=0.0
+        )
+        self.assertEqual(set(picks[0].tolist()), {1, 2, 4})
+
+    def test_genuinely_better_trio_still_wins_immediately(self):
+        # A real content change (not a near-tie) must flip on a single frame
+        # regardless of the margin — the hysteresis must not smear motion.
+        d_cell = np.full((1, 32, 16), 500.0, dtype=np.float32)
+        d_cell[:, :, 5] = 0.0  # every pixel now sits exactly on color 5
+        counts = _cell_counts_from_present({5: 20, 1: 1, 2: 1, 3: 1}, bg0=0)
+        prev_trio = np.array([[1, 2, 3]], dtype=np.int64)
+        picks = pick_cell_colors(
+            counts, d_cell, 0, "error-min", prev_trio=prev_trio, error_min_margin=0.5
+        )
+        self.assertIn(5, picks[0].tolist())
+
+    def test_default_margin_suppresses_steady_state_flicker_under_blending(self):
+        # End-to-end reproduction: a cell whose content sits ambiguously
+        # between two blend-table entries (a solid and its nearest pair, the
+        # closest possible near-tie) flickers between them under per-frame
+        # quantization noise when error-min scores unsmoothed, and stops once
+        # ERROR_MIN_HYSTERESIS_MARGIN is applied. Regression for the "cell
+        # backgrounds visibly flip" bug seen on hardware video playback.
+        from c64cast.video.flicker import blend_distances_for, build_blend_table
+
+        table = build_blend_table(0.075, tolerance="subtle")
+        n_cells = 200
+        bg0 = 0
+        pair_idxs = np.arange(16, table.size)
+        target_pair = int(pair_idxs[np.argmin(table.demotion_cost[pair_idxs])])
+        base_color = table.bgr[target_pair]
+
+        rng = np.random.default_rng(42)
+
+        def flips_per_frame(margin: float, n_frames: int = 20) -> int:
+            smoothed = None
+            prev_trio = None
+            prev_sorted = None
+            flips = 0
+            for _ in range(n_frames):
+                colors = np.tile(base_color, (n_cells, 32, 1)).astype(np.float32)
+                colors += rng.normal(0, 8.0, colors.shape).astype(np.float32)
+                flat = colors.reshape(-1, 3)
+                d = blend_distances_for(flat, table, perceptual=True)
+                n_entries = d.shape[1]
+                quantized = np.argmin(d, axis=1)
+                d_cell = d.reshape(n_cells, 32, n_entries)
+                combined = np.repeat(np.arange(n_cells), 32) * n_entries + quantized
+                raw = (
+                    np.bincount(combined, minlength=n_cells * n_entries)
+                    .reshape(n_cells, n_entries)
+                    .astype(np.float32)
+                )
+                smoothed = raw if smoothed is None else smoothed * 0.85 + raw * 0.15
+                cc = smoothed.copy()
+                cc[:, bg0] = -1.0
+                top3 = pick_cell_colors(
+                    cc, d_cell, bg0, "error-min", prev_trio=prev_trio, error_min_margin=margin
+                )
+                prev_trio = top3
+                top3s = np.sort(top3, axis=1)
+                if prev_sorted is not None:
+                    flips += int(np.any(prev_sorted != top3s, axis=1).sum())
+                prev_sorted = top3s
+            return flips
+
+        unstabilized = flips_per_frame(margin=0.0)
+        stabilized = flips_per_frame(margin=ERROR_MIN_HYSTERESIS_MARGIN)
+        self.assertGreater(unstabilized, 20)
+        self.assertLess(stabilized, unstabilized // 4)
 
 
 def _gradient(h: int = 200, w: int = 160) -> np.ndarray:
