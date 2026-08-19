@@ -75,8 +75,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   by eye, blind, with shuffled positions and hidden solid controls, and
   `flicker_tolerance` is a cut across that table: `"off"` (default), `"clean"`
   (only pairs that fused — 24 colors on an Ultimate 64), `"subtle"` (30),
-  `"visible"` (39), `"strobe"` (all 49). Past `"subtle"` the flicker is the
-  point rather than a side effect. Pairs another `host_palette` brings under the
+  `"visible"` (39, where the flicker is the point rather than a side effect).
+  Pairs scored worse than `"visible"` are kept as a record but offered by no
+  setting — measured, they reconstruct no better than `"visible"` does, so a
+  setting for them would trade flicker for nothing. Pairs another `host_palette` brings under the
   cap that the sitting never judged are excluded rather than guessed at, and
   `scripts/diags/flicker_score_grid.py` is how the table grows.
 
@@ -84,10 +86,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
   `[color].flicker_max_luma_delta` (default 0.075, hard-capped at 0.12) limits
   how far apart in brightness a pair may be, which is the quantity that governs
-  the hazard. It is a safety control only, not a quality knob — see above for
+  the hazard. It **warns rather than refuses** — above 0.10, and again above
+  0.12 where modulation depth approaches the 20%-of-peak-white flash criterion —
+  because a pair someone has looked at and accepted outranks a computed
+  threshold; an earlier clamp at 0.12 withheld five of the eight cleanly-fusing
+  pairs on the VIC-II rendering. Nothing unscored gets in however wide it is
+  set. It is a safety control only, not a quality knob — see above for
   what decides whether a pair fuses — though it does bound what `flicker_tolerance`
-  can reach: at the 0.075 default `"clean"` gets 5 of its 8 pairs, the rest
-  needing the cap raised toward 0.12. Which pairs
+  can reach: at the 0.075 default `"clean"` gets 5 of its 8 pairs on an
+  Ultimate 64 and 3 of 8 on the VIC-II table. Which pairs
   qualify follows `[hardware].host_palette`, because what fuses is the light a
   particular machine emits. It also does not
   survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
@@ -143,13 +150,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the show and can do nothing else: no start, no stop, no tuning, no config
   writes. Setting `[web].viewer_token` yourself still works and is used as-is.
 
-- **A colour field is the sixteen colours.** `border` and `background` accept a
-  C64 colour name *or* an index, and the form only ever offered the number —
+- **A color field is the sixteen colors.** `border` and `background` accept a
+  C64 color name *or* an index, and the form only ever offered the number —
   directly under help text saying you could write "light blue". A field that
   takes two kinds of value now offers both, with a selector saying which you are
-  writing, and a colour field draws the palette as swatches. The colours come
+  writing, and a color field draws the palette as swatches. The colors come
   from the host, so one that has matched the machine's own emitted palette shows
-  the colours it really produces. `force_palette_colors` gains the same
+  the colors it really produces. `force_palette_colors` gains the same
   treatment: a count, or a whitelist picked from the swatches.
 
 - **Keep what you tuned, from the browser.** A knob turned on a phone changed
@@ -158,7 +165,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   rewrote every show file it stopped would be unusable — so under `--serve` the
   changes were recorded and nothing ever acted on them.
 
-  The Live screen's Tune panel now shows that record — every colour-pipeline
+  The Live screen's Tune panel now shows that record — every color-pipeline
   change since the show started, where it began and where it is now — and keeps
   it in the config the show is running from on one tap. The write is a patch of
   the file *on disk*, not a dump of the configuration the run was built from, so
@@ -189,11 +196,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Those are listed as *runtime only* rather than written into whichever scene
   happens to sit at that position.
 
-- **A Tune panel on the console's Live screen** — the colour pipeline, the
+- **A Tune panel on the console's Live screen** — the color pipeline, the
   generator and the scope, from a phone. A MIDI controller and the C64's own
   menu could always reach these 20-odd knobs; the browser reached the effect
   chain and nothing else, which made a phone a weaker controller than a MIDI
-  box. Dither strength and method, palette mode, colour matching, cell strategy,
+  box. Dither strength and method, palette mode, color matching, cell strategy,
   motion smoothing, auto-fit, every generator's speed and scale, the scope's
   gain: sliders for the numbers, pickers for the choices.
 
@@ -201,7 +208,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   every control on it writes somewhere — a blank scene has no generator and a
   PETSCII scene has no dither, and neither shows a slider that does nothing. And
   because the browser now turns a knob the same way a MIDI CC does, a
-  colour-pipeline change made from a phone is recorded like any other live tune
+  color-pipeline change made from a phone is recorded like any other live tune
   — the same record a `c64cast --config …` run offers to write back into the
   config when it ends, and the console now makes that offer too (below).
 
@@ -339,7 +346,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   menu and now the browser — but nothing connected it to `[color]
   hires_cell_pick`, the setting it is the live face of. Turning it worked and
   the change was recorded; every save-back then quietly skipped it. It is now
-  written like the rest of the colour pipeline, and the mapping is held to the
+  written like the rest of the color pipeline, and the mapping is held to the
   display modes' own registries by a test, so the next live knob cannot ship
   half-connected.
 
@@ -476,7 +483,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   grants reads only: the console watches the show and displays a `read-only`
   chip, but pause, skip, reload and clip launches are refused.
 
-  The default is empty, which is exactly today's behaviour — open to anything
+  The default is empty, which is exactly today's behavior — open to anything
   that can reach the port. What changes without a token is one log line: binding
   a non-loopback `host` now warns that the run is drivable by anyone who can
   reach it. Being a shared secret over plain HTTP, the token is a lock on the
@@ -610,7 +617,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fallback; this is the same surface with the rest of the host beside it.
 
 - **`scripts/diags/video_render_probe.py` now times the host as well as the
-  link.** It reported the modelled cost of getting a frame *onto the wire* but
+  link.** It reported the modeled cost of getting a frame *onto the wire* but
   nothing about the cost of producing one, so it could not answer whether a
   given machine is fast enough to drive c64cast at all — the question that
   decides whether the host can be a small single-board computer instead of a
@@ -637,7 +644,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   it, so a tune composed for PAL's 50.12 Hz ran at 60.0 on a PAL machine as
   much as an NTSC one: **+19.7% tempo**, across roughly 80% of a full HVSC.
   New `[ultimate64].sid_play_rate` (default `"auto"`) sets the latch to the
-  tune's own frame rate. `"off"` restores the previous behaviour for anyone who
+  tune's own frame rate. `"off"` restores the previous behavior for anyone who
   knows these tunes at NTSC speed and prefers them that way, and an explicit
   number in Hz pins every vsync tune to one rate. CIA-timed (multispeed) tunes
   self-time from their own INIT and are never overridden — the correction is
@@ -901,7 +908,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading)
   section of its own, and the same symptom is answered in both troubleshooting
   appendices. A release's own notes now lead with how to install or upgrade, with
-  the wheel and tarball labelled for the installers that fetch them.
+  the wheel and tarball labeled for the installers that fetch them.
 
 - **The `#:schema` line no longer needs maintaining, and says so when it does.**
   Two new surfaces and one changed instruction. `c64cast --print-schema-path`
@@ -996,7 +1003,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Ultimate with its REU enabled already stages `hires`/`mhires` bitmaps through
   the REU bank-swap instead, and those are unaffected (their screen and color
   RAM still benefit). TeensyROM+ playback is unaffected in kind: that link *is*
-  byte-bound, and the same model keeps its existing chunking behaviour.
+  byte-bound, and the same model keeps its existing chunking behavior.
 
 - **The baked `mahoney_ultisid` table has been re-measured** against the
   emulated core in isolation. It reproduces the original curve almost exactly,
@@ -1456,8 +1463,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   live-target row the way Appendix E did — Appendix F heads each section with
   the holder itself (`mode`, `effect`, `source`, `scene`) and says what it
   holds, the card puts it in the column heading.
-- **The books, and the code, are spelled in American English.** `colour`,
-  `behaviour`, `quantise`, `analyser`, `centre`, `catalogue`, `licence` and the
+- **The books, and the code, are spelled in American English.** `color`,
+  `behavior`, `quantise`, `analyser`, `center`, `catalogue`, `licence` and the
   rest. The program has always named itself in American English — `color_match`,
   `grayscale`, `palette_mode` — so the prose was disagreeing with the keys it
   was telling the reader to type, sometimes in the same sentence. The `grey` /

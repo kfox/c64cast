@@ -779,12 +779,15 @@ hires_cell_pick = "error-min"
 #             cap, 21 at the 0.075 default (three of the eight sit above it).
 #   "subtle"  adds pairs scored mildly unsteady. 30 colors.
 #   "visible" adds pairs that visibly flicker. 39 colors.
-#   "strobe"  everything, 49 colors — the alternation is the point, not a side
-#             effect. For deliberate effect only.
 #
-# Past "subtle" you are choosing flicker, not tolerating it. It is seen at 25 Hz
+# Pairs scored worse than "visible" are kept in the table as a record of what was
+# seen, but no setting offers them: measured against the plain palette they
+# reconstruct no better than "visible" does, so they would trade flicker for
+# nothing at all.
+#
+# At "visible" you are choosing flicker, not tolerating it. It is seen at 25 Hz
 # (PAL) / 30 Hz (NTSC), inside the recognized photosensitive-seizure band — do
-# not use those settings for a stream other people will watch. PAL's 25 Hz fuses
+# not use that setting for a stream other people will watch. PAL's 25 Hz fuses
 # noticeably worse than NTSC's 30 Hz throughout.
 #
 # At NO setting does blending survive a 30 fps capture: a capture card records
@@ -798,11 +801,19 @@ hires_cell_pick = "error-min"
 flicker_tolerance = "off"
 #
 # flicker_max_luma_delta: how far apart in brightness the two colors of a pair
-# may be before they are refused, 0..0.12, as a fraction of peak white in linear
-# light. Treat this as the SAFETY control and not a quality knob: alternation at
-# the field rate is a seizure risk in proportion to luminance modulation depth,
-# and the 0.12 ceiling is there because 20% of peak white is the level the
-# guidance is written around. Above 0.10 warns; above 0.12 is refused outright.
+# may be, as a fraction of peak white in linear light. Treat this as the SAFETY
+# control and not a quality knob: alternation at the field rate is a seizure risk
+# in proportion to luminance modulation depth.
+#
+# !! WARNING !! It advises, it does not refuse. Above 0.10 it warns that pairs
+# start reading as luminance flicker; above 0.12 it warns again, because that is
+# where a blended area's modulation approaches the 20%-of-peak-white flash
+# criterion the photosensitive-seizure guidance is written around. Both let the
+# run proceed. Raising this past 0.12 is a decision to show a flashing image at
+# a depth the guidance cautions against — do not do it for a stream anyone else
+# will watch. It is set up this way because a pair someone has looked at and
+# accepted outranks a computed threshold; nothing unscored gets in regardless of
+# how wide it is set.
 #
 # Do NOT read a lower value as "less flicker" — that is flicker_tolerance's job.
 # Every pair this cap admits was scored by eye, and brightness distance barely
@@ -810,8 +821,9 @@ flicker_tolerance = "off"
 # visibly flickered, while one near the top of the range read as almost nothing.
 #
 # It does bound what flicker_tolerance can reach, though. At the 0.075 default
-# "clean" gets 5 of its 8 pairs on an Ultimate 64; the other 3 need the cap
-# raised toward 0.12, which is a photosensitivity decision, not a quality one.
+# "clean" gets 5 of its 8 pairs on an Ultimate 64, and only 3 of 8 on the VIC-II
+# rendering, whose luminances put five cleanly-fusing pairs above 0.12. Widening
+# it is how you get the rest, with the warnings above in mind.
 #
 # Which pairs qualify depends on [hardware].host_palette, because what fuses is
 # the light the machine emits: the VIC-II rendering and an Ultimate 64 agree on
@@ -951,7 +963,7 @@ enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
 # Shared-token auth. Empty = open to anything that can reach the port (the
-# historical behaviour, fine on loopback). Set it before binding `host` to a
+# historical behavior, fine on loopback). Set it before binding `host` to a
 # LAN address; prefer the C64CAST_CONTROL_TOKEN env var over a value here.
 # Browsers trade the token for a cookie at /api/login?token=…&next=/perf.
 token = ""

@@ -517,11 +517,17 @@ band recognized as a photosensitive-seizure risk (ITU-R BT.1702). What makes
 alternation hazardous is luminance modulation depth, which is exactly the same
 quantity that decides whether a pair reads as a *color* or as *flicker*. So
 `[color].flicker_max_luma_delta` is a safety control and nothing else: at the
-0.075 default only ~21 of the 120 possible pairs clear it, and c64cast refuses
-anything above 0.12 outright because that is where modulation depth approaches
-the level the guidance is written around. NTSC's 30 Hz fuses noticeably better
-than PAL's 25 Hz. Don't point this at an audience without knowing that, and
-leave the cap alone unless you have a reason.
+0.075 default only ~21 of the 120 possible pairs clear it.
+
+**It warns rather than refuses.** Past 0.10 it says pairs are starting to read
+as luminance flicker; past 0.12 it warns again, that being where modulation
+depth approaches the 20%-of-peak-white flash criterion the guidance is written
+around — and then proceeds either way. It clamped at 0.12 in an earlier build,
+which put a computed threshold above pairs a person had looked at and accepted;
+on the VIC-II rendering that withheld five of the eight pairs scored as fusing
+cleanly. Going past 0.12 is a deliberate decision to show a flashing image at a
+depth the guidance cautions against, so don't do it for anything an audience
+will see. NTSC's 30 Hz fuses noticeably better than PAL's 25 Hz.
 
 **A lower cap is not less flicker.** Brightness distance turned out to be a poor
 predictor of whether a pair actually fuses — scored by eye over every admitted
@@ -534,9 +540,11 @@ blind sitting showed it excluding five of the eight steadiest pairs.
 So the knob that buys steadiness is `[color].flicker_tolerance`, and it is not a
 metric at all — every pair the safety cap allows was scored by eye, blind, and
 the setting picks how far down that scale to go. `"clean"` takes only the pairs
-that fused, `"subtle"` adds mildly unsteady ones, `"visible"` and `"strobe"`
-take pairs that are *meant* to be seen flickering. Treat those last two as an
-effect you chose, not as a palette upgrade, and not for an audience.
+that fused, `"subtle"` adds mildly unsteady ones, and `"visible"` takes pairs
+that are *meant* to be seen flickering — an effect you chose, not a palette
+upgrade, and not for an audience. Pairs scored worse than that are recorded but
+offered by no setting: they reconstruct no better than `"visible"` does, so
+there is nothing to trade the flicker for.
 
 Expect a smaller widened palette than the raw pair count suggests: of the 33
 pairs the hard cap admits on an Ultimate 64, only 8 read as fused — 24 effective
@@ -764,7 +772,7 @@ fast** — on a PAL machine too. Changing the Ultimate's System Mode does
 not fix this; it changes φ2, which is pitch, not tempo.
 
 `[ultimate64].sid_play_rate` (default `"auto"`) reprograms the latch to
-the tune's own frame rate. `"off"` restores the old behaviour if you are
+the tune's own frame rate. `"off"` restores the old behavior if you are
 used to hearing PAL tunes at NTSC speed, and an explicit number in Hz
 pins every vsync tune to one rate. CIA-timed (multispeed) tunes always
 self-time from their own INIT and are never overridden.
@@ -798,22 +806,22 @@ cycle clears it regardless.
 
 Retiming the machine changes the analog signal in a way the upscaler
 hides from HDMI. c64cast preserves the chroma encoding across a switch,
-so a set that decoded colour before still can — but the **field rate**
+so a set that decoded color before still can — but the **field rate**
 changes with the timing, and a single-standard analog display may simply
 not lock to it.
 
-An NTSC-timed machine retimed to PAL emits `NTSC-50`: NTSC colour at
-50 Hz. A PAL-timed one retimed to NTSC emits `PAL-60`: PAL colour at
+An NTSC-timed machine retimed to PAL emits `NTSC-50`: NTSC color at
+50 Hz. A PAL-timed one retimed to NTSC emits `PAL-60`: PAL color at
 60 Hz. `PAL-60` is the friendlier of the two — most multi-standard sets
 and capture devices handle it — while `NTSC-50` is rarer and more likely
 to come out monochrome or unstable. A pure NTSC set fed `PAL-60`
-generally locks sync and loses colour.
+generally locks sync and loses color.
 
 Audio is unaffected as a signal path; it leaves by the same connector
 either way. Its *pitch* changes, because φ2 did, which is the point.
 
 If you run composite and picked one of the `/L` modes for its locked
-colour subcarrier, note that a `sid_video_mode` run gives that up: every
+color subcarrier, note that a `sid_video_mode` run gives that up: every
 `/L` mode is a hybrid, and retiming a hybrid always lands on the other
 standard's plain mode, which has no locked form. Teardown restores it.
 

@@ -85,11 +85,11 @@ class MHiresComposeBuffers(BitmapComposeBuffers):
 class FlickerComposeBuffers(BitmapComposeBuffers):
     """Flicker blending ([color].flicker_tolerance) adds ``screen_b``: the second
     1000-byte screen matrix, alternated with ``screen`` at the VIC field rate so
-    each cell's colour pair fuses in the eye.
+    each cell's color pair fuses in the eye.
 
-    The two pages differ only in their colour nibbles — ``bitmap`` is shared,
+    The two pages differ only in their color nibbles — ``bitmap`` is shared,
     which is both what keeps the shapes stable (a differing mask would flicker
-    geometry, not colour) and what holds the cost to one extra 1000-byte write
+    geometry, not color) and what holds the cost to one extra 1000-byte write
     rather than a second full frame."""
 
     screen_b: np.ndarray

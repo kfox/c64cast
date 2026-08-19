@@ -497,7 +497,7 @@ Every name c64cast answers to — 439 of them — and the pages that discuss eac
 | `speed_cells_per_s` | [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`marquee` (C)](22-appendix-c-overlays.md#marquee), [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `start_s` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`video` (2)](03-vocabulary.md#video), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `storage` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
-| `strobe` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `strobe` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | `style` | [`webcam` (2)](03-vocabulary.md#webcam), [The Six Display Modes (3)](04-display-pipeline.md#the-six-display-modes), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | subtune | [`waveform` (2)](03-vocabulary.md#waveform), [The Player (4)](05-sound-and-music.md#the-player), [Duration and Subtunes (4)](05-sound-and-music.md#duration-and-subtunes) |
 | `--suggest-palette` | [`color` (A)](20-appendix-a-configuration.md#color), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |

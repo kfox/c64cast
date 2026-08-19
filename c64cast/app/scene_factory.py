@@ -718,7 +718,7 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
     _validate_scope_knobs(s, "waveform")
     # WaveformScene is bitmap-only — the SceneCfg `display` field is
-    # ignored for this scene type. Synthesise a hires display_mode so
+    # ignored for this scene type. Synthesize a hires display_mode so
     # overlay compatibility checks fire against what the scene will
     # actually paint.
     return _build_display_mode("hires")
@@ -757,7 +757,7 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
             )
     _validate_scope_knobs(s, "midi")
     # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
-    # field is ignored. Synthesise a hires display_mode so overlay
+    # field is ignored. Synthesize a hires display_mode so overlay
     # compatibility validates against what the scene will actually paint
     # (and PETSCII overlays are rejected, as on a waveform scene).
     return _build_display_mode("hires")
@@ -766,7 +766,7 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
 def _validate_asid(s: SceneCfg) -> DisplayMode:
     # AsidScene carries the SID state in the stream, so it has no synth knobs
     # to validate — only the shared oscilloscope knobs. Like MidiScene it's
-    # bitmap-only (hires), so synthesise a hires display_mode for overlay
+    # bitmap-only (hires), so synthesize a hires display_mode for overlay
     # compatibility (PETSCII overlays rejected).
     _validate_scope_knobs(s, "asid")
     if not (1 <= s.asid_max_sids <= 8):

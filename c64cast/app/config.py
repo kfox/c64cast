@@ -420,7 +420,7 @@ class Ultimate64Cfg:
             "help": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's "
             "native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); "
             "'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so "
-            "PAL tunes run ~20% fast — the pre-1.9 behaviour); a number pins every "
+            "PAL tunes run ~20% fast — the pre-1.9 behavior); a number pins every "
             "vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always "
             "self-time and are never overridden.",
             "choices": SID_PLAY_RATE_CHOICES,
@@ -1977,11 +1977,13 @@ class ColorCfg:
             "pair was scored by eye, blind, and this picks how far down that "
             "scale to go: 'off' (default) no blending, 16 colors; 'clean' only "
             "pairs that fused, 24 colors on an Ultimate 64; 'subtle' adds mildly "
-            "unsteady pairs, 30; 'visible' 39; 'strobe' takes all 49 and the "
-            "flicker with them. Past 'subtle' the alternation is meant to be "
-            "seen — it is inside the photosensitive-seizure band, so treat it as "
-            "an effect you chose, not a palette upgrade. Blending does not "
-            "survive a 30 fps capture at any setting. Hires 'normal' style only.",
+            "unsteady pairs, 30; 'visible' adds pairs that visibly flicker, 39. "
+            "Pairs scored worse than that are recorded but offered by no setting "
+            "— they reconstruct no better than 'visible' does, so they would "
+            "trade flicker for nothing. 'visible' is itself inside the "
+            "photosensitive-seizure band: treat it as an effect you chose, not a "
+            "palette upgrade. Blending does not survive a 30 fps capture at any "
+            "setting. Hires 'normal' style only.",
             "choices": tuple(FLICKER_TOLERANCES),
             "applies_to": ("hires",),
         },
@@ -1990,16 +1992,20 @@ class ColorCfg:
         default=0.075,
         metadata={
             "help": "How far apart in brightness the two colors of a flicker pair "
-            "may be, 0..0.12, as a fraction of peak white in linear light. This "
-            "is a photosensitivity control, not a quality knob: alternation at "
-            "the field rate is hazardous in proportion to luminance modulation "
-            "depth, and 0.12 is the ceiling because 20% of peak white is what "
-            "the guidance is written around. Do not read a lower value as less "
+            "may be, as a fraction of peak white in linear light. This is a "
+            "photosensitivity control, not a quality knob: alternation at the "
+            "field rate is hazardous in proportion to luminance modulation "
+            "depth. WARNS above 0.10, and again above 0.12 where modulation "
+            "approaches the 20%-of-peak-white flash criterion the guidance is "
+            "written around — but does not refuse, because a pair you have "
+            "looked at and accepted outranks the number. Nothing unscored can "
+            "get in however wide it is set. Do not read a lower value as less "
             "flicker — scored by eye, ΔY predicts fusion barely at all "
-            "(r=+0.26), which is what flicker_tolerance is for. 0.075 "
-            "(default) admits ~21 of the 120 pairs before that cap, and holds "
-            "flicker_tolerance = 'clean' to 5 of its 8 pairs. Above "
-            "0.10 warns; above 0.12 is refused. Which pairs qualify depends on "
+            "(r=+0.26), which is what flicker_tolerance is for. It does bound "
+            "what that setting can reach: 0.075 (default) holds "
+            "flicker_tolerance = 'clean' to 5 of its 8 pairs on an Ultimate 64, "
+            "and to 3 of 8 on the VIC-II rendering, whose luminances put five "
+            "cleanly-fusing pairs above 0.12. Which pairs qualify depends on "
             "[hardware].host_palette, since it is the emitted light that fuses.",
             "applies_to": ("hires",),
         },
@@ -2269,7 +2275,7 @@ class ControlPlaneCfg:
         metadata={
             "help": "Shared token required on every control-plane request, including "
             "the /perf console and its WebSocket. Empty = no authentication (the "
-            "historical behaviour). Prefer the C64CAST_CONTROL_TOKEN env var."
+            "historical behavior). Prefer the C64CAST_CONTROL_TOKEN env var."
         },
     )
     viewer_token: str = field(

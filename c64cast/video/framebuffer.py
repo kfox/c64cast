@@ -189,9 +189,9 @@ class Framebuffer:
             fg_palette = C64_PALETTE_BGR[fg]
             bg_palette = C64_PALETTE_BGR[bg]
         else:
-            # Fuse the two fields' cell colours once, then render a single pass:
+            # Fuse the two fields' cell colors once, then render a single pass:
             # equivalent to alternating them, and it is the frame the eye
-            # integrates. Both pages share the bitmap, so only the colours differ.
+            # integrates. Both pages share the bitmap, so only the colors differ.
             screen_b = np.frombuffer(ram[page_b : page_b + SCREEN.N_CELLS], dtype=np.uint8).reshape(
                 25, 40
             )

@@ -883,9 +883,9 @@ assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
 # ---------------------------------------------------------------------------
 # The host-DMA sibling above, plus an unconditional per-field toggle of the
 # $D018 screen-matrix nibble between the two page offsets (c64.D018_HIRES_PAGE_A
-# / _B). Two screen pages holding different colour nibbles over one shared
+# / _B). Two screen pages holding different color nibbles over one shared
 # bitmap therefore alternate at the VIC field rate, and the eye fuses each cell's
-# pair into a colour the VIC cannot draw. See video/flicker.py for which pairs
+# pair into a color the VIC cannot draw. See video/flicker.py for which pairs
 # are eligible and why.
 #
 # The toggle is deliberately ahead of the ready-flag check, and ahead of the
@@ -893,13 +893,13 @@ assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
 # rate whatever the host is doing, which is the whole reason this does not need
 # 50-60 fps over the link. Gating it would drop fields out of the fusion cadence
 # — a worse artifact than a late page flip, which only mistimes the blended
-# cells' colours rather than showing two frames of bitmap at once. Only the
+# cells' colors rather than showing two frames of bitmap at once. Only the
 # double-buffer commit ($DD00 + $D021) waits on a staged frame and a safe raster.
 #
 # That commit is additionally gated on landing in phase 0, so a bank swap can
 # never transpose the A/B page roles — without it a swap arriving on an odd
 # field would put field A's nibbles on field B's slot for the rest of the scene,
-# which is invisible on a still frame and reads as a colour shift on motion.
+# which is invisible on a still frame and reads as a color shift on motion.
 #
 # X is used as the page index and is NOT saved here: kernal $FF48 pushed A/X/Y
 # before vectoring through $0314 and $EA81 pulls them back, the same reason the

@@ -6,12 +6,15 @@ This IS `flicker.SCORED_FLICKER`: the tier table `[color].flicker_tolerance`
 cuts across is a recording of a sitting with this script, not a rule. Two fitted
 rules came before it — a ΔY threshold and a red-orange "warmth" axis — and both
 were refuted the first time a run they had not been fitted to was scored. So
-there is nothing left to predict with, and the table only grows by looking.
+there is nothing left to predict with, and the table only changes by looking.
 
-Run this to re-score the table, to settle a pair whose tier is in doubt, or to
-score pairs a different `host_palette` brings under the safety clamp that the
-Ultimate 64 sitting never had to judge (those carry no tier and are never
-admitted, whatever the tolerance).
+Run this to re-score the admitted set, or to settle a pair whose tier is in
+doubt. What it CANNOT reach is anything no tolerance admits — a pair scored
+`intense`, or one another `host_palette` brings under the cap that has never
+been scored — because the renderer builds its blend table from this same data,
+so an unadmitted pair is in no table and cannot be put on screen. Those are
+printed at startup rather than dropped; widening the tolerance vocabulary is
+what it would take to score them.
 
 WHY THE OLD LADDER CANNOT BE REUSED. It laid its patches out sorted by ΔY, so
 screen position was perfectly confounded with the variable under test: row means
@@ -29,7 +32,7 @@ exist to fix that:
     is dealt with the loud pool: an unknown among the quiet patches could be
     anything, and that is the pool whose readings are easiest to spoil.
   * Every page carries one SOLID patch, placed at random and never announced.
-    A solid cannot flicker — both fields hold the same colour — so calling one
+    A solid cannot flicker — both fields hold the same color — so calling one
     unsteady says the reading is picking up something other than fusion (the
     bank-swap residual, a capture beat, the room's lighting) and the page should
     be discounted. It is the only negative control available here.
@@ -53,7 +56,7 @@ of five all-loud pages cannot walk the scale in one direction unchecked.
 
 BLIND after that. The script prints patch numbers and nothing else while you
 score. Which pair sits in which slot, and what it was scored at last time, is
-revealed only after the last page. Scoring a patch already labelled "this one
+revealed only after the last page. Scoring a patch already labeled "this one
 flickers" is not scoring it.
 
 PACE. It waits on Enter between pages, with no timer anywhere. Take as long as a
@@ -68,7 +71,7 @@ settling as a page comes up is the scene starting, so ignore the first second.
 WHAT TO WRITE DOWN. Per patch, a rating applied consistently matters more than a
 precise one: none / very mild / mild / moderate / intense, printed with a gloss
 on each before every page. Two extras are worth more than precision on the
-scale: note if a patch reads as a colour you cannot name from the 16 (the blend
+scale: note if a patch reads as a color you cannot name from the 16 (the blend
 working), and note whether any shimmer sits still or crawls, because a crawl is
 the display's chroma decoding and not fusion.
 
@@ -117,15 +120,17 @@ Pool = tuple[list[Entry], list[Entry]]
 
 HOST_PALETTE = "u64"
 
-# The whole admissible set, so colours that no shipping default lets through
-# still get judged. MAX_ALLOWED_LUMA_DELTA is the photosensitivity ceiling and
-# is not raised here: a pair past it is refused by the renderer whatever this
-# script asks for, and it is the one limit that should not be probed by eye.
-SCORE_TOLERANCE = "strobe"
+# The widest tolerance there is, so pairs no shipping default lets through still
+# get judged. Note what this CANNOT reach: the renderer builds its blend table
+# from the same tier data, so a pair scored `intense` — or never scored at all —
+# is in no table and cannot be put on screen. Scoring those needs the tolerance
+# vocabulary widened first; `unscorable_pairs` reports them rather than letting
+# them go missing quietly.
+SCORE_TOLERANCE = "visible"
 
 # 320x200, all offsets multiples of 8. A patch that straddled a character cell
 # would put two blend entries in one cell, which hires resolves by picking one —
-# so the patch would quietly stop being the pair it is labelled as.
+# so the patch would quietly stop being the pair it is labeled as.
 PAGE_W, PAGE_H = 320, 200
 COLS_X = (24, 120, 216)
 ROWS_Y = (16, 112)
@@ -164,12 +169,29 @@ def build_page(entries: list[Entry | None], gutter: tuple[int, ...]) -> np.ndarr
     return img
 
 
-def candidate_pairs(cap: float) -> list[tuple[int, int]]:
-    """Every pair worth putting on the chart: under the safety cap and far
-    enough from a solid to be worth a page, whatever its tier is.
+def flicker_mod():
+    from c64cast.video import flicker
 
-    Not flicker.blend_pairs — that one drops unscored pairs, which are the ones
-    a re-score most needs to reach."""
+    return flicker
+
+
+def candidate_pairs(cap: float) -> list[tuple[int, int]]:
+    """Every pair this script can actually put on screen.
+
+    Exactly what the renderer will build its blend table from, so a patch can
+    never be painted as a pair the machine will then quantize to something
+    else — verify_page() would catch that, but only after a run."""
+    from c64cast.video import flicker
+
+    return flicker.blend_pairs(cap, tolerance=SCORE_TOLERANCE)
+
+
+def unscorable_pairs(cap: float) -> list[tuple[tuple[int, int], str]]:
+    """Pairs under the cap that no tolerance admits, and why.
+
+    Reported rather than skipped silently: these are the ones a sitting cannot
+    settle, and a table that quietly stopped covering part of its own range
+    would look identical to one that covers all of it."""
     import itertools
 
     import numpy as np
@@ -177,13 +199,16 @@ def candidate_pairs(cap: float) -> list[tuple[int, int]]:
     from c64cast.video import flicker
 
     out = []
+    admissible = set(candidate_pairs(cap))
     for a, b in itertools.combinations(range(16), 2):
-        if flicker.pair_luma_delta(a, b) > cap:
+        if flicker.pair_luma_delta(a, b) > cap or (a, b) in admissible:
             continue
         fused = flicker._to_lab(flicker.fuse(a, b)[None, :])
         gain = float(np.min(np.linalg.norm(flicker._PALETTE_LAB - fused, axis=1)))
-        if gain >= flicker.MIN_BLEND_LAB_GAIN:
-            out.append((a, b))
+        if gain < flicker.MIN_BLEND_LAB_GAIN:
+            continue  # duplicates a solid; not a blend anyone would want
+        tier = flicker.pair_flicker_tier(a, b)
+        out.append(((a, b), tier or "unscored"))
     return out
 
 
@@ -198,7 +223,7 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
     )
 
     set_host_palette(HOST_PALETTES[HOST_PALETTE], name=HOST_PALETTE)
-    cap = flicker.MAX_ALLOWED_LUMA_DELTA
+    cap = flicker.FLASH_CRITERION_LUMA_DELTA
     loud: list[Entry] = []
     quiet: list[Entry] = []
     for a, b in candidate_pairs(cap):
@@ -217,7 +242,7 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
         (quiet if is_quiet else loud).append(entry)
 
     # Solid controls drawn from whatever the pool's pairs are built out of, so a
-    # control never introduces a colour the page would not otherwise show.
+    # control never introduces a color the page would not otherwise show.
     def solids_for(pool: list[Entry]) -> list[Entry]:
         used = sorted({c for e in pool for c in e.pair})
         return [
@@ -238,11 +263,12 @@ def collect_entries(rng: random.Random) -> tuple[Pool, Pool]:
     return (loud, solids_for(loud)), (quiet, solids_for(quiet))
 
 
-# Anchors for the calibration page, both from the earlier scoring session and
-# both inside the photosensitivity clamp — a genuinely violent pair would anchor
-# the top of the scale better and is deliberately unreachable, since
-# MAX_ALLOWED_LUMA_DELTA is the one limit that should not be probed by eye.
-CALIBRATION_LOUD = (6, 8)  # Blue + Orange — scored "intense"
+# Anchors for the calibration page, both from the previous scoring run. The loud
+# end is the loudest pair a tolerance still admits rather than the loudest pair
+# there is: Blue+Orange would anchor the top of the scale better, but it scored
+# `intense` and no tolerance builds it into a table any more, so it cannot be
+# rendered to anchor anything.
+CALIBRATION_LOUD = (5, 10)  # Green + Light Red — scored "moderate"
 CALIBRATION_QUIET = (6, 9)  # Blue + Brown — the one pair scored "none"
 
 
@@ -326,15 +352,15 @@ def paginate(
 
 
 def verify_page(entries: list[Entry | None]) -> list[str]:
-    """Check each patch quantizes to the pair it is labelled as.
+    """Check each patch quantizes to the pair it is labeled as.
 
     A patch is only evidence about its pair if the renderer actually picks that
-    blend entry for it. Painting the fused colour is not the same as getting it
+    blend entry for it. Painting the fused color is not the same as getting it
     back — a neighbouring entry can win, and the failure is invisible on screen.
     """
     from c64cast.video import flicker
 
-    table = flicker.build_blend_table(flicker.MAX_ALLOWED_LUMA_DELTA, tolerance=SCORE_TOLERANCE)
+    table = flicker.build_blend_table(flicker.FLASH_CRITERION_LUMA_DELTA, tolerance=SCORE_TOLERANCE)
     problems = []
     for slot, entry in enumerate(entries):
         if entry is None:
@@ -357,8 +383,8 @@ enabled = false
 host_palette = "{HOST_PALETTE}"
 
 [color]
-# auto_fit would remap the very colours the patches were painted to be, so the
-# patch would stop being the pair it is labelled as. Same for dither.
+# auto_fit would remap the very colors the patches were painted to be, so the
+# patch would stop being the pair it is labeled as. Same for dither.
 auto_fit = false
 dither = "none"
 flicker_max_luma_delta = {0.12}
@@ -383,7 +409,7 @@ aspect_mode = "stretch"
 
 
 SCALE = (
-    "  none        sits perfectly still — a flat colour, nothing moving in it",
+    "  none        sits perfectly still — a flat color, nothing moving in it",
     "  very mild   you have to look for it; only obvious against a still patch",
     "  mild        clearly unsteady once you notice, easy to stop noticing",
     "  moderate    obviously shimmering the whole time you look at it",
@@ -482,7 +508,7 @@ def show_page(
                 print("  as the page comes up is the scene starting, not the effect.")
                 print("  Rate each numbered patch:")
                 print("\n".join(SCALE))
-                print("  Also: does it read as a colour outside the C64's 16, and does any")
+                print("  Also: does it read as a color outside the C64's 16, and does any")
                 print("  shimmer sit still or crawl sideways?")
             print("  Take as long as you need, then press Enter.")
             input("  > ")
@@ -530,8 +556,18 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     (loud, loud_solids), (quiet, quiet_solids) = collect_entries(rng)
-    quiet_pages = paginate(quiet, quiet_solids, rng) if args.pool in ("all", "cool") else []
-    loud_pages = paginate(loud, loud_solids, rng) if args.pool in ("all", "warm") else []
+    blocked = unscorable_pairs(flicker_mod().FLASH_CRITERION_LUMA_DELTA)
+    if blocked:
+        from c64cast.video.palette import color_display_name
+
+        print(
+            f"[grid] {len(blocked)} pair(s) under the cap cannot be rendered at "
+            f"tolerance {SCORE_TOLERANCE!r} and are NOT in this sitting:"
+        )
+        for (a_i, b_i), why in blocked:
+            print(f"[grid]   {color_display_name(a_i)}+{color_display_name(b_i)} ({why})")
+    quiet_pages = paginate(quiet, quiet_solids, rng) if args.pool in ("all", "quiet") else []
+    loud_pages = paginate(loud, loud_solids, rng) if args.pool in ("all", "loud") else []
     pages = interleave(quiet_pages, loud_pages)
 
     from c64cast.video.palette import C64_PALETTE_BGR
@@ -541,7 +577,7 @@ def main() -> None:
 
     problems = [p for page in pages for p in verify_page(page)]
     if problems:
-        print("REFUSING TO RUN — some patches do not render as the pair they are labelled as:")
+        print("REFUSING TO RUN — some patches do not render as the pair they are labeled as:")
         for p in problems:
             print("  " + p)
         raise SystemExit(2)

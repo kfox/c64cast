@@ -1,9 +1,9 @@
-"""Temporal colour blending: the palette the eye sees when two C64 colours
+"""Temporal color blending: the palette the eye sees when two C64 colors
 alternate at the VIC field rate.
 
-Alternating two hardware colours every video field fuses them into a shade the
+Alternating two hardware colors every video field fuses them into a shade the
 VIC cannot produce (the Dragon Breed / Mayhem in Monsterland trick). This module
-owns the *colour* half of that: which pairs are eligible, what they look like
+owns the *color* half of that: which pairs are eligible, what they look like
 fused, and how to quantize a frame against the widened palette. The C64-side
 alternation lives in `modes_irq.FLICKER_SWAP_IRQ_HANDLER`.
 
@@ -23,11 +23,18 @@ gamma-encoded values, so it misreads the dark end in the opposite direction.
 What the cap is *for* is photosensitivity, and that justification stands by
 itself: a blended area alternates at 25 Hz (PAL) / 30 Hz (NTSC), inside the
 ITU-R BT.1702 risk band, where the hazard is governed by luminance modulation
-depth. `MAX_ALLOWED_LUMA_DELTA` keeps every admitted pair well under the
-20%-of-peak-white flash criterion.
+depth. `FLASH_CRITERION_LUMA_DELTA` marks where modulation depth approaches the
+20%-of-peak-white level that guidance is written around.
+
+It **advises rather than refuses**. An earlier version clamped to it, which put
+a computed threshold above a pair a human had looked at and accepted — the same
+mistake the fitted eligibility rules made, in the one place where being wrong
+withholds something already verified. Exceeding it logs a warning and proceeds;
+what is admitted is still bounded by the scored table, so a wide cap cannot
+reach anything unscored.
 
 What the cap is **not** is a predictor of whether a pair fuses — and neither is
-anything else derived from the two colours. Every pair the hard clamp admits was
+anything else derived from the two colors. Every pair the hard clamp admits was
 scored by eye, blind, and against those verdicts ΔY reaches r=+0.26, Δchroma
 +0.04, mean luminance −0.04, and the best multi-term fit an adjusted R² of 0.18
 over n=33. A warmth axis was tried and removed: fitted to an earlier, smaller run
@@ -37,7 +44,7 @@ the eight steadiest pairs. Warm *solids* do not flicker (all seven hidden solid
 controls scored none, Red and Orange among them) and warm+warm pairs fuse well;
 what the earlier run had actually picked up was warm against neutral.
 
-**So eligibility is measured rather than modelled.** `SCORED_FLICKER` is that
+**So eligibility is measured rather than modeled.** `SCORED_FLICKER` is that
 blind run, one tier per pair, and `[color].flicker_tolerance` is a cut across it.
 A pair with no entry is never admitted at any tolerance. On the Ultimate 64
 table that costs nothing — the scored set is exactly what the hard clamp allows
@@ -59,15 +66,19 @@ whatever palette is active, which is an extrapolation: they were collected on an
 Ultimate 64, and a custom `host_palette` far from either shipped table
 invalidates them.
 
-**Fused colour is the linear-light average, not the sRGB average.** The eye
+**Fused color is the linear-light average, not the sRGB average.** The eye
 integrates emitted light over the two fields, so the mix has to happen after
 sRGB decode. Averaging the encoded values instead makes every blend read too
 dark, worst on the high-contrast pairs where the gamma curve is steepest.
 
-Note that the safety cap binds before the tolerance does: at the 0.075 default
-on an Ultimate 64, `"clean"` admits 5 of its 8 pairs, the other 3 sitting between
-0.075 and the 0.12 clamp. Widening the cap to reach them is a photosensitivity
-decision, not a quality one.
+No tolerance admits the tier scored `intense`. Those ten pairs are kept in the
+table because they are what was seen, but measured against the plain palette
+they reconstruct no better than `"visible"` does — under 0.1% on every fixture —
+so a setting for them would trade flicker for nothing.
+
+Note that the luma cap still binds before the tolerance does: at the 0.075
+default on an Ultimate 64, `"clean"` reaches 5 of its 8 pairs, the other 3
+sitting between 0.075 and 0.12.
 """
 
 from __future__ import annotations
@@ -87,16 +98,16 @@ from c64cast.video.palette import (
 
 # Rec.709 luminance weights in OpenCV's BGR channel order, applied to
 # linear-light values. Distinct from palette.PALETTE_LUMA, which is Rec.601 on
-# *encoded* sRGB — fine for ordering a cell's colours dark→light, wrong for
-# deciding whether two colours will visibly flicker against each other.
+# *encoded* sRGB — fine for ordering a cell's colors dark→light, wrong for
+# deciding whether two colors will visibly flicker against each other.
 _LUMA_WEIGHTS_BGR = np.array([0.0722, 0.7152, 0.2126], dtype=np.float32)
 
-# Linear-luminance delta above which a pair is refused outright, whatever the
-# config asks for. Set from the flash criterion and not from anything observed
-# to fuse: a pair here modulates 12% of peak white at the field rate, and the
-# ceiling exists so no config can walk the modulation depth up to the 20% the
-# photosensitivity guidance is written around.
-MAX_ALLOWED_LUMA_DELTA = 0.12
+# Linear-luminance delta past which the arming path warns about modulation
+# depth. Set from the flash criterion and not from anything observed to fuse: a
+# pair here modulates 12% of peak white at the field rate, against the 20% the
+# photosensitivity guidance is written around. Advisory — clamping to it was
+# rejected for putting a computed number above a verdict made by eye.
+FLASH_CRITERION_LUMA_DELTA = 0.12
 
 # Past here the modulation depth is close enough to that criterion that the
 # arming path says so rather than letting it through silently.
@@ -153,11 +164,10 @@ FLICKER_TOLERANCES: dict[str, int] = {
     "clean": 1,  # none + very mild
     "subtle": 2,  # + mild
     "visible": 3,  # + moderate
-    "strobe": 4,  # + intense
 }
 DEFAULT_TOLERANCE = "off"
 
-# Below this the pair fuses to something a solid colour already covers, so it
+# Below this the pair fuses to something a solid color already covers, so it
 # costs a page write and buys nothing. In OpenCV 8-bit Lab units.
 MIN_BLEND_LAB_GAIN = 4.0
 
@@ -183,7 +193,7 @@ def pair_luma_delta(a: int, b: int) -> float:
     """Linear-luminance separation of a candidate flicker pair, 0.0 (identical
     brightness, fuses invisibly) to 1.0 (black against white).
 
-    Absolute, not normalized by the pair's own brightness: two dark colours a
+    Absolute, not normalized by the pair's own brightness: two dark colors a
     given distance apart flicker no worse than two light ones the same distance
     apart, and every normalization tried — Michelson, Weber, a Ferry-Porter
     term — made the dark end worse rather than better.
@@ -192,7 +202,7 @@ def pair_luma_delta(a: int, b: int) -> float:
 
 
 def fuse(a: int, b: int) -> np.ndarray:
-    """The BGR colour the eye sees when palette indices `a` and `b` alternate."""
+    """The BGR color the eye sees when palette indices `a` and `b` alternate."""
     return _linear_to_srgb(0.5 * (_PALETTE_LINEAR[a] + _PALETTE_LINEAR[b]))
 
 
@@ -200,7 +210,7 @@ def fuse_indices(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """`fuse` over arrays of palette indices, elementwise. Shape (..., 3).
 
     What the software mirror behind preview and recording paints with: fusing
-    the two fields' cell colours once is equivalent to alternating them and far
+    the two fields' cell colors once is equivalent to alternating them and far
     cheaper than rendering both pages, and it is the frame a viewer's eye
     actually integrates — so the mirror shows the blend with no flicker at all,
     which no capture of the real display can do."""
@@ -228,13 +238,17 @@ def blend_pairs(
     descending gain over the nearest solid.
 
     A pair qualifies when it modulates luminance gently enough to be safe, it
-    was scored no worse than the tolerance allows, and its fused colour lands
+    was scored no worse than the tolerance allows, and its fused color lands
     far enough from all 16 solids to be worth a second screen page.
     """
-    worst = FLICKER_TOLERANCES.get(tolerance, -1)
+    if tolerance not in FLICKER_TOLERANCES:
+        raise ValueError(
+            f"flicker tolerance must be one of {tuple(FLICKER_TOLERANCES)}, got {tolerance!r}"
+        )
+    worst = FLICKER_TOLERANCES[tolerance]
     if worst < 0:
         return []
-    cap = min(float(max_luma_delta), MAX_ALLOWED_LUMA_DELTA)
+    cap = float(max_luma_delta)
     scored: list[tuple[float, tuple[int, int]]] = []
     for a, b in itertools.combinations(range(16), 2):
         if pair_luma_delta(a, b) > cap:
@@ -256,11 +270,11 @@ class BlendTable:
     `pairs[i]` is the (field A, field B) palette pair entry `i` renders as, so a
     solid is simply the pair `(c, c)` and nothing downstream needs a branch for
     it. Entry `i` for `i < 16` IS solid `i`, which lets a caller fall back to
-    plain-palette behaviour by clipping indices to 16.
+    plain-palette behavior by clipping indices to 16.
     """
 
     pairs: np.ndarray  # (N, 2) uint8
-    bgr: np.ndarray  # (N, 3) float32 — the fused colour
+    bgr: np.ndarray  # (N, 3) float32 — the fused color
     max_luma_delta: float
     tolerance: str = DEFAULT_TOLERANCE
 

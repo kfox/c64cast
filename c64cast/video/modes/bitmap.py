@@ -182,7 +182,7 @@ class BitmapDisplayMode(DisplayMode):
     # The double-buffer above, plus a second screen page per bank. Both pages
     # go into the off-screen bank each frame over the same host-DMA path; the
     # $C500 handler alternates $D018 between them every field so the eye fuses
-    # each cell's colour pair. See modes_irq.FLICKER_SWAP_IRQ_HANDLER and
+    # each cell's color pair. See modes_irq.FLICKER_SWAP_IRQ_HANDLER and
     # video/flicker.py.
     def _flicker_swap_target(self) -> tuple[int, int, int, int, int, int, int, int]:
         """Resolve the current off-screen bank to (target_bank, bitmap_addr,

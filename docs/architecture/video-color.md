@@ -359,19 +359,21 @@ On the repo's photo set it lands at **−24 %**, consistently across every `dith
 
 **Hysteresis.** `HIRES_CELL_HYSTERESIS_BONUS` (2000, d² space, scaled by `PERCEPTUAL_DIST_SCALE` under the Lab metric like base.py's percell bonuses) keeps a cell's previous pick unless this frame beats it by that margin. Well below the per-pixel 5000 because the quantity differs: this thresholds a *mean* over 64 pixels, which has already averaged most of the noise out. Swept on noisy static and panning sequences — 2000 takes static churn to zero for +0.06 Lab on the panning case, and everything above only buys lag (5000 → +0.28, 15000 → +1.05, 50000 → +6.6). Since it is a decision hysteresis and not a smoother, over-damping shows up directly as motion inaccuracy, so it sits at the knee. `set_cell_pick` drops the state on a live swap — the strategies choose by different criteria, so a carried-over "previous pick" would hold the old strategy's answers for a frame.
 
-### `[color].flicker_tolerance` — temporal colour blending
+### `[color].flicker_tolerance` — temporal color blending
 
-Off by default (`flicker_tolerance = "off"`), hires `"normal"` style only. Holds **two** screen pages over one shared bitmap and alternates `$D018` between them every video field, so the eye fuses each cell's pair of hardware colours into a shade the VIC cannot draw — the Dragon Breed / Mayhem in Monsterland trick. Colour side in [`video/flicker.py`](../../c64cast/video/flicker.py), C64 side in `modes_irq.FLICKER_SWAP_IRQ_HANDLER` — whose bank-swap commit is held to the [raster gate](#the-raster-gate--why-a-vblank-irq-is-not-enough) while the `$D018` alternation itself is not.
+Off by default (`flicker_tolerance = "off"`), hires `"normal"` style only. Holds **two** screen pages over one shared bitmap and alternates `$D018` between them every video field, so the eye fuses each cell's pair of hardware colors into a shade the VIC cannot draw — the Dragon Breed / Mayhem in Monsterland trick. Color side in [`video/flicker.py`](../../c64cast/video/flicker.py), C64 side in `modes_irq.FLICKER_SWAP_IRQ_HANDLER` — whose bank-swap commit is held to the [raster gate](#the-raster-gate--why-a-vblank-irq-is-not-enough) while the `$D018` alternation itself is not.
 
-**The frame rate does not come from the link.** This is the thing that makes it practical: the alternation is owned by a C64-side raster IRQ and free-runs at the VIC field rate no matter how slowly the host pushes. The host only uploads the *pair*. Both fields share one bitmap — the fg/bg mask must be identical or the flicker would be geometry rather than colour — so a frame costs one extra 1000-byte page, not a second frame: **≈26.0 ms vs 20.8 ms** on the Ultimate link (`HardwareProfile.write_cost_s`), comfortably inside the 30 fps bitmap cap. Compose adds ≈1.3 ms. No REU and no sampler involved; it works on the TeensyROM too.
+**The frame rate does not come from the link.** This is the thing that makes it practical: the alternation is owned by a C64-side raster IRQ and free-runs at the VIC field rate no matter how slowly the host pushes. The host only uploads the *pair*. Both fields share one bitmap — the fg/bg mask must be identical or the flicker would be geometry rather than color — so a frame costs one extra 1000-byte page, not a second frame: **≈26.0 ms vs 20.8 ms** on the Ultimate link (`HardwareProfile.write_cost_s`), comfortably inside the 30 fps bitmap cap. Compose adds ≈1.3 ms. No REU and no sampler involved; it works on the TeensyROM too.
 
 #### Eligibility: a safety cap, then a table of what was actually seen
 
-`flicker.blend_pairs(max_luma_delta, tolerance=)` admits a pair when three things hold: the **absolute difference in linear luminance** between its two colours is under the luma cap, the pair carries a scored tier no worse than the tolerance allows, and the fused colour lands ≥4 Lab from all 16 solids — below that it duplicates a solid and costs a page write for nothing.
+`flicker.blend_pairs(max_luma_delta, tolerance=)` admits a pair when three things hold: the **absolute difference in linear luminance** between its two colors is under the luma cap, the pair carries a scored tier no worse than the tolerance allows, and the fused color lands ≥4 Lab from all 16 solids — below that it duplicates a solid and costs a page write for nothing.
 
-**The cap is a photosensitivity control, and that is all it is.** A pair is seen at 25 Hz (PAL) / 30 Hz (NTSC), inside the ITU-R BT.1702 risk band, where the hazard scales with luminance modulation depth. Hence `flicker_max_luma_delta = 0.075` by default, a hard `MAX_ALLOWED_LUMA_DELTA = 0.12` clamp set below the 20%-of-peak-white level the guidance is written around, a warning past `WARN_LUMA_DELTA = 0.10`, and the feature opt-in.
+**The cap is a photosensitivity control, and that is all it is.** A pair is seen at 25 Hz (PAL) / 30 Hz (NTSC), inside the ITU-R BT.1702 risk band, where the hazard scales with luminance modulation depth. Hence `flicker_max_luma_delta = 0.075` by default, a warning past `WARN_LUMA_DELTA = 0.10`, a second warning past `FLASH_CRITERION_LUMA_DELTA = 0.12` where modulation approaches the 20%-of-peak-white level the guidance is written around, and the feature opt-in.
 
-**Two rules were fitted here and a blind run refuted both.** The first derived 0.075 from six flat bands bracketing a solid/flicker transition, leaving a 0.106-wide unsampled hole that the interesting behaviour turned out to live inside. Scoring the pairs the default admits put ΔY's correlation with the verdicts at r=+0.33 with two clean refutations, so the branch then reached for colour instead: every pair containing Red (2), Purple (4), Orange (8) or Light Red (10) had scored high, and `flicker_max_warmth` capped a Lab chroma projection onto a red-orange axis to exclude them.
+**It advises; it does not refuse.** An earlier build clamped to 0.12, which put a computed threshold above pairs a person had looked at and accepted — the same mistake the fitted eligibility rules made, in the one place where being wrong withholds something already verified. It was not hypothetical: against the VIC-II rendering, five of the eight pairs scored as fusing cleanly sit above 0.12 (Red+Purple 0.161, Red+Orange 0.284, Cyan+Light Gray 0.366, Purple+Orange 0.123, Orange+Medium Gray 0.152), so the clamp held `"clean"` to 3 of 8 there and no setting could recover them. Both thresholds now log and proceed. Nothing is lost on safety grounds that the scored table does not already cover: admission is bounded by the tier data, so however wide the cap is set it cannot reach a pair nobody has judged.
+
+**Two rules were fitted here and a blind run refuted both.** The first derived 0.075 from six flat bands bracketing a solid/flicker transition, leaving a 0.106-wide unsampled hole that the interesting behavior turned out to live inside. Scoring the pairs the default admits put ΔY's correlation with the verdicts at r=+0.33 with two clean refutations, so the branch then reached for color instead: every pair containing Red (2), Purple (4), Orange (8) or Light Red (10) had scored high, and `flicker_max_warmth` capped a Lab chroma projection onto a red-orange axis to exclude them.
 
 That rule was then scored against a run it had not been fitted to — all 33 pairs the hard clamp admits, positions shuffled, pools separated, seven hidden solid negative controls, key withheld — and it did not survive:
 
@@ -381,7 +383,7 @@ That rule was then scored against a run it had not been fitted to — all 33 pai
 | ΔY | +0.26 | 0.680 |
 | Δchroma, max chroma, mean luminance | +0.04 … +0.08 | — |
 
-Best multi-term fit: adjusted R² **0.179** over n=33. Two things killed the warm rule specifically. All seven solid controls scored *none*, Red, Orange and Brown among them — so warm colours do not flicker on their own, and the effect is fusion failure rather than composite chroma crawl. And warm+warm pairs are among the steadiest scored: Red+Purple, Red+Orange and Purple+Orange all read *very mild* while Red+Dark Gray reads *intense*. What the earlier session had picked up was warm against **neutral**, and the cap was excluding five of the eight quietest pairs to catch it.
+Best multi-term fit: adjusted R² **0.179** over n=33. Two things killed the warm rule specifically. All seven solid controls scored *none*, Red, Orange and Brown among them — so warm colors do not flicker on their own, and the effect is fusion failure rather than composite chroma crawl. And warm+warm pairs are among the steadiest scored: Red+Purple, Red+Orange and Purple+Orange all read *very mild* while Red+Dark Gray reads *intense*. What the earlier session had picked up was warm against **neutral**, and the cap was excluding five of the eight quietest pairs to catch it.
 
 **So the eligible set is a recording, not a rule.** `flicker.SCORED_FLICKER` holds one tier per pair on the five-point scale the sitting used, and `[color].flicker_tolerance` is a cut across it:
 
@@ -391,9 +393,10 @@ Best multi-term fit: adjusted R² **0.179** over n=33. Two things killed the war
 | `clean` | none + very mild | 8 | 24 |
 | `subtle` | + mild | 14 | 30 |
 | `visible` | + moderate | 23 | 39 |
-| `strobe` | + intense | 33 | 49 |
 
 The tolerance values are named apart from the tier names on purpose: one pair scored `none`, which a tolerance called `"none"` would have to include and exclude at once.
+
+**No tolerance admits the `intense` tier.** Those ten pairs stay in the table because they are what was seen, and dropping them would make "scored but excluded" indistinguishable from "never scored" — which is the distinction the whole admission rule turns on. But there is no setting for them, because measured against the plain palette they buy nothing: see the reconstruction table below, where admitting them moves the error by under 0.1 % on every fixture. A setting that trades visible flicker for zero accuracy is not a choice worth offering.
 
 **A pair with no tier is never admitted, at any tolerance.** On the Ultimate 64 table that costs nothing — the scored set is exactly what the hard clamp allows, so coverage is total at every legal setting. The VIC-II rendering shifts luminances enough to bring five unscored pairs under the clamp, and one of them is Cyan+Yellow, which this module's own docstring calls as violent a flicker as anything on the chart and which ΔY refused on the U64. Excluding the unscored is what stops a palette swap admitting it. `scripts/diags/flicker_score_grid.py` is how the table grows; a test pins the recorded distribution so a tier cannot drift silently.
 
@@ -407,20 +410,20 @@ The 8-bit `PALETTE_LUMA` delta is also wrong here, for a different reason: it is
 
 **The safety cap binds before the tolerance does.** Three of `"clean"`'s eight pairs sit between 0.075 and the 0.12 clamp, so the shipping default holds it to five:
 
-| cap | `clean` | `subtle` | `visible` | `strobe` |
-|---|---|---|---|---|
-| 0.05 | 5 | 7 | 8 | 12 |
-| **0.075 (default)** | **5** | **9** | **13** | **21** |
-| 0.10 (warns above) | 7 | 13 | 19 | 28 |
-| 0.12 (clamp) | 8 | 14 | 23 | 33 |
+| cap | `clean` | `subtle` | `visible` |
+|---|---|---|---|
+| 0.05 | 5 | 7 | 8 |
+| **0.075 (default)** | **5** | **9** | **13** |
+| 0.10 (warns above) | 7 | 13 | 19 |
+| 0.12 (warns above) | 8 | 14 | 23 |
 
-(Ultimate 64. The VIC-II table is smaller throughout and flat in `clean` at 3.) Raising the cap to reach the other three is a photosensitivity decision, not a quality one, and should read that way in any recommendation.
+Ultimate 64; every scored pair sits under 0.12 there, so a wider cap adds nothing. The VIC-II table is the opposite case — flat at `clean` = 3 all the way to 0.12 and only complete at ~0.37, because that rendering spreads the same pairs much further apart in luminance. Widening the cap is a photosensitivity decision, not a quality one, and should read that way in any recommendation.
 
 Fusion is the **linear-light** average, not the sRGB one — the eye integrates emitted light over the two fields, so mixing the encoded values instead makes every blend read too dark, worst where the gamma curve is steepest.
 
 #### What it is actually for
 
-Gradient banding, not a general palette upgrade — spatial dither already synthesises intermediate colours wherever there is texture to hide them in, so blending is largely redundant on photographic content and only pays where dither has little to work with. Measured against the plain path (perceptual metric):
+Gradient banding, not a general palette upgrade — spatial dither already synthesizes intermediate colors wherever there is texture to hide them in, so blending is largely redundant on photographic content and only pays where dither has little to work with. Measured against the plain path (perceptual metric):
 
 | content | VIC-II palette | Ultimate 64 palette |
 |---|---|---|
@@ -431,20 +434,20 @@ Gradient banding, not a general palette upgrade — spatial dither already synth
 | soft radial glow | −1.8 % | −0.5 % |
 | photograph | −1.3 % | −0.9 % |
 
-Two columns because eligibility is per machine, and the two tables do not gain the same colours: the ramp improves twice as much on an Ultimate 64 (its dark end holds more near-equal pairs), the warm gradients less.
+Two columns because eligibility is per machine, and the two tables do not gain the same colors: the ramp improves twice as much on an Ultimate 64 (its dark end holds more near-equal pairs), the warm gradients less.
 
-**Those figures admit every eligible pair**, which is `flicker_tolerance = "strobe"` today. Isolating the palette from the cell fit — per-pixel nearest-colour Lab error against the widened table, so not the same quantity as the compose measurement above, but it tracks it within a point or two — shows what each cut is actually worth at the 0.12 cap:
+**Those figures admit every eligible pair**, which is wider than any `flicker_tolerance` now offers. Isolating the palette from the cell fit — per-pixel nearest-color Lab error against the widened table, so not the same quantity as the compose measurement above, but it tracks it within a point or two — shows what each cut is actually worth at the 0.12 cap:
 
-| content | `clean` | `subtle` | `visible` | `strobe` |
+| content | `clean` | `subtle` | `visible` | + `intense` |
 |---|---|---|---|---|
 | chromatic gradient (U64) | −11.5 % | −23.3 % | −29.3 % | −29.3 % |
 | chromatic gradient (VIC-II) | −12.9 % | −31.8 % | −34.0 % | −34.0 % |
 | vertical dusk gradient (U64) | −11.7 % | −14.5 % | −14.5 % | −14.6 % |
 | luminance ramp (U64) | −2.3 % | −16.4 % | −17.2 % | −17.2 % |
 
-The last column is the finding worth acting on: **`"strobe"` measures the same as `"visible"`** to within 0.1 % everywhere. The ten pairs scored *intense* add no reconstruction accuracy at all — whatever they cover, a quieter pair or a solid already covers about as well. So `"strobe"` is never the right answer to "I want more colours"; it exists only for when the alternation itself is the intended effect.
+The last column is why there is no setting for it: admitting the ten pairs scored *intense* moves the error by under 0.1 % anywhere. Whatever they cover, a quieter pair or a solid already covers about as well, so the tier is recorded and never offered.
 
-**It requires the perceptual metric**, and forces it. Blending is *defined* perceptually — linear-light fusion, Lab-measured gaps — so fitting cells in weighted-BGR optimises a different space than the one the extra entries live in. That mismatch is not academic: under the BGR metric the widened palette measures **worse** than the 16 solids on a photo (+2.5 %) and on a luminance ramp (+6.3 %), where the same frames improve under Lab. `color_match`'s own default already resolves to perceptual here, so the force only fires when a config explicitly asked for `"rgb"`, and `set_cell_pick`'s sibling `set_color_match` pins it live.
+**It requires the perceptual metric**, and forces it. Blending is *defined* perceptually — linear-light fusion, Lab-measured gaps — so fitting cells in weighted-BGR optimizes a different space than the one the extra entries live in. That mismatch is not academic: under the BGR metric the widened palette measures **worse** than the 16 solids on a photo (+2.5 %) and on a luminance ramp (+6.3 %), where the same frames improve under Lab. `color_match`'s own default already resolves to perceptual here, so the force only fires when a config explicitly asked for `"rgb"`, and `set_cell_pick`'s sibling `set_color_match` pins it live.
 
 Blending also **forces the error-min cell pick** regardless of [`hires_cell_pick`](#colorhires_cell_pick--which-color-fills-a-hires-cell): a blend entry sits between its two constituent solids, so a single-pixel sample lands on one of them more or less at random, and the widened palette then scores worse than the 16 solids. The cell fit is what makes the second page pay for itself.
 
@@ -452,7 +455,7 @@ Blending also **forces the error-min cell pick** regardless of [`hires_cell_pick
 
 `FLICKER_SWAP_IRQ_HANDLER` (53 bytes at `$C500`) is the host-DMA page-flip handler plus an unconditional per-field toggle of the `$D018` screen-matrix nibble between `D018_HIRES_PAGE_A` (`$18`, matrix offset `$0400`) and `_B` (`$38`, offset `$0C00`), bitmap pinned at the `$2000` offset in both. Those values are **bank-relative**, so one pair is correct in bank 0 and bank 2 alike and the alternation survives a `$DD00` double-buffer swap untouched.
 
-The toggle sits deliberately *ahead* of the ready-flag check — the alternation is the C64's job and must free-run whatever the host is doing, which is precisely why this needs no 50-60 fps link. Only the double-buffer commit (`$DD00` + `$D021`) waits on a staged frame, and that commit is additionally gated on landing in **phase 0**, so a swap arriving on an odd field can never transpose the A/B page roles — invisible on a still frame, a colour shift on motion. `X` carries the page index and is not saved: kernal `$FF48` pushed A/X/Y before vectoring through `$0314`.
+The toggle sits deliberately *ahead* of the ready-flag check — the alternation is the C64's job and must free-run whatever the host is doing, which is precisely why this needs no 50-60 fps link. Only the double-buffer commit (`$DD00` + `$D021`) waits on a staged frame, and that commit is additionally gated on landing in **phase 0**, so a swap arriving on an odd field can never transpose the A/B page roles — invisible on a still frame, a color shift on motion. `X` carries the page index and is not saved: kernal `$FF48` pushed A/X/Y before vectoring through `$0314`.
 
 Tracker at `$C700`, 6 bytes: `[bg0, bank, ready, phase, d018_a, d018_b]`. `phase` is handler-owned, so `_arm_flicker_swap` writes only the first three — re-sending the rest would restart the alternation from page A on every staged frame and stall the blend. `install_bank_swap_irq`'s `tracker_init` seeds the page pair before the raster source is armed, since zeros there would point VIC at the `$0000` matrix offset for the field or two before the first frame stages.
 
@@ -460,7 +463,7 @@ Tracker at `$C700`, 6 bytes: `[bg0, bank, ready, phase, d018_a, d018_b]`. `phase
 
 #### Gating
 
-`scene_factory.resolve_flicker_tolerance` is opt-in, so there is no `"auto"`; it only decides where an explicit tolerance can be honoured, returning `"off"` where it cannot. An unrecognised value raises rather than degrading to `"off"`, which would silently disable the feature on a typo. Four structural gates: hires only (mhires' c3 lives in un-banked colour RAM at `$D800`, which `$D018` does not select, so only part of its picture could alternate — and the char modes keep per-cell colour there too); `"normal"` style only; no buffer-painting text overlay (the `$0C00` collision); and not while the REU mic pump owns `$0314`. `force_host_dma` gates it as well, for the reason it gates the others — a SID-audio scene's player owns `$0314`.
+`scene_factory.resolve_flicker_tolerance` is opt-in, so there is no `"auto"`; it only decides where an explicit tolerance can be honoured, returning `"off"` where it cannot. An unrecognised value raises rather than degrading to `"off"`, which would silently disable the feature on a typo. Four structural gates: hires only (mhires' c3 lives in un-banked color RAM at `$D800`, which `$D018` does not select, so only part of its picture could alternate — and the char modes keep per-cell color there too); `"normal"` style only; no buffer-painting text overlay (the `$0C00` collision); and not while the REU mic pump owns `$0314`. `force_host_dma` gates it as well, for the reason it gates the others — a SID-audio scene's player owns `$0314`.
 
 Where it engages it takes the double-buffer slot and pushes REU staging aside, extending the mutual exclusion those two already have, because the REU bank-swap handler has no `$D018` phase toggle. A `display = "random"` slideshow re-resolves it per concrete mode, alongside the other two.
 
@@ -592,7 +595,7 @@ The residual being **flicker-only is what identifies it**: anything on the displ
 
 **Flicker defers twice as far.** Its commit is additionally gated on phase 0, so a rejected commit waits for the next phase-0 field: worst case 2 fields = 33.4 ms against a ~38.5 ms host frame period at 26 fps. That is also the likely reason flicker tore ~4.4× more often than plain before the gate — half as many commit opportunities per second, so a halt is likelier to have covered all of them — and why the whole of the post-gate residual is on the flicker side. The attribution is inferred from the handler shape, not measured.
 
-The `$D018` phase toggle is deliberately **not** gated — it sits ahead of the check and free-runs at the field rate whatever the host is doing, which is what makes flicker independent of link speed. Gating it would drop fields out of the fusion cadence, a worse artifact than a late page flip: the flip mistimes only the blended cells' colours, where a dropped field breaks the blend itself.
+The `$D018` phase toggle is deliberately **not** gated — it sits ahead of the check and free-runs at the field rate whatever the host is doing, which is what makes flicker independent of link speed. Gating it would drop fields out of the fusion cadence, a worse artifact than a late page flip: the flip mistimes only the blended cells' colors, where a dropped field breaks the blend itself.
 
 **Coverage.** `tests/test_raster_gate.py` runs both handlers' real bytes under py65 across both window edges, the wrap through 0, and the aliased line sets for 262- and 312-line systems. On hardware, `scripts/diags/flicker_tear_ab.py` is the acceptance test — it reports percent torn *and* seam position, and the run has to hold throughput, since a fix that buys cleanliness with frame rate is the write cap in disguise.
 

@@ -14,6 +14,7 @@ from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
     DEFAULT_TOLERANCE,
+    FLASH_CRITERION_LUMA_DELTA,
     FLICKER_TOLERANCES,
     WARN_LUMA_DELTA,
     BlendTable,
@@ -146,7 +147,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         # Flicker blend ([color].flicker_tolerance). None = off, and every
         # blend branch is keyed on that rather than a bool so the plain path
         # keeps running the 16-entry quantizer it always did. Only the "normal"
-        # style picks colour, so blending is a no-op on the edges styles.
+        # style picks color, so blending is a no-op on the edges styles.
         _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
         self._blend_table: BlendTable | None = (
             build_blend_table(flicker_max_luma_delta, tolerance=flicker_tolerance)
@@ -154,9 +155,9 @@ class HiresDisplayMode(BitmapDisplayMode):
             else None
         )
         self._last_bg_index: int | None = None
-        # Which colour each cell's foreground takes ([color].hires_cell_pick).
-        # Only the "normal" style picks colour at all — the edges styles are
-        # fixed 2-colour, so this is a no-op there, same as _perceptual.
+        # Which color each cell's foreground takes ([color].hires_cell_pick).
+        # Only the "normal" style picks color at all — the edges styles are
+        # fixed 2-color, so this is a no-op there, same as _perceptual.
         self._cell_pick = cell_pick
         self._last_fg: np.ndarray | None = None
         # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
@@ -164,9 +165,9 @@ class HiresDisplayMode(BitmapDisplayMode):
         # edges styles are fixed 2-color, so this is a no-op there.
         self._perceptual = bool(perceptual)
         if self._blend_table is not None and not self._perceptual:
-            # Blending is defined perceptually — a pair's fused colour is a
+            # Blending is defined perceptually — a pair's fused color is a
             # linear-light average and its eligibility is a Lab gap — so fitting
-            # in weighted-BGR optimises a different space than the one the extra
+            # in weighted-BGR optimizes a different space than the one the extra
             # entries live in. Measured, that mismatch is enough to make the
             # widened palette score WORSE than the 16 solids on photographic
             # content (+2.5%) and on a luminance ramp (+6.3%), where under the
@@ -236,7 +237,7 @@ class HiresDisplayMode(BitmapDisplayMode):
 
         Blend-only. bg fills every %0 pixel, so under blending a bg flip does not
         merely recolour the field — it can switch the whole background between
-        steady and alternating, which reads far harder than the colour change
+        steady and alternating, which reads far harder than the color change
         itself. The margin is the one mhires uses on $D021, for the same reason:
         track a sustained shift, ignore a near-tie."""
         best = int(counts.argmax())
@@ -327,7 +328,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             self._setup_flicker_doublebuffer(api)
             log.info(
                 "hires: flicker blend armed — %d blend pairs at tolerance %r, "
-                "ΔY <= %.3f (%d effective colours), pages $%04X/$%04X, "
+                "ΔY <= %.3f (%d effective colors), pages $%04X/$%04X, "
                 "IRQ @ $%04X",
                 table.blend_count,
                 table.tolerance,
@@ -337,17 +338,26 @@ class HiresDisplayMode(BitmapDisplayMode):
                 VIC_BANK_0.SCREEN_ALT,
                 BANK_SWAP_IRQ_HANDLER_ADDR,
             )
-            if table.max_luma_delta > WARN_LUMA_DELTA:
+            if table.max_luma_delta > FLASH_CRITERION_LUMA_DELTA:
+                log.warning(
+                    "hires: flicker_max_luma_delta = %.3f is past %.2f, where a blended "
+                    "area's luminance modulation approaches the 20%%-of-peak-white flash "
+                    "criterion the photosensitive-seizure guidance is written around (it "
+                    "alternates at 25 Hz PAL / 30 Hz NTSC, inside the risk band). Allowed "
+                    "rather than refused, because a pair you have looked at and accepted "
+                    "outranks this number — but don't raise it for a stream anyone else "
+                    "will watch without knowing that.",
+                    table.max_luma_delta,
+                    FLASH_CRITERION_LUMA_DELTA,
+                )
+            elif table.max_luma_delta > WARN_LUMA_DELTA:
                 log.warning(
                     "hires: flicker_max_luma_delta = %.3f is above %.2f, where pairs "
-                    "start to read as luminance flicker rather than color. A blended "
-                    "area alternates at the video field rate (25 Hz PAL / 30 Hz NTSC), "
-                    "which is inside the recognized photosensitive-seizure band — "
-                    "don't raise this for a stream anyone else will watch.",
+                    "start to read as luminance flicker rather than color.",
                     table.max_luma_delta,
                     WARN_LUMA_DELTA,
                 )
-            if table.tolerance in ("visible", "strobe"):
+            if table.tolerance == "visible":
                 log.warning(
                     "hires: flicker_tolerance = %r admits pairs scored as visibly "
                     "flickering rather than fusing. A blended area alternates at the "
@@ -456,7 +466,7 @@ class HiresDisplayMode(BitmapDisplayMode):
             if self._dither_method in ("floyd-steinberg", "atkinson"):
                 # Re-dither each 8×8 cell's own pixels against its 2-color set
                 # {bg, cell fg}, replacing the nearest-of-two assignment above.
-                # Only the per-pixel fill dithers — the cell's two colours are
+                # Only the per-pixel fill dithers — the cell's two colors are
                 # already fixed by this point, whichever way they were picked.
                 pixels_cell = (
                     flat.reshape(200, 320, 3)
