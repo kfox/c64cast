@@ -28,6 +28,14 @@ exist to fix that:
     bank-swap residual, a capture beat, the room's lighting) and the page should
     be discounted. It is the only negative control available here.
 
+WATCH THE C64's OWN DISPLAY. The CRT, or a monitor driven straight off the
+machine — never a capture preview or a screen recording. A capture samples the
+alternation at its own rate and beats against it, which reads as the picture
+slowly flipping between two versions of itself every few seconds, and on a still
+page that is completely convincing. It is the capture, not the effect. The
+calibration page runs a capture-based check that the C64 really is alternating
+every field, so a slow flip after that check passes is known to be downstream.
+
 CALIBRATION FIRST. One page comes up before any scoring, with its three patches
 named: the loudest pair the safety clamp allows, a solid that cannot flicker at
 all, and a real blend that reads as near-still. Without it the first scored page
@@ -77,6 +85,7 @@ import os
 import random
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -353,7 +362,63 @@ SCALE = (
 )
 
 
-def show_page(n: int, total: int, cfg: Path, url: str, log: Path, *, banner: str = "") -> None:
+def check_source_alternation(device: int | str, seconds: float = 4.0) -> str:
+    """Confirm the C64 is alternating at the field rate, with the page up.
+
+    Worth the seconds it costs, because the failure it rules out is invisible
+    from the host: everything about a slow flip between two pictures looks like
+    a broken page-flip, and the C64 side can be perfect while the surface being
+    watched samples it into a beat. A capture card sampling a 59.83 Hz
+    alternation at its own rate shows one field for seconds at a time, and a
+    still picture is exactly where that is most convincing.
+
+    The evidence is the shape of the consecutive-frame difference. Alternating
+    every field means every captured frame differs from the last by about the
+    same amount; a beat means long identical runs with a spike at each turn.
+    """
+    import numpy as np
+
+    cap = d.open_capture(device)
+    try:
+        for _ in range(15):
+            cap.read()
+        frames = []
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < seconds:
+            ok, f = cap.read()
+            if ok and f is not None:
+                frames.append(f[::8, ::8].astype(np.float32))
+    finally:
+        cap.release()
+    if len(frames) < 30:
+        return f"  source check SKIPPED — only {len(frames)} frames captured (no signal?)"
+    stack = np.stack(frames)
+    diffs = np.abs(np.diff(stack, axis=0)).mean(axis=(1, 2, 3))
+    quiet = float((diffs < diffs.max() * 0.25).mean())
+    states = float(np.abs(stack - stack[0]).mean(axis=(1, 2, 3)).std())
+    if quiet < 0.10 and states > 0.5:
+        return (
+            "  SOURCE VERIFIED: the C64 is alternating its two pages every field.\n"
+            "  So if you see the picture slowly flip between two versions of itself,\n"
+            "  that is the screen or capture path sampling it, NOT the effect."
+        )
+    return (
+        f"  SOURCE CHECK FAILED: {quiet:.0%} of captured frame pairs are identical.\n"
+        "  The two pages are not alternating every field, so nothing here is\n"
+        "  scorable — stop and report this rather than rating anything."
+    )
+
+
+def show_page(
+    n: int,
+    total: int,
+    cfg: Path,
+    url: str,
+    log: Path,
+    *,
+    banner: str = "",
+    probe: Callable[[], str] | None = None,
+) -> None:
     label = "calibration" if n == 0 else f"page {n}/{total}"
     print(f"\n[{label}] launching …")
     with open(log, "w") as lf:
@@ -366,6 +431,8 @@ def show_page(n: int, total: int, cfg: Path, url: str, log: Path, *, banner: str
         try:
             time.sleep(9.0)  # boot + first rendered frame
             print(f"[{label}] up.")
+            if probe is not None:
+                print(probe())
             if banner:
                 print(banner)
             else:
@@ -403,6 +470,16 @@ def main() -> None:
         help="the solid the patches sit on (default black)",
     )
     ap.add_argument("--no-reset", action="store_true")
+    ap.add_argument(
+        "--device",
+        default=d.CAMLINK_DEVICE,
+        help="capture device for the source self-check on the calibration page",
+    )
+    ap.add_argument(
+        "--no-source-check",
+        action="store_true",
+        help="skip the capture-based check that the C64 is alternating every field",
+    )
     args = ap.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(1 << 30)
@@ -452,6 +529,11 @@ def main() -> None:
     print("\n".join(SCALE))
     print("\nA calibration page comes first, with its answers given away, so you can")
     print("see the two ends of that scale before anything is scored blind.\n")
+    print("WATCH THE C64's OWN DISPLAY — the CRT, or a monitor driven straight off the")
+    print("machine. NOT a capture preview and NOT a screen recording. A capture samples")
+    print("the alternation at its own rate and beats against it, which shows up as the")
+    print("picture slowly flipping between two versions of itself every few seconds.")
+    print("That is the capture, not the effect, and it makes scoring meaningless.\n")
 
     banner = (
         "  CALIBRATION — not scored, and the only page whose contents you are told.\n"
@@ -463,7 +545,16 @@ def main() -> None:
     )
 
     try:
-        show_page(0, len(pages), out / "page00.toml", args.url, out / "page00.log", banner=banner)
+        probe = None if args.no_source_check else (lambda: check_source_alternation(args.device))
+        show_page(
+            0,
+            len(pages),
+            out / "page00.toml",
+            args.url,
+            out / "page00.log",
+            banner=banner,
+            probe=probe,
+        )
         for n in range(1, len(pages) + 1):
             show_page(n, len(pages), out / f"page{n:02d}.toml", args.url, out / f"page{n:02d}.log")
     finally:
