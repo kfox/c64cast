@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 443 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 444 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -99,7 +99,7 @@ Every name c64cast answers to — 443 of them — and the pages that discuss eac
 | `--compat` | [What Is In Here](01-introduction.md#what-is-in-here), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `compress` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `--config` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Ensemble Cascade (1)](02-config-rules.md#the-ensemble-cascade) |
-| `config_roots` | [Browsing And Editing Configurations (6)](07-inputs-and-outputs.md#browsing-and-editing-configurations), [Browsing Media (6)](07-inputs-and-outputs.md#browsing-media), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `config_roots` | [Browsing And Editing Configurations (6)](07-inputs-and-outputs.md#browsing-and-editing-configurations), [Browsing And Uploading Media (6)](07-inputs-and-outputs.md#browsing-and-uploading-media), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `[control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`control` (A)](20-appendix-a-configuration.md#control) |
 | `controller_profile` | [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `corner` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`callsign` (C)](22-appendix-c-overlays.md#callsign), [`clock` (C)](22-appendix-c-overlays.md#clock) |
@@ -314,7 +314,8 @@ Every name c64cast answers to — 443 of them — and the pages that discuss eac
 | `max_duration_s` | [`launcher` (2)](03-vocabulary.md#launcher), [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `max_items` | [`rss` (C)](22-appendix-c-overlays.md#rss) |
 | `mcm` | [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow), [`video` (2)](03-vocabulary.md#video) |
-| `media_roots` | [Browsing Media (6)](07-inputs-and-outputs.md#browsing-media), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `media_read_only` | [Browsing And Uploading Media (6)](07-inputs-and-outputs.md#browsing-and-uploading-media), [`web` (A)](20-appendix-a-configuration.md#web) |
+| `media_read_write` | [Browsing And Uploading Media (6)](07-inputs-and-outputs.md#browsing-and-uploading-media), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `[menu]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`menu` (A)](20-appendix-a-configuration.md#menu) |
 | `messages` | [`big_text` (C)](22-appendix-c-overlays.md#big_text), [`scrolling_text` (C)](22-appendix-c-overlays.md#scrolling_text) |
 | `metaballs` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |

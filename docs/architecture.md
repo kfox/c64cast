@@ -87,8 +87,8 @@ the two lists account for every module in the tree.
 | `control/web_api.py` | [Control surfaces & live performance](architecture/control.md#web_apipy--the-web-consoles-api--the-host---serve) |
 | `app/config_store.py` | [Control surfaces & live performance](architecture/control.md#config_storepy--the-config-browser-and-its-root-jail) |
 | `app/console_library.py` | [Control surfaces & live performance](architecture/control.md#console_librarypy--favorites--recently-launched-configs) |
-| `app/media_store.py` | [Control surfaces & live performance](architecture/control.md#media_storepy--the-read-only-media-picker-and-its-root-jail) |
-| `app/fs_walk.py` | [Control surfaces & live performance](architecture/control.md#media_storepy--the-read-only-media-picker-and-its-root-jail) |
+| `app/media_store.py` | [Control surfaces & live performance](architecture/control.md#media_storepy--the-media-picker-its-root-jail-and-its-one-write-surface) |
+| `app/fs_walk.py` | [Control surfaces & live performance](architecture/control.md#media_storepy--the-media-picker-its-root-jail-and-its-one-write-surface) |
 | `control/web_static.py` | [Control surfaces & live performance](architecture/control.md#web_staticpy--the-consoles-built-ui-committed-and-served) |
 | `video/modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
 | `video/modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |

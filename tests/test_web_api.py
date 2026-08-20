@@ -296,11 +296,18 @@ class WebApiTestCase(unittest.TestCase):
         # the packaged examples root left in.
         self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
         self.library = console_library.ConsoleLibrary(Path(tmp.name) / "console.json")
-        # An explicit root rather than the default four asset dirs: several
-        # tests in this module `chdir` to a directory with no `assets/` in it
-        # (on purpose — see SceneStructureRouteTest), and the default would
-        # log a dropped-root warning on every `app()` call while that's active.
-        self.media = media_store.MediaStore([str(self.root)])
+        # An explicit write table rather than the default four asset dirs:
+        # several tests in this module `chdir` to a directory with no
+        # `assets/` in it (on purpose — see SceneStructureRouteTest), and an
+        # unset kind would otherwise fall back to a default resolved against
+        # whatever the process cwd happens to be. `video` writes (and
+        # browses) `self.root`, matching what `MediaBrowserTest` already
+        # expects to find there; the rest are turned off outright so a test
+        # picking another extension exercises the "not configured" refusal
+        # rather than quietly finding a real directory.
+        self.media = media_store.MediaStore(
+            read_write={"video": str(self.root), "sid": "", "picture": "", "program": ""}
+        )
         self.build = _Build()
         self.factory = _Factory()
         self.log_buffer = serve.SessionLogBuffer(capacity=50)
@@ -663,6 +670,61 @@ class MediaBrowserTest(WebApiTestCase):
         with self.client() as c:
             r = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"})
         self.assertEqual(r.status_code, 200)
+
+
+class MediaUploadTest(WebApiTestCase):
+    """`PUT /api/media/{name}` — the route's own mapping onto HTTP (status
+    codes, who may call it); `destination`'s policy and `receive`'s streamed
+    commit are covered by tests/test_media_store.py. `setUp`'s write table
+    (see `WebApiTestCase.setUp`) writes `video` to `self.root` and turns
+    `sid`/`picture`/`program` off outright, which is what makes an
+    unconfigured-kind upload here a plain "not this host" refusal rather than
+    a real directory it happened to find."""
+
+    def test_a_put_writes_and_answers_the_spec(self):
+        with self.client() as c:
+            r = c.put("/api/media/clip2.mp4", headers=AUTH, content=b"hello")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["kind"], "video")
+        self.assertEqual(body["name"], "clip2.mp4")
+        self.assertEqual(body["bytes"], 5)
+        self.assertFalse(body["renamed"])
+        self.assertEqual(body["spec"], f"{self.root}/clip2.mp4")
+        self.assertEqual((self.root / "clip2.mp4").read_bytes(), b"hello")
+
+    def test_a_name_already_taken_is_renamed_not_overwritten(self):
+        (self.root / "clip2.mp4").write_bytes(b"original")
+        with self.client() as c:
+            r = c.put("/api/media/clip2.mp4", headers=AUTH, content=b"new")
+        body = r.json()
+        self.assertEqual(body["name"], "clip2-2.mp4")
+        self.assertTrue(body["renamed"])
+        self.assertEqual((self.root / "clip2.mp4").read_bytes(), b"original")
+        self.assertEqual((self.root / "clip2-2.mp4").read_bytes(), b"new")
+
+    def test_a_viewer_may_not_upload(self):
+        with self.client() as c:
+            r = c.put("/api/media/clip2.mp4", headers=VIEWER_AUTH, content=b"hello")
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse((self.root / "clip2.mp4").exists())
+
+    def test_a_bad_extension_is_a_400(self):
+        with self.client() as c:
+            r = c.put("/api/media/notes.txt", headers=AUTH, content=b"hello")
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_unconfigured_kind_is_a_403(self):
+        with self.client() as c:
+            r = c.put("/api/media/photo.png", headers=AUTH, content=b"hello")
+        self.assertEqual(r.status_code, 403)
+
+    def test_an_oversized_upload_is_a_413(self):
+        with mock.patch.object(media_store, "MAX_UPLOAD_BYTES", 4):
+            with self.client() as c:
+                r = c.put("/api/media/big.mp4", headers=AUTH, content=b"way too big")
+        self.assertEqual(r.status_code, 413)
+        self.assertFalse((self.root / "big.mp4").exists())
 
 
 class LibraryRouteTest(WebApiTestCase):

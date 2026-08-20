@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 20 sections and 174 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 175 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -473,7 +473,8 @@ autostart = false
 | **`screen_fps`**<br>*Type:* `float`<br>*Default:* `10.0` | How often the console's live screen picture is refreshed, in frames per second (0 turns the screen off entirely). The picture is the Ultimate 64's own VIC stream, so this caps how often the host encodes a frame, not how fast the machine sends. Ultimate 64 only — an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path. |
 | **`settle_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly. |
 | **`config_roots`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent. |
-| **`media_roots`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Directories the web console's media picker may browse (read-only — it never writes here). Empty = the four directories the loader itself already defaults to (assets/videos, assets/sids, assets/pictures, assets/programs). Nothing outside these is listed, symlinks included. |
+| **`media_read_write`**<br>*Type:* `dict[str, str]`<br>*Default:* `{}` | Kind (video/sid/picture/program/audio) to directory, both browsable and uploadable to. Unset kinds fall back to the loader's own defaults (assets/videos, assets/sids, assets/pictures, assets/programs); audio has no default, so name one to allow audio uploads. Set a kind to "" to disable uploading it while leaving the rest at their defaults (this is the only way to turn one off — an empty table means every default applies). Uploads never overwrite: a name already taken is renamed clip-2.mp4, clip-3.mp4, and so on. |
+| **`media_read_only`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Additional directories the media picker may browse but never write to — a library you want offered without exposing it to uploads, e.g. ["~/Movies", "/mnt/hvsc"]. Empty adds nothing. |
 
 ## `[wled]`
 

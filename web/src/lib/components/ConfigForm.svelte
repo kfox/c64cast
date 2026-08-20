@@ -5,7 +5,7 @@
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
   import type { DocIndex } from "$lib/introspect";
-  import { kindsForScene, pickerOptions, urlFromDrop } from "$lib/mediaPickerLogic";
+  import { kindsForScene, pickerOptions, uploadMessage, urlFromDrop } from "$lib/mediaPickerLogic";
   import type {
     ConfigEdit,
     ConfigForm,
@@ -39,9 +39,24 @@
      *  just render an empty datalist — a picker with nothing to offer is a
      *  plain text box, which is exactly the fallback. */
     media?: Record<string, MediaEntry[]>;
+    /** A file just landed on the host for this scene type — `Config.svelte`
+     *  drops its cached listing for the kind(s) that type browses and
+     *  re-fetches, so the newly uploaded file shows up in every datalist
+     *  without a page reload. */
+    onuploaded?: (sceneType: string) => void;
   }
 
-  let { form, docs, path, readOnly, pending, onpending, onsaved, media = {} }: Props = $props();
+  let {
+    form,
+    docs,
+    path,
+    readOnly,
+    pending,
+    onpending,
+    onsaved,
+    media = {},
+    onuploaded,
+  }: Props = $props();
 
   /** The datalist options a scene type's `file =` field offers: the union of
    *  every media kind it browses, deduplicated. Cached per scene type name so
@@ -71,6 +86,16 @@
   let problem = $state("");
   let saved = $state("");
   let busy = $state(false);
+  // Which scene an upload is streaming into, for the "Uploading clip.mp4…"
+  // line beside its drop zone — `fetch` can't report a percentage (that needs
+  // XMLHttpRequest, deliberately not pulled in for this), so this is what the
+  // console has to say meanwhile.
+  let uploadingIndex = $state<number | null>(null);
+  let uploadingName = $state("");
+  // Set by an in-flight upload just before its `structural()` call, so the
+  // "Saved." banner can say what was actually uploaded rather than just that
+  // a save happened.
+  let uploadNote = $state("");
 
   // Half-typed values, kept here rather than beside the edits: a number that
   // isn't one yet is a state of this screen, not something worth carrying to
@@ -248,40 +273,68 @@
     busy = true;
     try {
       const written = await act();
-      saved = `Saved. ${written.backup ? `The previous version is in ${written.backup}.` : ""}`;
+      const note = uploadNote ? `${uploadNote} ` : "";
+      saved = `${note}Saved. ${written.backup ? `The previous version is in ${written.backup}.` : ""}`;
       warnings = written.warnings ?? [];
       // No sections held back: a scene list is exactly what a reload re-reads.
       onsaved(written, []);
     } catch (e) {
       const refused = reportOf(e);
+      const note = uploadNote ? `${uploadNote} ` : "";
       if (refused) report = refused;
-      else if (e instanceof ApiError) problem = e.message;
-      else problem = e instanceof Error ? e.message : String(e);
+      else if (e instanceof ApiError) problem = `${note}${e.message}`;
+      else problem = `${note}${e instanceof Error ? e.message : String(e)}`;
     } finally {
       busy = false;
+      uploadNote = "";
+    }
+  }
+
+  /** Upload a file dropped or picked for a scene's `fieldName`, then PATCH
+   *  that field to the spec the upload landed at — one `structural()` call,
+   *  so a viewer's busy flag, error/report handling and post-save re-read all
+   *  come from the same place a scene add/remove already uses. */
+  async function uploadFile(index: number, fieldName: string, file: File): Promise<void> {
+    if (readOnly || busy || structuralBlocked) return;
+    uploadingIndex = index;
+    uploadingName = file.name;
+    try {
+      await structural(async () => {
+        const uploaded = await api.uploadMedia(file.name, file);
+        uploadNote = uploadMessage(uploaded);
+        onuploaded?.(form.scenes[index]?.type ?? "");
+        return api.patchConfig(path, [{ scene: index, field: fieldName, value: uploaded.spec }]);
+      });
+    } finally {
+      uploadingIndex = null;
+      uploadingName = "";
     }
   }
 
   // Highlighted while a drag hovers a scene card; `null` the rest of the time.
   let dragOverIndex = $state<number | null>(null);
 
-  /** Dropping a **URL** onto a scene sets its `file =` field directly — no
-   *  upload path exists, so anything else (a real file from the desktop) is
-   *  ignored with a hint rather than silently doing nothing. Saved as its own
-   *  immediate patch, the same way `structural()` already handles add/remove,
-   *  because a drop isn't part of the staged-edit flow a keystroke goes
-   *  through. */
+  /** Dropping a **file** onto a scene uploads it (see `uploadFile`); dropping
+   *  a **URL** instead sets its `file =` field directly, with no upload
+   *  involved. Files are checked first — a Finder or Explorer drag carries
+   *  both a `File` and a `file:///` `text/uri-list` entry, and the latter is
+   *  not a URL this console should fetch. */
   async function dropUrl(index: number, event: DragEvent): Promise<void> {
     event.preventDefault();
     dragOverIndex = null;
     if (readOnly || busy || structuralBlocked) return;
     const dt = event.dataTransfer;
+    const file = dt?.files?.[0];
+    if (file) {
+      await uploadFile(index, "file", file);
+      return;
+    }
     const url = urlFromDrop({
       "text/uri-list": dt?.getData("text/uri-list") ?? "",
       "text/plain": dt?.getData("text/plain") ?? "",
     });
     if (!url) {
-      problem = "Drop a URL to set a scene's file — uploading a file from the desktop isn't wired up yet.";
+      problem = "Drop a file or a URL to set a scene's file.";
       return;
     }
     await structural(() => api.patchConfig(path, [{ scene: index, field: "file", value: url }]));
@@ -361,6 +414,7 @@
                  {dragOverIndex === row.index ? 'border-[var(--accent)]' : 'border-[var(--edge)]'}"
           ondragover={(e) => {
             e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
             dragOverIndex = row.index;
           }}
           ondragleave={() => (dragOverIndex = null)}
@@ -377,6 +431,9 @@
               </h4>
               {#if doc?.help}
                 <p class="mt-0.5 text-xs text-[var(--ink-dim)]">{doc.help}</p>
+              {/if}
+              {#if uploadingIndex === row.index}
+                <p class="mt-0.5 text-xs text-[var(--ink-dim)]">Uploading {uploadingName}…</p>
               {/if}
             </div>
             {#if !readOnly}
@@ -431,6 +488,9 @@
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}
               onrevert={() => revert(key)}
+              onupload={fd?.vocabulary === "media"
+                ? (file) => void uploadFile(row.index, field.name, file)
+                : undefined}
             />
           {/each}
 

@@ -1028,15 +1028,34 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 - **A media picker for the Editor's `file =` fields**, so a video, `.sid`,
   image or program is chosen from a list of what is actually on disk instead
-  of typed from memory. `GET /api/media?kind=&q=` (a new, read-only
-  `MediaStore`) browses `[web].media_roots` — one flat list of directories,
-  defaulting to the four the loader itself already defaults to
-  (`assets/videos`, `assets/sids`, `assets/pictures`, `assets/programs`) —
-  and offers the result as a combobox: free text, a glob, a comma-separated
-  list and a directory (a per-play random pick, same as an unset `file =`)
-  all stay typeable. Dropping a URL onto a scene sets its `file =` field
-  directly, with no upload involved. Uploading a file from the desktop is a
-  separate surface, not built yet — this one only lists.
+  of typed from memory. `GET /api/media?kind=&q=` browses
+  `[web].media_read_write` and `media_read_only`, defaulting to the four
+  directories the loader itself already defaults to (`assets/videos`,
+  `assets/sids`, `assets/pictures`, `assets/programs`) — and offers the
+  result as a combobox: free text, a glob, a comma-separated list and a
+  directory (a per-play random pick, same as an unset `file =`) all stay
+  typeable. Dropping a URL onto a scene sets its `file =` field directly.
+
+### Added
+
+- **Uploading media from the browser**, so a clip reaches the host without a
+  shell. Drop a file onto a scene's card, or press the new **Upload…** button
+  on any `file =` field: `PUT /api/media/{name}` streams it straight to disk
+  (never buffered whole in memory — the host may be encoding video for a
+  running show at the same moment) and PATCHes the field to wherever it
+  landed. `[web].media_read_write` — a *kind → directory* table (`video` →
+  `assets/videos`, and so on; empty means the four loader defaults, same as
+  before) — replaces the unreleased `media_roots`, because which directory an
+  upload of a given kind lands in has to be stated rather than guessed: a
+  directory renamed `clips/` says nothing about what it holds. The kind comes
+  off the file's own extension, so there is nothing to pick for a two-kind
+  `generative` scene either. `[web].media_read_only` adds directories that
+  are browsable but never a destination. Nothing already there is ever
+  overwritten — a name already taken is renamed `clip-2.mp4`, `clip-3.mp4`,
+  and so on — and a `viewer` token is refused the same way it is refused a
+  config write. A `media_read_write` key that isn't one of the five known
+  kinds (a typo like `vidoe`) now fails at startup instead of silently
+  resolving to a directory no upload could ever reach.
 
 ## [0.3.0] - 2026-08-09
 

@@ -79,6 +79,18 @@ export interface MediaIndex {
   truncated: boolean;
 }
 
+/** `PUT /api/media/{name}` — what landed on disk. `spec` is the value to
+ *  write into the scene's `file =` field, built the same way `MediaEntry.spec`
+ *  is. `renamed` is true when `name` was already taken and the upload was
+ *  given a `-2`-style name instead — never an overwrite. */
+export interface MediaUploaded {
+  spec: string;
+  name: string;
+  kind: string;
+  bytes: number;
+  renamed: boolean;
+}
+
 /** `GET /api/library` — favorites + recently-launched configs, shared across
  *  every browser or phone pointed at this host (`console_library.py`). */
 export interface LibraryEntry {

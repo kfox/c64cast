@@ -9,12 +9,17 @@ extension-per-kind in `media_store`) and the per-entry
 `resolve().is_relative_to(root)` symlink-escape re-check, since a directory
 that passes the walk isn't itself a candidate for that check the same way a
 file is.
+
+`disambiguate` lives here for the same reason: both modules number a
+collided name `base-2`, `base-3`, … the same way, so it's one function
+callers plug their own `taken` check into rather than two hand-kept-in-sync
+loops.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 #: Caps on the listing walk. Both are about keeping a hostile or merely
@@ -40,3 +45,26 @@ def walk_dirs(root_path: Path) -> Iterator[tuple[Path, list[str]]]:
                 d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS
             )
         yield here, filenames
+
+
+def disambiguate(
+    base: str, suffix: str, taken: Callable[[str], bool], max_attempts: int | None = None
+) -> tuple[str, bool]:
+    """`f"{base}{suffix}"`, or the first `f"{base}-{n}{suffix}"` for which
+    `taken` says `False` — never returns a name `taken` calls collided.
+    Returns `(name, renamed)`.
+
+    `max_attempts` bounds the search and raises `LookupError` past it; pass it
+    when `taken` costs a filesystem stat per call, so a directory that's
+    already full of `base-N` collisions can't turn one request into an
+    unbounded scan. Omit it when `taken` checks an already-enumerated,
+    in-memory set, which terminates on its own once `n` exceeds the set's
+    size."""
+    candidate = f"{base}{suffix}"
+    n = 2
+    while taken(candidate):
+        if max_attempts is not None and n > max_attempts:
+            raise LookupError(f"too many names already taken like {base!r}")
+        candidate = f"{base}-{n}{suffix}"
+        n += 1
+    return candidate, n > 2

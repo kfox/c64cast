@@ -9,6 +9,7 @@ import type {
   LiveTuneSaved,
   LogLine,
   MediaIndex,
+  MediaUploaded,
   SceneChanged,
   ScreenAvailability,
   SessionStatus,
@@ -58,19 +59,13 @@ function detailOf(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  // `same-origin` credentials, and nothing else: the token rides in the
-  // HttpOnly `SameSite=Strict` cookie the login exchange set. The app never
-  // holds the token in JS, so an injected script has nothing to steal.
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: body === undefined ? { Accept: "application/json" } : {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+/** The response half of a request: parse the body (JSON if it is JSON, the
+ *  raw text otherwise) and throw `ApiError` for anything not 2xx. Shared by
+ *  `request()`'s JSON calls and `uploadMedia`'s raw-body `PUT`, which can't
+ *  go through `request()` itself — that hard-wires `Content-Type:
+ *  application/json` and `JSON.stringify`s the body, and a `File` handed to
+ *  that would upload the four bytes of the string `"{}"`. */
+async function answer<T>(response: Response): Promise<T> {
   const text = await response.text();
   let parsed: unknown = null;
   if (text) {
@@ -85,6 +80,22 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new ApiError(response.status, message, parsed);
   }
   return parsed as T;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // `same-origin` credentials, and nothing else: the token rides in the
+  // HttpOnly `SameSite=Strict` cookie the login exchange set. The app never
+  // holds the token in JS, so an injected script has nothing to steal.
+  const response = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: body === undefined ? { Accept: "application/json" } : {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return answer<T>(response);
 }
 
 /** A config ref is `<root-label>/<relative path>`, and its separators are part
@@ -112,6 +123,19 @@ export const api = {
    *  for the page's lifetime) without a distinct request shape. */
   media: (kind: string, q = "") =>
     request<MediaIndex>("GET", `/api/media?${new URLSearchParams({ kind, q })}`),
+
+  /** Upload a file, streamed straight through as the request body — no JSON
+   *  envelope, so this bypasses `request()` and calls `answer()` directly.
+   *  The kind and the destination directory are the server's call (it reads
+   *  the extension off `name`); a name already taken there comes back
+   *  renamed rather than overwritten. */
+  uploadMedia: (name: string, file: File) =>
+    fetch(`/api/media/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+      body: file,
+    }).then((response) => answer<MediaUploaded>(response)),
 
   /** Describes the code, not the run, so it cannot change while the host is
    *  up — see `introspection()` in introspect.ts, which fetches it once. */

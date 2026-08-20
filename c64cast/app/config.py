@@ -2403,16 +2403,31 @@ class WebCfg:
             "name media anywhere, so treat write access as shell-equivalent."
         },
     )
-    # Unlike `config_roots`, one flat list serves every media kind — the kind
-    # (video/sid/picture/program/audio) selects which extensions count as a
-    # hit while browsing, not which directories are walked.
-    media_roots: list[str] = field(
+    # Kind -> directory, unlike `config_roots`'s flat list: which directory an
+    # upload of that kind lands in has to be stated, not guessed from a name
+    # (a directory called "clips" tells you nothing) or from its contents (a
+    # brand-new empty one has none to guess from). The same directories are
+    # also what every kind's browsing offers, same as before this field grew
+    # a write side.
+    media_read_write: dict[str, str] = field(
+        default_factory=dict,
+        metadata={
+            "help": "Kind (video/sid/picture/program/audio) to directory, both "
+            "browsable and uploadable to. Unset kinds fall back to the loader's own "
+            "defaults (assets/videos, assets/sids, assets/pictures, assets/programs); "
+            "audio has no default, so name one to allow audio uploads. Set a kind to "
+            '"" to disable uploading it while leaving the rest at their defaults '
+            "(this is the only way to turn one off — an empty table means every "
+            "default applies). Uploads never overwrite: a name already taken is "
+            "renamed clip-2.mp4, clip-3.mp4, and so on."
+        },
+    )
+    media_read_only: list[str] = field(
         default_factory=list,
         metadata={
-            "help": "Directories the web console's media picker may browse (read-only — "
-            "it never writes here). Empty = the four directories the loader itself "
-            "already defaults to (assets/videos, assets/sids, assets/pictures, "
-            "assets/programs). Nothing outside these is listed, symlinks included."
+            "help": "Additional directories the media picker may browse but never "
+            "write to — a library you want offered without exposing it to uploads, "
+            'e.g. ["~/Movies", "/mnt/hvsc"]. Empty adds nothing.'
         },
     )
 
