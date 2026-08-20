@@ -392,6 +392,18 @@ def _schema_directive(text: str) -> str | None:
     return None
 
 
+def _require_scene_index(scenes: Sequence[cfgmod.SceneCfg], index: int, verb: str) -> None:
+    """Raise :class:`EditRejected` unless ``index`` names a scene in ``scenes``.
+
+    Shared by every place a request names a scene by index — a field edit, a
+    copy source, a removal, a reorder's `index` and its `to` — so the bounds
+    check and its wording can't drift between them. ``verb`` is the part of
+    the message specific to why the index was needed, e.g. ``"no scene at
+    index"`` or ``"cannot move to index"``."""
+    if not 0 <= index < len(scenes):
+        raise EditRejected(f"{verb} {index} (the config has {len(scenes)})")
+
+
 def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> dict[str, Any]:
     """Set one field on a loaded config, and describe what was set.
 
@@ -421,8 +433,7 @@ def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> di
     else:
         if not isinstance(scene, int) or isinstance(scene, bool):
             raise EditRejected(f"a scene is named by its index, got {scene!r}")
-        if not 0 <= scene < len(cfg.scenes):
-            raise EditRejected(f"no scene at index {scene} (the config has {len(cfg.scenes)})")
+        _require_scene_index(cfg.scenes, scene, "no scene at index")
         target = cfg.scenes[scene]
         if field == "type":
             raise EditRejected(
@@ -938,10 +949,8 @@ class ConfigStore:
             raise EditRejected(f"unknown scene type {scene_type!r}; known: {sorted(known)}")
 
         def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
-            if copy_of is not None and not 0 <= copy_of < len(cfg.scenes):
-                raise EditRejected(
-                    f"no scene at index {copy_of} (the config has {len(cfg.scenes)})"
-                )
+            if copy_of is not None:
+                _require_scene_index(cfg.scenes, copy_of, "no scene at index")
             if after is not None and not -1 <= after < len(cfg.scenes):
                 raise EditRejected(f"cannot insert after index {after}")
             scene = (
@@ -967,8 +976,7 @@ class ConfigStore:
         scenes rather than about the button that was pressed."""
 
         def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
-            if not 0 <= index < len(cfg.scenes):
-                raise EditRejected(f"no scene at index {index} (the config has {len(cfg.scenes)})")
+            _require_scene_index(cfg.scenes, index, "no scene at index")
             if len(cfg.scenes) == 1:
                 raise EditRejected("this is the only scene — a show needs one to play")
             gone = cfg.scenes.pop(index)
@@ -987,10 +995,8 @@ class ConfigStore:
         tolerance its neighbors have for a request that changes nothing."""
 
         def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
-            if not 0 <= index < len(cfg.scenes):
-                raise EditRejected(f"no scene at index {index} (the config has {len(cfg.scenes)})")
-            if not 0 <= to < len(cfg.scenes):
-                raise EditRejected(f"cannot move to index {to} (the config has {len(cfg.scenes)})")
+            _require_scene_index(cfg.scenes, index, "no scene at index")
+            _require_scene_index(cfg.scenes, to, "cannot move to index")
             scene = cfg.scenes.pop(index)
             cfg.scenes.insert(to, scene)
             return {"moved": index, "to": to, "type": scene.type, "name": scene.name}
