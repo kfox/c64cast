@@ -668,6 +668,20 @@ def register_web_routes(
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
+    # Registered before the bare `{ref:path}` PATCH below for the same reason
+    # `/validate` and `/scenes` are: a config named "…/scenes/3" must not be
+    # read as a request to PATCH a file by that name.
+    @app.patch("/api/configs/{ref:path}/scenes/{index}")
+    async def api_scene_move(ref: str, index: int, request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        try:
+            to = _opt_index(body.get("to"), "to")
+            if to is None:
+                raise HTTPException(400, 'moving a scene needs a "to" index')
+            return store.move_scene(ref, index, to)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
     # Registered after the more specific DELETE route above, so a delete of
     # "…/scenes/3" is never read as a request to remove a file named that.
     @app.delete("/api/configs/{ref:path}")

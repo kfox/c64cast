@@ -347,13 +347,16 @@ export interface ConfigPatched extends ConfigWritten {
   text: string;
 }
 
-/** A scene added or removed — a structural change to the file rather than a
- *  new value for a field, so it reports which index moved rather than a list
- *  of edits. `scene.added` is where the new one landed. */
+/** A scene added, removed or reordered — a structural change to the file
+ *  rather than a new value for a field, so it reports which index changed
+ *  rather than a list of edits. `scene.added` is where the new one landed;
+ *  `scene.moved`/`scene.to` are the reorder's from/to indices. */
 export interface SceneChanged extends ConfigWritten {
   scene: {
     added?: number;
     removed?: number;
+    moved?: number;
+    to?: number;
     type: string;
     name?: string | null;
     copied_from?: number | null;

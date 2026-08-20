@@ -266,6 +266,15 @@
    *  unsaved change onto a different scene. */
   const structuralBlocked = $derived(edits.length > 0);
 
+  /** The ↑/↓ chips for a scene at `index`: one shape, so the earlier/later
+   *  pair can't drift apart on a later tweak to the label or disabled rule. */
+  function moveDirections(index: number, sceneCount: number) {
+    return [
+      { delta: -1, symbol: "↑", label: "Move this scene earlier", atEdge: index === 0 },
+      { delta: 1, symbol: "↓", label: "Move this scene later", atEdge: index === sceneCount - 1 },
+    ];
+  }
+
   async function structural(act: () => Promise<ConfigWritten>): Promise<void> {
     report = null;
     problem = "";
@@ -439,6 +448,20 @@
             </div>
             {#if !readOnly}
               <div class="flex gap-1">
+                {#each moveDirections(row.index, scenes.length) as move (move.delta)}
+                  <button
+                    class={chip}
+                    aria-label={move.label}
+                    disabled={busy || structuralBlocked || move.atEdge}
+                    title={structuralBlocked
+                      ? "Save or discard the staged edits first — reordering renumbers the rest"
+                      : move.label}
+                    onclick={() =>
+                      void structural(() => api.moveScene(path, row.index, row.index + move.delta))}
+                  >
+                    {move.symbol}
+                  </button>
+                {/each}
                 <button
                   class={chip}
                   disabled={busy || structuralBlocked}
