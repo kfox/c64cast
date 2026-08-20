@@ -378,28 +378,24 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertFalse(bridge.transport(None, "rewind"))
         self.assertFalse(pl.pause_event.is_set())
 
-    def test_freeze_enqueues_play_pause_only_when_not_already_frozen(self):
-        bridge, pl = _bridge(scene=_FakeTransportScene(paused=False))
+    def test_freeze_and_unfreeze_enqueue_their_own_verb(self):
+        # The idempotency check against transport_is_paused now happens on
+        # the playlist thread, inside TransportSession._dispatch (see
+        # tests/test_transport.py) — not here at enqueue time, so that two
+        # requests racing ahead of a single drain can't both read the same
+        # stale state and cancel each other out.
+        bridge, pl = _bridge(scene=_FakeTransportScene())
         self.assertTrue(bridge.transport(None, "freeze"))
-        self.assertEqual([e.action for e in pl.transport.events], ["play_pause"])
-        # Already frozen (the scene reports paused) — a second freeze is a
-        # no-op rather than a toggle back to playing.
-        pl.current._paused = True
-        self.assertTrue(bridge.transport(None, "freeze"))
-        self.assertEqual(len(pl.transport.events), 1)
-
-    def test_unfreeze_enqueues_play_pause_only_when_frozen(self):
-        bridge, pl = _bridge(scene=_FakeTransportScene(paused=True))
         self.assertTrue(bridge.transport(None, "unfreeze"))
-        self.assertEqual([e.action for e in pl.transport.events], ["play_pause"])
-        pl.current._paused = False
-        self.assertTrue(bridge.transport(None, "unfreeze"))
-        self.assertEqual(len(pl.transport.events), 1)
+        self.assertEqual([e.action for e in pl.transport.events], ["freeze", "unfreeze"])
 
-    def test_freeze_on_a_scene_with_no_transport_surface_is_a_noop_but_addressed(self):
+    def test_freeze_on_a_scene_with_no_transport_surface_still_enqueues(self):
+        # _dispatch's own missing-surface check (duck-typed getattr) makes
+        # this a no-op once drained — see
+        # test_transport.test_unknown_scene_type_missing_surface_is_noop.
         bridge, pl = _bridge()
         self.assertTrue(bridge.transport(None, "freeze"))
-        self.assertEqual(pl.transport.events, [])
+        self.assertEqual([e.action for e in pl.transport.events], ["freeze"])
 
     def test_rw_and_ff_enqueue_holds_with_pressed(self):
         bridge, pl = _bridge(scene=_FakeTransportScene())

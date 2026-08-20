@@ -587,6 +587,16 @@ class TransportSession:
                 toggle = getattr(scene, "transport_toggle_pause", None)
                 if toggle is not None:
                     toggle()
+        elif event.action in ("freeze", "unfreeze"):
+            # Checked here rather than by the caller that enqueued this: two
+            # duplicate requests (two open consoles, a network retry) both
+            # land on this one drain loop, so the second sees the first's
+            # effect and no-ops instead of toggling back.
+            is_paused = getattr(scene, "transport_is_paused", None)
+            if is_paused is not None and is_paused() != (event.action == "freeze"):
+                toggle = getattr(scene, "transport_toggle_pause", None)
+                if toggle is not None:
+                    toggle()
         elif event.action == "stop":
             if event.pressed:
                 stop = getattr(scene, "transport_stop", None)

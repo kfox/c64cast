@@ -61,8 +61,12 @@ class _StubScene:
     def transport_pause(self) -> None:
         self.paused = True
 
+    def transport_is_paused(self) -> bool:
+        return self.paused
+
     def transport_toggle_pause(self) -> None:
         self.toggle_calls += 1
+        self.paused = not self.paused
 
     def transport_loop_toggle(self) -> None:
         self.loop_toggle_calls += 1
@@ -182,6 +186,56 @@ class DispatchTests(unittest.TestCase):
         session.enqueue(TransportEvent(action="play_pause"))
         _tick(session, pl, 0.0)  # must not raise
         self.assertTrue(session._queue.empty(), "event must be consumed, not left queued")
+
+    def test_freeze_toggles_when_not_already_paused(self):
+        scene = _StubScene()
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="freeze"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
+        self.assertTrue(scene.paused)
+
+    def test_freeze_is_a_noop_when_already_paused(self):
+        scene = _StubScene()
+        scene.paused = True
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="freeze"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 0)
+
+    def test_unfreeze_toggles_when_paused(self):
+        scene = _StubScene()
+        scene.paused = True
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="unfreeze"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
+        self.assertFalse(scene.paused)
+
+    def test_unfreeze_is_a_noop_when_not_paused(self):
+        scene = _StubScene()
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="unfreeze"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 0)
+
+    def test_duplicate_freeze_events_drained_in_one_tick_toggle_only_once(self):
+        # Two consoles open on the same show (or a network retry) both enqueue
+        # "freeze" before either is drained. Both land in the same tick()
+        # drain loop, so the second sees the first's effect and no-ops
+        # instead of toggling the scene back to playing.
+        scene = _StubScene()
+        pl = _FakePlaylist(scene)
+        session = TransportSession()
+        session.enqueue(TransportEvent(action="freeze"))
+        session.enqueue(TransportEvent(action="freeze"))
+        _tick(session, pl, 0.0)
+        self.assertEqual(scene.toggle_calls, 1)
+        self.assertTrue(scene.paused)
 
 
 class JogTests(unittest.TestCase):

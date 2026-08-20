@@ -162,6 +162,7 @@
         tempo={current.tempo}
         scene={current.current_scene}
         armed={current.armed}
+        paused={current.paused}
         readOnly={frozen}
         ontap={() => send({ action: "tap" })}
       />

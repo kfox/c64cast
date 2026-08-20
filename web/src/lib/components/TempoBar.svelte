@@ -6,11 +6,12 @@
     tempo: TempoState;
     scene: string | null;
     armed: ArmedClip | null;
+    paused: boolean;
     readOnly?: boolean;
     ontap: () => void;
   }
 
-  let { tempo, scene, armed, readOnly = false, ontap }: Props = $props();
+  let { tempo, scene, armed, paused, readOnly = false, ontap }: Props = $props();
 
   /** Where the beat clock was when the host last told us, and when we heard it.
    *  Deliberately a plain object rather than `$state`: the frame loop below
@@ -80,6 +81,14 @@
     {tempo.source}{tempo.running ? "" : " · stopped"}
   </p>
 
+  {#if paused}
+    <!-- A machine-level halt (the C64's own keys, MIDI, or the legacy /perf
+         console) — a different thing from TransportBar's per-scene Freeze,
+         and this bar's only job is to say so: the pause/resume control itself
+         still lives on /perf, not here. -->
+    <p class="font-mono text-xs text-c64-yellow">· paused</p>
+  {/if}
+
   {#if countIn}
     <p class="font-mono text-xs text-c64-yellow">· {countIn}</p>
   {/if}
@@ -88,8 +97,6 @@
     {#if scene}
       <p class="truncate font-mono text-xs text-[var(--ink-dim)]">scene: {scene}</p>
     {/if}
-    <!-- Machine-level pause/skip (a full halt, not a scene freeze) and DJ
-         transport live on TransportBar below now — this bar is tempo only. -->
     <Button disabled={readOnly} onclick={ontap}>Tap</Button>
   </div>
 </div>

@@ -487,10 +487,12 @@ class PerfBridge:
         enqueues a :class:`~c64cast.control.transport.TransportEvent`, the same
         queue the MIDI transport surface drains from — see
         :class:`~c64cast.control.transport.TransportSession`. ``freeze``/
-        ``unfreeze`` are guarded against the scene's own ``transport_is_paused``
-        rather than sent as a bare toggle: two consoles open on the same show,
-        or a network retry, must not fight over which way ``play_pause``
-        flips."""
+        ``unfreeze`` enqueue the target state rather than a bare toggle, and
+        :meth:`~c64cast.control.transport.TransportSession._dispatch` checks
+        ``transport_is_paused`` itself, on the playlist thread, right before
+        acting on it — so two consoles open on the same show, or a network
+        retry, can't race each other's stale read of the pre-enqueue state
+        into a double-toggle that cancels out."""
         pl = self._resolve(system)
         if pl is None or verb not in TRANSPORT_VERBS:
             return False
@@ -501,9 +503,7 @@ class PerfBridge:
             event.set()
             return True
         if verb in ("freeze", "unfreeze"):
-            is_paused = getattr(pl.current, "transport_is_paused", None)
-            if is_paused is not None and is_paused() != (verb == "freeze"):
-                pl.transport.enqueue(TransportEvent(action="play_pause"))
+            pl.transport.enqueue(TransportEvent(action=verb))
             return True
         if verb in ("rw", "ff"):
             pl.transport.enqueue(TransportEvent(action=verb, pressed=pressed))
