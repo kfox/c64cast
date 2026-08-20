@@ -85,6 +85,7 @@ from . import config_store, console_library, media_store, paths
 from .session import (
     Session,
     build_session,
+    join_bounded,
     join_playlists,
     reload_all,
     reload_registries,
@@ -306,7 +307,9 @@ class _Workers:
     def join(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         for t in list(self.threads):
-            t.join(timeout=max(0.0, deadline - time.monotonic()))
+            remaining = max(0.0, deadline - time.monotonic())
+            if not join_bounded(t, remaining):
+                log.error("[%s] did not exit within %.0fs; abandoning", t.name, timeout)
 
 
 class SessionManager:
@@ -490,6 +493,7 @@ class SessionManager:
     def close(self, *, timeout: float = 30.0) -> None:
         """Stop whatever is running and release the supervisor's own threads.
         Safe to call from any state, and safe to call twice."""
+        log.info("waiting up to %.0fs for the session to tear down", timeout * 2)
         self.stop()
         self.wait_for(STARTABLE, timeout=timeout)
         self._reaper.stop()
@@ -974,9 +978,22 @@ def run_daemon(
         return 2
 
     shutdown = threading.Event()
+    interrupted = False
 
     def _on_stop_signal(signum: int, _frame: Any) -> None:
-        log.info("%s received; shutting down the host", signal.Signals(signum).name)
+        # Same three-strike shape as cli._run_session's handler (see its
+        # comment for the rationale): a second signal restores the default
+        # disposition for whichever signal just arrived, so a third — or a
+        # repeated SIGTERM from a service manager — actually kills instead of
+        # being caught forever.
+        nonlocal interrupted
+        name = signal.Signals(signum).name
+        if interrupted:
+            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
+            signal.signal(signum, signal.SIG_DFL)
+            return
+        interrupted = True
+        log.info("%s received; shutting down the host", name)
         shutdown.set()
 
     def _on_sighup(_signum: int, _frame: Any) -> None:

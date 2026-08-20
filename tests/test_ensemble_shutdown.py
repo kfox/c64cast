@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from _fakes import fake_system_stack
 
+from c64cast.app import session
 from c64cast.app.cli import _run_playlists, teardown_stack
 from c64cast.app.ensemble import SystemStack
 
@@ -84,6 +85,79 @@ class RunPlaylistsTest(unittest.TestCase):
             timer.cancel()
         self.assertTrue(timeouts, "join was never called")
         self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
+
+
+class JoinBoundedTest(unittest.TestCase):
+    """session.join_bounded is the polling join every non-daemon join in the
+    project now shares — pump_until_done's headless branch, join_playlists,
+    and serve._Workers.join. Covering it once here is what lets those callers
+    just trust it."""
+
+    def test_polls_until_the_thread_finishes(self):
+        event = threading.Event()
+        t = threading.Thread(target=event.wait, name="winding-down")
+        t.start()
+        timer = threading.Timer(0.05, event.set)
+        timer.start()
+        try:
+            self.assertTrue(session.join_bounded(t, 5.0, poll_s=0.02))
+        finally:
+            timer.cancel()
+        self.assertFalse(t.is_alive())
+
+    def test_reports_false_when_the_thread_outlives_the_timeout(self):
+        event = threading.Event()
+        t = threading.Thread(target=event.wait, name="stuck")
+        t.start()
+        try:
+            self.assertFalse(session.join_bounded(t, 0.05, poll_s=0.02))
+            self.assertTrue(t.is_alive())
+        finally:
+            event.set()
+            t.join()
+
+
+class JoinPlaylistsTest(unittest.TestCase):
+    def test_polls_so_signals_can_be_delivered(self):
+        # Same measurement as pump_until_done: a single long join(timeout)
+        # parks uninterruptibly, so join_playlists must poll too.
+        running = threading.Event()
+        stacks = [fake_system_stack("a")]
+        t = threading.Thread(target=running.wait, name="playlist-a")
+        t.start()
+        stop_event = threading.Event()
+        timeouts: list[float | None] = []
+        real_join = threading.Thread.join
+
+        def recording_join(self, timeout=None):  # noqa: ANN001
+            timeouts.append(timeout)
+            return real_join(self, timeout)
+
+        timer = threading.Timer(0.05, running.set)
+        timer.start()
+        try:
+            with unittest.mock.patch.object(threading.Thread, "join", recording_join):
+                session.join_playlists([t], stacks, stop_event)
+        finally:
+            timer.cancel()
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(timeouts, "join was never called")
+        self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
+
+    def test_a_thread_that_never_exits_is_logged_and_abandoned(self):
+        stacks = [fake_system_stack("a")]
+        stop_event = threading.Event()
+        t = threading.Thread(target=stop_event.wait, name="playlist-stuck")
+        t.start()
+        try:
+            with unittest.mock.patch.object(session, "join_bounded", return_value=False) as jb:
+                with self.assertLogs("c64cast", level="ERROR") as cm:
+                    session.join_playlists([t], stacks, stop_event)
+            jb.assert_called_once_with(t, 5.0)
+            self.assertTrue(any("playlist-stuck" in m and "5s" in m for m in cm.output))
+        finally:
+            stop_event.set()
+            t.join()
 
 
 class TeardownStackOrderTest(unittest.TestCase):

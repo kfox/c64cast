@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import threading
 import time
@@ -707,6 +708,20 @@ def teardown_stack(stack: SystemStack) -> None:
 _JOIN_POLL_S = 0.2
 
 
+def join_bounded(t: threading.Thread, timeout: float, poll_s: float = _JOIN_POLL_S) -> bool:
+    """Join ``t`` for at most ``timeout``, polling so the main thread keeps
+    returning to the interpreter. Returns whether it finished in time.
+
+    A single long ``join(timeout)`` would not: CPython parks it in
+    ``_PyParkingLot_Park``, where no signal handler runs (see
+    pump_until_done). Every non-daemon join in this project shares this
+    helper so that measurement only has to be made once."""
+    deadline = time.monotonic() + timeout
+    while t.is_alive() and time.monotonic() < deadline:
+        t.join(timeout=min(poll_s, max(0.0, deadline - time.monotonic())))
+    return not t.is_alive()
+
+
 def _pump_previews_until_done(
     threads: Sequence[threading.Thread], previews: Sequence[PreviewWindow]
 ) -> None:
@@ -765,8 +780,7 @@ def pump_until_done(threads: list[threading.Thread], stacks: list[SystemStack]) 
         _pump_previews_until_done(threads, previews)
     else:
         for t in threads:
-            while t.is_alive():
-                t.join(timeout=_JOIN_POLL_S)
+            join_bounded(t, math.inf)
 
 
 def join_playlists(
@@ -778,8 +792,7 @@ def join_playlists(
     log.info("interrupted; stopping %d system(s)", len(stacks))
     stop_event.set()
     for t in threads:
-        t.join(timeout=5)
-        if t.is_alive():
+        if not join_bounded(t, 5.0):
             log.error("[%s] did not exit within 5s; abandoning", t.name)
 
 

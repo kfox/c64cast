@@ -1057,6 +1057,27 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   kinds (a typo like `vidoe`) now fails at startup instead of silently
   resolving to a directory no upload could ever reach.
 
+### Fixed
+
+- **SIGINT/SIGTERM now always end the process.** A stuck teardown thread used
+  to leave a run that would not exit and would not log why: `daemon=False`
+  playlist/supervisor threads are joined with a timeout and logged as
+  abandoned, but the interpreter's own shutdown joins those same threads again
+  on the way out — untimed, with no signal delivery, after `main()` had
+  already returned its exit code. The installed entry point now force-exits
+  once nothing can stall it (flushing output and `--log-file` first), so a run
+  that cannot finish its own teardown releases the machine instead of hanging
+  forever holding the DMA socket.
+- A second SIGINT or SIGTERM now restores the default disposition for
+  whichever signal actually arrived, rather than always SIGINT — so a repeated
+  SIGTERM from a service manager is no longer caught forever, and a third
+  signal genuinely kills the process. `--serve`'s host gained the same
+  three-strike escape hatch the one-shot CLI already had.
+- A paused scene's resume no longer sleeps through a stop signal: the
+  post-reset wait now waits on the stop event instead of a bare `sleep(1)`, so
+  a signal received during that second is honored immediately instead of after
+  it elapses.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
