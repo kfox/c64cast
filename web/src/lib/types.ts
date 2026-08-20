@@ -372,7 +372,9 @@ export interface FxLayer {
  *  `perf_console._live_dict`. The host tries every target
  *  `introspect.live_targets()` declares against the running scene and sends
  *  only the ones that resolve, so a rendered control always writes somewhere.
- *  `min`/`max`/`norm` come with a scalar, `choices` with a choice. */
+ *  `min`/`max`/`norm` come with a scalar, `choices` with a choice.
+ *  `vocabulary` mirrors `FieldDoc.vocabulary` — `"c64color"` (border/
+ *  background, Live DJ/VJ Phase 7) swaps the `<select>` for swatches. */
 export interface LiveKnob {
   target: string;
   group: string;
@@ -383,6 +385,29 @@ export interface LiveKnob {
   max?: number;
   norm?: number;
   choices?: string[];
+  vocabulary?: string;
+}
+
+/** The A/B loop machine's state (Live DJ/VJ Phase 7), content-seconds like
+ *  `TransportState.position`. `"none"` before a mark, `"armed"` after A,
+ *  `"active"` once B closes it and it starts looping. */
+export interface LoopState {
+  state: "none" | "armed" | "active";
+  a: number | null;
+  b: number | null;
+}
+
+/** The current scene's DJ transport surface, from `perf_console._transport_dict`.
+ *  Null on `PerfSystem` for a scene that declares none (a generator, a
+ *  picture, a scope) — the console renders no transport bar rather than one
+ *  that writes nowhere. `duration` is null for a scene with no fixed length. */
+export interface TransportState {
+  position: number;
+  duration: number | null;
+  frozen: boolean;
+  loop: LoopState;
+  /** Pad numbers holding a saved loop preset for the current video. */
+  loop_slots: number[];
 }
 
 /** One knob change the running show is holding: where it started, where it is
@@ -447,6 +472,9 @@ export interface PerfSystem {
   /** Slots that hold a saved look, so a recall pad lights only when there is
    *  something to recall. */
   looks: number[];
+  /** The current scene's DJ transport (freeze/scrub/rw/ff/A-B loop), or null
+   *  for a scene that has none. */
+  transport: TransportState | null;
 }
 
 /** A frame off `/api/ws`: the performance console's payload with the

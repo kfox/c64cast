@@ -1002,6 +1002,28 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   from any surface (MIDI, a script, another console) counts as a recent, not
   only one started from this browser.
 
+### Added
+
+- **The web console's Live tab freezes a video in place instead of stopping the
+  show.** Its old Pause button set the same machine-level `pause_event` the
+  C64's own C= key does — a full halt, not what a performer reaching for
+  Pause mid-set wants. A new **Freeze** button (and the rest of the Live DJ/VJ
+  transport: a scrub bar, press-and-hold rewind/fast-forward, and A/B loop
+  set/clear plus recall pads for a video's saved loop points) instead drives
+  the same engine the MIDI transport surface has used since Phase 2 — pause
+  in place with the audio muted, not a stop. It appears only for a scene that
+  actually has a transport (a playing video), since a generator or a picture
+  has nothing to scrub. The old pause/skip moved off the Live tab; they are
+  still reachable from the legacy `/perf` page.
+- **A visual color picker on the Live tab**, for a blank scene's border and
+  background — the first `mode.*` live-tune target whose values are colors
+  rather than a mode keyword, so it renders as the same palette swatches the
+  config Editor already offers instead of a `<select>`.
+- The Looks pads on the Live tab no longer look broken with a sparse set of
+  saved slots: an empty pad now reads **+** rather than sitting disabled at
+  30% opacity, and a tap on one saves the current look immediately (there is
+  nothing there to lose) instead of requiring the SAVE toggle first.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

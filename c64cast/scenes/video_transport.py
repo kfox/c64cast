@@ -350,3 +350,17 @@ class VideoTransportControls:
 
     def is_paused(self) -> bool:
         return self.paused
+
+    def loop_info(self) -> dict[str, float | str | None]:
+        """The A/B loop machine's state, for a console's scrub bar to draw the
+        marks and its own loop button to reflect. Content-seconds, matching
+        :meth:`position` — not the internal (possibly scaled) clock domain."""
+        return {"state": self.loop_state, "a": self.loop_a, "b": self.loop_b}
+
+    def loop_slots(self) -> list[int]:
+        """Which pad numbers hold a saved loop preset, so a console lights a
+        recall pad only where there is something to recall — mirrors
+        ``PerformanceEngine.saved_look_slots``."""
+        if self.loop_store is None:
+            return []
+        return sorted(int(k) for k in self.loop_store.load())

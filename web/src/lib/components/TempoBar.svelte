@@ -6,13 +6,11 @@
     tempo: TempoState;
     scene: string | null;
     armed: ArmedClip | null;
-    paused: boolean;
     readOnly?: boolean;
     ontap: () => void;
-    ontransport: (verb: "pause" | "resume" | "skip") => void;
   }
 
-  let { tempo, scene, armed, paused, readOnly = false, ontap, ontransport }: Props = $props();
+  let { tempo, scene, armed, readOnly = false, ontap }: Props = $props();
 
   /** Where the beat clock was when the host last told us, and when we heard it.
    *  Deliberately a plain object rather than `$state`: the frame loop below
@@ -86,21 +84,12 @@
     <p class="font-mono text-xs text-c64-yellow">· {countIn}</p>
   {/if}
 
-  {#if paused}
-    <p class="font-mono text-xs text-c64-yellow">· paused</p>
-  {/if}
-
   <div class="ms-auto flex items-center gap-2">
     {#if scene}
       <p class="truncate font-mono text-xs text-[var(--ink-dim)]">scene: {scene}</p>
     {/if}
-    <!-- Transport where a performer's thumb already is. One button rather than
-         two: the host tells us whether the show is paused, so the control can
-         say what it will do instead of offering both and being half wrong. -->
-    <Button disabled={readOnly} onclick={() => ontransport(paused ? "resume" : "pause")}>
-      {paused ? "Resume" : "Pause"}
-    </Button>
-    <Button disabled={readOnly} onclick={() => ontransport("skip")}>Skip</Button>
+    <!-- Machine-level pause/skip (a full halt, not a scene freeze) and DJ
+         transport live on TransportBar below now — this bar is tempo only. -->
     <Button disabled={readOnly} onclick={ontap}>Tap</Button>
   </div>
 </div>

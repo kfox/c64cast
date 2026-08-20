@@ -131,6 +131,10 @@ class LiveTargetDoc:
     hi: float | None = None  # scalar range high
     choices: tuple[str, ...] = ()  # choice values
     owners: tuple[str, ...] = ()  # which registered classes declare it (for display)
+    # The named set a choice's values are drawn from, mirroring FieldDoc's own
+    # `vocabulary` — "c64color" is what tells a console to render swatches
+    # instead of a <select>. "" for every scalar and most choices.
+    vocabulary: str = ""
 
 
 class _Required:
@@ -404,6 +408,12 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
     return out
 
 
+# Choice targets whose values are C64 color names rather than a mode keyword —
+# keyed by the bare param name (unambiguous across holders today). The picker
+# renders these as swatches instead of a <select>; see LiveTargetDoc.vocabulary.
+_LIVE_CHOICE_VOCAB: dict[str, str] = {"border": "c64color", "background": "c64color"}
+
+
 def live_targets() -> list[LiveTargetDoc]:
     """Every live-tunable ``param`` target, deduped by ``holder.name`` and grouped
     for the ``--midi-setup`` target picker. Single source of truth over the
@@ -441,6 +451,7 @@ def live_targets() -> list[LiveTargetDoc]:
                     "hi": None,
                     "choices": tuple(values),
                     "owners": [],
+                    "vocabulary": _LIVE_CHOICE_VOCAB.get(pname, ""),
                 }
                 order.append(target)
             acc[target]["owners"].append(owner)
@@ -459,6 +470,7 @@ def live_targets() -> list[LiveTargetDoc]:
                 hi=a["hi"],
                 choices=a["choices"],
                 owners=tuple(dict.fromkeys(a["owners"])),  # dedup, preserve order
+                vocabulary=str(a.get("vocabulary", "")),
             )
         )
     # Stable group order for the picker (Color pipeline / Effect / Generator /

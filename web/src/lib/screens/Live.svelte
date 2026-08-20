@@ -9,9 +9,11 @@
   import SceneList from "$lib/components/SceneList.svelte";
   import ScreenView from "$lib/components/ScreenView.svelte";
   import TempoBar from "$lib/components/TempoBar.svelte";
+  import TransportBar from "$lib/components/TransportBar.svelte";
   import TunePanel from "$lib/components/TunePanel.svelte";
   import TunedChanges from "$lib/components/TunedChanges.svelte";
   import type { Console } from "$lib/console.svelte";
+  import { DocIndex, documentation } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
 
   interface Props {
@@ -39,6 +41,11 @@
   let screens = $state<Record<string, boolean>>({});
   const screenReady = $derived(current !== null && screens[current.name] === true);
 
+  // The live palette, for the Tune panel's `c64color` knobs (border/
+  // background, Live DJ/VJ Phase 7) — same cached fetch the Editor uses, so
+  // opening Live first costs one request and opening it second costs none.
+  let docs = $state<DocIndex | null>(null);
+
   onMount(async () => {
     try {
       screens = (await api.screen()).systems;
@@ -47,6 +54,11 @@
       // panel then says the machine cannot show a picture, which is true of
       // this pairing even if not of the machine.
       screens = {};
+    }
+    try {
+      docs = await documentation();
+    } catch {
+      // No palette yet — the knob falls back to a <select>, still writable.
     }
   });
 
@@ -150,12 +162,21 @@
         tempo={current.tempo}
         scene={current.current_scene}
         armed={current.armed}
-        paused={current.paused}
         readOnly={frozen}
         ontap={() => send({ action: "tap" })}
-        ontransport={(verb) => send({ action: "transport", verb })}
       />
     </section>
+
+    {#if current.transport}
+      <section class="panel p-4">
+        <h2 class="mb-3 text-lg font-semibold">Transport</h2>
+        <TransportBar
+          transport={current.transport}
+          readOnly={frozen}
+          onverb={(verb, extra) => send({ action: "transport", verb, ...extra })}
+        />
+      </section>
+    {/if}
 
     {#if host.readOnly}
       <p class="text-sm text-[var(--ink-dim)]">
@@ -202,6 +223,7 @@
         <h2 class="mb-3 text-lg font-semibold">Tune</h2>
         <TunePanel
           knobs={current.live}
+          palette={docs?.palette ?? []}
           readOnly={frozen}
           onscalar={(target, norm) => send({ action: "live", target, norm })}
           onchoice={(target, value) => send({ action: "live", target, value })}

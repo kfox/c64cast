@@ -8,6 +8,7 @@ from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, RegionID
 from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
+from c64cast.video.palette import C64_COLORS, color_display_name, resolve_color
 
 from .base import ComposeBuffers
 from .char import CharDisplayMode, clear_char_screen
@@ -24,6 +25,15 @@ class BlankDisplayMode(CharDisplayMode):
 
     name = "blank"
     is_petscii_compatible = True
+
+    # Live-tune surface (see DisplayMode.LIVE_CHOICES): a performer's border/
+    # background picks are the "visual color/palette picker" on the Live tab
+    # (Live DJ/VJ Phase 7) — `vocabulary="c64color"` (introspect.live_targets)
+    # is what tells the console to render swatches instead of a <select>.
+    LIVE_CHOICES = {
+        "border": tuple(C64_COLORS.keys()),
+        "background": tuple(C64_COLORS.keys()),
+    }
 
     def __init__(self, border: int = 0, background: int = 0, *, use_reu_staged: bool = False):
         self.border = int(border) & 0x0F
@@ -45,6 +55,22 @@ class BlankDisplayMode(CharDisplayMode):
         api.write_memory("d016", "08")
         api.write_regs("d020", self.border, self.background)
         api.write_memory("d011", "1b")
+
+    def set_border(self, api: C64Backend, value: str) -> str:
+        """Live-tune ``mode.border``. Unlike ``background`` (re-read into
+        color RAM every frame by ``compose()``/``push()``), $D020 is only
+        written at ``setup()``, so a live change has to poke it directly."""
+        self.border = resolve_color(value)
+        api.write_regs("d020", self.border, self.background)
+        return f"border {color_display_name(self.border)}"
+
+    def set_background(self, api: C64Backend, value: str) -> str:
+        """Live-tune ``mode.background``. Pokes $D021 for the instant border-
+        style feedback; the color-RAM fill (what actually shows through the
+        blank screen) follows on the next frame's ``compose()``."""
+        self.background = resolve_color(value)
+        api.write_regs("d020", self.border, self.background)
+        return f"background {color_display_name(self.background)}"
 
     def compose(self, frame=None) -> ComposeBuffers:
         # frame ignored — blank mode has no video input. Pass through so
