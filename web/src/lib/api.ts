@@ -8,6 +8,7 @@ import type {
   LibraryState,
   LiveTuneSaved,
   LogLine,
+  MediaIndex,
   SceneChanged,
   ScreenAvailability,
   SessionStatus,
@@ -105,6 +106,12 @@ export interface SessionSnapshot extends SessionStatus {
 export const api = {
   session: () => request<SessionSnapshot>("GET", "/api/session"),
   configs: () => request<ConfigIndex>("GET", "/api/configs"),
+
+  /** Media a `file =` field could name — a plain GET, so it can be issued
+   *  freely (once per kind a loaded config's scenes actually use, memoized
+   *  for the page's lifetime) without a distinct request shape. */
+  media: (kind: string, q = "") =>
+    request<MediaIndex>("GET", `/api/media?${new URLSearchParams({ kind, q })}`),
 
   /** Describes the code, not the run, so it cannot change while the host is
    *  up — see `introspection()` in introspect.ts, which fetches it once. */

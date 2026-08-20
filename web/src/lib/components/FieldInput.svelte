@@ -18,6 +18,11 @@
      *  `"c64color"` swaps the text box for the palette. */
     vocabulary?: string;
     palette?: Swatch[];
+    /** Datalist options offered alongside the text box when `vocabulary ===
+     *  "media"` — media the scene's own type browses. Free text, a glob, a
+     *  comma-separated list and a directory all stay typeable; this is a
+     *  suggestion, not a picker replacing the input. */
+    options?: string[];
     value: unknown;
     disabled?: boolean;
     /** The parsed value, or `null` and a reason when what is typed is not one
@@ -32,10 +37,14 @@
     choices = [],
     vocabulary = "",
     palette = [],
+    options = [],
     value,
     disabled = false,
     onedit,
   }: Props = $props();
+
+  const listId = $props.id();
+  const media = $derived(vocabulary === "media" && options.length > 0);
 
   /** Which half of a union the value in hand already is, so a field opens on
    *  the control that can show it rather than on whichever member was declared
@@ -215,8 +224,16 @@
     autocapitalize="off"
     {disabled}
     aria-label={label}
+    list={media ? listId : undefined}
     value={text}
     oninput={(e) => type(e.currentTarget.value)}
     onblur={settle}
   />
+  {#if media}
+    <datalist id={listId}>
+      {#each options as option (option)}
+        <option value={option}></option>
+      {/each}
+    </datalist>
+  {/if}
 {/if}

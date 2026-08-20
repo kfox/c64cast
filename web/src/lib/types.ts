@@ -61,6 +61,24 @@ export interface ConfigIndex {
   truncated: boolean;
 }
 
+/** One entry from `GET /api/media` (`media_store.py`) — a file or a directory
+ *  that could go straight into a scene's `file =` field. `spec` is built from
+ *  its root exactly as configured (a `~` stays a `~`), not a synthetic ref. */
+export interface MediaEntry {
+  spec: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  mtime: number;
+}
+
+export interface MediaIndex {
+  kind: string;
+  roots: string[];
+  entries: MediaEntry[];
+  truncated: boolean;
+}
+
 /** `GET /api/library` — favorites + recently-launched configs, shared across
  *  every browser or phone pointed at this host (`console_library.py`). */
 export interface LibraryEntry {
@@ -141,6 +159,11 @@ export interface SceneTypeDoc {
   help: string;
   displays: string[];
   fields: FieldDoc[];
+  /** Which `media_store.py` kind(s) this type's `file =` field browses —
+   *  `[]` for a type with no `file =` at all. Rides on the scene type rather
+   *  than the field because the same field means videos on `video` and .sid
+   *  files on `waveform`. */
+  media_kinds: string[];
 }
 
 export interface ParamDoc {

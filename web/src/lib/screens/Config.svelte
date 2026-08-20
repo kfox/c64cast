@@ -9,9 +9,9 @@
   import TomlEditor from "$lib/components/TomlEditor.svelte";
   import type { Console } from "$lib/console.svelte";
   import { drafts } from "$lib/drafts.svelte";
-  import { DocIndex, documentation } from "$lib/introspect";
+  import { DocIndex, documentation, mediaOfKind } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState } from "$lib/types";
+  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaEntry } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -27,6 +27,7 @@
   let library = $state<LibraryState | null>(null);
   let docs = $state<DocIndex | null>(null);
   let detail = $state<ConfigDetail | null>(null);
+  let media = $state<Record<string, MediaEntry[]>>({});
   let loading = $state(false);
   let problem = $state("");
   let view = $state<"form" | "text">("form");
@@ -72,6 +73,26 @@
   $effect(() => {
     const ref = selected;
     untrack(() => void load(ref));
+  });
+
+  // Whichever media kinds the loaded config's scenes actually browse — fetched
+  // once each (mediaOfKind caches per kind, not per config) and merged into
+  // `media`, which ConfigForm reads to build each `file =` field's datalist.
+  $effect(() => {
+    const form = detail?.form;
+    const loadedDocs = docs;
+    if (!form || !loadedDocs) return;
+    const kinds = new Set(
+      form.scenes.flatMap((sc) => loadedDocs.sceneType(sc.type)?.media_kinds ?? []),
+    );
+    untrack(() => {
+      for (const kind of kinds) {
+        if (kind in media) continue;
+        mediaOfKind(kind)
+          .then((entries) => (media = { ...media, [kind]: entries }))
+          .catch(() => {});
+      }
+    });
   });
 
   async function refreshIndex(): Promise<void> {
@@ -404,6 +425,7 @@
           path={detail.path}
           readOnly={host.readOnly}
           {pending}
+          {media}
           onpending={stage}
           onsaved={(_written, held) => void afterSave(held)}
         />

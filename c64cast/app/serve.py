@@ -81,7 +81,7 @@ from c64cast.control.transport import atomic_write_text
 from c64cast.video.preview import PreviewWindow
 
 from . import config as cfgmod
-from . import config_store, console_library, paths
+from . import config_store, console_library, media_store, paths
 from .session import (
     Session,
     build_session,
@@ -819,6 +819,7 @@ def build_daemon_app(
     log_buffer: SessionLogBuffer | None = None,
     store: config_store.ConfigStore | None = None,
     library: console_library.ConsoleLibrary | None = None,
+    media: media_store.MediaStore | None = None,
     screen_fps: float = 10.0,
 ) -> Any:
     """The host's FastAPI app: the control plane over the *current* session,
@@ -858,6 +859,7 @@ def build_daemon_app(
         log_buffer=log_buffer,
         store=store if store is not None else config_store.ConfigStore(),
         library=library,
+        media=media,
         # The very object the gate reads, so a token minted from the console is
         # accepted by the next request rather than by the next restart.
         viewer=viewer_token if isinstance(viewer_token, ViewerCredential) else None,
@@ -950,6 +952,7 @@ def run_daemon(
     )
     factory = make_request_factory(load, config_path=config_path)
     store = config_store.ConfigStore(web_cfg.config_roots)
+    media = media_store.MediaStore(web_cfg.media_roots)
 
     try:
         from c64cast.control.control_plane import ControlServer
@@ -962,6 +965,7 @@ def run_daemon(
             screen_fps=web_cfg.screen_fps,
             log_buffer=log_buffer,
             store=store,
+            media=media,
         )
         server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
     except RuntimeError as e:

@@ -1215,6 +1215,11 @@ class SceneCfg:
             ".prg/.crt for launcher, .sid for generative when "
             "audio_source = sid.",
             "applies_to": ("video", "waveform", "slideshow", "launcher", "generative"),
+            # Which media kind(s) this means depends on the *scene type*, not
+            # the field — see introspect.SCENE_MEDIA_KINDS. "media" just tells
+            # a console this is a browsable path, the way "c64color" tells it
+            # a string is a palette entry.
+            "vocabulary": "media",
         },
     )
     # Start offset for video playback. Quick playback (`c64cast MEDIA…`) fills
@@ -2396,6 +2401,18 @@ class WebCfg:
             "Empty = the directory the host was launched from. Nothing outside these "
             "is readable or writable, symlinks included; a config saved here can still "
             "name media anywhere, so treat write access as shell-equivalent."
+        },
+    )
+    # Unlike `config_roots`, one flat list serves every media kind — the kind
+    # (video/sid/picture/program/audio) selects which extensions count as a
+    # hit while browsing, not which directories are walked.
+    media_roots: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "Directories the web console's media picker may browse (read-only — "
+            "it never writes here). Empty = the four directories the loader itself "
+            "already defaults to (assets/videos, assets/sids, assets/pictures, "
+            "assets/programs). Nothing outside these is listed, symlinks included."
         },
     )
 

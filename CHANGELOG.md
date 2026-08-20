@@ -1024,6 +1024,20 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   30% opacity, and a tap on one saves the current look immediately (there is
   nothing there to lose) instead of requiring the SAVE toggle first.
 
+### Added
+
+- **A media picker for the Editor's `file =` fields**, so a video, `.sid`,
+  image or program is chosen from a list of what is actually on disk instead
+  of typed from memory. `GET /api/media?kind=&q=` (a new, read-only
+  `MediaStore`) browses `[web].media_roots` — one flat list of directories,
+  defaulting to the four the loader itself already defaults to
+  (`assets/videos`, `assets/sids`, `assets/pictures`, `assets/programs`) —
+  and offers the result as a combobox: free text, a glob, a comma-separated
+  list and a directory (a per-play random pick, same as an unset `file =`)
+  all stay typeable. Dropping a URL onto a scene sets its `file =` field
+  directly, with no upload involved. Uploading a file from the desktop is a
+  separate surface, not built yet — this one only lists.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

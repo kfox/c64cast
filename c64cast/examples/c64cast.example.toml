@@ -1027,6 +1027,11 @@ settle_s = 3.0                      # hardware cool-off between one session's
 # the host was launched from. A config you can save can name media anywhere,
 # so treat write access as shell-equivalent and keep the token private.
 config_roots = []
+# Directories the console's media picker may browse — read-only, unlike
+# config_roots above; nothing is ever written here. Empty = the four
+# directories the loader itself already defaults to (assets/videos,
+# assets/sids, assets/pictures, assets/programs).
+media_roots = []
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,

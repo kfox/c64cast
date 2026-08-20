@@ -18,6 +18,9 @@
      *  swatches the value means anyway. */
     vocabulary?: string;
     palette?: Swatch[];
+    /** Datalist options for a `vocabulary === "media"` field — the media the
+     *  scene's own type browses (`mediaPickerLogic.pickerOptions`). */
+    options?: string[];
     /** True for a field that takes effect without a restart. Not shown for the
      *  others: every top-level config field needs a rebuild, so a badge on
      *  each of them would be 167 badges saying nothing. */
@@ -53,6 +56,7 @@
     choices = [],
     vocabulary = "",
     palette = [],
+    options = [],
     live = false,
     editable = false,
     locked = "",
@@ -125,6 +129,7 @@
           {choices}
           {vocabulary}
           {palette}
+          {options}
           {value}
           onedit={(v, e) => onedit?.(v, e)}
         />

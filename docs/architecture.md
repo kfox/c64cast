@@ -13,7 +13,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
 * **[SID playback & the oscilloscope](architecture/sid.md)** — `sid/voice_scope.py`, SID player PRG, `sid/waveform.py`, `sid/sidemu.py`, `sid/sid_host_emu.py`, `sid/sid_panning.py`, `sid/sid_volume.py`, `sid/sid_resolved.py`, `sid/midi_scene.py`, `sid/asid.py`, `sid/asid_scene.py`
-* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `app/console_library.py`, `control/web_static.py`, `control/screen.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
+* **[Control surfaces & live performance](architecture/control.md)** — `control/keyboard.py`, `control/camera.py`, `control/vision.py`, `control/control_plane.py`, `control/auth.py`, `app/serve.py`, `control/web_api.py`, `app/config_store.py`, `app/console_library.py`, `app/media_store.py`, `control/web_static.py`, `control/screen.py`, `control/midi_control.py`, `control/live_tune.py`, `control/tempo.py`, `control/performance.py`, `control/perf_console.py`, `control/transport.py`, `control/midi_setup.py`
 * **[WLED bridge](architecture/wled.md)** — `wled/wled_sync.py`, `wled/wled_device.py`, `wled/wled_sink.py`
 * **[Config, CLI & ensemble](architecture/config.md)** — `app/ensemble.py`, `app/orchestrator.py`, `app/orchestrators/`, `app/paths.py`, `app/config.py`, `app/introspect.py`, `app/scene_factory.py`, `app/cli.py`, `app/session.py`, `app/doctor.py`, `app/playlist.py`, `app/recording_metadata.py`
 
@@ -87,6 +87,7 @@ the two lists account for every module in the tree.
 | `control/web_api.py` | [Control surfaces & live performance](architecture/control.md#web_apipy--the-web-consoles-api--the-host---serve) |
 | `app/config_store.py` | [Control surfaces & live performance](architecture/control.md#config_storepy--the-config-browser-and-its-root-jail) |
 | `app/console_library.py` | [Control surfaces & live performance](architecture/control.md#console_librarypy--favorites--recently-launched-configs) |
+| `app/media_store.py` | [Control surfaces & live performance](architecture/control.md#media_storepy--the-read-only-media-picker-and-its-root-jail) |
 | `control/web_static.py` | [Control surfaces & live performance](architecture/control.md#web_staticpy--the-consoles-built-ui-committed-and-served) |
 | `video/modes/` | [Video input & the color pipeline](architecture/video-color.md#modes--displaymode-hierarchy) |
 | `video/modes_irq.py` | [Video input & the color pipeline](architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers) |
