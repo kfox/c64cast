@@ -83,7 +83,7 @@ from c64cast.control.transport import atomic_write_text
 
 from . import config as cfgmod
 from . import config_serialize, introspect, paths, wizard
-from .fs_walk import MAX_FILES, walk_dirs
+from .fs_walk import MAX_FILES, disambiguate, walk_dirs
 
 log = logging.getLogger(__name__)
 
@@ -144,12 +144,7 @@ class Root:
 
 
 def _label_for(path: Path, taken: set[str]) -> str:
-    base = path.name or "root"
-    label = base
-    n = 2
-    while label in taken:
-        label = f"{base}-{n}"
-        n += 1
+    label, _ = disambiguate(path.name or "root", "", taken.__contains__)
     return label
 
 

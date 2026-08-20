@@ -1053,7 +1053,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   are browsable but never a destination. Nothing already there is ever
   overwritten — a name already taken is renamed `clip-2.mp4`, `clip-3.mp4`,
   and so on — and a `viewer` token is refused the same way it is refused a
-  config write.
+  config write. A `media_read_write` key that isn't one of the five known
+  kinds (a typo like `vidoe`) now fails at startup instead of silently
+  resolving to a directory no upload could ever reach.
 
 ## [0.3.0] - 2026-08-09
 

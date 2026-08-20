@@ -280,9 +280,10 @@
       onsaved(written, []);
     } catch (e) {
       const refused = reportOf(e);
+      const note = uploadNote ? `${uploadNote} ` : "";
       if (refused) report = refused;
-      else if (e instanceof ApiError) problem = e.message;
-      else problem = e instanceof Error ? e.message : String(e);
+      else if (e instanceof ApiError) problem = `${note}${e.message}`;
+      else problem = `${note}${e instanceof Error ? e.message : String(e)}`;
     } finally {
       busy = false;
       uploadNote = "";

@@ -77,7 +77,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
-from .fs_walk import MAX_FILES, walk_dirs
+from .fs_walk import MAX_FILES, disambiguate, walk_dirs
 from .scene_factory import (
     AUDIO_EXTS,
     DEFAULT_PROGRAM_DIR,
@@ -228,9 +228,19 @@ def _resolve_write_table(read_write: Mapping[str, str]) -> dict[str, str]:
     means the four defaults untouched; naming a kind (including setting it to
     `""`, the off switch) only ever changes that one kind, because a config
     author turning `video` off has no way in TOML to say "and leave the rest
-    alone" other than not mentioning them."""
+    alone" other than not mentioning them.
+
+    Raises `MediaKindUnknown` for any key outside the five known kinds — left
+    unchecked, a misspelled kind (``vidoe``) would resolve as a writable root
+    no upload's extension-derived kind could ever reach, and the typo would
+    do nothing without a word said about it."""
     if not read_write:
         return dict(_DEFAULT_WRITE)
+    unknown = sorted(set(read_write) - _KIND_EXTS.keys())
+    if unknown:
+        raise MediaKindUnknown(
+            f"media_read_write names {unknown!r}, not a media kind (know: {', '.join(_KIND_EXTS)})"
+        )
     merged = dict(_DEFAULT_WRITE)
     merged.update(read_write)
     return merged
@@ -238,25 +248,19 @@ def _resolve_write_table(read_write: Mapping[str, str]) -> dict[str, str]:
 
 def _unique_name(directory: Path, name: str) -> tuple[str, bool]:
     """`name`, or the first of `stem-2.ext`, `stem-3.ext`, … not already in
-    `directory` — never an overwrite. Numbered like
-    `config_store._label_for`, but before the extension rather than appended,
-    since this disambiguates a file name and not a label.
+    `directory` — never an overwrite. Numbered by `fs_walk.disambiguate`, the
+    same scheme `config_store._label_for` uses to disambiguate a root label —
+    one way in this repository to say "that name was taken".
 
     Checked here and used immediately by the caller's `os.replace` — the
     remaining TOCTOU window is the same one `ConfigStore.create` already
     accepts, and `os.replace`'s atomicity means the loser of a genuine race
     replaces rather than corrupts."""
     stem, suffix = Path(name).stem, Path(name).suffix
-    candidate = name
-    renamed = False
-    n = 2
-    while (directory / candidate).exists():
-        if n > _MAX_RENAME_ATTEMPTS:
-            raise MediaNameRejected(f"too many files already named like {name!r}")
-        candidate = f"{stem}-{n}{suffix}"
-        renamed = True
-        n += 1
-    return candidate, renamed
+    try:
+        return disambiguate(stem, suffix, lambda c: (directory / c).exists(), _MAX_RENAME_ATTEMPTS)
+    except LookupError as e:
+        raise MediaNameRejected(str(e)) from e
 
 
 def _reject_unless_bare_filename(name: str) -> None:

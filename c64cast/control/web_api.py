@@ -571,15 +571,30 @@ def register_web_routes(
     # module's docstring for why a `bytes` buffer isn't acceptable here. A
     # `viewer` token is refused with no code at all: `auth.READ_METHODS`
     # covers only GET/HEAD/OPTIONS, so a PUT never reaches this function.
+    #
+    # Each `write` (and the commit `receive` runs on a clean exit — fsync,
+    # then the rename) is blocking disk I/O, so it's pushed through
+    # `run_in_executor` same as `_until_gone` does for frame encoding: this
+    # is the one event loop also serving the control websocket and status
+    # polling for a show that may be running right now.
     @app.put("/api/media/{name}")
     async def api_media_upload(name: str, request: Request) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        upload = med.receive(name)
         try:
-            with med.receive(name) as upload:
-                async for chunk in request.stream():
-                    upload.write(chunk)
+            handle = upload.__enter__()
         except MediaStoreError as e:
             raise _media_error(e) from e
-        return upload.result
+        try:
+            async for chunk in request.stream():
+                await loop.run_in_executor(None, handle.write, chunk)
+        except BaseException as e:
+            upload.__exit__(type(e), e, e.__traceback__)
+            if isinstance(e, MediaStoreError):
+                raise _media_error(e) from e
+            raise
+        await loop.run_in_executor(None, upload.__exit__, None, None, None)
+        return handle.result
 
     # A path (not a ref) that names the new file: it doesn't exist yet, so
     # there is nothing for `ConfigStore.resolve` to have found and turned into
