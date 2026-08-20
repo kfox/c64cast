@@ -9,7 +9,7 @@
   import TomlEditor from "$lib/components/TomlEditor.svelte";
   import type { Console } from "$lib/console.svelte";
   import { drafts } from "$lib/drafts.svelte";
-  import { DocIndex, documentation, mediaOfKind } from "$lib/introspect";
+  import { DocIndex, documentation, forgetMedia, mediaOfKind } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
   import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaEntry } from "$lib/types";
 
@@ -257,6 +257,23 @@
     await reread();
   }
 
+  /** A file just landed on the host for a scene of `sceneType` — drop that
+   *  type's media kind(s) from `mediaOfKind`'s cache and re-fetch them, so the
+   *  new file shows up in every datalist without a page reload. `media` is
+   *  replaced rather than mutated, which is what makes ConfigForm's own
+   *  per-scene-type cache (keyed off this same object) rebuild. */
+  async function handleUploaded(sceneType: string): Promise<void> {
+    const kinds = docs?.sceneType(sceneType)?.media_kinds ?? [];
+    for (const kind of kinds) {
+      forgetMedia(kind);
+      try {
+        media = { ...media, [kind]: await mediaOfKind(kind) };
+      } catch (e) {
+        problem = describe(e);
+      }
+    }
+  }
+
   const clock = (t: number) => new Date(t * 1000).toLocaleString();
 
   let launching = $state(false);
@@ -428,6 +445,7 @@
           {media}
           onpending={stage}
           onsaved={(_written, held) => void afterSave(held)}
+          onuploaded={(sceneType) => void handleUploaded(sceneType)}
         />
       {:else if detail.kind === "ensemble"}
         <p class="text-sm text-[var(--ink-dim)]">

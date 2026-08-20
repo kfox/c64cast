@@ -38,9 +38,12 @@ through the config dataclasses (the generated form). Every path goes through
 the jail is not repeated here, because a second copy of it is a second thing to
 get wrong.
 
-``/api/media`` is the read-only sibling: what a `file =` field could point at,
-from :class:`~c64cast.app.media_store.MediaStore`. No write path lives here —
-uploading media is a separate surface, not yet built.
+``/api/media`` is the other half: what a `file =` field could point at, and
+where a dropped or picked file lands, from
+:class:`~c64cast.app.media_store.MediaStore`. ``GET`` browses; ``PUT
+/api/media/{name}`` uploads, streamed straight to disk rather than buffered
+into memory (see the module's own docstring for why) and refused rather than
+allowed to overwrite anything already there.
 
 ``/api/session/live-tune`` is where those two halves meet. A one-shot run asks
 "save these knob changes?" at exit; a daemon has no exit and no terminal, and a
@@ -78,7 +81,14 @@ from c64cast.app.config_store import (
     PathRejected,
 )
 from c64cast.app.console_library import ConsoleLibrary
-from c64cast.app.media_store import MediaKindUnknown, MediaStore
+from c64cast.app.media_store import (
+    MediaKindUnknown,
+    MediaNameRejected,
+    MediaNotUploadable,
+    MediaStore,
+    MediaStoreError,
+    MediaTooLarge,
+)
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
@@ -115,6 +125,16 @@ _STORE_STATUS: tuple[tuple[type[ConfigStoreError], int], ...] = (
     (ConfigTooLarge, 413),
     (PathRejected, 403),
     (EditRejected, 400),
+)
+
+#: Same idea as `_STORE_STATUS`, for `MediaStore`'s own refusals — kept apart
+#: because the two stores don't share a common exception base, and a mapping
+#: table is cheaper than a second `isinstance` chain hand-written into a route.
+_MEDIA_STATUS: tuple[tuple[type[MediaStoreError], int], ...] = (
+    (MediaKindUnknown, 400),
+    (MediaNameRejected, 400),
+    (MediaNotUploadable, 403),
+    (MediaTooLarge, 413),
 )
 
 
@@ -262,6 +282,12 @@ def register_web_routes(
             if isinstance(e, kind):
                 detail = getattr(e, "report", None) or str(e)
                 return HTTPException(status, detail)
+        return HTTPException(400, str(e))
+
+    def _media_error(e: MediaStoreError) -> HTTPException:
+        for kind, status in _MEDIA_STATUS:
+            if isinstance(e, kind):
+                return HTTPException(status, str(e))
         return HTTPException(400, str(e))
 
     def _resolve_ref(ref: str | None) -> str | None:
@@ -538,6 +564,22 @@ def register_web_routes(
             return med.index(kind, q)
         except MediaKindUnknown as e:
             raise HTTPException(400, str(e)) from e
+
+    # PUT, not POST: `name` names the resource being created, same shape as
+    # `/api/configs/{ref:path}`'s save. Streamed straight through to
+    # `MediaStore.receive` rather than read into memory first — see that
+    # module's docstring for why a `bytes` buffer isn't acceptable here. A
+    # `viewer` token is refused with no code at all: `auth.READ_METHODS`
+    # covers only GET/HEAD/OPTIONS, so a PUT never reaches this function.
+    @app.put("/api/media/{name}")
+    async def api_media_upload(name: str, request: Request) -> dict[str, Any]:
+        try:
+            with med.receive(name) as upload:
+                async for chunk in request.stream():
+                    upload.write(chunk)
+        except MediaStoreError as e:
+            raise _media_error(e) from e
+        return upload.result
 
     # A path (not a ref) that names the new file: it doesn't exist yet, so
     # there is nothing for `ConfigStore.resolve` to have found and turned into

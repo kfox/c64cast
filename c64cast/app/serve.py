@@ -952,7 +952,7 @@ def run_daemon(
     )
     factory = make_request_factory(load, config_path=config_path)
     store = config_store.ConfigStore(web_cfg.config_roots)
-    media = media_store.MediaStore(web_cfg.media_roots)
+    media = media_store.MediaStore(web_cfg.media_read_write, web_cfg.media_read_only)
 
     try:
         from c64cast.control.control_plane import ControlServer

@@ -45,6 +45,10 @@
     onclear?: () => void;
     /** Drop the unsaved edit and show what is on disk again. */
     onrevert?: () => void;
+    /** A file was picked (or dropped) for this field — present only for a
+     *  `vocabulary === "media"` field, which is what shows the button below.
+     *  The row itself doesn't upload anything; it just hands the `File` up. */
+    onupload?: (file: File) => void;
   }
 
   let {
@@ -66,7 +70,18 @@
     onedit,
     onclear,
     onrevert,
+    onupload,
   }: Props = $props();
+
+  let fileInput = $state<HTMLInputElement | undefined>();
+
+  function fileChosen(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    // Cleared so picking the same name again still fires a change event.
+    input.value = "";
+    if (file) onupload?.(file);
+  }
 
   // Help is a paragraph for some fields and a sentence for others, and the
   // form shows a hundred rows at once with the filter off. Clamped, and
@@ -134,6 +149,18 @@
           onedit={(v, e) => onedit?.(v, e)}
         />
       </div>
+      {#if onupload}
+        <input
+          bind:this={fileInput}
+          type="file"
+          class="hidden"
+          onchange={fileChosen}
+          aria-label="Choose a file to upload for {name}"
+        />
+        <button class={chip} onclick={() => fileInput?.click()} title="Upload a file from this device">
+          Upload…
+        </button>
+      {/if}
       {#if dirty}
         <button class={chip} onclick={() => onrevert?.()} title="Drop this unsaved edit">
           Undo

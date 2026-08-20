@@ -1027,11 +1027,16 @@ settle_s = 3.0                      # hardware cool-off between one session's
 # the host was launched from. A config you can save can name media anywhere,
 # so treat write access as shell-equivalent and keep the token private.
 config_roots = []
-# Directories the console's media picker may browse — read-only, unlike
-# config_roots above; nothing is ever written here. Empty = the four
-# directories the loader itself already defaults to (assets/videos,
-# assets/sids, assets/pictures, assets/programs).
-media_roots = []
+# Kind -> directory: both browsable by the media picker and a valid upload
+# destination for that kind. Empty = the four directories the loader itself
+# already defaults to (assets/videos, assets/sids, assets/pictures,
+# assets/programs); audio has no default, so name one to allow audio
+# uploads. Naming a kind only changes that one — set it to "" to turn its
+# uploads off while leaving the rest at their defaults. An upload never
+# overwrites: a name already taken is renamed clip-2.mp4, clip-3.mp4, ...
+media_read_write = {}
+# Additional directories the picker may browse but never write to.
+media_read_only = []
 
 [midi_control]
 # Process-wide MIDI control surface for live performance: scene jumps,

@@ -3,7 +3,7 @@
  *  URL out of a drag-and-drop payload — pulled out of the components so it
  *  can be unit-tested without mounting Svelte or a `DataTransfer`. */
 
-import type { MediaEntry, SceneTypeDoc } from "./types";
+import type { MediaEntry, MediaUploaded, SceneTypeDoc } from "./types";
 
 /** The datalist options for a `file =` field: directories first (the more
  *  useful default to reach for — a slideshow or an HVSC tree is usually
@@ -25,8 +25,10 @@ export function kindsForScene(doc: SceneTypeDoc | undefined): string[] {
 const URL_LINE = /^https?:\/\/\S+$/i;
 
 /** The first `http(s)://` line out of a drop's `text/uri-list` /
- *  `text/plain` payload, or `null` — a `file:///` path or a bare filename (an
- *  upload, not a URL) isn't one, and uploading isn't wired up yet.
+ *  `text/plain` payload, or `null` — a `file:///` path or a bare filename is a
+ *  dropped file, not a URL, and goes through `api.uploadMedia` instead (the
+ *  component checks `dataTransfer.files` before calling this, since a Finder
+ *  or Explorer drag carries both).
  *
  *  Takes a plain string map rather than a `DataTransfer` so this stays
  *  testable under `vitest.config.ts`'s `environment: "node"`; the component
@@ -38,4 +40,16 @@ export function urlFromDrop(payload: Readonly<Record<string, string>>): string |
     if (trimmed && !trimmed.startsWith("#") && URL_LINE.test(trimmed)) return trimmed;
   }
   return null;
+}
+
+/** The one-sentence success banner for a finished upload — the only new logic
+ *  worth its own pure function; everything else about the upload flow is
+ *  fetch + component state. Says when the name was changed to avoid clobbering
+ *  something already there, since a silent rename is the kind of thing an
+ *  operator notices five minutes later instead of right away. */
+export function uploadMessage(uploaded: MediaUploaded): string {
+  if (uploaded.renamed) {
+    return `Uploaded as ${uploaded.name} — that name was already taken.`;
+  }
+  return `Uploaded ${uploaded.name}.`;
 }

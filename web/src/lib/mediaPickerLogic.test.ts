@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { kindsForScene, pickerOptions, urlFromDrop } from "./mediaPickerLogic";
-import type { MediaEntry, SceneTypeDoc } from "./types";
+import { kindsForScene, pickerOptions, uploadMessage, urlFromDrop } from "./mediaPickerLogic";
+import type { MediaEntry, MediaUploaded, SceneTypeDoc } from "./types";
 
 function entry(overrides: Partial<MediaEntry> & Pick<MediaEntry, "spec">): MediaEntry {
   return {
@@ -87,5 +87,21 @@ describe("urlFromDrop", () => {
 
   it("is null with nothing dropped", () => {
     expect(urlFromDrop({})).toBeNull();
+  });
+});
+
+describe("uploadMessage", () => {
+  function uploaded(overrides: Partial<MediaUploaded> = {}): MediaUploaded {
+    return { spec: "assets/videos/clip.mp4", name: "clip.mp4", kind: "video", bytes: 0,
+      renamed: false, ...overrides };
+  }
+
+  it("names the file for a plain upload", () => {
+    expect(uploadMessage(uploaded())).toBe("Uploaded clip.mp4.");
+  });
+
+  it("says why for a renamed upload", () => {
+    const message = uploadMessage(uploaded({ name: "clip-2.mp4", renamed: true }));
+    expect(message).toBe("Uploaded as clip-2.mp4 — that name was already taken.");
   });
 });

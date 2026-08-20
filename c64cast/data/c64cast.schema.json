@@ -1007,9 +1007,14 @@
           "description": "Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent.",
           "default": []
         },
-        "media_roots": {
+        "media_read_write": {
+          "type": "object",
+          "description": "Kind (video/sid/picture/program/audio) to directory, both browsable and uploadable to. Unset kinds fall back to the loader's own defaults (assets/videos, assets/sids, assets/pictures, assets/programs); audio has no default, so name one to allow audio uploads. Set a kind to \"\" to disable uploading it while leaving the rest at their defaults (this is the only way to turn one off \u2014 an empty table means every default applies). Uploads never overwrite: a name already taken is renamed clip-2.mp4, clip-3.mp4, and so on.",
+          "default": {}
+        },
+        "media_read_only": {
           "type": "array",
-          "description": "Directories the web console's media picker may browse (read-only \u2014 it never writes here). Empty = the four directories the loader itself already defaults to (assets/videos, assets/sids, assets/pictures, assets/programs). Nothing outside these is listed, symlinks included.",
+          "description": "Additional directories the media picker may browse but never write to \u2014 a library you want offered without exposing it to uploads, e.g. [\"~/Movies\", \"/mnt/hvsc\"]. Empty adds nothing.",
           "default": []
         }
       }

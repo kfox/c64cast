@@ -112,6 +112,13 @@ export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
   return cached;
 }
 
+/** Drop a kind's cached listing so the next `mediaOfKind` re-fetches it —
+ *  called after an upload, which otherwise would not appear in any datalist
+ *  until the page reloaded (this cache is the only reason it wouldn't). */
+export function forgetMedia(kind: string): void {
+  mediaCache.delete(kind);
+}
+
 export type FieldKind = "bool" | "int" | "float" | "str" | "complex";
 
 /** The wizard's `field_kind()` (c64cast/app/wizard.py), which classifies a

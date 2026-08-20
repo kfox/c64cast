@@ -675,26 +675,35 @@ master files read but have no such view — they are authored across several fil
 > file can reach. Keep the full token private, and hand out `viewer_token` to
 > anyone who only needs to watch.
 
-### Browsing Media
+### Browsing And Uploading Media
 
-`media_roots` lists the directories the Editor's `file =` fields may browse
-for existing media, and offers a datalist of what is actually there instead of
-a bare text box you have to fill from memory. Leave it empty and it is the
-four directories the loader itself already defaults to
-(`assets/videos`, `assets/sids`, `assets/pictures`, `assets/programs`):
+`media_read_write` maps each media kind to the directory the Editor's
+`file =` fields both browse for existing media *and* upload new media into —
+a datalist of what is actually there, instead of a bare text box you have to
+fill from memory, plus a drop zone and an **Upload…** button on the field
+itself. Leave it empty and it is the four directories the loader itself
+already defaults to (`assets/videos`, `assets/sids`, `assets/pictures`,
+`assets/programs`); naming a kind only ever changes that one kind, so setting
+one to `""` turns its uploads off without disturbing the rest:
 
 ```toml
 [web]
-media_roots = ["~/Movies", "assets/videos"]
+media_read_write = { video = "assets/videos", sid = "" }
+media_read_only = ["~/Movies", "/mnt/hvsc"]
 ```
 
-Unlike `config_roots`, one list is browsed for every kind of media at once —
+`media_read_only` adds directories that are browsable but never a destination
+— a library you want offered without exposing it to uploads. Unlike
+`config_roots`, every kind is browsed across the same combined list at once —
 a scene's own type decides which kind (video, `.sid`, still image, program, or
 generative audio) it offers, not which directory is searched. A directory
 inside a root shows up too, whenever it directly holds a matching file, since
-`file =` already treats a directory as a random pick per scene. This surface
-is **read-only**: nothing is ever written under a media root, only listed —
-uploading a file from the browser is a separate surface, not built yet.
+`file =` already treats a directory as a random pick per scene.
+
+An upload never overwrites anything already there: a name already taken is
+renamed `clip-2.mp4`, `clip-3.mp4`, and so on. `audio` has no default
+directory (`generative`'s `audio_source = "file"` is the one scene type that
+requires an explicit `file =`), so name one to allow audio uploads at all.
 
 ### The Token Is Not Optional Here
 
