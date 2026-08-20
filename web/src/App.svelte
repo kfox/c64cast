@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
 
-  import { ApiError } from "$lib/api";
-  import { launch } from "$lib/actions";
+  import { launch, PreflightRefused } from "$lib/actions";
   import { Console } from "$lib/console.svelte";
   import Button from "$lib/components/Button.svelte";
   import LogDrawer from "$lib/components/LogDrawer.svelte";
   import { drafts } from "$lib/drafts.svelte";
+  import { describeError } from "$lib/errorsLogic";
   import { Router, type Screen } from "$lib/router.svelte";
   import ConfigScreen from "$lib/screens/Config.svelte";
   import LiveScreen from "$lib/screens/Live.svelte";
@@ -73,9 +73,14 @@
     try {
       await launch(host, selectedConfig);
     } catch (e) {
-      // Surfaced on the Session screen's own log/status rather than repeated
-      // here — a toast on the shell would have nowhere permanent to live.
-      console.error(e instanceof ApiError ? e.message : e);
+      // Handed to the Session screen rather than shown here — a toast on the
+      // shell would have nowhere permanent to live, and Session already owns
+      // a permanent problem line and the log drawer.
+      host.launchProblem = {
+        message: describeError(e),
+        report: e instanceof PreflightRefused ? e.report : null,
+      };
+      router.go("session");
     } finally {
       starting = false;
     }

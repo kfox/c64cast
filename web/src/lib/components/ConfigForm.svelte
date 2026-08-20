@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
+  import Diagnostics from "$lib/components/Diagnostics.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
@@ -666,6 +667,7 @@
           {/each}
         </ul>
       {/if}
+      <Diagnostics diagnostics={report.diagnostics} />
       <LayerBlame layers={report.layers} />
       <p class="mt-1 text-xs text-[var(--ink-dim)]">
         The file is untouched and the changes are still staged.

@@ -75,7 +75,7 @@ import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -691,6 +691,31 @@ class ConfigStore:
     ) -> dict[str, Any]:
         """Load `text` as if it were saved, without saving it.
 
+        Thin wrapper over :meth:`_validate_text_and_load`, for callers (every
+        caller but :meth:`validate_ref`) that only want the report."""
+        report, _loaded = self._validate_text_and_load(text, ref, partial=partial)
+        return report
+
+    def _validate_text_and_load(
+        self,
+        text: str,
+        ref: str | None = None,
+        *,
+        partial: bool = False,
+        _load_path: Path | None = None,
+    ) -> tuple[dict[str, Any], cfgmod.LoadResult | None]:
+        """Do :meth:`validate_text`'s work, and also hand back the
+        ``LoadResult`` on success — so :meth:`validate_ref` can feed it
+        straight to the doctor pass instead of loading the same file twice.
+
+        `_load_path`, ``validate_ref``-only, is the real file `text` was just
+        read from. Loading it directly (instead of a scratch copy of `text`)
+        gets a `LoadResult` whose `paths` are the real, still-there files the
+        doctor pass reads again for its schema-directive check — a scratch
+        copy's path is a tempfile this method deletes before that pass runs.
+        Skipped by every other caller, whose `text` may be unsaved edits that
+        don't match `_load_path`'s (or any) file on disk.
+
         The scratch file goes in the *target's own directory* rather than a temp
         dir: an ensemble master resolves its per-system paths relative to
         itself, so validating one anywhere else would report missing files that
@@ -706,7 +731,6 @@ class ConfigStore:
         same report instead. Every other failure still refuses, including a bad
         value the form itself produced: that one is wrong now and wrong later,
         and the save is the last chance to say so."""
-        directory = self._scratch_dir(ref)
         report: dict[str, Any] = {
             "ok": False,
             "error": None,
@@ -719,23 +743,32 @@ class ConfigStore:
             # Filled only on a failure this file may not be responsible for —
             # see _machine_layer_notes.
             "layers": [],
+            # Only ever populated by validate_ref's pre-flight — a check of
+            # unsaved text has no file on disk for the doctor to look at.
+            "diagnostics": [],
         }
-        try:
-            fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
-        except OSError as e:
-            # `directory` is the target's own (possibly read-only-by-policy,
-            # or on a wheel install genuinely unwritable) directory — see the
-            # docstring for why it has to be that one. A denied write belongs
-            # in the report, not an unhandled 500.
-            raise PathRejected(f"cannot check a config in {directory}: {e}") from e
-        tmp = Path(tmp_name)
-        unplayable: list[dict[str, Any]] = []
-        try:
+        tmp: Path | None = None
+        if _load_path is None:
+            directory = self._scratch_dir(ref)
+            try:
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".c64cast-check-", suffix=SUFFIX, dir=directory
+                )
+            except OSError as e:
+                # `directory` is the target's own (possibly read-only-by-policy,
+                # or on a wheel install genuinely unwritable) directory — see the
+                # docstring for why it has to be that one. A denied write belongs
+                # in the report, not an unhandled 500.
+                raise PathRejected(f"cannot check a config in {directory}: {e}") from e
+            tmp = Path(tmp_name)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
+        load_path = tmp if _load_path is None else _load_path
+        unplayable: list[dict[str, Any]] = []
+        try:
             with _capture_errors() as messages:
                 try:
-                    loaded = cfgmod.load_master(str(tmp))
+                    loaded = cfgmod.load_master(str(load_path))
                     from .scene_factory import MediaNotChosen
                     from .session import SessionConfigError, validate_configs
 
@@ -755,21 +788,51 @@ class ConfigStore:
                             report["error"] = detail
                             report["messages"] = list(messages)
                             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
-                            return self._blame_layers(report, text)
+                            # The file itself parsed fine — validate_configs
+                            # is what refused — so the doctor pass still has
+                            # something to look at.
+                            return self._blame_layers(report, text), loaded
                 except (cfgmod.ConfigError, ValueError) as e:
                     # The scratch name is an implementation detail; the caller
                     # asked about their file.
-                    report["error"] = str(e).replace(str(tmp), ref or "the config")
+                    report["error"] = str(e).replace(str(load_path), ref or "the config")
                     report["messages"] = list(messages)
-                    return self._blame_layers(report, text)
+                    return self._blame_layers(report, text), None
             report["ok"] = True
             report["messages"] = list(messages)
             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
             report["systems"] = list(loaded.names)
             report["warnings"] = unplayable + _media_warnings(loaded.cfgs, loaded.names)
-            return report
+            return report, loaded
         finally:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+
+    def validate_ref(self, ref: str) -> dict[str, Any]:
+        """Validate the file as it stands on disk, plus every *other* problem
+        in it — the console's pre-flight before a start.
+
+        ``validate_text`` alone is fail-fast, the same question
+        ``validate_configs`` asks before a start: it stops at the first
+        problem. This adds ``doctor.validate_load_result``'s collect-all pass
+        (``probe_u64=False`` keeps it network-free, and it has never been
+        reachable over HTTP before) as a ``diagnostics`` list, so a bad
+        config names everything wrong with it at once instead of one thing
+        per click. Diagnostics run regardless of ``ok`` — a config that fails
+        the fail-fast check but still loads gets the full list too — and stay
+        empty when the file doesn't even load, since there's nothing loaded
+        for the doctor to look at."""
+        path = self.resolve(ref)
+        report, loaded = self._validate_text_and_load(self._read_text(path), ref, _load_path=path)
+        if loaded is None:
+            return report
+        from .doctor import validate_load_result
+
+        report["diagnostics"] = [
+            asdict(d)
+            for d in validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        ]
+        return report
 
     @staticmethod
     def _blame_layers(report: dict[str, Any], text: str) -> dict[str, Any]:
