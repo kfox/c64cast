@@ -14,6 +14,7 @@
   import TunedChanges from "$lib/components/TunedChanges.svelte";
   import type { Console } from "$lib/console.svelte";
   import { DocIndex, documentation } from "$lib/introspect";
+  import { commandForKey, commandForKeyUp, isTypingTarget } from "$lib/liveKeysLogic";
   import type { Router } from "$lib/router.svelte";
 
   interface Props {
@@ -67,6 +68,52 @@
     host.send({ ...cmd, system: current.name });
   }
 
+  // Off by default: a shortcut nobody knows about isn't a feature, but a list
+  // open by default on every visit is clutter for anyone who already does.
+  let showKeys = $state(false);
+
+  /** Ctrl/Alt/Meta only — Shift stays out, or a plain `?` (`Shift+/` on a US
+   *  layout) could never reach the help toggle, and Caps Lock would read as
+   *  a shortcut for no reason. */
+  function hasModifier(event: KeyboardEvent): boolean {
+    return event.ctrlKey || event.altKey || event.metaKey;
+  }
+
+  function fromTypingTarget(event: KeyboardEvent): boolean {
+    const target = event.target;
+    return (
+      target instanceof HTMLElement && isTypingTarget(target.tagName, target.isContentEditable)
+    );
+  }
+
+  function onWindowKeydown(event: KeyboardEvent): void {
+    // Auto-repeat would spam a one-shot verb (pause/resume, tap, a clip
+    // launch) many times a second while a key is just held down.
+    if (event.repeat || fromTypingTarget(event) || current === null) return;
+    if (event.key === "?") {
+      event.preventDefault();
+      showKeys = !showKeys;
+      return;
+    }
+    const commands = commandForKey(event.key, hasModifier(event), {
+      readOnly: frozen,
+      paused: current.paused,
+      videoFrozen: current.transport?.frozen ?? null,
+      clips: current.clips,
+    });
+    if (commands === null) return;
+    event.preventDefault();
+    for (const cmd of commands) send(cmd);
+  }
+
+  function onWindowKeyup(event: KeyboardEvent): void {
+    if (fromTypingTarget(event)) return;
+    const commands = commandForKeyUp(event.key);
+    if (commands === null) return;
+    event.preventDefault();
+    for (const cmd of commands) send(cmd);
+  }
+
   // Starting a show from here is a shortcut back to the Session screen's own
   // button, kept because "nothing is running" and "start something" are one
   // gesture apart in intent and were two screens apart in fact.
@@ -85,6 +132,11 @@
     }
   }
 </script>
+
+<!-- The app's first global key handler. Both handlers bail on their own for a
+     typing target, a modifier, a repeat, or nothing running — so this is safe
+     to keep mounted for the whole screen rather than only once a show is up. -->
+<svelte:window onkeydown={onWindowKeydown} onkeyup={onWindowKeyup} />
 
 {#if current === null}
   <section class="panel p-5">
@@ -129,8 +181,8 @@
   </section>
 {:else}
   <div class="space-y-4">
-    {#if host.session?.config_ref}
-      <div class="flex items-center gap-2 text-xs text-[var(--ink-dim)]">
+    <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--ink-dim)]">
+      {#if host.session?.config_ref}
         <span class="truncate font-mono">{host.session.config_ref}</span>
         <button
           class="underline underline-offset-2"
@@ -138,7 +190,42 @@
         >
           Edit
         </button>
-      </div>
+      {/if}
+      <button
+        class="ms-auto underline underline-offset-2"
+        aria-expanded={showKeys}
+        onclick={() => (showKeys = !showKeys)}
+      >
+        Keys
+      </button>
+    </div>
+
+    {#if showKeys}
+      <section class="panel p-4 text-xs">
+        <h2 class="mb-2 text-sm font-semibold">Keyboard shortcuts</h2>
+        <p class="mb-2 text-[var(--ink-dim)]">
+          Live everywhere on this screen except while a text field, a select or a button has the
+          caret or the focus.
+        </p>
+        <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
+          <dt>Space</dt>
+          <dd class="font-sans">Pause / resume</dd>
+          <dt>t</dt>
+          <dd class="font-sans">Tap tempo</dd>
+          <dt>n</dt>
+          <dd class="font-sans">Skip to the next scene</dd>
+          <dt>f</dt>
+          <dd class="font-sans">Freeze / unfreeze the video</dd>
+          <dt>l</dt>
+          <dd class="font-sans">Toggle the A/B loop</dd>
+          <dt>[ / ]</dt>
+          <dd class="font-sans">Rewind / fast-forward, held</dd>
+          <dt>1–8</dt>
+          <dd class="font-sans">Launch that clip slot</dd>
+          <dt>?</dt>
+          <dd class="font-sans">Show or hide this list</dd>
+        </dl>
+      </section>
     {/if}
     {#if systems.length > 1}
       <nav class="flex flex-wrap gap-1" aria-label="Systems">

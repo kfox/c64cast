@@ -202,6 +202,24 @@ and **Tune** — the color pipeline, the generator's knobs, a scope's gain. Tune
 shows what the *current scene* actually has, so it changes shape as the show
 advances and never offers you a slider that does nothing.
 
+Live also works from the keyboard, so driving a set doesn't mean aiming a mouse
+at a pad every time. Press **?** to show or hide the list on screen:
+
+| Key | Does |
+|---|---|
+| Space | Pause / resume |
+| `t` | Tap tempo |
+| `n` | Skip to the next scene |
+| `f` | Freeze / unfreeze the video |
+| `l` | Toggle the A/B loop |
+| `[` / `]` | Rewind / fast-forward, held |
+| `1`–`8` | Launch that clip slot |
+| `?` | Show or hide this list |
+
+These are live everywhere on the screen except while a text field, a select or
+a button has the caret or the focus — so tabbing to a button and pressing Space
+still activates *that* button rather than pausing the show out from under you.
+
 ### Keeping What You Tuned
 
 A run started from a terminal asks "save these changes?" as it exits. A host has

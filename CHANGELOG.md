@@ -1078,6 +1078,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Added
+
+- **The Live screen can now be driven from the keyboard.** Space
+  pauses/resumes, `t` taps the tempo, `n` skips to the next scene, `f`
+  freezes/unfreezes the video, `l` toggles the A/B loop, `[`/`]` rewind/fast-
+  forward while held, `1`–`8` launch a clip slot, and `?` shows or hides the
+  list on screen. Every shortcut backs off the moment a text field, a select
+  or a button has the focus — so tabbing to a button and pressing Space still
+  activates that button rather than pausing the show — and none of them
+  reaches past a read-only console.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
