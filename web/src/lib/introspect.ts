@@ -3,6 +3,7 @@ import type {
   FieldDoc,
   Introspection,
   MediaEntry,
+  MediaIndex,
   OverlayDoc,
   ParamDoc,
   SceneTypeDoc,
@@ -117,6 +118,15 @@ export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
  *  until the page reloaded (this cache is the only reason it wouldn't). */
 export function forgetMedia(kind: string): void {
   mediaCache.delete(kind);
+}
+
+/** A live query against a media kind, uncached — `mediaOfKind`'s cache is for
+ *  the unfiltered listing everyone reads on mount; a query fires on a
+ *  debounce and freshness beats a map keyed by every prefix somebody typed.
+ *  Returns the whole index, `truncated` included, so a search past
+ *  `MAX_FILES` still says so. */
+export function searchMedia(kind: string, q: string): Promise<MediaIndex> {
+  return api.media(kind, q);
 }
 
 export type FieldKind = "bool" | "int" | "float" | "str" | "complex";

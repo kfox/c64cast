@@ -21,6 +21,11 @@
     /** Datalist options for a `vocabulary === "media"` field — the media the
      *  scene's own type browses (`mediaPickerLogic.pickerOptions`). */
     options?: string[];
+    /** Whether `options` stopped short of every match on the host. */
+    truncated?: boolean;
+    /** The field's current text, on every keystroke — media fields only. The
+     *  form debounces it into a live search against the host. */
+    onsearch?: (q: string) => void;
     /** True for a field that takes effect without a restart. Not shown for the
      *  others: every top-level config field needs a rebuild, so a badge on
      *  each of them would be 167 badges saying nothing. */
@@ -61,6 +66,8 @@
     vocabulary = "",
     palette = [],
     options = [],
+    truncated = false,
+    onsearch,
     live = false,
     editable = false,
     locked = "",
@@ -145,6 +152,8 @@
           {vocabulary}
           {palette}
           {options}
+          {truncated}
+          {onsearch}
           {value}
           onedit={(v, e) => onedit?.(v, e)}
         />

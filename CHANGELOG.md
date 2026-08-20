@@ -1078,6 +1078,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Added
+
+- **A `file =` field's picker searches the host instead of filtering the first
+  500 entries a plain listing reached.** Typing into a media picker used to
+  filter whatever `mediaOfKind` had already cached — one unfiltered listing per
+  kind, capped at `MAX_FILES` — so an HVSC-sized tree or a large asset
+  directory hid almost everything behind the ones the walk happened to reach
+  first, and the `truncated` flag saying so was fetched and then dropped on
+  the floor. The field itself is the search box: typing now debounces into a
+  live `GET /api/media?kind=&q=` (the parameter has existed since uploads
+  shipped; nothing called it with one before this), and a search past the cap
+  is offered a "truncated" note instead of silently narrowing.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
