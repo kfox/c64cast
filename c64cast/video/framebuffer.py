@@ -226,14 +226,28 @@ class Framebuffer:
             dtype=np.uint8,
         ).reshape(25, 40)
         bg0 = ram[VIC.D021_BG0] & 0x0F
+        page_b = self._flicker_page_b(ram)
+        if page_b is None:
+            c1_palette = C64_PALETTE_BGR[(screen >> 4) & 0x0F]
+            c2_palette = C64_PALETTE_BGR[screen & 0x0F]
+        else:
+            # Only c1/c2 alternate — c3 is the un-banked $D800 and bg0 the single
+            # $D021 register, so both fields read one value there. Fusing the two
+            # pages once is what the eye integrates, and is far cheaper than
+            # rendering both (see fuse_indices).
+            screen_b = np.frombuffer(ram[page_b : page_b + SCREEN.N_CELLS], dtype=np.uint8).reshape(
+                25, 40
+            )
+            c1_palette = fuse_indices((screen >> 4) & 0x0F, (screen_b >> 4) & 0x0F)
+            c2_palette = fuse_indices(screen & 0x0F, screen_b & 0x0F)
         img = np.empty((200, 320, 3), dtype=np.uint8)
         for cy in range(25):
             for cx in range(40):
                 cell = bitmap[cy, cx]
                 colors = [
                     C64_PALETTE_BGR[bg0],
-                    C64_PALETTE_BGR[(screen[cy, cx] >> 4) & 0x0F],
-                    C64_PALETTE_BGR[screen[cy, cx] & 0x0F],
+                    c1_palette[cy, cx],
+                    c2_palette[cy, cx],
                     C64_PALETTE_BGR[color_ram[cy, cx] & 0x0F],
                 ]
                 for row in range(8):

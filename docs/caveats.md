@@ -506,10 +506,17 @@ reports the same.)
 
 ## Flicker blending flashes at 25/30 Hz, and cameras can't see it
 
-`[color].flicker_tolerance` makes hires hold two screen pages and alternate
-them at the VIC field rate, so the eye fuses each cell's pair of hardware colors
-into a shade the machine cannot draw. It is `"off"` by default, and there are two
-reasons worth reading before turning it on.
+`[color].flicker_tolerance` makes the bitmap modes hold two screen pages and
+alternate them at the VIC field rate, so the eye fuses each cell's pair of
+hardware colors into a shade the machine cannot draw. It is `"off"` by default,
+and there are two reasons worth reading before turning it on.
+
+In mhires only two of a cell's four colors can blend — the two the screen byte
+carries. The third lives in color RAM at `$D800`, which both fields read from
+the one copy, and the background is a single register; both stay real colors.
+It still pays better there than in hires, and on photographs rather than only
+on gradients, because four colors across a 4-pixel-wide cell leave spatial
+dither much less room to work with.
 
 **It is a flashing image.** Each color is shown every other field, so a blended
 region alternates at **25 Hz on PAL and 30 Hz on NTSC** — inside the frequency

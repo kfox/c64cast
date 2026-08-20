@@ -361,7 +361,7 @@ On the repo's photo set it lands at **−24 %**, consistently across every `dith
 
 ### `[color].flicker_tolerance` — temporal color blending
 
-Off by default (`flicker_tolerance = "off"`), hires `"normal"` style only. Holds **two** screen pages over one shared bitmap and alternates `$D018` between them every video field, so the eye fuses each cell's pair of hardware colors into a shade the VIC cannot draw — the Dragon Breed / Mayhem in Monsterland trick. Color side in [`video/flicker.py`](../../c64cast/video/flicker.py), C64 side in `modes_irq.FLICKER_SWAP_IRQ_HANDLER` — whose bank-swap commit is held to the [raster gate](#the-raster-gate--why-a-vblank-irq-is-not-enough) while the `$D018` alternation itself is not.
+Off by default (`flicker_tolerance = "off"`); hires `"normal"` style and mhires `percell`. Holds **two** screen pages over one shared bitmap and alternates `$D018` between them every video field, so the eye fuses each cell's pair of hardware colors into a shade the VIC cannot draw — the Dragon Breed / Mayhem in Monsterland trick. Color side in [`video/flicker.py`](../../c64cast/video/flicker.py), C64 side in `modes_irq.FLICKER_SWAP_IRQ_HANDLER` — whose bank-swap commit is held to the [raster gate](#the-raster-gate--why-a-vblank-irq-is-not-enough) while the `$D018` alternation itself is not.
 
 **The frame rate does not come from the link.** This is the thing that makes it practical: the alternation is owned by a C64-side raster IRQ and free-runs at the VIC field rate no matter how slowly the host pushes. The host only uploads the *pair*. Both fields share one bitmap — the fg/bg mask must be identical or the flicker would be geometry rather than color — so a frame costs one extra 1000-byte page, not a second frame: **≈26.0 ms vs 20.8 ms** on the Ultimate link (`HardwareProfile.write_cost_s`), comfortably inside the 30 fps bitmap cap. Compose adds ≈1.3 ms. No REU and no sampler involved; it works on the TeensyROM too.
 
@@ -453,7 +453,43 @@ The last column is why there is no setting for it: admitting the ten pairs score
 
 **It requires the perceptual metric**, and forces it. Blending is *defined* perceptually — linear-light fusion, Lab-measured gaps — so fitting cells in weighted-BGR optimizes a different space than the one the extra entries live in. That mismatch is not academic: under the BGR metric the widened palette measures **worse** than the 16 solids on a photo (+2.5 %) and on a luminance ramp (+6.3 %), where the same frames improve under Lab. `color_match`'s own default already resolves to perceptual here, so the force only fires when a config explicitly asked for `"rgb"`, and `set_cell_pick`'s sibling `set_color_match` pins it live.
 
-Blending also **forces the error-min cell pick** regardless of [`hires_cell_pick`](#colorhires_cell_pick--which-color-fills-a-hires-cell): a blend entry sits between its two constituent solids, so a single-pixel sample lands on one of them more or less at random, and the widened palette then scores worse than the 16 solids. The cell fit is what makes the second page pay for itself.
+Blending also **forces the error-min cell pick** regardless of [`hires_cell_pick`](#colorhires_cell_pick--which-color-fills-a-hires-cell) or [`cell_strategy`](#colorcell_strategy--which-3-colors-fill-a-cell): a blend entry sits between its two constituent solids, so counting how many pixels landed on each entry splits a cell's population across neighbors and no slot wins on merit. In hires the widened palette then scores worse than the 16 solids outright; in mhires it costs less but still turns two of seven photographic fixtures very slightly negative, which the fit turns into an improvement or a tie on all seven. The cell fit is what makes the second page pay for itself.
+
+This override cuts directly against `auto`'s own video-content rule ([`cell_strategy`](#colorcell_strategy--which-3-colors-fill-a-cell) above): error-min is skipped for motion content because it re-ranks on noisier raw input and churns slots frame to frame, yet blending forces it on unconditionally, motion or not. Unlike frequency (which picks off the EMA-smoothed cell_counts, so it inherits `motion_smoothing`'s stability for free), error-min's trio search scores each frame's raw, unsmoothed `d_cell` — the pool it searches is smoothed, but the winner is not. A pair's fused color sitting deliberately close to a solid or another pair (that's what makes it worth blending) means two candidate trios routinely land within noise of each other, and on video that near-tie flips the argmin every frame: cells whose slot is a demoted-to-solid pick (`_solid_last`, below) visibly flash between the two near-tied colors — reproduced offline at up to ~500 of 1000 cells/frame on a synthetic near-tied cell under realistic per-frame noise, and observed on hardware as cell *backgrounds* flipping unpredictably on video playback, distinct from the intended per-field flicker fusion.
+
+`ERROR_MIN_HYSTERESIS_MARGIN` (`base.py`, 0.25 — the same value as `BG0_HYSTERESIS_MARGIN`) fixes this the same way bg0 is kept sticky: `pick_cell_colors`/`_pick_cell_colors_error_min` take the previous frame's trio and keep it unless a challenger's summed error is at least that fraction lower, so a genuine near-tie stops flip-flopping while a real content change (whose error improvement is overwhelming, not a near-tie) still wins on a single frame. Unscaled by `motion_smoothing` (`self._error_min_margin`, set alongside `_ema_alpha`/`_quant_hysteresis`/`_code_hysteresis` in the setter, but not derived from `s` like they are) — scaling it down left the margin at ~0.06 under the real-world default of `motion_smoothing = 0.25`, too weak to suppress the flicker it exists to fix, and unlike the other three buffers it costs nothing in motion-tracking responsiveness: a genuinely-better trio's error improvement clears the margin on a single frame regardless.
+
+The margin itself is gated to blend-armed scenes at the `_compose_percell` call site, not applied unconditionally: the near-tie rate above was only ever measured for a blend pair's fused color sitting close to a solid or another pair. A user-selected `cell_strategy = "error-min"` with no `flicker_tolerance` armed was never profiled the same way, so it keeps the original raw per-frame argmin rather than silently inheriting stickiness through the margin.
+
+#### mhires: two of four slots
+
+A mode blends exactly the colors it keeps in the **screen matrix**, because that is the only memory `$D018` re-points. Hires keeps both of a cell's colors there, so the page flip reaches all of them. MCBM spreads a cell's four across three places, and only one of them alternates:
+
+| slot | bit pair | lives in | blends? |
+|---|---|---|---|
+| bg0 | `%00` | `$D021`, one register | no |
+| c1 | `%01` | screen byte, high nibble | **yes** |
+| c2 | `%10` | screen byte, low nibble | **yes** |
+| c3 | `%11` | color RAM `$D800` | no |
+
+`$D800` is not VIC-banked and no register selects an alternate copy, so both fields read the one byte; a pair parked there would show only half of itself. `$D021` is a single register the swap handler writes once per *committed frame*, not once per field.
+
+**bg0 was measured rather than assumed.** Alternating `$D021` too is cheap in principle — one more indexed store in the handler — but across the fixture set the frame's most-populated entry came out a solid every time, so the widened bg0 pick was bit-identical to the restricted one. A solid wins the dominant slot precisely because it owns a larger region of color space than any pair squeezed between two of them. The handler is therefore the hires one **unmodified**, which is also why `$D021` still carries bg0 at all: hires ignores that write and mhires needs it.
+
+`_solid_last` enforces the c3 rule after the pick rather than constraining the pick. The picks arrive sorted ascending and the widened table lists all 16 solids before any pair, so a cell that picked a solid at all has it at position 0 and the fix is a rotation. Only a cell whose three picks are *all* pairs has to give one up, and it gives up the one with the smallest `BlendTable.demotion_cost` — the pair whose fused color was closest to a real color anyway, so the one buying least. That case fires on **0.14 % of cells**, measured; ranking by pixel count instead was rejected because EMA jitter would reshuffle slots on a static cell, where the cost ranking is content-independent.
+
+**Blending pays far better here than in hires**, and on photographs rather than only on gradients — four colors across a 4-pixel-wide cell leaves spatial dither much less room to synthesize intermediates than hires' 8-pixel cells do. Reconstruction error against the source, per-cell fit isolated from the color-shaping stage, at the 0.075 default cap:
+
+| content | VIC-II `clean` | `subtle` | U64 `clean` | `subtle` |
+|---|---|---|---|---|
+| chromatic gradient (blue→cyan) | −12.7 % | −31.2 % | −4.2 % | −20.8 % |
+| photograph | −7.5 % | −13.1 % | −3.6 % | −31.8 % |
+| vertical dusk gradient | −5.2 % | −5.2 % | −6.6 % | −10.5 % |
+| luminance ramp (black→white) | −1.4 % | −8.2 % | −0.7 % | −14.8 % |
+
+Compare the hires table above, where a photograph moves ~1 %.
+
+**Only `percell` blends.** The global-4 palette modes pick one set for the whole frame, so no cell has a decision for a pair to win, and `grayscale`'s slots are fixed on purpose (see the class docstring). Those modes still *arm* — the handler alternates whatever the two pages hold — so `compose` hands `push` a page B that is a real copy of page A rather than whatever the last blended frame left there. The forced-palette remap is held identical for a different reason: it exists to emit exactly the colors it was given, and a blend is not one of them. Arming warns when the palette_mode cannot use it.
 
 #### Mechanism
 
@@ -467,7 +503,7 @@ Tracker at `$C700`, 6 bytes: `[bg0, bank, ready, phase, d018_a, d018_b]`. `phase
 
 #### Gating
 
-`scene_factory.resolve_flicker_tolerance` is opt-in, so there is no `"auto"`; it only decides where an explicit tolerance can be honored, returning `"off"` where it cannot. An unrecognized value raises rather than degrading to `"off"`, which would silently disable the feature on a typo. Four structural gates: hires only (mhires' c3 lives in un-banked color RAM at `$D800`, which `$D018` does not select, so only part of its picture could alternate — and the char modes keep per-cell color there too); `"normal"` style only; no buffer-painting text overlay (the `$0C00` collision); and not while the REU mic pump owns `$0314`. `force_host_dma` gates it as well, for the reason it gates the others — a SID-audio scene's player owns `$0314`.
+`scene_factory.resolve_flicker_tolerance` is opt-in, so there is no `"auto"`; it only decides where an explicit tolerance can be honored, returning `"off"` where it cannot. An unrecognized value raises rather than degrading to `"off"`, which would silently disable the feature on a typo. Four structural gates: the two bitmap modes only (the char modes keep all their per-cell color in `$D800`, which `$D018` does not select, so they have nothing to alternate); hires `"normal"` style only; no buffer-painting text overlay (the `$0C00` collision); and not while the REU mic pump owns `$0314`. `force_host_dma` gates it as well, for the reason it gates the others — a SID-audio scene's player owns `$0314`.
 
 Where it engages it takes the double-buffer slot and pushes REU staging aside, extending the mutual exclusion those two already have, because the REU bank-swap handler has no `$D018` phase toggle. A `display = "random"` slideshow re-resolves it per concrete mode, alongside the other two.
 

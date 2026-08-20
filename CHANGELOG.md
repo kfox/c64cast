@@ -55,8 +55,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 ### Added
 
 - **`[color].flicker_tolerance` — colors the C64 cannot draw, by alternating two
-  of the ones it can.** Hires holds two screen pages over one shared bitmap and
-  flips between them every video field, so the eye fuses each cell's pair into an
+  of the ones it can.** The bitmap modes hold two screen pages over one shared
+  bitmap and flip between them every video field, so the eye fuses each cell's
+  pair into an
   intermediate shade — the trick Dragon Breed and Mayhem in Monsterland used. The
   alternation is driven by a C64-side raster IRQ and free-runs at the VIC field
   rate no matter how fast the host is pushing, so it needs no unusual link speed,
@@ -66,6 +67,32 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   wherever there is texture to hide them in, so a chromatic gradient improves
   27-34% — how much depends on which pairs the machine's palette makes
   eligible — while a photograph improves ~1%.
+
+  **In mhires it is worth much more, and on ordinary content.** Four colors
+  across a 4-pixel-wide cell leave spatial dither far less room than hires' 8,
+  so a photograph improves 4-32% rather than ~1%, and a chromatic gradient
+  4-31%, depending on palette and setting. Two of a cell's four colors can
+  blend: the pair the screen byte carries. Its third lives in color RAM at
+  `$D800`, which is not VIC-banked and which both fields read from the one copy,
+  and its background is a single register the swap writes once per frame — so
+  both of those stay real hardware colors. Blending the background was measured
+  and dropped rather than skipped: the frame's dominant color came out a real
+  one on every fixture, so alternating `$D021` too would have bought a
+  bit-identical picture. Needs `palette_mode = "percell"`; the global-4 modes
+  choose one color set for the whole frame, so no cell has a decision for a pair
+  to win, and arming says so.
+
+  Widening the palette also forces the per-cell pick onto `error-min` (see
+  `cell_strategy` below), which scores each frame's own reconstruction error
+  rather than a temporally-smoothed histogram — and a pair's fused color sits
+  deliberately close to a solid or another pair, so on video that pick
+  routinely near-ties frame to frame. Fixed before this shipped: the pick now
+  keeps the previous frame's trio unless a challenger's error is at least 25%
+  lower, so a near-tie stops flip-flopping while a genuine color change still
+  wins on a single frame. Unscaled by `motion_smoothing` — unlike the mode's
+  other temporal smoothing, a genuinely-better trio's error improvement clears
+  the margin on a single frame regardless, so there's no responsiveness cost
+  to buy back by scaling it down.
 
   **Which pairs fuse was measured, not derived.** Nothing computed from the two
   colors predicts it: brightness distance correlates with scored verdicts at
@@ -89,7 +116,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
   **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
   30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
-  `[color].flicker_max_luma_delta` (default 0.075, hard-capped at 0.12) limits
+  `[color].flicker_max_luma_delta` (default 0.075) limits
   how far apart in brightness a pair may be, which is the quantity that governs
   the hazard. It **warns rather than refuses** — above 0.10, and again above
   0.12 where modulation depth approaches the 20%-of-peak-white flash criterion —

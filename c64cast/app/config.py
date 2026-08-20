@@ -1968,8 +1968,8 @@ class ColorCfg:
     flicker_tolerance: str = field(
         default=DEFAULT_TOLERANCE,
         metadata={
-            "help": "Temporal color blending for hires, and how much visible "
-            "flicker you'll accept to get it: hold two screen pages and "
+            "help": "Temporal color blending for the bitmap modes, and how much "
+            "visible flicker you'll accept to get it: hold two screen pages and "
             "alternate them at the VIC field rate, so the eye fuses each cell's "
             "pair of hardware colors into a shade the VIC cannot draw. Targets "
             "gradient banding — spatial dither already synthesizes intermediate "
@@ -1983,9 +1983,16 @@ class ColorCfg:
             "trade flicker for nothing. 'visible' is itself inside the "
             "photosensitive-seizure band: treat it as an effect you chose, not a "
             "palette upgrade. Blending does not survive a 30 fps capture at any "
-            "setting. Hires 'normal' style only.",
+            "setting. What alternates is the screen matrix, so a mode blends "
+            "exactly the colors it keeps there: hires both colors of every cell "
+            "('normal' style only), mhires its c1 and c2 — its c3 is color RAM "
+            "and its background is $D021, neither of which the field flip can "
+            "reach, so both stay real colors. mhires also needs "
+            "palette_mode = 'percell' (the global-4 modes pick one set for the "
+            "whole frame, so no cell has a decision for a pair to win) and "
+            "pins color_match and cell_strategy, which blending measurably needs.",
             "choices": tuple(FLICKER_TOLERANCES),
-            "applies_to": ("hires",),
+            "applies_to": ("hires", "mhires"),
         },
     )
     flicker_max_luma_delta: float = field(
@@ -2007,7 +2014,7 @@ class ColorCfg:
             "and to 3 of 8 on the VIC-II rendering, whose luminances put five "
             "cleanly-fusing pairs above 0.12. Which pairs qualify depends on "
             "[hardware].host_palette, since it is the emitted light that fuses.",
-            "applies_to": ("hires",),
+            "applies_to": ("hires", "mhires"),
         },
     )
     flicker_score_pairs: list[str] = field(
@@ -2024,7 +2031,7 @@ class ColorCfg:
             "only this way was excluded on evidence. Cannot switch blending on by "
             "itself: flicker_tolerance must still be set, and every structural gate "
             "still applies. Empty (default) uses the scored set.",
-            "applies_to": ("hires",),
+            "applies_to": ("hires", "mhires"),
         },
     )
     motion_smoothing: float = field(

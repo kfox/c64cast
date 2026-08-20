@@ -95,6 +95,16 @@ class FlickerComposeBuffers(BitmapComposeBuffers):
     screen_b: np.ndarray
 
 
+class MHiresFlickerComposeBuffers(MHiresComposeBuffers, FlickerComposeBuffers):
+    """MultiHires under flicker blending: ``color`` plus the second screen page
+    (inherited from ``FlickerComposeBuffers`` rather than redeclared).
+
+    Only the screen nibbles alternate, so only c1 and c2 can be blends. c3 lives
+    in color RAM at $D800, which is neither VIC-banked nor selected by $D018 —
+    one copy, both fields — and bg0 is the single $D021 register. Both stay real
+    palette indices, which is why ``color`` has no B-page sibling here."""
+
+
 # grayscale palette_mode uses fixed slot assignments (no per-frame picking)
 # in luminance order. Two reasons:
 #   1. Slot 0..N maps to ascending luminance, so the bitmap stays a stable
@@ -217,6 +227,26 @@ BG0_HYSTERESIS_MARGIN = 0.25
 # vectorized and realtime-capable. C(6,3) = 20 trios.
 ERROR_MIN_POOL_SIZE = 6
 
+# Relative-margin hysteresis for the error-min trio pick. Every other
+# selection stage in this module (bg0, frequency's top-3) picks off the
+# EMA-smoothed cell_counts, so temporal stability comes for free. error-min
+# instead scores candidate trios by summed reconstruction error against this
+# frame's raw (unsmoothed) per-pixel distances — the pool of colors it
+# searches is smoothed, but the winning trio is not. Under flicker blending, a
+# pair's fused color is deliberately close to a solid or another pair (that's
+# what makes it worth blending), so two trios routinely land within noise of
+# each other, and ordinary per-frame sensor/video noise flips the argmin every
+# frame — reproduced offline at ~500 of 1000 cells/frame on a synthetic
+# near-tied cell, versus 0 for the same noise under frequency/16-solid. Keep
+# the previous frame's trio unless a challenger's summed error is at least
+# this fraction lower, mirroring BG0_HYSTERESIS_MARGIN's keep-unless-beaten
+# shape for a minimization instead of a maximization — same value as that
+# constant, and an offline sweep against the reproduction above found no
+# measurable cost to a real (large, single-frame) color change: a genuine
+# jump clears even a much larger margin immediately, since the challenger's
+# error improvement is overwhelming rather than a near-tie.
+ERROR_MIN_HYSTERESIS_MARGIN = 0.25
+
 
 def validate_cell_strategy(strategy: str) -> None:
     if strategy not in CELL_STRATEGIES:
@@ -228,19 +258,32 @@ def pick_cell_colors(
     d_cell: np.ndarray,
     bg0: int,
     strategy: str,
+    luma: np.ndarray = PALETTE_LUMA,
+    prev_trio: np.ndarray | None = None,
+    error_min_margin: float = ERROR_MIN_HYSTERESIS_MARGIN,
 ) -> np.ndarray:
     """Choose each cell's 3 non-bg0 color slots (c1/c2/c3) by `strategy`.
 
-    `cell_counts` is the (1000, 16) smoothed per-cell palette histogram with the
+    `cell_counts` is the (1000, N) smoothed per-cell palette histogram with the
     bg0 entry already masked to -1 (so bg0 is never picked). `d_cell` is the
-    (1000, 32, 16) per-cell-pixel distance to all 16 palette entries (only the
-    error-min strategy uses it). Returns a (1000, 3) int64 array of palette
-    indices; any slot the cell can't fill from a genuinely-present color is set
-    to `bg0` — the same poison-filler guard the frequency path has always used
-    (a duplicate bg0 is harmless: the %00 code already reaches bg0, and it keeps
-    the absent slots deterministic so present colors don't churn screen/color
-    RAM frame-to-frame). The caller sorts the result by palette index for
+    (1000, 32, N) per-cell-pixel distance to all N entries (only the error-min
+    strategy uses it). Returns a (1000, 3) int64 array of palette indices; any
+    slot the cell can't fill from a genuinely-present color is set to `bg0` —
+    the same poison-filler guard the frequency path has always used (a duplicate
+    bg0 is harmless: the %00 code already reaches bg0, and it keeps the absent
+    slots deterministic so present colors don't churn screen/color RAM
+    frame-to-frame). The caller sorts the result by palette index for
     delta-cache stability.
+
+    N is 16 for the plain palette and larger under flicker blending, where the
+    trailing entries are color pairs rather than colors ([color].flicker_tolerance,
+    video/flicker.py). `luma` orders that same entry space dark→light for the
+    luminance/contrast strategies, so it has to be the blend table's own vector
+    when one is in play — the default is the 16-entry palette.
+
+    `prev_trio` (only the error-min strategy uses it) is the previous frame's
+    (1000, 3) winning trio, for the temporal hysteresis ERROR_MIN_HYSTERESIS_MARGIN
+    documents; None disables it (first frame, or a caller that doesn't track it).
     """
     if strategy == "frequency":
         top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
@@ -248,29 +291,30 @@ def pick_cell_colors(
         return np.where(absent, bg0, top3)
 
     if strategy == "error-min":
-        return _pick_cell_colors_error_min(cell_counts, d_cell, bg0)
+        return _pick_cell_colors_error_min(cell_counts, d_cell, bg0, prev_trio, error_min_margin)
 
     # luminance / contrast both order the cell's present colors dark→light and
     # pick the extremes; they differ only in the 3rd slot.
     rows = np.arange(cell_counts.shape[0])
-    present = cell_counts > 0.0  # (1000, 16) bool; bg0 masked out via -1
+    last = cell_counts.shape[1] - 1  # highest valid entry index
+    present = cell_counts > 0.0  # (1000, N) bool; bg0 masked out via -1
     n = present.sum(axis=1)  # (1000,) present color count per cell
     # Sort present colors by luma; absent entries → +inf so they sort last and
     # never get gathered for a valid slot.
-    luma_masked = np.where(present, PALETTE_LUMA[None, :], np.inf)
-    order = np.argsort(luma_masked, axis=1)  # (1000, 16) ascending by luma
+    luma_masked = np.where(present, luma[None, :], np.inf)
+    order = np.argsort(luma_masked, axis=1)  # (1000, N) ascending by luma
     darkest = order[:, 0]
-    brightest = order[rows, np.clip(n - 1, 0, 15)]
+    brightest = order[rows, np.clip(n - 1, 0, last)]
     pick0 = np.where(n >= 1, darkest, bg0)
     pick1 = np.where(n >= 2, brightest, bg0)
 
     if strategy == "luminance":
-        median = order[rows, np.clip(n // 2, 0, 15)]  # middle of the sorted span
+        median = order[rows, np.clip(n // 2, 0, last)]  # middle of the sorted span
         pick2 = np.where(n >= 3, median, bg0)
     else:  # contrast: farthest present color (in luma) from both extremes
-        d_dark = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[darkest][:, None])
-        d_bright = np.abs(PALETTE_LUMA[None, :] - PALETTE_LUMA[brightest][:, None])
-        spread = np.minimum(d_dark, d_bright)  # (1000, 16)
+        d_dark = np.abs(luma[None, :] - luma[darkest][:, None])
+        d_bright = np.abs(luma[None, :] - luma[brightest][:, None])
+        spread = np.minimum(d_dark, d_bright)  # (1000, N)
         eligible = present.copy()
         eligible[rows, darkest] = False
         eligible[rows, brightest] = False
@@ -281,7 +325,11 @@ def pick_cell_colors(
 
 
 def _pick_cell_colors_error_min(
-    cell_counts: np.ndarray, d_cell: np.ndarray, bg0: int
+    cell_counts: np.ndarray,
+    d_cell: np.ndarray,
+    bg0: int,
+    prev_trio: np.ndarray | None = None,
+    margin: float = ERROR_MIN_HYSTERESIS_MARGIN,
 ) -> np.ndarray:
     """error-min strategy: for each cell pick the trio of present colors that
     minimizes the summed per-pixel quantization error against {bg0, c1, c2, c3}.
@@ -292,6 +340,11 @@ def _pick_cell_colors_error_min(
     meaningfully-populated colors). Pool slots a cell can't fill are set to bg0,
     so a trio drawing on them simply re-uses bg0 (a no-op against the fixed bg0
     candidate) — which naturally handles cells with fewer than 3 present colors.
+
+    `prev_trio` + `margin` apply ERROR_MIN_HYSTERESIS_MARGIN's keep-unless-beaten
+    rule: the pool search's winner only replaces the previous frame's trio when
+    its summed error is at least `margin` lower, since scoring against this
+    frame's raw d_cell (see that constant's comment) has no smoothing of its own.
     """
     n_cells = cell_counts.shape[0]
     k = ERROR_MIN_POOL_SIZE
@@ -315,12 +368,25 @@ def _pick_cell_colors_error_min(
         better = err < best_err
         best_err = np.where(better, err, best_err)
         best_trio[better] = (i, j, m)
-    return np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
+    challenger = np.take_along_axis(poolk, best_trio, axis=1).astype(np.int64)  # (n, 3)
+    if prev_trio is None:
+        return challenger
+
+    # prev_trio's error against *this* frame's d_cell — not last frame's pool
+    # search, since the pool (and even the trio's own poolk positions) may have
+    # shifted; the trio's actual entry indices still index d_cell directly.
+    d_prev = np.take_along_axis(d_cell, prev_trio[:, None, :], axis=2)  # (n, 32, 3)
+    prev_min = np.minimum(
+        d_bg0, np.minimum(d_prev[:, :, 0], np.minimum(d_prev[:, :, 1], d_prev[:, :, 2]))
+    )
+    prev_err = prev_min.sum(axis=1)  # (n,)
+    keep = best_err >= prev_err * (1.0 - margin)
+    return np.where(keep[:, None], prev_trio, challenger)
 
 
-def ema_counts(mode, per_pixel: np.ndarray) -> np.ndarray:
-    """EMA-smoothed (16,) palette counts. Mode must have `_smoothed_counts`."""
-    counts = np.bincount(per_pixel, minlength=16).astype(np.float32)
+def ema_counts(mode, per_pixel: np.ndarray, n_entries: int = 16) -> np.ndarray:
+    """EMA-smoothed (n_entries,) palette counts. Mode must have `_smoothed_counts`."""
+    counts = np.bincount(per_pixel, minlength=n_entries).astype(np.float32)
     if mode._smoothed_counts is None:
         mode._smoothed_counts = counts
     else:

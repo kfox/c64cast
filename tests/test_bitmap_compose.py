@@ -300,7 +300,7 @@ class PercellFillerSafetyTest(unittest.TestCase):
         targets[24000] = 4
         present = {0, 4, 6, 14}
 
-        _bitmap, screen, color, bg0 = self._compose_from_targets(targets)
+        _bitmap, screen, color, bg0, _b = self._compose_from_targets(targets)
         self.assertEqual(bg0, 0)  # black dominates
         seen = (
             set(np.asarray(screen) >> 4) | set(np.asarray(screen) & 0x0F) | set(np.asarray(color))
@@ -314,7 +314,9 @@ class PercellFillerSafetyTest(unittest.TestCase):
         # A wholly-black frame: every cell must collapse to solid bg0 in both
         # screen nibbles and color RAM (this is the letterboxed-edge case that
         # flashed as a "border"). Pre-fix the fillers were random indices.
-        _bitmap, screen, color, bg0 = self._compose_from_targets(np.zeros(32000, dtype=np.int64))
+        _bitmap, screen, color, bg0, _b = self._compose_from_targets(
+            np.zeros(32000, dtype=np.int64)
+        )
         self.assertEqual(bg0, 0)
         self.assertEqual(set(np.asarray(screen)), {0})
         self.assertEqual(set(np.asarray(color)), {0})
