@@ -1,5 +1,6 @@
 import { api } from "./api";
 import type { Console } from "./console.svelte";
+import type { LibraryState } from "./types";
 
 /** Start `ref` (or switch to it if a show is already running), and arm the
  *  shell to jump to Live once it actually comes up.
@@ -18,4 +19,20 @@ export async function launch(host: Console, ref: string): Promise<void> {
     host.expectingStart = false;
     throw e;
   }
+}
+
+/** Fetch the shared favorites/recents library — Session and Config screens
+ *  both show it, so both refresh it the same way. */
+export const fetchLibrary = (): Promise<LibraryState> => api.library();
+
+/** Toggle `ref`'s favorite state and fold the result into `library`, so a
+ *  caller's own state assignment doesn't have to re-derive the merge.
+ *  Returns `library` unchanged if it hasn't loaded yet. */
+export async function withToggledFavorite(
+  library: LibraryState | null,
+  ref: string,
+  on: boolean,
+): Promise<LibraryState | null> {
+  const { favorites } = await api.favorite(ref, on);
+  return library ? { ...library, favorites } : library;
 }

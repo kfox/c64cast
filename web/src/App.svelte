@@ -146,7 +146,7 @@
        bottom of the viewport and would otherwise sit on the last control. -->
   <main class="flex-1 pb-14">
     {#if router.screen === "config"}
-      <ConfigScreen {host} {router} />
+      <ConfigScreen {host} {router} onselect={(ref) => (selectedConfig = ref)} />
     {:else if router.screen === "live"}
       <LiveScreen {host} {router} />
     {:else}

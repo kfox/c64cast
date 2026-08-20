@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
 
   import { ApiError, api } from "$lib/api";
-  import { launch } from "$lib/actions";
+  import { fetchLibrary, launch, withToggledFavorite } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
   import ConfigForm from "$lib/components/ConfigForm.svelte";
   import ConfigList from "$lib/components/ConfigList.svelte";
@@ -16,9 +16,12 @@
   interface Props {
     host: Console;
     router: Router;
+    /** Told when the file on screen is deleted, so the shell's shared
+     *  selection (the tab-bar Start button) doesn't keep pointing at it. */
+    onselect: (ref: string) => void;
   }
 
-  let { host, router }: Props = $props();
+  let { host, router, onselect }: Props = $props();
 
   let index = $state<ConfigIndex | null>(null);
   let library = $state<LibraryState | null>(null);
@@ -81,7 +84,7 @@
 
   async function refreshLibrary(): Promise<void> {
     try {
-      library = await api.library();
+      library = await fetchLibrary();
     } catch (e) {
       problem = describe(e);
     }
@@ -89,8 +92,7 @@
 
   async function toggleFavorite(ref: string, on: boolean): Promise<void> {
     try {
-      const { favorites } = await api.favorite(ref, on);
-      if (library) library = { ...library, favorites };
+      library = await withToggledFavorite(library, ref, on);
     } catch (e) {
       problem = describe(e);
     }
@@ -134,6 +136,7 @@
       drafts.clear(selected);
       await refreshIndex();
       router.go("config");
+      onselect("");
     } catch (e) {
       problem = describe(e);
     }

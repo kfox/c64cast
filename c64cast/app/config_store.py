@@ -492,6 +492,7 @@ class ConfigStore:
             self._append_examples_root(resolved, taken)
         self._roots = tuple(resolved)
         self._by_label = {r.label: r for r in self._roots}
+        self._ref_for_cache: tuple[str, str | None] | None = None
 
     @staticmethod
     def _append_examples_root(resolved: list[Root], taken: set[str]) -> None:
@@ -518,12 +519,24 @@ class ConfigStore:
 
     # -- refs ---------------------------------------------------------------
 
+    @staticmethod
+    def _ref_parts(ref: str) -> list[str]:
+        """Split a wire ref into its non-empty, non-`.` segments.
+
+        Shared by :meth:`resolve` and :meth:`_require_writable` so a leading
+        `/` or `./` (or a doubled slash) is filtered out the same way in both
+        places — re-deriving the root label with a naive `split("/", 1)` let
+        such a ref name a root :meth:`resolve` had correctly found, while the
+        write-side readonly check looked up an empty label and skipped
+        itself."""
+        return [p for p in str(ref).replace("\\", "/").split("/") if p not in ("", ".")]
+
     def resolve(self, ref: str) -> Path:
         """Turn a wire ref into an absolute path inside a root, or refuse.
 
         The returned path need not exist — a write to a new file is legal — but
         it is always a real location under a root, symlinks followed."""
-        parts = [p for p in str(ref).replace("\\", "/").split("/") if p not in ("", ".")]
+        parts = self._ref_parts(ref)
         if not parts:
             raise PathRejected("no config path given")
         if ".." in parts:
@@ -543,13 +556,25 @@ class ConfigStore:
         return target
 
     def ref_for(self, path: Path) -> str | None:
-        """The ref that addresses `path`, or None if no root contains it."""
+        """The ref that addresses `path`, or None if no root contains it.
+
+        Cached on the input path's string form: a websocket status frame
+        calls this every ~0.35s per connected client, but `config_path` only
+        changes on start/switch, so most calls would otherwise pay for a
+        `Path.resolve()` stat to re-derive the same answer."""
+        key = str(path)
+        cached = self._ref_for_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         resolved = Path(path).resolve()
+        ref = None
         for root in self._roots:
             if resolved.is_relative_to(root.path):
                 rel = resolved.relative_to(root.path)
-                return "/".join((root.label, *rel.parts))
-        return None
+                ref = "/".join((root.label, *rel.parts))
+                break
+        self._ref_for_cache = (key, ref)
+        return ref
 
     def _require_writable(self, ref: str) -> Path:
         """:meth:`resolve`, plus a refusal for the packaged examples root.
@@ -559,7 +584,7 @@ class ConfigStore:
         is looked up again here. Copy an example (:meth:`create` with
         ``copy_of``) to get an editable file from one."""
         path = self.resolve(ref)
-        label = str(ref).replace("\\", "/").split("/", 1)[0]
+        label = self._ref_parts(ref)[0]
         root = self._by_label.get(label)
         if root is not None and root.readonly:
             raise PathRejected(f"{ref!r} is a read-only example — duplicate it to edit")
@@ -710,7 +735,14 @@ class ConfigStore:
             # see _machine_layer_notes.
             "layers": [],
         }
-        fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
+        except OSError as e:
+            # `directory` is the target's own (possibly read-only-by-policy,
+            # or on a wheel install genuinely unwritable) directory — see the
+            # docstring for why it has to be that one. A denied write belongs
+            # in the report, not an unhandled 500.
+            raise PathRejected(f"cannot check a config in {directory}: {e}") from e
         tmp = Path(tmp_name)
         unplayable: list[dict[str, Any]] = []
         try:

@@ -110,7 +110,10 @@
         onclick={() => select(row.path)}
         ondblclick={() => start(row.path)}
         onkeydown={(e) => {
-          if (e.key === "Enter") select(row.path);
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            select(row.path);
+          }
         }}
         class="flex w-full cursor-pointer items-start gap-1.5 rounded-md border px-2.5 py-2 text-sm
                focus-visible:outline-2 focus-visible:outline-[var(--accent)]

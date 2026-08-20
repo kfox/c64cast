@@ -2,10 +2,11 @@
   import { onMount } from "svelte";
 
   import { ApiError, api } from "$lib/api";
-  import { launch } from "$lib/actions";
+  import { fetchLibrary, launch, withToggledFavorite } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
   import ViewerLink from "$lib/components/ViewerLink.svelte";
+  import { displayLabel } from "$lib/configListLogic";
   import type { Console } from "$lib/console.svelte";
   import type { Router } from "$lib/router.svelte";
   import type { ConfigIndex, LibraryState } from "$lib/types";
@@ -53,7 +54,7 @@
 
   async function refreshLibrary(): Promise<void> {
     try {
-      library = await api.library();
+      library = await fetchLibrary();
     } catch (e) {
       problem = describe(e);
     }
@@ -87,15 +88,14 @@
    *  render as *something*. */
   function displayName(ref: string): string {
     const file = index?.files.find((f) => f.path === ref);
-    if (file) return file.rel.replace(/\.toml$/i, "");
+    if (file) return displayLabel(file);
     const slash = ref.indexOf("/");
     return (slash >= 0 ? ref.slice(slash + 1) : ref).replace(/\.toml$/i, "");
   }
 
   async function toggleFavorite(ref: string, on: boolean): Promise<void> {
     try {
-      const { favorites } = await api.favorite(ref, on);
-      if (library) library = { ...library, favorites };
+      library = await withToggledFavorite(library, ref, on);
     } catch (e) {
       problem = describe(e);
     }

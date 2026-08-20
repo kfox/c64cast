@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,10 @@ class ConsoleLibrary:
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path if path is not None else paths.console_library_path()
+        # A phone and a laptop can each hit `set_favorite`/`record_recent` in
+        # the same moment; both are read-modify-write over one file, and
+        # without this a second save can silently overwrite the first's.
+        self._lock = threading.Lock()
 
     def _load(self) -> dict[str, Any]:
         """Tolerant load: a missing, corrupt, or wrong-shaped file reads as an
@@ -78,23 +83,25 @@ class ConsoleLibrary:
 
     def set_favorite(self, ref: str, on: bool) -> list[str]:
         """Toggle `ref`'s favorite state and return the new favorites list."""
-        data = self._load()
-        favorites = [f for f in data["favorites"] if f != ref]
-        if on:
-            favorites.append(ref)
-        data["favorites"] = favorites
-        self._save(data)
-        return favorites
+        with self._lock:
+            data = self._load()
+            favorites = [f for f in data["favorites"] if f != ref]
+            if on:
+                favorites.append(ref)
+            data["favorites"] = favorites
+            self._save(data)
+            return favorites
 
     def record_recent(self, ref: str) -> list[dict[str, Any]]:
         """Move `ref` to the front of the recents list (deduplicated), capped
         at :data:`MAX_RECENTS`. Called on every start/switch, from any surface
         — a launch from a MIDI controller or a script counts the same as one
         from the browser."""
-        data = self._load()
-        recents: list[dict[str, Any]] = [r for r in data["recents"] if r["ref"] != ref]
-        recents.insert(0, {"ref": ref, "at": time.time()})
-        recents = recents[:MAX_RECENTS]
-        data["recents"] = recents
-        self._save(data)
-        return recents
+        with self._lock:
+            data = self._load()
+            recents: list[dict[str, Any]] = [r for r in data["recents"] if r["ref"] != ref]
+            recents.insert(0, {"ref": ref, "at": time.time()})
+            recents = recents[:MAX_RECENTS]
+            data["recents"] = recents
+            self._save(data)
+            return recents
