@@ -178,9 +178,14 @@ export const api = {
 
   /** Load `text` as if it were saved, without saving it. The same check a save
    *  makes, offered separately so the editor can show the reason before the
-   *  file is at stake. */
-  checkConfig: (ref: string, text: string) =>
-    request<ValidationReport>("POST", `/api/configs/${refPath(ref)}/validate`, { text }),
+   *  file is at stake. With `text` omitted, checks the file as it stands on
+   *  disk instead — a start or switch's pre-flight. */
+  checkConfig: (ref: string, text?: string) =>
+    request<ValidationReport>(
+      "POST",
+      `/api/configs/${refPath(ref)}/validate`,
+      text === undefined ? undefined : { text },
+    ),
 
   /** Refused with 422 if the text does not load — the store never writes a
    *  config that cannot run. */
@@ -206,6 +211,11 @@ export const api = {
    *  door back to the text editor. Refused for the last scene. */
   removeScene: (ref: string, index: number) =>
     request<SceneChanged>("DELETE", `/api/configs/${refPath(ref)}/scenes/${index}`),
+
+  /** The order of a show, reachable without the text editor: move the scene
+   *  at `index` to `to`. A no-op move (`index === to`) is accepted. */
+  moveScene: (ref: string, index: number, to: number) =>
+    request<SceneChanged>("PATCH", `/api/configs/${refPath(ref)}/scenes/${index}`, { to }),
 
   /** A new file at `path`: a copy of `copyOf` (any readable ref, including a
    *  packaged example — the onboarding path for one), or a minimal starter

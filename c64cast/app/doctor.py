@@ -124,8 +124,17 @@ def _running_from_checkout() -> bool:
     return (_REPO_ROOT / "pyproject.toml").is_file()
 
 
-def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[Diagnostic]:
+def validate_load_result(
+    loaded: LoadResult, *, probe_u64: bool = True, probe_environment: bool = True
+) -> list[Diagnostic]:
     """Run every config + environment check and collect the results.
+
+    `probe_environment=False` skips the installation-level checks (venv,
+    hard deps, uv.lock, machine settings, data dirs, char ROM, extras) —
+    real disk I/O that answers "is this machine set up right", not "is this
+    config good to launch". Those facts don't change per config and don't
+    change per click, so `config_store.validate_ref`'s pre-flight (run on
+    every Start/Switch) skips them; `--doctor` still runs them every time.
 
     Per-scene validation runs `validate_scene_cfg` inside try/except so a
     single broken scene doesn't hide the others. Cross-system orchestrator
@@ -135,10 +144,11 @@ def validate_load_result(loaded: LoadResult, *, probe_u64: bool = True) -> list[
     """
     out: list[Diagnostic] = []
 
-    out.extend(_probe_environment())
-    out.extend(_probe_machine_settings())
-    out.extend(_probe_data_dirs())
-    out.extend(_probe_char_rom())
+    if probe_environment:
+        out.extend(_probe_environment())
+        out.extend(_probe_machine_settings())
+        out.extend(_probe_data_dirs())
+        out.extend(_probe_char_rom())
     out.extend(_validate_unknown_keys(loaded))
     out.extend(_validate_schema_directive(loaded))
     out.extend(_validate_scenes(loaded))

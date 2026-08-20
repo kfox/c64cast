@@ -276,8 +276,22 @@ export interface LayerNote {
   error: string | null;
 }
 
+/** One problem `doctor.validate_load_result` found — the collect-all offline
+ *  check `--doctor --skip-probe` runs, reachable here as the `diagnostics` on
+ *  a pre-flight report so the console can say everything wrong with a config
+ *  at once rather than one thing per click. */
+export interface Diagnostic {
+  level: "ok" | "warn" | "error";
+  category: string;
+  subject: string;
+  message: string;
+  hint: string | null;
+}
+
 /** `POST /api/configs/{ref}/validate`, and the body of the 422 a refused save
- *  answers with. */
+ *  answers with. `diagnostics` is only ever populated by a pre-flight check
+ *  (an absent `text`, meaning "the file on disk") — a check of unsaved text
+ *  has no environment to run the collect-all pass against. */
 export interface ValidationReport {
   ok: boolean;
   error: string | null;
@@ -286,6 +300,7 @@ export interface ValidationReport {
   systems: string[];
   layers: LayerNote[];
   warnings: Warning[];
+  diagnostics: Diagnostic[];
 }
 
 /** Something that loads but will bite — media a scene names that isn't on this
@@ -332,13 +347,16 @@ export interface ConfigPatched extends ConfigWritten {
   text: string;
 }
 
-/** A scene added or removed — a structural change to the file rather than a
- *  new value for a field, so it reports which index moved rather than a list
- *  of edits. `scene.added` is where the new one landed. */
+/** A scene added, removed or reordered — a structural change to the file
+ *  rather than a new value for a field, so it reports which index changed
+ *  rather than a list of edits. `scene.added` is where the new one landed;
+ *  `scene.moved`/`scene.to` are the reorder's from/to indices. */
 export interface SceneChanged extends ConfigWritten {
   scene: {
     added?: number;
     removed?: number;
+    moved?: number;
+    to?: number;
     type: string;
     name?: string | null;
     copied_from?: number | null;
