@@ -1723,6 +1723,12 @@ class VideoScene(MediaFileMixin, Scene):
     def transport_is_paused(self) -> bool:
         return self.transport.is_paused()
 
+    def transport_loop_info(self) -> dict[str, float | str | None]:
+        return self.transport.loop_info()
+
+    def transport_loop_slots(self) -> list[int]:
+        return self.transport.loop_slots()
+
     def process_frame(self, current_time: float) -> bool:
         # A source at EOF while an A/B loop is active isn't "done" — it's
         # about to wrap to A (below) — so it doesn't end the scene.

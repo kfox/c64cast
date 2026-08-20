@@ -12,6 +12,8 @@ generated: true
 |---|---|---|
 | `auto_fit_strength` | `0 – 1` | `petscii`, `mcm`, `mhires` |
 | `color_match` | `2 values` | `petscii`, `mcm`, `hires`, `mhires` |
+| `border` | `16 values` | `blank` |
+| `background` | `16 values` | `blank` |
 | `dither_strength` | `0 – 2` | `mcm`, `hires`, `mhires` |
 | `dither_method` | `5 values` | `mcm`, `hires`, `mhires` |
 | `palette_mode` | `4 values` | `mcm`, `mhires` |

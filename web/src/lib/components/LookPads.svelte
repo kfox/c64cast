@@ -14,11 +14,17 @@
 
   // A save arms first and fires on the pad, rather than each pad carrying two
   // buttons: on a phone at a gig the pads have to stay big, and recall is the
-  // move that has to be fast.
+  // move that has to be fast. An *empty* pad has nothing to lose, though, so
+  // it saves on a plain tap without arming SAVE first — only a pad that would
+  // overwrite an existing look needs the arm-then-tap safety.
   let saving = $state(false);
 
   const saved = $derived(new Set(looks));
   const slots = $derived(Array.from({ length: SLOTS }, (_, i) => i + 1));
+
+  function tap(slot: number, isSaved: boolean): void {
+    onlook(slot, saving || !isSaved);
+  }
 </script>
 
 <div class="mb-3 flex items-center gap-3">
@@ -37,24 +43,27 @@
     SAVE
   </button>
   <p class="text-xs text-[var(--ink-dim)]">
-    {saving ? "A pad now stores the current clip and effect chain." : "A pad recalls its look."}
+    {saving
+      ? "A pad now stores the current clip and effect chain."
+      : "A pad recalls its look — an empty pad saves one instead."}
   </p>
 </div>
 
 <div class="grid grid-cols-[repeat(auto-fill,minmax(3.5rem,1fr))] gap-2">
   {#each slots as slot (slot)}
+    {@const isSaved = saved.has(slot)}
     <button
       type="button"
-      disabled={readOnly || (!saving && !saved.has(slot))}
-      onclick={() => onlook(slot, saving)}
+      disabled={readOnly}
+      onclick={() => tap(slot, isSaved)}
       class="aspect-square rounded-lg border font-mono text-sm
-             disabled:cursor-not-allowed disabled:opacity-30
+             disabled:cursor-not-allowed disabled:opacity-40
              focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]
-             {saved.has(slot)
+             {isSaved
         ? 'border-c64-cyan text-c64-cyan'
-        : 'border-[var(--edge)] text-[var(--ink-dim)]'}"
+        : 'border-dashed border-[var(--edge)] text-[var(--ink-dim)]'}"
     >
-      {slot}
+      {isSaved ? slot : "+"}
     </button>
   {/each}
 </div>

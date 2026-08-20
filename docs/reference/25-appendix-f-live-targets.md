@@ -5,7 +5,7 @@ generated: true
 
 # Live-Tune Targets
 
-The 27 parameters a MIDI knob, pad or web-console control can move while a show is running. Each names the `target` of a `param` action in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
+The 29 parameters a MIDI knob, pad or web-console control can move while a show is running. Each names the `target` of a `param` action in `[[midi_control.cc_map]]`: the holder that heads its section, a dot, and the parameter. A knob sweeps a scalar or bucket-selects a choice; a pad steps a choice on.
 
 ## Mapping One
 
@@ -27,6 +27,8 @@ The display mode's color pipeline. A row's target is `mode.` and its name.
 |---|---|---|---|
 | `auto_fit_strength` | `scalar` | `0 – 1` | `petscii`, `mcm`, `mhires` |
 | `color_match` | `choice` | `rgb`, `perceptual` | `petscii`, `mcm`, `hires`, `mhires` |
+| `border` | `choice` | `black`, `white`, `red`, `cyan`, `purple`, `green`, `blue`, `yellow`, `orange`, `brown`, `light red`, `dark gray`, `gray`, `light green`, `light blue`, `light gray` | `blank` |
+| `background` | `choice` | `black`, `white`, `red`, `cyan`, `purple`, `green`, `blue`, `yellow`, `orange`, `brown`, `light red`, `dark gray`, `gray`, `light green`, `light blue`, `light gray` | `blank` |
 | `dither_strength` | `scalar` | `0 – 2` | `mcm`, `hires`, `mhires` |
 | `dither_method` | `choice` | `none`, `ordered`, `blue_noise`, `floyd-steinberg`, `atkinson` | `mcm`, `hires`, `mhires` |
 | `palette_mode` | `choice` | `percell`, `cheap`, `vivid`, `grayscale` | `mcm`, `mhires` |

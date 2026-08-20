@@ -57,13 +57,34 @@ from c64cast.app.playlist import Playlist
 
 from . import live_tune
 from .performance import ClipEvent
+from .transport import TransportEvent
 
 log = logging.getLogger(__name__)
 
-#: The transport verbs a console may send. Each is one event the playlist's run
-#: loop already watches — the same events the C64 keyboard and a MIDI transport
-#: button set, so a web pause and a keyboard pause are the same pause.
-TRANSPORT_VERBS = ("pause", "resume", "skip")
+#: The transport verbs a console may send.
+#:
+#: ``pause``/``resume``/``skip`` set the same playlist events the C64
+#: keyboard and a MIDI transport button set — a machine-level halt, applied at
+#: the run loop's next clean boundary (see :meth:`PerfBridge.transport`).
+#:
+#: ``freeze``/``unfreeze``/``rw``/``ff``/``seek``/``loop_toggle``/``loop_slot``
+#: (Live DJ/VJ Phase 7) instead enqueue a
+#: :class:`~c64cast.control.transport.TransportEvent` onto the current
+#: scene's own :class:`~c64cast.scenes.video_transport.VideoTransportControls`
+#: — pause-in-place with audio muting, not a machine halt — which is what the
+#: Live tab's scrub bar, hold-to-rewind/fast-forward and A/B loop drive.
+TRANSPORT_VERBS = (
+    "pause",
+    "resume",
+    "skip",
+    "freeze",
+    "unfreeze",
+    "rw",
+    "ff",
+    "seek",
+    "loop_toggle",
+    "loop_slot",
+)
 
 # How often the WebSocket pushes a fresh state snapshot to connected consoles.
 # The beat grid advances continuously, so a client extrapolates the beat pulse
@@ -189,6 +210,7 @@ def _live_dict(pl: Playlist) -> list[dict[str, Any]]:
             "name": found.name,
             "kind": found.kind,
             "value": value,
+            "vocabulary": doc.vocabulary,
         }
         if found.kind == "scalar":
             row["min"] = found.lo
@@ -259,6 +281,30 @@ def _clip_state(slot: int, active: int | None, armed: int | None) -> str:
     return "loaded"
 
 
+def _transport_dict(pl: Playlist) -> dict[str, Any] | None:
+    """The DJ transport surface of the *current* scene (Live DJ/VJ Phase 7) —
+    ``None`` for a scene that declares none (a generator, a picture, a scope),
+    which is what tells the console to render no transport bar rather than one
+    that writes nowhere. Duck-typed against the same ``transport_*`` methods
+    :class:`~c64cast.control.transport.TransportSession` dispatches onto, so a
+    console can only ask for what the engine already exposes."""
+    scene = pl.current
+    position = getattr(scene, "transport_position", None)
+    duration = getattr(scene, "transport_duration", None)
+    is_paused = getattr(scene, "transport_is_paused", None)
+    if position is None or duration is None or is_paused is None:
+        return None
+    loop_info = getattr(scene, "transport_loop_info", None)
+    loop_slots = getattr(scene, "transport_loop_slots", None)
+    return {
+        "position": round(position(), 2),
+        "duration": duration(),
+        "frozen": is_paused(),
+        "loop": loop_info() if loop_info is not None else {"state": "none", "a": None, "b": None},
+        "loop_slots": loop_slots() if loop_slots is not None else [],
+    }
+
+
 def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
     perf = pl.performance
     active = perf.active_slot
@@ -297,6 +343,9 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         # only for a slot that holds a look. Reads the store from disk; cheap at
         # the state-poll cadence.
         "looks": perf.saved_look_slots(),
+        # The current scene's DJ transport (freeze/scrub/rw/ff/A-B loop), or
+        # None when it has none — see _transport_dict.
+        "transport": _transport_dict(pl),
     }
 
 
@@ -412,21 +461,63 @@ class PerfBridge:
         live_tune.apply(pl, target, move)
         return True
 
-    def transport(self, system: str | None, verb: str) -> bool:
-        """``pause`` / ``resume`` / ``skip`` on the target system.
+    def transport(
+        self,
+        system: str | None,
+        verb: str,
+        *,
+        pressed: bool = True,
+        target: float | None = None,
+        slot: int = 0,
+        save: bool | None = None,
+        clear: bool | None = None,
+    ) -> bool:
+        """Every transport verb (``TRANSPORT_VERBS``) on the target system.
 
-        Sets the same events the C64's own keys and a MIDI transport button set,
-        so the run loop applies them at its next clean boundary rather than
-        mutating a scene from this thread. ``resume`` on a show that is not
-        paused is harmless — the event is simply never consumed — so unlike the
-        control plane's ``/resume`` there is no conflict to report; a console
-        showing a Pause button that is really a Resume button is the UI's
-        problem, and it has the ``paused`` flag to solve it with."""
+        ``pause``/``resume``/``skip`` set the same events the C64's own keys
+        and a MIDI transport button set, so the run loop applies them at its
+        next clean boundary rather than mutating a scene from this thread.
+        ``resume`` on a show that is not paused is harmless — the event is
+        simply never consumed — so unlike the control plane's ``/resume``
+        there is no conflict to report; a console showing a Pause button that
+        is really a Resume button is the UI's problem, and it has the
+        ``paused`` flag to solve it with.
+
+        Everything else (Live DJ/VJ Phase 7 — freeze/scrub/rw/ff/loop) instead
+        enqueues a :class:`~c64cast.control.transport.TransportEvent`, the same
+        queue the MIDI transport surface drains from — see
+        :class:`~c64cast.control.transport.TransportSession`. ``freeze``/
+        ``unfreeze`` enqueue the target state rather than a bare toggle, and
+        :meth:`~c64cast.control.transport.TransportSession._dispatch` checks
+        ``transport_is_paused`` itself, on the playlist thread, right before
+        acting on it — so two consoles open on the same show, or a network
+        retry, can't race each other's stale read of the pre-enqueue state
+        into a double-toggle that cancels out."""
         pl = self._resolve(system)
         if pl is None or verb not in TRANSPORT_VERBS:
             return False
-        event = {"pause": pl.pause_event, "resume": pl.resume_event, "skip": pl.skip_event}[verb]
-        event.set()
+        if verb in ("pause", "resume", "skip"):
+            event = {"pause": pl.pause_event, "resume": pl.resume_event, "skip": pl.skip_event}[
+                verb
+            ]
+            event.set()
+            return True
+        if verb in ("freeze", "unfreeze"):
+            pl.transport.enqueue(TransportEvent(action=verb))
+            return True
+        if verb in ("rw", "ff"):
+            pl.transport.enqueue(TransportEvent(action=verb, pressed=pressed))
+            return True
+        if verb == "seek":
+            if target is None:
+                return False
+            pl.transport.enqueue(TransportEvent(action="seek", target=target))
+            return True
+        if verb == "loop_toggle":
+            pl.transport.enqueue(TransportEvent(action="loop_toggle"))
+            return True
+        # loop_slot
+        pl.transport.enqueue(TransportEvent(action="loop_slot", slot=slot, save=save, clear=clear))
         return True
 
     def jump(self, system: str | None, index: int) -> bool:
@@ -477,7 +568,18 @@ class PerfBridge:
                 value=cmd.get("value"),
             )
         if action == "transport":
-            return self.transport(system, str(cmd.get("verb", "")))
+            target = cmd.get("target")
+            save = cmd.get("save")
+            clear = cmd.get("clear")
+            return self.transport(
+                system,
+                str(cmd.get("verb", "")),
+                pressed=bool(cmd.get("pressed", True)),
+                target=None if target is None else float(target),
+                slot=int(cmd.get("slot", 0)),
+                save=None if save is None else bool(save),
+                clear=None if clear is None else bool(clear),
+            )
         if action == "jump":
             return self.jump(system, int(cmd["index"]))
         if action == "look":

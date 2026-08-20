@@ -516,6 +516,45 @@ class LiveTuneApplyTests(unittest.TestCase):
         self.assertAlmostEqual(scene.source.speed, 0.5)
 
 
+class BlankModeColorLiveTuneTests(unittest.TestCase):
+    """``mode.border``/``mode.background`` (Live DJ/VJ Phase 7) through the
+    real BlankDisplayMode, not a fake mode — the Live tab's picker has to land
+    on the actual $D020/$D021 write, not just satisfy a mock's call log."""
+
+    def _pl(self, cfg_index: int | None = 0) -> tuple[Any, Any, Any]:
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        mode = BlankDisplayMode(border=0, background=0)
+        scene = _RichScene(mode, cfg_index)
+        scene.api = FakeAPI()
+        return _FakePlaylist(scene), mode, scene
+
+    def test_border_applies_and_repaints_live(self):
+        pl, mode, scene = self._pl()
+        self.assertTrue(lt.apply(pl, "mode.border", lt.Move(value="light blue")))
+        self.assertEqual(mode.border, 14)
+        self.assertEqual(scene.api.regs["D020"], (14, 0))
+
+    def test_background_applies_and_repaints_live(self):
+        pl, mode, scene = self._pl()
+        self.assertTrue(lt.apply(pl, "mode.background", lt.Move(value="red")))
+        self.assertEqual(mode.background, 2)
+        self.assertEqual(scene.api.regs["D020"], (0, 2))
+
+    def test_border_records_against_the_scene_it_was_turned_on(self):
+        # border/background are per-[[scenes]] fields (like palette_mode), not
+        # [color] — the save-back writes one scene's block, not the show.
+        pl, _mode, _scene = self._pl(cfg_index=3)
+        lt.apply(pl, "mode.border", lt.Move(value="red"))
+        (row,) = pl.live_tracker.pending()
+        self.assertEqual((row["target"], row["field"], row["scene"]), ("mode.border", "border", 3))
+
+    def test_a_color_the_picker_does_not_offer_is_refused(self):
+        pl, mode, _scene = self._pl()
+        self.assertFalse(lt.apply(pl, "mode.border", lt.Move(value="not a color")))
+        self.assertEqual(mode.border, 0)
+
+
 # ---------------------------------------------- LiveTuneTracker ----------------
 class LiveTuneTrackerTests(unittest.TestCase):
     def test_record_and_describe(self):

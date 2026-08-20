@@ -63,6 +63,18 @@ def color_display_name(index: int) -> str:
     return C64_COLOR_NAMES[index & 0x0F]
 
 
+# Reverse of C64_COLORS: index -> the lowercase spelling a config (and a
+# LIVE_CHOICES value) is written with. Built once at import.
+_INDEX_TO_WRITE_NAME: dict[int, str] = {index: name for name, index in C64_COLORS.items()}
+
+
+def color_name(index: int) -> str:
+    """The lowercase spelling ``resolve_color`` accepts back for a palette
+    index (0..15) — what a live-tune choice reads its current value as,
+    since that's what a picker's swatches are named."""
+    return _INDEX_TO_WRITE_NAME[index & 0x0F]
+
+
 # --- Fuzzy color-name resolution -------------------------------------------
 # _COLOR_ALIASES maps many spellings/abbreviations to a palette index so config
 # color knobs accept forgiving names (case-insensitive, "lgrn", "mgry", "blk",

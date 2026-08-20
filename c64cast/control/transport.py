@@ -215,6 +215,8 @@ _MODE_FIELD_TO_COLOR: dict[str, str] = {
 # entries, because it is two settings.
 _MODE_FIELD_TO_SCENE: dict[str, str] = {
     "palette_mode": "palette_mode",
+    "border": "border",
+    "background": "background",
 }
 
 # The live-tunable mode params that deliberately have no config field at all,
@@ -461,24 +463,34 @@ _CHORD_HOLD_WINDOW_S = 5.0
 
 @dataclass(frozen=True)
 class TransportEvent:
-    """One MIDI-triggered transport action, queued by the MIDI reader thread
-    and drained on the playlist thread by :meth:`TransportSession.tick`.
+    """One transport action, queued by whichever surface fired it (the MIDI
+    reader thread, or a web console's HTTP worker — see
+    :meth:`c64cast.control.perf_console.PerfBridge.transport`) and drained on
+    the playlist thread by :meth:`TransportSession.tick`.
 
     ``action`` is the short form (``"play_pause"``, ``"stop"``, ``"record"``,
-    ``"loop_toggle"``, ``"rw"``, ``"ff"``, ``"jog"``, ``"loop_slot"`` — the
-    cc_map action string with any ``"transport."`` prefix stripped; plain
-    ``loop_slot`` has no prefix to strip). ``pressed`` distinguishes a
-    note-on from a note-off for the hold-aware rw/ff/record/stop actions
+    ``"loop_toggle"``, ``"rw"``, ``"ff"``, ``"jog"``, ``"seek"``,
+    ``"loop_slot"`` — the cc_map action string with any ``"transport."``
+    prefix stripped; plain ``loop_slot`` has no prefix to strip). ``pressed``
+    distinguishes a note-on from a note-off for the hold-aware rw/ff actions
     (ignored by the others). ``value`` is the raw MIDI value/velocity
     (0-127) — used by ``jog``. ``mode`` is jog's ``"abs"``/``"rel"``
     (default ``"rel"``), from the cc_map entry. ``slot`` is the pad number
-    for ``loop_slot`` (unused otherwise)."""
+    for ``loop_slot`` (unused otherwise). ``target`` is an absolute
+    content-seconds position for ``seek`` — a scrub bar's drag target, in a
+    different domain than ``jog``'s 0..127 controller reading. ``save``/
+    ``clear`` override ``loop_slot``'s MIDI Stop/Record-held chord detection
+    with an explicit choice — what a console with no "hold Stop" gesture
+    sends instead; ``None`` (the MIDI default) falls back to the chord."""
 
     action: str
     pressed: bool = True
     value: int = 0
     mode: str = "rel"
     slot: int = 0
+    target: float | None = None
+    save: bool | None = None
+    clear: bool | None = None
 
 
 def _decode_relative_jog(value: int) -> int:
@@ -575,6 +587,16 @@ class TransportSession:
                 toggle = getattr(scene, "transport_toggle_pause", None)
                 if toggle is not None:
                     toggle()
+        elif event.action in ("freeze", "unfreeze"):
+            # Checked here rather than by the caller that enqueued this: two
+            # duplicate requests (two open consoles, a network retry) both
+            # land on this one drain loop, so the second sees the first's
+            # effect and no-ops instead of toggling back.
+            is_paused = getattr(scene, "transport_is_paused", None)
+            if is_paused is not None and is_paused() != (event.action == "freeze"):
+                toggle = getattr(scene, "transport_toggle_pause", None)
+                if toggle is not None:
+                    toggle()
         elif event.action == "stop":
             if event.pressed:
                 stop = getattr(scene, "transport_stop", None)
@@ -594,11 +616,21 @@ class TransportSession:
             if event.pressed:
                 loop_slot = getattr(scene, "transport_loop_slot", None)
                 if loop_slot is not None:
-                    clear = self._chord_active(self._record_held_since, now)
-                    save = (not clear) and self._chord_active(self._stop_held_since, now)
+                    if event.save is not None or event.clear is not None:
+                        # An explicit choice (a console with no "hold Stop"
+                        # gesture) overrides the MIDI chord entirely.
+                        clear = bool(event.clear)
+                        save = (not clear) and bool(event.save)
+                    else:
+                        clear = self._chord_active(self._record_held_since, now)
+                        save = (not clear) and self._chord_active(self._stop_held_since, now)
                     loop_slot(event.slot, save=save, clear=clear)
         elif event.action == "jog":
             self._apply_jog(scene, event)
+        elif event.action == "seek":
+            seek = getattr(scene, "transport_seek", None)
+            if event.pressed and event.target is not None and seek is not None:
+                seek(event.target)
 
     @staticmethod
     def _chord_active(held_since: float | None, now: float) -> bool:

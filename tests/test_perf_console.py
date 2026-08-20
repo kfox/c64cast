@@ -30,7 +30,7 @@ from c64cast.control.perf_console import (
     _beats_remaining,
     _system_state,
 )
-from c64cast.control.transport import LiveTuneTracker
+from c64cast.control.transport import LiveTuneTracker, TransportEvent
 from c64cast.scenes.effects import TrailsEffect
 
 try:
@@ -102,6 +102,52 @@ class _FakeScene:
             self.source = source
 
 
+class _FakeTransportScene(_FakeScene):
+    """A scene declaring the DJ transport surface (Live DJ/VJ Phase 7) —
+    `_FakeScene` has none, which is what exercises `_transport_dict`'s "no
+    transport bar for this scene" branch."""
+
+    def __init__(
+        self,
+        name: str = "clip",
+        *,
+        paused: bool = False,
+        position: float = 12.5,
+        duration: float | None = 60.0,
+        loop: dict[str, Any] | None = None,
+        loop_slots: list[int] | None = None,
+    ) -> None:
+        super().__init__(name)
+        self._paused = paused
+        self._position = position
+        self._duration = duration
+        self._loop = loop or {"state": "none", "a": None, "b": None}
+        self._loop_slots = loop_slots or []
+
+    def transport_is_paused(self) -> bool:
+        return self._paused
+
+    def transport_position(self) -> float:
+        return self._position
+
+    def transport_duration(self) -> float | None:
+        return self._duration
+
+    def transport_loop_info(self) -> dict[str, Any]:
+        return self._loop
+
+    def transport_loop_slots(self) -> list[int]:
+        return self._loop_slots
+
+
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.events: list[TransportEvent] = []
+
+    def enqueue(self, event: TransportEvent) -> None:
+        self.events.append(event)
+
+
 class _FakeSource:
     """A scene generator declaring one real live-tune target. Named after the
     range `introspect.live_targets()` reports for `source.scale`, so the panel
@@ -122,10 +168,11 @@ class _FakePlaylist:
         scene_name: str = "demo",
         source: Any = None,
         config_path: str = "",
+        scene: Any = None,
     ) -> None:
         self.tempo = _FakeTempo()
         self.performance = _FakePerf(clips)
-        self.current = _FakeScene(scene_name, effects, source)
+        self.current = scene if scene is not None else _FakeScene(scene_name, effects, source)
         self.scenes = [self.current]
         self.index = 0
         self.pause_event = threading.Event()
@@ -138,6 +185,10 @@ class _FakePlaylist:
         self.config_path = config_path
         self.osd: list[str] = []
         self.jumps: list[tuple[int, bool]] = []
+        # A real TransportSession would getattr-probe the scene and touch a
+        # frame; the bridge only ever enqueues onto it, so a plain recorder is
+        # enough to assert what was queued without a playlist thread to drain it.
+        self.transport = _FakeTransport()
 
     def post_osd(self, text: str) -> None:
         self.osd.append(text)
@@ -327,6 +378,54 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertFalse(bridge.transport(None, "rewind"))
         self.assertFalse(pl.pause_event.is_set())
 
+    def test_freeze_and_unfreeze_enqueue_their_own_verb(self):
+        # The idempotency check against transport_is_paused now happens on
+        # the playlist thread, inside TransportSession._dispatch (see
+        # tests/test_transport.py) — not here at enqueue time, so that two
+        # requests racing ahead of a single drain can't both read the same
+        # stale state and cancel each other out.
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        self.assertTrue(bridge.transport(None, "freeze"))
+        self.assertTrue(bridge.transport(None, "unfreeze"))
+        self.assertEqual([e.action for e in pl.transport.events], ["freeze", "unfreeze"])
+
+    def test_freeze_on_a_scene_with_no_transport_surface_still_enqueues(self):
+        # _dispatch's own missing-surface check (duck-typed getattr) makes
+        # this a no-op once drained — see
+        # test_transport.test_unknown_scene_type_missing_surface_is_noop.
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.transport(None, "freeze"))
+        self.assertEqual([e.action for e in pl.transport.events], ["freeze"])
+
+    def test_rw_and_ff_enqueue_holds_with_pressed(self):
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        self.assertTrue(bridge.transport(None, "rw", pressed=True))
+        self.assertTrue(bridge.transport(None, "ff", pressed=False))
+        got = [(e.action, e.pressed) for e in pl.transport.events]
+        self.assertEqual(got, [("rw", True), ("ff", False)])
+
+    def test_seek_requires_a_target(self):
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        self.assertFalse(bridge.transport(None, "seek"))
+        self.assertEqual(pl.transport.events, [])
+        self.assertTrue(bridge.transport(None, "seek", target=12.5))
+        self.assertEqual(pl.transport.events[0].target, 12.5)
+
+    def test_loop_toggle_enqueues(self):
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        self.assertTrue(bridge.transport(None, "loop_toggle"))
+        self.assertEqual(pl.transport.events[0].action, "loop_toggle")
+
+    def test_loop_slot_carries_slot_and_explicit_save_clear(self):
+        # A console has no "hold Stop" gesture, so it says save/clear outright
+        # rather than relying on the MIDI chord-timing fallback.
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        self.assertTrue(bridge.transport(None, "loop_slot", slot=3, save=True))
+        event = pl.transport.events[0]
+        self.assertEqual(
+            (event.action, event.slot, event.save, event.clear), ("loop_slot", 3, True, None)
+        )
+
     def test_paused_and_scenes_are_in_the_state(self):
         bridge, pl = _bridge(scene_name="opener")
         state = bridge.state()["systems"][0]
@@ -338,6 +437,31 @@ class PerfBridgeTest(unittest.TestCase):
         )
         pl.pause_event.set()
         self.assertTrue(bridge.state()["systems"][0]["paused"])
+
+    def test_transport_is_none_for_a_scene_with_no_transport_surface(self):
+        bridge, _pl = _bridge()
+        self.assertIsNone(bridge.state()["systems"][0]["transport"])
+
+    def test_transport_reflects_the_scenes_own_surface(self):
+        scene = _FakeTransportScene(
+            paused=True,
+            position=12.5,
+            duration=60.0,
+            loop={"state": "active", "a": 1.0, "b": 5.0},
+            loop_slots=[2, 5],
+        )
+        bridge, _pl = _bridge(scene=scene)
+        transport = bridge.state()["systems"][0]["transport"]
+        self.assertEqual(
+            transport,
+            {
+                "position": 12.5,
+                "duration": 60.0,
+                "frozen": True,
+                "loop": {"state": "active", "a": 1.0, "b": 5.0},
+                "loop_slots": [2, 5],
+            },
+        )
 
     def test_jump_is_a_cut(self):
         bridge, pl = _bridge()
@@ -358,6 +482,23 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertTrue(pl.skip_event.is_set())
         bridge.apply({"action": "jump", "index": 0})
         self.assertEqual(pl.jumps, [(0, True)])
+
+    def test_apply_carries_the_transport_verbs_extra_fields(self):
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        bridge.apply({"action": "transport", "verb": "seek", "target": 30.0})
+        bridge.apply({"action": "transport", "verb": "rw", "pressed": False})
+        bridge.apply({"action": "transport", "verb": "loop_slot", "slot": 4, "clear": True})
+        got = [
+            (e.action, e.target, e.pressed, e.slot, e.save, e.clear) for e in pl.transport.events
+        ]
+        self.assertEqual(
+            got,
+            [
+                ("seek", 30.0, True, 0, None, None),
+                ("rw", None, False, 0, None, None),
+                ("loop_slot", None, True, 4, None, True),
+            ],
+        )
 
     def test_beats_remaining(self):
         pl = _FakePlaylist()

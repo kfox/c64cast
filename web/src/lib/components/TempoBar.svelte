@@ -9,10 +9,9 @@
     paused: boolean;
     readOnly?: boolean;
     ontap: () => void;
-    ontransport: (verb: "pause" | "resume" | "skip") => void;
   }
 
-  let { tempo, scene, armed, paused, readOnly = false, ontap, ontransport }: Props = $props();
+  let { tempo, scene, armed, paused, readOnly = false, ontap }: Props = $props();
 
   /** Where the beat clock was when the host last told us, and when we heard it.
    *  Deliberately a plain object rather than `$state`: the frame loop below
@@ -82,25 +81,22 @@
     {tempo.source}{tempo.running ? "" : " · stopped"}
   </p>
 
-  {#if countIn}
-    <p class="font-mono text-xs text-c64-yellow">· {countIn}</p>
+  {#if paused}
+    <!-- A machine-level halt (the C64's own keys, MIDI, or the legacy /perf
+         console) — a different thing from TransportBar's per-scene Freeze,
+         and this bar's only job is to say so: the pause/resume control itself
+         still lives on /perf, not here. -->
+    <p class="font-mono text-xs text-c64-yellow">· paused</p>
   {/if}
 
-  {#if paused}
-    <p class="font-mono text-xs text-c64-yellow">· paused</p>
+  {#if countIn}
+    <p class="font-mono text-xs text-c64-yellow">· {countIn}</p>
   {/if}
 
   <div class="ms-auto flex items-center gap-2">
     {#if scene}
       <p class="truncate font-mono text-xs text-[var(--ink-dim)]">scene: {scene}</p>
     {/if}
-    <!-- Transport where a performer's thumb already is. One button rather than
-         two: the host tells us whether the show is paused, so the control can
-         say what it will do instead of offering both and being half wrong. -->
-    <Button disabled={readOnly} onclick={() => ontransport(paused ? "resume" : "pause")}>
-      {paused ? "Resume" : "Pause"}
-    </Button>
-    <Button disabled={readOnly} onclick={() => ontransport("skip")}>Skip</Button>
     <Button disabled={readOnly} onclick={ontap}>Tap</Button>
   </div>
 </div>

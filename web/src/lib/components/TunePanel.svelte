@@ -1,15 +1,22 @@
 <script lang="ts">
+  import ColorSwatches from "$lib/components/ColorSwatches.svelte";
   import FxSlider from "$lib/components/FxSlider.svelte";
-  import type { Knob, LiveKnob } from "$lib/types";
+  import type { Knob, LiveKnob, Swatch } from "$lib/types";
 
   interface Props {
     knobs: LiveKnob[];
+    /** The host's live palette (`introspect.palette_swatches()`), for a
+     *  `vocabulary === "c64color"` knob (border/background) to render as
+     *  swatches instead of a `<select>`. Empty falls back to the select — a
+     *  console that hasn't fetched introspection yet still renders something
+     *  a performer can turn. */
+    palette?: Swatch[];
     readOnly?: boolean;
     onscalar: (target: string, norm: number) => void;
     onchoice: (target: string, value: string) => void;
   }
 
-  let { knobs, readOnly = false, onscalar, onchoice }: Props = $props();
+  let { knobs, palette = [], readOnly = false, onscalar, onchoice }: Props = $props();
 
   /** Grouped the way the host grouped them — `Color pipeline`, `Generator`,
    *  `Scope` — which is `introspect.live_targets()`'s own grouping and so the
@@ -58,6 +65,17 @@
                 {readOnly}
                 onchange={(norm) => onscalar(knob.target, norm)}
               />
+            {:else if knob.vocabulary === "c64color" && palette.length > 0}
+              <div class="space-y-1">
+                <span class="block font-mono text-xs text-[var(--ink-dim)]">{knob.name}</span>
+                <ColorSwatches
+                  label={knob.name}
+                  {palette}
+                  value={knob.value}
+                  disabled={readOnly}
+                  onpick={(v) => onchoice(knob.target, v as string)}
+                />
+              </div>
             {:else}
               <div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-center gap-3">
                 <!-- `aria-label` rather than `<label for>`: a param name is

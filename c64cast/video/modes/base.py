@@ -21,6 +21,7 @@ from c64cast.video.palette import (
     ColorFit,
     ColorMap,
     HueCorrection,
+    color_name,
     make_gray_penalty,
     parse_channel_boost,
     parse_hue_corrections,
@@ -630,18 +631,20 @@ class DisplayMode:
             return None
         return self._color_fit.lerped(self._auto_fit_strength)
 
+    #: Choice fields whose setter needs the backend handle to repaint a VIC
+    #: register live, the same reason palette_mode does — border/background
+    #: only ever hit $D020/$D021 at setup() otherwise (see BlankDisplayMode).
+    _CHOICES_NEEDING_API: frozenset[str] = frozenset({"palette_mode", "border", "background"})
+
     def set_live_choice(self, api: C64Backend, name: str, value: str) -> str:
         """Apply a discrete LIVE_CHOICES value to the running mode; return a short
-        OSD label. palette_mode needs the backend handle so it's special-cased;
-        every other choice dispatches to its ``set_<name>`` setter. Empty label
-        (a no-op) when the mode has no such setter."""
-        if name == "palette_mode":
-            setter = getattr(self, "set_palette_mode", None)
-            return setter(api, value) if setter is not None else ""
+        OSD label. A handful of choices need the backend handle so they're
+        special-cased; every other choice dispatches to its ``set_<name>``
+        setter. Empty label (a no-op) when the mode has no such setter."""
         setter = getattr(self, "set_" + name, None)
         if setter is None:
             return ""
-        label = setter(value)
+        label = setter(api, value) if name in self._CHOICES_NEEDING_API else setter(value)
         return label if isinstance(label, str) else f"{name}={value}"
 
     def get_live_choice(self, name: str) -> str | None:
@@ -659,6 +662,9 @@ class DisplayMode:
             return "perceptual" if getattr(self, "_perceptual", False) else "rgb"
         if name == "palette_mode":
             return getattr(self, "palette_mode", None)
+        if name in ("border", "background"):
+            index = getattr(self, name, None)
+            return color_name(index) if isinstance(index, int) else None
         value = getattr(self, f"_{name}", None)
         return value if isinstance(value, str) else None
 

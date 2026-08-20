@@ -76,6 +76,49 @@ class BlankDisplayModeTest(unittest.TestCase):
         self.assertTrue(all(b == 6 for b in api.regions[0xD800]))
 
 
+class BlankDisplayModeLiveTuneTest(unittest.TestCase):
+    """`border`/`background` as live-tune targets (Live DJ/VJ Phase 7) — the
+    visual color/palette picker on the web console's Live tab. Declared via
+    LIVE_CHOICES like every other mode knob, so `introspect.live_targets()`
+    picks them up with no registry change (see tests/test_midi_setup.py's
+    drift test)."""
+
+    def test_declares_border_and_background_as_choices(self):
+        self.assertIn("border", BlankDisplayMode.LIVE_CHOICES)
+        self.assertIn("background", BlankDisplayMode.LIVE_CHOICES)
+        # Every canonical color spelling, so a picker's swatches always
+        # resolve — palette.resolve_color accepts exactly these keys.
+        self.assertEqual(len(BlankDisplayMode.LIVE_CHOICES["border"]), 16)
+
+    def test_set_border_repaints_the_register_live(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=0, background=6)
+        label = m.set_live_choice(api, "border", "light blue")
+        self.assertEqual(m.border, 14)
+        self.assertEqual(api.regs["D020"], (14, 6))
+        self.assertIn("light blue", label.lower())
+
+    def test_set_background_repaints_the_register_live(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=0)
+        label = m.set_live_choice(api, "background", "red")
+        self.assertEqual(m.background, 2)
+        self.assertEqual(api.regs["D020"], (2, 2))
+        self.assertIn("red", label.lower())
+
+    def test_get_live_choice_reads_back_the_canonical_spelling(self):
+        m = BlankDisplayMode(border=14, background=2)
+        self.assertEqual(m.get_live_choice("border"), "light blue")
+        self.assertEqual(m.get_live_choice("background"), "red")
+
+    def test_an_unknown_color_name_is_a_noop(self):
+        api = FakeAPI()
+        m = BlankDisplayMode(border=2, background=6)
+        with self.assertRaises(ValueError):
+            m.set_live_choice(api, "border", "not a color")
+        self.assertEqual(m.border, 2)
+
+
 class BlankSceneTest(unittest.TestCase):
     def test_scene_constructs_without_source(self):
         from c64cast.scenes.scenes import BlankScene
