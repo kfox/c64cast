@@ -675,6 +675,27 @@ master files read but have no such view — they are authored across several fil
 > file can reach. Keep the full token private, and hand out `viewer_token` to
 > anyone who only needs to watch.
 
+### Browsing Media
+
+`media_roots` lists the directories the Editor's `file =` fields may browse
+for existing media, and offers a datalist of what is actually there instead of
+a bare text box you have to fill from memory. Leave it empty and it is the
+four directories the loader itself already defaults to
+(`assets/videos`, `assets/sids`, `assets/pictures`, `assets/programs`):
+
+```toml
+[web]
+media_roots = ["~/Movies", "assets/videos"]
+```
+
+Unlike `config_roots`, one list is browsed for every kind of media at once —
+a scene's own type decides which kind (video, `.sid`, still image, program, or
+generative audio) it offers, not which directory is searched. A directory
+inside a root shows up too, whenever it directly holds a matching file, since
+`file =` already treats a directory as a random pick per scene. This surface
+is **read-only**: nothing is ever written under a media root, only listed —
+uploading a file from the browser is a separate surface, not built yet.
+
 ### The Token Is Not Optional Here
 
 Unlike the control plane, this surface has no unauthenticated mode. It starts

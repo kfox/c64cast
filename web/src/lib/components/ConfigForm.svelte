@@ -5,6 +5,7 @@
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
   import type { DocIndex } from "$lib/introspect";
+  import { kindsForScene, pickerOptions, urlFromDrop } from "$lib/mediaPickerLogic";
   import type {
     ConfigEdit,
     ConfigForm,
@@ -12,6 +13,8 @@
     FormField,
     FormScene,
     FormSection,
+    MediaEntry,
+    SceneTypeDoc,
     ValidationReport,
     Warning,
   } from "$lib/types";
@@ -31,9 +34,33 @@
      *  reload covers in full — which includes every structural change, since
      *  adding or removing a scene is exactly what a reload is for. */
     onsaved: (written: ConfigWritten, restart: string[]) => void;
+    /** Media kind -> what's browsable there (`Config.svelte` fetches one
+     *  listing per kind any loaded scene type actually uses). Absent kinds
+     *  just render an empty datalist — a picker with nothing to offer is a
+     *  plain text box, which is exactly the fallback. */
+    media?: Record<string, MediaEntry[]>;
   }
 
-  let { form, docs, path, readOnly, pending, onpending, onsaved }: Props = $props();
+  let { form, docs, path, readOnly, pending, onpending, onsaved, media = {} }: Props = $props();
+
+  /** The datalist options a scene type's `file =` field offers: the union of
+   *  every media kind it browses, deduplicated. Cached per scene type name so
+   *  staging an edit elsewhere in the form — which replaces `pending` and
+   *  would otherwise re-run this for every `file =` field — only recomputes
+   *  when `media` itself changes. */
+  const mediaOptions = $derived.by(() => {
+    const cache = new Map<string, string[]>();
+    return (doc: SceneTypeDoc | undefined): string[] => {
+      const key = doc?.name ?? "";
+      let options = cache.get(key);
+      if (!options) {
+        const entries = kindsForScene(doc).flatMap((kind) => media[kind] ?? []);
+        options = [...new Set(pickerOptions(entries))];
+        cache.set(key, options);
+      }
+      return options;
+    };
+  });
 
   /** Hide every field still sitting at its baseline. On by default: a config
    *  has 167 settable fields and a show file names a dozen of them, and the
@@ -235,6 +262,31 @@
     }
   }
 
+  // Highlighted while a drag hovers a scene card; `null` the rest of the time.
+  let dragOverIndex = $state<number | null>(null);
+
+  /** Dropping a **URL** onto a scene sets its `file =` field directly — no
+   *  upload path exists, so anything else (a real file from the desktop) is
+   *  ignored with a hint rather than silently doing nothing. Saved as its own
+   *  immediate patch, the same way `structural()` already handles add/remove,
+   *  because a drop isn't part of the staged-edit flow a keystroke goes
+   *  through. */
+  async function dropUrl(index: number, event: DragEvent): Promise<void> {
+    event.preventDefault();
+    dragOverIndex = null;
+    if (readOnly || busy || structuralBlocked) return;
+    const dt = event.dataTransfer;
+    const url = urlFromDrop({
+      "text/uri-list": dt?.getData("text/uri-list") ?? "",
+      "text/plain": dt?.getData("text/plain") ?? "",
+    });
+    if (!url) {
+      problem = "Drop a URL to set a scene's file — uploading a file from the desktop isn't wired up yet.";
+      return;
+    }
+    await structural(() => api.patchConfig(path, [{ scene: index, field: "file", value: url }]));
+  }
+
   async function save(): Promise<void> {
     report = null;
     problem = "";
@@ -304,7 +356,16 @@
     <div class="space-y-4">
       {#each scenes as row (row.index)}
         {@const doc = docs.sceneType(row.scene.type)}
-        <article class="rounded-lg border border-[var(--edge)] p-3">
+        <article
+          class="rounded-lg border p-3
+                 {dragOverIndex === row.index ? 'border-[var(--accent)]' : 'border-[var(--edge)]'}"
+          ondragover={(e) => {
+            e.preventDefault();
+            dragOverIndex = row.index;
+          }}
+          ondragleave={() => (dragOverIndex = null)}
+          ondrop={(e) => void dropUrl(row.index, e)}
+        >
           <header class="mb-2 flex flex-wrap items-start justify-between gap-2">
             <div class="min-w-0 flex-1">
               <h4 class="text-sm font-medium">
@@ -365,6 +426,7 @@
               choices={fd?.choices ?? []}
               vocabulary={fd?.vocabulary ?? ""}
               palette={docs.palette}
+              options={fd?.vocabulary === "media" ? mediaOptions(doc) : []}
               live={fd?.apply === "live"}
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}

@@ -278,6 +278,32 @@ class VocabularyTest(unittest.TestCase):
         scene_fields = {f["name"]: f for st in doc["scene_types"] for f in st["fields"]}
         self.assertEqual(scene_fields["border"]["vocabulary"], "c64color")
 
+    def test_file_declares_the_media_vocabulary(self):
+        self.assertEqual(self._scene_field("file").vocabulary, "media")
+
+
+class MediaKindTest(unittest.TestCase):
+    """`SceneTypeDoc.media_kinds` says which media_store.py kind(s) a scene
+    type's `file =` field browses. It can't live on the field itself — the
+    same `file` field means videos on `video` and .sid files on `waveform` —
+    so this is the drift guard that keeps its lookup table honest against the
+    field's own `applies_to`."""
+
+    def test_every_type_with_a_file_field_has_media_kinds(self):
+        for st in introspect.scene_types():
+            has_file = any(f.name == "file" for f in st.fields)
+            self.assertEqual(bool(st.media_kinds), has_file, st.name)
+
+    def test_a_type_with_no_file_field_has_no_media_kinds(self):
+        webcam = next(st for st in introspect.scene_types() if st.name == "webcam")
+        self.assertEqual(webcam.media_kinds, ())
+
+    def test_it_reaches_the_document_the_console_renders(self):
+        doc = introspect.as_dict()
+        kinds = {st["name"]: st["media_kinds"] for st in doc["scene_types"]}
+        self.assertEqual(kinds["video"], ["video"])
+        self.assertEqual(kinds["generative"], ["sid", "audio"])
+
 
 class PaletteSwatchTest(unittest.TestCase):
     """The swatch picker's colors are served rather than copied into the

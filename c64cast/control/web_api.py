@@ -38,6 +38,10 @@ through the config dataclasses (the generated form). Every path goes through
 the jail is not repeated here, because a second copy of it is a second thing to
 get wrong.
 
+``/api/media`` is the read-only sibling: what a `file =` field could point at,
+from :class:`~c64cast.app.media_store.MediaStore`. No write path lives here —
+uploading media is a separate surface, not yet built.
+
 ``/api/session/live-tune`` is where those two halves meet. A one-shot run asks
 "save these knob changes?" at exit; a daemon has no exit and no terminal, and a
 host that rewrote every show file it stopped would be unusable — so under
@@ -74,6 +78,7 @@ from c64cast.app.config_store import (
     PathRejected,
 )
 from c64cast.app.console_library import ConsoleLibrary
+from c64cast.app.media_store import MediaKindUnknown, MediaStore
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
@@ -197,6 +202,7 @@ def register_web_routes(
     playlists: PlaylistRegistry,
     store: ConfigStore,
     library: ConsoleLibrary | None = None,
+    media: MediaStore | None = None,
     log_buffer: Any = None,
     viewer: ViewerCredential | None = None,
     screen_fps: float = 10.0,
@@ -224,6 +230,7 @@ def register_web_routes(
     from .perf_console import PerfBridge
 
     lib = library if library is not None else ConsoleLibrary()
+    med = media if media is not None else MediaStore()
     bridge = PerfBridge(lambda: list(playlists().items()))
     # One playlist per system, each holding the backend that system's writes go
     # through — and the screen is a property of that same machine.
@@ -522,6 +529,15 @@ def register_web_routes(
     @app.get("/api/configs")
     def api_configs() -> dict[str, Any]:
         return store.index()
+
+    # A GET, so the viewer role may browse it — it lists media a config
+    # already names, and a viewer who can watch the screen can already see it.
+    @app.get("/api/media")
+    def api_media(kind: str, q: str = "") -> dict[str, Any]:
+        try:
+            return med.index(kind, q)
+        except MediaKindUnknown as e:
+            raise HTTPException(400, str(e)) from e
 
     # A path (not a ref) that names the new file: it doesn't exist yet, so
     # there is nothing for `ConfigStore.resolve` to have found and turned into

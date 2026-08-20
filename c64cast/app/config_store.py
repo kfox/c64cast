@@ -83,6 +83,7 @@ from c64cast.control.transport import atomic_write_text
 
 from . import config as cfgmod
 from . import config_serialize, introspect, paths, wizard
+from .fs_walk import MAX_FILES, walk_dirs
 
 log = logging.getLogger(__name__)
 
@@ -90,14 +91,10 @@ log = logging.getLogger(__name__)
 #: open arbitrary files is a file manager, which is a much larger promise.
 SUFFIX = ".toml"
 
-#: Caps on the listing walk and on a single file. All three are about keeping a
-#: hostile or merely enormous directory from turning one request into minutes of
-#: I/O; none of them is a security boundary.
-MAX_FILES = 500
-MAX_DEPTH = 8
+#: Cap on a single file's size. Same rationale as `fs_walk.MAX_FILES`/
+#: `MAX_DEPTH`: keeping a hostile or merely enormous file from turning one
+#: request into minutes of I/O, not a security boundary.
 MAX_BYTES = 1 << 20
-
-_SKIP_DIRS = frozenset({"__pycache__", "node_modules", ".git", ".venv"})
 
 
 class ConfigStoreError(Exception):
@@ -626,14 +623,7 @@ class ConfigStore:
         }
 
     def _walk(self, root: Root) -> Iterator[Path]:
-        for dirpath, dirnames, filenames in os.walk(root.path, followlinks=False):
-            here = Path(dirpath)
-            if len(here.relative_to(root.path).parts) >= MAX_DEPTH:
-                dirnames[:] = []
-            else:
-                dirnames[:] = sorted(
-                    d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
-                )
+        for here, filenames in walk_dirs(root.path):
             for name in sorted(filenames):
                 if name.startswith(".") or not name.lower().endswith(SUFFIX):
                     continue

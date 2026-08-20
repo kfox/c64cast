@@ -2,6 +2,7 @@ import { api } from "./api";
 import type {
   FieldDoc,
   Introspection,
+  MediaEntry,
   OverlayDoc,
   ParamDoc,
   SceneTypeDoc,
@@ -87,6 +88,28 @@ export class DocIndex {
   overlayParam(overlay: string, name: string): ParamDoc | undefined {
     return this.#params.get(`${overlay}.${name}`);
   }
+}
+
+/** One `GET /api/media` per kind, cached for the page's lifetime the same
+ *  way `documentation()` caches the introspection document — a media kind
+ *  describes what's on disk right now rather than the code, but re-listing
+ *  it on every scene render would mean one request per field per keystroke.
+ *  A failure clears its cache entry so a later attempt can retry. */
+const mediaCache = new Map<string, Promise<MediaEntry[]>>();
+
+export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
+  let cached = mediaCache.get(kind);
+  if (!cached) {
+    cached = api
+      .media(kind)
+      .then((idx) => idx.entries)
+      .catch((e: unknown) => {
+        mediaCache.delete(kind);
+        throw e;
+      });
+    mediaCache.set(kind, cached);
+  }
+  return cached;
 }
 
 export type FieldKind = "bool" | "int" | "float" | "str" | "complex";

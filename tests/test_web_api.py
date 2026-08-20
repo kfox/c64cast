@@ -48,7 +48,7 @@ except (ImportError, RuntimeError):
     WebSocketDisconnect = Exception  # type: ignore[misc,assignment]
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store, console_library, serve, session
+from c64cast.app import config_store, console_library, media_store, serve, session
 from c64cast.app.serve import SessionState
 from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
@@ -296,6 +296,11 @@ class WebApiTestCase(unittest.TestCase):
         # the packaged examples root left in.
         self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
         self.library = console_library.ConsoleLibrary(Path(tmp.name) / "console.json")
+        # An explicit root rather than the default four asset dirs: several
+        # tests in this module `chdir` to a directory with no `assets/` in it
+        # (on purpose — see SceneStructureRouteTest), and the default would
+        # log a dropped-root warning on every `app()` call while that's active.
+        self.media = media_store.MediaStore([str(self.root)])
         self.build = _Build()
         self.factory = _Factory()
         self.log_buffer = serve.SessionLogBuffer(capacity=50)
@@ -314,6 +319,7 @@ class WebApiTestCase(unittest.TestCase):
         kwargs.setdefault("viewer_token", VIEWER)
         kwargs.setdefault("store", self.store)
         kwargs.setdefault("library", self.library)
+        kwargs.setdefault("media", self.media)
         return serve.build_daemon_app(
             self.manager, self.factory, log_buffer=self.log_buffer, **kwargs
         )
@@ -626,6 +632,37 @@ class ConfigBrowserTest(WebApiTestCase):
             self.assertEqual(c.get("/api/configs", headers=VIEWER_AUTH).status_code, 200)
             r = c.put("/api/configs/shows/gig.toml", headers=VIEWER_AUTH, json={"text": GIG_TOML})
         self.assertEqual(r.status_code, 403)
+
+
+class MediaBrowserTest(WebApiTestCase):
+    """`/api/media` — the jail and the listing semantics are covered by
+    tests/test_media_store.py; what these add is the route's own mapping onto
+    HTTP, same split as `ConfigBrowserTest`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / "clip.mp4").write_bytes(b"")
+
+    def test_a_listing_names_the_kind_and_its_entries(self):
+        with self.client() as c:
+            body = c.get("/api/media", headers=AUTH, params={"kind": "video"}).json()
+        self.assertEqual(body["kind"], "video")
+        # The root here is configured by its absolute path (same as `self.store`
+        # above), so a listed spec is that absolute path too — media_store.py's
+        # specs are built from the root exactly as configured, with the
+        # relative part always joined by "/" regardless of platform (unlike
+        # `str(self.root / "clip.mp4")`, which normalizes to native separators).
+        self.assertIn(f"{self.root}/clip.mp4", [e["spec"] for e in body["entries"]])
+
+    def test_an_unknown_kind_is_a_400_not_a_500(self):
+        with self.client() as c:
+            r = c.get("/api/media", headers=AUTH, params={"kind": "subtitle"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_viewer_may_browse_it(self):
+        with self.client() as c:
+            r = c.get("/api/media", headers=VIEWER_AUTH, params={"kind": "video"})
+        self.assertEqual(r.status_code, 200)
 
 
 class LibraryRouteTest(WebApiTestCase):

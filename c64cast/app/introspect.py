@@ -111,6 +111,11 @@ class SceneTypeDoc:
     help: str
     displays: tuple[str, ...]  # supported `display` values ("" = N/A / fixed)
     fields: tuple[FieldDoc, ...]
+    # Which media_store.py kind(s) this type's `file =` field browses. A
+    # field's own `vocabulary` ("media") can't say this by itself — the same
+    # field means videos on a video scene and .sid files on a waveform one —
+    # so it rides on the scene type instead. Empty for a type with no `file =`.
+    media_kinds: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,6 +297,21 @@ _SCENE_TYPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("mhires", "hires", "hires_edges", "mcm", "petscii"),
     ),
 )
+
+# Scene type -> media_store.py kind(s) its `file =` field browses. Keys must
+# equal the `file` FieldDoc's own `applies_to` (config.py's SceneCfg.file) —
+# tests/test_introspect.py pins the two together so they can't drift.
+# `generative` gets both kinds because which one applies depends on its own
+# `audio_source` field, not on anything scene_types() can see; offering both is
+# harmless since the loader (not the picker) is what actually enforces the
+# match.
+_SCENE_MEDIA_KINDS: dict[str, tuple[str, ...]] = {
+    "video": ("video",),
+    "waveform": ("sid",),
+    "slideshow": ("picture",),
+    "launcher": ("program",),
+    "generative": ("sid", "audio"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +515,15 @@ def scene_types() -> list[SceneTypeDoc]:
             for fd in all_fields
             if fd.name == "type" or not fd.applies_to or name in fd.applies_to
         )
-        out.append(SceneTypeDoc(name=name, help=help_, displays=displays, fields=relevant))
+        out.append(
+            SceneTypeDoc(
+                name=name,
+                help=help_,
+                displays=displays,
+                fields=relevant,
+                media_kinds=_SCENE_MEDIA_KINDS.get(name, ()),
+            )
+        )
     return out
 
 
@@ -667,6 +695,7 @@ def as_dict() -> dict[str, Any]:
                 "help": s.help,
                 "displays": list(s.displays),
                 "fields": [field_dict(f) for f in s.fields],
+                "media_kinds": list(s.media_kinds),
             }
             for s in scene_types()
         ],

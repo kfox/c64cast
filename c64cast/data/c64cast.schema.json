@@ -1006,6 +1006,11 @@
           "type": "array",
           "description": "Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent.",
           "default": []
+        },
+        "media_roots": {
+          "type": "array",
+          "description": "Directories the web console's media picker may browse (read-only \u2014 it never writes here). Empty = the four directories the loader itself already defaults to (assets/videos, assets/sids, assets/pictures, assets/programs). Nothing outside these is listed, symlinks included.",
+          "default": []
         }
       }
     },
