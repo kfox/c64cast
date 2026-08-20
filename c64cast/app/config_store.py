@@ -915,6 +915,27 @@ class ConfigStore:
         out["scene"] = out.pop("result")
         return out
 
+    def move_scene(self, ref: str, index: int, to: int) -> dict[str, Any]:
+        """Reorder a scene and write the file back.
+
+        The one structural move `add_scene`/`remove_scene` never got a route
+        for — the order of a show was otherwise a text-editor job. A no-op
+        move (``index == to``) is accepted and idempotent, the same
+        tolerance its neighbors have for a request that changes nothing."""
+
+        def mutate(cfg: cfgmod.Config, _baseline: cfgmod.Config) -> dict[str, Any]:
+            if not 0 <= index < len(cfg.scenes):
+                raise EditRejected(f"no scene at index {index} (the config has {len(cfg.scenes)})")
+            if not 0 <= to < len(cfg.scenes):
+                raise EditRejected(f"cannot move to index {to} (the config has {len(cfg.scenes)})")
+            scene = cfg.scenes.pop(index)
+            cfg.scenes.insert(to, scene)
+            return {"moved": index, "to": to, "type": scene.type, "name": scene.name}
+
+        out = self._rewrite(ref, mutate)
+        out["scene"] = out.pop("result")
+        return out
+
     def create(self, ref: str, *, copy_of: str | None = None) -> dict[str, Any]:
         """Make a new config at `ref`.
 

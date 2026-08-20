@@ -174,6 +174,11 @@ export const api = {
   removeScene: (ref: string, index: number) =>
     request<SceneChanged>("DELETE", `/api/configs/${refPath(ref)}/scenes/${index}`),
 
+  /** The order of a show, reachable without the text editor: move the scene
+   *  at `index` to `to`. A no-op move (`index === to`) is accepted. */
+  moveScene: (ref: string, index: number, to: number) =>
+    request<SceneChanged>("PATCH", `/api/configs/${refPath(ref)}/scenes/${index}`, { to }),
+
   /** A new file at `path`: a copy of `copyOf` (any readable ref, including a
    *  packaged example — the onboarding path for one), or a minimal starter
    *  when omitted. Refused if `path` already exists. */

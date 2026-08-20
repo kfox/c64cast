@@ -577,6 +577,29 @@ class SceneStructureTest(StoreTestCase):
         self.assertIn("only scene", str(caught.exception))
         self.assertEqual(len(self._scenes()), 1)
 
+    def test_a_move_reorders_and_writes(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.store.add_scene("shows/gig.toml", scene_type="waveform")
+        out = self.store.move_scene("shows/gig.toml", 2, 0)
+        self.assertEqual(out["scene"], {"moved": 2, "to": 0, "type": "waveform", "name": None})
+        self.assertEqual([s.type for s in self._scenes()], ["waveform", "blank", "video"])
+
+    def test_a_no_op_move_is_accepted_and_idempotent(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        out = self.store.move_scene("shows/gig.toml", 1, 1)
+        self.assertTrue(out["ok"])
+        self.assertEqual([s.type for s in self._scenes()], ["blank", "video"])
+
+    def test_moving_from_an_out_of_range_index_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.move_scene("shows/gig.toml", 5, 0)
+        self.assertEqual([s.type for s in self._scenes()], ["blank"])
+
+    def test_moving_to_an_out_of_range_index_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.move_scene("shows/gig.toml", 0, 5)
+        self.assertEqual([s.type for s in self._scenes()], ["blank"])
+
     def test_a_structural_change_keeps_the_previous_text_like_any_other_save(self):
         self.store.add_scene("shows/gig.toml", scene_type="video")
         self.assertTrue((self.shows / ".gig.toml.bak").is_file())

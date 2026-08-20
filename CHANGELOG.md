@@ -1078,6 +1078,20 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Added
+
+- **Reorder a show's scenes from the web console**, without opening the text
+  editor. `add_scene` and `remove_scene` had a route each; the order of a show
+  was still a text-editor job, which was the one structural change that never
+  got one. **↑**/**↓** chips on each scene block move it earlier or later
+  (`PATCH /api/configs/{ref}/scenes/{index}`, body `{"to": n}`), reusing the
+  same `_rewrite` spine as every other structural edit — the `.bak` sibling, the
+  ensemble and secret refusals, `partial=True` so reordering a half-built show
+  isn't refused for a scene that names no media yet. Disabled while an edit is
+  staged, the same as *Duplicate* and *Remove*, since renumbering the staged
+  edits to match a reorder is exactly the reconciliation those two already
+  refuse rather than attempt.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

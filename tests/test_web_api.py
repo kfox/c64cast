@@ -999,6 +999,41 @@ class SceneStructureRouteTest(WebApiTestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
+    def test_a_scene_is_moved(self):
+        with self.client() as c:
+            c.post("/api/configs/shows/gig.toml/scenes", headers=AUTH, json={"type": "video"})
+            r = c.patch("/api/configs/shows/gig.toml/scenes/1", headers=AUTH, json={"to": 0})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["scene"], {"moved": 1, "to": 0, "type": "video", "name": None})
+        text = (self.root / "gig.toml").read_text(encoding="utf-8")
+        self.assertLess(text.index('type = "video"'), text.index('type = "blank"'))
+
+    def test_the_move_route_is_not_swallowed_by_the_field_patch_route(self):
+        # `{ref:path}` is greedy: the move route has to be registered before
+        # the bare field-patch PATCH, or this would be read as a request to
+        # patch a file named "…/scenes/0" and 400 for a missing "edits" list.
+        with self.client() as c:
+            r = c.patch("/api/configs/shows/gig.toml/scenes/0", headers=AUTH, json={"to": 0})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("moved", r.json()["scene"])
+
+    def test_a_move_with_no_to_index_is_a_400(self):
+        with self.client() as c:
+            r = c.patch("/api/configs/shows/gig.toml/scenes/0", headers=AUTH, json={})
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_to_index_that_is_not_an_index_is_a_400(self):
+        # `true` is an `int` in Python and would otherwise read as scene 1.
+        with self.client() as c:
+            r = c.patch("/api/configs/shows/gig.toml/scenes/0", headers=AUTH, json={"to": True})
+        self.assertEqual(r.status_code, 400)
+
+    def test_moving_an_out_of_range_index_is_a_400_not_a_broken_config(self):
+        with self.client() as c:
+            r = c.patch("/api/configs/shows/gig.toml/scenes/5", headers=AUTH, json={"to": 0})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
     def test_a_copy_index_that_is_not_an_index_is_a_400(self):
         # `true` is an `int` in Python and would otherwise read as scene 1.
         with self.client() as c:
@@ -1011,8 +1046,12 @@ class SceneStructureRouteTest(WebApiTestCase):
                 "/api/configs/shows/gig.toml/scenes", headers=VIEWER_AUTH, json={"type": "video"}
             )
             drop = c.delete("/api/configs/shows/gig.toml/scenes/0", headers=VIEWER_AUTH)
+            move = c.patch(
+                "/api/configs/shows/gig.toml/scenes/0", headers=VIEWER_AUTH, json={"to": 0}
+            )
         self.assertEqual(add.status_code, 403)
         self.assertEqual(drop.status_code, 403)
+        self.assertEqual(move.status_code, 403)
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
 

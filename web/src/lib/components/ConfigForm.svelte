@@ -440,6 +440,28 @@
               <div class="flex gap-1">
                 <button
                   class={chip}
+                  aria-label="Move this scene earlier"
+                  disabled={busy || structuralBlocked || row.index === 0}
+                  title={structuralBlocked
+                    ? "Save or discard the staged edits first — reordering renumbers the rest"
+                    : "Move this scene earlier"}
+                  onclick={() => void structural(() => api.moveScene(path, row.index, row.index - 1))}
+                >
+                  ↑
+                </button>
+                <button
+                  class={chip}
+                  aria-label="Move this scene later"
+                  disabled={busy || structuralBlocked || row.index === scenes.length - 1}
+                  title={structuralBlocked
+                    ? "Save or discard the staged edits first — reordering renumbers the rest"
+                    : "Move this scene later"}
+                  onclick={() => void structural(() => api.moveScene(path, row.index, row.index + 1))}
+                >
+                  ↓
+                </button>
+                <button
+                  class={chip}
                   disabled={busy || structuralBlocked}
                   title={structuralBlocked
                     ? "Save or discard the staged edits first — adding a scene renumbers the rest"
