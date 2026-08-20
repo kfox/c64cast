@@ -622,18 +622,7 @@ def _run_session(
     # Installed here rather than in session.py because signal.signal raises
     # ValueError off the main thread: a session built from a worker (a
     # long-lived host) must not inherit this.
-    interrupted = False
-
-    def _on_stop_signal(signum, _frame):
-        nonlocal interrupted
-        name = signal.Signals(signum).name
-        if interrupted:
-            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
-            signal.signal(signum, signal.SIG_DFL)
-            return
-        interrupted = True
-        log.info("%s received; stopping", name)
-        sess.stop_event.set()
+    _on_stop_signal = session.make_stop_signal_handler(sess.stop_event.set, verb="stopping")
 
     def _on_sighup(_signum, _frame):
         log.info("SIGHUP received")

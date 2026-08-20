@@ -87,6 +87,7 @@ from .session import (
     build_session,
     join_bounded,
     join_playlists,
+    make_stop_signal_handler,
     reload_all,
     reload_registries,
     start_playlists,
@@ -308,8 +309,7 @@ class _Workers:
         deadline = time.monotonic() + timeout
         for t in list(self.threads):
             remaining = max(0.0, deadline - time.monotonic())
-            if not join_bounded(t, remaining):
-                log.error("[%s] did not exit within %.0fs; abandoning", t.name, timeout)
+            join_bounded(t, remaining)
 
 
 class SessionManager:
@@ -978,23 +978,7 @@ def run_daemon(
         return 2
 
     shutdown = threading.Event()
-    interrupted = False
-
-    def _on_stop_signal(signum: int, _frame: Any) -> None:
-        # Same three-strike shape as cli._run_session's handler (see its
-        # comment for the rationale): a second signal restores the default
-        # disposition for whichever signal just arrived, so a third — or a
-        # repeated SIGTERM from a service manager — actually kills instead of
-        # being caught forever.
-        nonlocal interrupted
-        name = signal.Signals(signum).name
-        if interrupted:
-            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
-            signal.signal(signum, signal.SIG_DFL)
-            return
-        interrupted = True
-        log.info("%s received; shutting down the host", name)
-        shutdown.set()
+    _on_stop_signal = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
 
     def _on_sighup(_signum: int, _frame: Any) -> None:
         log.info("SIGHUP received")

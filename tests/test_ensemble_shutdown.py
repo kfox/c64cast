@@ -110,8 +110,10 @@ class JoinBoundedTest(unittest.TestCase):
         t = threading.Thread(target=event.wait, name="stuck")
         t.start()
         try:
-            self.assertFalse(session.join_bounded(t, 0.05, poll_s=0.02))
+            with self.assertLogs("c64cast", level="ERROR") as cm:
+                self.assertFalse(session.join_bounded(t, 0.05, poll_s=0.02))
             self.assertTrue(t.is_alive())
+            self.assertTrue(any("stuck" in m and "0s" in m for m in cm.output))
         finally:
             event.set()
             t.join()
@@ -149,11 +151,17 @@ class JoinPlaylistsTest(unittest.TestCase):
         stop_event = threading.Event()
         t = threading.Thread(target=stop_event.wait, name="playlist-stuck")
         t.start()
+        # Fast-forwards join_bounded's deadline past its 5s budget on the very
+        # first check, so the thread reads as abandoned without a real wait.
+        clock = iter([0.0])
+
+        def fake_monotonic():
+            return next(clock, 100.0)
+
         try:
-            with unittest.mock.patch.object(session, "join_bounded", return_value=False) as jb:
+            with unittest.mock.patch.object(session.time, "monotonic", side_effect=fake_monotonic):
                 with self.assertLogs("c64cast", level="ERROR") as cm:
                     session.join_playlists([t], stacks, stop_event)
-            jb.assert_called_once_with(t, 5.0)
             self.assertTrue(any("playlist-stuck" in m and "5s" in m for m in cm.output))
         finally:
             stop_event.set()
