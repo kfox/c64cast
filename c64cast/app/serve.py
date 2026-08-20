@@ -85,7 +85,9 @@ from . import config_store, console_library, media_store, paths
 from .session import (
     Session,
     build_session,
+    join_bounded,
     join_playlists,
+    make_stop_signal_handler,
     reload_all,
     reload_registries,
     start_playlists,
@@ -306,7 +308,8 @@ class _Workers:
     def join(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         for t in list(self.threads):
-            t.join(timeout=max(0.0, deadline - time.monotonic()))
+            remaining = max(0.0, deadline - time.monotonic())
+            join_bounded(t, remaining)
 
 
 class SessionManager:
@@ -490,6 +493,7 @@ class SessionManager:
     def close(self, *, timeout: float = 30.0) -> None:
         """Stop whatever is running and release the supervisor's own threads.
         Safe to call from any state, and safe to call twice."""
+        log.info("waiting up to %.0fs for the session to tear down", timeout * 2)
         self.stop()
         self.wait_for(STARTABLE, timeout=timeout)
         self._reaper.stop()
@@ -974,10 +978,7 @@ def run_daemon(
         return 2
 
     shutdown = threading.Event()
-
-    def _on_stop_signal(signum: int, _frame: Any) -> None:
-        log.info("%s received; shutting down the host", signal.Signals(signum).name)
-        shutdown.set()
+    _on_stop_signal = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
 
     def _on_sighup(_signum: int, _frame: Any) -> None:
         log.info("SIGHUP received")

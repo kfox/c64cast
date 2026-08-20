@@ -1,5 +1,5 @@
 import sys
 
-from c64cast.app.cli import main
+from c64cast.app.cli import run
 
-sys.exit(main())
+sys.exit(run())

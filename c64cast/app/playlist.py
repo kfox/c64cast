@@ -1029,7 +1029,7 @@ class Playlist:
         self.log.info("resuming — reset + run clear loop")
         try:
             self.api.reset()
-            time.sleep(1)
+            self.stop_event.wait(1.0)
             self.api.run_basic_clear_loop()
             self.api.disable_case_switch()
         except Exception:

@@ -1368,5 +1368,37 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
         self.assertFalse(pl.tempo.running)
 
 
+class PauseResumeTest(unittest.TestCase):
+    def test_resume_wait_is_cut_short_by_a_stop(self):
+        # The wait between reset() and run_basic_clear_loop() used to be a
+        # bare time.sleep(1) -- unconditional, unlike the pause loop right
+        # above it which spins on stop_event.wait() precisely "so SIGTERM can
+        # shortcut the pause". stop_event.wait(1.0) should return as soon as
+        # stop fires instead of sleeping out the full second.
+        api = FakeApi()
+        api.pause_idle = lambda: None
+        api.reset = lambda: None
+        api.run_basic_clear_loop = lambda: None
+        api.disable_case_switch = lambda: None
+        stop_event = threading.Event()
+        factory, _ = _transition_factory()
+        pl = Playlist(
+            [FakeScene("only")],
+            api,
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            stop_event=stop_event,
+            interstitial_factory=factory,
+        )
+        # Resume shortly after entering the pause loop (so _handle_pause moves
+        # on to reset() rather than idling forever), then stop mid-wait.
+        threading.Timer(0.05, pl.resume_event.set).start()
+        threading.Timer(0.3, stop_event.set).start()
+        t0 = time.time()
+        pl._handle_pause()
+        dt = time.time() - t0
+        self.assertLess(dt, 0.6, f"resume wait should be cut short by stop_event, took {dt:.2f}s")
+
+
 if __name__ == "__main__":
     unittest.main()

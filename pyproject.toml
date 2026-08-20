@@ -243,7 +243,7 @@ dev = [
 ]
 
 [project.scripts]
-c64cast = "c64cast.app.cli:main"
+c64cast = "c64cast.app.cli:run"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"

@@ -10,15 +10,18 @@ and maps their exceptions back to exit codes:
 * :func:`run_foreground` — run the playlists to completion.
 * :func:`teardown_session` — bring it all down, in the order teardown needs.
 
-Signals are deliberately *not* handled here: ``signal.signal`` raises off the
-main thread, so a caller that starts a session from a worker must install its
-own handlers (see ``cli._run_session``).
+Signals are deliberately *not* installed here: ``signal.signal`` raises off
+the main thread, so a caller that starts a session from a worker must install
+its own handlers (see ``cli._run_session``) — but the handler *shape* they
+install is shared via :func:`make_stop_signal_handler`.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import math
+import signal
 import sys
 import threading
 import time
@@ -707,6 +710,56 @@ def teardown_stack(stack: SystemStack) -> None:
 _JOIN_POLL_S = 0.2
 
 
+def join_bounded(t: threading.Thread, timeout: float, poll_s: float = _JOIN_POLL_S) -> bool:
+    """Join ``t`` for at most ``timeout``, polling so the main thread keeps
+    returning to the interpreter. Returns whether it finished in time.
+
+    A single long ``join(timeout)`` would not: CPython parks it in
+    ``_PyParkingLot_Park``, where no signal handler runs (see
+    pump_until_done). Every non-daemon join in this project shares this
+    helper so that measurement — and the abandonment log, on timeout — only
+    has to be made once."""
+    deadline = time.monotonic() + timeout
+    while t.is_alive() and time.monotonic() < deadline:
+        t.join(timeout=min(poll_s, max(0.0, deadline - time.monotonic())))
+    finished = not t.is_alive()
+    if not finished:
+        log.error("[%s] did not exit within %.0fs; abandoning", t.name, timeout)
+    return finished
+
+
+def make_stop_signal_handler(
+    on_first_signal: Callable[[], None], *, verb: str
+) -> Callable[[int, Any], None]:
+    """Build the three-strike SIGINT/SIGTERM handler shared by the CLI
+    (``cli._run_session``) and the daemon (``serve.run_daemon``).
+
+    First signal: log and call ``on_first_signal`` (set a stop flag, so an
+    in-flight DMA finishes rather than being cut — killing mid-DMA is what
+    wedges the hardware into needing a power cycle). Second signal for the
+    same signum: restore its default disposition, so a third — or a repeated
+    SIGTERM from a service manager — actually kills instead of being caught
+    forever. ``verb`` is the caller-specific tail of the first-signal log
+    line (e.g. "stopping", "shutting down the host").
+
+    Building the closure here doesn't install it: ``signal.signal`` raises
+    off the main thread, so the caller still does that call itself."""
+    interrupted = False
+
+    def handler(signum: int, _frame: Any) -> None:
+        nonlocal interrupted
+        name = signal.Signals(signum).name
+        if interrupted:
+            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
+            signal.signal(signum, signal.SIG_DFL)
+            return
+        interrupted = True
+        log.info("%s received; %s", name, verb)
+        on_first_signal()
+
+    return handler
+
+
 def _pump_previews_until_done(
     threads: Sequence[threading.Thread], previews: Sequence[PreviewWindow]
 ) -> None:
@@ -765,8 +818,7 @@ def pump_until_done(threads: list[threading.Thread], stacks: list[SystemStack]) 
         _pump_previews_until_done(threads, previews)
     else:
         for t in threads:
-            while t.is_alive():
-                t.join(timeout=_JOIN_POLL_S)
+            join_bounded(t, math.inf)
 
 
 def join_playlists(
@@ -778,9 +830,7 @@ def join_playlists(
     log.info("interrupted; stopping %d system(s)", len(stacks))
     stop_event.set()
     for t in threads:
-        t.join(timeout=5)
-        if t.is_alive():
-            log.error("[%s] did not exit within 5s; abandoning", t.name)
+        join_bounded(t, 5.0)
 
 
 def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> None:

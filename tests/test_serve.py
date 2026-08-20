@@ -20,8 +20,11 @@ silence pyright's attribute complaints file-wide rather than per assertion."""
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import threading
 import unittest
+from collections.abc import Callable
 from unittest import mock
 
 from _fakes import fake_system_stack, quiet_logging
@@ -609,6 +612,123 @@ class StatusShapeTest(SupervisorTestCase):
         self.assertEqual(payload["state"], "running")
         self.assertEqual(payload["systems"], ["a"])
         self.assertEqual(payload["generation"], 1)
+
+
+class WorkersJoinTest(unittest.TestCase):
+    """_Workers.join is serve.py's other non-daemon join site (the supervisor's
+    own start/teardown threads, not the playlist ones session.py owns) — same
+    join_bounded helper, same reason: a single long join(timeout) parks
+    uninterruptibly, so it has to poll instead."""
+
+    def test_join_polls_so_signals_can_be_delivered(self):
+        event = threading.Event()
+
+        def wait_forever() -> None:
+            event.wait()
+
+        workers = serve._Workers()
+        workers.spawn("worker-a", wait_forever)
+        timeouts: list[float | None] = []
+        real_join = threading.Thread.join
+
+        def recording_join(self, timeout=None):  # noqa: ANN001
+            timeouts.append(timeout)
+            return real_join(self, timeout)
+
+        timer = threading.Timer(0.05, event.set)
+        timer.start()
+        try:
+            with mock.patch.object(threading.Thread, "join", recording_join):
+                workers.join(timeout=5.0)
+        finally:
+            timer.cancel()
+        self.assertTrue(timeouts, "join was never called")
+        self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
+
+    def test_a_worker_that_outlives_its_deadline_is_logged_and_abandoned(self):
+        event = threading.Event()
+
+        def wait_forever() -> None:
+            event.wait()
+
+        workers = serve._Workers()
+        workers.spawn("worker-stuck", wait_forever)
+        try:
+            with self.assertLogs("c64cast", level="ERROR") as cm:
+                workers.join(timeout=0.05)
+            self.assertTrue(any("worker-stuck" in m for m in cm.output))
+        finally:
+            event.set()
+            for t in workers.threads:
+                t.join()
+
+
+class RunDaemonSignalTest(unittest.TestCase):
+    """run_daemon's own signal handling — no real OS signal is ever raised;
+    the handler run_daemon installs is captured by patching signal.signal and
+    called directly, same as cli._run_session's three-strike shape it mirrors."""
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp.name}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_second_signal_restores_the_default_disposition(self):
+        class _FakeControlServer:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+        registered: dict[int, Callable[[int, object], None]] = {}
+        calls: list[tuple[int, object]] = []
+        sigterm_installed = threading.Event()
+
+        def recording_signal(signum, handler):
+            calls.append((signum, handler))
+            registered[signum] = handler
+            if signum == signal.SIGTERM:
+                sigterm_installed.set()
+            return signal.SIG_DFL
+
+        web_cfg = cfgmod.WebCfg(autostart=False)
+        result: dict[str, int] = {}
+
+        def run():
+            def load(_path):
+                raise AssertionError("autostart is off; load must not be called")
+
+            result["code"] = serve.run_daemon(web_cfg, load)
+
+        with mock.patch("c64cast.control.control_plane.ControlServer", _FakeControlServer):
+            with mock.patch.object(signal, "signal", side_effect=recording_signal):
+                thread = threading.Thread(target=run, daemon=True)
+                thread.start()
+                try:
+                    self.assertTrue(
+                        sigterm_installed.wait(timeout=WAIT), "SIGTERM handler never installed"
+                    )
+                    handler = registered[signal.SIGTERM]
+                    with self.assertLogs("c64cast", level="INFO") as cm:
+                        handler(signal.SIGTERM, None)
+                        handler(signal.SIGTERM, None)
+                finally:
+                    thread.join(timeout=WAIT)
+        self.assertFalse(thread.is_alive(), "run_daemon did not return after the stop signal")
+        self.assertEqual(result.get("code"), 0)
+        self.assertTrue(
+            any("again; next one exits immediately" in m for m in cm.output),
+            "second signal did not warn about the escape hatch",
+        )
+        self.assertIn((signal.SIGTERM, signal.SIG_DFL), calls)
 
 
 if __name__ == "__main__":

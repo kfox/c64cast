@@ -19,7 +19,11 @@ import logging
 import os
 import signal
 import sys
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 from c64cast import UNINSTALLED_VERSION, __version__
 from c64cast.hw.backend import make_backend  # noqa: F401 — re-export (diag scripts)
@@ -607,8 +611,10 @@ def _run_session(
     # machine mid-session behind a traceback. A handler can't land mid-teardown,
     # and setting stop_event means an in-flight DMA finishes rather than being
     # cut (killing mid-DMA is what wedges the hardware into needing a power
-    # cycle). The second Ctrl+C restores the default handler rather than exiting
-    # on the spot, so a third is what actually kills, for the same reason.
+    # cycle). The second signal restores the default disposition for whichever
+    # one arrived — SIGINT or SIGTERM — rather than exiting on the spot, so a
+    # third is what actually kills. A repeated SIGTERM (what a service manager
+    # sends) needs this exactly as much as a repeated Ctrl+C does.
     # SIGHUP -> reload TOML config (only the [interstitial] + [playlist] +
     # [[scenes]] sections take effect; [audio], [video], [ultimate64] are
     # set at startup and reloading them would require restarting threads).
@@ -616,18 +622,7 @@ def _run_session(
     # Installed here rather than in session.py because signal.signal raises
     # ValueError off the main thread: a session built from a worker (a
     # long-lived host) must not inherit this.
-    interrupted = False
-
-    def _on_stop_signal(signum, _frame):
-        nonlocal interrupted
-        name = signal.Signals(signum).name
-        if interrupted:
-            log.warning("%s again; next one exits immediately (teardown may not finish)", name)
-            signal.signal(signal.SIGINT, signal.SIG_DFL)
-            return
-        interrupted = True
-        log.info("%s received; stopping", name)
-        sess.stop_event.set()
+    _on_stop_signal = session.make_stop_signal_handler(sess.stop_event.set, verb="stopping")
 
     def _on_sighup(_signum, _frame):
         log.info("SIGHUP received")
@@ -779,5 +774,74 @@ def main(argv=None) -> int:
     return _run_session(args, loaded, cfgs)
 
 
+# How long ensure_exit gives lingering threads to finish on their own before
+# forcing the issue. Generous enough that a thread mid-unwind still gets a
+# clean exit (atexit handlers, flushed buffers); short enough that a truly
+# stuck one doesn't keep the operator waiting twice.
+FORCE_EXIT_GRACE_S = 5.0
+
+# How often ensure_exit re-checks _lingering_threads() during the grace
+# period. Mirrors session._JOIN_POLL_S: short enough to notice a thread
+# finishing promptly, long enough not to spin.
+_EXIT_POLL_S = 0.2
+
+
+def _lingering_threads() -> list[threading.Thread]:
+    """Non-daemon threads that will hold interpreter shutdown open."""
+    main_thread = threading.main_thread()
+    return [
+        t for t in threading.enumerate() if t is not main_thread and not t.daemon and t.is_alive()
+    ]
+
+
+def ensure_exit(
+    code: int,
+    *,
+    grace_s: float = FORCE_EXIT_GRACE_S,
+    lingering: Callable[[], list[threading.Thread]] = _lingering_threads,
+    hard_exit: Callable[[int], NoReturn] = os._exit,
+) -> int:
+    """Return ``code`` once nothing can stall the exit — or leave by force.
+
+    Graceful teardown has already happened by the time this runs; every
+    non-daemon thread still alive here is one that outlived its own deadline
+    and was already logged as abandoned (see session.join_bounded and
+    serve._Workers.join). `threading._shutdown()` would join it anyway,
+    untimed and with no signal delivery, so a run that can't finish its own
+    teardown would hang forever instead of releasing the machine. A thread
+    that's merely mid-unwind still gets a clean exit: this only forces the
+    issue once ``grace_s`` has passed with a survivor still standing.
+
+    ``lingering`` is injected (rather than always reading the live process's
+    threads) so a test can name exactly the threads it cares about instead of
+    every non-daemon thread any other test happens to have left running in
+    the same process. ``hard_exit`` is injected for the same reason every
+    callable in serve.py is: a test asserts the call instead of dying — which
+    is also why this still returns explicitly after calling it, even though
+    the real ``os._exit`` never gets there."""
+    deadline = time.monotonic() + grace_s
+    stragglers = lingering()
+    while stragglers and time.monotonic() < deadline:
+        time.sleep(_EXIT_POLL_S)
+        stragglers = lingering()
+
+    if not stragglers:
+        return code
+
+    for t in stragglers:
+        log.error("[%s] still running after teardown; forcing exit", t.name)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    hard_exit(code)
+    return code
+
+
+def run(argv: list[str] | None = None) -> int:
+    """The installed console-script entry point: ``main()`` plus the
+    guarantee that the process actually ends (see ensure_exit)."""
+    return ensure_exit(main(argv))
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
