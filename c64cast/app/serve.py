@@ -81,7 +81,7 @@ from c64cast.control.transport import atomic_write_text
 from c64cast.video.preview import PreviewWindow
 
 from . import config as cfgmod
-from . import config_store, paths
+from . import config_store, console_library, paths
 from .session import (
     Session,
     build_session,
@@ -330,6 +330,7 @@ class SessionManager:
         marker_path: Path | None = None,
         reap_period_s: float = 0.25,
         clock: Callable[[], float] = time.monotonic,
+        launch_config_path: str = "",
     ) -> None:
         self._build = build
         self._teardown = teardown
@@ -339,6 +340,12 @@ class SessionManager:
         self._log_buffer = log_buffer
         self._marker_path = marker_path
         self._clock = clock
+        # What `status()` answers before the console has started anything —
+        # the config this host was launched with, so the browser has
+        # something to preselect and show as "the running config" even at
+        # idle. There is no other "host default" concept left: once a start
+        # names a ref, `_request.config_path` is that ref instead.
+        self._launch_config_path = launch_config_path
 
         self._lock = threading.RLock()
         self._cond = threading.Condition(self._lock)
@@ -381,7 +388,11 @@ class SessionManager:
             return SessionStatus(
                 state=self._state,
                 generation=self._generation,
-                config_path=self._request.config_path if self._request is not None else "",
+                config_path=(
+                    self._request.config_path
+                    if self._request is not None
+                    else self._launch_config_path
+                ),
                 systems=tuple(st.name for st in sess.stacks) if sess is not None else (),
                 last_error=self._last_error,
                 hardware_wait_s=max(0.0, self._hardware_free_at - self._clock()),
@@ -807,6 +818,7 @@ def build_daemon_app(
     viewer_token: str | ViewerCredential = "",
     log_buffer: SessionLogBuffer | None = None,
     store: config_store.ConfigStore | None = None,
+    library: console_library.ConsoleLibrary | None = None,
     screen_fps: float = 10.0,
 ) -> Any:
     """The host's FastAPI app: the control plane over the *current* session,
@@ -845,6 +857,7 @@ def build_daemon_app(
         playlists=playlists,
         log_buffer=log_buffer,
         store=store if store is not None else config_store.ConfigStore(),
+        library=library,
         # The very object the gate reads, so a token minted from the console is
         # accepted by the next request rather than by the next restart.
         viewer=viewer_token if isinstance(viewer_token, ViewerCredential) else None,
@@ -932,7 +945,9 @@ def run_daemon(
 
     log_buffer = SessionLogBuffer()
     log_buffer.install()
-    manager = SessionManager(settle_s=web_cfg.settle_s, log_buffer=log_buffer)
+    manager = SessionManager(
+        settle_s=web_cfg.settle_s, log_buffer=log_buffer, launch_config_path=config_path
+    )
     factory = make_request_factory(load, config_path=config_path)
     store = config_store.ConfigStore(web_cfg.config_roots)
 

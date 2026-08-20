@@ -32,6 +32,12 @@ export class Console {
   ready = $state(false);
   session = $state<SessionStatus | null>(null);
   role = $state<Role>(null);
+  /** Set by a screen right before it asks the host to start or switch to a
+   *  config, so the shell can jump to the Live tab once the show actually
+   *  comes up. A viewer just watching the feed, or a start this browser
+   *  didn't ask for, should not be yanked between tabs by it — so this is
+   *  local to the browser that set it, not part of the state feed. */
+  expectingStart = $state(false);
   log = $state<LogLine[]>([]);
   frame = $state<StateFrame>({});
 

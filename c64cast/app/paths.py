@@ -165,6 +165,15 @@ def web_token_path() -> Path:
     return data_root() / "web_token"
 
 
+def console_library_path() -> Path:
+    """The web console's favorites + recents file (``<data root>/console.json``).
+
+    Server-side rather than browser ``localStorage`` so every browser or phone
+    pointed at the same host sees the same library — see
+    :mod:`c64cast.app.console_library`."""
+    return data_root() / "console.json"
+
+
 def web_viewer_token_path() -> Path:
     """The web console's generated read-only token
     (``<data root>/web_viewer_token``).

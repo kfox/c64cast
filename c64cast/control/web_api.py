@@ -73,6 +73,7 @@ from c64cast.app.config_store import (
     EditRejected,
     PathRejected,
 )
+from c64cast.app.console_library import ConsoleLibrary
 from c64cast.app.playlist import Playlist
 from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
@@ -112,9 +113,14 @@ _STORE_STATUS: tuple[tuple[type[ConfigStoreError], int], ...] = (
 )
 
 
-def _status_payload(status: SessionStatus, log_buffer: Any) -> dict[str, Any]:
+def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) -> dict[str, Any]:
     out = status.as_dict()
     out["log_seq"] = log_buffer.seq if log_buffer is not None else 0
+    # The browser's default selection: the config the host was launched with,
+    # named the way the config browser names everything else. None when that
+    # path isn't under a root this store knows (a quick-playback run, or one
+    # started from outside any configured `config_roots`).
+    out["config_ref"] = store.ref_for(Path(out["config_path"])) if out.get("config_path") else None
     return out
 
 
@@ -190,6 +196,7 @@ def register_web_routes(
     request_factory: RequestFactory,
     playlists: PlaylistRegistry,
     store: ConfigStore,
+    library: ConsoleLibrary | None = None,
     log_buffer: Any = None,
     viewer: ViewerCredential | None = None,
     screen_fps: float = 10.0,
@@ -216,6 +223,7 @@ def register_web_routes(
 
     from .perf_console import PerfBridge
 
+    lib = library if library is not None else ConsoleLibrary()
     bridge = PerfBridge(lambda: list(playlists().items()))
     # One playlist per system, each holding the backend that system's writes go
     # through — and the screen is a property of that same machine.
@@ -275,7 +283,7 @@ def register_web_routes(
         return parsed
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
-        state = _status_payload(manager.status(), log_buffer)
+        state = _status_payload(manager.status(), log_buffer, store)
         state["role"] = scope.get("c64cast_role")
         return state
 
@@ -379,11 +387,18 @@ def register_web_routes(
 
     @app.post("/api/session/start", status_code=202)
     async def api_start(request: Request) -> dict[str, Any]:
-        req = _make_request(_resolve_ref((await _body(request)).get("config")))
+        ref = (await _body(request)).get("config")
+        req = _make_request(_resolve_ref(ref))
         try:
             generation = manager.start(req)
         except SupervisorBusy as e:
             raise _busy(e) from e
+        # Recorded from every surface that starts a show, not just this one —
+        # `_apply_command` does the same for the socket. A falsy ref is the
+        # host's own default config, which has nothing to add to a *config*
+        # library.
+        if ref:
+            lib.record_recent(str(ref))
         return {"ok": True, "generation": generation, "state": str(manager.state)}
 
     @app.post("/api/session/stop", status_code=202)
@@ -394,11 +409,14 @@ def register_web_routes(
 
     @app.post("/api/session/switch", status_code=202)
     async def api_switch(request: Request) -> dict[str, Any]:
-        req = _make_request(_resolve_ref((await _body(request)).get("config")))
+        ref = (await _body(request)).get("config")
+        req = _make_request(_resolve_ref(ref))
         try:
             generation = manager.switch(req)
         except SupervisorBusy as e:
             raise _busy(e) from e
+        if ref:
+            lib.record_recent(str(ref))
         return {"ok": True, "generation": generation, "state": str(manager.state)}
 
     @app.post("/api/session/reload")
@@ -485,11 +503,40 @@ def register_web_routes(
         out["kept_out"] = [r["target"] for r in rows if r["field"] is None]
         return out
 
+    # -- favorites + recents --------------------------------------------------
+
+    @app.get("/api/library")
+    def api_library() -> dict[str, Any]:
+        return lib.as_dict()
+
+    @app.post("/api/library/favorites")
+    async def api_library_favorite(request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        ref = str(body.get("ref", ""))
+        if not ref:
+            raise HTTPException(400, 'a favorite needs a "ref"')
+        return {"favorites": lib.set_favorite(ref, bool(body.get("on", True)))}
+
     # -- the config browser -------------------------------------------------
 
     @app.get("/api/configs")
     def api_configs() -> dict[str, Any]:
         return store.index()
+
+    # A path (not a ref) that names the new file: it doesn't exist yet, so
+    # there is nothing for `ConfigStore.resolve` to have found and turned into
+    # a ref. `copy_of` is a ref, the same identifier the list already shows.
+    @app.post("/api/configs")
+    async def api_config_create(request: Request) -> dict[str, Any]:
+        body = await _body(request)
+        ref = str(body.get("path", ""))
+        if not ref:
+            raise HTTPException(400, 'creating a config needs a "path"')
+        copy_of = body.get("copy_of")
+        try:
+            return store.create(ref, copy_of=str(copy_of) if copy_of else None)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
 
     # Registered before the bare `{ref:path}` route so a POST can't be read as
     # a write to a file whose name happens to end in "/validate".
@@ -545,6 +592,18 @@ def register_web_routes(
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
+    # Registered after the more specific DELETE route above, so a delete of
+    # "…/scenes/3" is never read as a request to remove a file named that.
+    @app.delete("/api/configs/{ref:path}")
+    def api_config_delete(ref: str) -> dict[str, Any]:
+        running = manager.status().config_path
+        if running and store.ref_for(Path(running)) == ref:
+            raise HTTPException(409, f"{ref} is the running config — stop or switch away first")
+        try:
+            return store.delete(ref)
+        except ConfigStoreError as e:
+            raise _store_error(e) from e
+
     # The generated form's save. PUT replaces the file with the text a client
     # composed; PATCH names fields and lets the *server* compose the text, so a
     # form never has to know how a TOML is written — and two consoles editing
@@ -574,8 +633,12 @@ def register_web_routes(
             path = str(store.resolve(str(ref))) if ref else None
             if action == "start":
                 manager.start(request_factory(path))
+                if ref:
+                    lib.record_recent(str(ref))
             elif action == "switch":
                 manager.switch(request_factory(path))
+                if ref:
+                    lib.record_recent(str(ref))
             elif action == "stop":
                 manager.stop()
             elif action == "reload":
@@ -610,7 +673,7 @@ def register_web_routes(
                 try:
                     frame = bridge.state()
                     frame["role"] = websocket.scope.get("c64cast_role")
-                    frame["session"] = _status_payload(manager.status(), log_buffer)
+                    frame["session"] = _status_payload(manager.status(), log_buffer, store)
                 except Exception:
                     log.exception("web console: could not build a state frame")
                     break

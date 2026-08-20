@@ -48,7 +48,7 @@ except (ImportError, RuntimeError):
     WebSocketDisconnect = Exception  # type: ignore[misc,assignment]
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store, serve, session
+from c64cast.app import config_store, console_library, serve, session
 from c64cast.app.serve import SessionState
 from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
@@ -291,7 +291,11 @@ class WebApiTestCase(unittest.TestCase):
         self.root = Path(tmp.name).resolve() / "shows"
         self.root.mkdir()
         (self.root / "gig.toml").write_text(GIG_TOML, encoding="utf-8")
-        self.store = config_store.ConfigStore([str(self.root)])
+        # `include_examples=False`: this fixture is about the routes over one
+        # configured root. `ExamplesRouteTest` below builds its own store with
+        # the packaged examples root left in.
+        self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
+        self.library = console_library.ConsoleLibrary(Path(tmp.name) / "console.json")
         self.build = _Build()
         self.factory = _Factory()
         self.log_buffer = serve.SessionLogBuffer(capacity=50)
@@ -309,6 +313,7 @@ class WebApiTestCase(unittest.TestCase):
         kwargs.setdefault("token", TOKEN)
         kwargs.setdefault("viewer_token", VIEWER)
         kwargs.setdefault("store", self.store)
+        kwargs.setdefault("library", self.library)
         return serve.build_daemon_app(
             self.manager, self.factory, log_buffer=self.log_buffer, **kwargs
         )
@@ -419,6 +424,27 @@ class SessionStatusTest(WebApiTestCase):
         self.assertEqual(body["state"], "running")
         self.assertEqual(body["systems"], ["a"])
         self.assertEqual(body["config_path"], "show.toml")
+
+    def test_config_ref_is_none_when_idle(self):
+        with self.client() as c:
+            body = c.get("/api/session", headers=AUTH).json()
+        self.assertIsNone(body["config_ref"])
+
+    def test_config_ref_names_the_config_the_browser_should_preselect(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            body = c.get("/api/session", headers=AUTH).json()
+        self.assertEqual(body["config_ref"], "shows/gig.toml")
+
+    def test_config_ref_is_none_for_a_path_outside_any_root(self):
+        # `_request`'s default `config_path="show.toml"` is a bare name under no
+        # configured root — a quick-playback run looks the same way.
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING)
+            body = c.get("/api/session", headers=AUTH).json()
+        self.assertIsNone(body["config_ref"])
 
     def test_the_log_tail_carries_what_a_failed_start_wrote(self):
         self.log_buffer.install()
@@ -600,6 +626,176 @@ class ConfigBrowserTest(WebApiTestCase):
             self.assertEqual(c.get("/api/configs", headers=VIEWER_AUTH).status_code, 200)
             r = c.put("/api/configs/shows/gig.toml", headers=VIEWER_AUTH, json={"text": GIG_TOML})
         self.assertEqual(r.status_code, 403)
+
+
+class LibraryRouteTest(WebApiTestCase):
+    """`/api/library*` — favorites and recents."""
+
+    def test_library_starts_empty(self):
+        with self.client() as c:
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual(body, {"favorites": [], "recents": []})
+
+    def test_favoriting_a_ref_is_reflected_back(self):
+        with self.client() as c:
+            r = c.post(
+                "/api/library/favorites", headers=AUTH, json={"ref": "shows/gig.toml", "on": True}
+            )
+            self.assertEqual(r.json()["favorites"], ["shows/gig.toml"])
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual(body["favorites"], ["shows/gig.toml"])
+
+    def test_unfavoriting_removes_it(self):
+        with self.client() as c:
+            c.post(
+                "/api/library/favorites", headers=AUTH, json={"ref": "shows/gig.toml", "on": True}
+            )
+            r = c.post(
+                "/api/library/favorites", headers=AUTH, json={"ref": "shows/gig.toml", "on": False}
+            )
+        self.assertEqual(r.json()["favorites"], [])
+
+    def test_a_favorite_needs_a_ref(self):
+        with self.client() as c:
+            r = c.post("/api/library/favorites", headers=AUTH, json={"on": True})
+        self.assertEqual(r.status_code, 400)
+
+    def test_starting_a_named_config_records_a_recent(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual([r["ref"] for r in body["recents"]], ["shows/gig.toml"])
+
+    def test_starting_with_no_config_records_nothing(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING)
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual(body["recents"], [])
+
+    def test_switching_to_a_named_config_records_a_recent_too(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING, generation=1)
+            c.post("/api/session/switch", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING, generation=2)
+            body = c.get("/api/library", headers=AUTH).json()
+        self.assertEqual([r["ref"] for r in body["recents"]], ["shows/gig.toml"])
+
+    def test_a_viewer_may_read_the_library_but_not_favorite(self):
+        with self.client() as c:
+            self.assertEqual(c.get("/api/library", headers=VIEWER_AUTH).status_code, 200)
+            r = c.post(
+                "/api/library/favorites", headers=VIEWER_AUTH, json={"ref": "shows/gig.toml"}
+            )
+        self.assertEqual(r.status_code, 403)
+
+
+class ConfigCreateDeleteRouteTest(WebApiTestCase):
+    """`POST /api/configs` (create) and `DELETE /api/configs/{ref}`."""
+
+    def test_a_blank_config_is_created(self):
+        with self.client() as c:
+            r = c.post("/api/configs", headers=AUTH, json={"path": "shows/new.toml"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue((self.root / "new.toml").exists())
+
+    def test_creating_needs_a_path(self):
+        with self.client() as c:
+            r = c.post("/api/configs", headers=AUTH, json={})
+        self.assertEqual(r.status_code, 400)
+
+    def test_duplicating_an_existing_config(self):
+        with self.client() as c:
+            r = c.post(
+                "/api/configs",
+                headers=AUTH,
+                json={"path": "shows/copy.toml", "copy_of": "shows/gig.toml"},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((self.root / "copy.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def test_creating_over_an_existing_file_is_a_403(self):
+        with self.client() as c:
+            r = c.post("/api/configs", headers=AUTH, json={"path": "shows/gig.toml"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_viewer_cannot_create(self):
+        with self.client() as c:
+            r = c.post("/api/configs", headers=VIEWER_AUTH, json={"path": "shows/new.toml"})
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse((self.root / "new.toml").exists())
+
+    def test_delete_removes_the_file(self):
+        with self.client() as c:
+            r = c.delete("/api/configs/shows/gig.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse((self.root / "gig.toml").exists())
+
+    def test_deleting_the_running_config_is_refused(self):
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            r = c.delete("/api/configs/shows/gig.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue((self.root / "gig.toml").exists())
+
+    def test_deleting_a_missing_config_is_a_404(self):
+        with self.client() as c:
+            r = c.delete("/api/configs/shows/nope.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 404)
+
+    def test_a_viewer_cannot_delete(self):
+        with self.client() as c:
+            r = c.delete("/api/configs/shows/gig.toml", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 403)
+        self.assertTrue((self.root / "gig.toml").exists())
+
+
+class ExamplesRouteTest(WebApiTestCase):
+    """The packaged examples root, over HTTP: listed, readable, and refused on
+    every write route the jail itself already refuses (tests/test_config_store.py
+    covers the store's own logic; this is the route-level status mapping)."""
+
+    def app(self, **kwargs) -> Any:
+        kwargs.setdefault(
+            "store", config_store.ConfigStore([str(self.root)], include_examples=True)
+        )
+        return super().app(**kwargs)
+
+    def _example_ref(self, c) -> str:
+        body = c.get("/api/configs", headers=AUTH).json()
+        return next(f["path"] for f in body["files"] if f["root"] == "examples")
+
+    def test_examples_are_listed_and_readable(self):
+        with self.client() as c:
+            ref = self._example_ref(c)
+            r = c.get(f"/api/configs/{ref}", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+
+    def test_writing_to_an_example_is_forbidden(self):
+        with self.client() as c:
+            ref = self._example_ref(c)
+            r = c.put(f"/api/configs/{ref}", headers=AUTH, json={"text": GIG_TOML})
+        self.assertEqual(r.status_code, 403)
+
+    def test_deleting_an_example_is_forbidden(self):
+        with self.client() as c:
+            ref = self._example_ref(c)
+            r = c.delete(f"/api/configs/{ref}", headers=AUTH)
+        self.assertEqual(r.status_code, 403)
+
+    def test_creating_a_config_by_copying_an_example_works(self):
+        with self.client() as c:
+            ref = self._example_ref(c)
+            r = c.post(
+                "/api/configs",
+                headers=AUTH,
+                json={"path": "shows/from_example.toml", "copy_of": ref},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue((self.root / "from_example.toml").exists())
 
 
 class ConfigFormSaveTest(WebApiTestCase):

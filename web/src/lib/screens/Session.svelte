@@ -2,21 +2,28 @@
   import { onMount } from "svelte";
 
   import { ApiError, api } from "$lib/api";
+  import { launch } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
-  import ConfigList from "$lib/components/ConfigList.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
   import ViewerLink from "$lib/components/ViewerLink.svelte";
   import type { Console } from "$lib/console.svelte";
-  import type { ConfigIndex } from "$lib/types";
+  import type { Router } from "$lib/router.svelte";
+  import type { ConfigIndex, LibraryState } from "$lib/types";
 
   interface Props {
     host: Console;
+    router: Router;
+    /** The config this browser has picked, shared with every other tab —
+     *  owned by the shell (`App.svelte`) rather than local state, so a config
+     *  picked here is still selected after a trip to the Editor and back. */
+    selected: string;
+    onselect: (ref: string) => void;
   }
 
-  let { host }: Props = $props();
+  let { host, router, selected, onselect }: Props = $props();
 
   let index = $state<ConfigIndex | null>(null);
-  let chosen = $state("");
+  let library = $state<LibraryState | null>(null);
   let problem = $state("");
   // Set while an action is in flight. The supervisor answers 202 the instant
   // it claims the transition, so this only covers the request itself — what
@@ -33,11 +40,20 @@
 
   onMount(() => {
     void refreshIndex();
+    void refreshLibrary();
   });
 
   async function refreshIndex(): Promise<void> {
     try {
       index = await api.configs();
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function refreshLibrary(): Promise<void> {
+    try {
+      library = await api.library();
     } catch (e) {
       problem = describe(e);
     }
@@ -65,9 +81,65 @@
     }
   }
 
-  const ref = $derived(chosen || null);
-  const label = $derived(chosen || "the host default");
+  /** `rel` with `.toml` stripped when the ref is still in the index; a plain
+   *  fallback (root label dropped, suffix stripped) when it isn't — a starred
+   *  or recent config that has since been moved or deleted still has to
+   *  render as *something*. */
+  function displayName(ref: string): string {
+    const file = index?.files.find((f) => f.path === ref);
+    if (file) return file.rel.replace(/\.toml$/i, "");
+    const slash = ref.indexOf("/");
+    return (slash >= 0 ? ref.slice(slash + 1) : ref).replace(/\.toml$/i, "");
+  }
+
+  async function toggleFavorite(ref: string, on: boolean): Promise<void> {
+    try {
+      const { favorites } = await api.favorite(ref, on);
+      if (library) library = { ...library, favorites };
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function quickLaunch(ref: string): Promise<void> {
+    onselect(ref);
+    await act(() => launch(host, ref));
+    await refreshLibrary();
+  }
 </script>
+
+{#snippet configRow(ref: string, hint: string)}
+  {@const isFavorite = library?.favorites.includes(ref) ?? false}
+  <li class="flex items-center gap-1.5">
+    <button
+      onclick={() => onselect(ref)}
+      ondblclick={() => void quickLaunch(ref)}
+      aria-pressed={selected === ref}
+      class="min-w-0 flex-1 rounded-md border px-2.5 py-2 text-left text-sm
+             {selected === ref
+        ? 'border-[var(--accent)] bg-[var(--panel-alt)]'
+        : 'border-transparent hover:bg-[var(--panel-alt)]'}"
+    >
+      <span class="block truncate font-mono">{displayName(ref)}</span>
+      {#if hint}
+        <span class="block text-xs text-[var(--ink-dim)]">{hint}</span>
+      {/if}
+    </button>
+    {#if !host.readOnly}
+      <button
+        type="button"
+        aria-pressed={isFavorite}
+        aria-label={isFavorite ? "Remove favorite" : "Add favorite"}
+        onclick={() => void toggleFavorite(ref, !isFavorite)}
+        class="min-h-9 min-w-9 shrink-0 rounded text-base leading-none
+               focus-visible:outline-2 focus-visible:outline-[var(--accent)]
+               {isFavorite ? 'text-c64-yellow' : 'text-[var(--ink-dim)]'}"
+      >
+        {isFavorite ? "★" : "☆"}
+      </button>
+    {/if}
+  </li>
+{/snippet}
 
 <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
   <!-- `min-w-0` on every grid item, here and on the other screens: a grid item
@@ -83,7 +155,17 @@
 
     <dl class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)]">
       <dt class="text-[var(--ink-dim)]">Configuration</dt>
-      <dd class="font-mono break-all">{status?.config_path || "—"}</dd>
+      <dd class="flex items-center gap-2 font-mono break-all">
+        {status?.config_path || "—"}
+        {#if status?.config_ref}
+          <button
+            class="shrink-0 text-xs underline underline-offset-2"
+            onclick={() => router.go("config", status?.config_ref ?? "")}
+          >
+            Edit
+          </button>
+        {/if}
+      </dd>
 
       <dt class="text-[var(--ink-dim)]">Systems</dt>
       <dd class="font-mono">{status?.systems.length ? status.systems.join(", ") : "—"}</dd>
@@ -118,13 +200,20 @@
     {:else}
       <div class="mt-5 space-y-3">
         <p class="text-sm text-[var(--ink-dim)]">
-          Selected: <span class="text-[var(--ink)]" class:font-mono={chosen}>{label}</span>
+          Selected:
+          <span class="text-[var(--ink)]" class:font-mono={selected}>
+            {selected || "nothing yet"}
+          </span>
         </p>
         <div class="flex flex-wrap gap-2">
           {#if running}
             <!-- Never an implicit stop: replacing a running show is `switch`,
                  which is the one place stop → settle → start is sequenced. -->
-            <Button variant="primary" disabled={busy} onclick={() => act(() => api.switch(ref))}>
+            <Button
+              variant="primary"
+              disabled={busy}
+              onclick={() => act(() => launch(host, selected))}
+            >
               Switch to this
             </Button>
             <Button disabled={busy} onclick={() => act(() => api.reload())}>Reload scenes</Button>
@@ -135,7 +224,7 @@
             <Button
               variant="primary"
               disabled={busy || !startable}
-              onclick={() => act(() => api.start(ref))}
+              onclick={() => act(() => launch(host, selected))}
             >
               Start
             </Button>
@@ -153,16 +242,41 @@
     {/if}
   </section>
 
-  <section class="panel min-w-0 p-5 lg:col-start-2 lg:row-start-1">
-    <header class="mb-3 flex items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold">Configurations</h2>
-      <Button onclick={refreshIndex}>Refresh</Button>
-    </header>
-    {#if index === null}
-      <p class="text-sm text-[var(--ink-dim)]">Loading…</p>
-    {:else}
-      <ConfigList {index} value={chosen} onselect={(ref) => (chosen = ref)} />
-    {/if}
-  </section>
+  <div class="grid min-w-0 gap-4 lg:col-start-2 lg:row-start-1">
+    <section class="panel min-w-0 p-5">
+      <h2 class="mb-3 text-lg font-semibold">Favorites</h2>
+      {#if library === null}
+        <p class="text-sm text-[var(--ink-dim)]">Loading…</p>
+      {:else if library.favorites.length === 0}
+        <p class="text-sm text-[var(--ink-dim)]">
+          None yet — star a configuration in the
+          <button class="underline underline-offset-2" onclick={() => router.go("config")}>
+            Editor
+          </button>
+          to keep it here.
+        </p>
+      {:else}
+        <ul class="space-y-1">
+          {#each library.favorites as ref (ref)}
+            {@render configRow(ref, "")}
+          {/each}
+        </ul>
+      {/if}
+    </section>
 
+    <section class="panel min-w-0 p-5">
+      <h2 class="mb-3 text-lg font-semibold">Recently launched</h2>
+      {#if library === null}
+        <p class="text-sm text-[var(--ink-dim)]">Loading…</p>
+      {:else if library.recents.length === 0}
+        <p class="text-sm text-[var(--ink-dim)]">Nothing started from this host yet.</p>
+      {:else}
+        <ul class="space-y-1">
+          {#each library.recents as entry (entry.ref)}
+            {@render configRow(entry.ref, new Date(entry.at * 1000).toLocaleString())}
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  </div>
 </div>

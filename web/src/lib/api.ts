@@ -5,6 +5,7 @@ import type {
   ConfigPatched,
   ConfigWritten,
   Introspection,
+  LibraryState,
   LiveTuneSaved,
   LogLine,
   SceneChanged,
@@ -142,6 +143,16 @@ export const api = {
   removeScene: (ref: string, index: number) =>
     request<SceneChanged>("DELETE", `/api/configs/${refPath(ref)}/scenes/${index}`),
 
+  /** A new file at `path`: a copy of `copyOf` (any readable ref, including a
+   *  packaged example — the onboarding path for one), or a minimal starter
+   *  when omitted. Refused if `path` already exists. */
+  createConfig: (path: string, copyOf?: string) =>
+    request<ConfigWritten>("POST", "/api/configs", { path, copy_of: copyOf }),
+
+  /** Refused for a read-only root or the config the session is currently
+   *  running — the store and the route each refuse one of those. */
+  deleteConfig: (ref: string) => request<{ ok: boolean }>("DELETE", `/api/configs/${refPath(ref)}`),
+
   /** `start`, `switch` and `stop` all answer 202: the supervisor has claimed
    *  the transition, not finished it. What actually happened arrives on the
    *  state feed, which is why nothing here waits for a result. */
@@ -176,4 +187,11 @@ export const api = {
    *  Asking does not start anything — the stream comes up when an `<img>`
    *  opens `/api/screen/stream`, and goes down when it closes. */
   screen: () => request<ScreenAvailability>("GET", "/api/screen"),
+
+  /** Favorites + recently-launched configs — server-side and shared across
+   *  every browser or phone pointed at this host, rather than one browser's
+   *  `localStorage`. */
+  library: () => request<LibraryState>("GET", "/api/library"),
+  favorite: (ref: string, on: boolean) =>
+    request<{ favorites: string[] }>("POST", "/api/library/favorites", { ref, on }),
 };

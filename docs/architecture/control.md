@@ -14,6 +14,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`app/serve.py` — the session supervisor](#appservepy--the-session-supervisor)
 * [`web_api.py` — the web console's API + the host (`--serve`)](#web_apipy--the-web-consoles-api--the-host---serve)
 * [`config_store.py` — the config browser and its root jail](#config_storepy--the-config-browser-and-its-root-jail)
+* [`console_library.py` — favorites + recently-launched configs](#console_librarypy--favorites--recently-launched-configs)
 * [`web_static.py` — the console's built UI, committed and served](#web_staticpy--the-consoles-built-ui-committed-and-served)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
@@ -192,6 +193,16 @@ Two costs, both deliberate. **The file's prose does not survive** a re-serialize
 The replaced text goes to a dotfile sibling (`.gig.toml.bak`, invisible to the listing) because a remote overwrite of a show config otherwise has no undo at all. Ensemble masters read fine but come back with `kind: "ensemble"` and no form data — `config_serialize` refuses them by design, so the raw text editor is the whole story for one. The DMA password is withheld from the form via `config_serialize.SECRET_FIELDS`, the same list that keeps it out of a serialized config; the raw `text` is still the file, because this is an editor, not a redactor.
 
 **What a ref bounds is which files are edited, not what a config can reach.** A saved TOML names media paths and URLs a session will open and `yt-dlp` will fetch, so remote config write access is equivalent to local shell-ish reach. That is why the full token gates it, why a `viewer` cannot write, and why `config_roots` defaults to the one directory the host was launched from rather than to anything broader.
+
+## `console_library.py` — favorites + recently-launched configs
+
+`GET /api/library` and `POST /api/library/favorites` back the Session tab's two panels: **Favorites** and **Recently launched**, in place of the raw, unfiltered configuration list the console used to open on. Persisted to `<data root>/console.json` rather than the browser's own storage, because the point is that a phone and a laptop pointed at the same host see the same stars and the same recent list — a favorite starred from the console at the front of house should still be there from the console backstage.
+
+**Same contract as `transport.JsonSlotStore`, not a subclass of it.** Tolerant load (a missing, corrupt, or wrong-shaped file reads as an empty library, and only well-formed entries survive), atomic write via `atomic_write_text`. Not a subclass because that class's contract is a *numbered-slot* map (`transport.py`'s WLED presets, Looks, loop presets), and this file's shape is two lists — a fourth reimplementation of the slot machinery for a shape that isn't slots would be the wrong reuse.
+
+**Refs, not paths.** A favorite or a recent is stored as the same `<root-label>/<relative>` identifier `config_store.ConfigStore` already hands the browser, so it can be handed straight back to `store.resolve` with no translation and no second notion of "which file". A ref that no longer resolves — the file was moved or deleted since it was starred — is left in the list rather than pruned here: this module has no way to ask whether a ref is still good, and the client asking to render one is the one place that already finds out.
+
+**Recents are recorded from every surface that starts a show**, not only the browser: `web_api.py`'s `POST /api/session/start`/`switch` call `record_recent` on success, and the WebSocket's `session: "start"/"switch"` command does the same — a launch from a MIDI controller or a script counts. A falsy ref (the host's own default config) records nothing, because a *config* library has nothing to say about "whatever this host was launched with".
 
 ## `web_static.py` — the console's built UI, committed and served
 

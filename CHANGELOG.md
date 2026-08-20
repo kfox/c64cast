@@ -975,6 +975,33 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   would stop flagging real mistakes and start suggesting keys the installed
   version rejects.
 
+### Added
+
+- **The web console's config browser is now a library, not a raw file
+  listing.** The Session tab shows **Favorites** and **Recently launched**
+  instead of every `.toml` under every root; the full, searchable list —
+  sortable by name or by date, with a show/hide toggle for the packaged
+  example configs — lives on the renamed **Editor** tab (`Configs` before).
+  Any config can be starred from either tab. A file's name is now shown with
+  its config root's path and `.toml` suffix stripped (subdirectories kept),
+  double-clicking one starts it, and a persistent Start/Switch button in the
+  tab bar tracks whatever config is currently selected, on every tab. Starting
+  a show from any of these now switches to the Live tab once it actually comes
+  up.
+- **New and Duplicate buttons on the Editor**, alongside a Delete. Duplicate
+  works on a packaged example too — the intended way to turn one into an
+  editable starting point, since the examples root is otherwise read-only.
+- **There is no more "host default" config.** Every surface used to treat "no
+  config chosen" as a stand-in for whatever `--config` named at launch; the
+  supervisor now reports that config's ref (`config_ref`) even before the
+  first start, so the browser can preselect and show it like any other
+  config instead of special-casing an empty selection.
+- Favorites and recently-launched configs are **server-side state**
+  (`~/.local/share/c64cast/console.json`), not one browser's `localStorage` —
+  a phone and a laptop pointed at the same host see the same list. A launch
+  from any surface (MIDI, a script, another console) counts as a recent, not
+  only one started from this browser.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

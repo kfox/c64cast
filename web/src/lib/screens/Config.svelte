@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
 
   import { ApiError, api } from "$lib/api";
+  import { launch } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
   import ConfigForm from "$lib/components/ConfigForm.svelte";
   import ConfigList from "$lib/components/ConfigList.svelte";
@@ -10,7 +11,7 @@
   import { drafts } from "$lib/drafts.svelte";
   import { DocIndex, documentation } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigDetail, ConfigEdit, ConfigIndex } from "$lib/types";
+  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -20,6 +21,7 @@
   let { host, router }: Props = $props();
 
   let index = $state<ConfigIndex | null>(null);
+  let library = $state<LibraryState | null>(null);
   let docs = $state<DocIndex | null>(null);
   let detail = $state<ConfigDetail | null>(null);
   let loading = $state(false);
@@ -55,6 +57,7 @@
 
   onMount(() => {
     void refreshIndex();
+    void refreshLibrary();
     documentation()
       .then((d) => (docs = d))
       .catch((e: unknown) => (problem = describe(e)));
@@ -71,6 +74,66 @@
   async function refreshIndex(): Promise<void> {
     try {
       index = await api.configs();
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function refreshLibrary(): Promise<void> {
+    try {
+      library = await api.library();
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function toggleFavorite(ref: string, on: boolean): Promise<void> {
+    try {
+      const { favorites } = await api.favorite(ref, on);
+      if (library) library = { ...library, favorites };
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function createNew(): Promise<void> {
+    const root = index?.roots.find((r) => !r.readonly);
+    const path = window.prompt(
+      "Path for the new configuration (inside a writable root):",
+      root ? `${root.label}/new.toml` : "new.toml",
+    );
+    if (!path) return;
+    try {
+      await api.createConfig(path);
+      await refreshIndex();
+      router.go("config", path);
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function duplicate(): Promise<void> {
+    if (!selected) return;
+    const suggested = selected.replace(/(\.toml)?$/i, "-copy.toml");
+    const path = window.prompt("Path for the duplicate:", suggested);
+    if (!path) return;
+    try {
+      await api.createConfig(path, selected);
+      await refreshIndex();
+      router.go("config", path);
+    } catch (e) {
+      problem = describe(e);
+    }
+  }
+
+  async function remove(): Promise<void> {
+    if (!selected) return;
+    if (!window.confirm(`Delete ${selected}? This cannot be undone.`)) return;
+    try {
+      await api.deleteConfig(selected);
+      drafts.clear(selected);
+      await refreshIndex();
+      router.go("config");
     } catch (e) {
       problem = describe(e);
     }
@@ -103,6 +166,7 @@
     if (e instanceof ApiError) {
       if (e.status === 403) return `Not allowed: ${e.message}`;
       if (e.status === 404) return `No such configuration: ${e.message}`;
+      if (e.status === 409) return `Can't do that right now: ${e.message}`;
       if (e.status === 413) return `That file is too large to edit here: ${e.message}`;
       return e.message;
     }
@@ -170,14 +234,36 @@
   }
 
   const clock = (t: number) => new Date(t * 1000).toLocaleString();
+
+  let launching = $state(false);
+
+  async function startSelected(ref: string = selected): Promise<void> {
+    if (!ref) return;
+    launching = true;
+    problem = "";
+    try {
+      await launch(host, ref);
+    } catch (e) {
+      problem = describe(e);
+    } finally {
+      launching = false;
+    }
+  }
 </script>
 
 <div class="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
   <section class="panel min-w-0 p-5">
     <header class="mb-3 flex items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold">Configurations</h2>
+      <h2 class="text-lg font-semibold">Editor</h2>
       <Button onclick={refreshIndex}>Refresh</Button>
     </header>
+    {#if !host.readOnly}
+      <div class="mb-3 flex flex-wrap gap-2">
+        <Button onclick={createNew}>New</Button>
+        <Button disabled={!selected} onclick={duplicate}>Duplicate</Button>
+        <Button variant="danger" disabled={!selected} onclick={remove}>Delete</Button>
+      </div>
+    {/if}
     {#if index === null}
       <p class="text-sm text-[var(--ink-dim)]">Loading…</p>
     {:else}
@@ -185,9 +271,14 @@
         {index}
         {edited}
         tall
-        hostDefault={false}
         value={selected}
         onselect={(ref: string) => router.go("config", ref)}
+        onstart={(ref: string) => {
+          router.go("config", ref);
+          void startSelected(ref);
+        }}
+        favorites={library?.favorites ?? []}
+        onfavorite={toggleFavorite}
       />
     {/if}
   </section>
@@ -208,14 +299,25 @@
     {:else if loading && detail === null}
       <p class="text-sm text-[var(--ink-dim)]">Loading {selected}…</p>
     {:else if detail}
-      <header class="mb-4">
-        <h2 class="font-mono text-lg font-semibold break-all">{detail.path}</h2>
-        <p class="mt-1 text-xs text-[var(--ink-dim)]">
-          {detail.size} bytes · {clock(detail.mtime)}
-          {#if detail.kind === "ensemble"}
-            · ensemble master over {detail.systems.join(", ")}
-          {/if}
-        </p>
+      <header class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-mono text-lg font-semibold break-all">{detail.path}</h2>
+          <p class="mt-1 text-xs text-[var(--ink-dim)]">
+            {detail.size} bytes · {clock(detail.mtime)}
+            {#if detail.kind === "ensemble"}
+              · ensemble master over {detail.systems.join(", ")}
+            {/if}
+          </p>
+        </div>
+        {#if !host.readOnly && !isRunning}
+          <Button
+            variant="primary"
+            disabled={launching || host.busy}
+            onclick={() => startSelected()}
+          >
+            {host.session?.state === "running" ? "Switch to this" : "Start"}
+          </Button>
+        {/if}
       </header>
 
       {#if isRunning}

@@ -150,7 +150,7 @@ web:
 	  echo "Install it with:  brew install node"; \
 	  echo "(see https://nodejs.org for other platforms)"; \
 	  exit 1; }
-	cd web && npm ci --no-audit --no-fund && npm run build
+	cd web && npm ci --no-audit --no-fund && npm run build && npm test
 
 # Redraw the guide's placeholder figures. Real captures saved over the same
 # filenames are detected and left alone; see the script's --force-all escape.
