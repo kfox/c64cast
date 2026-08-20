@@ -75,7 +75,7 @@ import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -719,6 +719,9 @@ class ConfigStore:
             # Filled only on a failure this file may not be responsible for —
             # see _machine_layer_notes.
             "layers": [],
+            # Only ever populated by validate_ref's pre-flight — a check of
+            # unsaved text has no file on disk for the doctor to look at.
+            "diagnostics": [],
         }
         try:
             fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
@@ -770,6 +773,31 @@ class ConfigStore:
             return report
         finally:
             tmp.unlink(missing_ok=True)
+
+    def validate_ref(self, ref: str) -> dict[str, Any]:
+        """Validate the file as it stands on disk, plus every *other* problem
+        in it — the console's pre-flight before a start.
+
+        ``validate_text`` alone is fail-fast, the same question
+        ``validate_configs`` asks before a start: it stops at the first
+        problem. This adds ``doctor.validate_load_result``'s collect-all pass
+        (``probe_u64=False`` keeps it network-free, and it has never been
+        reachable over HTTP before) as a ``diagnostics`` list, so a bad
+        config names everything wrong with it at once instead of one thing
+        per click. Diagnostics run regardless of ``ok`` — a config that fails
+        the fail-fast check but still loads gets the full list too — and stay
+        empty when the file doesn't even load, since there's nothing loaded
+        for the doctor to look at."""
+        path = self.resolve(ref)
+        report = self.validate_text(self._read_text(path), ref)
+        try:
+            loaded = cfgmod.load_master(str(path))
+        except (cfgmod.ConfigError, ValueError):
+            return report
+        from .doctor import validate_load_result
+
+        report["diagnostics"] = [asdict(d) for d in validate_load_result(loaded, probe_u64=False)]
+        return report
 
     @staticmethod
     def _blame_layers(report: dict[str, Any], text: str) -> dict[str, Any]:

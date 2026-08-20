@@ -1078,6 +1078,31 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Fixed
+
+- **A refused start now says why, everywhere it can be tried.** A start or
+  switch that failed its config validation used to answer `config did not
+  validate (exit code 3); see the log` — the reason existed only in the log,
+  because `session.SessionConfigError` carried an exit code and no message.
+  It now carries the same diagnostic `validate_configs` already logs, so the
+  422 names the actual scene or setting that was wrong. The shell's tab-bar
+  Start button — reachable from every tab, and the most-used way to launch a
+  show — used to swallow that failure into the browser's console instead of
+  showing it anywhere; it now hands the refusal to the Session screen, which
+  already owns a permanent problem line for it.
+- **The web console pre-flights a config before ever claiming a start or
+  switch**, rather than finding out from the 202 that followed it. `launch()`
+  — the one function every launch surface (the tab-bar button, Session's own
+  Start/Switch, a favorite's quick-launch, a double-click in the Editor) goes
+  through — now checks the config first and refuses locally if it would not
+  run. The check exposes `doctor.validate_load_result` (`--doctor
+  --skip-probe`'s collect-all pass, never reachable over HTTP before) as a new
+  `diagnostics` list on `POST /api/configs/{ref}/validate`'s report, so a bad
+  config names everything wrong with it at once instead of one problem per
+  click. That route also no longer silently validates an empty string when
+  called with no body — an absent `text` key now checks the file as it
+  stands on disk, which is what a pre-flight actually needs to ask about.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

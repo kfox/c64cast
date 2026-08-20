@@ -67,6 +67,7 @@ reason.
 | `src/lib/console.svelte.ts` | The `/api/ws` feed as one reactive object |
 | `src/lib/router.svelte.ts` | Which screen is showing, kept in the address bar |
 | `src/lib/configListLogic.ts` | `ConfigList`'s search/sort/name-display, as plain functions — see Testing |
+| `src/lib/errorsLogic.ts` | `describeError`: the one status-code→sentence mapping every screen's `problem` line uses |
 | `src/lib/introspect.ts` | `/api/introspect`, fetched once, indexed for lookup |
 | `src/lib/types.ts` | Hand-written mirrors of the daemon's JSON |
 | `src/lib/components/` | Presentational pieces |

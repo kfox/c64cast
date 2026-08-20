@@ -145,9 +145,14 @@ export const api = {
 
   /** Load `text` as if it were saved, without saving it. The same check a save
    *  makes, offered separately so the editor can show the reason before the
-   *  file is at stake. */
-  checkConfig: (ref: string, text: string) =>
-    request<ValidationReport>("POST", `/api/configs/${refPath(ref)}/validate`, { text }),
+   *  file is at stake. With `text` omitted, checks the file as it stands on
+   *  disk instead — a start or switch's pre-flight. */
+  checkConfig: (ref: string, text?: string) =>
+    request<ValidationReport>(
+      "POST",
+      `/api/configs/${refPath(ref)}/validate`,
+      text === undefined ? undefined : { text },
+    ),
 
   /** Refused with 422 if the text does not load — the store never writes a
    *  config that cannot run. */

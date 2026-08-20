@@ -268,9 +268,8 @@ def register_web_routes(
         try:
             return request_factory(path)
         except SessionConfigError as e:
-            raise HTTPException(
-                422, f"config did not validate (exit code {e.exit_code}); see the log"
-            ) from e
+            detail = e.detail or f"config did not validate (exit code {e.exit_code}); see the log"
+            raise HTTPException(422, detail) from e
         except ConfigError as e:
             raise HTTPException(422, str(e)) from e
 
@@ -612,12 +611,16 @@ def register_web_routes(
             raise _store_error(e) from e
 
     # Registered before the bare `{ref:path}` route so a POST can't be read as
-    # a write to a file whose name happens to end in "/validate".
+    # a write to a file whose name happens to end in "/validate". A body with
+    # no "text" key checks the file as it stands on disk — the console's
+    # pre-flight before a start — rather than silently validating "".
     @app.post("/api/configs/{ref:path}/validate")
     async def api_config_validate(ref: str, request: Request) -> dict[str, Any]:
         body = await _body(request)
         try:
-            return store.validate_text(str(body.get("text", "")), ref)
+            if "text" in body:
+                return store.validate_text(str(body["text"]), ref)
+            return store.validate_ref(ref)
         except ConfigStoreError as e:
             raise _store_error(e) from e
 

@@ -87,6 +87,17 @@ class ReExportTest(unittest.TestCase):
             )
 
 
+class SessionConfigErrorTest(unittest.TestCase):
+    def test_str_falls_back_to_the_exit_code_when_no_detail_is_given(self):
+        e = session.SessionConfigError(5)
+        self.assertEqual(e.detail, "")
+        self.assertIn("exit code 5", str(e))
+
+    def test_str_is_the_detail_when_one_is_given(self):
+        e = session.SessionConfigError(3, "scene outro: no such file")
+        self.assertEqual(str(e), "scene outro: no such file")
+
+
 class ValidateConfigsTest(unittest.TestCase):
     """validate_configs must reach a verdict without touching hardware — that
     is what lets a caller reject a config while a session is running."""
@@ -100,6 +111,7 @@ class ValidateConfigsTest(unittest.TestCase):
                     session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 3)
         self.assertIn("sounddevice is not installed", logged.output[0])
+        self.assertIn("sounddevice is not installed", cm.exception.detail)
 
     def test_a_config_error_from_any_validator_is_exit_5(self):
         loaded = _loaded(["a"])
@@ -113,6 +125,7 @@ class ValidateConfigsTest(unittest.TestCase):
                     session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 5)
         self.assertIn("bad dither", logged.output[0])
+        self.assertEqual(cm.exception.detail, "bad dither")
 
     def test_clean_configs_pass(self):
         loaded = _loaded(["a", "b"])
@@ -136,9 +149,10 @@ class ValidateConfigsTest(unittest.TestCase):
             cfgmod.SceneCfg(type="video", name="outro", duration_s=5.0),
         ]
         with self.assertLogs("c64cast", level="ERROR") as logged:
-            with self.assertRaises(session.SessionConfigError):
+            with self.assertRaises(session.SessionConfigError) as cm:
                 session.validate_configs(loaded, loaded.cfgs)
         self.assertIn("outro", logged.output[0])
+        self.assertIn("outro", cm.exception.detail)
 
     def test_a_follower_only_scene_is_validated_too(self):
         # It is built lazily at broadcast time, so a bad one would otherwise
