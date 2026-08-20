@@ -60,7 +60,10 @@ class RootsTest(StoreTestCase):
         home = self.tmp / "home"
         home.mkdir()
         (home / "clip.mp4").write_bytes(b"")
-        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+        # `os.path.expanduser` reads $HOME on POSIX and $USERPROFILE first on
+        # Windows (falling back to $HOMEDRIVE+$HOMEPATH, then $HOME) — both
+        # are set so this is deterministic on every CI runner.
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
             store = media_store.MediaStore(["~"])
             out = store.index("video")
         specs = {e["spec"] for e in out["entries"]}

@@ -649,8 +649,10 @@ class MediaBrowserTest(WebApiTestCase):
         self.assertEqual(body["kind"], "video")
         # The root here is configured by its absolute path (same as `self.store`
         # above), so a listed spec is that absolute path too — media_store.py's
-        # specs are built from the root exactly as configured.
-        self.assertIn(str(self.root / "clip.mp4"), [e["spec"] for e in body["entries"]])
+        # specs are built from the root exactly as configured, with the
+        # relative part always joined by "/" regardless of platform (unlike
+        # `str(self.root / "clip.mp4")`, which normalizes to native separators).
+        self.assertIn(f"{self.root}/clip.mp4", [e["spec"] for e in body["entries"]])
 
     def test_an_unknown_kind_is_a_400_not_a_500(self):
         with self.client() as c:
