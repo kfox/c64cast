@@ -909,7 +909,10 @@ class ConfigStore:
         built the same way ``--init`` builds one: on top of
         :func:`c64cast.app.config.machine_baseline`, so a machine setting this
         host already carries isn't written into the new file as if the show
-        chose it.
+        chose it. Audio starts disabled, mirroring the interactive wizard's own
+        default answer to "enable SID audio streaming?" — a brand-new config
+        should validate on a host without the optional `mic` extra, not fail
+        before a single scene has been added.
 
         Refuses an existing path outright — this creates, it does not save —
         and refuses a parent directory that doesn't exist yet rather than
@@ -922,8 +925,15 @@ class ConfigStore:
         if copy_of is not None:
             text = self._read_text(self.resolve(copy_of))
         else:
+            # Two separate calls, not one shared instance: `base` is mutated
+            # in place by build_multi_config, and dumps() needs an untouched
+            # baseline to diff against — mirrors wizard.py's _run_single/_run_multi.
             baseline = cfgmod.machine_baseline()
-            cfg = wizard.build_multi_config(scenes=[cfgmod.SceneCfg(type="blank")], base=baseline)
+            cfg = wizard.build_multi_config(
+                scenes=[cfgmod.SceneCfg(type="blank")],
+                base=cfgmod.machine_baseline(),
+                audio_enabled=False,
+            )
             text = config_serialize.dumps(cfg, baseline=baseline)
         out = self.write(ref, text, partial=True)
         out["created"] = True

@@ -903,7 +903,12 @@ class CreateFromExampleTest(unittest.TestCase):
 
     def test_duplicating_an_example_copies_it_verbatim(self):
         example_ref = self._example_ref()
-        self.store.create("shows/from_example.toml", copy_of=example_ref)
+        # Some packaged examples need [audio].enabled for their own feature
+        # (mic capture, a soundtrack) regardless of whether this host happens
+        # to have the optional `mic` extra installed — irrelevant to a verbatim
+        # copy, so stand in for it rather than picking an example that avoids it.
+        with mock.patch("c64cast.app.session.AUDIO_AVAILABLE", True):
+            self.store.create("shows/from_example.toml", copy_of=example_ref)
         got = (self.shows / "from_example.toml").read_text(encoding="utf-8")
         want = self.store.read(example_ref)["text"]
         self.assertEqual(got, want)

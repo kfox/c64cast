@@ -787,13 +787,19 @@ class ExamplesRouteTest(WebApiTestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_creating_a_config_by_copying_an_example_works(self):
-        with self.client() as c:
-            ref = self._example_ref(c)
-            r = c.post(
-                "/api/configs",
-                headers=AUTH,
-                json={"path": "shows/from_example.toml", "copy_of": ref},
-            )
+        # Some packaged examples need [audio].enabled for their own feature
+        # (mic capture, a soundtrack) regardless of whether this host happens
+        # to have the optional `mic` extra installed — irrelevant to a
+        # verbatim copy, so stand in for it rather than picking an example
+        # that avoids it.
+        with mock.patch("c64cast.app.session.AUDIO_AVAILABLE", True):
+            with self.client() as c:
+                ref = self._example_ref(c)
+                r = c.post(
+                    "/api/configs",
+                    headers=AUTH,
+                    json={"path": "shows/from_example.toml", "copy_of": ref},
+                )
         self.assertEqual(r.status_code, 200)
         self.assertTrue((self.root / "from_example.toml").exists())
 
