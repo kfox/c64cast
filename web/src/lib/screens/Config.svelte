@@ -90,7 +90,7 @@
         if (kind in media) continue;
         mediaOfKind(kind)
           .then((entries) => (media = { ...media, [kind]: entries }))
-          .catch(() => {});
+          .catch((e: unknown) => (problem = describe(e)));
       }
     });
   });

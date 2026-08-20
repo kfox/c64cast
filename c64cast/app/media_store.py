@@ -1,12 +1,13 @@
 """Browse the media a `file =` field could name, inside a root jail.
 
 The read-only sibling of :mod:`config_store`: same jail discipline (roots
-resolved once, ``os.walk(followlinks=False)`` plus the per-entry
-``resolve().is_relative_to(root)`` re-check for a symlinked file, the same
-``_SKIP_DIRS``), because a second copy of that check is a second thing to get
-wrong. It stops there — no ``create``, no ``write``, no ``delete`` — so the one
-new *write*-to-disk surface (uploading a file) can land as its own change and
-get reviewed on its own.
+resolved once, the depth-capped, skip-dirs-pruned walk shared via
+:mod:`fs_walk`, plus the per-entry ``resolve().is_relative_to(root)`` re-check
+for a symlinked file) — a second copy of that check would be a second thing to
+get wrong, so the walk itself is one function both modules call rather than
+two hand-kept-in-sync copies. It stops there — no ``create``, no ``write``, no
+``delete`` — so the one new *write*-to-disk surface (uploading a file) can
+land as its own change and get reviewed on its own.
 
 **Specs, not refs.** ``ConfigStore`` addresses a file by ``<root-label>/<rel>``
 because it *writes* to a named file and ambiguity there would pick the wrong
@@ -46,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .fs_walk import MAX_FILES, walk_dirs
 from .scene_factory import (
     AUDIO_EXTS,
     DEFAULT_PROGRAM_DIR,
@@ -81,14 +83,6 @@ _DEFAULT_ROOTS = (
     DEFAULT_PROGRAM_DIR,
 )
 
-#: Caps on the listing walk, mirroring config_store's — about keeping a
-#: hostile or merely enormous directory from turning one request into minutes
-#: of I/O, not a security boundary.
-MAX_FILES = 500
-MAX_DEPTH = 8
-
-_SKIP_DIRS = frozenset({"__pycache__", "node_modules", ".git", ".venv"})
-
 
 class MediaStoreError(Exception):
     """Base for every refusal from this module."""
@@ -111,22 +105,57 @@ class MediaRoot:
 
 
 def _walk(root: MediaRoot) -> Iterator[tuple[Path, list[str]]]:
-    """Yield `(directory, filenames)` under `root`, depth- and skip-limited the
-    same way `config_store.ConfigStore._walk` is."""
-    for dirpath, dirnames, filenames in os.walk(root.path, followlinks=False):
-        here = Path(dirpath)
-        if len(here.relative_to(root.path).parts) >= MAX_DEPTH:
-            dirnames[:] = []
-        else:
-            dirnames[:] = sorted(
-                d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
-            )
+    """Yield `(directory, filenames)` under `root`, hidden files dropped —
+    depth and skip-dirs limiting is `fs_walk.walk_dirs`'s, shared with
+    `config_store.ConfigStore._walk`."""
+    for here, filenames in walk_dirs(root.path):
         yield here, sorted(f for f in filenames if not f.startswith("."))
 
 
 def _spec(root: MediaRoot, rel_parts: Sequence[str]) -> str:
-    spelling = root.spelling.rstrip("/") or "."
-    return "/".join((spelling, *rel_parts)) if rel_parts else spelling
+    # `wanted` in `MediaStore.__init__` already drops empty/blank spellings,
+    # so `rstrip("/")` only empties out a spelling that was itself all
+    # slashes (e.g. "/") — the filesystem root, not "no path at all". That
+    # root is the one spelling `"/".join` can't just prepend to, or a rel
+    # part joins in as "//etc" instead of "/etc".
+    spelling = root.spelling.rstrip("/") or "/"
+    if not rel_parts:
+        return spelling
+    if spelling == "/":
+        return "/" + "/".join(rel_parts)
+    return "/".join((spelling, *rel_parts))
+
+
+def _candidates(root: MediaRoot, exts: tuple[str, ...]) -> Iterator[tuple[str, bool, Path]]:
+    """Yield `(spec, is_dir, path)` for every directory under `root` that
+    directly holds a file ending in `exts`, and for every such file itself."""
+    for here, filenames in _walk(root):
+        hits = [f for f in filenames if f.lower().endswith(exts)]
+        if hits:
+            yield _spec(root, here.relative_to(root.path).parts), True, here
+        for name in hits:
+            path = here / name
+            # A symlinked file pointing out of the root is an ordinary walk
+            # entry (followlinks=False only keeps the walk out of symlinked
+            # *directories*) — same escape config_store's own `_walk` guards
+            # against.
+            if not path.resolve().is_relative_to(root.path):
+                continue
+            yield _spec(root, path.relative_to(root.path).parts), False, path
+
+
+def _stat_entry(spec: str, *, is_dir: bool, path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {
+        "spec": spec,
+        "name": path.name,
+        "is_dir": is_dir,
+        "size": 0 if is_dir else stat.st_size,
+        "mtime": stat.st_mtime,
+    }
 
 
 class MediaStore:
@@ -184,48 +213,16 @@ class MediaStore:
         entries: list[dict[str, Any]] = []
         truncated = False
 
-        def add(spec: str, *, is_dir: bool, path: Path) -> bool:
-            if needle and needle not in spec.lower():
-                return True
-            if len(entries) >= MAX_FILES:
-                return False
-            try:
-                stat = path.stat()
-            except OSError:
-                return True
-            entries.append(
-                {
-                    "spec": spec,
-                    "name": path.name,
-                    "is_dir": is_dir,
-                    "size": 0 if is_dir else stat.st_size,
-                    "mtime": stat.st_mtime,
-                }
-            )
-            return True
-
         for root in self._roots:
-            for here, filenames in _walk(root):
-                hits = [f for f in filenames if f.lower().endswith(exts)]
-                if hits:
-                    dir_rel = here.relative_to(root.path).parts
-                    if not add(_spec(root, dir_rel), is_dir=True, path=here):
-                        truncated = True
-                        break
-                for name in hits:
-                    path = here / name
-                    # A symlinked file pointing out of the root is an ordinary
-                    # walk entry (followlinks=False only keeps the walk out of
-                    # symlinked *directories*) — same escape config_store's own
-                    # `_walk` guards against.
-                    if not path.resolve().is_relative_to(root.path):
-                        continue
-                    rel = path.relative_to(root.path).parts
-                    if not add(_spec(root, rel), is_dir=False, path=path):
-                        truncated = True
-                        break
-                if truncated:
+            for spec, is_dir, path in _candidates(root, exts):
+                if needle and needle not in spec.lower():
+                    continue
+                if len(entries) >= MAX_FILES:
+                    truncated = True
                     break
+                entry = _stat_entry(spec, is_dir=is_dir, path=path)
+                if entry is not None:
+                    entries.append(entry)
             if truncated:
                 break
 

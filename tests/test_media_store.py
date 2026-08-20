@@ -35,6 +35,16 @@ class StoreTestCase(unittest.TestCase):
         self.assets.mkdir()
 
 
+class SpecTest(unittest.TestCase):
+    def test_a_root_spelled_as_only_slashes_specs_from_the_root_not_cwd(self):
+        # `rstrip("/")` on a spelling of just "/" empties out entirely; the
+        # fallback has to land back on "/", not "." (which would silently
+        # point a listed spec at the process's cwd instead of the filesystem
+        # root).
+        root = media_store.MediaRoot(spelling="/", path=Path("/"))
+        self.assertEqual(media_store._spec(root, ("etc", "motd")), "/etc/motd")
+
+
 class RootsTest(StoreTestCase):
     def test_a_root_that_is_not_a_directory_is_dropped_not_fatal(self):
         with self.assertLogs("c64cast.app.media_store", level="WARNING"):

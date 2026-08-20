@@ -44,11 +44,23 @@
   let { form, docs, path, readOnly, pending, onpending, onsaved, media = {} }: Props = $props();
 
   /** The datalist options a scene type's `file =` field offers: the union of
-   *  every media kind it browses, deduplicated. */
-  function mediaOptions(doc: SceneTypeDoc | undefined): string[] {
-    const entries = kindsForScene(doc).flatMap((kind) => media[kind] ?? []);
-    return [...new Set(pickerOptions(entries))];
-  }
+   *  every media kind it browses, deduplicated. Cached per scene type name so
+   *  staging an edit elsewhere in the form — which replaces `pending` and
+   *  would otherwise re-run this for every `file =` field — only recomputes
+   *  when `media` itself changes. */
+  const mediaOptions = $derived.by(() => {
+    const cache = new Map<string, string[]>();
+    return (doc: SceneTypeDoc | undefined): string[] => {
+      const key = doc?.name ?? "";
+      let options = cache.get(key);
+      if (!options) {
+        const entries = kindsForScene(doc).flatMap((kind) => media[kind] ?? []);
+        options = [...new Set(pickerOptions(entries))];
+        cache.set(key, options);
+      }
+      return options;
+    };
+  });
 
   /** Hide every field still sitting at its baseline. On by default: a config
    *  has 167 settable fields and a show file names a dozen of them, and the
