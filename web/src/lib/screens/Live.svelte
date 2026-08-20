@@ -99,6 +99,14 @@
             {host.session.config_path}
           </span>
         {/if}
+        {#if host.session?.config_ref}
+          <button
+            class="text-xs underline underline-offset-2"
+            onclick={() => router.go("config", host.session?.config_ref ?? "")}
+          >
+            Edit
+          </button>
+        {/if}
       </div>
     {/if}
     {#if problem}
@@ -109,6 +117,17 @@
   </section>
 {:else}
   <div class="space-y-4">
+    {#if host.session?.config_ref}
+      <div class="flex items-center gap-2 text-xs text-[var(--ink-dim)]">
+        <span class="truncate font-mono">{host.session.config_ref}</span>
+        <button
+          class="underline underline-offset-2"
+          onclick={() => router.go("config", host.session?.config_ref ?? "")}
+        >
+          Edit
+        </button>
+      </div>
+    {/if}
     {#if systems.length > 1}
       <nav class="flex flex-wrap gap-1" aria-label="Systems">
         {#each systems as system (system.name)}

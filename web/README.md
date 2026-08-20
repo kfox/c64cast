@@ -29,13 +29,28 @@ halves share one origin — which matters, because the token cookie is
 ## Shipping a change
 
 ```bash
-make web           # from the repo root: svelte-check, then vite build
+make web           # from the repo root: svelte-check, vite build, then npm test
 git add web c64cast/web/dist
 ```
 
 The bundle **must be rebuilt in the same commit as the source**. CI rebuilds it
 and fails on a diff, the same way it does for the JSON schema and the generated
 reference appendices.
+
+## Testing
+
+```bash
+cd web
+npm test           # vitest, once (make web runs this too)
+npx vitest         # watch mode
+```
+
+Pure logic pulled out of a component — `*.test.ts` beside the module it tests,
+e.g. `src/lib/configListLogic.test.ts`. Plain `vitest`, no DOM: everything
+under test today is logic a component imports rather than a component itself,
+which is why there's no `@testing-library/svelte` here yet. `vitest.config.ts`
+is deliberately separate from `vite.config.ts` — the app build needs the Svelte
+and Tailwind plugins, and a logic-only test needs neither.
 
 The build is deterministic: fixed asset names (`assets/app.js`, `assets/app.css`)
 rather than content hashes, so a rebuild is one diff on one file instead of a
@@ -48,8 +63,10 @@ reason.
 |---|---|
 | `src/App.svelte` | The shell: owns the one state feed and the router, and hands both down |
 | `src/lib/api.ts` | `fetch` wrappers; `ApiError` carries the status and the body |
+| `src/lib/actions.ts` | Cross-screen actions (`launch`) that touch `console.svelte.ts` state |
 | `src/lib/console.svelte.ts` | The `/api/ws` feed as one reactive object |
 | `src/lib/router.svelte.ts` | Which screen is showing, kept in the address bar |
+| `src/lib/configListLogic.ts` | `ConfigList`'s search/sort/name-display, as plain functions — see Testing |
 | `src/lib/introspect.ts` | `/api/introspect`, fetched once, indexed for lookup |
 | `src/lib/types.ts` | Hand-written mirrors of the daemon's JSON |
 | `src/lib/components/` | Presentational pieces |

@@ -343,6 +343,7 @@ files = [
     "c64cast/app/session.py",
     "c64cast/app/serve.py",
     "c64cast/app/config_store.py",
+    "c64cast/app/console_library.py",
     "c64cast/hw/socket_dma.py",
     "c64cast/hw/teensyrom_dma.py",
     "c64cast/scenes/scenes.py",

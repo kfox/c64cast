@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
 
+  import { ApiError } from "$lib/api";
+  import { launch } from "$lib/actions";
   import { Console } from "$lib/console.svelte";
+  import Button from "$lib/components/Button.svelte";
   import LogDrawer from "$lib/components/LogDrawer.svelte";
   import { drafts } from "$lib/drafts.svelte";
   import { Router, type Screen } from "$lib/router.svelte";
@@ -24,13 +27,59 @@
   const tabs: { screen: Screen; label: string }[] = [
     { screen: "session", label: "Session" },
     { screen: "live", label: "Live" },
-    { screen: "config", label: "Configs" },
+    { screen: "config", label: "Editor" },
   ];
 
   // Unsaved edits are marked on the tab, not just inside the screen that holds
   // them: the file list and the file header both say so, and neither is on
   // screen once somebody has walked away to watch the show.
   const unsaved = $derived(drafts.count);
+
+  // The one config every tab shares. Defaults to whatever the host was
+  // launched with (`config_ref`, the only "host default" concept left) the
+  // instant the state feed says so, and otherwise follows whatever was picked
+  // on the Session screen or opened in the Editor — so a Start button is
+  // always reachable from wherever the reader happens to be.
+  let selectedConfig = $state("");
+  let starting = $state(false);
+
+  $effect(() => {
+    if (!selectedConfig && host.session?.config_ref) selectedConfig = host.session.config_ref;
+  });
+
+  // Opening a file in the Editor is picking it, the same as clicking it in
+  // the Session list — both are "this is the show I'm working on right now".
+  $effect(() => {
+    if (router.screen === "config" && router.tail) selectedConfig = router.tail;
+  });
+
+  // A start or switch this browser asked for lands on the Live tab once the
+  // show is actually up — not before, and not for a transition somebody else
+  // drove from another console.
+  $effect(() => {
+    if (host.expectingStart && host.session?.state === "running") {
+      host.expectingStart = false;
+      router.go("live");
+    }
+  });
+
+  const phase = $derived(host.session?.state ?? "idle");
+  const running = $derived(phase === "running");
+  const busy = $derived(starting || phase === "starting" || phase === "stopping");
+  const canQuickStart = $derived(!host.readOnly && selectedConfig !== "" && !busy);
+
+  async function quickStart(): Promise<void> {
+    starting = true;
+    try {
+      await launch(host, selectedConfig);
+    } catch (e) {
+      // Surfaced on the Session screen's own log/status rather than repeated
+      // here — a toast on the shell would have nowhere permanent to live.
+      console.error(e instanceof ApiError ? e.message : e);
+    } finally {
+      starting = false;
+    }
+  }
 </script>
 
 <div class="mx-auto flex min-h-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
@@ -53,7 +102,7 @@
     </p>
   </header>
 
-  <nav class="flex gap-1 border-b border-[var(--edge)]" aria-label="Screens">
+  <nav class="flex flex-wrap items-center gap-1 border-b border-[var(--edge)]" aria-label="Screens">
     {#each tabs as tab (tab.screen)}
       <button
         onclick={() => router.go(tab.screen)}
@@ -72,17 +121,36 @@
         {/if}
       </button>
     {/each}
+
+    <!-- Reachable from every tab, not just the Session screen's own — the
+         point is that a config file selected anywhere is one click from
+         running, with no detour back to Session first. -->
+    {#if !host.readOnly}
+      <span class="ms-auto mb-1">
+        <Button
+          variant="primary"
+          disabled={!canQuickStart}
+          title={selectedConfig || "Pick a configuration first"}
+          onclick={quickStart}
+        >
+          {running ? "Switch to" : "Start"}
+          {#if selectedConfig}
+            <span class="max-w-32 truncate font-mono">{selectedConfig}</span>
+          {/if}
+        </Button>
+      </span>
+    {/if}
   </nav>
 
   <!-- `pb-14` clears the log drawer's collapsed bar, which is fixed to the
        bottom of the viewport and would otherwise sit on the last control. -->
   <main class="flex-1 pb-14">
     {#if router.screen === "config"}
-      <ConfigScreen {host} {router} />
+      <ConfigScreen {host} {router} onselect={(ref) => (selectedConfig = ref)} />
     {:else if router.screen === "live"}
       <LiveScreen {host} {router} />
     {:else}
-      <SessionScreen {host} />
+      <SessionScreen {host} {router} selected={selectedConfig} onselect={(ref) => (selectedConfig = ref)} />
     {/if}
   </main>
 

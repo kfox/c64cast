@@ -11,6 +11,12 @@ export interface SessionStatus {
   state: SessionState;
   generation: number;
   config_path: string;
+  /** `config_path` as a ref (`<root-label>/<relative>`), or null when that
+   *  path isn't under any configured root — a quick-playback run, or one
+   *  started from outside `[web].config_roots`. What the browser preselects
+   *  and reveals as the running config; there is no "host default" concept
+   *  beyond this. */
+  config_ref: string | null;
   systems: string[];
   last_error: string | null;
   hardware_wait_s: number;
@@ -32,20 +38,39 @@ export interface LogLine {
 export interface ConfigFile {
   path: string;
   root: string;
+  /** `path` with the root label stripped — what the list displays (the
+   *  `.toml` suffix is stripped by the client, subdirectories kept). */
+  rel: string;
   name: string;
   size: number;
   mtime: number;
+  /** True under the packaged-examples root: readable and copyable, never
+   *  writable or deletable. */
+  readonly: boolean;
 }
 
 export interface ConfigRoot {
   label: string;
   path: string;
+  readonly: boolean;
 }
 
 export interface ConfigIndex {
   roots: ConfigRoot[];
   files: ConfigFile[];
   truncated: boolean;
+}
+
+/** `GET /api/library` — favorites + recently-launched configs, shared across
+ *  every browser or phone pointed at this host (`console_library.py`). */
+export interface LibraryEntry {
+  ref: string;
+  at: number;
+}
+
+export interface LibraryState {
+  favorites: string[];
+  recents: LibraryEntry[];
 }
 
 /** `GET /api/screen`. `systems` maps a running system's name to whether that

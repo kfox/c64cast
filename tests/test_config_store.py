@@ -78,7 +78,12 @@ class StoreTestCase(unittest.TestCase):
         self.shows = self.tmp / "shows"
         self.shows.mkdir()
         (self.shows / "gig.toml").write_text(GOOD, encoding="utf-8")
-        self.store = config_store.ConfigStore([str(self.shows)])
+        # `include_examples=False`: this fixture is about the *configured*
+        # root, and coupling it to whatever ships in `c64cast/examples/` would
+        # make an unrelated packaging change break tests having nothing to do
+        # with examples. `ExamplesRootTest` below covers the examples root on
+        # its own.
+        self.store = config_store.ConfigStore([str(self.shows)], include_examples=False)
 
 
 class RootsTest(StoreTestCase):
@@ -87,22 +92,24 @@ class RootsTest(StoreTestCase):
         self.assertEqual(self.store.roots[0].path, self.shows)
 
     def test_no_roots_configured_means_the_working_directory(self):
-        store = config_store.ConfigStore([], cwd=self.shows)
+        store = config_store.ConfigStore([], cwd=self.shows, include_examples=False)
         self.assertEqual([r.path for r in store.roots], [self.shows])
 
     def test_two_roots_with_the_same_basename_get_distinct_labels(self):
         other = self.tmp / "b" / "shows"
         other.mkdir(parents=True)
-        store = config_store.ConfigStore([str(self.shows), str(other)])
+        store = config_store.ConfigStore([str(self.shows), str(other)], include_examples=False)
         self.assertEqual([r.label for r in store.roots], ["shows", "shows-2"])
 
     def test_a_root_that_is_not_a_directory_is_dropped_not_fatal(self):
         with self.assertLogs("c64cast.app.config_store", level="WARNING"):
-            store = config_store.ConfigStore([str(self.shows), str(self.tmp / "nope")])
+            store = config_store.ConfigStore(
+                [str(self.shows), str(self.tmp / "nope")], include_examples=False
+            )
         self.assertEqual([r.label for r in store.roots], ["shows"])
 
     def test_the_same_root_twice_is_listed_once(self):
-        store = config_store.ConfigStore([str(self.shows), str(self.shows)])
+        store = config_store.ConfigStore([str(self.shows), str(self.shows)], include_examples=False)
         self.assertEqual(len(store.roots), 1)
 
 
@@ -194,7 +201,10 @@ class IndexTest(StoreTestCase):
         self.assertEqual(len(index["files"]), 3)
 
     def test_the_roots_come_back_with_the_listing(self):
-        self.assertEqual(self.store.index()["roots"], [{"label": "shows", "path": str(self.shows)}])
+        self.assertEqual(
+            self.store.index()["roots"],
+            [{"label": "shows", "path": str(self.shows), "readonly": False}],
+        )
 
 
 class ReadTest(StoreTestCase):
@@ -798,6 +808,131 @@ class MachineLayerBlameTest(StoreTestCase):
         with self.assertRaises(config_store.ConfigInvalid) as caught:
             self.store.write("shows/other.toml", SILENT_ON_DITHER)
         self.assertEqual(caught.exception.report["layers"][0]["key"], "dither")
+
+
+class ExamplesRootTest(unittest.TestCase):
+    """The packaged examples, appended as a trailing read-only root."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.shows = self.tmp / "shows"
+        self.shows.mkdir()
+        (self.shows / "gig.toml").write_text(GOOD, encoding="utf-8")
+        self.store = config_store.ConfigStore([str(self.shows)])
+
+    def _example_ref(self) -> str:
+        return next(f["path"] for f in self.store.index()["files"] if f["root"] == "examples")
+
+    def test_examples_root_is_listed_and_readonly(self):
+        labels = {r.label: r for r in self.store.roots}
+        self.assertIn("examples", labels)
+        self.assertTrue(labels["examples"].readonly)
+        self.assertFalse(labels["shows"].readonly)
+
+    def test_examples_are_in_the_index_marked_readonly(self):
+        files = self.store.index()["files"]
+        example_files = [f for f in files if f["root"] == "examples"]
+        self.assertTrue(example_files)
+        self.assertTrue(all(f["readonly"] for f in example_files))
+        shows_files = [f for f in files if f["root"] == "shows"]
+        self.assertTrue(shows_files)
+        self.assertTrue(all(not f["readonly"] for f in shows_files))
+
+    def test_an_example_is_readable(self):
+        out = self.store.read(self._example_ref())
+        self.assertIsNone(out["error"])
+
+    def test_writing_to_the_examples_root_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.write(self._example_ref(), GOOD)
+
+    def test_patching_the_examples_root_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.patch(
+                self._example_ref(), [{"section": "color", "field": "dither", "value": "ordered"}]
+            )
+
+    def test_include_examples_false_leaves_them_out(self):
+        store = config_store.ConfigStore([str(self.shows)], include_examples=False)
+        self.assertNotIn("examples", {r.label for r in store.roots})
+
+
+class CreateTest(StoreTestCase):
+    def test_a_blank_starter_is_created_and_validates(self):
+        out = self.store.create("shows/new_show.toml")
+        self.assertTrue(out["ok"])
+        self.assertTrue((self.shows / "new_show.toml").exists())
+        self.assertIsNone(self.store.read("shows/new_show.toml")["error"])
+
+    def test_a_copy_of_an_existing_config_is_verbatim(self):
+        self.store.create("shows/copy.toml", copy_of="shows/gig.toml")
+        self.assertEqual(
+            (self.shows / "copy.toml").read_text(encoding="utf-8"),
+            (self.shows / "gig.toml").read_text(encoding="utf-8"),
+        )
+
+    def test_creating_over_an_existing_file_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.create("shows/gig.toml")
+
+    def test_creating_in_a_directory_that_does_not_exist_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.create("shows/nowhere/new.toml")
+
+    def test_creating_from_a_copy_source_that_does_not_exist_fails(self):
+        with self.assertRaises(config_store.ConfigNotFound):
+            self.store.create("shows/new.toml", copy_of="shows/nope.toml")
+
+
+class CreateFromExampleTest(unittest.TestCase):
+    """Duplicating a packaged example is the onboarding path — the only way
+    an example, which cannot be edited in place, becomes an editable file."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.shows = self.tmp / "shows"
+        self.shows.mkdir()
+        self.store = config_store.ConfigStore([str(self.shows)])
+
+    def _example_ref(self) -> str:
+        return next(f["path"] for f in self.store.index()["files"] if f["root"] == "examples")
+
+    def test_duplicating_an_example_copies_it_verbatim(self):
+        example_ref = self._example_ref()
+        # Some packaged examples need [audio].enabled for their own feature
+        # (mic capture, a soundtrack) regardless of whether this host happens
+        # to have the optional `mic` extra installed — irrelevant to a verbatim
+        # copy, so stand in for it rather than picking an example that avoids it.
+        with mock.patch("c64cast.app.session.AUDIO_AVAILABLE", True):
+            self.store.create("shows/from_example.toml", copy_of=example_ref)
+        got = (self.shows / "from_example.toml").read_text(encoding="utf-8")
+        want = self.store.read(example_ref)["text"]
+        self.assertEqual(got, want)
+
+    def test_creating_inside_the_examples_root_is_refused(self):
+        with self.assertRaises(config_store.PathRejected):
+            self.store.create("examples/mine.toml")
+
+
+class DeleteTest(StoreTestCase):
+    def test_delete_removes_the_file(self):
+        out = self.store.delete("shows/gig.toml")
+        self.assertTrue(out["ok"])
+        self.assertFalse((self.shows / "gig.toml").exists())
+
+    def test_deleting_a_missing_file_is_refused(self):
+        with self.assertRaises(config_store.ConfigNotFound):
+            self.store.delete("shows/nope.toml")
+
+    def test_deleting_from_the_examples_root_is_refused(self):
+        store = config_store.ConfigStore([str(self.shows)])
+        example_ref = next(f["path"] for f in store.index()["files"] if f["root"] == "examples")
+        with self.assertRaises(config_store.PathRejected):
+            store.delete(example_ref)
 
 
 if __name__ == "__main__":

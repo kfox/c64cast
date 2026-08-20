@@ -165,6 +165,19 @@ class StartStopTest(SupervisorTestCase):
         self.assertEqual(status.config_path, "show.toml")
         self.assertIsNone(status.last_error)
 
+    def test_idle_status_names_the_config_the_host_was_launched_with(self):
+        # There is no other "host default" concept: before any start,
+        # `config_path` (and the browser's `config_ref` built from it) is the
+        # only way to say what `--config` named at launch.
+        mgr = self.manager(build=_Build(), teardown=_Teardown(), launch_config_path="launch.toml")
+        self.assertEqual(mgr.status().config_path, "launch.toml")
+
+    def test_an_explicit_start_overrides_the_launch_default(self):
+        mgr = self.manager(build=_Build(), teardown=_Teardown(), launch_config_path="launch.toml")
+        mgr.start(_request("a", config_path="chosen.toml"))
+        self.assertReaches(mgr, SessionState.RUNNING)
+        self.assertEqual(mgr.status().config_path, "chosen.toml")
+
     def test_the_build_is_handed_the_request_and_the_generation(self):
         build = _Build()
         mgr = self.manager(build=build, teardown=_Teardown())

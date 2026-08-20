@@ -82,7 +82,7 @@ from typing import Any
 from c64cast.control.transport import atomic_write_text
 
 from . import config as cfgmod
-from . import config_serialize, introspect, paths
+from . import config_serialize, introspect, paths, wizard
 
 log = logging.getLogger(__name__)
 
@@ -138,9 +138,12 @@ class Root:
 
     label: str
     path: Path
+    #: True for the packaged examples root — readable and copyable, never
+    #: written to. See :meth:`ConfigStore._require_writable`.
+    readonly: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {"label": self.label, "path": str(self.path)}
+        return {"label": self.label, "path": str(self.path), "readonly": self.readonly}
 
 
 def _label_for(path: Path, taken: set[str]) -> str:
@@ -456,9 +459,20 @@ class ConfigStore:
     list means the working directory, which is where a ``c64cast --serve`` run
     launched from a show folder already has its configs. A root that doesn't
     exist is dropped with a warning rather than failing the host — the console
-    is still useful for starting the config it was launched with."""
+    is still useful for starting the config it was launched with.
 
-    def __init__(self, roots: Sequence[str] = (), *, cwd: Path | None = None) -> None:
+    A trailing, read-only root for the packaged examples is appended
+    automatically (``include_examples=False`` turns that off — mainly so a
+    test fixture built around a single configured root doesn't also have to
+    account for whatever ships in ``c64cast/examples/``)."""
+
+    def __init__(
+        self,
+        roots: Sequence[str] = (),
+        *,
+        cwd: Path | None = None,
+        include_examples: bool = True,
+    ) -> None:
         wanted = [paths.expand_user(r) for r in roots if str(r).strip()]
         if not wanted:
             wanted = [str(cwd) if cwd is not None else os.getcwd()]
@@ -474,8 +488,30 @@ class ConfigStore:
             label = _label_for(path, taken)
             taken.add(label)
             resolved.append(Root(label=label, path=path))
+        if include_examples:
+            self._append_examples_root(resolved, taken)
         self._roots = tuple(resolved)
         self._by_label = {r.label: r for r in self._roots}
+        self._ref_for_cache: tuple[str, str | None] | None = None
+
+    @staticmethod
+    def _append_examples_root(resolved: list[Root], taken: set[str]) -> None:
+        """Add the packaged examples as a trailing, read-only root, so they are
+        listed and readable (and thus copyable — see :meth:`create`) without
+        being mistaken for a place a user's own config can be saved.
+
+        Best-effort: a zipapp install has no real example files on disk (see
+        :func:`paths._package_dir`), and that is not a reason for the console
+        to refuse to start."""
+        try:
+            path = paths.examples_dir().resolve()
+        except RuntimeError:
+            return
+        if not path.is_dir() or any(path == r.path for r in resolved):
+            return
+        label = _label_for(path, taken)
+        taken.add(label)
+        resolved.append(Root(label=label, path=path, readonly=True))
 
     @property
     def roots(self) -> tuple[Root, ...]:
@@ -483,12 +519,24 @@ class ConfigStore:
 
     # -- refs ---------------------------------------------------------------
 
+    @staticmethod
+    def _ref_parts(ref: str) -> list[str]:
+        """Split a wire ref into its non-empty, non-`.` segments.
+
+        Shared by :meth:`resolve` and :meth:`_require_writable` so a leading
+        `/` or `./` (or a doubled slash) is filtered out the same way in both
+        places — re-deriving the root label with a naive `split("/", 1)` let
+        such a ref name a root :meth:`resolve` had correctly found, while the
+        write-side readonly check looked up an empty label and skipped
+        itself."""
+        return [p for p in str(ref).replace("\\", "/").split("/") if p not in ("", ".")]
+
     def resolve(self, ref: str) -> Path:
         """Turn a wire ref into an absolute path inside a root, or refuse.
 
         The returned path need not exist — a write to a new file is legal — but
         it is always a real location under a root, symlinks followed."""
-        parts = [p for p in str(ref).replace("\\", "/").split("/") if p not in ("", ".")]
+        parts = self._ref_parts(ref)
         if not parts:
             raise PathRejected("no config path given")
         if ".." in parts:
@@ -508,13 +556,39 @@ class ConfigStore:
         return target
 
     def ref_for(self, path: Path) -> str | None:
-        """The ref that addresses `path`, or None if no root contains it."""
+        """The ref that addresses `path`, or None if no root contains it.
+
+        Cached on the input path's string form: a websocket status frame
+        calls this every ~0.35s per connected client, but `config_path` only
+        changes on start/switch, so most calls would otherwise pay for a
+        `Path.resolve()` stat to re-derive the same answer."""
+        key = str(path)
+        cached = self._ref_for_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         resolved = Path(path).resolve()
+        ref = None
         for root in self._roots:
             if resolved.is_relative_to(root.path):
                 rel = resolved.relative_to(root.path)
-                return "/".join((root.label, *rel.parts))
-        return None
+                ref = "/".join((root.label, *rel.parts))
+                break
+        self._ref_for_cache = (key, ref)
+        return ref
+
+    def _require_writable(self, ref: str) -> Path:
+        """:meth:`resolve`, plus a refusal for the packaged examples root.
+
+        A ref's own label says which root it is in, so this needs no second
+        walk of ``self._roots`` — the same label :meth:`resolve` just checked
+        is looked up again here. Copy an example (:meth:`create` with
+        ``copy_of``) to get an editable file from one."""
+        path = self.resolve(ref)
+        label = self._ref_parts(ref)[0]
+        root = self._by_label.get(label)
+        if root is not None and root.readonly:
+            raise PathRejected(f"{ref!r} is a read-only example — duplicate it to edit")
+        return path
 
     # -- listing ------------------------------------------------------------
 
@@ -536,9 +610,11 @@ class ConfigStore:
                     {
                         "path": "/".join((root.label, *rel.parts)),
                         "root": root.label,
+                        "rel": rel.as_posix(),
                         "name": path.name,
                         "size": stat.st_size,
                         "mtime": stat.st_mtime,
+                        "readonly": root.readonly,
                     }
                 )
             if truncated:
@@ -659,7 +735,14 @@ class ConfigStore:
             # see _machine_layer_notes.
             "layers": [],
         }
-        fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
+        try:
+            fd, tmp_name = tempfile.mkstemp(prefix=".c64cast-check-", suffix=SUFFIX, dir=directory)
+        except OSError as e:
+            # `directory` is the target's own (possibly read-only-by-policy,
+            # or on a wheel install genuinely unwritable) directory — see the
+            # docstring for why it has to be that one. A denied write belongs
+            # in the report, not an unhandled 500.
+            raise PathRejected(f"cannot check a config in {directory}: {e}") from e
         tmp = Path(tmp_name)
         unplayable: list[dict[str, Any]] = []
         try:
@@ -727,7 +810,7 @@ class ConfigStore:
         """Validate, back up whatever is there, then replace it atomically.
 
         `partial` is :meth:`validate_text`'s, and reaches it unchanged."""
-        path = self.resolve(ref)
+        path = self._require_writable(ref)
         if len(text.encode("utf-8")) > MAX_BYTES:
             raise ConfigTooLarge(f"config is larger than {MAX_BYTES} bytes")
         if not path.parent.is_dir():
@@ -847,6 +930,61 @@ class ConfigStore:
         out["scene"] = out.pop("result")
         return out
 
+    def create(self, ref: str, *, copy_of: str | None = None) -> dict[str, Any]:
+        """Make a new config at `ref`.
+
+        `copy_of` is any *readable* ref — including one under the read-only
+        examples root, which is how an example becomes an editable starting
+        point rather than something only ``--config example:NAME`` can reach.
+        With no `copy_of`, the new file is a minimal single-scene starter
+        (a ``blank`` scene, the one type with nothing to point at a file for),
+        built the same way ``--init`` builds one: on top of
+        :func:`c64cast.app.config.machine_baseline`, so a machine setting this
+        host already carries isn't written into the new file as if the show
+        chose it. Audio starts disabled, mirroring the interactive wizard's own
+        default answer to "enable SID audio streaming?" — a brand-new config
+        should validate on a host without the optional `mic` extra, not fail
+        before a single scene has been added.
+
+        Refuses an existing path outright — this creates, it does not save —
+        and refuses a parent directory that doesn't exist yet rather than
+        guessing at a new one to make."""
+        path = self._require_writable(ref)
+        if path.exists():
+            raise PathRejected(f"{ref} already exists")
+        if not path.parent.is_dir():
+            raise PathRejected(f"{ref}: {path.parent} does not exist")
+        if copy_of is not None:
+            text = self._read_text(self.resolve(copy_of))
+        else:
+            # Two separate calls, not one shared instance: `base` is mutated
+            # in place by build_multi_config, and dumps() needs an untouched
+            # baseline to diff against — mirrors wizard.py's _run_single/_run_multi.
+            baseline = cfgmod.machine_baseline()
+            cfg = wizard.build_multi_config(
+                scenes=[cfgmod.SceneCfg(type="blank")],
+                base=cfgmod.machine_baseline(),
+                audio_enabled=False,
+            )
+            text = config_serialize.dumps(cfg, baseline=baseline)
+        out = self.write(ref, text, partial=True)
+        out["created"] = True
+        out["copied_from"] = copy_of
+        return out
+
+    def delete(self, ref: str) -> dict[str, Any]:
+        """Remove a config file.
+
+        Refuses a read-only root the same way a write does. Refusing the
+        config a session is currently running is left to the caller — this
+        store has no notion of a running session, and `web_api` does."""
+        path = self._require_writable(ref)
+        if not path.is_file():
+            raise ConfigNotFound(f"no such config: {ref}")
+        path.unlink()
+        log.info("web console: deleted %s", path)
+        return {"ok": True, "path": ref}
+
     def _rewrite(
         self, ref: str, mutate: Callable[[cfgmod.Config, cfgmod.Config], Any]
     ) -> dict[str, Any]:
@@ -864,7 +1002,7 @@ class ConfigStore:
         show, so a scene that has not named its media yet is a warning rather
         than a refusal. See :meth:`validate_text` for what that does and does
         not excuse."""
-        path = self.resolve(ref)
+        path = self._require_writable(ref)
         original = self._read_text(path)
         try:
             loaded = cfgmod.load_master(str(path))
