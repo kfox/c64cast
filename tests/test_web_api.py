@@ -726,6 +726,20 @@ class MediaUploadTest(WebApiTestCase):
         self.assertEqual(r.status_code, 413)
         self.assertFalse((self.root / "big.mp4").exists())
 
+    def test_a_body_that_ends_early_leaves_no_part_file_and_no_target(self):
+        # The client side of a cancel: `request.stream()` raising is what
+        # drives `MediaStore.receive`'s own `except BaseException` branch
+        # (covered at the store level in tests/test_media_store.py), so this
+        # is the route's half — nothing lands on disk either way.
+        def cut_short():
+            yield b"partial"
+            raise RuntimeError("client vanished mid-upload")
+
+        with self.client() as c:
+            with self.assertRaises(RuntimeError):
+                c.put("/api/media/cut.mp4", headers=AUTH, content=cut_short())
+        self.assertEqual(list(self.root.glob("*cut*")), [])
+
 
 class LibraryRouteTest(WebApiTestCase):
     """`/api/library*` — favorites and recents."""

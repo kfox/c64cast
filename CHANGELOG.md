@@ -1078,6 +1078,20 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Added
+
+- **A real progress bar for media uploads, with a Cancel button.** Dropping a
+  large clip onto a scene, or picking one with the **Upload…** button, used to
+  show `Uploading clip.mp4…` and nothing else until it finished or failed — no
+  percentage, no way to stop it. `uploadMedia` now goes over
+  `XMLHttpRequest` instead of `fetch` (the only browser API that reports
+  request-body progress), so the console's first `<progress>` fills in as the
+  bytes actually land, going indeterminate if the browser can't measure a
+  total. Canceling aborts the request through an `AbortController`; nothing
+  changes on the server side — the aborted read already drives the same
+  cleanup path a network failure does, and the partial file is unlinked either
+  way.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

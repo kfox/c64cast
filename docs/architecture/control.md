@@ -15,7 +15,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`web_api.py` — the web console's API + the host (`--serve`)](#web_apipy--the-web-consoles-api--the-host---serve)
 * [`config_store.py` — the config browser and its root jail](#config_storepy--the-config-browser-and-its-root-jail)
 * [`console_library.py` — favorites + recently-launched configs](#console_librarypy--favorites--recently-launched-configs)
-* [`media_store.py` — the read-only media picker and its root jail](#media_storepy--the-read-only-media-picker-and-its-root-jail)
+* [`media_store.py` — the media picker, its root jail, and its one write surface](#media_storepy--the-media-picker-its-root-jail-and-its-one-write-surface)
 * [`web_static.py` — the console's built UI, committed and served](#web_staticpy--the-consoles-built-ui-committed-and-served)
 * [`midi_control.py` — process-wide MIDI control surface (optional, live performance)](#midi_controlpy--process-wide-midi-control-surface-optional-live-performance)
 * [`tempo.py` — process-wide musical beat grid (Live DJ/VJ Phase 1)](#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1)
@@ -260,6 +260,8 @@ Unsaved edits are kept per ref rather than defended with a "you have unsaved cha
 **Scenes can be added and removed from the form.** *Add scene* with a type picker under the list, *Duplicate* and *Remove* on each block — the routes described under `config_store.py`. They write immediately, like every other save, so the screen re-reads the file afterwards; and they are disabled while an edit is staged, saying why, because inserting a scene renumbers the ones a staged edit is keyed to.
 
 **A green "Saved" cannot stand alone over a show that will not run.** `MediaWarnings` renders `warnings[]` inside both the check panel and the saved panel — *"scene 2 (video) names `/clips/opener.mp4`, which is not on this host"* — in the same block the loader's own diagnostics use.
+
+**An upload shows a real bar, and can be canceled.** `api.uploadMedia` is the console's only `XMLHttpRequest` — `fetch` cannot report request-body progress, and XHR is the only browser API that can. `settle()` in `api.ts` is the shared tail (parse the body, throw `ApiError` for anything not 2xx) both that and `request()`'s `fetch` path funnel through, so the two transports produce the same error shape. `<progress>` (the console's first) goes indeterminate — no `value`/`max` — the moment `lengthComputable` is false, which happens when something between the browser and the host strips `Content-Length` from the streamed body; `uploadTotal` starts at the file's own `size` so the bar has a real number before the first `progress` event lands rather than sitting at 0 for however long the first chunk takes. Canceling aborts the `XMLHttpRequest` via an `AbortController`, needing nothing from the server: the aborted read is exactly what already drives `MediaStore.receive`'s `except BaseException` branch, which unlinks the `.part` file regardless of why the stream ended.
 
 **Sharing the console meant sharing the token that can stop the show.** The Session screen's *Share* block asks the host for a read-only link and shows it selectable, with a Copy button that reports its own failure rather than silently doing nothing (`navigator.clipboard` is unavailable over plain HTTP outside localhost, which is exactly how this host is usually reached). The link is fetched on a tap and not on mount, because asking is what mints the token.
 
