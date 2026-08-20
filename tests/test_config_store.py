@@ -319,10 +319,9 @@ class ValidateRefTest(StoreTestCase):
     collect-all diagnostics on top."""
 
     def test_a_good_config_validates_and_carries_diagnostics(self):
-        # Only the per-scene diagnostics are pinned down here — the rest of
-        # validate_load_result also probes this machine's own environment
-        # (uv.lock, char ROM, data dirs), which this fixture says nothing
-        # about and has no business asserting on.
+        # validate_ref runs with probe_environment=False (it's about this
+        # config, not this machine's install), so only per-scene diagnostics
+        # are expected here.
         report = self.store.validate_ref("shows/gig.toml")
         self.assertTrue(report["ok"])
         scene_diagnostics = [d for d in report["diagnostics"] if d["category"] == "scene"]

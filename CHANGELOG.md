@@ -1102,6 +1102,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   click. That route also no longer silently validates an empty string when
   called with no body — an absent `text` key now checks the file as it
   stands on disk, which is what a pre-flight actually needs to ask about.
+  The pre-flight's diagnostics list skips the installation-level checks
+  (venv, hard deps, uv.lock, machine settings, data dirs, char ROM, extras)
+  that `--doctor` still runs — those answer "is this machine set up right",
+  not "is this config good to launch", and don't change from one Start click
+  to the next. Live's own Start-the-host-default button now reports a
+  refusal through the same `describeError` every other screen's problem
+  line uses, instead of the bare exception text.
 
 ## [0.3.0] - 2026-08-09
 
