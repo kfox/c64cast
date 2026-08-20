@@ -369,6 +369,16 @@ class SessionLifecycleTest(WebApiTestCase):
         self.assertEqual(self.manager.state, SessionState.IDLE)
         self.assertEqual(self.build.calls, 0)
 
+    def test_a_config_that_does_not_validate_names_the_reason_in_the_422(self):
+        # SessionConfigError's detail is the same diagnostic validate_configs
+        # already logged — carried here instead of the caller having to go
+        # read the log for it.
+        self.factory.error = session.SessionConfigError(3, "scene outro: no such file")
+        with self.client() as c:
+            r = c.post("/api/session/start", headers=AUTH)
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()["detail"], "scene outro: no such file")
+
     def test_a_broken_toml_is_refused_with_its_own_message(self):
         self.factory.error = cfgmod.ConfigError("Config file not found: nope.toml")
         with self.client() as c:
@@ -634,10 +644,27 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertFalse(r.json()["ok"])
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
+    def test_validate_with_no_text_checks_the_file_on_disk(self):
+        # An absent "text" key used to validate an empty string and answer
+        # about a config nobody submitted — this is the console's pre-flight
+        # before a start, so it has to be the file that would actually run.
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/validate", headers=AUTH, json={})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["diagnostics"])
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
     def test_a_viewer_may_read_but_not_write(self):
         with self.client() as c:
             self.assertEqual(c.get("/api/configs", headers=VIEWER_AUTH).status_code, 200)
             r = c.put("/api/configs/shows/gig.toml", headers=VIEWER_AUTH, json={"text": GIG_TOML})
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_viewer_cannot_validate(self):
+        with self.client() as c:
+            r = c.post("/api/configs/shows/gig.toml/validate", headers=VIEWER_AUTH, json={})
         self.assertEqual(r.status_code, 403)
 
 

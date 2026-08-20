@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { ApiError, api } from "$lib/api";
+  import { api } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
   import ClipGrid from "$lib/components/ClipGrid.svelte";
   import EffectRack from "$lib/components/EffectRack.svelte";
@@ -13,6 +13,7 @@
   import TunePanel from "$lib/components/TunePanel.svelte";
   import TunedChanges from "$lib/components/TunedChanges.svelte";
   import type { Console } from "$lib/console.svelte";
+  import { describeError } from "$lib/errorsLogic";
   import { DocIndex, documentation } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
 
@@ -79,7 +80,7 @@
     try {
       await api.start(null);
     } catch (e) {
-      problem = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+      problem = describeError(e);
     } finally {
       starting = false;
     }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
+  import Diagnostics from "$lib/components/Diagnostics.svelte";
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
   import type { ConfigWritten, ValidationReport } from "$lib/types";
@@ -133,6 +134,7 @@
         </ul>
       {/if}
       <MediaWarnings warnings={report.warnings} />
+      <Diagnostics diagnostics={report.diagnostics} />
       <LayerBlame layers={report.layers} />
     </div>
   {/if}
