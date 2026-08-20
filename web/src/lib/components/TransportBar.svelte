@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatTime, keyNudgeEvents, loopButtonLabel, slotEnabled } from "$lib/transportBarLogic";
   import type { TransportState } from "$lib/types";
 
   interface Props {
@@ -11,11 +12,6 @@
   }
 
   let { transport, readOnly = false, onverb }: Props = $props();
-
-  function fmt(seconds: number): string {
-    const whole = Math.max(0, Math.round(seconds));
-    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
-  }
 
   // The scrub bar holds the dragged position under the finger and only sends
   // on release — the same rule FieldInput and FxSlider follow: a control the
@@ -50,15 +46,14 @@
   // `detail === 0` — there was no pointerdown/up to hold, so it gets a single
   // brief nudge instead of a hang with no release.
   function keyNudge(action: "rw" | "ff", event: MouseEvent): void {
-    if (event.detail !== 0 || readOnly) return;
-    onverb(action, { pressed: true });
-    onverb(action, { pressed: false });
+    if (readOnly) return;
+    const nudges = keyNudgeEvents(event.detail);
+    if (nudges === null) return;
+    for (const { pressed } of nudges) onverb(action, { pressed });
   }
 
   const loop = $derived(transport.loop);
-  const loopLabel = $derived(
-    loop.state === "none" ? "Mark loop A" : loop.state === "armed" ? "Mark loop B" : "Clear loop",
-  );
+  const loopLabel = $derived(loopButtonLabel(loop.state));
 
   /** Matches the Looks pad count so the same "SAVE arms, a pad commits"
    *  gesture (see LookPads) applies here for a video's per-file loop presets. */
@@ -85,7 +80,9 @@
       {transport.frozen ? "Frozen" : "Freeze"}
     </button>
     <span class="font-mono text-xs tabular-nums text-[var(--ink-dim)]">
-      {fmt(shownPosition)}{transport.duration !== null ? ` / ${fmt(transport.duration)}` : ""}
+      {formatTime(shownPosition)}{transport.duration !== null
+        ? ` / ${formatTime(transport.duration)}`
+        : ""}
     </span>
   </div>
 
@@ -172,7 +169,7 @@
       {@const saved = savedSlots.has(slot)}
       <button
         type="button"
-        disabled={readOnly || (!savingSlot && !saved)}
+        disabled={readOnly || !slotEnabled(saved, savingSlot)}
         onclick={() => onverb("loop_slot", { slot, save: savingSlot, clear: false })}
         class="aspect-square rounded-lg border font-mono text-sm
                disabled:cursor-not-allowed disabled:opacity-30
