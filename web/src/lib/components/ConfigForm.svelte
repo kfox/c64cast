@@ -1,11 +1,14 @@
 <script lang="ts">
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
+  import Diagnostics from "$lib/components/Diagnostics.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
-  import type { DocIndex } from "$lib/introspect";
+  import { debounce } from "$lib/debounce";
+  import { searchMedia, type DocIndex } from "$lib/introspect";
   import { kindsForScene, pickerOptions, uploadMessage, urlFromDrop } from "$lib/mediaPickerLogic";
+  import { uploadLabel } from "$lib/uploadLogic";
   import type {
     ConfigEdit,
     ConfigForm,
@@ -13,7 +16,7 @@
     FormField,
     FormScene,
     FormSection,
-    MediaEntry,
+    MediaIndex,
     SceneTypeDoc,
     ValidationReport,
     Warning,
@@ -38,7 +41,7 @@
      *  listing per kind any loaded scene type actually uses). Absent kinds
      *  just render an empty datalist — a picker with nothing to offer is a
      *  plain text box, which is exactly the fallback. */
-    media?: Record<string, MediaEntry[]>;
+    media?: Record<string, MediaIndex>;
     /** A file just landed on the host for this scene type — `Config.svelte`
      *  drops its cached listing for the kind(s) that type browses and
      *  re-fetches, so the newly uploaded file shows up in every datalist
@@ -59,23 +62,101 @@
   }: Props = $props();
 
   /** The datalist options a scene type's `file =` field offers: the union of
-   *  every media kind it browses, deduplicated. Cached per scene type name so
+   *  every media kind it browses, deduplicated. Cached per scene index so
    *  staging an edit elsewhere in the form — which replaces `pending` and
    *  would otherwise re-run this for every `file =` field — only recomputes
-   *  when `media` itself changes. */
+   *  when `media` or `searchResults` changes. Keyed by scene index rather
+   *  than scene type name, so two scenes sharing a type never share the other's
+   *  datalist. A kind with a live search overlays `media`'s unfiltered
+   *  listing entirely rather than merging with it, so what's shown is exactly
+   *  what the host just answered. */
   const mediaOptions = $derived.by(() => {
-    const cache = new Map<string, string[]>();
-    return (doc: SceneTypeDoc | undefined): string[] => {
-      const key = doc?.name ?? "";
-      let options = cache.get(key);
+    const cache = new Map<number, string[]>();
+    return (doc: SceneTypeDoc | undefined, sceneIndex: number): string[] => {
+      let options = cache.get(sceneIndex);
       if (!options) {
-        const entries = kindsForScene(doc).flatMap((kind) => media[kind] ?? []);
+        const entries = kindsForScene(doc).flatMap(
+          (kind) => searchResults[searchKey(sceneIndex, kind)]?.entries ?? media[kind]?.entries ?? [],
+        );
         options = [...new Set(pickerOptions(entries))];
-        cache.set(key, options);
+        cache.set(sceneIndex, options);
       }
       return options;
     };
   });
+
+  /** Whether any kind this scene type browses has stopped short of every
+   *  match on the host — a live search past `MAX_FILES`, or (with no search
+   *  live for that scene+kind) the unfiltered listing itself. */
+  function mediaTruncated(doc: SceneTypeDoc | undefined, sceneIndex: number): boolean {
+    return kindsForScene(doc).some(
+      (kind) => (searchResults[searchKey(sceneIndex, kind)] ?? media[kind])?.truncated === true,
+    );
+  }
+
+  // How long a burst of keystrokes waits before it becomes a request — a
+  // search field's own pace, not the network's.
+  const SEARCH_DEBOUNCE_MS = 250;
+
+  // A live search's result per scene index + kind, uncached — a query fires
+  // on a debounce and freshness beats a map keyed by every prefix somebody
+  // typed. Keyed by scene index as well as kind, so searching in one scene
+  // never changes the datalist of another scene that shares its type. `null`
+  // means no query is live for that scene+kind, so `mediaOptions` falls back
+  // to the unfiltered `media` prop.
+  let searchResults = $state<Record<string, MediaIndex | null>>({});
+
+  function searchKey(sceneIndex: number, kind: string): string {
+    return `${sceneIndex}:${kind}`;
+  }
+
+  // One debounced fetch per scene+kind, so a burst within one field coalesces
+  // without a keystroke in a *different* field clobbering it. `searchGenerations`
+  // pairs with it: each firing bumps its key's generation, and a fetch that
+  // resolves against a since-superseded generation is dropped, so a slower
+  // response to an earlier, broader query can never overwrite a faster
+  // response to a later, narrower one the user is already looking at.
+  const searchDebouncers = new Map<string, (q: string) => void>();
+  const searchGenerations = new Map<string, number>();
+
+  function debouncedSearch(key: string, kind: string): (q: string) => void {
+    let debounced = searchDebouncers.get(key);
+    if (!debounced) {
+      debounced = debounce((q: string) => {
+        const generation = (searchGenerations.get(key) ?? 0) + 1;
+        searchGenerations.set(key, generation);
+        searchMedia(kind, q)
+          .then((idx) => {
+            if (searchGenerations.get(key) !== generation) return;
+            searchResults = { ...searchResults, [key]: idx };
+          })
+          .catch(() => {
+            // A failed search leaves whatever was showing rather than
+            // blanking the datalist over a transient network hiccup.
+          });
+      }, SEARCH_DEBOUNCE_MS);
+      searchDebouncers.set(key, debounced);
+    }
+    return debounced;
+  }
+
+  /** Search every kind scene `sceneIndex` browses — a `file =` field's
+   *  datalist is their union, so its search is too. An empty query clears
+   *  immediately rather than waiting out the debounce, so backspacing to
+   *  nothing snaps straight back to the unfiltered listing; it also bumps the
+   *  generation, so a fetch already in flight for the query just abandoned
+   *  cannot land afterward and repopulate it. */
+  function searchScene(doc: SceneTypeDoc | undefined, sceneIndex: number, q: string): void {
+    for (const kind of kindsForScene(doc)) {
+      const key = searchKey(sceneIndex, kind);
+      if (!q.trim()) {
+        searchGenerations.set(key, (searchGenerations.get(key) ?? 0) + 1);
+        searchResults = { ...searchResults, [key]: null };
+      } else {
+        debouncedSearch(key, kind)(q);
+      }
+    }
+  }
 
   /** Hide every field still sitting at its baseline. On by default: a config
    *  has 167 settable fields and a show file names a dozen of them, and the
@@ -86,12 +167,18 @@
   let problem = $state("");
   let saved = $state("");
   let busy = $state(false);
-  // Which scene an upload is streaming into, for the "Uploading clip.mp4…"
-  // line beside its drop zone — `fetch` can't report a percentage (that needs
-  // XMLHttpRequest, deliberately not pulled in for this), so this is what the
-  // console has to say meanwhile.
+  // Which scene an upload is streaming into, for the progress bar beside its
+  // drop zone, and what it has reported so far — `uploadTotal` starts at the
+  // file's own size so the bar has a real number to show before the first
+  // `progress` event lands.
   let uploadingIndex = $state<number | null>(null);
   let uploadingName = $state("");
+  let uploadLoaded = $state(0);
+  let uploadTotal = $state(0);
+  let uploadComputable = $state(true);
+  // `$state` so the Cancel chip can disable itself once the upload it would
+  // abort has already finished.
+  let uploadAbort = $state<AbortController | null>(null);
   // Set by an in-flight upload just before its `structural()` call, so the
   // "Saved." banner can say what was actually uploaded rather than just that
   // a save happened.
@@ -265,6 +352,15 @@
    *  unsaved change onto a different scene. */
   const structuralBlocked = $derived(edits.length > 0);
 
+  /** The ↑/↓ chips for a scene at `index`: one shape, so the earlier/later
+   *  pair can't drift apart on a later tweak to the label or disabled rule. */
+  function moveDirections(index: number, sceneCount: number) {
+    return [
+      { delta: -1, symbol: "↑", label: "Move this scene earlier", atEdge: index === 0 },
+      { delta: 1, symbol: "↓", label: "Move this scene later", atEdge: index === sceneCount - 1 },
+    ];
+  }
+
   async function structural(act: () => Promise<ConfigWritten>): Promise<void> {
     report = null;
     problem = "";
@@ -298,9 +394,23 @@
     if (readOnly || busy || structuralBlocked) return;
     uploadingIndex = index;
     uploadingName = file.name;
+    uploadLoaded = 0;
+    uploadTotal = file.size;
+    uploadComputable = true;
+    uploadAbort = new AbortController();
     try {
       await structural(async () => {
-        const uploaded = await api.uploadMedia(file.name, file);
+        const uploaded = await api.uploadMedia(file.name, file, {
+          onProgress: (loaded, total, computable) => {
+            uploadLoaded = loaded;
+            uploadTotal = total;
+            uploadComputable = computable;
+          },
+          signal: uploadAbort?.signal,
+        });
+        // The upload itself is done; abort() from here on would be a no-op
+        // (the XHR is already in state DONE), so stop offering it.
+        uploadAbort = null;
         uploadNote = uploadMessage(uploaded);
         onuploaded?.(form.scenes[index]?.type ?? "");
         return api.patchConfig(path, [{ scene: index, field: fieldName, value: uploaded.spec }]);
@@ -308,7 +418,15 @@
     } finally {
       uploadingIndex = null;
       uploadingName = "";
+      uploadAbort = null;
     }
+  }
+
+  /** Abort the upload in flight, if there is one. Its rejection reaches
+   *  `structural`'s own catch like any other failure, so canceling reports
+   *  itself the same way a network error would. */
+  function cancelUpload(): void {
+    uploadAbort?.abort();
   }
 
   // Highlighted while a drag hovers a scene card; `null` the rest of the time.
@@ -433,11 +551,42 @@
                 <p class="mt-0.5 text-xs text-[var(--ink-dim)]">{doc.help}</p>
               {/if}
               {#if uploadingIndex === row.index}
-                <p class="mt-0.5 text-xs text-[var(--ink-dim)]">Uploading {uploadingName}…</p>
+                <div class="mt-1 flex items-center gap-2">
+                  <progress
+                    class="h-1.5 flex-1 accent-[var(--accent)]"
+                    value={uploadComputable ? uploadLoaded : undefined}
+                    max={uploadComputable ? uploadTotal : undefined}
+                  ></progress>
+                  <span class="shrink-0 text-xs text-[var(--ink-dim)]">
+                    {uploadLabel(uploadingName, uploadLoaded, uploadTotal, uploadComputable)}
+                  </span>
+                  <button
+                    type="button"
+                    class="{chip} shrink-0"
+                    disabled={!uploadAbort}
+                    onclick={cancelUpload}
+                  >
+                    Cancel
+                  </button>
+                </div>
               {/if}
             </div>
             {#if !readOnly}
               <div class="flex gap-1">
+                {#each moveDirections(row.index, scenes.length) as move (move.delta)}
+                  <button
+                    class={chip}
+                    aria-label={move.label}
+                    disabled={busy || structuralBlocked || move.atEdge}
+                    title={structuralBlocked
+                      ? "Save or discard the staged edits first — reordering renumbers the rest"
+                      : move.label}
+                    onclick={() =>
+                      void structural(() => api.moveScene(path, row.index, row.index + move.delta))}
+                  >
+                    {move.symbol}
+                  </button>
+                {/each}
                 <button
                   class={chip}
                   disabled={busy || structuralBlocked}
@@ -483,7 +632,11 @@
               choices={fd?.choices ?? []}
               vocabulary={fd?.vocabulary ?? ""}
               palette={docs.palette}
-              options={fd?.vocabulary === "media" ? mediaOptions(doc) : []}
+              options={fd?.vocabulary === "media" ? mediaOptions(doc, row.index) : []}
+              truncated={fd?.vocabulary === "media" && mediaTruncated(doc, row.index)}
+              onsearch={fd?.vocabulary === "media"
+                ? (q) => searchScene(doc, row.index, q)
+                : undefined}
               live={fd?.apply === "live"}
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}
@@ -644,6 +797,7 @@
           {/each}
         </ul>
       {/if}
+      <Diagnostics diagnostics={report.diagnostics} />
       <LayerBlame layers={report.layers} />
       <p class="mt-1 text-xs text-[var(--ink-dim)]">
         The file is untouched and the changes are still staged.

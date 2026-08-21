@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
 
-  import { ApiError, api } from "$lib/api";
+  import { api } from "$lib/api";
   import { fetchLibrary, launch, withToggledFavorite } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
   import ConfigForm from "$lib/components/ConfigForm.svelte";
@@ -9,9 +9,10 @@
   import TomlEditor from "$lib/components/TomlEditor.svelte";
   import type { Console } from "$lib/console.svelte";
   import { drafts } from "$lib/drafts.svelte";
+  import { describeError } from "$lib/errorsLogic";
   import { DocIndex, documentation, forgetMedia, mediaOfKind } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaEntry } from "$lib/types";
+  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaIndex } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -27,7 +28,7 @@
   let library = $state<LibraryState | null>(null);
   let docs = $state<DocIndex | null>(null);
   let detail = $state<ConfigDetail | null>(null);
-  let media = $state<Record<string, MediaEntry[]>>({});
+  let media = $state<Record<string, MediaIndex>>({});
   let loading = $state(false);
   let problem = $state("");
   let view = $state<"form" | "text">("form");
@@ -64,7 +65,7 @@
     void refreshLibrary();
     documentation()
       .then((d) => (docs = d))
-      .catch((e: unknown) => (problem = describe(e)));
+      .catch((e: unknown) => (problem = describeError(e)));
   });
 
   // `untrack` so this reacts to the *ref* only. `load` reads the draft map,
@@ -89,8 +90,8 @@
       for (const kind of kinds) {
         if (kind in media) continue;
         mediaOfKind(kind)
-          .then((entries) => (media = { ...media, [kind]: entries }))
-          .catch((e: unknown) => (problem = describe(e)));
+          .then((idx) => (media = { ...media, [kind]: idx }))
+          .catch((e: unknown) => (problem = describeError(e)));
       }
     });
   });
@@ -99,7 +100,7 @@
     try {
       index = await api.configs();
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -107,7 +108,7 @@
     try {
       library = await fetchLibrary();
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -115,7 +116,7 @@
     try {
       library = await withToggledFavorite(library, ref, on);
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -131,7 +132,7 @@
       await refreshIndex();
       router.go("config", path);
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -145,7 +146,7 @@
       await refreshIndex();
       router.go("config", path);
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -159,7 +160,7 @@
       router.go("config");
       onselect("");
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -180,21 +181,10 @@
     } catch (e) {
       if (token !== generation) return;
       detail = null;
-      problem = describe(e);
+      problem = describeError(e);
     } finally {
       if (token === generation) loading = false;
     }
-  }
-
-  function describe(e: unknown): string {
-    if (e instanceof ApiError) {
-      if (e.status === 403) return `Not allowed: ${e.message}`;
-      if (e.status === 404) return `No such configuration: ${e.message}`;
-      if (e.status === 409) return `Can't do that right now: ${e.message}`;
-      if (e.status === 413) return `That file is too large to edit here: ${e.message}`;
-      return e.message;
-    }
-    return e instanceof Error ? e.message : String(e);
   }
 
   function edit(text: string): void {
@@ -235,7 +225,7 @@
       await api.reload();
       heldBack = [];
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -248,7 +238,7 @@
       await api.switch(selected);
       heldBack = [];
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     }
   }
 
@@ -269,7 +259,7 @@
       try {
         media = { ...media, [kind]: await mediaOfKind(kind) };
       } catch (e) {
-        problem = describe(e);
+        problem = describeError(e);
       }
     }
   }
@@ -285,7 +275,7 @@
     try {
       await launch(host, ref);
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
     } finally {
       launching = false;
     }

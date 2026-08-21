@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { ApiError, api } from "$lib/api";
-  import { fetchLibrary, launch, withToggledFavorite } from "$lib/actions";
+  import { api } from "$lib/api";
+  import { fetchLibrary, launch, PreflightRefused, withToggledFavorite } from "$lib/actions";
   import Button from "$lib/components/Button.svelte";
+  import Diagnostics from "$lib/components/Diagnostics.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
   import ViewerLink from "$lib/components/ViewerLink.svelte";
   import { displayLabel } from "$lib/configListLogic";
   import type { Console } from "$lib/console.svelte";
+  import { describeError } from "$lib/errorsLogic";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigIndex, LibraryState } from "$lib/types";
+  import type { ConfigIndex, LibraryState, ValidationReport } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -26,10 +28,25 @@
   let index = $state<ConfigIndex | null>(null);
   let library = $state<LibraryState | null>(null);
   let problem = $state("");
+  // A pre-flight refusal's full report, alongside `problem`'s one-line
+  // summary — set only when the failure is one of those, cleared by every
+  // other action so a stale report doesn't survive past it.
+  let report = $state<ValidationReport | null>(null);
   // Set while an action is in flight. The supervisor answers 202 the instant
   // it claims the transition, so this only covers the request itself — what
   // happens next is the state feed's job, and the badge is where it shows.
   let sending = $state(false);
+
+  // The shell's tab-bar Start button has nowhere of its own to show a
+  // refusal; it stashes one on the host and this screen claims it once, the
+  // instant it's routed to.
+  $effect(() => {
+    if (host.launchProblem) {
+      problem = host.launchProblem.message;
+      report = host.launchProblem.report;
+      host.launchProblem = null;
+    }
+  });
 
   const status = $derived(host.session);
   // Not `state`: a variable of that name makes `$state` read as a store
@@ -48,7 +65,8 @@
     try {
       index = await api.configs();
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
+      report = null;
     }
   }
 
@@ -56,27 +74,20 @@
     try {
       library = await fetchLibrary();
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
+      report = null;
     }
-  }
-
-  function describe(e: unknown): string {
-    if (e instanceof ApiError) {
-      if (e.status === 403) return `Not allowed: ${e.message}`;
-      if (e.status === 409) return `The host is busy: ${e.message}`;
-      if (e.status === 422) return `That configuration will not run: ${e.message}`;
-      return e.message;
-    }
-    return e instanceof Error ? e.message : String(e);
   }
 
   async function act(fn: () => Promise<unknown>): Promise<void> {
     problem = "";
+    report = null;
     sending = true;
     try {
       await fn();
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
+      report = e instanceof PreflightRefused ? e.report : null;
     } finally {
       sending = false;
     }
@@ -97,7 +108,8 @@
     try {
       library = await withToggledFavorite(library, ref, on);
     } catch (e) {
-      problem = describe(e);
+      problem = describeError(e);
+      report = null;
     }
   }
 
@@ -188,9 +200,10 @@
     {/if}
 
     {#if problem}
-      <p class="mt-4 rounded-lg border border-c64-red/50 px-3 py-2 text-sm text-c64-red">
-        {problem}
-      </p>
+      <div class="mt-4 rounded-lg border border-c64-red/50 px-3 py-2 text-sm text-c64-red">
+        <p>{problem}</p>
+        <Diagnostics diagnostics={report?.diagnostics ?? []} />
+      </div>
     {/if}
 
     {#if host.readOnly}

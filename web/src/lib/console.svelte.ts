@@ -1,4 +1,4 @@
-import type { LogLine, PerfSystem, Role, SessionStatus, StateFrame } from "./types";
+import type { LogLine, PerfSystem, Role, SessionStatus, StateFrame, ValidationReport } from "./types";
 
 /** How many log lines the browser keeps. The daemon's own buffer holds 500 and
  *  hands a new connection the last 200; matching its ceiling means a console
@@ -38,6 +38,11 @@ export class Console {
    *  didn't ask for, should not be yanked between tabs by it — so this is
    *  local to the browser that set it, not part of the state feed. */
   expectingStart = $state(false);
+  /** The most recent failure from this browser's own start/switch attempt —
+   *  set by the shell's tab-bar Start button, which has nowhere of its own to
+   *  show a refusal, and consumed once by the Session screen when it takes
+   *  over. Local to the browser that set it, same as `expectingStart`. */
+  launchProblem = $state<{ message: string; report: ValidationReport | null } | null>(null);
   log = $state<LogLine[]>([]);
   frame = $state<StateFrame>({});
 

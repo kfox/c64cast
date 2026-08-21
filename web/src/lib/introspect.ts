@@ -2,7 +2,7 @@ import { api } from "./api";
 import type {
   FieldDoc,
   Introspection,
-  MediaEntry,
+  MediaIndex,
   OverlayDoc,
   ParamDoc,
   SceneTypeDoc,
@@ -94,19 +94,18 @@ export class DocIndex {
  *  way `documentation()` caches the introspection document — a media kind
  *  describes what's on disk right now rather than the code, but re-listing
  *  it on every scene render would mean one request per field per keystroke.
- *  A failure clears its cache entry so a later attempt can retry. */
-const mediaCache = new Map<string, Promise<MediaEntry[]>>();
+ *  Returns the whole index, `truncated` included, so a mount-time listing
+ *  past `MAX_FILES` says so before anyone has typed a search. A failure
+ *  clears its cache entry so a later attempt can retry. */
+const mediaCache = new Map<string, Promise<MediaIndex>>();
 
-export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
+export function mediaOfKind(kind: string): Promise<MediaIndex> {
   let cached = mediaCache.get(kind);
   if (!cached) {
-    cached = api
-      .media(kind)
-      .then((idx) => idx.entries)
-      .catch((e: unknown) => {
-        mediaCache.delete(kind);
-        throw e;
-      });
+    cached = api.media(kind).catch((e: unknown) => {
+      mediaCache.delete(kind);
+      throw e;
+    });
     mediaCache.set(kind, cached);
   }
   return cached;
@@ -117,6 +116,15 @@ export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
  *  until the page reloaded (this cache is the only reason it wouldn't). */
 export function forgetMedia(kind: string): void {
   mediaCache.delete(kind);
+}
+
+/** A live query against a media kind, uncached — `mediaOfKind`'s cache is for
+ *  the unfiltered listing everyone reads on mount; a query fires on a
+ *  debounce and freshness beats a map keyed by every prefix somebody typed.
+ *  Returns the whole index, `truncated` included, so a search past
+ *  `MAX_FILES` still says so. */
+export function searchMedia(kind: string, q: string): Promise<MediaIndex> {
+  return api.media(kind, q);
 }
 
 export type FieldKind = "bool" | "int" | "float" | "str" | "complex";

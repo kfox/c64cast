@@ -69,11 +69,16 @@ class SessionConfigError(Exception):
     """Raised by validate_configs when a config can't be run. Like
     StackBuildError it carries the exit code and its diagnostic is already
     logged — but it is raised before any hardware is touched, which is what
-    lets a caller reject a config without disturbing a running session."""
+    lets a caller reject a config without disturbing a running session.
 
-    def __init__(self, exit_code: int):
-        super().__init__(f"config validation failed (exit code {exit_code})")
+    ``detail`` is the same message validate_configs just logged, carried
+    along so a caller with no access to the log (the web console) can still
+    tell the user what was wrong."""
+
+    def __init__(self, exit_code: int, detail: str = ""):
+        super().__init__(detail or f"config validation failed (exit code {exit_code})")
         self.exit_code = exit_code
+        self.detail = detail
 
 
 @dataclass
@@ -920,14 +925,15 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
         # (see _coerce_reu_for_transport).
         _coerce_reu_for_transport(cfg, midi_cfg)
         if cfg.audio.enabled and not AUDIO_AVAILABLE:
-            log.error(
+            detail = (
                 "audio enabled but sounddevice is not installed. Install the "
                 "'mic' extra (`uv tool install --force 'c64cast[all]'`), "
                 "or set [audio].enabled = false in your "
                 "config. Aborting so you don't run with broken audio for "
                 "the whole session."
             )
-            raise SessionConfigError(3)
+            log.error(detail)
+            raise SessionConfigError(3, detail)
         # Reject a sample rate that would overrun the NMI DAC handler on the
         # target system (broken/pitch-dropped audio) before the playlist runs.
         try:
@@ -942,7 +948,7 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
             scene_factory.validate_motion_smoothing_cfg(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
-            raise SessionConfigError(5) from e
+            raise SessionConfigError(5, str(e)) from e
         # Every scene, including the follower-only ones (built lazily at
         # broadcast time, so without this a bad one surfaces mid-show). Exit
         # code 3 is what `build_stack` already returns when `scenes_from_config`
@@ -952,8 +958,9 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
             try:
                 scene_factory.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
             except (ValueError, OrchestratorError) as e:
-                log.error("scene %s: %s", s.name or f"{s.type}#{idx}", e)
-                raise SessionConfigError(3) from e
+                detail = f"scene {s.name or f'{s.type}#{idx}'}: {e}"
+                log.error(detail)
+                raise SessionConfigError(3, detail) from e
 
 
 def _follower_scene_factory(st: SystemStack, cfg: cfgmod.Config) -> FollowerSceneFactory:

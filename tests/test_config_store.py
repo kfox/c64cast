@@ -302,6 +302,53 @@ class ValidateTest(StoreTestCase):
         self.assertEqual(report["systems"], ["left", "right"])
 
 
+# Two scenes that each name no media, on a host with no assets/videos to
+# default to — the exact state a video scene is in the instant the console
+# adds it. validate_configs (fail-fast) stops at the first; the doctor's
+# collect-all pass names both.
+TWO_UNRESOLVED_SCENES = (
+    "[audio]\nenabled = false\n\n"
+    '[[scenes]]\ntype = "video"\nduration_s = 5.0\n\n'
+    '[[scenes]]\ntype = "video"\nduration_s = 5.0\n'
+)
+
+
+class ValidateRefTest(StoreTestCase):
+    """validate_ref is the console's pre-flight: validate_text's fail-fast
+    verdict on the file as it stands on disk, plus doctor.validate_load_result's
+    collect-all diagnostics on top."""
+
+    def test_a_good_config_validates_and_carries_diagnostics(self):
+        # validate_ref runs with probe_environment=False (it's about this
+        # config, not this machine's install), so only per-scene diagnostics
+        # are expected here.
+        report = self.store.validate_ref("shows/gig.toml")
+        self.assertTrue(report["ok"])
+        scene_diagnostics = [d for d in report["diagnostics"] if d["category"] == "scene"]
+        self.assertTrue(scene_diagnostics)
+        self.assertTrue(all(d["level"] == "ok" for d in scene_diagnostics))
+
+    def test_a_file_that_will_not_parse_has_no_diagnostics(self):
+        # Nothing loaded for the doctor to look at.
+        (self.shows / "broken.toml").write_text(BROKEN, encoding="utf-8")
+        report = self.store.validate_ref("shows/broken.toml")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["diagnostics"], [])
+
+    def test_a_config_that_fails_the_fail_fast_check_still_gets_full_diagnostics(self):
+        (self.shows / "two-bad.toml").write_text(TWO_UNRESOLVED_SCENES, encoding="utf-8")
+        report = self.store.validate_ref("shows/two-bad.toml")
+        # The fail-fast half stops at the first bad scene...
+        self.assertFalse(report["ok"])
+        self.assertIn("video#0", report["error"])
+        self.assertNotIn("video#1", report["error"])
+        # ...but the collect-all half names every one of them.
+        errors = [d for d in report["diagnostics"] if d["level"] == "error"]
+        subjects = {d["subject"] for d in errors}
+        self.assertIn("system/video#0", subjects)
+        self.assertIn("system/video#1", subjects)
+
+
 class WriteTest(StoreTestCase):
     def test_a_write_lands_and_reads_back(self):
         text = GOOD.replace("atkinson", "ordered")
@@ -576,6 +623,29 @@ class SceneStructureTest(StoreTestCase):
             self.store.remove_scene("shows/gig.toml", 0)
         self.assertIn("only scene", str(caught.exception))
         self.assertEqual(len(self._scenes()), 1)
+
+    def test_a_move_reorders_and_writes(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        self.store.add_scene("shows/gig.toml", scene_type="waveform")
+        out = self.store.move_scene("shows/gig.toml", 2, 0)
+        self.assertEqual(out["scene"], {"moved": 2, "to": 0, "type": "waveform", "name": None})
+        self.assertEqual([s.type for s in self._scenes()], ["waveform", "blank", "video"])
+
+    def test_a_no_op_move_is_accepted_and_idempotent(self):
+        self.store.add_scene("shows/gig.toml", scene_type="video")
+        out = self.store.move_scene("shows/gig.toml", 1, 1)
+        self.assertTrue(out["ok"])
+        self.assertEqual([s.type for s in self._scenes()], ["blank", "video"])
+
+    def test_moving_from_an_out_of_range_index_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.move_scene("shows/gig.toml", 5, 0)
+        self.assertEqual([s.type for s in self._scenes()], ["blank"])
+
+    def test_moving_to_an_out_of_range_index_is_refused(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.move_scene("shows/gig.toml", 0, 5)
+        self.assertEqual([s.type for s in self._scenes()], ["blank"])
 
     def test_a_structural_change_keeps_the_previous_text_like_any_other_save(self):
         self.store.add_scene("shows/gig.toml", scene_type="video")
