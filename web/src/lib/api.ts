@@ -59,14 +59,12 @@ function detailOf(body: unknown, fallback: string): string {
   return fallback;
 }
 
-/** The response half of a request: parse the body (JSON if it is JSON, the
- *  raw text otherwise) and throw `ApiError` for anything not 2xx. Shared by
- *  `request()`'s JSON calls and `uploadMedia`'s raw-body `PUT`, which can't
- *  go through `request()` itself — that hard-wires `Content-Type:
- *  application/json` and `JSON.stringify`s the body, and a `File` handed to
- *  that would upload the four bytes of the string `"{}"`. */
-async function answer<T>(response: Response): Promise<T> {
-  const text = await response.text();
+/** Parse a response body (JSON if it is JSON, the raw text otherwise) and
+ *  throw `ApiError` for anything not 2xx. The shared tail of two transports
+ *  that can't share a `Response` object: `fetch`'s (via `answer`, below) and
+ *  `uploadMedia`'s `XMLHttpRequest` (the only API that reports upload
+ *  progress), which lands on the same status/statusText/text triple by hand. */
+export function settle<T>(status: number, statusText: string, text: string): T {
   let parsed: unknown = null;
   if (text) {
     try {
@@ -75,11 +73,17 @@ async function answer<T>(response: Response): Promise<T> {
       parsed = text;
     }
   }
-  if (!response.ok) {
-    const message = detailOf(parsed, `${response.status} ${response.statusText}`);
-    throw new ApiError(response.status, message, parsed);
+  if (status < 200 || status >= 300) {
+    const message = detailOf(parsed, `${status} ${statusText}`);
+    throw new ApiError(status, message, parsed);
   }
   return parsed as T;
+}
+
+/** `request()`'s response half, built on `settle`. */
+async function answer<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  return settle<T>(response.status, response.statusText, text);
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -125,17 +129,46 @@ export const api = {
     request<MediaIndex>("GET", `/api/media?${new URLSearchParams({ kind, q })}`),
 
   /** Upload a file, streamed straight through as the request body — no JSON
-   *  envelope, so this bypasses `request()` and calls `answer()` directly.
-   *  The kind and the destination directory are the server's call (it reads
-   *  the extension off `name`); a name already taken there comes back
-   *  renamed rather than overwritten. */
-  uploadMedia: (name: string, file: File) =>
-    fetch(`/api/media/${encodeURIComponent(name)}`, {
-      method: "PUT",
-      credentials: "same-origin",
-      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
-      body: file,
-    }).then((response) => answer<MediaUploaded>(response)),
+   *  envelope, so this bypasses `request()`. `XMLHttpRequest` rather than
+   *  `fetch`: it is the only browser API that reports request-body progress,
+   *  which is what `opts.onProgress` rides on, and `opts.signal` wires an
+   *  `AbortController` to `xhr.abort()` so a large upload can be canceled
+   *  mid-flight. Same-origin, so the `SameSite=Strict` token cookie rides
+   *  along with no extra flag needed. The kind and the destination directory
+   *  are the server's call (it reads the extension off `name`); a name
+   *  already taken there comes back renamed rather than overwritten. */
+  uploadMedia: (
+    name: string,
+    file: File,
+    opts: {
+      onProgress?: (loaded: number, total: number, computable: boolean) => void;
+      signal?: AbortSignal;
+    } = {},
+  ) =>
+    new Promise<MediaUploaded>((resolve, reject) => {
+      if (opts.signal?.aborted) {
+        reject(new Error("upload canceled"));
+        return;
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", `/api/media/${encodeURIComponent(name)}`);
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.upload.onprogress = (event) => {
+        opts.onProgress?.(event.loaded, event.total, event.lengthComputable);
+      };
+      xhr.onload = () => {
+        try {
+          resolve(settle<MediaUploaded>(xhr.status, xhr.statusText, xhr.responseText));
+        } catch (e) {
+          reject(e);
+        }
+      };
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.onabort = () => reject(new Error("upload canceled"));
+      opts.signal?.addEventListener("abort", () => xhr.abort());
+      xhr.send(file);
+    }),
 
   /** Describes the code, not the run, so it cannot change while the host is
    *  up — see `introspection()` in introspect.ts, which fetches it once. */
