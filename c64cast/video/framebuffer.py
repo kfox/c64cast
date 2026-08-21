@@ -27,14 +27,18 @@ from pathlib import Path
 import numpy as np
 
 from c64cast.app import paths
-from c64cast.hw.c64 import SCREEN, VECTORS, VIC
+from c64cast.hw.c64 import SCREEN, VECTORS, VIC, VIC_BANK_0, VIC_BANK_2
 
 from .flicker import fuse_indices
 from .modes_irq import (
     BANK_SWAP_IRQ_HANDLER_ADDR,
+    DD00_BANK_2,
     FLICKER_SWAP_IRQ_HANDLER,
+    FLICKER_TRACKER_OFF_BANK,
     FLICKER_TRACKER_OFF_D018,
     FRAME_TRACKER_ADDR,
+    HOSTDMA_SWAP_IRQ_HANDLER,
+    HOSTDMA_TRACKER_OFF_BANK,
 )
 from .palette import C64_PALETTE_BGR
 
@@ -147,7 +151,43 @@ class Framebuffer:
 
     # ---- bitmap modes -------------------------------------------------------
 
-    def _flicker_page_b(self, ram: bytes) -> int | None:
+    def _vic_bank_base(self, ram: bytes) -> int:
+        """0x0000 or 0x8000: which VIC bank a bank-swapping bitmap mode's
+        per-frame IRQ is most recently armed to swap to.
+
+        The swap itself is a C64-side ``STA $DD00`` inside the raster IRQ, so
+        the host never issues that write and the shadow's own $DD00 byte never
+        moves — it would read forever whatever setup() last wrote there. What
+        DOES cross the wire every push is the tracker's pending-bank byte,
+        which is what the next safe vblank commits to $DD00; by the time
+        anything calls render() the real swap has all but certainly already
+        run (the raster gate defers it at most one field — see modes_irq.py),
+        so the tracker is the best host-observable proxy for "current bank."
+
+        Bank 0 whenever no host-DMA bank-swapping handler is installed: plain
+        single-buffer (always bank 0), or a REU-staged mode, whose bitmap and
+        screen bytes never reach the shadow at all (REUWRITE bypasses
+        add_write_listener — see caveats.md), so which bank they'd land in
+        doesn't matter here."""
+        vector = ram[VECTORS.IRQ] | (ram[VECTORS.IRQ + 1] << 8)
+        if vector != BANK_SWAP_IRQ_HANDLER_ADDR:
+            return VIC_BANK_0.BASE
+        installed = ram[
+            BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR + len(HOSTDMA_SWAP_IRQ_HANDLER)
+        ]
+        if installed == HOSTDMA_SWAP_IRQ_HANDLER:
+            bank_byte = ram[FRAME_TRACKER_ADDR + HOSTDMA_TRACKER_OFF_BANK]
+        else:
+            installed = ram[
+                BANK_SWAP_IRQ_HANDLER_ADDR : BANK_SWAP_IRQ_HANDLER_ADDR
+                + len(FLICKER_SWAP_IRQ_HANDLER)
+            ]
+            if installed != FLICKER_SWAP_IRQ_HANDLER:
+                return VIC_BANK_0.BASE
+            bank_byte = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_BANK]
+        return VIC_BANK_2.BASE if bank_byte == DD00_BANK_2 else VIC_BANK_0.BASE
+
+    def _flicker_page_b(self, ram: bytes, bank_base: int) -> int | None:
         """Address of the second screen page when flicker blending is live, else
         None.
 
@@ -166,25 +206,29 @@ class Framebuffer:
         if installed != FLICKER_SWAP_IRQ_HANDLER:
             return None
         page_b = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018 + 1]
-        # $D018's matrix nibble is bank-relative; the mirror models bank 0 only
-        # (see caveats.md), which is where a flicker scene's first frame lands.
-        return ((page_b >> 4) & 0x0F) * 0x400
+        # $D018's matrix nibble is bank-relative, so it's added to whichever
+        # bank the tracker's own pending-bank byte says is current (see
+        # _vic_bank_base) rather than assumed to be bank 0.
+        return bank_base + ((page_b >> 4) & 0x0F) * 0x400
 
     def _render_hires(self, ram: bytes) -> np.ndarray:
         """320×200 hires bitmap. Each 8×8 cell has FG (high nibble of screen
         RAM byte) and BG (low nibble)."""
+        bank_base = self._vic_bank_base(ram)
         # Cell layout: 25 cell rows × 40 cells × 8 bytes/cell.
+        bitmap_base = bank_base + SCREEN.BITMAP
+        screen_base = bank_base + SCREEN.RAM
         bitmap = np.frombuffer(
-            ram[SCREEN.BITMAP : SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
+            ram[bitmap_base : bitmap_base + SCREEN.BITMAP_BYTES],
             dtype=np.uint8,
         ).reshape(25, 40, 8)
         screen = np.frombuffer(
-            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
+            ram[screen_base : screen_base + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         fg = (screen >> 4) & 0x0F
         bg = screen & 0x0F
-        page_b = self._flicker_page_b(ram)
+        page_b = self._flicker_page_b(ram, bank_base)
         if page_b is None:
             fg_palette = C64_PALETTE_BGR[fg]
             bg_palette = C64_PALETTE_BGR[bg]
@@ -213,20 +257,25 @@ class Framebuffer:
     def _render_mhires(self, ram: bytes) -> np.ndarray:
         """160×200 multicolor bitmap. 4 colors per cell: 00=$D021, 01=high
         nibble of screen RAM, 10=low nibble of screen RAM, 11=color RAM."""
+        bank_base = self._vic_bank_base(ram)
+        bitmap_base = bank_base + SCREEN.BITMAP
+        screen_base = bank_base + SCREEN.RAM
         bitmap = np.frombuffer(
-            ram[SCREEN.BITMAP : SCREEN.BITMAP + SCREEN.BITMAP_BYTES],
+            ram[bitmap_base : bitmap_base + SCREEN.BITMAP_BYTES],
             dtype=np.uint8,
         ).reshape(25, 40, 8)
         screen = np.frombuffer(
-            ram[SCREEN.RAM : SCREEN.RAM + SCREEN.N_CELLS],
+            ram[screen_base : screen_base + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
+        # Color RAM ($D800) is never banked — one shared SRAM regardless of
+        # which VIC bank is displayed.
         color_ram = np.frombuffer(
             ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
         bg0 = ram[VIC.D021_BG0] & 0x0F
-        page_b = self._flicker_page_b(ram)
+        page_b = self._flicker_page_b(ram, bank_base)
         if page_b is None:
             c1_palette = C64_PALETTE_BGR[(screen >> 4) & 0x0F]
             c2_palette = C64_PALETTE_BGR[screen & 0x0F]

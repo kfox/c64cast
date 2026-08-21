@@ -595,11 +595,19 @@ that costs you:
   via `REUWRITE` and a C64-side IRQ DMAs them into the off-screen VIC bank.
   Those writes never reach `add_write_listener`, so the shadow never sees the
   pixels. `[video].use_reu_staged = false` routes them back through host DMA
-  and the preview fills in — verified on hardware. The same blind spot applies
-  to the host-DMA `double_buffer` page flip, for a second reason: `render()`
-  reads the bitmap from a fixed `$2000`/`$0400`, so it doesn't model `$DD00`
-  bank selection at all. Teaching the shadow about banks (and notifying it
-  from the REU path) is what a fully faithful preview would need.
+  and the preview fills in — verified on hardware.
+
+  The host-DMA `double_buffer` page flip (and `flicker_tolerance`'s own
+  bank-swapping double buffer) writes both banks over the observable path, so
+  the pixels ARE in the shadow — but the swap that decides which bank is
+  *live* is a C64-side `STA $DD00` inside the raster IRQ, which the host never
+  issues and so never reaches `add_write_listener` either. `render()` follows
+  the frame tracker's own pending-bank byte instead (see
+  `Framebuffer._vic_bank_base`) — the same byte the IRQ itself reads to decide
+  what to commit at the next safe vblank — rather than the (permanently stale)
+  shadowed `$DD00`. That is exact whenever the real swap has already
+  committed by the time something calls `render()`, which the raster gate
+  bounds to at most one field of lag (see `modes_irq.py`).
 * **Text needs a real CHARGEN dump** — see below.
 * **It is not visual verification.** Proving what the VIC actually put on
   HDMI needs a capture device (the `hw-visual-verify` skill), not this.

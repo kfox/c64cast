@@ -331,6 +331,21 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   does. Re-measured the same way afterwards: plain double-buffer split zero
   frames out of 1796, flicker blending 0.28%, at unchanged throughput.
 
+- **The preview window and recording follow a double-buffered bitmap scene to
+  the bank it actually swapped to.** `[video].double_buffer` and
+  `[color].flicker_tolerance` both flip `$DD00` from inside the C64-side raster
+  IRQ, which the host never issues and so never reaches the shadow the preview
+  and recording reconstruct from — `render()` still read a fixed `$2000`/
+  `$0400` regardless. Every other push the real swap lands on bank 2, so the
+  mirror showed content one push stale (bitmap and screen matrix both), most
+  visibly as ghosting/lag under motion and — because `[color].flicker_tolerance`
+  reuses the same swap — as a wrong-bank fusion under blending, which is the
+  one place `caveats.md` specifically recommends judging the result *from* the
+  recording rather than a capture card. `render()` now follows the frame
+  tracker's own pending-bank byte (the same one the IRQ reads to decide what
+  to commit), accurate to within the raster gate's one-field bound rather than
+  wrong on every other frame.
+
 - **The console's token no longer travels further than the terminal.** The host
   logs its login URL with the token in it, because that URL is the only way a
   phone gets in. Two destinations carried the same line and should not have:
