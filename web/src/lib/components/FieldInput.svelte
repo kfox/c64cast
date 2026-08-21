@@ -23,6 +23,14 @@
      *  comma-separated list and a directory all stay typeable; this is a
      *  suggestion, not a picker replacing the input. */
     options?: string[];
+    /** Whether `options` stopped short of every match on the host — an HVSC
+     *  tree or a large asset dir hits the walk's own cap before a query
+     *  narrows it. Media fields only; ignored otherwise. */
+    truncated?: boolean;
+    /** Asked with the field's current text on every keystroke, media fields
+     *  only — the parent debounces it and re-fetches `options` against the
+     *  host instead of leaving the field to filter whatever it already has. */
+    onsearch?: (q: string) => void;
     value: unknown;
     disabled?: boolean;
     /** The parsed value, or `null` and a reason when what is typed is not one
@@ -38,13 +46,19 @@
     vocabulary = "",
     palette = [],
     options = [],
+    truncated = false,
+    onsearch,
     value,
     disabled = false,
     onedit,
   }: Props = $props();
 
   const listId = $props.id();
-  const media = $derived(vocabulary === "media" && options.length > 0);
+  // Whether searching is even meaningful for this field — decoupled from
+  // `options.length` so a query that (or starts with) zero matches doesn't
+  // permanently stop future keystrokes from searching again.
+  const searchable = $derived(vocabulary === "media");
+  const media = $derived(searchable && options.length > 0);
 
   /** Which half of a union the value in hand already is, so a field opens on
    *  the control that can show it rather than on whichever member was declared
@@ -131,6 +145,7 @@
     typing = raw;
     const [parsed, error] = parse(raw);
     onedit(parsed, error);
+    if (searchable) onsearch?.(raw);
   }
 
   // Releasing the caret hands the field back to the value, so what is shown is
@@ -235,5 +250,8 @@
         <option value={option}></option>
       {/each}
     </datalist>
+    {#if truncated}
+      <p class="mt-1 text-xs text-c64-yellow">Truncated — narrow the search to see more.</p>
+    {/if}
   {/if}
 {/if}

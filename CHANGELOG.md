@@ -1112,6 +1112,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **A `file =` field's picker searches the host instead of filtering the first
+  500 entries a plain listing reached.** Typing into a media picker used to
+  filter whatever `mediaOfKind` had already cached — one unfiltered listing per
+  kind, capped at `MAX_FILES` — so an HVSC-sized tree or a large asset
+  directory hid almost everything behind the ones the walk happened to reach
+  first, and the `truncated` flag saying so was fetched and then dropped on
+  the floor. The field itself is the search box: typing now debounces into a
+  live `GET /api/media?kind=&q=` (the parameter has existed since uploads
+  shipped; nothing called it with one before this), and a search past the cap
+  is offered a "truncated" note instead of silently narrowing.
 - **Reorder a show's scenes from the web console**, without opening the text
   editor. `add_scene` and `remove_scene` had a route each; the order of a show
   was still a text-editor job, which was the one structural change that never
@@ -1123,9 +1133,6 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   staged, the same as *Duplicate* and *Remove*, since renumbering the staged
   edits to match a reorder is exactly the reconciliation those two already
   refuse rather than attempt.
-
-### Added
-
 - **A real progress bar for media uploads, with a Cancel button.** Dropping a
   large clip onto a scene, or picking one with the **Upload…** button, used to
   show `Uploading clip.mp4…` and nothing else until it finished or failed — no
