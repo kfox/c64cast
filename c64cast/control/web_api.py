@@ -90,7 +90,7 @@ from c64cast.app.media_store import (
     MediaTooLarge,
 )
 from c64cast.app.playlist import Playlist
-from c64cast.app.serve import SessionManager, SessionStatus, StartRequest, SupervisorBusy
+from c64cast.app.serve import STARTABLE, SessionManager, SessionStatus, StartRequest, SupervisorBusy
 from c64cast.app.session import SessionConfigError
 
 from . import screen as screen_mod
@@ -686,9 +686,16 @@ def register_web_routes(
     # "…/scenes/3" is never read as a request to remove a file named that.
     @app.delete("/api/configs/{ref:path}")
     def api_config_delete(ref: str) -> dict[str, Any]:
-        running = manager.status().config_path
-        if running and store.ref_for(Path(running)) == ref:
-            raise HTTPException(409, f"{ref} is the running config — stop or switch away first")
+        status = manager.status()
+        # `status.config_path` names the last config this host started even at
+        # idle (see SessionManager's docstring on `_launch_config_path`), so
+        # matching on the path alone would refuse a delete long after the
+        # session that ran it has stopped. Only a config the supervisor is
+        # actually mid-show with — not startable again without a fresh
+        # start — is the one this route needs to protect.
+        active = status.state not in STARTABLE and status.config_path
+        if active and store.ref_for(Path(status.config_path)) == ref:
+            raise HTTPException(409, f"{ref} is the running config — stop it first")
         try:
             return store.delete(ref)
         except ConfigStoreError as e:
