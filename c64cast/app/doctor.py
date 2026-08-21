@@ -35,19 +35,19 @@ from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording
 from .orchestrator import OrchestratorError
 from .paths import expand_user
 from .scene_factory import (
+    cell_strategy_cfg_error,
+    color_match_cfg_error,
+    dither_cfg_error,
+    motion_smoothing_cfg_error,
     resolve_cell_strategy,
     resolve_color_match,
     resolve_dither_method,
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
-    validate_cell_strategy_cfg,
-    validate_color_match_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
-    validate_dither_cfg,
     validate_midi_control_cfg,
-    validate_motion_smoothing_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
     validate_wled_cfg,
@@ -944,38 +944,71 @@ def _validate_sid_model(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+_DITHER_HINT = "See [color].dither in the config reference / --describe section:color."
+
+
 def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag an unknown [color].dither name / out-of-range dither_strength, and
-    report how "auto" resolves per scene (see config.resolve_dither_method).
-    Offline — delegates to config.validate_dither_cfg."""
+    """Flag an unknown [color].dither name / out-of-range dither_strength on
+    [color] and on every scene's own [scenes.color] override, and report how
+    "auto" resolves per scene (see config.resolve_dither_method).
+
+    Each scene is checked independently (rather than one whole-config
+    validate_dither_cfg call) so a bad override on one scene reports an error
+    for that scene alone, instead of also swallowing the resolution report for
+    every other scene in the same system. Offline — delegates the actual
+    check to config.dither_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        try:
-            validate_dither_cfg(cfg)
-        except ConfigError as e:
+        err = dither_cfg_error("[color]", cfg.color)
+        if err:
             out.append(
                 Diagnostic(
                     level="error",
                     category="color",
                     subject=f"{name}/dither",
-                    message=str(e),
-                    hint="See [color].dither in the config reference / --describe section:color.",
+                    message=err,
+                    hint=_DITHER_HINT,
                 )
             )
-            continue
-        for s in cfg.scenes:
+        for i, s in enumerate(cfg.scenes):
             if s.type not in ("webcam", "video", "slideshow", "generative"):
                 continue
-            color = scene_color(cfg, s)
+            subject = f"{name}/{s.name or s.type}/dither"
+            try:
+                color = scene_color(cfg, s)
+            except ValueError as e:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=subject,
+                        message=str(e),
+                        hint=_DITHER_HINT,
+                    )
+                )
+                continue
+            if s.color:
+                scene_err = dither_cfg_error(f"[[scenes]][{i}].color", color)
+                if scene_err:
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=subject,
+                            message=scene_err,
+                            hint=_DITHER_HINT,
+                        )
+                    )
+                    continue
             if color.dither != "auto":
                 continue
             resolved = resolve_dither_method(color.dither, s.type)
-            override_note = " (per-scene [scenes.color] override)" if s.color else ""
+            override_note = " (per-scene [scenes.color] override)" if "dither" in s.color else ""
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
-                    subject=f"{name}/{s.name or s.type}/dither",
+                    subject=subject,
                     message=(
                         f"'auto' resolves to {resolved!r} for this {s.type} scene "
                         f"(strength {color.dither_strength}){override_note}."
@@ -985,40 +1018,71 @@ def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+_COLOR_MATCH_HINT = "See [color].color_match in the config reference / --describe section:color."
+
+
 def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag an unknown [color].color_match value, and report how "auto" resolves
-    per scene's display mode (see config.resolve_color_match). Offline —
-    delegates to config.validate_color_match_cfg."""
+    """Flag an unknown [color].color_match value on [color] and on every
+    scene's own [scenes.color] override, and report how "auto" resolves per
+    scene's display mode (see config.resolve_color_match).
+
+    Each scene is checked independently — see `_validate_dither` for why.
+    Offline — delegates the actual check to config.color_match_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        try:
-            validate_color_match_cfg(cfg)
-        except ConfigError as e:
+        err = color_match_cfg_error("[color]", cfg.color)
+        if err:
             out.append(
                 Diagnostic(
                     level="error",
                     category="color",
                     subject=f"{name}/color_match",
-                    message=str(e),
-                    hint="See [color].color_match in the config reference / "
-                    "--describe section:color.",
+                    message=err,
+                    hint=_COLOR_MATCH_HINT,
                 )
             )
-            continue
-        for s in cfg.scenes:
+        for i, s in enumerate(cfg.scenes):
             display = resolve_scene_display(s.display, s.type)
             if display in ("blank", "hires_edges"):
                 continue  # these pick no colors — color_match is a no-op
-            color = scene_color(cfg, s)
+            subject = f"{name}/{s.name or s.type}/color_match"
+            try:
+                color = scene_color(cfg, s)
+            except ValueError as e:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=subject,
+                        message=str(e),
+                        hint=_COLOR_MATCH_HINT,
+                    )
+                )
+                continue
+            if s.color:
+                scene_err = color_match_cfg_error(f"[[scenes]][{i}].color", color)
+                if scene_err:
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=subject,
+                            message=scene_err,
+                            hint=_COLOR_MATCH_HINT,
+                        )
+                    )
+                    continue
             if color.color_match != "auto":
                 continue
             resolved = "perceptual" if resolve_color_match(color.color_match, display) else "rgb"
-            override_note = " (per-scene [scenes.color] override)" if s.color else ""
+            override_note = (
+                " (per-scene [scenes.color] override)" if "color_match" in s.color else ""
+            )
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
-                    subject=f"{name}/{s.name or s.type}/color_match",
+                    subject=subject,
                     message=f"'auto' resolves to {resolved!r} for this {display} scene"
                     f"{override_note}.",
                 )
@@ -1026,41 +1090,75 @@ def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+_CELL_STRATEGY_HINT = (
+    "See [color].cell_strategy in the config reference / --describe section:color."
+)
+
+
 def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag an unknown [color].cell_strategy value, and report how "auto"
-    resolves per scene (see config.resolve_cell_strategy). The knob only affects
-    mhires with palette_mode=percell, so the resolution report is scoped to
-    those scenes. Offline — delegates to config.validate_cell_strategy_cfg."""
+    """Flag an unknown [color].cell_strategy value on [color] and on every
+    scene's own [scenes.color] override, and report how "auto" resolves per
+    scene (see config.resolve_cell_strategy). The knob only affects mhires
+    with palette_mode=percell, so the resolution report is scoped to those
+    scenes.
+
+    Each scene is checked independently — see `_validate_dither` for why.
+    Offline — delegates the actual check to config.cell_strategy_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        try:
-            validate_cell_strategy_cfg(cfg)
-        except ConfigError as e:
+        err = cell_strategy_cfg_error("[color]", cfg.color)
+        if err:
             out.append(
                 Diagnostic(
                     level="error",
                     category="color",
                     subject=f"{name}/cell_strategy",
-                    message=str(e),
-                    hint="See [color].cell_strategy in the config reference / "
-                    "--describe section:color.",
+                    message=err,
+                    hint=_CELL_STRATEGY_HINT,
                 )
             )
-            continue
-        for s in cfg.scenes:
+        for i, s in enumerate(cfg.scenes):
             display = resolve_scene_display(s.display, s.type)
             if display != "mhires" or s.palette_mode != "percell":
                 continue  # cell_strategy only affects mhires percell
-            color = scene_color(cfg, s)
+            subject = f"{name}/{s.name or s.type}/cell_strategy"
+            try:
+                color = scene_color(cfg, s)
+            except ValueError as e:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=subject,
+                        message=str(e),
+                        hint=_CELL_STRATEGY_HINT,
+                    )
+                )
+                continue
+            if s.color:
+                scene_err = cell_strategy_cfg_error(f"[[scenes]][{i}].color", color)
+                if scene_err:
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=subject,
+                            message=scene_err,
+                            hint=_CELL_STRATEGY_HINT,
+                        )
+                    )
+                    continue
             if color.cell_strategy != "auto":
                 continue
             resolved = resolve_cell_strategy(color.cell_strategy, s.type)
-            override_note = " (per-scene [scenes.color] override)" if s.color else ""
+            override_note = (
+                " (per-scene [scenes.color] override)" if "cell_strategy" in s.color else ""
+            )
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
-                    subject=f"{name}/{s.name or s.type}/cell_strategy",
+                    subject=subject,
                     message=f"'auto' resolves to {resolved!r} for this {s.type} scene"
                     f"{override_note}.",
                 )
@@ -1068,39 +1166,72 @@ def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+_MOTION_SMOOTHING_HINT = (
+    "See [color].motion_smoothing in the config reference / --describe section:color."
+)
+
+
 def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
-    """Flag an out-of-range [color].motion_smoothing, and note it on the mhires
-    percell scenes it affects. Offline — delegates to
-    config.validate_motion_smoothing_cfg."""
+    """Flag an out-of-range [color].motion_smoothing on [color] and on every
+    scene's own [scenes.color] override, and note it on the mhires percell
+    scenes it affects.
+
+    Each scene is checked independently — see `_validate_dither` for why.
+    Offline — delegates the actual check to config.motion_smoothing_cfg_error."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        try:
-            validate_motion_smoothing_cfg(cfg)
-        except ConfigError as e:
+        err = motion_smoothing_cfg_error("[color]", cfg.color)
+        if err:
             out.append(
                 Diagnostic(
                     level="error",
                     category="color",
                     subject=f"{name}/motion_smoothing",
-                    message=str(e),
-                    hint="See [color].motion_smoothing in the config reference / "
-                    "--describe section:color.",
+                    message=err,
+                    hint=_MOTION_SMOOTHING_HINT,
                 )
             )
-            continue
-        for s in cfg.scenes:
+        for i, s in enumerate(cfg.scenes):
             display = resolve_scene_display(s.display, s.type)
             if display != "mhires" or s.palette_mode != "percell":
                 continue  # motion_smoothing only affects mhires percell
-            color = scene_color(cfg, s)
+            subject = f"{name}/{s.name or s.type}/motion_smoothing"
+            try:
+                color = scene_color(cfg, s)
+            except ValueError as e:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=subject,
+                        message=str(e),
+                        hint=_MOTION_SMOOTHING_HINT,
+                    )
+                )
+                continue
+            if s.color:
+                scene_err = motion_smoothing_cfg_error(f"[[scenes]][{i}].color", color)
+                if scene_err:
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=subject,
+                            message=scene_err,
+                            hint=_MOTION_SMOOTHING_HINT,
+                        )
+                    )
+                    continue
             if color.motion_smoothing == ColorCfg().motion_smoothing:
                 continue  # shipped default — nothing noteworthy
-            override_note = " (per-scene [scenes.color] override)" if s.color else ""
+            override_note = (
+                " (per-scene [scenes.color] override)" if "motion_smoothing" in s.color else ""
+            )
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
-                    subject=f"{name}/{s.name or s.type}/motion_smoothing",
+                    subject=subject,
                     message=(
                         f"{color.motion_smoothing} (higher = less flicker / more "
                         "after-image, lower = crisper motion) for this mhires percell "

@@ -217,7 +217,7 @@ def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
     field on an overriding scene goes into its ``[scenes.color]`` dict, not
     onto the scene itself)."""
     for row in rows:
-        write_live_tune_row(cfg, row["scene"], row["field"], row["new"])
+        write_live_tune_row(cfg, row)
 
 
 def register_web_routes(

@@ -239,18 +239,20 @@ def _key(target: str, scene: int | None) -> str:
     return target if scene is None else f"{target}@{scene}"
 
 
-def write_live_tune_row(cfg: Config, scene: int | None, field: str, new: Any) -> str | None:
-    """Write one save-back row into `cfg` in place, returning the
+def write_live_tune_row(cfg: Config, row: Mapping[str, Any]) -> str | None:
+    """Write one save-back row (a ``{"scene", "field", "new"}`` mapping —
+    see :meth:`LiveTuneTracker.pending`) into `cfg` in place, returning the
     ``<where>.<field> = <value>`` line describing what was written, or None
-    if `scene` names an index `cfg` no longer has a block for.
+    if the row's scene names an index `cfg` no longer has a block for.
 
     Shared by :meth:`LiveTuneTracker.apply` and the web console's
     ``_restamp`` (see web_api.py) so the two save-back paths can't drift
-    apart on where a row lands: `scene is None` always means the shared
-    [color] section; a per-scene row lands on the scene's own attribute
-    UNLESS `field` is one of the color-shaping fields (`COLOR_FIELD_NAMES`),
-    which instead go into that scene's ``[scenes.color]`` override dict — the
-    only way the write ends up where the scene will actually read it back."""
+    apart on where a row lands: a None scene always means the shared [color]
+    section; a per-scene row lands on the scene's own attribute UNLESS the
+    field is one of the color-shaping fields (`COLOR_FIELD_NAMES`), which
+    instead go into that scene's ``[scenes.color]`` override dict — the only
+    way the write ends up where the scene will actually read it back."""
+    scene, field, new = row["scene"], row["field"], row["new"]
     if scene is None:
         setattr(cfg.color, field, new)
         return f"[color].{field} = {_fmt(new)}"
@@ -433,7 +435,7 @@ class LiveTuneTracker:
         index. See :func:`write_live_tune_row` for where each row lands."""
         applied: list[str] = []
         for row in self._persistable():
-            line = write_live_tune_row(cfg, row["scene"], row["field"], row["new"])
+            line = write_live_tune_row(cfg, row)
             if line is not None:
                 applied.append(line)
         return applied

@@ -1305,6 +1305,35 @@ class SceneColorOverrideDiagnosticTest(unittest.TestCase):
         self.assertEqual([d.level for d in diags], ["error"])
         self.assertIn("[[scenes]][0].color.dither", diags[0].message)
 
+    def test_a_bad_scene_override_does_not_hide_other_scenes_diagnostics(self):
+        # Scene "broken"'s override is invalid; scene "fine" has none. "fine"
+        # must still get its resolution "ok" diagnostic instead of the whole
+        # system's per-scene report being skipped after the first bad scene.
+        loaded = _load(
+            '[[scenes]]\nname = "broken"\ntype = "video"\nfile = "a.mp4"\n'
+            '  [scenes.color]\n  dither = "bogus"\n\n'
+            '[[scenes]]\nname = "fine"\ntype = "video"\nfile = "b.mp4"\n  [scenes.color]\n'
+            '  dither = "auto"\n'
+        )
+        diags = doctor._validate_dither(loaded)
+        self.assertEqual(sorted(d.level for d in diags), ["error", "ok"])
+        error, ok = sorted(diags, key=lambda d: d.level)
+        self.assertIn("broken", error.subject)
+        self.assertIn("fine", ok.subject)
+
+    def test_override_note_only_names_the_field_actually_overridden(self):
+        # This scene overrides force_palette, not dither — the dither
+        # resolution note must not falsely claim a per-scene override.
+        loaded = _load(
+            '[color]\ndither = "auto"\n\n'
+            '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n'
+            "  [scenes.color]\n  force_palette = true\n"
+        )
+        diags = doctor._validate_dither(loaded)
+        ok = [d for d in diags if d.level == "ok"]
+        self.assertTrue(ok)
+        self.assertNotIn("override", ok[0].message)
+
 
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:

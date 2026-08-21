@@ -1128,36 +1128,62 @@ def effective_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
     The four ``validate_*_cfg`` guards below (and doctor's per-aspect probes)
     loop this instead of reading ``cfg.color`` directly, so a bad value inside
     a scene override surfaces the same as a bad global value, naming the scene
-    it came from."""
+    it came from. `scene_color` raises a plain `ValueError` for a bad
+    `force_palette_colors` override (it's also called at load time, outside
+    any ConfigError-only handler); re-raised here as `ConfigError` so the
+    session/doctor callers that only catch `ConfigError` around these guards
+    don't see an unhandled exception."""
     out: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
     for i, s in enumerate(cfg.scenes):
         if s.color:
-            out.append((f"[[scenes]][{i}].color", scene_color(cfg, s)))
+            label = f"[[scenes]][{i}].color"
+            try:
+                out.append((label, scene_color(cfg, s)))
+            except ValueError as e:
+                raise ConfigError(f"{label}: {e}") from e
     return out
+
+
+def dither_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Range-check one resolved [color] section's dither/dither_strength;
+    returns the ConfigError message, or None if `color` is fine.
+
+    Split out of `validate_dither_cfg` so doctor's per-scene report can check
+    one scene at a time (via `effective_colors`) without a bad override in
+    scene N hiding the resolution report for every other scene — see
+    `validate_dither_cfg` for the fail-fast form of the same check."""
+    if color.dither not in DITHER_CHOICES:
+        return f"{label}.dither must be one of {', '.join(DITHER_CHOICES)}, got {color.dither!r}"
+    if not 0.0 <= color.dither_strength <= 2.0:
+        return f"{label}.dither_strength must be 0..2.0, got {color.dither_strength}"
+    return None
 
 
 def validate_dither_cfg(cfg: Config) -> None:
     """Guard dither/dither_strength on [color] and every scene override:
     reject an unknown method name or an out-of-range strength."""
     for label, color in effective_colors(cfg):
-        if color.dither not in DITHER_CHOICES:
-            raise ConfigError(
-                f"{label}.dither must be one of {', '.join(DITHER_CHOICES)}, got {color.dither!r}"
-            )
-        if not 0.0 <= color.dither_strength <= 2.0:
-            raise ConfigError(
-                f"{label}.dither_strength must be 0..2.0, got {color.dither_strength}"
-            )
+        err = dither_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
+def motion_smoothing_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Range-check one resolved [color] section's motion_smoothing (0..1);
+    returns the ConfigError message, or None if `color` is fine. See
+    `dither_cfg_error` for why this is split from `validate_motion_smoothing_cfg`."""
+    if not 0.0 <= color.motion_smoothing <= 1.0:
+        return f"{label}.motion_smoothing must be 0..1.0, got {color.motion_smoothing}"
+    return None
 
 
 def validate_motion_smoothing_cfg(cfg: Config) -> None:
     """Guard motion_smoothing on [color] and every scene override: reject an
     out-of-range value (0..1)."""
     for label, color in effective_colors(cfg):
-        if not 0.0 <= color.motion_smoothing <= 1.0:
-            raise ConfigError(
-                f"{label}.motion_smoothing must be 0..1.0, got {color.motion_smoothing}"
-            )
+        err = motion_smoothing_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
 
 
 COLOR_MATCH_CHOICES: tuple[str, ...] = ("auto", *COLOR_MATCH_MODES)
@@ -1183,15 +1209,25 @@ def resolve_color_match(color_match_setting: str, display_mode_name: str) -> boo
     return display_mode_name in _COLOR_MATCH_AUTO_PERCEPTUAL
 
 
+def color_match_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Check one resolved [color] section's color_match choice; returns the
+    ConfigError message, or None if `color` is fine. See `dither_cfg_error`
+    for why this is split from `validate_color_match_cfg`."""
+    if color.color_match not in COLOR_MATCH_CHOICES:
+        return (
+            f"{label}.color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
+            f"got {color.color_match!r}"
+        )
+    return None
+
+
 def validate_color_match_cfg(cfg: Config) -> None:
     """Guard color_match on [color] and every scene override: reject an
     unknown value."""
     for label, color in effective_colors(cfg):
-        if color.color_match not in COLOR_MATCH_CHOICES:
-            raise ConfigError(
-                f"{label}.color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
-                f"got {color.color_match!r}"
-            )
+        err = color_match_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
 
 
 CELL_STRATEGY_CHOICES: tuple[str, ...] = ("auto", *CELL_STRATEGIES)
@@ -1217,15 +1253,25 @@ def resolve_cell_strategy(cell_strategy_setting: str, scene_type: str) -> str:
     return "error-min" if scene_type in _STATIC_CELL_STRATEGY_SCENE_TYPES else "frequency"
 
 
+def cell_strategy_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Check one resolved [color] section's cell_strategy choice; returns the
+    ConfigError message, or None if `color` is fine. See `dither_cfg_error`
+    for why this is split from `validate_cell_strategy_cfg`."""
+    if color.cell_strategy not in CELL_STRATEGY_CHOICES:
+        return (
+            f"{label}.cell_strategy must be one of {', '.join(CELL_STRATEGY_CHOICES)}, "
+            f"got {color.cell_strategy!r}"
+        )
+    return None
+
+
 def validate_cell_strategy_cfg(cfg: Config) -> None:
     """Guard cell_strategy on [color] and every scene override: reject an
     unknown value."""
     for label, color in effective_colors(cfg):
-        if color.cell_strategy not in CELL_STRATEGY_CHOICES:
-            raise ConfigError(
-                f"{label}.cell_strategy must be one of {', '.join(CELL_STRATEGY_CHOICES)}, "
-                f"got {color.cell_strategy!r}"
-            )
+        err = cell_strategy_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
 
 
 def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:

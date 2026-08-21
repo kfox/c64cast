@@ -209,6 +209,18 @@ class EffectiveColorsValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(cfgmod.ConfigError, r"motion_smoothing"):
             scene_factory.validate_motion_smoothing_cfg(cfg)
 
+    def test_bad_scene_force_palette_override_raises_config_error(self):
+        # scene_color()/_validate_force_palette raise a plain ValueError, not
+        # ConfigError — effective_colors must translate it, or this escapes
+        # the ConfigError-only handlers in session.validate_configs and
+        # doctor's per-aspect probes as an unhandled exception.
+        cfg = cfgmod.Config()
+        cfg.scenes.append(cfgmod.SceneCfg(type="video", color={"force_palette_colors": 999}))
+        with self.assertRaisesRegex(
+            cfgmod.ConfigError, r"\[\[scenes\]\]\[0\]\.color: color\.force_palette_colors"
+        ):
+            scene_factory.validate_dither_cfg(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()
