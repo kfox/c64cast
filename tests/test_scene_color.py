@@ -144,9 +144,15 @@ class SceneColorAppliesToTest(unittest.TestCase):
     the same set `effect`/`effects` are scoped to."""
 
     def test_frame_bearing_types_accept_it(self):
+        # video/slideshow need an explicit `file` — without one they fall
+        # back to scanning assets/videos or assets/pictures, which is empty
+        # on a fresh checkout (CI has no sample media, unlike a dev machine).
+        files = {"video": "clip.mp4", "slideshow": "pic.jpg"}
         for scene_type in ("webcam", "video", "slideshow", "generative", "wled"):
             with self.subTest(scene_type=scene_type):
-                s = cfgmod.SceneCfg(type=scene_type, color={"dither": "none"})
+                s = cfgmod.SceneCfg(
+                    type=scene_type, color={"dither": "none"}, file=files.get(scene_type)
+                )
                 scene_factory.validate_scene_cfg(s, cfgmod.Config(), audio_enabled=False)
 
     def test_non_frame_bearing_types_reject_it(self):
