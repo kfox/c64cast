@@ -87,6 +87,14 @@
     );
   }
 
+  // `[`/`]` only: which held keys actually got a press sent, so their release
+  // fires on keyup even if focus moved to a button or field in between —
+  // otherwise the rewind/fast-forward it started never lets go. Tracked here
+  // rather than trusting the keyup event's own target, the same way
+  // TransportBar's own hold buttons use `onpointercancel` rather than trusting
+  // the pointer still being over the button it started on.
+  const heldKeys = new Set<string>();
+
   function onWindowKeydown(event: KeyboardEvent): void {
     // Auto-repeat would spam a one-shot verb (pause/resume, tap, a clip
     // launch) many times a second while a key is just held down.
@@ -103,16 +111,29 @@
       clips: current.clips,
     });
     if (commands === null) return;
+    if (event.key === "[" || event.key === "]") heldKeys.add(event.key);
     event.preventDefault();
     for (const cmd of commands) send(cmd);
   }
 
   function onWindowKeyup(event: KeyboardEvent): void {
-    if (fromTypingTarget(event)) return;
+    if (!heldKeys.delete(event.key)) return;
     const commands = commandForKeyUp(event.key);
     if (commands === null) return;
     event.preventDefault();
     for (const cmd of commands) send(cmd);
+  }
+
+  // The keyboard equivalent of TransportBar's `onpointercancel`: if the
+  // window loses focus mid-hold (alt-tab, a browser dialog), no keyup ever
+  // arrives to release rw/ff, so release everything still held the moment
+  // focus goes away instead of leaving the show rewinding indefinitely.
+  function onWindowBlur(): void {
+    for (const key of heldKeys) {
+      heldKeys.delete(key);
+      const commands = commandForKeyUp(key);
+      if (commands !== null) for (const cmd of commands) send(cmd);
+    }
   }
 
   // Starting a show from here is a shortcut back to the Session screen's own
@@ -134,10 +155,11 @@
   }
 </script>
 
-<!-- The app's first global key handler. Both handlers bail on their own for a
-     typing target, a modifier, a repeat, or nothing running — so this is safe
-     to keep mounted for the whole screen rather than only once a show is up. -->
-<svelte:window onkeydown={onWindowKeydown} onkeyup={onWindowKeyup} />
+<!-- The app's first global key handler. Keydown bails on its own for a typing
+     target, a modifier, a repeat, or nothing running; keyup and blur only act
+     on a key this component itself put a press on — so all three are safe to
+     keep mounted for the whole screen rather than only once a show is up. -->
+<svelte:window onkeydown={onWindowKeydown} onkeyup={onWindowKeyup} onblur={onWindowBlur} />
 
 {#if current === null}
   <section class="panel p-5">
