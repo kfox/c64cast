@@ -16,7 +16,6 @@
     FormField,
     FormScene,
     FormSection,
-    MediaEntry,
     MediaIndex,
     SceneTypeDoc,
     ValidationReport,
@@ -42,7 +41,7 @@
      *  listing per kind any loaded scene type actually uses). Absent kinds
      *  just render an empty datalist — a picker with nothing to offer is a
      *  plain text box, which is exactly the fallback. */
-    media?: Record<string, MediaEntry[]>;
+    media?: Record<string, MediaIndex>;
     /** A file just landed on the host for this scene type — `Config.svelte`
      *  drops its cached listing for the kind(s) that type browses and
      *  re-fetches, so the newly uploaded file shows up in every datalist
@@ -63,72 +62,99 @@
   }: Props = $props();
 
   /** The datalist options a scene type's `file =` field offers: the union of
-   *  every media kind it browses, deduplicated. Cached per scene type name so
+   *  every media kind it browses, deduplicated. Cached per scene index so
    *  staging an edit elsewhere in the form — which replaces `pending` and
    *  would otherwise re-run this for every `file =` field — only recomputes
-   *  when `media` or `searchResults` changes. A kind with a live search
-   *  overlays `media`'s unfiltered listing entirely rather than merging with
-   *  it, so what's shown is exactly what the host just answered. */
+   *  when `media` or `searchResults` changes. Keyed by scene index rather
+   *  than scene type name, so two scenes sharing a type never share the other's
+   *  datalist. A kind with a live search overlays `media`'s unfiltered
+   *  listing entirely rather than merging with it, so what's shown is exactly
+   *  what the host just answered. */
   const mediaOptions = $derived.by(() => {
-    const cache = new Map<string, string[]>();
-    return (doc: SceneTypeDoc | undefined): string[] => {
-      const key = doc?.name ?? "";
-      let options = cache.get(key);
+    const cache = new Map<number, string[]>();
+    return (doc: SceneTypeDoc | undefined, sceneIndex: number): string[] => {
+      let options = cache.get(sceneIndex);
       if (!options) {
         const entries = kindsForScene(doc).flatMap(
-          (kind) => searchResults[kind]?.entries ?? media[kind] ?? [],
+          (kind) => searchResults[searchKey(sceneIndex, kind)]?.entries ?? media[kind]?.entries ?? [],
         );
         options = [...new Set(pickerOptions(entries))];
-        cache.set(key, options);
+        cache.set(sceneIndex, options);
       }
       return options;
     };
   });
 
-  /** Whether any kind this scene type browses has a live search that stopped
-   *  short of every match on the host. */
-  function mediaTruncated(doc: SceneTypeDoc | undefined): boolean {
-    return kindsForScene(doc).some((kind) => searchResults[kind]?.truncated === true);
+  /** Whether any kind this scene type browses has stopped short of every
+   *  match on the host — a live search past `MAX_FILES`, or (with no search
+   *  live for that scene+kind) the unfiltered listing itself. */
+  function mediaTruncated(doc: SceneTypeDoc | undefined, sceneIndex: number): boolean {
+    return kindsForScene(doc).some(
+      (kind) => (searchResults[searchKey(sceneIndex, kind)] ?? media[kind])?.truncated === true,
+    );
   }
 
   // How long a burst of keystrokes waits before it becomes a request — a
   // search field's own pace, not the network's.
   const SEARCH_DEBOUNCE_MS = 250;
 
-  // A live search's result per kind, uncached — a query fires on a debounce
-  // and freshness beats a map keyed by every prefix somebody typed. `null`
-  // means no query is live for that kind, so `mediaOptions` falls back to the
-  // unfiltered `media` prop.
+  // A live search's result per scene index + kind, uncached — a query fires
+  // on a debounce and freshness beats a map keyed by every prefix somebody
+  // typed. Keyed by scene index as well as kind, so searching in one scene
+  // never changes the datalist of another scene that shares its type. `null`
+  // means no query is live for that scene+kind, so `mediaOptions` falls back
+  // to the unfiltered `media` prop.
   let searchResults = $state<Record<string, MediaIndex | null>>({});
 
-  // One debounced fetch per kind, so a burst within one field's kind coalesces
-  // without a later keystroke in a *different* field's kind clobbering it.
-  const searchDebouncers = new Map<string, (q: string) => void>();
+  function searchKey(sceneIndex: number, kind: string): string {
+    return `${sceneIndex}:${kind}`;
+  }
 
-  function debouncedSearch(kind: string): (q: string) => void {
-    let debounced = searchDebouncers.get(kind);
+  // One debounced fetch per scene+kind, so a burst within one field coalesces
+  // without a keystroke in a *different* field clobbering it. `searchGenerations`
+  // pairs with it: each firing bumps its key's generation, and a fetch that
+  // resolves against a since-superseded generation is dropped, so a slower
+  // response to an earlier, broader query can never overwrite a faster
+  // response to a later, narrower one the user is already looking at.
+  const searchDebouncers = new Map<string, (q: string) => void>();
+  const searchGenerations = new Map<string, number>();
+
+  function debouncedSearch(key: string, kind: string): (q: string) => void {
+    let debounced = searchDebouncers.get(key);
     if (!debounced) {
       debounced = debounce((q: string) => {
+        const generation = (searchGenerations.get(key) ?? 0) + 1;
+        searchGenerations.set(key, generation);
         searchMedia(kind, q)
-          .then((idx) => (searchResults = { ...searchResults, [kind]: idx }))
+          .then((idx) => {
+            if (searchGenerations.get(key) !== generation) return;
+            searchResults = { ...searchResults, [key]: idx };
+          })
           .catch(() => {
             // A failed search leaves whatever was showing rather than
             // blanking the datalist over a transient network hiccup.
           });
       }, SEARCH_DEBOUNCE_MS);
-      searchDebouncers.set(kind, debounced);
+      searchDebouncers.set(key, debounced);
     }
     return debounced;
   }
 
-  /** Search every kind this scene type browses — a `file =` field's datalist
-   *  is their union, so its search is too. An empty query clears immediately
-   *  rather than waiting out the debounce, so backspacing to nothing snaps
-   *  straight back to the unfiltered listing. */
-  function searchScene(doc: SceneTypeDoc | undefined, q: string): void {
+  /** Search every kind scene `sceneIndex` browses — a `file =` field's
+   *  datalist is their union, so its search is too. An empty query clears
+   *  immediately rather than waiting out the debounce, so backspacing to
+   *  nothing snaps straight back to the unfiltered listing; it also bumps the
+   *  generation, so a fetch already in flight for the query just abandoned
+   *  cannot land afterward and repopulate it. */
+  function searchScene(doc: SceneTypeDoc | undefined, sceneIndex: number, q: string): void {
     for (const kind of kindsForScene(doc)) {
-      if (!q.trim()) searchResults = { ...searchResults, [kind]: null };
-      else debouncedSearch(kind)(q);
+      const key = searchKey(sceneIndex, kind);
+      if (!q.trim()) {
+        searchGenerations.set(key, (searchGenerations.get(key) ?? 0) + 1);
+        searchResults = { ...searchResults, [key]: null };
+      } else {
+        debouncedSearch(key, kind)(q);
+      }
     }
   }
 
@@ -606,9 +632,11 @@
               choices={fd?.choices ?? []}
               vocabulary={fd?.vocabulary ?? ""}
               palette={docs.palette}
-              options={fd?.vocabulary === "media" ? mediaOptions(doc) : []}
-              truncated={fd?.vocabulary === "media" && mediaTruncated(doc)}
-              onsearch={fd?.vocabulary === "media" ? (q) => searchScene(doc, q) : undefined}
+              options={fd?.vocabulary === "media" ? mediaOptions(doc, row.index) : []}
+              truncated={fd?.vocabulary === "media" && mediaTruncated(doc, row.index)}
+              onsearch={fd?.vocabulary === "media"
+                ? (q) => searchScene(doc, row.index, q)
+                : undefined}
               live={fd?.apply === "live"}
               onedit={(v, e) => stage(key, edit, field, v, e)}
               onclear={() => clear(key, edit, field)}

@@ -12,7 +12,7 @@
   import { describeError } from "$lib/errorsLogic";
   import { DocIndex, documentation, forgetMedia, mediaOfKind } from "$lib/introspect";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaEntry } from "$lib/types";
+  import type { ConfigDetail, ConfigEdit, ConfigIndex, LibraryState, MediaIndex } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -28,7 +28,7 @@
   let library = $state<LibraryState | null>(null);
   let docs = $state<DocIndex | null>(null);
   let detail = $state<ConfigDetail | null>(null);
-  let media = $state<Record<string, MediaEntry[]>>({});
+  let media = $state<Record<string, MediaIndex>>({});
   let loading = $state(false);
   let problem = $state("");
   let view = $state<"form" | "text">("form");
@@ -90,7 +90,7 @@
       for (const kind of kinds) {
         if (kind in media) continue;
         mediaOfKind(kind)
-          .then((entries) => (media = { ...media, [kind]: entries }))
+          .then((idx) => (media = { ...media, [kind]: idx }))
           .catch((e: unknown) => (problem = describeError(e)));
       }
     });

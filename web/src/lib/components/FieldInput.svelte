@@ -54,7 +54,11 @@
   }: Props = $props();
 
   const listId = $props.id();
-  const media = $derived(vocabulary === "media" && options.length > 0);
+  // Whether searching is even meaningful for this field — decoupled from
+  // `options.length` so a query that (or starts with) zero matches doesn't
+  // permanently stop future keystrokes from searching again.
+  const searchable = $derived(vocabulary === "media");
+  const media = $derived(searchable && options.length > 0);
 
   /** Which half of a union the value in hand already is, so a field opens on
    *  the control that can show it rather than on whichever member was declared
@@ -141,7 +145,7 @@
     typing = raw;
     const [parsed, error] = parse(raw);
     onedit(parsed, error);
-    if (media) onsearch?.(raw);
+    if (searchable) onsearch?.(raw);
   }
 
   // Releasing the caret hands the field back to the value, so what is shown is

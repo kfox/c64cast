@@ -2,7 +2,6 @@ import { api } from "./api";
 import type {
   FieldDoc,
   Introspection,
-  MediaEntry,
   MediaIndex,
   OverlayDoc,
   ParamDoc,
@@ -95,19 +94,18 @@ export class DocIndex {
  *  way `documentation()` caches the introspection document — a media kind
  *  describes what's on disk right now rather than the code, but re-listing
  *  it on every scene render would mean one request per field per keystroke.
- *  A failure clears its cache entry so a later attempt can retry. */
-const mediaCache = new Map<string, Promise<MediaEntry[]>>();
+ *  Returns the whole index, `truncated` included, so a mount-time listing
+ *  past `MAX_FILES` says so before anyone has typed a search. A failure
+ *  clears its cache entry so a later attempt can retry. */
+const mediaCache = new Map<string, Promise<MediaIndex>>();
 
-export function mediaOfKind(kind: string): Promise<MediaEntry[]> {
+export function mediaOfKind(kind: string): Promise<MediaIndex> {
   let cached = mediaCache.get(kind);
   if (!cached) {
-    cached = api
-      .media(kind)
-      .then((idx) => idx.entries)
-      .catch((e: unknown) => {
-        mediaCache.delete(kind);
-        throw e;
-      });
+    cached = api.media(kind).catch((e: unknown) => {
+      mediaCache.delete(kind);
+      throw e;
+    });
     mediaCache.set(kind, cached);
   }
   return cached;
