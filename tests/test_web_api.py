@@ -73,6 +73,15 @@ PAIR_TOML = (
     '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n\n'
     '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n'
 )
+# Same pair, but scene 1 carries its own [scenes.color] override for a
+# `_MODE_FIELD_TO_COLOR` field — the fixture for the scene-aware save-back
+# tests, where a [color]-homed knob has to land in ONE scene's own block.
+PAIR_TOML_ONE_OVERRIDES_COLOR = (
+    "[audio]\nenabled = false\n\n"
+    '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n\n'
+    '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n'
+    "  [scenes.color]\n  dither_strength = 0.1\n"
+)
 # Refused by `validate_configs`, not by the TOML parser — audio off so the
 # audio check (which runs first) can't be what fails instead.
 BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
@@ -1490,6 +1499,45 @@ class LiveTuneSaveBackTest(WebApiTestCase):
             r = c.post("/api/session/live-tune", headers=VIEWER_AUTH, json={"action": "save"})
         self.assertEqual(r.status_code, 403)
         self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
+
+    def _running_color_override(self, c) -> Any:
+        """A pair like `_running_two_scene`, but scene 1 already overrides
+        `dither_strength` in its own [scenes.color] block.
+
+        `_Factory` (this suite's request factory) builds its request from a
+        blank stub `Config`, not from the file on disk — so the fake playlist
+        it produces needs its `live_tracker` swapped for one built against the
+        real, loaded Config, the same way the real `Playlist.__init__` does,
+        for the scene-aware routing under test to have anything to key on."""
+        (self.root / "pair_override.toml").write_text(
+            PAIR_TOML_ONE_OVERRIDES_COLOR, encoding="utf-8"
+        )
+        c.post("/api/session/start", headers=AUTH, json={"config": "shows/pair_override.toml"})
+        self.assertReaches(SessionState.RUNNING)
+        pl = self.manager.session.stacks[0].playlist
+        pl.live_tracker = LiveTuneTracker(cfgmod.load(str(self.root / "pair_override.toml")))
+        return pl
+
+    def test_a_color_knob_tuned_on_an_overriding_scene_saves_into_its_block(self):
+        with self.client() as c:
+            pl = self._running_color_override(c)
+            pl.live_tracker.record("mode.dither_strength", 0.1, 0.9, scene=1)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["saved"], ["mode.dither_strength"])
+        loaded = cfgmod.load(str(self.root / "pair_override.toml"))
+        self.assertAlmostEqual(loaded.scenes[1].color["dither_strength"], 0.9)
+        self.assertEqual(loaded.color.dither_strength, cfgmod.ColorCfg().dither_strength)
+
+    def test_the_same_knob_on_the_non_overriding_scene_still_saves_globally(self):
+        with self.client() as c:
+            pl = self._running_color_override(c)
+            pl.live_tracker.record("mode.dither_strength", 0.5, 0.8, scene=0)
+            r = c.post("/api/session/live-tune", headers=AUTH, json={"action": "save"})
+        self.assertEqual(r.status_code, 200)
+        loaded = cfgmod.load(str(self.root / "pair_override.toml"))
+        self.assertAlmostEqual(loaded.color.dither_strength, 0.8)
+        self.assertEqual(loaded.scenes[0].color, {})
 
 
 class StartByRefTest(WebApiTestCase):

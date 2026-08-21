@@ -158,6 +158,8 @@ def _scenes_schema() -> dict[str, Any]:
         for fd in sd.fields:
             field_docs.setdefault(fd.name, fd)
 
+    color_section = next(sd for sd in introspect.config_sections() if sd.name == "color")
+
     props: dict[str, Any] = {}
     for fd in field_docs.values():
         if fd.name == "overlays":
@@ -166,6 +168,11 @@ def _scenes_schema() -> dict[str, Any]:
                 "description": fd.help,
                 "items": _overlay_schema(),
             }
+        elif fd.name == "color":
+            # [scenes.color]: the same object shape as the [color] section
+            # itself (reusing _section_schema keeps the two from drifting),
+            # under the scene field's own help text.
+            props["color"] = {**_section_schema(color_section), "description": fd.help}
         else:
             props[fd.name] = _field_schema(
                 fd.name, fd.type, help=fd.help, choices=fd.choices, default=fd.default

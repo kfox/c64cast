@@ -1406,6 +1406,12 @@ palette_mode = "percell"                # default; included here for clarity
 # SCENE 5 — Multi-hires bitmap, "vivid" palette mode.
 # Use this when a frame keeps coming out monochromatic — the hue-diversity
 # picker forces more distinct colors into the 4 global slots.
+#
+# [scenes.color] overrides the [color] section above for THIS scene only —
+# any of that section's fields can be set here; unset ones still follow the
+# global default. Here it turns on the EXTREME forced-palette remap just for
+# this scene, letting one show mix a faithful mhires video with a
+# deliberately false-color one without a global [color] flip between them.
 # ---------------------------------------------------------------------------
 
 [[scenes]]
@@ -1414,6 +1420,9 @@ display = "mhires"
 name = "Multi-Hires (vivid palette)"
 duration_s = 30.0
 palette_mode = "vivid"
+  [scenes.color]
+  force_palette = true
+  force_palette_colors = 8
 
 # ---------------------------------------------------------------------------
 # SCENE 6 — Multicolor character mode (MCM), "cheap" palette mode.

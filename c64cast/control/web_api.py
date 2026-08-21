@@ -96,6 +96,7 @@ from c64cast.app.session import SessionConfigError
 from . import screen as screen_mod
 from .auth import LOGIN_PATH, ViewerCredential
 from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
+from .transport import COLOR_FIELD_NAMES, write_live_tune_row
 from .web_static import landing_path
 
 log = logging.getLogger(__name__)
@@ -152,10 +153,16 @@ def _status_payload(status: SessionStatus, log_buffer: Any, store: ConfigStore) 
 def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     """One :meth:`LiveTuneTracker.pending` row as a :meth:`ConfigStore.patch`
     edit. ``scene`` is the row's own answer to where the value lives: an index
-    for a knob a scene owns, None for one the whole show shares."""
-    where: dict[str, Any] = (
-        {"section": "color"} if row["scene"] is None else {"scene": row["scene"]}
-    )
+    for a knob a scene owns, None for one the whole show shares. A color field
+    on an overriding scene additionally carries ``subsection: "color"``, which
+    is what routes the edit into that scene's ``[scenes.color]`` dict instead
+    of a plain scene attribute (see ``_apply_edit`` in config_store.py)."""
+    if row["scene"] is None:
+        where: dict[str, Any] = {"section": "color"}
+    elif row["field"] in COLOR_FIELD_NAMES:
+        where = {"scene": row["scene"], "subsection": "color"}
+    else:
+        where = {"scene": row["scene"]}
     return {**where, "field": row["field"], "value": row["new"]}
 
 
@@ -205,13 +212,12 @@ def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
 
     A scene index the config has no block for is skipped rather than clamped —
     it can only mean the file changed shape under the run, and writing the value
-    into whichever scene inherited the index would be worse than not writing it."""
+    into whichever scene inherited the index would be worse than not writing it.
+    See :func:`write_live_tune_row` for where each row actually lands (a color
+    field on an overriding scene goes into its ``[scenes.color]`` dict, not
+    onto the scene itself)."""
     for row in rows:
-        at = row["scene"]
-        if at is None:
-            setattr(cfg.color, row["field"], row["new"])
-        elif 0 <= at < len(cfg.scenes):
-            setattr(cfg.scenes[at], row["field"], row["new"])
+        write_live_tune_row(cfg, row)
 
 
 def register_web_routes(

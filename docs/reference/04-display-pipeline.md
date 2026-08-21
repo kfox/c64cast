@@ -170,6 +170,11 @@ two pick *which* colors a cell may use — one for `mhires`, one for `hires` —
 one picks *how near* is measured, and one decides which of the available colors
 each pixel takes.
 
+All four are read from `[color]`, but any scene can override its own copy of
+any of them (and everything else in this section) in a `[scenes.color]`
+sub-table — see ["Scenes and Playlists"](02-config-rules.md#scenes-and-playlists)
+in the config rules chapter.
+
 ### Which Colors — `cell_strategy`
 
 `mhires` with `palette_mode = "percell"` is the mode this question belongs to:
@@ -321,6 +326,11 @@ force_palette_colors = 8          # a count, 2..16
 A count spreads the source across that many distinct colors; an explicit list
 whitelists exactly those, and its length becomes the count. Names are matched
 loosely, as everywhere.
+
+Like every other `[color]` field, `force_palette` and `force_palette_colors`
+can be set per scene in a `[scenes.color]` sub-table — the way to put a
+deliberately false-color scene next to a faithful one in the same show
+without an in-between `[color]` change.
 
 The map is derived one of two ways, by what the source is. A video or a
 slideshow is **pre-scanned**: c64cast seeks to evenly spaced points through the

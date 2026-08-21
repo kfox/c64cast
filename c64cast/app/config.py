@@ -13,6 +13,7 @@ the scene/display runtime so loading a TOML never pulls it in.
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
 import functools
 import logging
@@ -1716,6 +1717,20 @@ class SceneCfg:
         default_factory=list,
         metadata={"help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."},
     )
+    # Per-scene [color] override, stored as the raw authored keys (not a
+    # materialized ColorCfg) so a scene can override a field back to its
+    # dataclass default even when the global [color] set it away from that
+    # default — see scene_color() and docs/architecture/video-color.md.
+    color: dict[str, Any] = field(
+        default_factory=dict,
+        metadata={
+            "help": "Per-scene [color] override ([scenes.color] sub-table): any "
+            "[color] field set here replaces the global value for this scene "
+            "only. Unset fields follow the global [color] section. See "
+            "`--describe color` for the field list.",
+            "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
+        },
+    )
     # orchestrate/follower_only drive the conductor/follower broadcast
     # protocol in c64cast/app/orchestrator.py; see docs/architecture.md.
     orchestrate: bool = field(
@@ -3385,6 +3400,33 @@ def resolved_force_palette(color: ColorCfg) -> tuple[int, list[int] | None]:
     return int(fp), None
 
 
+def scene_color(cfg: Config, s: SceneCfg) -> ColorCfg:
+    """The effective [color] section for scene `s`: the global [color] with
+    `s.color`'s authored keys applied over it.
+
+    `s.color` stores the raw authored keys rather than a materialized
+    ColorCfg specifically so a scene can override a field back to its
+    dataclass default even when the global section set it away from that
+    default — a "differs from ColorCfg()" merge (the idiom
+    apply_master_defaults uses for the machine-settings cascade) would treat
+    such an override as unauthored and let the global value win instead.
+
+    Returns `cfg.color` itself (no copy) when the scene has no override — the
+    common case, and it keeps every no-override scene sharing one object.
+    `hue_corrections` is an all-or-nothing replace: a scene that sets it swaps
+    the whole list rather than extending the global's."""
+    if not s.color:
+        return cfg.color
+    color = copy.deepcopy(cfg.color)
+    raw = dict(s.color)
+    hue_corrections = raw.pop("hue_corrections", None)
+    _apply_section(color, raw, "scenes.color")
+    if hue_corrections is not None:
+        color.hue_corrections = [dict(hc) for hc in hue_corrections]
+    _validate_force_palette(color)
+    return color
+
+
 # Scalar config sections whose TOML section name equals the Config attribute
 # name. Applied uniformly by _apply_toml_sections. [color] is handled out of
 # band (it carries the hue_corrections list-of-tables); [[scenes]]/[ensemble]
@@ -3576,14 +3618,26 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
 
     for raw in data.get("scenes", []):
         sc = SceneCfg()
-        # Pull overlays out before _apply_section so we keep the original
-        # dicts intact (each overlay class validates its own kwargs).
+        # Pull overlays and the [scenes.color] override out before
+        # _apply_section so we keep the original dicts intact (each overlay
+        # class validates its own kwargs; color is validated below against a
+        # throwaway ColorCfg so a typo'd key gets the same unknown-key
+        # difflib hint as a top-level [color] key).
         raw_overlays = raw.pop("overlays", [])
+        raw_color = raw.pop("color", {})
         _apply_section(sc, raw, "scenes", unknown, source=path)
         for ov_raw in raw_overlays:
             if not isinstance(ov_raw, dict):
                 raise ValueError(f"scenes.overlays entry must be a table, got {ov_raw!r}")
             sc.overlays.append(dict(ov_raw))
+        if raw_color:
+            if not isinstance(raw_color, dict):
+                raise ValueError(f"scenes.color must be a table, got {raw_color!r}")
+            # hue_corrections is a real ColorCfg field (list[dict]), so this
+            # also validates a [[scenes.color.hue_corrections]] block's shape;
+            # scene_color() is what gives it replace-not-extend semantics.
+            _apply_section(ColorCfg(), dict(raw_color), "scenes.color", unknown, source=path)
+            sc.color = dict(raw_color)
         if sc.orchestrate and not sc.name:
             raise ConfigError(
                 f"[[scenes]] in {path}: scenes with `orchestrate = true` "

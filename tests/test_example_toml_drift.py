@@ -150,6 +150,22 @@ class ForwardStrictnessTest(unittest.TestCase):
                         f"{_name(path)} overlay {ot!r} unknown keys: {sorted(unknown)}",
                     )
 
+    def test_scenes_color_keys_are_real(self):
+        # No `_SECTION_DC` walk covers this — [scenes.color]'s keys are nested
+        # a level deeper than a plain [[scenes]] key, so nothing else here
+        # checks them against ColorCfg's actual fields.
+        valid = {f.name for f in dataclasses.fields(cfgmod.ColorCfg)}
+        for path in _all_configs():
+            for s in _load(path).get("scenes", []):
+                color = s.get("color")
+                if not color:
+                    continue
+                unknown = set(color) - valid
+                self.assertFalse(
+                    unknown,
+                    f"{_name(path)} [[scenes]].color unknown keys: {sorted(unknown)}",
+                )
+
 
 class SectionCoverageTest(unittest.TestCase):
     def test_reference_documents_every_section_field(self):

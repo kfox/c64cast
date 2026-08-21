@@ -130,6 +130,41 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         cfg.color.hue_corrections_replace_defaults = True
         self.assertEqual(_reload(cfg), cfg)
 
+    def test_scene_color_override(self):
+        cfg = cfgmod.Config()
+        cfg.color.dither = "blue_noise"
+        cfg.scenes = [
+            cfgmod.SceneCfg(
+                type="video",
+                file="clip.mp4",
+                color={
+                    "dither": "floyd-steinberg",
+                    "force_palette": True,
+                    "force_palette_colors": 8,
+                    "hue_corrections": [{"name": "scene_band", "hue_lo_deg": 10}],
+                },
+            )
+        ]
+        reloaded = _reload(cfg)
+        self.assertEqual(reloaded, cfg)
+        # The global section is untouched by the scene's override.
+        self.assertEqual(reloaded.color.dither, "blue_noise")
+
+    def test_scene_color_override_back_to_the_dataclass_default(self):
+        # The case the sparse-dict design exists for: a scene override equal
+        # to ColorCfg()'s default, while the global section differs from it —
+        # both keys must round-trip, or "minimal" would drop the override as
+        # if it were unauthored.
+        cfg = cfgmod.Config()
+        cfg.color.force_palette = True
+        cfg.scenes = [
+            cfgmod.SceneCfg(type="video", file="clip.mp4", color={"force_palette": False})
+        ]
+        reloaded = _reload(cfg)
+        self.assertEqual(reloaded, cfg)
+        self.assertTrue(reloaded.color.force_palette)
+        self.assertEqual(reloaded.scenes[0].color, {"force_palette": False})
+
     def test_per_scene_audio_false(self):
         cfg = cfgmod.Config()
         cfg.scenes = [cfgmod.SceneCfg(type="webcam", audio=False)]

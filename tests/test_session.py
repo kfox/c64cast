@@ -163,6 +163,19 @@ class ValidateConfigsTest(unittest.TestCase):
             with self.assertRaises(session.SessionConfigError):
                 session.validate_configs(loaded, loaded.cfgs)
 
+    def test_a_bad_scene_force_palette_override_is_exit_5_not_an_unhandled_error(self):
+        # force_palette_colors is range-checked by scene_color(), which raises
+        # a plain ValueError — it must surface as SessionConfigError (caught
+        # by cli.py's ConfigError-only handler around validate_configs), not
+        # escape as an unhandled exception.
+        loaded = _loaded(["a"])
+        loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", color={"force_palette_colors": 999})]
+        with self.assertLogs("c64cast", level="ERROR") as logged:
+            with self.assertRaises(session.SessionConfigError) as cm:
+                session.validate_configs(loaded, loaded.cfgs)
+        self.assertEqual(cm.exception.exit_code, 5)
+        self.assertIn("force_palette_colors", logged.output[0])
+
     def test_transport_coercion_runs_before_any_stack_is_built(self):
         # [audio].use_reu_pump has no seek/splice support, so a transport.*
         # MIDI mapping must force it off — and it has to happen here, because

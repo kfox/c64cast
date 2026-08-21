@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 447 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 448 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -83,7 +83,8 @@ Every name c64cast answers to — 447 of them — and the pages that discuss eac
 | `clock` | [The Overlays (2)](03-vocabulary.md#the-overlays), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `clock_port` | [Clock (6)](07-inputs-and-outputs.md#clock), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `col` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`logo` (C)](22-appendix-c-overlays.md#logo) |
-| `[color]` | [Machine Settings (1)](02-config-rules.md#machine-settings), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `[color]` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Machine Settings (1)](02-config-rules.md#machine-settings), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `color` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Quantizing a Cell (3)](04-display-pipeline.md#quantizing-a-cell) |
 | color RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [Regions and the Dirty Model (5)](06-under-the-hood.md#regions-and-the-dirty-model), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
 | `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
 | `color_match` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
@@ -159,7 +160,7 @@ Every name c64cast answers to — 447 of them — and the pages that discuss eac
 <!-- table: index -->
 | Term | See |
 |---|---|
-| `effect` | [What Is In Here](01-introduction.md#what-is-in-here), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`effect` (F)](25-appendix-f-live-targets.md#effect) |
+| `effect` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `effects` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `enabled` | [Audio (2)](03-vocabulary.md#audio), [Shaping the Signal (4)](05-sound-and-music.md#shaping-the-signal), [The Machine's Own Keyboard (6)](07-inputs-and-outputs.md#the-machines-own-keyboard) |
 | `enabled` (audio) | [Audio (2)](03-vocabulary.md#audio), [`audio` (A)](20-appendix-a-configuration.md#audio) |
@@ -578,9 +579,9 @@ Every name c64cast answers to — 447 of them — and the pages that discuss eac
 | `weather` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `[web]` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | web console | [Generators (3)](04-display-pipeline.md#generators), [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Web Console (G)](26-appendix-g-cli-flags.md#web-console) |
-| `webcam` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`webcam` (2)](03-vocabulary.md#webcam), [`webcam` (B)](21-appendix-b-scene-types.md#webcam) |
+| `webcam` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`webcam` (2)](03-vocabulary.md#webcam), [`webcam` (B)](21-appendix-b-scene-types.md#webcam) |
 | `[wled]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`wled` (2)](03-vocabulary.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
-| `wled` | [`wled` (2)](03-vocabulary.md#wled), [WLED (6)](07-inputs-and-outputs.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
+| `wled` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | write budget | [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
 
 ## Y

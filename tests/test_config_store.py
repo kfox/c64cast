@@ -531,6 +531,77 @@ class PatchTest(StoreTestCase):
         self.assertNotIn("#:schema", self._read())
 
 
+# GOOD's scene is `blank` (color unsupported there); these need a
+# color-capable scene type, so this class writes its own fixture.
+GOOD_VIDEO_SCENE = (
+    '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
+    '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n'
+)
+
+
+class SceneColorPatchTest(StoreTestCase):
+    """The nested `{scene, subsection: "color", field, value}` edit form —
+    the one way a save-back (or a console) reaches into one scene's
+    [scenes.color] override without touching the shared [color] section."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.shows / "gig.toml").write_text(GOOD_VIDEO_SCENE, encoding="utf-8")
+
+    def _read(self) -> str:
+        return (self.shows / "gig.toml").read_text(encoding="utf-8")
+
+    def test_a_nested_edit_lands_in_the_scenes_color_block(self):
+        self.store.patch(
+            "shows/gig.toml",
+            [{"scene": 0, "subsection": "color", "field": "dither", "value": "floyd-steinberg"}],
+        )
+        loaded = cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0]
+        self.assertEqual(loaded.scenes[0].color, {"dither": "floyd-steinberg"})
+        self.assertEqual(loaded.color.dither, "atkinson")  # global untouched
+
+    def test_reset_removes_the_key_rather_than_writing_a_default(self):
+        self.store.patch(
+            "shows/gig.toml",
+            [{"scene": 0, "subsection": "color", "field": "dither", "value": "floyd-steinberg"}],
+        )
+        self.store.patch(
+            "shows/gig.toml",
+            [{"scene": 0, "subsection": "color", "field": "dither", "reset": True}],
+        )
+        loaded = cfgmod.load_master(str(self.shows / "gig.toml")).cfgs[0]
+        self.assertEqual(loaded.scenes[0].color, {})
+
+    def test_an_unknown_color_field_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"scene": 0, "subsection": "color", "field": "nope", "value": 1}],
+            )
+
+    def test_an_unknown_subsection_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"scene": 0, "subsection": "overlays", "field": "dither", "value": "none"}],
+            )
+
+    def test_subsection_with_a_section_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"section": "color", "subsection": "color", "field": "dither", "value": "none"}],
+            )
+
+    def test_a_nested_edit_on_a_scene_type_that_rejects_color_fails_to_validate(self):
+        (self.shows / "blank.toml").write_text(GOOD, encoding="utf-8")  # GOOD's scene is blank
+        with self.assertRaises(config_store.ConfigInvalid):
+            self.store.patch(
+                "shows/blank.toml",
+                [{"scene": 0, "subsection": "color", "field": "dither", "value": "none"}],
+            )
+
+
 class SceneStructureTest(StoreTestCase):
     """Adding and removing scenes — the two changes that alter the *shape* of a
     show file rather than the value of a field, and the last common edit that
@@ -766,6 +837,20 @@ class DescribeTest(unittest.TestCase):
         video = next(s for s in form["sections"] if s["name"] == "video")
         device = next(f for f in video["fields"] if f["name"] == "device")
         self.assertTrue(device["is_default"])
+
+    def test_color_is_its_own_key_not_a_flat_field(self):
+        # Same treatment as `overlays`: a sparse override dict, not a plain
+        # scalar field a form would render inline.
+        cfg = cfgmod.Config()
+        cfg.scenes.append(cfgmod.SceneCfg(type="video", color={"dither": "none"}))
+        scene = config_store.describe(cfg)["scenes"][0]
+        self.assertNotIn("color", {f["name"] for f in scene["fields"]})
+        self.assertEqual(scene["color"], {"dither": "none"})
+
+    def test_color_reports_empty_when_the_scene_has_no_override(self):
+        cfg = cfgmod.Config()
+        cfg.scenes.append(cfgmod.SceneCfg(type="video"))
+        self.assertEqual(config_store.describe(cfg)["scenes"][0]["color"], {})
 
 
 class MachineBaselineTest(StoreTestCase):

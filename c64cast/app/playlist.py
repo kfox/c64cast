@@ -185,8 +185,10 @@ class Playlist:
         # Live-tune change log for the exit save-back flow (--overwrite / prompt).
         # The MIDI/WLED live-tune controls record each applied param change here;
         # cli.main reads it after teardown. Always present (cheap), so callers
-        # needn't guard. See transport.LiveTuneTracker.
-        self.live_tracker = LiveTuneTracker()
+        # needn't guard. `config` lets it route a [color]-homed knob into a
+        # scene's own [scenes.color] block when that scene overrides the
+        # field — see transport.LiveTuneTracker.
+        self.live_tracker = LiveTuneTracker(config)
         # DJ-style transport control (seek/pause/loop) driven by
         # [midi_control]'s transport.* actions — see transport.TransportSession.
         # Always present (cheap; the queue just stays empty for a run with no

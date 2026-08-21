@@ -289,11 +289,11 @@ class _FakeScene:
 
 
 class _FakePlaylist:
-    def __init__(self, scene):
+    def __init__(self, scene, cfg=None):
         self.current = scene
         self.name = "s"
         self.osd_posts: list[str] = []
-        self.live_tracker = LiveTuneTracker()
+        self.live_tracker = LiveTuneTracker(cfg)
 
     def post_osd(self, text, duration_s=2.5):
         self.osd_posts.append(text)
@@ -367,13 +367,13 @@ class _RichScene:
         self.cfg_index = cfg_index
 
 
-def _rich(cfg_index=None) -> tuple[Any, _FakeMode, _RichScene]:
+def _rich(cfg_index=None, cfg=None) -> tuple[Any, _FakeMode, _RichScene]:
     """A playlist standing in for the real one. The fake exposes exactly what
     `live_tune` touches — `current`, `post_osd`, `live_tracker` — which is most
     of what makes the module worth having as one."""
     mode = _FakeMode()
     scene = _RichScene(mode, cfg_index)
-    return _FakePlaylist(scene), mode, scene
+    return _FakePlaylist(scene, cfg), mode, scene
 
 
 class LiveTuneResolveTests(unittest.TestCase):
@@ -514,6 +514,64 @@ class LiveTuneApplyTests(unittest.TestCase):
         self.assertFalse(lt.apply(pl, "source.speed", lt.Move(value="fast")))
         self.assertFalse(lt.apply(pl, "source.speed", lt.Move(cycle=True)))
         self.assertAlmostEqual(scene.source.speed, 0.5)
+
+
+class SceneAwareColorSaveBackTest(unittest.TestCase):
+    """A `_MODE_FIELD_TO_COLOR` target (e.g. `mode.dither_strength`) normally
+    saves to the shared [color] section, but a scene carrying its own
+    [scenes.color] override for that field has to save into that block
+    instead — otherwise the write lands somewhere the scene never reads."""
+
+    def _cfg_with_scene(self, *, overrides: dict[str, Any] | None = None) -> Config:
+        cfg = Config()
+        cfg.scenes.append(SceneCfg(type="video", color=dict(overrides or {})))
+        cfg.scenes.append(SceneCfg(type="video"))  # a plain scene, no override
+        return cfg
+
+    def test_an_overriding_scene_saves_into_its_own_block(self):
+        cfg = self._cfg_with_scene(overrides={"dither_strength": 0.1})
+        pl, _mode, _scene = _rich(cfg_index=0, cfg=cfg)
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        (row,) = pl.live_tracker.pending()
+        self.assertEqual((row["field"], row["scene"]), ("dither_strength", 0))
+
+    def test_a_non_overriding_scene_still_saves_to_color(self):
+        cfg = self._cfg_with_scene(overrides={"dither_strength": 0.1})
+        pl, _mode, _scene = _rich(cfg_index=1, cfg=cfg)  # scene 1 has no override
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        (row,) = pl.live_tracker.pending()
+        self.assertEqual((row["field"], row["scene"]), ("dither_strength", None))
+
+    def test_no_config_at_all_keeps_the_old_always_global_behavior(self):
+        pl, _mode, _scene = _rich(cfg_index=0)  # cfg=None, the common test case
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        (row,) = pl.live_tracker.pending()
+        self.assertIsNone(row["scene"])
+
+    def test_apply_writes_into_the_scenes_color_dict(self):
+        cfg = self._cfg_with_scene(overrides={"dither_strength": 0.1})
+        pl, _mode, _scene = _rich(cfg_index=0, cfg=cfg)
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        lines = pl.live_tracker.apply(cfg)
+        self.assertEqual(lines, ["[[scenes]][0].color.dither_strength = 1.5"])
+        self.assertEqual(cfg.scenes[0].color["dither_strength"], 1.5)
+        self.assertNotIn("dither_strength", cfg.scenes[1].color)
+        self.assertEqual(cfg.color.dither_strength, ColorCfg().dither_strength)
+
+    def test_apply_still_writes_shared_color_for_a_non_overriding_scene(self):
+        cfg = self._cfg_with_scene(overrides={"dither_strength": 0.1})
+        pl, _mode, _scene = _rich(cfg_index=1, cfg=cfg)
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        lines = pl.live_tracker.apply(cfg)
+        self.assertEqual(lines, ["[color].dither_strength = 1.5"])
+        self.assertEqual(cfg.color.dither_strength, 1.5)
+
+    def test_toml_snippet_notes_scenes_color_for_an_override(self):
+        cfg = self._cfg_with_scene(overrides={"dither_strength": 0.1})
+        pl, _mode, _scene = _rich(cfg_index=0, cfg=cfg)
+        lt.apply(pl, "mode.dither_strength", lt.Move(value=1.5))
+        snippet = pl.live_tracker.toml_snippet()
+        self.assertIn("scene 1's [scenes.color] block", snippet)
 
 
 class BlankModeColorLiveTuneTests(unittest.TestCase):
