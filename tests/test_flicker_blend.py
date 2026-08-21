@@ -879,12 +879,14 @@ class FlickerMirrorTest(unittest.TestCase):
 
     def test_detects_the_second_page_only_when_the_vector_is_hooked(self):
         fb = self._armed_framebuffer(0x10, 0x01)
-        self.assertIsNone(fb._flicker_page_b(bytes(fb.ram)), "detected before $0314 was hooked")
+        self.assertIsNone(
+            fb._flicker_page_b(bytes(fb.ram), VIC_BANK_0.BASE), "detected before $0314 was hooked"
+        )
         fb.on_write(
             VECTORS.IRQ,
             bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
         )
-        self.assertEqual(fb._flicker_page_b(bytes(fb.ram)), VIC_BANK_0.SCREEN_ALT)
+        self.assertEqual(fb._flicker_page_b(bytes(fb.ram), VIC_BANK_0.BASE), VIC_BANK_0.SCREEN_ALT)
 
     def test_stops_detecting_after_teardown_unhooks_the_vector(self):
         """Teardown leaves the handler and tracker in RAM, so the page bytes
@@ -895,7 +897,51 @@ class FlickerMirrorTest(unittest.TestCase):
             bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
         )
         fb.on_write(VECTORS.IRQ, bytes([0x31, 0xEA]))
-        self.assertIsNone(fb._flicker_page_b(bytes(fb.ram)))
+        self.assertIsNone(fb._flicker_page_b(bytes(fb.ram), VIC_BANK_0.BASE))
+
+    def test_page_b_is_bank_relative(self):
+        """The tracker's pending-bank byte, not a hardcoded bank 0, decides
+        which bank's page B the mirror reads — see _vic_bank_base."""
+        from c64cast.video.modes_irq import DD00_BANK_2, FLICKER_TRACKER_OFF_BANK
+
+        fb = self._armed_framebuffer(0x10, 0x01)
+        fb.on_write(
+            VECTORS.IRQ,
+            bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
+        )
+        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_BANK, bytes([DD00_BANK_2]))
+        self.assertEqual(fb._flicker_page_b(bytes(fb.ram), VIC_BANK_2.BASE), VIC_BANK_2.SCREEN_ALT)
+
+    def test_render_follows_the_swap_to_bank_2(self):
+        """The bank swap that makes host-DMA double-buffering tear-free is a
+        C64-side ``STA $DD00`` inside the raster IRQ — the host never issues
+        that write, so a mirror that always read bank 0 would show whatever
+        was last pushed there, stale by one push, on every frame the real
+        swap has moved to bank 2. Rendering has to follow the tracker's own
+        pending-bank byte instead (see _vic_bank_base)."""
+        from c64cast.hw.c64 import SCREEN
+        from c64cast.video.modes_irq import DD00_BANK_2, FLICKER_TRACKER_OFF_BANK
+
+        fb = self._base_flicker_fb(0x08)
+        fb.on_write(
+            VECTORS.IRQ,
+            bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
+        )
+        # Stale bank-0 content from an earlier push — should NOT be shown.
+        fb.on_write(SCREEN.BITMAP, bytes([0x00]) * 8000)
+        fb.on_write(VIC_BANK_0.SCREEN, bytes([0x00]) * 1000)
+        fb.on_write(VIC_BANK_0.SCREEN_ALT, bytes([0x00]) * 1000)
+        # The live frame: bank 2, every pixel foreground, white-on-black.
+        fb.on_write(VIC_BANK_2.BITMAP, bytes([0xFF]) * 8000)
+        fb.on_write(VIC_BANK_2.SCREEN, bytes([0x10]) * 1000)
+        fb.on_write(VIC_BANK_2.SCREEN_ALT, bytes([0x10]) * 1000)
+        fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_BANK, bytes([DD00_BANK_2]))
+        # White fused with itself, off by a rounding count from the sRGB<->
+        # linear round trip (see test_renders_the_fused_color_in_linear_light) —
+        # not the point here; the point is that it's white/bank-2 at all,
+        # rather than stale black/bank-0.
+        pixel = fb.render()[100, 160]
+        self.assertTrue(np.all(pixel >= 254), f"expected near-white (bank 2), got {pixel}")
 
     def test_renders_the_fused_color_in_linear_light(self):
         # page A white-on-black, page B black-on-white → fuses to mid grey.

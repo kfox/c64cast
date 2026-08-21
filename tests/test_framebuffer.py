@@ -31,6 +31,39 @@ class FramebufferTest(unittest.TestCase):
         self.assertEqual(img.shape, (200, 320, 3))
         self.assertEqual(img.dtype.name, "uint8")
 
+    def test_render_follows_hostdma_double_buffer_to_bank_2(self):
+        """The host-DMA double-buffer's $DD00 swap runs inside the C64-side
+        raster IRQ, so the host never writes it and the shadow's own $DD00
+        byte never moves. render() has to follow the tracker's own
+        pending-bank byte (see Framebuffer._vic_bank_base) instead of always
+        reading bank 0, or it shows one push's worth of stale content on
+        every frame the real swap has moved to bank 2."""
+        from c64cast.hw.c64 import VECTORS, VIC_BANK_0, VIC_BANK_2
+        from c64cast.video.framebuffer import Framebuffer
+        from c64cast.video.modes_irq import (
+            BANK_SWAP_IRQ_HANDLER_ADDR,
+            DD00_BANK_2,
+            FRAME_TRACKER_ADDR,
+            HOSTDMA_SWAP_IRQ_HANDLER,
+            HOSTDMA_TRACKER_OFF_BANK,
+        )
+
+        fb = Framebuffer()
+        fb.on_write(0xD011, b"\x3b")  # hires bitmap mode
+        fb.on_write(
+            VECTORS.IRQ,
+            bytes([BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF, BANK_SWAP_IRQ_HANDLER_ADDR >> 8]),
+        )
+        fb.on_write(BANK_SWAP_IRQ_HANDLER_ADDR, HOSTDMA_SWAP_IRQ_HANDLER)
+        # Stale bank-0 content from an earlier push — should NOT be shown.
+        fb.on_write(VIC_BANK_0.BITMAP, b"\x00" * 8000)
+        fb.on_write(VIC_BANK_0.SCREEN, b"\x00" * 1000)
+        # The live frame: bank 2, white-on-black.
+        fb.on_write(VIC_BANK_2.BITMAP, b"\xff" * 8000)
+        fb.on_write(VIC_BANK_2.SCREEN, b"\x10" * 1000)
+        fb.on_write(FRAME_TRACKER_ADDR + HOSTDMA_TRACKER_OFF_BANK, bytes([DD00_BANK_2]))
+        self.assertEqual(fb.render()[100, 160].tolist(), [255, 255, 255])
+
     def test_on_write_clamps_past_top_of_ram(self):
         from c64cast.video.framebuffer import Framebuffer
 
