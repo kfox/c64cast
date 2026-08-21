@@ -504,17 +504,21 @@ archive (or a git checkout) into a directory installs nothing and rewrites no
 metadata. The `c64cast` on your `PATH` is a shim into whichever environment
 installed it, and it never consults the working directory you run from.
 
-`--version` prints that environment after the number:
+`c64cast --upgrade` finds that environment and upgrades it directly, whichever
+of `uv tool`, pipx, plain pip, or a development checkout it turns out to be —
+so it doesn't matter which one applies to you. `--version` still prints the
+environment after the number, if you'd rather run the underlying command
+yourself:
 
 ```bash
 $ c64cast --version
 c64cast 0.3.0 (/home/you/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)
 ```
 
-Upgrade the install it names — `uv tool upgrade c64cast`, `pipx upgrade
-c64cast`, or `pip install --upgrade c64cast` inside that venv — then delete the
-unpacked copy, which does nothing where it is. Walkthrough, including what to do
-about extras: [the User's Guide,
+That path names the install: `uv tool upgrade c64cast`, `pipx upgrade
+c64cast`, or `pip install --upgrade c64cast` inside that venv. Either way,
+delete the unpacked copy — it does nothing where it is. Walkthrough,
+including what to do about extras: [the User's Guide,
 "Upgrading"](guide/04-setting-up.md#upgrading).
 
 ### "My editor underlines a setting that works — or offers one that doesn't"

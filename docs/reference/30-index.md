@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 444 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 447 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -77,6 +77,7 @@ Every name c64cast answers to — 444 of them — and the pages that discuss eac
 | `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
 | `charset_path` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
+| `--check-for-updates` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | clip grid | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [The Performance Console (6)](07-inputs-and-outputs.md#the-performance-console), [The Clip Grid (6)](07-inputs-and-outputs.md#the-clip-grid) |
 | `clips` | [The Console (6)](07-inputs-and-outputs.md#the-console), [Performing (6)](07-inputs-and-outputs.md#performing), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `clock` | [The Overlays (2)](03-vocabulary.md#the-overlays), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`clock` (C)](22-appendix-c-overlays.md#clock) |
@@ -540,6 +541,7 @@ Every name c64cast answers to — 444 of them — and the pages that discuss eac
 |---|---|
 | `[ultimate64]` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `units` | [`weather` (C)](22-appendix-c-overlays.md#weather) |
+| `--upgrade` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | `--url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Flags in Ensemble Mode (1)](02-config-rules.md#flags-in-ensemble-mode) |
 | `url` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings) |
 | `use_reu_pump` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`audio` (A)](20-appendix-a-configuration.md#audio) |
@@ -580,6 +582,13 @@ Every name c64cast answers to — 444 of them — and the pages that discuss eac
 | `[wled]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`wled` (2)](03-vocabulary.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `wled` | [`wled` (2)](03-vocabulary.md#wled), [WLED (6)](07-inputs-and-outputs.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | write budget | [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
+
+## Y
+
+<!-- table: index -->
+| Term | See |
+|---|---|
+| `--yes` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 
 ## Z
 

@@ -20,7 +20,7 @@ scripts/c64cast.sh -u tr:// clip.mp4 tune.sid assets/pictures/
 
 **Audio is on by default**; `--no-audio` mutes. U64 video audio uses the Ultimate Audio FPGA PCM sampler when available; `[audio].backend = "dac"` forces the 4-bit `$D418` DAC (the only path on TeensyROM and for mic/webcam audio). The sampler's effective clock ships as 6160000 Hz, not the nominal 6.25 MHz — why, and how to re-measure: [audio.md → sampler](docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm).
 
-Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `introspection`, `debug`. Notable: `--config`, `-v` / `-vv`, `--log-file PATH` (each scene activation logs a `SCENE_CONFIG_JSON` snapshot safe for a public video description — [`recording_metadata.py`](docs/architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging)).
+Flag groups (`-h` shows them grouped): `connection`, `quick playback`, `video input`, `audio`, `vision input`, `playlist`, `web console`, `introspection`, `updates`, `debug`. Notable: `--config`, `-v` / `-vv`, `--log-file PATH` (each scene activation logs a `SCENE_CONFIG_JSON` snapshot safe for a public video description — [`recording_metadata.py`](docs/architecture/config.md#recording_metadatapy--per-scene-scene_config_json-logging)).
 
 The DMA password (if the U64 has one set) is supplied via `C64CAST_DMA_PASSWORD` env var or `[ultimate64] dma_password` in the config — **no CLI flag**, so secrets don't leak into shell history or `ps` output. The env var wins when both are set.
 

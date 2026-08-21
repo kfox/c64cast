@@ -50,6 +50,8 @@ remembering:
 | `--serve` | Run as a host with a browser console instead of playing once |
 | `--doctor` | Check everything and report |
 | `--skip-probe` | Run checks without touching the Commodore |
+| `--check-for-updates` | Ask PyPI whether a newer c64cast release exists |
+| `--upgrade` | Detect how you installed c64cast and upgrade it, one command either way |
 | `--init` | Build a configuration interactively |
 | `--save-settings` | Remember this run's connection and devices |
 | `--dump-char-rom` | Re-read the character ROM from the Commodore |

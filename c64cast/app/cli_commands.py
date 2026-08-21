@@ -558,5 +558,52 @@ def run_doctor(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> int:
         master_midi_control=loaded.master_midi_control,
         unknown_keys=loaded.unknown_keys,
     )
-    diagnostics = validate_load_result(merged, probe_u64=not cfgs[0].debug.skip_probe)
+    diagnostics = validate_load_result(
+        merged,
+        probe_u64=not cfgs[0].debug.skip_probe,
+        probe_updates=not cfgs[0].debug.skip_probe,
+    )
     return print_report(diagnostics)
+
+
+def run_check_for_updates() -> int:
+    """--check-for-updates: query PyPI and report whether a newer c64cast
+    release exists, then exit. No config, no hardware, no mutation — see
+    --upgrade to act on the answer. Exit 0 whether or not an update exists
+    (both are successful answers); 4 when the answer couldn't be determined
+    (no network, or an unparsable version)."""
+    from c64cast import __version__
+
+    from . import upgrade
+
+    install = upgrade.detect_install()
+    print(f"c64cast {__version__} ({install.root})")
+
+    remote = upgrade.latest_release()
+    if remote is None:
+        print("Could not reach PyPI to check for updates.", file=sys.stderr)
+        return 4
+
+    newer = upgrade.is_newer(remote, __version__)
+    if newer is None:
+        print(f"PyPI reports {remote}, but it could not be compared to {__version__}.")
+        return 4
+    if not newer:
+        print("c64cast is up to date.")
+        return 0
+
+    print(f"A newer version is available: {remote}")
+    if install.kind == "uvx":
+        print("The next `uvx` invocation already fetches it.")
+    else:
+        print("Upgrade with: c64cast --upgrade")
+    return 0
+
+
+def run_upgrade(args: argparse.Namespace) -> int:
+    """--upgrade: detect how this install was made and run its upgrade
+    command, confirming first unless --yes. See c64cast.app.upgrade for the
+    per-install-kind behavior."""
+    from . import upgrade
+
+    return upgrade.run_upgrade(assume_yes=bool(args.yes))

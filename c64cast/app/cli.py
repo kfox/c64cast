@@ -22,7 +22,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import NoReturn
 
 from c64cast import UNINSTALLED_VERSION, __version__
@@ -34,16 +33,19 @@ from . import (
     paths,
     scene_factory,
     session,
+    upgrade,
 )
 from .cli_commands import (
     configure_logging,
     list_devices,
     run_calibrate_dac,
+    run_check_for_updates,
     run_doctor,
     run_dump_char_rom,
     run_install_char_rom,
     run_introspection,
     run_save_settings,
+    run_upgrade,
 )
 from .session import (  # noqa: F401 — re-exports; see the module docstring
     Session,
@@ -101,9 +103,7 @@ def _version_text() -> str:
     running code sits in says which environment that is, and names the installer
     that owns it (`uv/tools/…`, `pipx/venvs/…`) on the way past.
     """
-    # site-packages, or the repo root for a checkout: two levels above
-    # `c64cast/app/cli.py` is where the `c64cast` package itself sits.
-    home = Path(__file__).resolve().parents[2]
+    home = upgrade.install_root()
 
     if __version__ == UNINSTALLED_VERSION:
         return f"{PROG} {__version__} (source checkout: {home})"
@@ -395,6 +395,28 @@ def build_parser() -> argparse.ArgumentParser:
         "can't dump from. No hardware needed.",
     )
 
+    upd = p.add_argument_group("updates")
+    upd.add_argument(
+        "--check-for-updates",
+        action="store_true",
+        help="Query PyPI for the latest c64cast release and report whether "
+        "it's newer than this install, then exit. No config, no hardware, no "
+        "mutation — see --upgrade to act on the answer.",
+    )
+    upd.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Detect how this install was made (uv tool, pipx, pip, or a "
+        "development checkout) and run that installer's own upgrade command, "
+        "which preserves whichever extras are already installed. Prompts for "
+        "confirmation unless --yes.",
+    )
+    upd.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip --upgrade's confirmation prompt (for scripts/CI). No effect without --upgrade.",
+    )
+
     debug = p.add_argument_group("debug")
     debug.add_argument(
         "-v",
@@ -675,6 +697,17 @@ def main(argv=None) -> int:
     if args.install_char_rom is not None:
         configure_logging(args.verbose or 0, args.log_file)
         return run_install_char_rom(args.install_char_rom)
+
+    # --check-for-updates and --upgrade are config-free in the same way: they
+    # answer/act on "which install is this, and is it current", never
+    # touching a config file or the hardware.
+    if args.check_for_updates:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_check_for_updates()
+
+    if args.upgrade:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_upgrade(args)
 
     try:
         loaded, cfgs = _resolve_configs(args)

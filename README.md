@@ -50,9 +50,9 @@ playback, and overlays; add extras à la carte later
 (`uv tool install 'c64cast[video,midi,web]'`). Extras don't accumulate, so name
 every one you want in a single command.
 
-Later, `uv tool upgrade c64cast` (or `pipx upgrade c64cast`) is the upgrade —
-unpacking a release archive over a directory installs nothing, which is why
-`c64cast --version` also prints the install it runs from. See
+Later, `c64cast --upgrade` is the upgrade — it works out whether you're on
+`uv tool`, pipx, or plain pip and runs that installer's own command, so you
+never have to remember which. `c64cast --check-for-updates` just asks. See
 [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading).
 
 You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is

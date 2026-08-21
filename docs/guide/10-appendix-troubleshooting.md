@@ -150,9 +150,10 @@ Until you do, `uv tool run c64cast` works regardless.
 **You upgraded, and `c64cast --version` still shows the old version.** Then
 nothing was upgraded. c64cast is a command living in its own environment, not a
 folder of files, so unpacking a release archive into a directory leaves a copy of
-the source and changes no install at all. `--version` prints the directory the
-running code sits in, after the number: upgrade the install it names, then delete
-the unpacked copy. See [Upgrading](04-setting-up.md#upgrading).
+the source and changes no install at all. `c64cast --upgrade` acts on the real
+install rather than whatever's in the working directory, so it's the fix as
+well as the diagnosis; delete the unpacked copy once it's done. See
+[Upgrading](04-setting-up.md#upgrading).
 
 **A feature says it needs an extra you thought you installed.** You most
 likely installed plain `c64cast` rather than `c64cast[all]`. Installing an

@@ -221,11 +221,20 @@ uv tool install 'c64cast[video,midi,web]'
 ## Upgrading
 
 ```bash
-uv tool upgrade c64cast
+c64cast --upgrade
 ```
 
-That is the whole thing, nearly always. The rest of this section is about the
-one way it goes wrong.
+That is the whole thing, nearly always. It works out how you installed
+c64cast — `uv tool`, pipx, plain pip, or a development checkout — and runs
+that installer's own upgrade command, so you never have to remember which
+one applies to you. It asks before doing anything (`--yes` skips the prompt
+for a script) and keeps whichever optional features you already installed.
+
+To ask without touching anything, `c64cast --check-for-updates` reports
+whether a newer release exists and stops there.
+
+The rest of this section is about what `--upgrade` does under the hood, and
+the one way upgrading goes wrong even with it.
 
 c64cast is not a folder you keep up to date. It is a command that lives in its
 own private environment, and the `c64cast` on your `PATH` points into that
@@ -236,21 +245,22 @@ running the version it was already running. `c64cast --version` will go on
 reporting the old number, correctly, because it reads the version of the
 *installed* package and not of whatever files happen to be nearby.
 
-Which is why `--version` tells you where that install is, as well as which
-version it is:
+`--upgrade` sidesteps that trap by acting on the install it finds rather than
+asking you to identify it — but if you'd rather run the underlying command
+yourself, `--version` still names it:
 
 ```
 c64cast 0.3.0 (/home/you/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)
 ```
 
-If the number did not move after an upgrade, that path is your answer. It names
-the environment the command actually runs from, and on the way past it names the
-tool that owns it — `uv/tools/` here, `pipx/venvs/` if you installed that way.
-Upgrade *that*, and the number moves.
+The path names the environment the command actually runs from, and on the
+way past it names the tool that owns it: `uv/tools/` here means
+`uv tool upgrade c64cast`, `pipx/venvs/` means `pipx upgrade c64cast`.
 
-**Optional features do not accumulate.** If a release adds one you want and you
-installed a narrow set, name every extra you want in a single command and let it
-overwrite what is there:
+**Optional features do not accumulate.** `--upgrade` keeps whichever extras
+you already have — it does not add one a release just introduced. If you
+want a feature that's new, name every extra you want in a single command and
+let it overwrite what is there:
 
 ```bash
 uv tool install --force 'c64cast[all]'
