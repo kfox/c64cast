@@ -1281,6 +1281,31 @@ class UnknownKeyDiagnosticTest(unittest.TestCase):
         self.assertTrue(any(d.category == "config" for d in diags))
 
 
+class SceneColorOverrideDiagnosticTest(unittest.TestCase):
+    """A scene's own [scenes.color] override resolves and reports separately
+    from the global [color] section — including a bad value, which has to
+    name the scene it came from."""
+
+    def test_a_scene_override_gets_its_own_resolution_note(self):
+        loaded = _load(
+            '[color]\ndither = "blue_noise"\n\n'
+            '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n'
+            '  [scenes.color]\n  dither = "auto"\n'
+        )
+        diags = doctor._validate_dither(loaded)
+        override_notes = [d for d in diags if "override" in d.message]
+        self.assertTrue(override_notes)
+        self.assertEqual(override_notes[0].level, "ok")
+
+    def test_a_bad_scene_override_is_an_error_naming_the_scene(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n  [scenes.color]\n  dither = "bogus"\n'
+        )
+        diags = doctor._validate_dither(loaded)
+        self.assertEqual([d.level for d in diags], ["error"])
+        self.assertIn("[[scenes]][0].color.dither", diags[0].message)
+
+
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
     """A loaded single-system config whose file is still on disk, plus its

@@ -169,6 +169,56 @@ Each mode does VIC register setup + frame quantization + push to the right addre
 
 **Package layout** (split from the single `modes.py`, 2026-08): one module per mode (`petscii`/`blank`/`mcm`/`hires`/`mhires`) over two mid-bases (`char.py` — `CharDisplayMode` + `clear_char_screen`; `bitmap.py` — `engage_bitmap_mode` + `BitmapDisplayMode`), with the compose-buffer TypedDicts, cell-color pickers, palette-mode shaping helpers and the `DisplayMode` base in `base.py`. `__init__.py` re-exports the whole public surface, so `from c64cast.video.modes import X` resolves exactly as before — but its submodule import order is `isort: off`-guarded because it **is** `DisplayMode.__subclasses__()` creation order, which introspect's live-target walk, the MIDI-setup wizard's pick lists, and generated reference appendix F all render in. Two things to know when editing: the live-tunable pick knobs (`PALETTE_PICK_EMA_ALPHA`, the `PERCELL_*` trio) are rebindable **on `modes.base` only** — the mode classes read them as `base.<NAME>` at call time so a runtime retune (the `mhires_ema_ghost_ab.py` diag) takes effect, while the `modes.<NAME>` re-exports are import-time value snapshots; and the helpers that went public in the split (`pick_cell_colors`, `ema_counts`, `fade_nibbles`, `clear_char_screen`, the `validate_*`/`*_palette_*` family) did so because the split made them cross-module — don't re-privatize them.
 
+### Per-scene color override (`[scenes.color]`)
+
+`[color]` is a show-wide default; any `[[scenes]]` block may override any subset
+of its fields with its own `[scenes.color]` sub-table (`config.SceneCfg.color`).
+`config.scene_color(cfg, s)` is the one resolution point: it returns `cfg.color`
+unchanged when the scene has no override (same object, no copy — the common
+case), otherwise a deep copy of the global section with the scene's authored
+keys applied over it. `scene_factory._display_mode_for_scene` calls it and
+threads the result everywhere a builder used to read `cfg.color` directly (the
+seven `color=` constructor kwargs, plus `dither`/`cell_strategy`/
+`flicker_tolerance` resolution) — so a scene's effective color is what its
+`DisplayMode` actually gets, the same funnel the global section already went
+through.
+
+**Why the override is stored as the raw authored keys, not a merged
+`ColorCfg`.** The obvious alternative — a nested `ColorCfg` field on `SceneCfg`,
+resolved the way `apply_master_defaults` resolves the machine-settings cascade
+("a field differs from `ColorCfg()`'s default → it was authored") — breaks the
+one case per-scene overrides exist for: a scene can never override a field
+*back to* its dataclass default. With `[color] force_palette = true` show-wide,
+a scene wanting `force_palette = false` would test as "not authored" under that
+scheme and silently inherit `true`. Storing the scene's `color` as a sparse
+`dict[str, Any]` of exactly what TOML wrote makes "unset" precisely "key
+absent," with no ambiguity against the default. `hue_corrections` is an
+all-or-nothing replace when a scene sets it (not an extend of the global's
+list) — the same shape distinction `hue_corrections_replace_defaults` already
+draws between the *built-in* purple-rescue band and user bands.
+
+`scene_factory.effective_colors(cfg)` is the loop every `validate_*_cfg` guard
+(dither/color_match/cell_strategy/motion_smoothing) and doctor's per-aspect
+probes now run: the global section, plus one more effective `ColorCfg` per
+scene that carries an override, each labeled for its error/report messages
+(`"[color]"` vs. `"[[scenes]][i].color"`). `validate_scene_cfg` rejects a
+non-empty `color` on a scene type that paints no frame (waveform/midi/asid/
+launcher/blank), mirroring the existing `effect`/`start_s` type-scoping.
+
+Live-tuning follows the same scene-vs-global split: a `mode.*` target whose
+config home is a `_MODE_FIELD_TO_COLOR` field (`transport.py`) saves into
+`[color]` as before UNLESS the scene playing when it was tuned carries its own
+override for that field, in which case the save-back writes that scene's
+`[scenes.color]` block instead — `LiveTuneTracker._scene_overrides` is the
+check, and `write_live_tune_row` (shared by the CLI exit flow and the web
+console's `_restamp`) is where the write actually lands. The web console's
+nested field-edit form addresses a `[scenes.color]` key as
+`{scene: i, subsection: "color", field, value}` — deliberately not
+`{section: "color", scene: i}`, which `config_store._apply_edit` already
+refuses (naming both a section and a scene is nonsensical for every other
+field, so the ambiguity is resolved with a distinct key rather than
+overloading that pair).
+
 ### `frame_target_size`
 
 Each mode's `(width, height)` — the only resolution it downscales a source frame to in `compose`/`render` (`(40,25)` PETSCII, `(80,50)` MCM, `(320,200)` Hires, `(160,200)` MHires; `None` for `BlankDisplayMode`, which renders no source frame). `compose` sources its `cv2.resize` target from this attribute (not a literal), and `VideoScene` reads it as `AVFileSource`'s `decode_target_size` — so it's the **single source of truth** for both the compose resize and the video decoder's downscale-during-decode plan, and the two can't drift (a stale decode plan would under/over-decode). See the `video.py` decode-time-downscale note above.

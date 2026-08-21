@@ -54,6 +54,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **Per-scene `[color]` overrides.** Any `[[scenes]]` block can now override
+  part of the global `[color]` section for itself alone, in a
+  `[scenes.color]` sub-table — every `[color]` field is overridable, and a
+  field left out still follows the show-wide default. This is what lets one
+  playlist mix a grayscale-forced `mhires` video with a faithful full-color
+  one, or any other combination, without a `[color]` change in between. A
+  live-tuned color knob (MIDI/web console) now saves into the scene's own
+  block when that scene overrides the field, and into `[color]` otherwise, so
+  the save-back always lands where the running show actually reads it.
+
 - **`--upgrade` and `--check-for-updates` — one command, any install method.**
   `--version` printing its install directory (0.3.0) still left recognizing
   `uv/tools/` or `pipx/venvs/` in that path, and running the matching command,

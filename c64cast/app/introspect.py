@@ -171,7 +171,7 @@ _SECTIONS: tuple[tuple[str, type, str], ...] = (
     (
         "color",
         cfgmod.ColorCfg,
-        "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (video/slideshow).",
+        "Global pre-quantize color shaping for mcm/mhires/petscii: static channel boost + hue corrections, plus per-source adaptive auto_fit (video/slideshow). Any field here is a show-wide default a scene's own [scenes.color] table may override — see `scene:` field `color` under --describe.",
     ),
     (
         "dsp",

@@ -48,7 +48,8 @@ runs at the machine's full frame rate.
 ## Color, and How It Is Chosen
 
 Between the source picture and the screen sits a color pipeline, configured
-once in the `[color]` section and applied to every scene:
+once in the `[color]` section as the show's default — any scene can override
+part of it, below:
 
 ```toml
 [color]
@@ -106,6 +107,39 @@ force_palette_colors = [
 This is a deliberate stylistic effect rather than a fidelity improvement.
 Four cold colors make everything look like a monitor from a submarine
 film, and that is sometimes exactly what you want.
+
+### Mixing Looks Across Scenes
+
+Any `[[scenes]]` block can override part of `[color]` for itself alone, in a
+`[scenes.color]` sub-table — the rest of that scene's color settings still
+follow the show-wide `[color]` section:
+
+```toml
+[color]
+dither = "blue_noise"          # the show's default look
+
+[[scenes]]
+type = "video"
+file = "grayscale_reel.mp4"
+display = "mhires"
+  [scenes.color]
+  force_palette = true
+  force_palette_colors = [
+    "black", "dark gray", "gray", "light gray",
+  ]
+
+[[scenes]]
+type = "video"
+file = "full_color_clip.mp4"
+display = "mhires"
+# no [scenes.color] here — uses the [color] default
+```
+
+This is how one playlist mixes a grayscale-forced video with an ordinary
+full-color one, or any other combination, without a global `[color]` change
+in between. Only the fields you set in `[scenes.color]` change; everything
+else — including a field you deliberately set *back* to its default — still
+does what you told it to.
 
 ## Overlays
 

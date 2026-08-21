@@ -75,7 +75,7 @@ import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -331,7 +331,7 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
         docs = field_docs.get(sc.type, ())
         fields = []
         for fd in docs:
-            if fd.name == "overlays":
+            if fd.name in ("overlays", "color"):
                 continue
             value = getattr(sc, fd.name)
             default = getattr(blank_scene, fd.name)
@@ -349,6 +349,11 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
                 "name": sc.name,
                 "fields": fields,
                 "overlays": [_value(ov) for ov in sc.overlays],
+                # [scenes.color]: the scene's own sparse override, not merged
+                # with the global [color] section — a console renders this
+                # alongside the [color] section's own form and shows which
+                # keys this scene has claimed.
+                "color": dict(sc.color),
             }
         )
     return {"sections": sections, "scenes": scenes}
@@ -368,9 +373,12 @@ def _editable_fields() -> dict[str, frozenset[str]]:
 def _editable_scene_fields(scene_type: str) -> frozenset[str]:
     for st in introspect.scene_types():
         if st.name == scene_type:
-            # `overlays` is in the form as its own list rather than a field, so
-            # `describe` drops it from the field list — but it is still a scene
-            # field an editor can replace wholesale.
+            # `overlays` and `color` are each in the form as their own key
+            # rather than a plain field, so `describe` drops them from the
+            # field list — but both are still scene fields a plain edit can
+            # replace wholesale (a nested `{scene, subsection: "color", ...}`
+            # edit is the other way into `color`, one key at a time — see
+            # `_apply_edit`).
             #
             # `type` is *not* editable, and it is the one field that has to be
             # named to say so. It decides which of the other fields mean
@@ -407,10 +415,16 @@ def _require_scene_index(scenes: Sequence[cfgmod.SceneCfg], index: int, verb: st
 def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> dict[str, Any]:
     """Set one field on a loaded config, and describe what was set.
 
-    ``baseline`` is what ``reset`` puts a field back to. The machine-overlaid
-    Config rather than a blank one: reset means "this file stops saying
-    anything about this field", and what shows through then is whatever the
-    layer below already said."""
+    ``baseline`` is what ``reset`` puts a field back to for a plain field. A
+    ``[scenes.color]`` field (named by ``scene`` plus ``subsection: "color"``)
+    has no baseline of its own to reset to: the scene's [color] override is a
+    sparse dict, so "reset" there means the scene stops overriding the field
+    at all, which is a key deletion rather than a value write — see
+    config.scene_color.
+
+    The machine-overlaid Config rather than a blank one: reset means "this
+    file stops saying anything about this field", and what shows through then
+    is whatever the layer below already said."""
     if not isinstance(edit, Mapping):
         raise EditRejected(f"an edit is an object, got {type(edit).__name__}")
     field = str(edit.get("field", "")).strip()
@@ -420,6 +434,31 @@ def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> di
     scene = edit.get("scene")
     if (section is None) == (scene is None):
         raise EditRejected(f"{field}: an edit names either a `section` or a `scene`, not both")
+
+    subsection = edit.get("subsection")
+    if subsection is not None:
+        if section is not None:
+            raise EditRejected(f"{field}: `subsection` only applies to a `scene` edit")
+        if subsection != "color":
+            raise EditRejected(f"a scene has no editable subsection {subsection!r}")
+        if not isinstance(scene, int) or isinstance(scene, bool):
+            raise EditRejected(f"a scene is named by its index, got {scene!r}")
+        _require_scene_index(cfg.scenes, scene, "no scene at index")
+        if field not in {f.name for f in fields(cfgmod.ColorCfg)}:
+            raise EditRejected(f"[scenes.color] has no editable field {field!r}")
+        sc_color = cfg.scenes[scene].color
+        if edit.get("reset"):
+            sc_color.pop(field, None)
+            return {"scene": scene, "subsection": "color", "field": field, "value": None}
+        if "value" not in edit:
+            raise EditRejected(f"{field}: an edit needs a `value`, or `reset = true`")
+        sc_color[field] = edit["value"]
+        return {
+            "scene": scene,
+            "subsection": "color",
+            "field": field,
+            "value": _value(edit["value"]),
+        }
 
     if section is not None:
         allowed = _editable_fields().get(str(section))

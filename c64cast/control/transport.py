@@ -225,21 +225,11 @@ _MODE_FIELD_TO_SCENE: dict[str, str] = {
 # only member until it grew the per-scene home above.
 MODE_FIELDS_WITH_NO_CONFIG_HOME: frozenset[str] = frozenset()
 
-
-def _config_home(target: str) -> tuple[str | None, bool]:
-    """Where a live target's value is kept in a config file: the field's name
-    there, and whether that field belongs to a scene rather than to [color].
-
-    (None, False) for a target no config carries — every non-``mode.`` one, since
-    effect and generator knobs are runtime state and writing them would put knob
-    positions in a show file."""
-    holder, _, name = target.partition(".")
-    if holder != "mode":
-        return None, False
-    per_scene = _MODE_FIELD_TO_SCENE.get(name)
-    if per_scene is not None:
-        return per_scene, True
-    return _MODE_FIELD_TO_COLOR.get(name), False
+# ColorCfg field names a `_MODE_FIELD_TO_COLOR` target may map to — used to
+# tell, at save-back time, whether a per-scene row belongs in that scene's
+# [scenes.color] override dict rather than as a plain scene attribute (the
+# `_MODE_FIELD_TO_SCENE` fields' home).
+COLOR_FIELD_NAMES: frozenset[str] = frozenset(_MODE_FIELD_TO_COLOR.values())
 
 
 def _key(target: str, scene: int | None) -> str:
@@ -247,6 +237,31 @@ def _key(target: str, scene: int | None) -> str:
     target alone for a global, ``target@<scene>`` for a per-scene one — so the
     same knob on two scenes is two rows a console can discard independently."""
     return target if scene is None else f"{target}@{scene}"
+
+
+def write_live_tune_row(cfg: Config, scene: int | None, field: str, new: Any) -> str | None:
+    """Write one save-back row into `cfg` in place, returning the
+    ``<where>.<field> = <value>`` line describing what was written, or None
+    if `scene` names an index `cfg` no longer has a block for.
+
+    Shared by :meth:`LiveTuneTracker.apply` and the web console's
+    ``_restamp`` (see web_api.py) so the two save-back paths can't drift
+    apart on where a row lands: `scene is None` always means the shared
+    [color] section; a per-scene row lands on the scene's own attribute
+    UNLESS `field` is one of the color-shaping fields (`COLOR_FIELD_NAMES`),
+    which instead go into that scene's ``[scenes.color]`` override dict — the
+    only way the write ends up where the scene will actually read it back."""
+    if scene is None:
+        setattr(cfg.color, field, new)
+        return f"[color].{field} = {_fmt(new)}"
+    if not 0 <= scene < len(cfg.scenes):
+        return None
+    sc = cfg.scenes[scene]
+    if field in COLOR_FIELD_NAMES:
+        sc.color[field] = new
+        return f"[[scenes]][{scene}].color.{field} = {_fmt(new)}"
+    setattr(sc, field, new)
+    return f"[[scenes]][{scene}].{field} = {_fmt(new)}"
 
 
 class _Change(NamedTuple):
@@ -272,16 +287,57 @@ class LiveTuneTracker:
     a churn of intermediates. A per-scene knob turned on two different scenes is
     two entries for the same reason: they are two settings, not one moved twice.
 
+    A `_MODE_FIELD_TO_COLOR` target (e.g. ``mode.dither_strength``) normally
+    saves to the shared ``[color]`` section, but a scene that carries its own
+    ``[scenes.color]`` override for that field reads *that*, not the global —
+    so tuning the knob while such a scene plays has to save into its block
+    instead, or the save-back would write somewhere the scene ignores. That
+    check needs the run's `Config`, passed in at construction; without one
+    (the common case in tests, and any caller with no file to save back to)
+    every `_MODE_FIELD_TO_COLOR` target keeps its old, always-global home.
+
     Thread-safe: the MIDI reader thread and the WLED server thread both record;
     the exit flow (main thread) reads. `has_changes` / `describe` / `pending` /
     `apply` are the read side, and a web console's HTTP worker is a third
     reader — `pending` is the structured face of `describe`, for a save-back
     surface that has to render the changes rather than print them."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: Config | None = None) -> None:
         self._lock = threading.Lock()
         # key (see _key) -> _Change; insertion order preserved.
         self._changes: dict[str, _Change] = {}
+        self._cfg = cfg
+
+    def _scene_overrides(self, scene: int | None, color_field: str) -> bool:
+        """True if `scene` authors `color_field` in its own [scenes.color] —
+        the only case a `_MODE_FIELD_TO_COLOR` target routes per-scene rather
+        than to the shared [color] section."""
+        if self._cfg is None or scene is None:
+            return False
+        if not 0 <= scene < len(self._cfg.scenes):
+            return False
+        return color_field in self._cfg.scenes[scene].color
+
+    def _config_home(self, target: str, scene: int | None) -> tuple[str | None, bool]:
+        """Where `target`'s value is kept in a config file: the field's name
+        there, and whether that field belongs to `scene` rather than to the
+        shared section.
+
+        (None, False) for a target no config carries — every non-``mode.`` one,
+        since effect and generator knobs are runtime state and writing them
+        would put knob positions in a show file. A `_MODE_FIELD_TO_SCENE`
+        target is always per-scene, as it always was; a `_MODE_FIELD_TO_COLOR`
+        one is per-scene only when `_scene_overrides` says `scene` claims it."""
+        holder, _, name = target.partition(".")
+        if holder != "mode":
+            return None, False
+        scene_field = _MODE_FIELD_TO_SCENE.get(name)
+        if scene_field is not None:
+            return scene_field, True
+        color_field = _MODE_FIELD_TO_COLOR.get(name)
+        if color_field is None:
+            return None, False
+        return color_field, self._scene_overrides(scene, color_field)
 
     def record(self, target: str, old: Any, new: Any, *, scene: int | None = None) -> None:
         """Note that `target` moved from `old` to `new` while `scene` was
@@ -293,7 +349,7 @@ class LiveTuneTracker:
         playing and let this decide whether it matters: it is part of the key
         only for the per-scene targets, so a ``[color]`` knob swept across a
         scene change stays one entry."""
-        _, per_scene = _config_home(target)
+        _, per_scene = self._config_home(target, scene)
         at = scene if per_scene else None
         key = _key(target, at)
         with self._lock:
@@ -339,7 +395,7 @@ class LiveTuneTracker:
             items = list(self._changes.items())
         rows: list[dict[str, Any]] = []
         for key, c in items:
-            field, per_scene = _config_home(c.target)
+            field, per_scene = self._config_home(c.target, c.scene)
             if per_scene and c.scene is None:
                 field = None
             rows.append(
@@ -374,16 +430,12 @@ class LiveTuneTracker:
         Changes nothing can carry are skipped, and so is a scene index `cfg` has
         no block for — a config reloaded with fewer scenes since the knob moved
         would otherwise write the value into whichever scene inherited the
-        index."""
+        index. See :func:`write_live_tune_row` for where each row lands."""
         applied: list[str] = []
         for row in self._persistable():
-            at, field, new = row["scene"], row["field"], row["new"]
-            if at is None:
-                setattr(cfg.color, field, new)
-                applied.append(f"[color].{field} = {_fmt(new)}")
-            elif 0 <= at < len(cfg.scenes):
-                setattr(cfg.scenes[at], field, new)
-                applied.append(f"[[scenes]][{at}].{field} = {_fmt(new)}")
+            line = write_live_tune_row(cfg, row["scene"], row["field"], row["new"])
+            if line is not None:
+                applied.append(line)
         return applied
 
     def toml_snippet(self) -> str:
@@ -403,6 +455,11 @@ class LiveTuneTracker:
         for row in rows:
             if row["scene"] is None:
                 merged[row["field"]] = row["new"]
+            elif row["field"] in COLOR_FIELD_NAMES:
+                notes.append(
+                    f"# in scene {row['scene'] + 1}'s [scenes.color] block: "
+                    f"{row['field']} = {_toml_value(row['new'])}"
+                )
             else:
                 notes.append(
                     f"# in scene {row['scene'] + 1}'s [[scenes]] block: "

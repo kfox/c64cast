@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast import __version__
 
+from .config import SceneCfg, scene_color
+
 if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene
 
@@ -200,7 +202,9 @@ def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) 
             **_scene_cfg_fields(scene_cfg),
         },
         "source": _scene_source(scene, scene_type),
-        "color": dataclasses.asdict(cfg.color),
+        "color": dataclasses.asdict(
+            scene_color(cfg, scene_cfg) if isinstance(scene_cfg, SceneCfg) else cfg.color
+        ),
         "audio": {name: getattr(cfg.audio, name) for name in _AUDIO_FIELDS},
         "hardware": {
             "backend": cfg.hardware.backend,

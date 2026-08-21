@@ -345,7 +345,11 @@ below the configuration file and why they apply to a run that has no
 configuration file at all. The next section covers them in full.
 
 **The configuration file** is the show: the playlist, and any global setting
-the show needs to differ on.
+the show needs to differ on. A scene's own `[scenes.color]` override (see
+["Scenes and Playlists"](#scenes-and-playlists)) sits *inside* this layer, not
+above it — it is one `[[scenes]]` block overriding a sibling `[color]` block
+within the same file, resolved once the file is loaded, not another rung on
+this ladder.
 
 **Command-line flags** are this run. Every overridable flag defaults to `None`
 internally, so "you passed the default" and "you passed nothing" stay distinct
@@ -464,6 +468,27 @@ duration_s = 30.0
 The indentation is cosmetic — TOML attaches a nested table to the most recent
 `[[scenes]]` regardless — but it makes a long playlist readable, and every
 example in this book uses it.
+
+A scene may also override part of the show-wide `[color]` section for itself
+alone, in a `[scenes.color]` sub-table — not an array, since a scene has at
+most one color override:
+
+```toml
+[[scenes]]
+type = "video"
+file = "clip.mp4"
+display = "mhires"
+
+  [scenes.color]
+  force_palette = true
+  force_palette_colors = 8
+```
+
+Any field `[color]` takes, `[scenes.color]` takes too; a field left out
+follows the show-wide `[color]` section, exactly as if this scene had said
+nothing about it. Only scenes that render a frame accept it (`webcam`,
+`video`, `slideshow`, `generative`, `wled`) — the same set `effect` is scoped
+to.
 
 `[playlist]` governs what happens around the scenes: whether the list repeats
 after the last one (`loop`, with `--no-loop` to run once and exit), whether a

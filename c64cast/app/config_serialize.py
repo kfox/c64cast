@@ -283,7 +283,7 @@ def _emit_scene(
     # so the block is unambiguous and copy-pasteable.
     lines.append(f"type = {_fmt_value(s.type)}")
     for fd in fields:
-        if fd.name == "type" or fd.name == _SCENE_TABLE_ARRAY:
+        if fd.name in ("type", _SCENE_TABLE_ARRAY, "color"):
             continue
         value = getattr(s, fd.name)
         if not _should_emit(value, fd.default, minimal=minimal):
@@ -292,8 +292,36 @@ def _emit_scene(
             lines += _comment_lines(fd.help, fd.choices, "")
         lines.append(f"{_fmt_key(fd.name)} = {_fmt_value(value)}")
     lines.append("")
+    if s.color:
+        lines += _emit_scene_color(s.color, annotate=annotate)
     if s.overlays:
         lines += _emit_table_array("scenes.overlays", list(s.overlays), annotate)
+    return lines
+
+
+def _emit_scene_color(color: dict[str, object], *, annotate: bool) -> list[str]:
+    """Render a scene's ``[scenes.color]`` override: the raw authored keys
+    (scene_cfg.color IS the sparse dict, so every key present is authored —
+    there's no default to measure against), with ``hue_corrections`` routed
+    to its own ``[[scenes.color.hue_corrections]]`` blocks after the scalar
+    keys, the same ordering constraint [[scenes.overlays]] follows."""
+    color_docs = {
+        fd.name: fd for sd in introspect.config_sections() if sd.name == "color" for fd in sd.fields
+    }
+    hue_corrections = color.get(_COLOR_TABLE_ARRAY)
+    lines = ["[scenes.color]"]
+    for k, v in color.items():
+        if k == _COLOR_TABLE_ARRAY:
+            continue
+        if annotate:
+            fd = color_docs.get(k)
+            if fd is not None:
+                lines += _comment_lines(fd.help, fd.choices, "")
+        lines.append(f"{_fmt_key(k)} = {_fmt_value(v)}")
+    lines.append("")
+    if isinstance(hue_corrections, list) and hue_corrections:
+        rows: list[dict[str, object]] = [dict(hc) for hc in hue_corrections]
+        lines += _emit_table_array("scenes.color.hue_corrections", rows, annotate)
     return lines
 
 

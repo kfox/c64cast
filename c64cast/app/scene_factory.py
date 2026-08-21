@@ -96,6 +96,7 @@ from .config import (
     MidiControlCfg,
     SceneCfg,
     _is_valid_param_holder,
+    scene_color,
 )
 from .orchestrator import resolve_orchestrator
 
@@ -574,6 +575,7 @@ def _display_mode_for_scene(
     $0314 IRQ for PLAY, so the display must not install the bank-swap raster IRQ
     at the same vector."""
     display = resolve_scene_display(display, s.type)
+    color = scene_color(cfg, s)
     has_buffer_overlays = any(
         paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
     )
@@ -611,7 +613,7 @@ def _display_mode_for_scene(
         "off"
         if force_host_dma
         else resolve_flicker_tolerance(
-            cfg.color.flicker_tolerance,
+            color.flicker_tolerance,
             display,
             has_buffer_overlays=has_buffer_overlays,
             audio_reu_pump_active=cfg.audio.use_reu_pump,
@@ -629,10 +631,10 @@ def _display_mode_for_scene(
         use_reu_staged=use_reu_staged,
         double_buffer=double_buffer,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
-        color=cfg.color,
+        color=color,
         text_double_height=s.text_double_height,
-        dither_method=resolve_dither_method(cfg.color.dither, s.type),
-        cell_strategy=resolve_cell_strategy(cfg.color.cell_strategy, s.type),
+        dither_method=resolve_dither_method(color.dither, s.type),
+        cell_strategy=resolve_cell_strategy(color.cell_strategy, s.type),
         flicker_tolerance=flicker_tolerance,
     )
 
@@ -1118,25 +1120,44 @@ def resolve_dither_method(dither_setting: str, scene_type: str) -> str:
     return "floyd-steinberg" if scene_type in _STATIC_DITHER_SCENE_TYPES else "blue_noise"
 
 
+def effective_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
+    """Every distinct effective [color] section `cfg` resolves to: the global
+    section, plus one per scene whose ``[scenes.color]`` overrides it — each
+    labeled for use in a ConfigError/report message.
+
+    The four ``validate_*_cfg`` guards below (and doctor's per-aspect probes)
+    loop this instead of reading ``cfg.color`` directly, so a bad value inside
+    a scene override surfaces the same as a bad global value, naming the scene
+    it came from."""
+    out: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
+    for i, s in enumerate(cfg.scenes):
+        if s.color:
+            out.append((f"[[scenes]][{i}].color", scene_color(cfg, s)))
+    return out
+
+
 def validate_dither_cfg(cfg: Config) -> None:
-    """Guard [color].dither/dither_strength: reject an unknown method name or
-    an out-of-range strength."""
-    if cfg.color.dither not in DITHER_CHOICES:
-        raise ConfigError(
-            f"[color].dither must be one of {', '.join(DITHER_CHOICES)}, got {cfg.color.dither!r}"
-        )
-    if not 0.0 <= cfg.color.dither_strength <= 2.0:
-        raise ConfigError(
-            f"[color].dither_strength must be 0..2.0, got {cfg.color.dither_strength}"
-        )
+    """Guard dither/dither_strength on [color] and every scene override:
+    reject an unknown method name or an out-of-range strength."""
+    for label, color in effective_colors(cfg):
+        if color.dither not in DITHER_CHOICES:
+            raise ConfigError(
+                f"{label}.dither must be one of {', '.join(DITHER_CHOICES)}, got {color.dither!r}"
+            )
+        if not 0.0 <= color.dither_strength <= 2.0:
+            raise ConfigError(
+                f"{label}.dither_strength must be 0..2.0, got {color.dither_strength}"
+            )
 
 
 def validate_motion_smoothing_cfg(cfg: Config) -> None:
-    """Guard [color].motion_smoothing: reject an out-of-range value (0..1)."""
-    if not 0.0 <= cfg.color.motion_smoothing <= 1.0:
-        raise ConfigError(
-            f"[color].motion_smoothing must be 0..1.0, got {cfg.color.motion_smoothing}"
-        )
+    """Guard motion_smoothing on [color] and every scene override: reject an
+    out-of-range value (0..1)."""
+    for label, color in effective_colors(cfg):
+        if not 0.0 <= color.motion_smoothing <= 1.0:
+            raise ConfigError(
+                f"{label}.motion_smoothing must be 0..1.0, got {color.motion_smoothing}"
+            )
 
 
 COLOR_MATCH_CHOICES: tuple[str, ...] = ("auto", *COLOR_MATCH_MODES)
@@ -1163,12 +1184,14 @@ def resolve_color_match(color_match_setting: str, display_mode_name: str) -> boo
 
 
 def validate_color_match_cfg(cfg: Config) -> None:
-    """Guard [color].color_match: reject an unknown value."""
-    if cfg.color.color_match not in COLOR_MATCH_CHOICES:
-        raise ConfigError(
-            f"[color].color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
-            f"got {cfg.color.color_match!r}"
-        )
+    """Guard color_match on [color] and every scene override: reject an
+    unknown value."""
+    for label, color in effective_colors(cfg):
+        if color.color_match not in COLOR_MATCH_CHOICES:
+            raise ConfigError(
+                f"{label}.color_match must be one of {', '.join(COLOR_MATCH_CHOICES)}, "
+                f"got {color.color_match!r}"
+            )
 
 
 CELL_STRATEGY_CHOICES: tuple[str, ...] = ("auto", *CELL_STRATEGIES)
@@ -1195,12 +1218,14 @@ def resolve_cell_strategy(cell_strategy_setting: str, scene_type: str) -> str:
 
 
 def validate_cell_strategy_cfg(cfg: Config) -> None:
-    """Guard [color].cell_strategy: reject an unknown value."""
-    if cfg.color.cell_strategy not in CELL_STRATEGY_CHOICES:
-        raise ConfigError(
-            f"[color].cell_strategy must be one of {', '.join(CELL_STRATEGY_CHOICES)}, "
-            f"got {cfg.color.cell_strategy!r}"
-        )
+    """Guard cell_strategy on [color] and every scene override: reject an
+    unknown value."""
+    for label, color in effective_colors(cfg):
+        if color.cell_strategy not in CELL_STRATEGY_CHOICES:
+            raise ConfigError(
+                f"{label}.cell_strategy must be one of {', '.join(CELL_STRATEGY_CHOICES)}, "
+                f"got {color.cell_strategy!r}"
+            )
 
 
 def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
@@ -1438,6 +1463,14 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     if s.mod_source not in _MOD_SOURCE_CHOICES:
         raise ValueError(f"mod_source must be one of {_MOD_SOURCE_CHOICES}, got {s.mod_source!r}")
 
+    # [scenes.color] only means anything on a scene that paints a frame — the
+    # same set `effect`/`effects` are scoped to above.
+    if s.color and s.type not in _EFFECT_SCENE_TYPES:
+        raise ValueError(
+            f"color is not supported on {s.type!r} scenes (they don't render a "
+            f"video frame). Supported: {tuple(sorted(_EFFECT_SCENE_TYPES))}."
+        )
+
     # start_s is a video-only start offset (the only scene whose source has a
     # seekable timeline). Reject it elsewhere rather than silently ignoring it.
     if s.start_s is not None and s.type != "video":
@@ -1583,6 +1616,13 @@ class _SceneBuildContext:
         backends (the TeensyROM). See resolve_double_buffer."""
         return self.api.profile.supports_reu
 
+    @property
+    def color(self) -> ColorCfg:
+        """The effective [color] section for ``s`` — the global section with
+        ``s.color``'s authored overrides applied. What every builder passes
+        to its Scene/DisplayMode constructors instead of ``cfg.color``."""
+        return scene_color(self.cfg, self.s)
+
     def display_mode(self, display: str | None) -> DisplayMode:
         """The scene's display mode for ``display``, with the probe verdicts
         threaded through — the call every frame-bearing builder makes."""
@@ -1695,7 +1735,7 @@ def _build_webcam(ctx: _SceneBuildContext) -> Scene:
     mode = ctx.display_mode(display)
     name = s.name or f"Webcam {display}"
     scene_audio = _resolve_live_audio(ctx, name, "live webcam scene")
-    scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=cfg.color)
+    scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=ctx.color)
     if s.target_fps is None:
         # always_fresh: every camera grab differs, so there is no dedup —
         # a char mode still repaints the whole screen each tick and, with
@@ -1751,7 +1791,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         mode,
         file_spec,
         prepend_alignment_marker=(cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump),
-        color=cfg.color,
+        color=ctx.color,
         start_s=start_s or 0.0,
         tempo_scale=_video_tempo_scale(cfg, mode, dac_audio=has_dac_audio),
         loop_audio=cfg.midi_control.loop_audio,
@@ -1857,7 +1897,7 @@ def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
         reu_available=ctx.reu_available,
         backend_supports_reu=ctx.backend_supports_reu,
         audio_reu_pump_active=cfg.audio.use_reu_pump,
-        color=cfg.color,
+        color=ctx.color,
         text_double_height=s.text_double_height,
         aspect_mode=s.aspect_mode,
     )
@@ -1900,7 +1940,7 @@ def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: 
         sid_volume=cfg.ultimate64.sid_volume,
         sid_play_rate=_resolve_sid_play_rate(cfg),
     )
-    scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=cfg.color)
+    scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
     # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at full
     # system rate that competes with the SID player's per-frame PLAY IRQ for
     # the bus. Default such scenes to half-rate (like WaveformScene) for
@@ -1934,7 +1974,7 @@ def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, nam
     else:
         # No streamer ([audio] off) or reactive = false → silence.
         audio_src = NullAudioSource()
-    return SourceScene(ctx.api, None, mode, gen, audio_src, name, color=cfg.color)
+    return SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
 
 
 def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
@@ -1990,7 +2030,7 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
     else:
         # "none", or "mic"/"file" with audio disabled → silence.
         audio_src = NullAudioSource()
-    scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=cfg.color)
+    scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=ctx.color)
     # Size a file-audio scene to the track so `c64cast tune.mp3` plays the
     # whole song then advances/loops (an explicit duration_s still wins,
     # applied in build_scene's duration-resolution epilogue).
@@ -2034,7 +2074,7 @@ def _build_wled(ctx: _SceneBuildContext) -> Scene:
     mode = ctx.display_mode(s.display)
     wled_source = WLEDSource(s.sink_width, s.sink_height)
     name = s.name or "WLED sink"
-    scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=cfg.color)
+    scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=ctx.color)
     # Bitmap displays push a full ~9-10 KB frame per update; default to half
     # rate like the other frame scenes (an explicit target_fps, applied in
     # build_scene's epilogue, still wins).

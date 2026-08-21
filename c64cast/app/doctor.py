@@ -31,7 +31,7 @@ from c64cast.hw import hw_provision
 from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
 from c64cast.sid import emusid_mixer
 
-from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path
+from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path, scene_color
 from .orchestrator import OrchestratorError
 from .paths import expand_user
 from .scene_factory import (
@@ -963,12 +963,14 @@ def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        if cfg.color.dither != "auto":
-            continue
         for s in cfg.scenes:
             if s.type not in ("webcam", "video", "slideshow", "generative"):
                 continue
-            resolved = resolve_dither_method(cfg.color.dither, s.type)
+            color = scene_color(cfg, s)
+            if color.dither != "auto":
+                continue
+            resolved = resolve_dither_method(color.dither, s.type)
+            override_note = " (per-scene [scenes.color] override)" if s.color else ""
             out.append(
                 Diagnostic(
                     level="ok",
@@ -976,7 +978,7 @@ def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/{s.name or s.type}/dither",
                     message=(
                         f"'auto' resolves to {resolved!r} for this {s.type} scene "
-                        f"(strength {cfg.color.dither_strength})."
+                        f"(strength {color.dither_strength}){override_note}."
                     ),
                 )
             )
@@ -1003,21 +1005,22 @@ def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        if cfg.color.color_match != "auto":
-            continue
         for s in cfg.scenes:
             display = resolve_scene_display(s.display, s.type)
             if display in ("blank", "hires_edges"):
                 continue  # these pick no colors — color_match is a no-op
-            resolved = (
-                "perceptual" if resolve_color_match(cfg.color.color_match, display) else "rgb"
-            )
+            color = scene_color(cfg, s)
+            if color.color_match != "auto":
+                continue
+            resolved = "perceptual" if resolve_color_match(color.color_match, display) else "rgb"
+            override_note = " (per-scene [scenes.color] override)" if s.color else ""
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
                     subject=f"{name}/{s.name or s.type}/color_match",
-                    message=f"'auto' resolves to {resolved!r} for this {display} scene.",
+                    message=f"'auto' resolves to {resolved!r} for this {display} scene"
+                    f"{override_note}.",
                 )
             )
     return out
@@ -1044,19 +1047,22 @@ def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        if cfg.color.cell_strategy != "auto":
-            continue
         for s in cfg.scenes:
             display = resolve_scene_display(s.display, s.type)
             if display != "mhires" or s.palette_mode != "percell":
                 continue  # cell_strategy only affects mhires percell
-            resolved = resolve_cell_strategy(cfg.color.cell_strategy, s.type)
+            color = scene_color(cfg, s)
+            if color.cell_strategy != "auto":
+                continue
+            resolved = resolve_cell_strategy(color.cell_strategy, s.type)
+            override_note = " (per-scene [scenes.color] override)" if s.color else ""
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
                     subject=f"{name}/{s.name or s.type}/cell_strategy",
-                    message=f"'auto' resolves to {resolved!r} for this {s.type} scene.",
+                    message=f"'auto' resolves to {resolved!r} for this {s.type} scene"
+                    f"{override_note}.",
                 )
             )
     return out
@@ -1082,20 +1088,23 @@ def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        if cfg.color.motion_smoothing == ColorCfg().motion_smoothing:
-            continue  # shipped default — nothing noteworthy
         for s in cfg.scenes:
             display = resolve_scene_display(s.display, s.type)
             if display != "mhires" or s.palette_mode != "percell":
                 continue  # motion_smoothing only affects mhires percell
+            color = scene_color(cfg, s)
+            if color.motion_smoothing == ColorCfg().motion_smoothing:
+                continue  # shipped default — nothing noteworthy
+            override_note = " (per-scene [scenes.color] override)" if s.color else ""
             out.append(
                 Diagnostic(
                     level="ok",
                     category="color",
                     subject=f"{name}/{s.name or s.type}/motion_smoothing",
                     message=(
-                        f"{cfg.color.motion_smoothing} (higher = less flicker / more "
-                        "after-image, lower = crisper motion) for this mhires percell scene."
+                        f"{color.motion_smoothing} (higher = less flicker / more "
+                        "after-image, lower = crisper motion) for this mhires percell "
+                        f"scene{override_note}."
                     ),
                 )
             )
