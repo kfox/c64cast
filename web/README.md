@@ -69,6 +69,7 @@ reason.
 | `src/lib/configListLogic.ts` | `ConfigList`'s search/sort/name-display, as plain functions — see Testing |
 | `src/lib/debounce.ts` | Coalesce a burst of calls into one — the media picker's search-as-you-type |
 | `src/lib/errorsLogic.ts` | `describeError`: the one status-code→sentence mapping every screen's `problem` line uses |
+| `src/lib/liveKeysLogic.ts` | Live's keyboard shortcuts: key → command, as plain functions — see Testing |
 | `src/lib/uploadLogic.ts` | The upload progress line and percentage, as plain functions |
 | `src/lib/introspect.ts` | `/api/introspect`, fetched once, indexed for lookup |
 | `src/lib/types.ts` | Hand-written mirrors of the daemon's JSON |
