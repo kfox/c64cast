@@ -1078,6 +1078,38 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a signal received during that second is honored immediately instead of after
   it elapses.
 
+### Fixed
+
+- **A refused start now says why, everywhere it can be tried.** A start or
+  switch that failed its config validation used to answer `config did not
+  validate (exit code 3); see the log` — the reason existed only in the log,
+  because `session.SessionConfigError` carried an exit code and no message.
+  It now carries the same diagnostic `validate_configs` already logs, so the
+  422 names the actual scene or setting that was wrong. The shell's tab-bar
+  Start button — reachable from every tab, and the most-used way to launch a
+  show — used to swallow that failure into the browser's console instead of
+  showing it anywhere; it now hands the refusal to the Session screen, which
+  already owns a permanent problem line for it.
+- **The web console pre-flights a config before ever claiming a start or
+  switch**, rather than finding out from the 202 that followed it. `launch()`
+  — the one function every launch surface (the tab-bar button, Session's own
+  Start/Switch, a favorite's quick-launch, a double-click in the Editor) goes
+  through — now checks the config first and refuses locally if it would not
+  run. The check exposes `doctor.validate_load_result` (`--doctor
+  --skip-probe`'s collect-all pass, never reachable over HTTP before) as a new
+  `diagnostics` list on `POST /api/configs/{ref}/validate`'s report, so a bad
+  config names everything wrong with it at once instead of one problem per
+  click. That route also no longer silently validates an empty string when
+  called with no body — an absent `text` key now checks the file as it
+  stands on disk, which is what a pre-flight actually needs to ask about.
+  The pre-flight's diagnostics list skips the installation-level checks
+  (venv, hard deps, uv.lock, machine settings, data dirs, char ROM, extras)
+  that `--doctor` still runs — those answer "is this machine set up right",
+  not "is this config good to launch", and don't change from one Start click
+  to the next. Live's own Start-the-host-default button now reports a
+  refusal through the same `describeError` every other screen's problem
+  line uses, instead of the bare exception text.
+
 ### Added
 
 - **A `file =` field's picker searches the host instead of filtering the first
@@ -1090,6 +1122,28 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   live `GET /api/media?kind=&q=` (the parameter has existed since uploads
   shipped; nothing called it with one before this), and a search past the cap
   is offered a "truncated" note instead of silently narrowing.
+- **Reorder a show's scenes from the web console**, without opening the text
+  editor. `add_scene` and `remove_scene` had a route each; the order of a show
+  was still a text-editor job, which was the one structural change that never
+  got one. **↑**/**↓** chips on each scene block move it earlier or later
+  (`PATCH /api/configs/{ref}/scenes/{index}`, body `{"to": n}`), reusing the
+  same `_rewrite` spine as every other structural edit — the `.bak` sibling, the
+  ensemble and secret refusals, `partial=True` so reordering a half-built show
+  isn't refused for a scene that names no media yet. Disabled while an edit is
+  staged, the same as *Duplicate* and *Remove*, since renumbering the staged
+  edits to match a reorder is exactly the reconciliation those two already
+  refuse rather than attempt.
+- **A real progress bar for media uploads, with a Cancel button.** Dropping a
+  large clip onto a scene, or picking one with the **Upload…** button, used to
+  show `Uploading clip.mp4…` and nothing else until it finished or failed — no
+  percentage, no way to stop it. `uploadMedia` now goes over
+  `XMLHttpRequest` instead of `fetch` (the only browser API that reports
+  request-body progress), so the console's first `<progress>` fills in as the
+  bytes actually land, going indeterminate if the browser can't measure a
+  total. Canceling aborts the request through an `AbortController`; nothing
+  changes on the server side — the aborted read already drives the same
+  cleanup path a network failure does, and the partial file is unlinked either
+  way.
 
 ## [0.3.0] - 2026-08-09
 

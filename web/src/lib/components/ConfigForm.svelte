@@ -1,12 +1,14 @@
 <script lang="ts">
   import { ApiError, api, reportOf } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
+  import Diagnostics from "$lib/components/Diagnostics.svelte";
   import FieldRow from "$lib/components/FieldRow.svelte";
   import LayerBlame from "$lib/components/LayerBlame.svelte";
   import MediaWarnings from "$lib/components/MediaWarnings.svelte";
   import { debounce } from "$lib/debounce";
   import { searchMedia, type DocIndex } from "$lib/introspect";
   import { kindsForScene, pickerOptions, uploadMessage, urlFromDrop } from "$lib/mediaPickerLogic";
+  import { uploadLabel } from "$lib/uploadLogic";
   import type {
     ConfigEdit,
     ConfigForm,
@@ -139,12 +141,18 @@
   let problem = $state("");
   let saved = $state("");
   let busy = $state(false);
-  // Which scene an upload is streaming into, for the "Uploading clip.mp4…"
-  // line beside its drop zone — `fetch` can't report a percentage (that needs
-  // XMLHttpRequest, deliberately not pulled in for this), so this is what the
-  // console has to say meanwhile.
+  // Which scene an upload is streaming into, for the progress bar beside its
+  // drop zone, and what it has reported so far — `uploadTotal` starts at the
+  // file's own size so the bar has a real number to show before the first
+  // `progress` event lands.
   let uploadingIndex = $state<number | null>(null);
   let uploadingName = $state("");
+  let uploadLoaded = $state(0);
+  let uploadTotal = $state(0);
+  let uploadComputable = $state(true);
+  // `$state` so the Cancel chip can disable itself once the upload it would
+  // abort has already finished.
+  let uploadAbort = $state<AbortController | null>(null);
   // Set by an in-flight upload just before its `structural()` call, so the
   // "Saved." banner can say what was actually uploaded rather than just that
   // a save happened.
@@ -318,6 +326,15 @@
    *  unsaved change onto a different scene. */
   const structuralBlocked = $derived(edits.length > 0);
 
+  /** The ↑/↓ chips for a scene at `index`: one shape, so the earlier/later
+   *  pair can't drift apart on a later tweak to the label or disabled rule. */
+  function moveDirections(index: number, sceneCount: number) {
+    return [
+      { delta: -1, symbol: "↑", label: "Move this scene earlier", atEdge: index === 0 },
+      { delta: 1, symbol: "↓", label: "Move this scene later", atEdge: index === sceneCount - 1 },
+    ];
+  }
+
   async function structural(act: () => Promise<ConfigWritten>): Promise<void> {
     report = null;
     problem = "";
@@ -351,9 +368,23 @@
     if (readOnly || busy || structuralBlocked) return;
     uploadingIndex = index;
     uploadingName = file.name;
+    uploadLoaded = 0;
+    uploadTotal = file.size;
+    uploadComputable = true;
+    uploadAbort = new AbortController();
     try {
       await structural(async () => {
-        const uploaded = await api.uploadMedia(file.name, file);
+        const uploaded = await api.uploadMedia(file.name, file, {
+          onProgress: (loaded, total, computable) => {
+            uploadLoaded = loaded;
+            uploadTotal = total;
+            uploadComputable = computable;
+          },
+          signal: uploadAbort?.signal,
+        });
+        // The upload itself is done; abort() from here on would be a no-op
+        // (the XHR is already in state DONE), so stop offering it.
+        uploadAbort = null;
         uploadNote = uploadMessage(uploaded);
         onuploaded?.(form.scenes[index]?.type ?? "");
         return api.patchConfig(path, [{ scene: index, field: fieldName, value: uploaded.spec }]);
@@ -361,7 +392,15 @@
     } finally {
       uploadingIndex = null;
       uploadingName = "";
+      uploadAbort = null;
     }
+  }
+
+  /** Abort the upload in flight, if there is one. Its rejection reaches
+   *  `structural`'s own catch like any other failure, so canceling reports
+   *  itself the same way a network error would. */
+  function cancelUpload(): void {
+    uploadAbort?.abort();
   }
 
   // Highlighted while a drag hovers a scene card; `null` the rest of the time.
@@ -486,11 +525,42 @@
                 <p class="mt-0.5 text-xs text-[var(--ink-dim)]">{doc.help}</p>
               {/if}
               {#if uploadingIndex === row.index}
-                <p class="mt-0.5 text-xs text-[var(--ink-dim)]">Uploading {uploadingName}…</p>
+                <div class="mt-1 flex items-center gap-2">
+                  <progress
+                    class="h-1.5 flex-1 accent-[var(--accent)]"
+                    value={uploadComputable ? uploadLoaded : undefined}
+                    max={uploadComputable ? uploadTotal : undefined}
+                  ></progress>
+                  <span class="shrink-0 text-xs text-[var(--ink-dim)]">
+                    {uploadLabel(uploadingName, uploadLoaded, uploadTotal, uploadComputable)}
+                  </span>
+                  <button
+                    type="button"
+                    class="{chip} shrink-0"
+                    disabled={!uploadAbort}
+                    onclick={cancelUpload}
+                  >
+                    Cancel
+                  </button>
+                </div>
               {/if}
             </div>
             {#if !readOnly}
               <div class="flex gap-1">
+                {#each moveDirections(row.index, scenes.length) as move (move.delta)}
+                  <button
+                    class={chip}
+                    aria-label={move.label}
+                    disabled={busy || structuralBlocked || move.atEdge}
+                    title={structuralBlocked
+                      ? "Save or discard the staged edits first — reordering renumbers the rest"
+                      : move.label}
+                    onclick={() =>
+                      void structural(() => api.moveScene(path, row.index, row.index + move.delta))}
+                  >
+                    {move.symbol}
+                  </button>
+                {/each}
                 <button
                   class={chip}
                   disabled={busy || structuralBlocked}
@@ -699,6 +769,7 @@
           {/each}
         </ul>
       {/if}
+      <Diagnostics diagnostics={report.diagnostics} />
       <LayerBlame layers={report.layers} />
       <p class="mt-1 text-xs text-[var(--ink-dim)]">
         The file is untouched and the changes are still staged.
