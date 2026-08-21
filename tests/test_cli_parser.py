@@ -4,9 +4,12 @@ The flag→config *mapping* is covered in test_quickcast (asserted against
 CLI_TO_CFG so a newly mapped flag is covered the day it's added); these
 pin the parser-level invariants that everything downstream assumes.
 
-Plus the two commands whose whole job is answering "which install is this?" —
-`--version` and `--print-schema-path`. Both exist because an upgrade is easy to
-believe you have done and hard to see, so what they print is the contract.
+Plus the four commands whose whole job is answering "which install is this,
+and is it current?" — `--version`, `--print-schema-path`,
+`--check-for-updates` and `--upgrade`. All four exist because an upgrade is
+easy to believe you have done and hard to see, so what they print (or run) is
+the contract; the mechanism itself (install detection, the PyPI query,
+running the installer) is tested in test_upgrade.py, not here.
 """
 
 from __future__ import annotations
@@ -17,11 +20,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from _fakes import quiet_logging
 
 import c64cast
 from c64cast import __version__
 from c64cast.app import config_serialize as ser
-from c64cast.app import paths
+from c64cast.app import paths, upgrade
 from c64cast.app.cli import _version_text, build_parser, main
 
 # The documented flag groups (CLAUDE.md "Flag groups (-h shows them
@@ -33,14 +39,20 @@ DOCUMENTED_GROUPS = {
     "audio",
     "vision input",
     "playlist",
+    "web console",
     "introspection",
+    "updates",
     "debug",
 }
 
 
 def _run(argv: list[str]) -> tuple[int, str]:
+    # quiet_logging() undoes any root-logger reconfiguration a config-free
+    # command's configure_logging() call performs — without it, that
+    # handler outlives this test and every later INFO record in the same
+    # worker process prints to the console (see _fakes.quiet_logging).
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    with quiet_logging(), contextlib.redirect_stdout(buf):
         rc = main(argv)
     return rc, buf.getvalue()
 
@@ -137,6 +149,40 @@ class ParserContractTest(unittest.TestCase):
         # Just the value, so `#:schema ` in front of it is a config's first line
         # and the bare output is what an editor's schema association wants.
         self.assertNotIn("#:schema", _run(["--print-schema-path"])[1])
+
+    def test_check_for_updates_dispatches_before_config_load(self):
+        # Mocked at the upgrade.py boundary (not requests/subprocess) so this
+        # stays a dispatch-order test, not a re-test of the PyPI query itself
+        # (that's test_upgrade.py's job) — and never touches the network.
+        with mock.patch.object(upgrade, "latest_release", return_value="0.3.0"):
+            rc, out = _run(["--check-for-updates"])
+        self.assertEqual(rc, 0)
+        self.assertIn("up to date", out)
+
+    def test_upgrade_dispatches_before_config_load(self):
+        # "unknown" install prints its explanation to stderr, not stdout —
+        # capture both so nothing leaks into the test run's own output.
+        err = io.StringIO()
+        with (
+            mock.patch.object(upgrade, "detect_install") as detect,
+            contextlib.redirect_stderr(err),
+        ):
+            detect.return_value = upgrade.Install("unknown", Path("/x"), None)
+            rc, _out = _run(["--upgrade", "--yes"])
+        self.assertEqual(rc, 2)  # "unknown" install: nothing to run, exit 2
+        detect.assert_called_once()
+
+    def test_check_for_updates_and_upgrade_and_yes_default_to_false(self):
+        ns = build_parser().parse_args([])
+        self.assertIs(ns.check_for_updates, False)
+        self.assertIs(ns.upgrade, False)
+        self.assertIs(ns.yes, False)
+
+    def test_check_for_updates_and_upgrade_and_yes_parse(self):
+        ns = build_parser().parse_args(["--check-for-updates", "--upgrade", "--yes"])
+        self.assertIs(ns.check_for_updates, True)
+        self.assertIs(ns.upgrade, True)
+        self.assertIs(ns.yes, True)
 
     def test_system_choices_are_the_two_video_standards(self):
         self.assertEqual(build_parser().parse_args(["-s", "PAL"]).system, "PAL")

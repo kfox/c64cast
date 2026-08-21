@@ -103,6 +103,15 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--dump-char-rom`** | Read the character ROM out of the C64 you're connected to and cache it, then exit. C64 text then renders in the real C64 font instead of a built-in ASCII substitute. This normally happens by itself on the first run; use the flag to re-dump (e.g. after swapping in a different character ROM). |
 | **`--install-char-rom`**<br>`PATH` | Install an existing character ROM dump (2 KB or 4 KB) from PATH instead of reading one off the C64, then exit. For machines c64cast can't dump from. No hardware needed. |
 
+## Updates
+
+<!-- table: fields -->
+| Flag | Description |
+|---|---|
+| **`--check-for-updates`** | Query PyPI for the latest c64cast release and report whether it's newer than this install, then exit. No config, no hardware, no mutation — see `--upgrade` to act on the answer. |
+| **`--upgrade`** | Detect how this install was made (uv tool, pipx, pip, or a development checkout) and run that installer's own upgrade command, which preserves whichever extras are already installed. Prompts for confirmation unless `--yes`. |
+| **`--yes`** | Skip `--upgrade`'s confirmation prompt (for scripts/CI). No effect without `--upgrade`. |
+
 ## Debug
 
 <!-- table: fields -->

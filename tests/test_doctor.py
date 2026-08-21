@@ -826,6 +826,84 @@ class EnvironmentProbeTest(unittest.TestCase):
         self.assertTrue(any(d.category == "environment" for d in diags))
 
 
+class UpdateProbeTest(unittest.TestCase):
+    """_probe_updates: the PyPI update check --doctor folds into the
+    ENVIRONMENT section, gated by validate_load_result's `probe_updates`
+    switch so a caller that only wants offline checks never triggers it."""
+
+    def test_probe_updates_defaults_to_off(self):
+        # probe_updates defaults to False: a caller (like config_store's
+        # pre-flight) that doesn't ask for it must not make a network call.
+        with mock.patch.object(doctor, "_probe_updates") as probe:
+            doctor.validate_load_result(_load(""), probe_u64=False, probe_environment=False)
+        probe.assert_not_called()
+
+    def test_probe_updates_runs_when_requested(self):
+        with mock.patch.object(doctor, "_probe_updates", return_value=[]) as probe:
+            doctor.validate_load_result(
+                _load(""), probe_u64=False, probe_environment=False, probe_updates=True
+            )
+        probe.assert_called_once()
+
+    def test_skipped_in_a_source_checkout(self):
+        with mock.patch.object(doctor, "_running_from_checkout", return_value=True):
+            diags = doctor._probe_updates()
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertEqual(diags[0].category, "environment")
+        self.assertIn("source checkout", diags[0].message)
+
+    def test_skipped_when_pypi_is_unreachable(self):
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value=None),
+        ):
+            diags = doctor._probe_updates()
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("could not reach PyPI", diags[0].message)
+
+    def test_warns_with_an_upgrade_hint_when_a_newer_release_exists(self):
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value="99.0.0"),
+            mock.patch("c64cast.app.upgrade.is_newer", return_value=True),
+        ):
+            diags = doctor._probe_updates()
+        self.assertEqual(diags[0].level, "warn")
+        self.assertIn("99.0.0", diags[0].message)
+        self.assertEqual(diags[0].hint, "c64cast --upgrade")
+
+    def test_ok_when_already_current(self):
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value="0.3.0"),
+            mock.patch("c64cast.app.upgrade.is_newer", return_value=False),
+        ):
+            diags = doctor._probe_updates()
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("up to date", diags[0].message)
+
+    def test_ok_when_versions_could_not_be_compared(self):
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value="bogus"),
+            mock.patch("c64cast.app.upgrade.is_newer", return_value=None),
+        ):
+            diags = doctor._probe_updates()
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("could not compare", diags[0].message)
+
+    def test_never_errors_on_a_network_failure(self):
+        # A flaky network says nothing about whether the install is broken —
+        # this probe must never reach "error", only "ok" or "warn".
+        with (
+            mock.patch.object(doctor, "_running_from_checkout", return_value=False),
+            mock.patch("c64cast.app.upgrade.latest_release", return_value=None),
+        ):
+            diags = doctor._probe_updates()
+        self.assertTrue(all(d.level != "error" for d in diags))
+
+
 class OfflineDacCurveCalibrationUncertaintyTest(unittest.TestCase):
     """_validate_dac_curve_resolution (offline — no live device identity)
     must not claim a confident 'no calibration applies' when a live run's

@@ -52,6 +52,7 @@ from .scene_factory import (
     validate_sid_model_cfg,
     validate_wled_cfg,
 )
+from .upgrade import install_root
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +103,10 @@ _HARD_DEPS: tuple[tuple[str, str], ...] = (
 
 # Repo root (parent of the package dir; this file sits two levels below the
 # package). Used to locate the project .venv and run `uv lock --check` from
-# the right directory.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# the right directory. `install_root()` is the single home for this
+# expression — `cli.py`'s `_version_text` and `upgrade.py`'s install
+# detection both call it too, rather than each computing it independently.
+_REPO_ROOT = install_root()
 
 
 def _running_from_checkout() -> bool:
@@ -125,7 +128,11 @@ def _running_from_checkout() -> bool:
 
 
 def validate_load_result(
-    loaded: LoadResult, *, probe_u64: bool = True, probe_environment: bool = True
+    loaded: LoadResult,
+    *,
+    probe_u64: bool = True,
+    probe_environment: bool = True,
+    probe_updates: bool = False,
 ) -> list[Diagnostic]:
     """Run every config + environment check and collect the results.
 
@@ -135,6 +142,15 @@ def validate_load_result(
     config good to launch". Those facts don't change per config and don't
     change per click, so `config_store.validate_ref`'s pre-flight (run on
     every Start/Switch) skips them; `--doctor` still runs them every time.
+
+    `probe_updates` is its own, separately-defaulted-off switch rather than
+    folded into `probe_environment`: it is the one probe here that hits the
+    network unconditionally (a PyPI query, not a U64), and it answers a
+    question ("is a newer release out") that has nothing to do with whether
+    *this* machine is set up right — so a caller that wants the offline
+    installation checks doesn't have to also accept a network call to get
+    them. Defaults to False so `config_store.validate_ref`'s pre-flight, and
+    any other caller that doesn't ask for it, stays offline unchanged.
 
     Per-scene validation runs `validate_scene_cfg` inside try/except so a
     single broken scene doesn't hide the others. Cross-system orchestrator
@@ -149,6 +165,8 @@ def validate_load_result(
         out.extend(_probe_machine_settings())
         out.extend(_probe_data_dirs())
         out.extend(_probe_char_rom())
+    if probe_updates:
+        out.extend(_probe_updates())
     out.extend(_validate_unknown_keys(loaded))
     out.extend(_validate_schema_directive(loaded))
     out.extend(_validate_scenes(loaded))
@@ -257,6 +275,45 @@ def _probe_environment() -> list[Diagnostic]:
     if _running_from_checkout():
         out.extend(_probe_uv_lock())
     return out
+
+
+def _probe_updates() -> list[Diagnostic]:
+    """Best-effort PyPI check for a newer c64cast release. Reuses the
+    ENVIRONMENT category so the row sits beside the `c64cast version` line it
+    answers (:func:`_probe_environment`), rather than opening a category of
+    its own for one row.
+
+    Meaningless in a source checkout (there's no installed distribution to
+    upgrade) — skip rather than query. Never `error`: a network hiccup here
+    says nothing about whether the install itself is broken, so it can only
+    ever `warn` (an update exists) or report `ok` (current, or the check
+    itself couldn't run). See :func:`c64cast.app.upgrade.run_upgrade` for the
+    command this Diagnostic's hint points at."""
+    from c64cast import __version__
+
+    from .upgrade import is_newer, latest_release
+
+    if _running_from_checkout():
+        return [Diagnostic("ok", "environment", "update check", "skipped (source checkout)")]
+
+    remote = latest_release()
+    if remote is None:
+        return [Diagnostic("ok", "environment", "update check", "skipped (could not reach PyPI)")]
+
+    newer = is_newer(remote, __version__)
+    if newer is None:
+        return [Diagnostic("ok", "environment", "update check", f"could not compare to {remote}")]
+    if newer:
+        return [
+            Diagnostic(
+                "warn",
+                "environment",
+                "update check",
+                f"{remote} is available (running {__version__})",
+                hint="c64cast --upgrade",
+            )
+        ]
+    return [Diagnostic("ok", "environment", "update check", f"up to date ({__version__})")]
 
 
 def _probe_opencv_provider() -> list[Diagnostic]:

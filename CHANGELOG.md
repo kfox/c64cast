@@ -54,6 +54,21 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`--upgrade` and `--check-for-updates` — one command, any install method.**
+  `--version` printing its install directory (0.3.0) still left recognizing
+  `uv/tools/` or `pipx/venvs/` in that path, and running the matching command,
+  as something the reader had to do. `--upgrade` does both itself: it detects
+  whether this install is `uv tool`, pipx, plain pip, or a development
+  checkout, and runs that installer's own upgrade command — keeping whichever
+  extras (`[all]`, `[video,midi,web]`, ...) are already installed, since `uv
+  tool upgrade` and `pipx upgrade` both replay their own recorded install spec.
+  It prints the exact command first and asks before running it (`--yes` skips
+  the prompt for scripts/CI); a development checkout additionally refuses on
+  uncommitted changes rather than `git pull` over them. `--check-for-updates`
+  asks the same question — a newer release exists, or it doesn't — without
+  touching anything, and `--doctor` folds the same check into its ENVIRONMENT
+  section (skipped under `--skip-probe`, same as the U64 reachability probe).
+
 - **`[color].flicker_tolerance` — colors the C64 cannot draw, by alternating two
   of the ones it can.** The bitmap modes hold two screen pages over one shared
   bitmap and flip between them every video field, so the eye fuses each cell's
