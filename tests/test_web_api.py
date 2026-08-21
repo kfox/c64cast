@@ -882,6 +882,22 @@ class ConfigCreateDeleteRouteTest(WebApiTestCase):
         self.assertEqual(r.status_code, 409)
         self.assertTrue((self.root / "gig.toml").exists())
 
+    def test_deleting_a_stopped_configs_former_config_is_allowed(self):
+        # status().config_path deliberately keeps naming the last-started
+        # config after a stop (so the browser has something to preselect at
+        # idle) — the delete route must not mistake that leftover pointer for
+        # an active session and refuse a config nothing is using anymore.
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
+            self.assertReaches(SessionState.RUNNING)
+            c.post("/api/session/stop", headers=AUTH)
+            self.assertReaches(SessionState.IDLE)
+            still_named = c.get("/api/session", headers=AUTH).json()["config_path"]
+            self.assertTrue(still_named.endswith("gig.toml"), still_named)
+            r = c.delete("/api/configs/shows/gig.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse((self.root / "gig.toml").exists())
+
     def test_deleting_a_missing_config_is_a_404(self):
         with self.client() as c:
             r = c.delete("/api/configs/shows/nope.toml", headers=AUTH)

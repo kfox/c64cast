@@ -444,6 +444,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `.vpl` file to describe a machine with a custom palette loaded — an Ultimate
   won't serve its own `.vpl` over the network, so point this at a local copy.
 
+- **Deleting a config no longer says "stop it" after you already have.**
+  `DELETE /api/configs/{ref}` refused with *"…is the running config — stop or
+  switch away first"* even once the session was idle, because the status
+  feed's `config_path` deliberately keeps naming the last-started config after
+  a stop (so the browser has something to preselect). The route now checks
+  whether the supervisor is actually mid-show with that config, not just
+  whether it is the last one named.
+
 ### Changed
 
 - **British spellings are gone from the prose, the code and the console.** The
