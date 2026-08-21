@@ -22,6 +22,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import quiet_logging
+
 import c64cast
 from c64cast import __version__
 from c64cast.app import config_serialize as ser
@@ -45,8 +47,12 @@ DOCUMENTED_GROUPS = {
 
 
 def _run(argv: list[str]) -> tuple[int, str]:
+    # quiet_logging() undoes any root-logger reconfiguration a config-free
+    # command's configure_logging() call performs — without it, that
+    # handler outlives this test and every later INFO record in the same
+    # worker process prints to the console (see _fakes.quiet_logging).
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    with quiet_logging(), contextlib.redirect_stdout(buf):
         rc = main(argv)
     return rc, buf.getvalue()
 
