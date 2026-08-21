@@ -765,7 +765,8 @@ class MediaUploadTest(WebApiTestCase):
         with self.client() as c:
             with self.assertRaises(RuntimeError):
                 c.put("/api/media/cut.mp4", headers=AUTH, content=cut_short())
-        self.assertEqual(list(self.root.glob("*cut*")), [])
+        self.assertFalse((self.root / "cut.mp4").exists())
+        self.assertEqual(list(self.root.glob("*.part")), [])
 
 
 class LibraryRouteTest(WebApiTestCase):

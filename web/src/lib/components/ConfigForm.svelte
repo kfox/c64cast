@@ -97,9 +97,9 @@
   let uploadLoaded = $state(0);
   let uploadTotal = $state(0);
   let uploadComputable = $state(true);
-  // Not `$state`: nothing renders it directly, `cancelUpload` just needs the
-  // one in flight.
-  let uploadAbort: AbortController | null = null;
+  // `$state` so the Cancel chip can disable itself once the upload it would
+  // abort has already finished.
+  let uploadAbort = $state<AbortController | null>(null);
   // Set by an in-flight upload just before its `structural()` call, so the
   // "Saved." banner can say what was actually uploaded rather than just that
   // a save happened.
@@ -329,6 +329,9 @@
           },
           signal: uploadAbort?.signal,
         });
+        // The upload itself is done; abort() from here on would be a no-op
+        // (the XHR is already in state DONE), so stop offering it.
+        uploadAbort = null;
         uploadNote = uploadMessage(uploaded);
         onuploaded?.(form.scenes[index]?.type ?? "");
         return api.patchConfig(path, [{ scene: index, field: fieldName, value: uploaded.spec }]);
@@ -481,6 +484,7 @@
                   <button
                     type="button"
                     class="{chip} shrink-0"
+                    disabled={!uploadAbort}
                     onclick={cancelUpload}
                   >
                     Cancel
