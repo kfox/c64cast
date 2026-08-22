@@ -26,6 +26,7 @@ from c64cast.video.video import (
     _plan_decode_size,
     _SampleProgressTap,
     ensure_pyav,
+    probe_container_title,
     scan_video_samples,
 )
 
@@ -68,6 +69,75 @@ class RemoteUrlTest(unittest.TestCase):
         self.assertFalse(_is_remote_url("/home/user/assets/videos/clip.mp4"))
         self.assertFalse(_is_remote_url("assets/videos/clip.webm"))
         self.assertFalse(_is_remote_url("file:///tmp/clip.mp4"))
+
+
+class ProbeContainerTitleTest(unittest.TestCase):
+    """A cheap header-only peek at a local file's own `title` tag — no real
+    PyAV container, so av_open/ensure_pyav are faked."""
+
+    class _FakeContainer:
+        def __init__(self, metadata):
+            self.metadata = metadata
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def test_remote_url_skipped_without_touching_pyav(self):
+        # Never even calls ensure_pyav/av_open — a probe here would be real
+        # network I/O just to pick a display name.
+        with (
+            mock.patch("c64cast.video.video.ensure_pyav") as ensure,
+            mock.patch("c64cast.video.video.av_open") as opener,
+        ):
+            self.assertIsNone(probe_container_title("https://example.com/clip.mp4"))
+        ensure.assert_not_called()
+        opener.assert_not_called()
+
+    def test_missing_local_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(probe_container_title(os.path.join(tmp, "nope.mp4")))
+
+    def test_pyav_unavailable_returns_none(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+            with mock.patch("c64cast.video.video.ensure_pyav", return_value=False):
+                self.assertIsNone(probe_container_title(f.name))
+
+    def test_open_failure_returns_none(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+            with (
+                mock.patch("c64cast.video.video.ensure_pyav", return_value=True),
+                mock.patch("c64cast.video.video.av_open", side_effect=OSError("bad container")),
+            ):
+                self.assertIsNone(probe_container_title(f.name))
+
+    def test_title_tag_returned_and_container_closed(self):
+        container = self._FakeContainer({"title": "Cool Clip"})
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+            with (
+                mock.patch("c64cast.video.video.ensure_pyav", return_value=True),
+                mock.patch("c64cast.video.video.av_open", return_value=container),
+            ):
+                self.assertEqual(probe_container_title(f.name), "Cool Clip")
+        self.assertTrue(container.closed)
+
+    def test_no_title_tag_returns_none(self):
+        container = self._FakeContainer({"encoder": "Lavf62.12.101"})
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+            with (
+                mock.patch("c64cast.video.video.ensure_pyav", return_value=True),
+                mock.patch("c64cast.video.video.av_open", return_value=container),
+            ):
+                self.assertIsNone(probe_container_title(f.name))
+
+    def test_blank_title_tag_returns_none(self):
+        container = self._FakeContainer({"title": "   "})
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+            with (
+                mock.patch("c64cast.video.video.ensure_pyav", return_value=True),
+                mock.patch("c64cast.video.video.av_open", return_value=container),
+            ):
+                self.assertIsNone(probe_container_title(f.name))
 
 
 class NormalizationGainTest(unittest.TestCase):

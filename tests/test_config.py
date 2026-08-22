@@ -1924,11 +1924,13 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
         return scene
 
     def test_youtube_url_resolved_with_timestamp_and_title(self):
+        from c64cast.app.quickcast import ResolvedMedia
+
         with (
             mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
                 "c64cast.app.quickcast.resolve_media_url",
-                return_value=("http://stream/v.m3u8", "video", "Cool Tune"),
+                return_value=ResolvedMedia("http://stream/v.m3u8", "video", title="Cool Tune"),
             ),
         ):
             scene = self._build("https://youtu.be/abc?t=1m30s")
@@ -1936,23 +1938,55 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
         self.assertEqual(scene.start_s, 90.0)
         self.assertEqual(scene.name, "Cool Tune")
 
-    def test_explicit_start_s_wins_over_url_timestamp(self):
+    def test_youtube_url_carries_uploader_license_webpage_url_onto_scene(self):
+        from c64cast.app.quickcast import ResolvedMedia
+
         with (
             mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
                 "c64cast.app.quickcast.resolve_media_url",
-                return_value=("http://stream/v.m3u8", "video", "T"),
+                return_value=ResolvedMedia(
+                    "http://stream/v.m3u8",
+                    "video",
+                    title="Cool Tune",
+                    uploader="Some Channel",
+                    license="CC BY",
+                    webpage_url="https://youtu.be/abc",
+                ),
+            ),
+        ):
+            scene = self._build("https://youtu.be/abc")
+        self.assertEqual(scene.source_uploader, "Some Channel")
+        self.assertEqual(scene.source_license, "CC BY")
+        self.assertEqual(scene.source_webpage_url, "https://youtu.be/abc")
+
+    def test_local_video_has_no_source_attribution(self):
+        scene = self._build("video.mp4")
+        self.assertIsNone(scene.source_uploader)
+        self.assertIsNone(scene.source_license)
+        self.assertIsNone(scene.source_webpage_url)
+
+    def test_explicit_start_s_wins_over_url_timestamp(self):
+        from c64cast.app.quickcast import ResolvedMedia
+
+        with (
+            mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
+            mock.patch(
+                "c64cast.app.quickcast.resolve_media_url",
+                return_value=ResolvedMedia("http://stream/v.m3u8", "video", title="T"),
             ),
         ):
             scene = self._build("https://youtu.be/abc?t=30", start_s=99.0)
         self.assertEqual(scene.start_s, 99.0)
 
     def test_audio_only_url_rejected_at_build(self):
+        from c64cast.app.quickcast import ResolvedMedia
+
         with (
             mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=True),
             mock.patch(
                 "c64cast.app.quickcast.resolve_media_url",
-                return_value=("http://stream/a", "audio", None),
+                return_value=ResolvedMedia("http://stream/a", "audio"),
             ),
         ):
             with self.assertRaisesRegex(ValueError, "audio"):

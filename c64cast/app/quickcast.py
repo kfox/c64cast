@@ -40,6 +40,7 @@ so a newly mapped flag is covered on the day it's added.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import glob
 import logging
 import os
@@ -50,6 +51,30 @@ from .config import Config, SceneCfg, apply_machine_settings, merge_cli
 from .scene_factory import AUDIO_EXTS, PICTURE_EXTS, PROGRAM_EXTS, SID_EXTS, VIDEO_EXTS
 
 log = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class ResolvedMedia:
+    """One :func:`resolve_media_url` / :func:`resolve_video_url` result.
+
+    A frozen object rather than a tuple so a field can be added without a
+    positional-tuple widening — the tuple this replaces had already grown
+    once, for `title`. `uploader`/`license`/`webpage_url` come from yt-dlp's
+    info dict and stay `None` for a direct URL (nothing to extract) and for
+    every field yt-dlp itself left blank — most sites, YouTube included,
+    leave `license` empty even for licensed content, so `uploader` is
+    offered alongside it as an attribution lead rather than a substitute."""
+
+    stream_url: str
+    kind: str  # "video" | "audio"
+    title: str | None = None
+    uploader: str | None = None
+    license: str | None = None
+    webpage_url: str | None = None
+    # Set only by resolve_video_url, from the URL's own t=/start=/#t=
+    # timestamp — resolve_media_url has no notion of "video scene" and
+    # never touches this field.
+    start_s: float | None = None
 
 
 class _YtDlpLog:
@@ -260,15 +285,17 @@ def classify_local(arg: str, *, display: str | None, duration_s: float | None) -
     return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
 
 
-def resolve_media_url(url: str) -> tuple[str, str, str | None]:
+def resolve_media_url(url: str) -> ResolvedMedia:
     """Resolve a URL to a directly-playable media URL.
 
-    Returns ``(stream_url, kind, title)`` where ``kind`` is ``"video"`` or
-    ``"audio"``. Direct media URLs (path ends in a known media extension) pass
-    through untouched — PyAV/ffmpeg opens http(s) directly. Everything else is
-    resolved via yt-dlp (YouTube and every other site it supports), preferring a
-    single *progressive* stream (combined audio+video in one container) because
-    PyAV can't merge separate DASH streams without downloading — and 360/720p is
+    Returns a :class:`ResolvedMedia` — ``kind`` is ``"video"`` or ``"audio"``,
+    and ``uploader``/``license``/``webpage_url`` are filled from yt-dlp's info
+    dict when available. Direct media URLs (path ends in a known media
+    extension) pass through untouched — PyAV/ffmpeg opens http(s) directly, so
+    only ``stream_url``/``kind`` are set. Everything else is resolved via
+    yt-dlp (YouTube and every other site it supports), preferring a single
+    *progressive* stream (combined audio+video in one container) because PyAV
+    can't merge separate DASH streams without downloading — and 360/720p is
     ample for a 320x200 downscale.
 
     Raises RuntimeError if a non-direct URL needs yt-dlp but it isn't installed,
@@ -278,9 +305,9 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
     """
     path = urllib.parse.urlsplit(url).path.lower()
     if path.endswith(VIDEO_EXTS):
-        return url, "video", None
+        return ResolvedMedia(url, "video")
     if path.endswith(AUDIO_EXTS):
-        return url, "audio", None
+        return ResolvedMedia(url, "audio")
 
     try:
         import yt_dlp  # type: ignore[import-untyped]  # noqa: PLC0415  (lazy; optional extra)
@@ -329,7 +356,14 @@ def resolve_media_url(url: str) -> tuple[str, str, str | None]:
         raise ValueError(f"yt-dlp returned no stream URL for {url}")
     vcodec = info.get("vcodec")
     kind = "audio" if (vcodec is None or vcodec == "none") else "video"
-    return stream_url, kind, info.get("title")
+    return ResolvedMedia(
+        stream_url,
+        kind,
+        title=info.get("title"),
+        uploader=info.get("uploader"),
+        license=info.get("license"),
+        webpage_url=info.get("webpage_url"),
+    )
 
 
 def url_needs_ytdlp(url: str) -> bool:
@@ -349,22 +383,22 @@ def _ytdlp_available() -> bool:
     return importlib.util.find_spec("yt_dlp") is not None
 
 
-def resolve_video_url(url: str) -> tuple[str, float | None, str | None]:
+def resolve_video_url(url: str) -> ResolvedMedia:
     """Resolve a media URL for a **video** scene.
 
-    Returns ``(stream_url, start_offset_s, title)``: the playable stream URL,
-    the URL's ``t=``/``start=``/``#t=`` timestamp in seconds (None if absent),
-    and the resolved title (None for direct URLs). Raises ValueError if the URL
-    resolves to audio-only (deferred). Shared by quick playback and the config
-    loader (:func:`c64cast.app.config.build_scene`) so both interfaces resolve URLs
+    Same :class:`ResolvedMedia` as :func:`resolve_media_url`, with ``start_s``
+    filled from the URL's own ``t=``/``start=``/``#t=`` timestamp (None if
+    absent). Raises ValueError if the URL resolves to audio-only (deferred).
+    Shared by quick playback and the config loader
+    (:func:`c64cast.app.config.build_scene`) so both interfaces resolve URLs
     and honor timestamps identically."""
-    stream_url, kind, title = resolve_media_url(url)
-    if kind != "video":
+    media = resolve_media_url(url)
+    if media.kind != "video":
         raise ValueError(
             f"{url!r} resolves to audio only. Reactive audio playback is "
             "supported for local files (`c64cast tune.mp3`) but not yet for URLs."
         )
-    return stream_url, _parse_start_offset(url), title
+    return dataclasses.replace(media, start_s=_parse_start_offset(url))
 
 
 def classify_url(arg: str, *, display: str | None) -> SceneCfg:
