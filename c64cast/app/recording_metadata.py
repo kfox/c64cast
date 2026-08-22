@@ -18,11 +18,13 @@ end up in a public video description:
   `Config`/`SceneCfg`/scene instance state — no extra U64 traffic, which
   matters mid-recording.
 
-Video scenes get a `copyright` **placeholder** rather than a guess — c64cast
+Video scenes get a `copyright` of **unknown** rather than a guess — c64cast
 doesn't collect yt-dlp uploader/license data today (see the note in
-docs/architecture.md). Waveform / generative-sid scenes are different: the
-PSID header (`SidHeader.name`/`author`/`released`) usually already carries
-real title/author/copyright text, so that's used verbatim.
+docs/architecture.md). It reads as a statement, not an instruction, because
+this blob is written to be pasted into a public description and the line goes
+out either way. Waveform / generative-sid scenes are different: the PSID
+header (`SidHeader.name`/`author`/`released`) usually already carries real
+title/author/copyright text, so that's used verbatim.
 """
 
 from __future__ import annotations
@@ -50,7 +52,14 @@ log = logging.getLogger("c64cast.recording")
 # of the active log formatter (rich/plain terminal vs. file handler).
 SCENE_CONFIG_MARKER = "SCENE_CONFIG_JSON"
 
-_PLACEHOLDER_COPYRIGHT = "TODO: add source link / license / attribution"
+# The one field in the payload c64cast cannot fill from the run: it never reads
+# the source's license. Written as an admission rather than a "TODO:" — the
+# blob's whole purpose is to be pasted somewhere public, so a line that is
+# false when published is worse than one that is merely unhelpful.
+_UNKNOWN_COPYRIGHT = (
+    "unknown — c64cast does not read the source's license; add the link, "
+    "license and attribution before publishing"
+)
 
 # SceneCfg fields already surfaced elsewhere in the payload in resolved form
 # (scene.name, scene.display_mode, scene.duration_s, scene.target_fps,
@@ -124,7 +133,7 @@ def _video_source(scene: Scene) -> dict[str, Any]:
         "url": raw_spec if is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
-        "copyright": _PLACEHOLDER_COPYRIGHT,
+        "copyright": _UNKNOWN_COPYRIGHT,
     }
 
 
@@ -272,7 +281,7 @@ def render_description(payload: dict[str, Any]) -> str:
 
     if source.get("url"):
         lines.append(f"Source video: {source['url']}")
-        lines.append(f"Copyright: {source.get('copyright', _PLACEHOLDER_COPYRIGHT)}")
+        lines.append(f"Copyright: {source.get('copyright', _UNKNOWN_COPYRIGHT)}")
     elif source.get("local_file"):
         lines.append(f"Source file: {source['local_file']}")
         if "copyright" in source:

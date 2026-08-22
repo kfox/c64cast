@@ -344,6 +344,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A recorded scene's description no longer hands you a `TODO`.** Every video
+  scene's `SCENE_CONFIG_JSON` carried
+  `copyright: TODO: add source link / license / attribution`, and
+  `scripts/scene_config_to_description.py` printed it straight into the block
+  you paste under a video — so an unedited paste published an instruction to
+  itself. The line now reads `unknown`, and says why: c64cast records what it
+  played, not what you are allowed to publish. A tune is unaffected — a PSID
+  header's own author and year were always reported as written.
+
 - **Double-buffered bitmap video no longer tears when the link is busy.** The
   bank swap is committed by a raster IRQ at line 248, which is inside vblank —
   but a host DMA write halts the C64's CPU for about a microsecond per byte, so

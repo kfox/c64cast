@@ -16,7 +16,7 @@ import unittest
 
 from c64cast.app.config import Config, SceneCfg
 from c64cast.app.recording_metadata import (
-    _PLACEHOLDER_COPYRIGHT,
+    _UNKNOWN_COPYRIGHT,
     SCENE_CONFIG_MARKER,
     build_scene_recording_metadata,
     extract_scene_configs,
@@ -77,7 +77,7 @@ class VideoSourceTest(unittest.TestCase):
         source = payload["source"]
         self.assertEqual(source["url"], "https://youtu.be/abc123")
         self.assertIsNone(source["local_file"])
-        self.assertEqual(source["copyright"], _PLACEHOLDER_COPYRIGHT)
+        self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
         # The resolved CDN stream URL must never leak into the blob.
         self.assertNotIn("cdn.example.com", json.dumps(payload))
 
@@ -88,7 +88,7 @@ class VideoSourceTest(unittest.TestCase):
         source = payload["source"]
         self.assertIsNone(source["url"])
         self.assertEqual(source["local_file"], "clip.mp4")
-        self.assertEqual(source["copyright"], _PLACEHOLDER_COPYRIGHT)
+        self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
 
 
 class WaveformSourceTest(unittest.TestCase):
@@ -157,7 +157,10 @@ class RenderDescriptionTest(unittest.TestCase):
         text = render_description(payload)
         self.assertIn("My Clip", text)
         self.assertIn("https://youtu.be/abc123", text)
-        self.assertIn(_PLACEHOLDER_COPYRIGHT, text)
+        self.assertIn(_UNKNOWN_COPYRIGHT, text)
+        # The blob is written to be pasted into a public description, so the
+        # copyright line has to survive being published unedited.
+        self.assertNotIn("TODO", text)
         self.assertIn("c64cast", text)
 
 

@@ -987,6 +987,11 @@ It is designed to be pasted into a public video description, which is why two
 things are deliberately absent: no connection details of any kind — no address,
 no password, no serial port — and nothing resolved past the value you configured.
 
+One line is yours to finish. A video scene's `copyright` reads `unknown` —
+c64cast records what it played, never what you are allowed to publish, and it
+would rather say so than guess. A tune is the exception: a PSID header usually
+names its own author and year, and those are reported as written.
+
 ```bash
 c64cast --config show.toml --log-file run.log
 python scripts/scene_config_to_description.py run.log
