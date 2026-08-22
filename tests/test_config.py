@@ -1956,15 +1956,14 @@ class BuildSceneVideoUrlTest(unittest.TestCase):
             ),
         ):
             scene = self._build("https://youtu.be/abc")
-        self.assertEqual(scene.source_uploader, "Some Channel")
-        self.assertEqual(scene.source_license, "CC BY")
-        self.assertEqual(scene.source_webpage_url, "https://youtu.be/abc")
+        assert scene.source_info is not None
+        self.assertEqual(scene.source_info.uploader, "Some Channel")
+        self.assertEqual(scene.source_info.license, "CC BY")
+        self.assertEqual(scene.source_info.webpage_url, "https://youtu.be/abc")
 
     def test_local_video_has_no_source_attribution(self):
         scene = self._build("video.mp4")
-        self.assertIsNone(scene.source_uploader)
-        self.assertIsNone(scene.source_license)
-        self.assertIsNone(scene.source_webpage_url)
+        self.assertIsNone(scene.source_info)
 
     def test_explicit_start_s_wins_over_url_timestamp(self):
         from c64cast.app.quickcast import ResolvedMedia

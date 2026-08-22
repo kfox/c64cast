@@ -104,6 +104,8 @@ def probe_container_title(path: str) -> str | None:
         return None
     try:
         title = container.metadata.get("title")
+    except Exception:
+        return None
     finally:
         container.close()
     return title.strip() if title and title.strip() else None

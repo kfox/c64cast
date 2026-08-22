@@ -1881,10 +1881,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         scene.name = video_name
     # Stashed for recording_metadata._video_source — never read by playback
     # itself, only by the SCENE_CONFIG_JSON snapshot at scene start.
-    if resolved is not None:
-        scene.source_uploader = resolved.uploader
-        scene.source_license = resolved.license
-        scene.source_webpage_url = resolved.webpage_url
+    scene.source_info = resolved
     if s.target_fps is None:
         # The sampler plays entirely off the C64 bus, so it neither imposes
         # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs

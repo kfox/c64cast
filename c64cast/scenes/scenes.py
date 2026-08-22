@@ -65,6 +65,7 @@ from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
     from c64cast.app.config import AudioCfg, ColorCfg
+    from c64cast.app.quickcast import ResolvedMedia
     from c64cast.audio.audio_source import AudioSource
 
     from .effects import FrameEffect
@@ -1347,13 +1348,10 @@ class VideoScene(MediaFileMixin, Scene):
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self.wall_start_time = 0.0
-        # yt-dlp attribution, when the file came from a resolved URL (None for
-        # a local file, and for a URL yt-dlp itself left the field blank).
-        # Set post-construction by scene_factory._build_video; read by
+        # The resolved URL's yt-dlp attribution (None for a local file). Set
+        # post-construction by scene_factory._build_video; read by
         # recording_metadata._video_source, nowhere in playback itself.
-        self.source_uploader: str | None = None
-        self.source_license: str | None = None
-        self.source_webpage_url: str | None = None
+        self.source_info: ResolvedMedia | None = None
         # Seconds into the file to begin playback (0 = from the start). Passed
         # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
         # derives this from a URL's t=/start= timestamp.

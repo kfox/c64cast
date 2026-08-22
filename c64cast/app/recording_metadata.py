@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from c64cast.scenes.scenes import Scene
 
     from .config import Config
+    from .quickcast import ResolvedMedia
 
 log = logging.getLogger("c64cast.recording")
 
@@ -56,14 +57,13 @@ log = logging.getLogger("c64cast.recording")
 # of the active log formatter (rich/plain terminal vs. file handler).
 SCENE_CONFIG_MARKER = "SCENE_CONFIG_JSON"
 
-# The one field in the payload c64cast cannot fill from the run: it never reads
-# the source's license. Written as an admission rather than a "TODO:" — the
-# blob's whole purpose is to be pasted somewhere public, so a line that is
-# false when published is worse than one that is merely unhelpful.
-_UNKNOWN_COPYRIGHT = (
-    "unknown — c64cast does not read the source's license; add the link, "
-    "license and attribution before publishing"
-)
+# Fallback for when the source's license genuinely isn't available (yt-dlp
+# gave neither a license nor an uploader, or the local file's container
+# carries none of _COPYRIGHT_METADATA_TAGS). Written as an admission rather
+# than a "TODO:" — the blob's whole purpose is to be pasted somewhere public,
+# so a line that is false when published is worse than one that is merely
+# unhelpful.
+_UNKNOWN_COPYRIGHT = "unknown — add the link, license and attribution before publishing"
 
 # SceneCfg fields already surfaced elsewhere in the payload in resolved form
 # (scene.name, scene.display_mode, scene.duration_s, scene.target_fps,
@@ -129,23 +129,22 @@ def _sid_header_fields(header: Any) -> dict[str, str]:
 
 
 # Container tags that plausibly carry rights info, checked in this order.
-# PyAV normalizes tag keys to lowercase; most casual clips (including every
-# yt-dlp remux checked while building this) carry none of them, but stock
-# footage and edited exports routinely do.
+# PyAV normalizes tag keys to lowercase; most casual clips carry none of
+# them, but stock footage and edited exports routinely do.
 _COPYRIGHT_METADATA_TAGS = ("copyright", "rights", "license")
 
 
-def _url_copyright(scene: Scene) -> str:
+def _url_copyright(resolved: ResolvedMedia | None) -> str:
     """A resolved URL's yt-dlp `license`, verbatim, when the site supplied
     one. Falls back to naming the uploader as an attribution lead — not a
     license, but more than nothing — and only to `_UNKNOWN_COPYRIGHT` when
     yt-dlp gave neither."""
-    license_ = getattr(scene, "source_license", None)
-    if license_:
-        return license_
-    uploader = getattr(scene, "source_uploader", None)
-    if uploader:
-        return f"unknown — uploaded by {uploader}; verify the license before publishing"
+    if resolved is None:
+        return _UNKNOWN_COPYRIGHT
+    if resolved.license:
+        return resolved.license
+    if resolved.uploader:
+        return f"unknown — uploaded by {resolved.uploader}; verify the license before publishing"
     return _UNKNOWN_COPYRIGHT
 
 
@@ -166,16 +165,19 @@ def _video_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     raw_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
     filepath = getattr(scene, "filepath", None)
-    is_url = isinstance(raw_spec, str) and raw_spec.lower().startswith(("http://", "https://"))
+    is_url = isinstance(raw_spec, str) and raw_spec.strip().lower().startswith(
+        ("http://", "https://")
+    )
     out: dict[str, Any] = {
         "url": raw_spec if is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
     }
     if is_url:
-        out["uploader"] = getattr(scene, "source_uploader", None)
-        out["webpage_url"] = getattr(scene, "source_webpage_url", None)
-        out["copyright"] = _url_copyright(scene)
+        resolved = getattr(scene, "source_info", None)
+        out["uploader"] = getattr(resolved, "uploader", None)
+        out["webpage_url"] = getattr(resolved, "webpage_url", None)
+        out["copyright"] = _url_copyright(resolved)
     else:
         out["copyright"] = _local_file_copyright(scene)
     return out

@@ -15,6 +15,7 @@ import json
 import unittest
 
 from c64cast.app.config import Config, SceneCfg
+from c64cast.app.quickcast import ResolvedMedia
 from c64cast.app.recording_metadata import (
     _UNKNOWN_COPYRIGHT,
     SCENE_CONFIG_MARKER,
@@ -33,9 +34,7 @@ class _FakeVideoScene:
         file_spec,
         filepath,
         display_mode=None,
-        source_uploader=None,
-        source_license=None,
-        source_webpage_url=None,
+        source_info: ResolvedMedia | None = None,
         source=None,
     ):
         self._cfg = SceneCfg(type="video", file=file_spec)
@@ -47,9 +46,7 @@ class _FakeVideoScene:
         self.audio = object()
         self.effect = None
         self.overlays = []
-        self.source_uploader = source_uploader
-        self.source_license = source_license
-        self.source_webpage_url = source_webpage_url
+        self.source_info = source_info
         self.source = source  # a fake AVFileSource, for local container-tag tests
 
 
@@ -112,9 +109,13 @@ class VideoSourceTest(unittest.TestCase):
             "My Clip",
             "https://youtu.be/abc123",
             "https://cdn.example.com/stream.mp4",
-            source_uploader="Some Channel",
-            source_license="Creative Commons Attribution license (reuse allowed)",
-            source_webpage_url="https://youtu.be/abc123",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+                license="Creative Commons Attribution license (reuse allowed)",
+                webpage_url="https://youtu.be/abc123",
+            ),
         )
         payload = build_scene_recording_metadata(scene, Config(), "system")
         source = payload["source"]
@@ -129,7 +130,11 @@ class VideoSourceTest(unittest.TestCase):
             "My Clip",
             "https://youtu.be/abc123",
             "https://cdn.example.com/stream.mp4",
-            source_uploader="Some Channel",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+            ),
         )
         payload = build_scene_recording_metadata(scene, Config(), "system")
         self.assertIn("Some Channel", payload["source"]["copyright"])
@@ -252,9 +257,13 @@ class RenderDescriptionTest(unittest.TestCase):
             "My Clip",
             "https://youtu.be/abc123",
             "https://cdn.example.com/stream.mp4",
-            source_uploader="Some Channel",
-            source_license="Public Domain",
-            source_webpage_url="https://youtu.be/abc123",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+                license="Public Domain",
+                webpage_url="https://youtu.be/abc123",
+            ),
         )
         payload = build_scene_recording_metadata(scene, Config(), "system")
         text = render_description(payload)
