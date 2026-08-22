@@ -635,6 +635,8 @@ where settings and data resolved to, which character ROM is in use), **CONFIG**
 describing this install), **SCENE**
 (one line per scene, with its resolved display mode and overlay count),
 **AUDIO** (what the `"auto"` backend and DAC-curve fields resolved to),
+**COLOR** (what the `"auto"` dither, palette and force-palette fields
+resolved to), **RECORDING**, **CONTROL**, **MIDI_CONTROL**, **WLED**,
 **ORCHESTRATOR** for an ensemble, **EXTRAS** (which optional features are
 installed, with the command to install a missing one), and **CONNECTIVITY**
 unless you skipped the probe.
