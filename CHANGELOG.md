@@ -83,6 +83,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **A recorded video's `copyright` line is now real when the source offers
+  one.** A URL resolved through yt-dlp carries its site-declared `license`
+  and `uploader` into the `SCENE_CONFIG_JSON` snapshot (most sites, YouTube
+  included, leave `license` blank — the uploader's name is reported alongside
+  it as an attribution lead either way), and a local file's own
+  `copyright`/`rights` container tag is read when one is present. Falls back
+  to `unknown` exactly as before when the source has nothing to offer.
+
 - **Per-scene `[color]` overrides.** Any `[[scenes]]` block can now override
   part of the global `[color]` section for itself alone, in a
   `[scenes.color]` sub-table — every `[color]` field is overridable, and a

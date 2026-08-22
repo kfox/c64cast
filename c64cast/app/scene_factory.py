@@ -106,6 +106,8 @@ if TYPE_CHECKING:
     from c64cast.audio.audio import AudioStreamer
     from c64cast.hw.backend import C64Backend
 
+    from .quickcast import ResolvedMedia
+
 log = logging.getLogger(__name__)
 
 # Display modes that benefit from REU bank-swap double-buffering. Bitmap
@@ -1771,8 +1773,13 @@ def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> fl
     return cfg.audio.dac_bitmap_tempo_hires
 
 
-def _resolve_video_source(s: SceneCfg) -> tuple[str, float | None, str | None]:
-    """The video scene's (file_spec, start_s, name) after URL resolution.
+def _resolve_video_source(
+    s: SceneCfg,
+) -> tuple[str, float | None, str | None, ResolvedMedia | None]:
+    """The video scene's (file_spec, start_s, name, resolved) after URL
+    resolution. `resolved` is the full ResolvedMedia (None for a local file) —
+    the caller stashes its uploader/license/webpage_url onto the scene for
+    recording_metadata to read.
 
     A single media URL (YouTube et al.) is resolved here — the ONE resolution
     path shared with quick playback — so config-driven videos accept URLs
@@ -1783,17 +1790,18 @@ def _resolve_video_source(s: SceneCfg) -> tuple[str, float | None, str | None]:
     file_spec = s.file
     start_s = s.start_s
     name = s.name
+    resolved = None
     if _is_single_url_spec(s.file):
         # Deferred: cycle with quickcast (see _validate_video).
         from .quickcast import resolve_video_url
 
-        stream_url, url_start_s, title = resolve_video_url(s.file.strip())
-        file_spec = stream_url
+        resolved = resolve_video_url(s.file.strip())
+        file_spec = resolved.stream_url
         if start_s is None:
-            start_s = url_start_s
+            start_s = resolved.start_s
         if name is None:
-            name = title
-    return file_spec, start_s, name
+            name = resolved.title
+    return file_spec, start_s, name, resolved
 
 
 def _build_webcam(ctx: _SceneBuildContext) -> Scene:
@@ -1856,7 +1864,7 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
             using_sampler = True
     # `using_sampler` False with audio present means the DAC path.
     has_dac_audio = video_audio is not None and not using_sampler
-    file_spec, start_s, video_name = _resolve_video_source(s)
+    file_spec, start_s, video_name, resolved = _resolve_video_source(s)
     scene = VideoScene(
         ctx.api,
         video_audio,
@@ -1871,6 +1879,12 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
     )
     if video_name:
         scene.name = video_name
+    # Stashed for recording_metadata._video_source — never read by playback
+    # itself, only by the SCENE_CONFIG_JSON snapshot at scene start.
+    if resolved is not None:
+        scene.source_uploader = resolved.uploader
+        scene.source_license = resolved.license
+        scene.source_webpage_url = resolved.webpage_url
     if s.target_fps is None:
         # The sampler plays entirely off the C64 bus, so it neither imposes
         # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs

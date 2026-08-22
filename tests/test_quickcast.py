@@ -317,11 +317,11 @@ class ResolveMediaUrlTest(unittest.TestCase):
 
     def test_direct_video_url_passthrough(self):
         url = "http://host/clip.mp4"
-        self.assertEqual(quickcast.resolve_media_url(url), (url, "video", None))
+        self.assertEqual(quickcast.resolve_media_url(url), quickcast.ResolvedMedia(url, "video"))
 
     def test_direct_audio_url_passthrough(self):
         url = "http://host/song.mp3?x=1"
-        self.assertEqual(quickcast.resolve_media_url(url), (url, "audio", None))
+        self.assertEqual(quickcast.resolve_media_url(url), quickcast.ResolvedMedia(url, "audio"))
 
     def _install_fake_ytdlp(self, info: dict):
         class FakeYDL:
@@ -347,13 +347,38 @@ class ResolveMediaUrlTest(unittest.TestCase):
         )
         self.assertEqual(
             quickcast.resolve_media_url("https://youtu.be/abc"),
-            ("http://stream/v.m3u8", "video", "Cool Video"),
+            quickcast.ResolvedMedia("http://stream/v.m3u8", "video", title="Cool Video"),
         )
+
+    def test_ytdlp_video_carries_uploader_license_webpage_url(self):
+        self._install_fake_ytdlp(
+            {
+                "url": "http://stream/v.m3u8",
+                "vcodec": "h264",
+                "title": "Cool Video",
+                "uploader": "Some Channel",
+                "license": "Creative Commons Attribution license (reuse allowed)",
+                "webpage_url": "https://youtu.be/abc",
+            }
+        )
+        resolved = quickcast.resolve_media_url("https://youtu.be/abc")
+        self.assertEqual(resolved.uploader, "Some Channel")
+        self.assertEqual(resolved.license, "Creative Commons Attribution license (reuse allowed)")
+        self.assertEqual(resolved.webpage_url, "https://youtu.be/abc")
+
+    def test_ytdlp_missing_uploader_license_webpage_url_are_none(self):
+        self._install_fake_ytdlp(
+            {"url": "http://stream/v.m3u8", "vcodec": "h264", "title": "Cool Video"}
+        )
+        resolved = quickcast.resolve_media_url("https://youtu.be/abc")
+        self.assertIsNone(resolved.uploader)
+        self.assertIsNone(resolved.license)
+        self.assertIsNone(resolved.webpage_url)
 
     def test_ytdlp_audio_only(self):
         self._install_fake_ytdlp({"url": "http://stream/a", "vcodec": "none", "title": "Pod"})
-        _, kind, _ = quickcast.resolve_media_url("https://example.com/pod")
-        self.assertEqual(kind, "audio")
+        resolved = quickcast.resolve_media_url("https://example.com/pod")
+        self.assertEqual(resolved.kind, "audio")
 
     def test_ytdlp_playlist_takes_first_entry(self):
         self._install_fake_ytdlp(
@@ -361,7 +386,7 @@ class ResolveMediaUrlTest(unittest.TestCase):
         )
         self.assertEqual(
             quickcast.resolve_media_url("https://example.com/list"),
-            ("http://stream/e2", "video", "E2"),
+            quickcast.ResolvedMedia("http://stream/e2", "video", title="E2"),
         )
 
     def test_missing_ytdlp_raises_runtime_error(self):
@@ -530,14 +555,32 @@ class ResolveVideoUrlTest(unittest.TestCase):
 
     def test_direct_video_url_passthrough_with_timestamp(self):
         url = "http://host/clip.mp4?t=2m"
-        self.assertEqual(quickcast.resolve_video_url(url), (url, 120.0, None))
+        self.assertEqual(
+            quickcast.resolve_video_url(url), quickcast.ResolvedMedia(url, "video", start_s=120.0)
+        )
 
     def test_ytdlp_video_returns_stream_offset_title(self):
         self._install_fake_ytdlp({"url": "http://stream/v.m3u8", "vcodec": "h264", "title": "Cool"})
         self.assertEqual(
             quickcast.resolve_video_url("https://youtu.be/abc?t=30"),
-            ("http://stream/v.m3u8", 30.0, "Cool"),
+            quickcast.ResolvedMedia("http://stream/v.m3u8", "video", title="Cool", start_s=30.0),
         )
+
+    def test_ytdlp_video_carries_uploader_and_license(self):
+        self._install_fake_ytdlp(
+            {
+                "url": "http://stream/v.m3u8",
+                "vcodec": "h264",
+                "title": "Cool",
+                "uploader": "Some Channel",
+                "license": "CC BY",
+                "webpage_url": "https://youtu.be/abc",
+            }
+        )
+        resolved = quickcast.resolve_video_url("https://youtu.be/abc")
+        self.assertEqual(resolved.uploader, "Some Channel")
+        self.assertEqual(resolved.license, "CC BY")
+        self.assertEqual(resolved.webpage_url, "https://youtu.be/abc")
 
     def test_audio_only_raises(self):
         with self.assertRaises(ValueError) as cm:

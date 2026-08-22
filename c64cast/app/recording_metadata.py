@@ -18,12 +18,16 @@ end up in a public video description:
   `Config`/`SceneCfg`/scene instance state — no extra U64 traffic, which
   matters mid-recording.
 
-Video scenes get a `copyright` of **unknown** rather than a guess — c64cast
-doesn't collect yt-dlp uploader/license data today (see the note in
-docs/architecture.md). It reads as a statement, not an instruction, because
-this blob is written to be pasted into a public description and the line goes
-out either way. Waveform / generative-sid scenes are different: the PSID
-header (`SidHeader.name`/`author`/`released`) usually already carries real
+A video scene's `copyright` is filled from whatever the source actually
+offers: a resolved URL's yt-dlp `license` field (most sites, YouTube
+included, leave it blank even for licensed content — `uploader` rides
+alongside it in the payload as an attribution lead either way), or a local
+file's own `copyright`/`rights` container tag when the file carries one. It
+falls back to **unknown** rather than a guess when neither is present — that
+reads as a statement, not an instruction, because this blob is written to be
+pasted into a public description and the line goes out either way. Waveform /
+generative-sid scenes are different: the PSID header
+(`SidHeader.name`/`author`/`released`) usually already carries real
 title/author/copyright text, so that's used verbatim.
 """
 
@@ -124,17 +128,57 @@ def _sid_header_fields(header: Any) -> dict[str, str]:
     }
 
 
+# Container tags that plausibly carry rights info, checked in this order.
+# PyAV normalizes tag keys to lowercase; most casual clips (including every
+# yt-dlp remux checked while building this) carry none of them, but stock
+# footage and edited exports routinely do.
+_COPYRIGHT_METADATA_TAGS = ("copyright", "rights", "license")
+
+
+def _url_copyright(scene: Scene) -> str:
+    """A resolved URL's yt-dlp `license`, verbatim, when the site supplied
+    one. Falls back to naming the uploader as an attribution lead — not a
+    license, but more than nothing — and only to `_UNKNOWN_COPYRIGHT` when
+    yt-dlp gave neither."""
+    license_ = getattr(scene, "source_license", None)
+    if license_:
+        return license_
+    uploader = getattr(scene, "source_uploader", None)
+    if uploader:
+        return f"unknown — uploaded by {uploader}; verify the license before publishing"
+    return _UNKNOWN_COPYRIGHT
+
+
+def _local_file_copyright(scene: Scene) -> str:
+    """A copyright/rights/license tag embedded in the container, if the file
+    carries one. Read off the AVFileSource that scene.setup() already opened
+    (safe_setup runs setup() before logging) — no extra I/O here."""
+    container = getattr(getattr(scene, "source", None), "container", None)
+    metadata = getattr(container, "metadata", None) or {}
+    for tag in _COPYRIGHT_METADATA_TAGS:
+        value = metadata.get(tag)
+        if value:
+            return value
+    return _UNKNOWN_COPYRIGHT
+
+
 def _video_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     raw_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
     filepath = getattr(scene, "filepath", None)
     is_url = isinstance(raw_spec, str) and raw_spec.lower().startswith(("http://", "https://"))
-    return {
+    out: dict[str, Any] = {
         "url": raw_spec if is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
-        "copyright": _UNKNOWN_COPYRIGHT,
     }
+    if is_url:
+        out["uploader"] = getattr(scene, "source_uploader", None)
+        out["webpage_url"] = getattr(scene, "source_webpage_url", None)
+        out["copyright"] = _url_copyright(scene)
+    else:
+        out["copyright"] = _local_file_copyright(scene)
+    return out
 
 
 def _waveform_source(scene: Scene) -> dict[str, Any]:
@@ -281,6 +325,10 @@ def render_description(payload: dict[str, Any]) -> str:
 
     if source.get("url"):
         lines.append(f"Source video: {source['url']}")
+        if source.get("uploader"):
+            lines.append(f"Uploader: {source['uploader']}")
+        if source.get("webpage_url") and source["webpage_url"] != source["url"]:
+            lines.append(f"Original page: {source['webpage_url']}")
         lines.append(f"Copyright: {source.get('copyright', _UNKNOWN_COPYRIGHT)}")
     elif source.get("local_file"):
         lines.append(f"Source file: {source['local_file']}")

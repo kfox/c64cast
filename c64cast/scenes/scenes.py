@@ -1339,6 +1339,13 @@ class VideoScene(MediaFileMixin, Scene):
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self.wall_start_time = 0.0
+        # yt-dlp attribution, when the file came from a resolved URL (None for
+        # a local file, and for a URL yt-dlp itself left the field blank).
+        # Set post-construction by scene_factory._build_video; read by
+        # recording_metadata._video_source, nowhere in playback itself.
+        self.source_uploader: str | None = None
+        self.source_license: str | None = None
+        self.source_webpage_url: str | None = None
         # Seconds into the file to begin playback (0 = from the start). Passed
         # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
         # derives this from a URL's t=/start= timestamp.
