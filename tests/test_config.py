@@ -500,6 +500,46 @@ class DoubleBufferTest(unittest.TestCase):
         self.assertIn("double_buffer", str(ctx.exception))
 
 
+class ControlPlaneAuthCfgTest(unittest.TestCase):
+    """validate_control_cfg refuses an open plane on a network address."""
+
+    def _cfg(self, **kw: object) -> cfgmod.ControlPlaneCfg:
+        from dataclasses import replace
+
+        return replace(cfgmod.ControlPlaneCfg(), enabled=True, **kw)  # type: ignore[arg-type]
+
+    def test_loopback_without_a_token_passes(self):
+        for host in cfgmod.LOOPBACK_HOSTS:
+            scene_factory.validate_control_cfg(self._cfg(host=host))  # must not raise
+
+    def test_network_host_with_a_token_passes(self):
+        scene_factory.validate_control_cfg(self._cfg(host="0.0.0.0", token="s3cret"))
+
+    def test_disabled_is_not_checked(self):
+        from dataclasses import replace
+
+        cfg = replace(cfgmod.ControlPlaneCfg(), enabled=False, host="0.0.0.0")
+        scene_factory.validate_control_cfg(cfg)  # must not raise
+
+    def test_network_host_without_a_token_raises(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            scene_factory.validate_control_cfg(self._cfg(host="0.0.0.0"))
+        msg = str(ctx.exception)
+        self.assertIn("0.0.0.0", msg)
+        self.assertIn("allow_unauthenticated", msg)
+
+    def test_the_opt_out_permits_it(self):
+        scene_factory.validate_control_cfg(
+            self._cfg(host="0.0.0.0", allow_unauthenticated=True)
+        )  # must not raise
+
+    def test_a_viewer_token_alone_does_not_count(self):
+        """viewer_token is ignored unless `token` is set, so it cannot be what
+        makes an off-loopback bind acceptable."""
+        with self.assertRaises(cfgmod.ConfigError):
+            scene_factory.validate_control_cfg(self._cfg(host="0.0.0.0", viewer_token="v"))
+
+
 class MidiControlLoopAudioTest(unittest.TestCase):
     """validate_midi_control_cfg guards the Phase 4 loop_audio choice."""
 

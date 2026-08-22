@@ -95,7 +95,7 @@ The same three events are fed by the keyboard poller, so HTTP and the C64 keyboa
 
 ## `auth.py` — shared-token gate (optional)
 
-`[control] token` (or `$C64CAST_CONTROL_TOKEN`, which wins) turns the whole control plane — routes, `/perf` console, WebSocket — into a token-gated surface. Empty is the default and leaves it open, which is what it has always been; `start_control_server` logs a warning when a non-loopback `host` is bound without one, but does not refuse, since breaking existing LAN-bound runs isn't a trade a security feature gets to make for the user. `viewer_token` adds a second credential that may only issue `GET`/`HEAD`/`OPTIONS`.
+`[control] token` (or `$C64CAST_CONTROL_TOKEN`, which wins) turns the whole control plane — routes, `/perf` console, WebSocket — into a token-gated surface. Empty is the default and leaves it open. That is allowed on loopback, where the port's audience is whoever already has a shell on the machine, and refused off it: `scene_factory.validate_control_cfg` rejects a non-loopback `host` with no token as a config error, so it surfaces from `--doctor` and from `session.validate_configs` before any hardware is opened rather than from a warning line during a running show. `[control].allow_unauthenticated` is the opt-out for a trusted show network — an opt-out rather than a removal of the open mode, which is a real deployment. The warning in `start_control_server` stays for a caller reaching that entry point directly, past the config gate. `viewer_token` adds a second credential that may only issue `GET`/`HEAD`/`OPTIONS`.
 
 **One pure-ASGI middleware, not a per-route dependency**, for two reasons that are not stylistic:
 

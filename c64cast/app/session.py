@@ -920,6 +920,14 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
     # listener once, before the per-cfg loop below applies it to each
     # system's audio settings.
     midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
+    # [control] is process-wide too, and `loaded.master_control` is the very
+    # section start_services binds — so check it once here, before hardware,
+    # rather than at bind time when a show is already up.
+    try:
+        scene_factory.validate_control_cfg(loaded.master_control)
+    except cfgmod.ConfigError as e:
+        log.error("%s", e)
+        raise SessionConfigError(5, str(e)) from e
     for cfg in cfgs:
         # Must run before build_stack constructs this system's AudioStreamer
         # (see _coerce_reu_for_transport).

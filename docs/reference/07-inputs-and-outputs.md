@@ -353,9 +353,19 @@ http://HOST:8765/api/login?token=a-long-random-string
 ```
 
 once: it stores the token in a cookie and drops you on the console, and
-everything the page does from then on is authenticated. The token defaults to
-empty, which is the historical behavior — open. Prefer the environment variable
-to a value in a file you might commit or share.
+everything the page does from then on is authenticated. Prefer the environment
+variable to a value in a file you might commit or share.
+
+The token defaults to empty, which means open. On loopback that is allowed and
+unremarkable. Off loopback it is refused: a `host` that is not `127.0.0.1`,
+`localhost` or `::1` with no token set is a configuration error, reported
+before the run opens the hardware and by `c64cast --doctor`. If the network is
+one you trust and you want the port open anyway, say so:
+
+```toml
+[control]
+allow_unauthenticated = true
+```
 
 A `viewer_token` is the same page with the writes removed: reads succeed, pause,
 skip, reload and every clip launch are refused, and the console shows a

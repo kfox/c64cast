@@ -90,9 +90,11 @@ from .config import (
     _MIDI_VOICE_MODE_CHOICES,
     _MIDI_WAVEFORM_CHOICES,
     _MOD_SOURCE_CHOICES,
+    LOOPBACK_HOSTS,
     ColorCfg,
     Config,
     ConfigError,
+    ControlPlaneCfg,
     MidiControlCfg,
     SceneCfg,
     _is_valid_param_holder,
@@ -1272,6 +1274,30 @@ def validate_cell_strategy_cfg(cfg: Config) -> None:
         err = cell_strategy_cfg_error(label, color)
         if err:
             raise ConfigError(err)
+
+
+def validate_control_cfg(control_cfg: ControlPlaneCfg) -> None:
+    """Guard [control]: refuse an unauthenticated plane on a network address.
+
+    Takes the already-resolved ControlPlaneCfg (`loaded.master_control` — the
+    section is process-wide like [midi_control], not per-system-cascaded), so
+    what is checked is what `session.start_services` will actually bind.
+    No-op when disabled, and on loopback, where the port is reachable only by
+    someone who already has a shell on this machine.
+
+    [web] needs no equivalent: that surface generates a token rather than
+    offering an open mode at all."""
+    if not control_cfg.enabled or control_cfg.token or control_cfg.allow_unauthenticated:
+        return
+    if control_cfg.host in LOOPBACK_HOSTS:
+        return
+    raise ConfigError(
+        f"[control].host is {control_cfg.host!r} with no token — anything that can "
+        "reach the port could drive the run (pause, skip, launch clips, reload "
+        "configs). Set C64CAST_CONTROL_TOKEN in the environment, or [control].token "
+        "in the config; on a network you trust, set "
+        "[control].allow_unauthenticated = true to keep it open."
+    )
 
 
 def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:

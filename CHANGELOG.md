@@ -29,6 +29,27 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   quantity that governs the hazard — but it warns rather than refuses, so
   read [caveats.md](docs/caveats.md) before turning this on.
 
+- **A `[control]` plane bound to a LAN address now needs a token.** `[control].host`
+  set to anything other than `127.0.0.1`, `localhost` or `::1` with
+  `[control].token` empty used to start anyway and log a warning — which arrives
+  with a show already on screen, where nobody reads it. It is now a
+  configuration error, refused before the hardware is opened and reported by
+  `c64cast --doctor`, because anything that can reach that port can drive the
+  run. Loopback is unchanged and needs no token: the audience there is whoever
+  already has a shell on the machine.
+
+  Set `C64CAST_CONTROL_TOKEN` in the environment (preferred — it keeps the
+  secret out of a file you might commit), or `[control].token`. If the network
+  is one you trust and you want the port open anyway, say so explicitly:
+
+  ```toml
+  [control]
+  allow_unauthenticated = true
+  ```
+
+  The `--serve` web console is unaffected: that surface has never had an open
+  mode, and generates a token when you don't set one.
+
 - **The browser console needs the new `web` extra**, which did not exist in
   0.3.0. `uv tool upgrade c64cast` keeps the extras you installed *with*, and
   re-reads what each of them now contains — so a `c64cast[all]` install picks

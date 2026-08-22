@@ -30,6 +30,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from c64cast._pollthread import PollThread
+from c64cast.app.config import LOOPBACK_HOSTS
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import Scene
 
@@ -293,10 +294,11 @@ def start_control_server(
     handle (caller calls `.stop()` at shutdown)."""
     if token:
         log.info("control plane: token authentication ON%s", " (+ viewer)" if viewer_token else "")
-    elif host not in ("127.0.0.1", "localhost", "::1"):
-        # Not fatal: binding wide open is what this surface has always done,
-        # and breaking those runs to add a security feature isn't a trade the
-        # user asked for. The web console's own listener does refuse.
+    elif host not in LOOPBACK_HOSTS:
+        # Reached only when [control].allow_unauthenticated is set — otherwise
+        # scene_factory.validate_control_cfg has already refused this
+        # combination, before any hardware was opened. Kept as a warning here
+        # so a caller reaching this entry point directly still gets told.
         log.warning(
             "control plane: bound to %s with no [control] token — "
             "anything that can reach the port can drive the run",

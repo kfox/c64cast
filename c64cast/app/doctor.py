@@ -45,6 +45,7 @@ from .scene_factory import (
     resolve_scene_display,
     resolve_wled_broadcast,
     resolve_wled_listen,
+    validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
     validate_midi_control_cfg,
@@ -178,6 +179,7 @@ def validate_load_result(
     out.extend(_validate_color_match(loaded))
     out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_motion_smoothing(loaded))
+    out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
     if loaded.is_ensemble:
@@ -1242,6 +1244,26 @@ def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+def _validate_control(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag an unauthenticated [control] plane bound to a network address.
+    Process-wide (like [midi_control]), so this validates loaded.master_control
+    once rather than looping per system. Offline — delegates to
+    scene_factory.validate_control_cfg."""
+    try:
+        validate_control_cfg(loaded.master_control)
+    except ConfigError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="control",
+                subject="control",
+                message=str(e),
+                hint="See [control] in the config reference / --describe section:control.",
+            )
+        ]
+    return []
+
+
 def _validate_midi_control(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a malformed [midi_control] section. Process-wide (like
     [control]), so this validates loaded.master_midi_control once rather
@@ -2145,6 +2167,7 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         "audio",
         "color",
         "recording",
+        "control",
         "midi_control",
         "wled",
         "orchestrator",
