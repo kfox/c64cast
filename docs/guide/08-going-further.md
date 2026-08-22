@@ -109,7 +109,9 @@ running scene, which is a pleasing thing to demonstrate.
 **A small web service** can be enabled with the `[control]` section,
 offering endpoints to pause, resume, skip and reload. It is the practical
 way to wire c64cast into a stream deck, a home automation system, or a
-button by the door.
+button by the door. Binding `host` to anything but loopback needs a `token`
+set too — see the Reference Guide's [Locking It](../reference/07-inputs-and-outputs.md#locking-it)
+for why and how.
 
 **A browser** does all of that and a great deal more; it has
 [its own section](#the-browser-console) below.
