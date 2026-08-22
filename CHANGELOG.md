@@ -83,6 +83,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **A video scene's "UP NEXT" name prefers the file's own title over its
+  filename.** `alien_ad_1983_remaster_v3.mp4` used to be the name a directory-
+  pool video scene announced on the interstitial card, even when the file
+  itself carries a real `title` container tag. That tag is now checked first
+  — a cheap header-only probe with no frame decode, so it costs nothing on
+  the files that don't have one — for both a single `file` and a directory/
+  glob pool's per-pick name. URLs are unaffected: their real title already
+  comes from yt-dlp.
+
 - **A recorded video's `copyright` line is now real when the source offers
   one.** A URL resolved through yt-dlp carries its site-declared `license`
   and `uploader` into the `SCENE_CONFIG_JSON` snapshot (most sites, YouTube
