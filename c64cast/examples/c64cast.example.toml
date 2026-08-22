@@ -988,12 +988,16 @@ listen_sample_rate = 44100          # audio_source = "listen" capture rate (full
 enabled = false                     # requires the `control` extra
 host = "127.0.0.1"
 port = 8765
-# Shared-token auth. Empty = open to anything that can reach the port (the
-# historical behavior, fine on loopback). Set it before binding `host` to a
-# LAN address; prefer the C64CAST_CONTROL_TOKEN env var over a value here.
-# Browsers trade the token for a cookie at /api/login?token=…&next=/perf.
+# Shared-token auth. Empty = open to anything that can reach the port, which
+# on loopback is whoever already has a shell here. Binding `host` to a LAN
+# address with no token is refused before the run starts — set a token, or
+# `allow_unauthenticated` below. Prefer the C64CAST_CONTROL_TOKEN env var over
+# a value here. Browsers trade the token for a cookie at
+# /api/login?token=…&next=/perf.
 token = ""
 viewer_token = ""                   # optional read-only token (GET only)
+# Accept an open plane on a non-loopback `host` (a show network you trust).
+allow_unauthenticated = false
 
 [web]
 # The web console host (`c64cast --serve`): instead of running this config

@@ -1281,6 +1281,44 @@ class UnknownKeyDiagnosticTest(unittest.TestCase):
         self.assertTrue(any(d.category == "config" for d in diags))
 
 
+class ControlPlaneAuthDiagnosticTest(unittest.TestCase):
+    """An open control plane on a network address is a doctor error, so it is
+    answerable offline — before a show is up and the port is already live."""
+
+    def test_open_network_bind_is_an_error_row(self):
+        loaded = _load('[control]\nenabled = true\nhost = "0.0.0.0"\n')
+        diags = doctor._validate_control(loaded)
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "error")
+        self.assertEqual(diags[0].category, "control")
+        self.assertIn("allow_unauthenticated", diags[0].message)
+
+    def test_loopback_reports_nothing(self):
+        loaded = _load('[control]\nenabled = true\nhost = "127.0.0.1"\n')
+        self.assertEqual(doctor._validate_control(loaded), [])
+
+    def test_the_opt_out_reports_nothing(self):
+        loaded = _load(
+            '[control]\nenabled = true\nhost = "0.0.0.0"\nallow_unauthenticated = true\n'
+        )
+        self.assertEqual(doctor._validate_control(loaded), [])
+
+    def test_validate_load_result_includes_the_row(self):
+        loaded = _load('[control]\nenabled = true\nhost = "0.0.0.0"\n')
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        self.assertTrue(any(d.category == "control" for d in diags))
+
+    def test_the_row_renders_and_fails_the_report(self):
+        buf = io.StringIO()
+        code = doctor.print_report(
+            doctor._validate_control(_load('[control]\nenabled = true\nhost = "0.0.0.0"\n')),
+            file=buf,
+        )
+        out = buf.getvalue()
+        self.assertNotEqual(code, 0)  # error-level: the run should not start
+        self.assertIn("CONTROL", out)
+
+
 class SceneColorOverrideDiagnosticTest(unittest.TestCase):
     """A scene's own [scenes.color] override resolves and reports separately
     from the global [color] section — including a bad value, which has to

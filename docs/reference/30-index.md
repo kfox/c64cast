@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 448 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 449 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -16,6 +16,7 @@ Every name c64cast answers to — 448 of them — and the pages that discuss eac
 | `agc_noise_floor_db` | [Shaping the Signal (4)](05-sound-and-music.md#shaping-the-signal), [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_target_db` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
 | `agc_time_ms` | [`dsp` (A)](20-appendix-a-configuration.md#dsp) |
+| `allow_unauthenticated` | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `asid` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`asid` (2)](03-vocabulary.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_buffered_player` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
 | `asid_max_sids` | [`asid` (2)](03-vocabulary.md#asid), [ASID (4)](05-sound-and-music.md#asid), [`asid` (B)](21-appendix-b-scene-types.md#asid) |
@@ -241,7 +242,7 @@ Every name c64cast answers to — 448 of them — and the pages that discuss eac
 | `hires_edges` | [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`generative` (2)](03-vocabulary.md#generative), [`slideshow` (2)](03-vocabulary.md#slideshow) |
 | `hold_threshold_s` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `hopalong` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `host` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`control` (A)](20-appendix-a-configuration.md#control), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `host` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Locking It (6)](07-inputs-and-outputs.md#locking-it), [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (control) | [`control` (A)](20-appendix-a-configuration.md#control) |
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |

@@ -949,6 +949,11 @@
           "type": "string",
           "description": "Optional second token granting read-only access (GET/HEAD only): the /perf console watches but can't launch. Ignored unless `token` is set. Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var.",
           "default": ""
+        },
+        "allow_unauthenticated": {
+          "type": "boolean",
+          "description": "Permit binding `host` to a non-loopback address with no `token` set. Off by default \u2014 an open plane on the network lets anything that can reach the port drive the run. Loopback needs no opt-in.",
+          "default": false
         }
       }
     },

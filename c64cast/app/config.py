@@ -2294,6 +2294,12 @@ class DSPCfg:
         )
 
 
+#: Bind addresses that reach only this machine. A control plane on one of
+#: these is exposed to whoever already has a shell here; anything else is
+#: exposed to the network, which is what `allow_unauthenticated` gates.
+LOOPBACK_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost", "::1")
+
+
 @dataclass
 class ControlPlaneCfg:
     """FastAPI control plane. Off by default; requires the `control` extra."""
@@ -2328,6 +2334,18 @@ class ControlPlaneCfg:
             "help": "Optional second token granting read-only access (GET/HEAD only): "
             "the /perf console watches but can't launch. Ignored unless `token` is set. "
             "Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var."
+        },
+    )
+    # An open plane on loopback is reachable only by someone who already has a
+    # shell here, so it stays allowed and unprompted; off-loopback is the
+    # combination this gates. Kept as an opt-out rather than dropping the open
+    # mode: a trusted, isolated show network is a real deployment.
+    allow_unauthenticated: bool = field(
+        default=False,
+        metadata={
+            "help": "Permit binding `host` to a non-loopback address with no `token` set. "
+            "Off by default — an open plane on the network lets anything that can reach "
+            "the port drive the run. Loopback needs no opt-in."
         },
     )
 

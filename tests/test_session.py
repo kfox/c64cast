@@ -127,6 +127,19 @@ class ValidateConfigsTest(unittest.TestCase):
         self.assertIn("bad dither", logged.output[0])
         self.assertEqual(cm.exception.detail, "bad dither")
 
+    def test_an_open_control_plane_on_a_network_host_is_exit_5(self):
+        # The gate has to be here, not at bind time: start_services runs after
+        # the hardware is up, so a warning there arrives with a show already
+        # on screen.
+        loaded = _loaded(["a"])
+        loaded.master_control.enabled = True
+        loaded.master_control.host = "0.0.0.0"
+        with self.assertLogs("c64cast", level="ERROR") as logged:
+            with self.assertRaises(session.SessionConfigError) as cm:
+                session.validate_configs(loaded, loaded.cfgs)
+        self.assertEqual(cm.exception.exit_code, 5)
+        self.assertIn("allow_unauthenticated", logged.output[0])
+
     def test_clean_configs_pass(self):
         loaded = _loaded(["a", "b"])
         session.validate_configs(loaded, loaded.cfgs)  # no raise
