@@ -21,6 +21,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Upgrade notes
 
+- **New: `[color].flicker_tolerance` blends two screen pages at the VIC field
+  rate (25 Hz PAL / 30 Hz NTSC) to fake colors the C64 can't draw — and that
+  rate sits inside the ITU-R BT.1702 photosensitive-seizure band.** It's
+  opt-in and off by default. `[color].flicker_max_luma_delta` (default
+  0.075) bounds how far apart in brightness a blended pair may be — the
+  quantity that governs the hazard — but it warns rather than refuses, so
+  read [caveats.md](docs/caveats.md) before turning this on.
+
 - **The browser console needs the new `web` extra**, which did not exist in
   0.3.0. `uv tool upgrade c64cast` keeps the extras you installed *with*, and
   re-reads what each of them now contains — so a `c64cast[all]` install picks
@@ -139,8 +147,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   permanent: a pair scored as flickering is in no blend table, so it could never
   be rendered to be re-judged. It cannot switch blending on by itself.
 
-  **Off by default, deliberately.** A blended area alternates at 25 Hz (PAL) /
-  30 Hz (NTSC), which is inside the recognized photosensitive-seizure band, so
+  **Off by default, deliberately** — see Upgrade notes above for why.
   `[color].flicker_max_luma_delta` (default 0.075) limits
   how far apart in brightness a pair may be, which is the quantity that governs
   the hazard. It **warns rather than refuses** — above 0.10, and again above
@@ -156,8 +163,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   particular machine emits. It also does not
   survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
   own preview and `[recording]` do show the fused result correctly, because they
-  reconstruct from the write stream instead of filming the screen. See
-  [caveats.md](docs/caveats.md) before enabling it.
+  reconstruct from the write stream instead of filming the screen.
 
 - **The C64's screen, in the browser.** The console could author a show, start
   it, tune it and save it without ever showing you what any of that did —
