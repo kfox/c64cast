@@ -12,6 +12,7 @@
 #   make doctor     # offline env + config diagnostics (catches a desynced .venv)
 #   make bench      # async write-pipeline benchmark
 #   make check      # lint + typecheck + test (pre-PR gate)
+#   make preflight  # check + full CI mirror (platform type-checks, docs, web bundle)
 #   make clean      # remove build artifacts
 #
 # Everything runs through `uv run`, so the synced project env is used regardless
@@ -27,9 +28,11 @@ PY ?= uv run python
 # deliberate install.
 SYNC := $(if $(CI),,sync)
 
+HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
+
 .DEFAULT_GOAL := help
 
-.PHONY: help sync lint fmt test coverage typecheck doctor bench check clean schema web \
+.PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
@@ -73,6 +76,31 @@ define render-book
 	@echo "wrote $(1)/$(2).pdf"
 endef
 
+# pyright and mypy spell the same three platforms differently (pyright:
+# Linux/Darwin/Windows; mypy: linux/darwin/win32), so each caller passes its
+# own list rather than the function guessing a mapping.
+PYRIGHT_PLATFORMS := Linux Darwin Windows
+MYPY_PLATFORMS    := linux darwin win32
+
+# Run a type checker once per platform, in parallel, and fail if any platform
+# does: $(1) = display name for the echo line, $(2) = the `uv run ...`
+# command up to and including its platform flag (no trailing value — that's
+# appended per job), $(3) = that tool's platform list. GNU parallel isn't a
+# hard dependency (brew install parallel) so xargs -P is the fallback; both
+# branches tag each line with its platform so a failure is traceable to which
+# of the three actually broke, and both stop at the first failure instead of
+# running all three to completion on a doomed check.
+define check-platforms
+	@if [ -n "$(HAS_PARALLEL)" ]; then \
+	  echo "$(1): checking $(3) with GNU parallel..."; \
+	  parallel --halt now,fail=1 --tagstring '[{}]' -j $(words $(3)) $(2) {} ::: $(3); \
+	else \
+	  echo "$(1): checking $(3) with xargs (brew install parallel for tagged/interleaved output)..."; \
+	  printf '%s\n' $(3) | xargs -n 1 -P $(words $(3)) -I {} bash -c \
+	    '$(2) "$$1" 2>&1 | sed "s/^/[$$1] /"; exit $${PIPESTATUS[0]}' _ {}; \
+	fi
+endef
+
 help:
 	@echo "targets:"
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
@@ -95,6 +123,7 @@ help:
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
+	@echo "  preflight  check + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
 	@echo "  clean      remove build artifacts"
 
 sync:
@@ -206,6 +235,32 @@ reference-appendices: $(SYNC)
 	$(PY) scripts/gen_reference_appendices.py
 
 check: lint typecheck test
+
+# Full pre-PR gate: mirrors every CI job, not just lint+typecheck+test.
+#
+# pyright/mypy are static analyzers — they read source text and never run
+# it — so re-running them with an explicit platform flag reproduces CI's
+# `types` job (which checks the Linux/Darwin/Windows *views*, all three from
+# ubuntu-latest runners) without needing three machines. `check`'s own
+# typecheck already covers the host platform; check-platforms (defined above)
+# runs all three explicitly rather than assuming which one that is, in
+# parallel since three sequential pyright/mypy passes add up.
+#
+# The book-parse loop and site-check mirror the `docs` job; rebuilding the web
+# console and diffing it against the committed bundle mirrors the `web` job.
+# `check` alone skips all of the above.
+#
+# What preflight still can't reproduce is CI's OS x Python-version test
+# matrix (`lint-and-test`) — that needs the actual runners, not a local flag.
+preflight: check
+	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
+	$(call check-platforms,mypy --strict,uv run mypy --strict --platform,$(MYPY_PLATFORMS))
+	@for book in docs/*/book.toml; do \
+	  $(PY) scripts/build_book.py --book-dir "$$(dirname "$$book")" --check || exit 1; \
+	done
+	$(MAKE) site-check
+	$(MAKE) web
+	git diff --exit-code -- c64cast/web/dist
 
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
