@@ -82,6 +82,35 @@ def av_open(path: str):
     return av.open(path)
 
 
+def probe_container_title(path: str) -> str | None:
+    """A cheap, header-only peek at a local file's own `title` tag (PyAV
+    parses container metadata without decoding any frames) — lets
+    VideoScene prefer a file's real name over its bare filename on the
+    "UP NEXT" interstitial card, which is built from `prepare_next()`
+    before `setup()` opens the file for real playback.
+
+    Local files only — a URL's real title already comes from yt-dlp,
+    resolved before the scene even exists (see
+    scene_factory._resolve_video_source); probing a remote stream here would
+    add real network I/O just to pick a display name. Returns None on
+    anything going wrong (missing/corrupt/unsupported file, PyAV
+    unavailable) — that's setup()'s problem to report moments later, not
+    this best-effort peek's."""
+    if _is_remote_url(path) or not ensure_pyav() or not os.path.exists(path):
+        return None
+    try:
+        container = av_open(path)
+    except Exception:
+        return None
+    try:
+        title = container.metadata.get("title")
+    except Exception:
+        return None
+    finally:
+        container.close()
+    return title.strip() if title and title.strip() else None
+
+
 def _compute_normalization_gain(
     peak_int16: int,
     target_peak: float = NORMALIZATION_TARGET_PEAK,

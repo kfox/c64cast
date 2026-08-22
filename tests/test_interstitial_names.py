@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 import cv2
@@ -80,6 +81,39 @@ class VideoPrepareNextTest(unittest.TestCase):
             self.assertFalse(scene._pick_filepath())
             scene.prepare_next()
         self.assertFalse(scene._prepared)
+
+
+class VideoDisplayNameOverrideTest(unittest.TestCase):
+    """VideoScene prefers a container's own `title` tag over the bare
+    filename on the interstitial card. probe_container_title itself is
+    unit-tested in test_video.py against a faked container; here it's mocked
+    at the call site to check the scene wires it in (and falls back)
+    correctly, for both the build-time single-entry name and a
+    prepare_next() pool pick."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        open(os.path.join(self.tmp.name, "alpha.mp4"), "wb").close()
+
+    def test_title_tag_used_when_present(self):
+        f = os.path.join(self.tmp.name, "alpha.mp4")
+        with mock.patch("c64cast.scenes.scenes.probe_container_title", return_value="Real Title"):
+            scene = VideoScene(MagicMock(), None, MagicMock(), f)
+        self.assertEqual(scene.name, "Video: Real Title")
+
+    def test_falls_back_to_filename_when_no_title_tag(self):
+        f = os.path.join(self.tmp.name, "alpha.mp4")
+        with mock.patch("c64cast.scenes.scenes.probe_container_title", return_value=None):
+            scene = VideoScene(MagicMock(), None, MagicMock(), f)
+        self.assertEqual(scene.name, "Video: alpha")
+
+    def test_prepare_next_pick_also_uses_title_tag(self):
+        open(os.path.join(self.tmp.name, "beta.mp4"), "wb").close()
+        with mock.patch("c64cast.scenes.scenes.probe_container_title", return_value="Picked Title"):
+            scene = VideoScene(MagicMock(), None, MagicMock(), self.tmp.name)
+            scene.prepare_next()
+        self.assertEqual(scene.name, "Video: Picked Title")
 
 
 class SlideshowPrepareNextTest(unittest.TestCase):

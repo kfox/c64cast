@@ -107,7 +107,10 @@ character ones. It appears before the first scene as well as between scenes.
 
 The name it shows is the real one. A scene whose `file` is a directory makes
 its pick *before* the card is built, so a jukebox announces the tune that is
-about to play rather than the folder it came from.
+about to play rather than the folder it came from. A video scene's name
+prefers the file's own container title tag over its filename, when the file
+carries one — a cheap header-only check, so it costs nothing extra on the
+files that don't.
 
 Three things bypass it. Single-scene mode never builds one. A jump — a MIDI
 pad, a clip launch, a control-plane request — lands on its scene directly,

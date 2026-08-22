@@ -56,6 +56,7 @@ from c64cast.video.video import (
     decode_audio_full,
     ensure_pyav,
     prescan_source_color,
+    probe_container_title,
 )
 
 from .bitmap_text import glyphs_to_mask, load_glyphs
@@ -64,6 +65,7 @@ from .video_transport import VideoTransportControls
 
 if TYPE_CHECKING:
     from c64cast.app.config import AudioCfg, ColorCfg
+    from c64cast.app.quickcast import ResolvedMedia
     from c64cast.audio.audio_source import AudioSource
 
     from .effects import FrameEffect
@@ -948,12 +950,19 @@ class MediaFileMixin:
 
         return resolve_file_spec(self.file_spec, self.MEDIA_EXTS, label=self.MEDIA_LABEL)
 
+    def _display_name_for(self, filepath: str) -> str:
+        """The name to show for a picked file: its basename by default.
+        Overridden by scene types that can read a real name out of the file
+        itself (VideoScene: a container `title` tag) rather than settling
+        for the filename."""
+        return _display_name(filepath)
+
     def _initial_scene_name(self, candidates: list[str]) -> str:
         """The build-time scene name: the file's basename for a single-entry
         pool, the raw spec for a multi-entry one (the picked file's basename
         gets prefixed at each setup)."""
         if len(candidates) == 1:
-            return f"{self.MEDIA_LABEL.title()}: {_display_name(candidates[0])}"
+            return f"{self.MEDIA_LABEL.title()}: {self._display_name_for(candidates[0])}"
         return f"{self.MEDIA_LABEL.title()}: {self.file_spec}"
 
     def _pick_filepath(self) -> bool:
@@ -973,7 +982,7 @@ class MediaFileMixin:
             )
             return False
         self.filepath = random.choice(candidates)
-        self.name = f"{self.MEDIA_LABEL.title()}: {_display_name(self.filepath)}"
+        self.name = f"{self.MEDIA_LABEL.title()}: {self._display_name_for(self.filepath)}"
         if len(candidates) > 1:
             log.info(
                 "%s: picked %s from %d candidates",
@@ -1339,6 +1348,10 @@ class VideoScene(MediaFileMixin, Scene):
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self.wall_start_time = 0.0
+        # The resolved URL's yt-dlp attribution (None for a local file). Set
+        # post-construction by scene_factory._build_video; read by
+        # recording_metadata._video_source, nowhere in playback itself.
+        self.source_info: ResolvedMedia | None = None
         # Seconds into the file to begin playback (0 = from the start). Passed
         # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
         # derives this from a URL's t=/start= timestamp.
@@ -1393,6 +1406,17 @@ class VideoScene(MediaFileMixin, Scene):
         # the record border, and the per-video loop preset store; reset in
         # setup() so a repeated/looped scene starts fresh.
         self.transport = VideoTransportControls(self, loop_audio=loop_audio)
+
+    def _display_name_for(self, filepath: str) -> str:
+        """Prefer the file's own container `title` tag over its bare
+        filename, when the file is local and actually carries one — the
+        cheap header-only peek in video.probe_container_title (no frame
+        decode, so this stays fast enough to run before every "UP NEXT"
+        interstitial). Falls back to the filename otherwise, and always for
+        a URL (its real title comes from yt-dlp instead — see
+        scene_factory._resolve_video_source — and probing a stream here
+        would mean real network I/O just to pick a display name)."""
+        return probe_container_title(filepath) or super()._display_name_for(filepath)
 
     def setup(self) -> None:
         # Consume a prepare_next() pick if there is one; otherwise pick now

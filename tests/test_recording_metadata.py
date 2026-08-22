@@ -15,6 +15,7 @@ import json
 import unittest
 
 from c64cast.app.config import Config, SceneCfg
+from c64cast.app.quickcast import ResolvedMedia
 from c64cast.app.recording_metadata import (
     _UNKNOWN_COPYRIGHT,
     SCENE_CONFIG_MARKER,
@@ -27,7 +28,15 @@ from c64cast.sid.sid_host_emu import SidHeader
 
 
 class _FakeVideoScene:
-    def __init__(self, name, file_spec, filepath, display_mode=None):
+    def __init__(
+        self,
+        name,
+        file_spec,
+        filepath,
+        display_mode=None,
+        source_info: ResolvedMedia | None = None,
+        source=None,
+    ):
         self._cfg = SceneCfg(type="video", file=file_spec)
         self.name = name
         self.filepath = filepath
@@ -37,6 +46,8 @@ class _FakeVideoScene:
         self.audio = object()
         self.effect = None
         self.overlays = []
+        self.source_info = source_info
+        self.source = source  # a fake AVFileSource, for local container-tag tests
 
 
 class _FakeWaveformScene:
@@ -67,6 +78,18 @@ def _make_header(name="Wizball", author="Martin Galway", released="1987 Ocean") 
     )
 
 
+class _FakeContainer:
+    def __init__(self, metadata):
+        self.metadata = metadata
+
+
+class _FakeAVFileSource:
+    """Stands in for VideoScene.source — only .container.metadata is read."""
+
+    def __init__(self, metadata):
+        self.container = _FakeContainer(metadata)
+
+
 class VideoSourceTest(unittest.TestCase):
     def test_url_scene_carries_original_link_and_placeholder_copyright(self):
         scene = _FakeVideoScene(
@@ -81,6 +104,42 @@ class VideoSourceTest(unittest.TestCase):
         # The resolved CDN stream URL must never leak into the blob.
         self.assertNotIn("cdn.example.com", json.dumps(payload))
 
+    def test_url_scene_reports_ytdlp_license_verbatim(self):
+        scene = _FakeVideoScene(
+            "My Clip",
+            "https://youtu.be/abc123",
+            "https://cdn.example.com/stream.mp4",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+                license="Creative Commons Attribution license (reuse allowed)",
+                webpage_url="https://youtu.be/abc123",
+            ),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        source = payload["source"]
+        self.assertEqual(
+            source["copyright"], "Creative Commons Attribution license (reuse allowed)"
+        )
+        self.assertEqual(source["uploader"], "Some Channel")
+        self.assertEqual(source["webpage_url"], "https://youtu.be/abc123")
+
+    def test_url_scene_with_uploader_but_no_license_names_uploader_as_lead(self):
+        scene = _FakeVideoScene(
+            "My Clip",
+            "https://youtu.be/abc123",
+            "https://cdn.example.com/stream.mp4",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+            ),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertIn("Some Channel", payload["source"]["copyright"])
+        self.assertIn("unknown", payload["source"]["copyright"])
+
     def test_local_video_scene_has_no_url(self):
         scene = _FakeVideoScene("clip.mp4", "assets/videos/clip.mp4", "assets/videos/clip.mp4")
         cfg = Config()
@@ -89,6 +148,36 @@ class VideoSourceTest(unittest.TestCase):
         self.assertIsNone(source["url"])
         self.assertEqual(source["local_file"], "clip.mp4")
         self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
+
+    def test_local_video_scene_reports_container_copyright_tag(self):
+        scene = _FakeVideoScene(
+            "clip.mp4",
+            "assets/videos/clip.mp4",
+            "assets/videos/clip.mp4",
+            source=_FakeAVFileSource({"copyright": "© 2026 Some Studio"}),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertEqual(payload["source"]["copyright"], "© 2026 Some Studio")
+
+    def test_local_video_scene_falls_back_to_rights_then_license_tag(self):
+        scene = _FakeVideoScene(
+            "clip.mp4",
+            "assets/videos/clip.mp4",
+            "assets/videos/clip.mp4",
+            source=_FakeAVFileSource({"license": "Public Domain"}),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertEqual(payload["source"]["copyright"], "Public Domain")
+
+    def test_local_video_scene_with_unrelated_container_tags_stays_unknown(self):
+        scene = _FakeVideoScene(
+            "clip.mp4",
+            "assets/videos/clip.mp4",
+            "assets/videos/clip.mp4",
+            source=_FakeAVFileSource({"encoder": "Lavf62.12.101"}),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertEqual(payload["source"]["copyright"], _UNKNOWN_COPYRIGHT)
 
 
 class WaveformSourceTest(unittest.TestCase):
@@ -162,6 +251,26 @@ class RenderDescriptionTest(unittest.TestCase):
         # copyright line has to survive being published unedited.
         self.assertNotIn("TODO", text)
         self.assertIn("c64cast", text)
+
+    def test_render_includes_uploader_and_real_license(self):
+        scene = _FakeVideoScene(
+            "My Clip",
+            "https://youtu.be/abc123",
+            "https://cdn.example.com/stream.mp4",
+            source_info=ResolvedMedia(
+                stream_url="https://cdn.example.com/stream.mp4",
+                kind="video",
+                uploader="Some Channel",
+                license="Public Domain",
+                webpage_url="https://youtu.be/abc123",
+            ),
+        )
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        text = render_description(payload)
+        self.assertIn("Some Channel", text)
+        self.assertIn("Public Domain", text)
+        # webpage_url equals the original link here, so it must not repeat.
+        self.assertEqual(text.count("https://youtu.be/abc123"), 1)
 
 
 if __name__ == "__main__":
