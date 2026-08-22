@@ -12,7 +12,7 @@
 #   make doctor     # offline env + config diagnostics (catches a desynced .venv)
 #   make bench      # async write-pipeline benchmark
 #   make check      # lint + typecheck + test (pre-PR gate)
-#   make preflight  # check + full CI mirror (platform type-checks, docs, web bundle)
+#   make preflight  # full CI mirror: lint + test + platform type-checks + docs/web
 #   make clean      # remove build artifacts
 #
 # Everything runs through `uv run`, so the synced project env is used regardless
@@ -123,7 +123,7 @@ help:
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
-	@echo "  preflight  check + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
+	@echo "  preflight  lint + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
 	@echo "  clean      remove build artifacts"
 
 sync:
@@ -241,10 +241,12 @@ check: lint typecheck test
 # pyright/mypy are static analyzers — they read source text and never run
 # it — so re-running them with an explicit platform flag reproduces CI's
 # `types` job (which checks the Linux/Darwin/Windows *views*, all three from
-# ubuntu-latest runners) without needing three machines. `check`'s own
-# typecheck already covers the host platform; check-platforms (defined above)
-# runs all three explicitly rather than assuming which one that is, in
-# parallel since three sequential pyright/mypy passes add up.
+# ubuntu-latest runners) without needing three machines. check-platforms
+# (defined above) runs all three explicitly, in parallel since three
+# sequential pyright/mypy passes add up — that sweep already includes
+# whichever platform is the host, so preflight depends on lint+test rather
+# than on check (which would run typecheck's own host-only pyright/mypy pass
+# a fourth, redundant, time).
 #
 # The book-parse loop and site-check mirror the `docs` job; rebuilding the web
 # console and diffing it against the committed bundle mirrors the `web` job.
@@ -252,7 +254,7 @@ check: lint typecheck test
 #
 # What preflight still can't reproduce is CI's OS x Python-version test
 # matrix (`lint-and-test`) — that needs the actual runners, not a local flag.
-preflight: check
+preflight: lint test
 	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
 	$(call check-platforms,mypy --strict,uv run mypy --strict --platform,$(MYPY_PLATFORMS))
 	@for book in docs/*/book.toml; do \
