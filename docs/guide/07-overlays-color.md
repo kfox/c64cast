@@ -80,6 +80,21 @@ four colors per cell per frame, a cell whose contents change can flicker as
 its palette is re-chosen. Smoothing damps that at the cost of slight
 after-images. Raise it for calm footage; lower it for fast motion.
 
+**`flicker_tolerance`** is a different trick entirely: rather than avoiding
+flicker, it puts it to work. Two screen pages alternate every video field, so
+the eye fuses a cell's pair of hardware colors into a shade the sixteen-color
+palette does not have — an old demo-scene technique, off by default because
+it is a deliberate look rather than a fidelity upgrade. Widening it past
+`"clean"` puts a flashing image on screen at a rate inside the recognized
+photosensitive-seizure band, so read
+[caveats.md](https://github.com/kfox/c64cast/blob/main/docs/caveats.md#flicker-blending-flashes-at-2530-hz-and-cameras-cant-see-it)
+before turning it up. It also does not survive being filmed at 30 fps — a
+capture card records the flicker, not the fusion — so judge it in c64cast's
+own `[preview]` window or a `[recording]` MP4, not a camera pointed at the
+screen.
+[The Programmer's Reference Guide](https://github.com/kfox/c64cast/blob/main/docs/reference/04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance)
+has the mechanism and a diagram of it.
+
 Most of these are set to `"auto"` out of the box, which is not a refusal to
 choose but a decision made per scene: a still slideshow gets
 `floyd-steinberg` dithering, while moving video gets `blue_noise`, because

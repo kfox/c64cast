@@ -4,10 +4,10 @@
     python scripts/make_reference_diagrams.py            # redraw everything
     python scripts/make_reference_diagrams.py ladder      # just that one
 
-Five figures, for the five things in the book that are inherently spatial and
-were carrying the whole load in prose: the precedence ladder, the twelve-step
-display pipeline, the VIC-II's per-cell attribute story, the two audio paths,
-and the 64 KB memory map.
+Six figures, for the things in the book that are inherently spatial and were
+carrying the whole load in prose: the precedence ladder, the twelve-step
+display pipeline, the VIC-II's per-cell attribute story, flicker blending's
+field alternation, the two audio paths, and the 64 KB memory map.
 
 Committed rather than built on demand. The release renders the books with
 `uv run --no-project typst`, which cannot import c64cast or Pillow, so
@@ -38,6 +38,7 @@ from PIL import Image, ImageDraw, ImageFont
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from c64cast.video.flicker import fuse as flicker_fuse  # noqa: E402
 from c64cast.video.palette import C64_PALETTE_BGR  # noqa: E402
 
 IMG_DIR = REPO_ROOT / "docs" / "reference" / "img"
@@ -515,6 +516,88 @@ def fig_pipeline() -> Image.Image:
 
 
 # ---------------------------------------------------------------------------
+# Figure 3-3 — blending colors the VIC cannot draw
+#
+# Red and purple, "verymild" on the scored table -- one of the mildest pairs
+# "clean" admits, so it fuses convincingly rather than merely fusing.
+# ---------------------------------------------------------------------------
+
+_FLICKER_PAIR = (2, 4)
+
+
+def _fused(a: int, b: int) -> tuple[int, int, int]:
+    """The linear-light average of two palette entries, as RGB. See flicker.fuse."""
+    blue, green, red = flicker_fuse(a, b)
+    return (int(round(red)), int(round(green)), int(round(blue)))
+
+
+def fig_flicker() -> Image.Image:
+    height = 1220
+    img, d = canvas(height)
+
+    left, right = (60.0, 700.0), (800.0, 1440.0)
+    swatch, sw_y = 220.0, 300.0
+    head_f = font("body", 44, "SemiBold")
+    reg_f = font("mono", 38)
+    note_f = font("body", 36)
+
+    box(d, (left[0], 50, right[1], 158), fill=ACCENT_WASH, outline=ACCENT_PALE)
+    top_label = "One shared bitmap — only the screen-matrix nibble differs"
+    top_f = font("body", 40)
+    must_fit(text_width(top_label, top_f), right[1] - left[0] - 60, top_label)
+    text(d, ((left[0] + right[1]) / 2, 104), top_label, top_f, INK, anchor="mm")
+
+    for band, title, reg, index in (
+        (left, "Field n", "$D018 = $18 — page A, $0400", _FLICKER_PAIR[0]),
+        (right, "Field n + 1", "$D018 = $38 — page B, $0C00", _FLICKER_PAIR[1]),
+    ):
+        cx = (band[0] + band[1]) / 2
+        arrow(d, (cx, 168), (cx, 210), ACCENT, 3, 13)
+        text(d, (cx, 246), title, head_f, ACCENT, anchor="mm")
+        box(
+            d,
+            (cx - swatch / 2, sw_y, cx + swatch / 2, sw_y + swatch),
+            fill=c64(index),
+            outline=INK,
+            width=2.5,
+            radius=14,
+        )
+        must_fit(text_width(reg, reg_f), band[1] - band[0] - 20, reg)
+        text(d, (cx, sw_y + swatch + 42), reg, reg_f, MUTED, anchor="mm")
+
+    tick_label = "toggled every field by a raster IRQ, free-running at the VIC's own rate"
+    must_fit(text_width(tick_label, note_f), WIDTH - 120, tick_label)
+    text(d, (WIDTH / 2, sw_y + swatch + 92), tick_label, note_f, MUTED, anchor="mm")
+
+    apex = (WIDTH / 2, sw_y + swatch + 240)
+    for band in (left, right):
+        arrow(d, ((band[0] + band[1]) / 2, sw_y + swatch + 130), apex, ACCENT, 3, 13)
+
+    out_y0 = apex[1] + 30
+    out_y1 = out_y0 + 400
+    box(d, (140.0, out_y0, 1360.0, out_y1), fill=ACCENT_WASH, outline=ACCENT)
+    fused_top = out_y0 + 40
+    box(
+        d,
+        (WIDTH / 2 - swatch / 2, fused_top, WIDTH / 2 + swatch / 2, fused_top + swatch),
+        fill=_fused(*_FLICKER_PAIR),
+        outline=INK,
+        width=2.5,
+        radius=14,
+    )
+    out_room = 1220.0 - 140.0 - 60
+    heading = "What a 25 Hz (PAL) / 30 Hz (NTSC) eye integrates"
+    heading_f = font("body", 40, "SemiBold")
+    must_fit(text_width(heading, heading_f), out_room, heading)
+    text(d, (WIDTH / 2, fused_top + swatch + 50), heading, heading_f, INK, anchor="mm")
+    caption = "a shade neither $0400 nor $0C00 alone can hold"
+    must_fit(text_width(caption, note_f), out_room, caption)
+    text(d, (WIDTH / 2, fused_top + swatch + 96), caption, note_f, MUTED, anchor="mm")
+
+    return finish(img)
+
+
+# ---------------------------------------------------------------------------
 # Figure 4-1 — the two ways out
 # ---------------------------------------------------------------------------
 
@@ -820,6 +903,11 @@ FIGURES = {
         fig_cells,
         "3 · The Six Display Modes",
         "One hardware cell per mode, with the bytes that color it",
+    ),
+    "fig-3-3-flicker": (
+        fig_flicker,
+        "3 · Blending Colors the VIC Cannot Draw",
+        "Two hardware colors, one per field, fused into a shade neither is",
     ),
     "fig-4-1-audio": (
         fig_audio,

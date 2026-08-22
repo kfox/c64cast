@@ -381,6 +381,48 @@ cut, structure from the previous shot lingers for a moment as an after-image.
 Lower it if after-images bother you; raise it if motion shimmers. It affects
 nothing outside `mhires` with `palette_mode = "percell"`.
 
+### Blending Colors the VIC Cannot Draw — `flicker_tolerance`
+
+Off by default. `hires` (`"normal"` style) and `mhires` with
+`palette_mode = "percell"` can hold **two** screen pages over one shared
+bitmap and alternate `$D018` between them every video field, so the eye fuses
+each cell's pair of hardware colors into a shade the sixteen-color palette
+does not contain — the trick behind Dragon Breed's sky and Mayhem in
+Monsterland's water. The alternation is owned by a C64-side raster IRQ that
+free-runs at the VIC's field rate no matter how fast the host pushes frames,
+so it costs nothing on the link beyond a second screen page.
+
+![Figure 3-3. Two hardware colors, one per field, fused by the eye into a shade the VIC-II has no register for.](img/fig-3-3-flicker.png)
+
+Not every pair of colors is offered — each candidate was scored by eye,
+blind, against how visibly it flickers — and `flicker_tolerance` is a cut
+across that scale:
+
+| `flicker_tolerance` | Admits | Colors reachable on an Ultimate 64 |
+|---|---|---|
+| `off` | Nothing. The default | 16 |
+| `clean` | Pairs that fused cleanly | 24 |
+| `subtle` | + pairs that flicker mildly | 30 |
+| `visible` | + pairs that visibly flicker | 39 |
+
+`visible` sits inside the frequency band recognized as a
+photosensitive-seizure risk — treat it as an effect you have chosen to use,
+not a free upgrade to the palette. `flicker_max_luma_delta` (default
+`0.075`) is a separate, absolute cap on how far apart in brightness a pair
+may be, checked for the same reason regardless of which tier admitted the
+pair.
+
+Which colors qualify depends on `[hardware].host_palette`: eligibility is a
+statement about the light one machine emits, not about "the C64 palette" in
+the abstract, so the table is rebuilt whenever the palette changes. Arming
+also pins `color_match` to `perceptual` and `cell_strategy` to `error-min`,
+because a blended color sits deliberately between two solids and only that
+distance space and that search find the better fit for a cell. The border
+cannot join in — `$D020` is a single register the field IRQ does not manage,
+so it holds the field-A color throughout — and the effect does not survive a
+30 fps capture: c64cast's own `[preview]` window and `[recording]` reconstruct
+the fused color arithmetically, but a camera records the flicker.
+
 ### Fades
 
 `[playlist].fade_duration_s` fades a scene up from black on entry and down to

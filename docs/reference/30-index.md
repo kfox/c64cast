@@ -73,7 +73,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | camera | [Validation (1)](02-config-rules.md#validation), [Cameras and Microphones (6)](07-inputs-and-outputs.md#cameras-and-microphones), [Choosing a Camera (6)](07-inputs-and-outputs.md#choosing-a-camera) |
 | `cc_map` | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [Learning a Controller (6)](07-inputs-and-outputs.md#learning-a-controller), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `cell_pick` (mode) | [`mode` (F)](25-appendix-f-live-targets.md#mode) |
-| `cell_strategy` | [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
+| `cell_strategy` | [Which Colors — `cell_strategy` (3)](04-display-pipeline.md#which-colors--cell_strategy), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [What to Give Up First (5)](06-under-the-hood.md#what-to-give-up-first) |
 | `cell_strategy` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
@@ -87,7 +87,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `[color]` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Machine Settings (1)](02-config-rules.md#machine-settings), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `color` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Quantizing a Cell (3)](04-display-pipeline.md#quantizing-a-cell) |
 | color RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [Regions and the Dirty Model (5)](06-under-the-hood.md#regions-and-the-dirty-model), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
-| `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
+| `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
 | `color_match` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `color_mode` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `colored_bursts` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
@@ -194,9 +194,9 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [The Shape of a Value (1)](02-config-rules.md#the-shape-of-a-value) |
 | `fire` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
-| `flicker_max_luma_delta` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_max_luma_delta` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_score_pairs` | [`color` (A)](20-appendix-a-configuration.md#color) |
-| `flicker_tolerance` | [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_tolerance` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
 | `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [The Console (6)](07-inputs-and-outputs.md#the-console), [`color` (A)](20-appendix-a-configuration.md#color) |
@@ -247,7 +247,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_palette` | [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_palette` | [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
 | `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
 | `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
@@ -412,7 +412,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `port` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `posterize` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `pre_emphasis` | [`dsp` (A)](20-appendix-a-configuration.md#dsp), [`blank` (B)](21-appendix-b-scene-types.md#blank), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
-| `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [`preview` (A)](20-appendix-a-configuration.md#preview) |
+| `[preview]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`preview` (A)](20-appendix-a-configuration.md#preview) |
 | `--print-example` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema` | [What Is In Here](01-introduction.md#what-is-in-here), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema-path` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
@@ -441,7 +441,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `rate` (effect) | [`effect` (F)](25-appendix-f-live-targets.md#effect) |
 | `rate_hz` | [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `reactive` | [`generative` (2)](03-vocabulary.md#generative), [Generators (3)](04-display-pipeline.md#generators), [Listening Back (4)](05-sound-and-music.md#listening-back) |
-| `[recording]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`recording` (A)](20-appendix-a-configuration.md#recording) |
+| `[recording]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `refresh_minutes` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss), [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `refresh_s` | [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown), [`network` (C)](22-appendix-c-overlays.md#network) |
 | `reset_before_launch` | [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
