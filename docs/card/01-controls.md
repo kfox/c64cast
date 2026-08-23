@@ -22,9 +22,9 @@ read memory, and takes the cursor keys while it is open.
 
 | Gesture | Running | With `[vision].performance` |
 |---|---|---|
-| Pinch | Pause; hold to resume | Hold: toggle effect layer 1 |
+| Pinch | Pause; hold to resume | Hold: toggle effect layer 0 |
 | Swipe | Skip | Next clip |
-| Open hand | Cycle style | Hold: toggle effect layer 2 |
+| Open hand | Cycle style | Hold: toggle effect layer 1 |
 
 Pinch-to-resume is unchanged in both modes, so a paused show always recovers the
 same way.

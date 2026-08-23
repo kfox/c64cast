@@ -31,6 +31,14 @@ the Commodore will.
 memory by, over a socket rather than the REST interface, because REST cannot
 carry writes at a useful rate.
 
+**FPGA** — field-programmable gate array. The chip on the Ultimate that
+emulates the SID and, separately, carries the Ultimate Audio PCM sampler —
+both off the C64's own bus.
+
+**MMC** — MIDI Machine Control, a SysEx transport protocol (play/stop/record/
+FF/RW/pause) a DAW or controller can send; a `cc_map` entry of type `mmc`
+matches one.
+
 **REU** — the RAM Expansion Unit. Additional memory the Ultimate can emulate,
 used here as a buffer deep enough to keep audio fed.
 
