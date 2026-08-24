@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from c64cast.app import introspect
+from c64cast.app import introspect, paths
 from c64cast.app.config import Config, ConfigError
 from c64cast.app.config_store import (
     ConfigInvalid,
@@ -331,6 +331,41 @@ def register_web_routes(
         if not introspection:
             introspection = introspect.as_dict()
         return introspection
+
+    @app.get("/api/update")
+    def api_update() -> dict[str, Any]:
+        """The last recorded PyPI check (`update_state.py`), for the
+        console's dismissible update banner. Never queries PyPI itself —
+        that only happens from `c64cast --check-for-updates --write-state`,
+        so opening this tab never makes an outbound request on its own. A
+        GET, so a `viewer` token can see it same as it can watch the
+        screen. The recorded verdict is re-answered against the version
+        actually running (`update_state.rechecked`), so an install upgraded
+        since the last check stops advertising the release it already took.
+        `unanswered_since` rides along so the console can say when PyPI last
+        stopped answering — a machine off the internet for a month is one
+        the banner has something else to tell — and `stale_after_days` with
+        it, so how long "a month" is stays one number here rather than one
+        here and another in the bundle."""
+        from c64cast import __version__
+        from c64cast.app.update_state import STALE_AFTER_DAYS, read_update_state, rechecked
+
+        check = rechecked(read_update_state(path=paths.update_check_path()), __version__)
+        if check is None:
+            return {
+                "checked": False,
+                "running_version": __version__,
+                "stale_after_days": STALE_AFTER_DAYS,
+            }
+        return {
+            "checked": True,
+            "checked_at": check.checked_at,
+            "running_version": check.running_version,
+            "latest_version": check.latest_version,
+            "newer": check.newer,
+            "unanswered_since": check.unanswered_since,
+            "stale_after_days": STALE_AFTER_DAYS,
+        }
 
     # The screen. All three are GETs, so the read-only role can watch — a
     # viewer who cannot see the show has been handed a link to nothing. What a

@@ -109,8 +109,11 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | Flag | Description |
 |---|---|
 | **`--check-for-updates`** | Query PyPI for the latest c64cast release and report whether it's newer than this install, then exit. No config, no hardware, no mutation — see `--upgrade` to act on the answer. |
+| **`--write-state`** | With `--check-for-updates`, also record the answer at <data root>/update_check.json, for the web console's update banner and (on the appliance image) the login MOTD to read without querying PyPI themselves. No effect without `--check-for-updates`. |
+| **`--motd-line`** | Print the pending-upgrade line from the last `--write-state` check (or nothing, if none is pending), then exit. Never queries PyPI — for an appliance's /etc/update-motd.d/ script. |
 | **`--upgrade`** | Detect how this install was made (uv tool, pipx, pip, or a development checkout) and run that installer's own upgrade command, which preserves whichever extras are already installed. Prompts for confirmation unless `--yes`. |
 | **`--yes`** | Skip `--upgrade`'s confirmation prompt (for scripts/CI). No effect without `--upgrade`. |
+| **`--reset-setup`** | Clear the appliance's first-run setup marker, then exit — the next `--serve` with [web].setup_wizard on will ask again rather than opening the normal token-gated console. No effect on a config with setup_wizard off. |
 
 ## Debug
 

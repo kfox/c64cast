@@ -231,7 +231,12 @@ one applies to you. It asks before doing anything (`--yes` skips the prompt
 for a script) and keeps whichever optional features you already installed.
 
 To ask without touching anything, `c64cast --check-for-updates` reports
-whether a newer release exists and stops there.
+whether a newer release exists and stops there. Add `--write-state` and it
+also records the answer to disk, which two other surfaces read without ever
+querying PyPI themselves: `--serve`'s web console shows a dismissible banner
+naming the release, and `c64cast --motd-line` prints the same thing (or
+nothing) for a login script. Nothing here ever installs anything on its own
+— that is still what `--upgrade` is for.
 
 The rest of this section is about what `--upgrade` does under the hood, and
 the one way upgrading goes wrong even with it.

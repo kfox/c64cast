@@ -357,7 +357,13 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
         return ok
 
 
-def install_auth(app: Any, *, token: str, viewer_token: str | ViewerCredential = "") -> bool:
+def install_auth(
+    app: Any,
+    *,
+    token: str,
+    viewer_token: str | ViewerCredential = "",
+    public_paths: Iterable[str] = PUBLIC_PATHS,
+) -> bool:
     """Gate ``app`` behind a shared token. Returns whether auth is on.
 
     A falsy ``token`` leaves the app wide open — the historical behavior, and
@@ -368,7 +374,13 @@ def install_auth(app: Any, *, token: str, viewer_token: str | ViewerCredential =
     gate and the login routes both follow it — which is what lets a host mint a
     read-only token for a guest without a restart. The
     "must differ from the full token" check runs against whatever it holds now;
-    a minted one is 32 random bytes and cannot collide."""
+    a minted one is 32 random bytes and cannot collide.
+
+    ``public_paths`` widens the exact-match allowlist a caller genuinely needs
+    reachable with no token at all — the appliance setup form
+    (:mod:`c64cast.control.setup_api`) is the one user today, threaded through
+    :func:`c64cast.control.control_plane.build_app_for_registry`. Defaults to
+    :data:`PUBLIC_PATHS` (just the login exchange), never narrower than that."""
     viewer = (
         viewer_token
         if isinstance(viewer_token, ViewerCredential)
@@ -381,5 +393,7 @@ def install_auth(app: Any, *, token: str, viewer_token: str | ViewerCredential =
     if viewer.token and hmac.compare_digest(token.encode("utf-8"), viewer.token.encode("utf-8")):
         raise ValueError("viewer_token must differ from token")
     _register_login_routes(app, token=token, viewer=viewer)
-    app.add_middleware(TokenAuthMiddleware, token=token, viewer_token=viewer)
+    app.add_middleware(
+        TokenAuthMiddleware, token=token, viewer_token=viewer, public_paths=public_paths
+    )
     return True

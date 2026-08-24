@@ -541,3 +541,25 @@ export interface StateFrame {
   systems?: PerfSystem[];
   [key: string]: unknown;
 }
+
+/** `GET /api/update` — the last recorded PyPI check
+ *  (`c64cast/app/update_state.py`), for the update banner. `checked` is
+ *  false only when no check has ever run; `newer` is null when no check has
+ *  ever answered (PyPI unreachable, or an unparsable version).
+ *
+ *  `checked_at` is the last *attempt* and `unanswered_since` the moment PyPI
+ *  stopped answering (null while it still does) — a failed check keeps the
+ *  last real answer, so the pair is what says how old that answer is. */
+export interface UpdateState {
+  checked: boolean;
+  checked_at?: number;
+  running_version: string;
+  latest_version?: string | null;
+  newer?: boolean | null;
+  unanswered_since?: number | null;
+  /** How long without an answer the host considers too long. Sent by the
+   *  host rather than hard-coded here, so the console and `c64cast
+   *  --motd-line` agree by construction; a response without it is simply
+   *  never called stale. */
+  stale_after_days?: number;
+}

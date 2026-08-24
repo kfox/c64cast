@@ -566,25 +566,44 @@ def run_doctor(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> int:
     return print_report(diagnostics)
 
 
-def run_check_for_updates() -> int:
+def run_check_for_updates(*, write_state: bool = False) -> int:
     """--check-for-updates: query PyPI and report whether a newer c64cast
     release exists, then exit. No config, no hardware, no mutation — see
     --upgrade to act on the answer. Exit 0 whether or not an update exists
     (both are successful answers); 4 when the answer couldn't be determined
-    (no network, or an unparsable version)."""
+    (no network, or an unparsable version).
+
+    ``--write-state`` additionally records the answer at
+    `paths.update_check_path()` (see `update_state.py`), so a surface that
+    isn't this terminal — the web console, an appliance's login MOTD — can
+    report it without querying PyPI itself. Written from the same PyPI
+    response this command already fetched, never a second query; a run that
+    couldn't reach PyPI records only that it tried, leaving the last real
+    answer standing (`update_state.record_check`)."""
     from c64cast import __version__
 
     from . import upgrade
+    from .update_state import UpdateCheck, record_check
 
     install = upgrade.detect_install()
     print(f"c64cast {__version__} ({install.root})")
 
     remote = upgrade.latest_release()
+    newer = upgrade.is_newer(remote, __version__) if remote is not None else None
+
+    if write_state:
+        record_check(
+            UpdateCheck(
+                checked_at=time.time(),
+                running_version=__version__,
+                latest_version=remote,
+                newer=newer,
+            )
+        )
+
     if remote is None:
         print("Could not reach PyPI to check for updates.", file=sys.stderr)
         return 4
-
-    newer = upgrade.is_newer(remote, __version__)
     if newer is None:
         print(f"PyPI reports {remote}, but it could not be compared to {__version__}.")
         return 4
@@ -600,6 +619,26 @@ def run_check_for_updates() -> int:
     return 0
 
 
+def run_motd_line() -> int:
+    """--motd-line: print the appliance login MOTD's pending-upgrade line (or
+    nothing), then exit 0. Reads the file `--check-for-updates --write-state`
+    already wrote; never queries PyPI itself, so a script that runs it at
+    every SSH login never blocks on the network. See `update_state.motd_line`
+    for what makes a check worth printing — a pending upgrade, or a host that
+    has not heard from PyPI in long enough that what it holds can't be quoted
+    as current — and `update_state.rechecked` for why the recorded verdict is
+    re-answered against the running version rather than printed as it was
+    written."""
+    from c64cast import __version__
+
+    from .update_state import motd_line, read_update_state, rechecked
+
+    line = motd_line(rechecked(read_update_state(), __version__), time.time())
+    if line:
+        print(line)
+    return 0
+
+
 def run_upgrade(args: argparse.Namespace) -> int:
     """--upgrade: detect how this install was made and run its upgrade
     command, confirming first unless --yes. See c64cast.app.upgrade for the
@@ -607,3 +646,20 @@ def run_upgrade(args: argparse.Namespace) -> int:
     from . import upgrade
 
     return upgrade.run_upgrade(assume_yes=bool(args.yes))
+
+
+def run_reset_setup() -> int:
+    """--reset-setup: clear the appliance's first-run marker, then exit.
+
+    Deliberately CLI-only — there is no HTTP route for this. An admin who can
+    already run `c64cast --reset-setup` has shell access to the box; an HTTP
+    route that did the same thing would reopen the unauthenticated setup
+    window to anyone who could reach the port, which is exactly the exposure
+    `setup_gate.py` exists to bound."""
+    path = paths.setup_state_path()
+    if not path.is_file():
+        print(f"No setup marker at {path} — the next --serve will ask for setup already.")
+        return 0
+    path.unlink()
+    print(f"Removed {path} — the next --serve with [web].setup_wizard on will ask again.")
+    return 0

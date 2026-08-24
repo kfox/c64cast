@@ -184,6 +184,7 @@ web = [
     { name = "fastapi" },
     { name = "uvicorn" },
     { name = "websockets" },
+    { name = "zeroconf" },
 ]
 wizard = [
     { name = "questionary" },
@@ -253,6 +254,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.7.4" },
     { name = "yt-dlp", marker = "extra == 'yt'", specifier = ">=2026.7.4" },
     { name = "zeroconf", marker = "extra == 'all'", specifier = ">=0.150.0,<1" },
+    { name = "zeroconf", marker = "extra == 'web'", specifier = ">=0.150.0,<1" },
     { name = "zeroconf", marker = "extra == 'wled'", specifier = ">=0.150.0,<1" },
 ]
 provides-extras = ["mic", "video", "control", "obs", "midi", "logging", "tr", "vision", "wizard", "camera", "yt", "wled", "web", "all"]

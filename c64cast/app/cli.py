@@ -44,6 +44,8 @@ from .cli_commands import (
     run_dump_char_rom,
     run_install_char_rom,
     run_introspection,
+    run_motd_line,
+    run_reset_setup,
     run_save_settings,
     run_upgrade,
 )
@@ -404,6 +406,21 @@ def build_parser() -> argparse.ArgumentParser:
         "mutation — see --upgrade to act on the answer.",
     )
     upd.add_argument(
+        "--write-state",
+        action="store_true",
+        help="With --check-for-updates, also record the answer at "
+        "<data root>/update_check.json, for the web console's update banner "
+        "and (on the appliance image) the login MOTD to read without querying "
+        "PyPI themselves. No effect without --check-for-updates.",
+    )
+    upd.add_argument(
+        "--motd-line",
+        action="store_true",
+        help="Print the pending-upgrade line from the last --write-state check "
+        "(or nothing, if none is pending), then exit. Never queries PyPI — for "
+        "an appliance's /etc/update-motd.d/ script.",
+    )
+    upd.add_argument(
         "--upgrade",
         action="store_true",
         help="Detect how this install was made (uv tool, pipx, pip, or a "
@@ -415,6 +432,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="Skip --upgrade's confirmation prompt (for scripts/CI). No effect without --upgrade.",
+    )
+    upd.add_argument(
+        "--reset-setup",
+        action="store_true",
+        help="Clear the appliance's first-run setup marker, then exit — the next "
+        "`--serve` with [web].setup_wizard on will ask again rather than opening the "
+        "normal token-gated console. No effect on a config with setup_wizard off.",
     )
 
     debug = p.add_argument_group("debug")
@@ -703,11 +727,24 @@ def main(argv=None) -> int:
     # touching a config file or the hardware.
     if args.check_for_updates:
         configure_logging(args.verbose or 0, args.log_file)
-        return run_check_for_updates()
+        return run_check_for_updates(write_state=bool(args.write_state))
 
     if args.upgrade:
         configure_logging(args.verbose or 0, args.log_file)
         return run_upgrade(args)
+
+    # --motd-line is config-free too, and deliberately never touches the
+    # network itself — see run_motd_line.
+    if args.motd_line:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_motd_line()
+
+    # --reset-setup is config-free too: it only ever touches the marker file
+    # under the data dir, regardless of whether this invocation's config even
+    # sets [web].setup_wizard.
+    if args.reset_setup:
+        configure_logging(args.verbose or 0, args.log_file)
+        return run_reset_setup()
 
     try:
         loaded, cfgs = _resolve_configs(args)

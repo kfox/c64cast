@@ -1,0 +1,16 @@
+# Daily trigger for c64cast-update-check.service. RandomizedDelaySec spreads
+# a fleet of these across the hour rather than all hitting PyPI at once;
+# Persistent=true catches up a box that was off at the scheduled time
+# instead of silently skipping a whole day. Installed by the appliance image
+# build; not read by c64cast itself.
+
+[Unit]
+Description=Daily check for a newer c64cast release
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

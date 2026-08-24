@@ -165,6 +165,30 @@ def web_token_path() -> Path:
     return data_root() / "web_token"
 
 
+def setup_state_path() -> Path:
+    """The web console's first-run setup marker (``<data root>/setup.json``).
+
+    Written once the appliance setup wizard (``[web].setup_wizard``) has been
+    completed; its absence is what :mod:`c64cast.control.setup_gate` reads as
+    "still pending". A sibling of :func:`run_marker_path` for the same reason:
+    existence, not content, is what a caller checks first, though this one's
+    content records what was set so a support request can be answered without
+    re-asking. Removed by ``c64cast --reset-setup``."""
+    return data_root() / "setup.json"
+
+
+def update_check_path() -> Path:
+    """The last recorded PyPI update check (``<data root>/update_check.json``).
+
+    Written by ``c64cast --check-for-updates --write-state``
+    (:mod:`c64cast.app.update_state`) — never by an unattended check, since
+    nothing in c64cast installs an update on its own. Read by the web
+    console's ``GET /api/update`` and, on the appliance image, an
+    ``/etc/update-motd.d/`` script; both want "what did the last check find",
+    not "check right now"."""
+    return data_root() / "update_check.json"
+
+
 def console_library_path() -> Path:
     """The web console's favorites + recents file (``<data root>/console.json``).
 

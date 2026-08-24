@@ -2406,6 +2406,25 @@ class WebCfg:
             "rather than waiting for a browser to ask (headless / launchd boxes)."
         },
     )
+
+    # Appliance-only. A normal `--serve` (a laptop, a dev machine) never sets
+    # this, so its exposure is opt-in per SECURITY.md rather than something
+    # every headless install inherits. See docs/architecture/control.md ->
+    # "setup_gate.py" for why the window it opens is bounded by construction.
+    # Declared below `autostart` rather than beside the token fields it relates
+    # to, and deliberately: the reference appendix's worked `[web]` fragment is
+    # the first four fields with a showable default (_SNIPPET_KEYS in
+    # scripts/gen_reference_appendices.py), and a switch nobody should turn on
+    # by hand does not belong in the example everyone copies.
+    setup_wizard: bool = field(
+        default=False,
+        metadata={
+            "help": "Serve a one-time, unauthenticated setup form (connection target + "
+            "token choice) until it is completed, instead of the normal token-gated "
+            "console. For a pre-provisioned appliance image only — leave this off on a "
+            "console you configure yourself. See `c64cast --reset-setup`."
+        },
+    )
     screen_fps: float = field(
         default=10.0,
         metadata={

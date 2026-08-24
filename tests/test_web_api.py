@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import tempfile
 import threading
 import unittest
 import warnings
@@ -48,8 +49,9 @@ except (ImportError, RuntimeError):
     WebSocketDisconnect = Exception  # type: ignore[misc,assignment]
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store, console_library, media_store, serve, session
+from c64cast.app import config_store, console_library, media_store, paths, serve, session
 from c64cast.app.serve import SessionState
+from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
 from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
@@ -516,6 +518,99 @@ class IntrospectRouteTest(WebApiTestCase):
         required = [p for ov in body["overlays"] for p in ov["params"] if p["required"]]
         self.assertTrue(required, "no required overlay param found")
         self.assertTrue(all(p["default"] is None for p in required))
+
+
+class UpdateRouteTest(WebApiTestCase):
+    """`GET /api/update` only ever reads `update_state.py`'s file — never
+    queries PyPI itself, which is why there's no test here for an unreachable
+    network. `update_check_path` is patched to a tmp path in every case
+    below rather than left at its real default, so this never reads a stale
+    file this machine's own `--check-for-updates --write-state` left behind."""
+
+    def _get_update(self, check: UpdateCheck) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            write_update_state(check, path=state_path)
+            with mock.patch.object(paths, "update_check_path", return_value=state_path):
+                with self.client() as c:
+                    return c.get("/api/update", headers=AUTH).json()
+
+    def test_no_check_recorded_yet(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(paths, "update_check_path", return_value=Path(d) / "nope.json"):
+                with self.client() as c:
+                    body = c.get("/api/update", headers=AUTH).json()
+        self.assertEqual(body["checked"], False)
+        self.assertIn("running_version", body)
+        # Sent either way: the console carries no copy of the threshold, so a
+        # response without it is one whose banner can never fire.
+        self.assertEqual(body["stale_after_days"], STALE_AFTER_DAYS)
+
+    def test_reports_the_last_recorded_check(self):
+        from c64cast import __version__
+
+        body = self._get_update(
+            UpdateCheck(
+                checked_at=1700000000.0,
+                running_version=__version__,
+                latest_version="9999.0.0",
+                newer=True,
+            )
+        )
+        self.assertEqual(
+            body,
+            {
+                "checked": True,
+                "checked_at": 1700000000.0,
+                "running_version": __version__,
+                "latest_version": "9999.0.0",
+                "newer": True,
+                "unanswered_since": None,
+                "stale_after_days": STALE_AFTER_DAYS,
+            },
+        )
+
+    def test_a_silent_host_reports_when_pypi_last_answered(self):
+        # The console's staleness reminder is dated from this, not from
+        # checked_at: an offline appliance's timer keeps bumping checked_at
+        # daily while the answer it holds goes on aging.
+        from c64cast import __version__
+
+        body = self._get_update(
+            UpdateCheck(
+                checked_at=1700000000.0,
+                running_version=__version__,
+                latest_version="9999.0.0",
+                newer=True,
+                unanswered_since=1600000000.0,
+            )
+        )
+        self.assertEqual(body["unanswered_since"], 1600000000.0)
+        self.assertEqual(body["checked_at"], 1700000000.0)
+
+    def test_a_release_this_install_already_took_is_not_advertised(self):
+        # The recorded verdict was true of the version running when the check
+        # ran; an upgrade since then must not leave the banner offering a
+        # release this install already has.
+        from c64cast import __version__
+
+        body = self._get_update(
+            UpdateCheck(
+                checked_at=1700000000.0,
+                running_version="0.0.1",
+                latest_version=__version__,
+                newer=True,
+            )
+        )
+        self.assertIs(body["newer"], False)
+        self.assertEqual(body["running_version"], __version__)
+
+    def test_a_viewer_may_read_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(paths, "update_check_path", return_value=Path(d) / "nope.json"):
+                with self.client() as c:
+                    r = c.get("/api/update", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 200)
 
 
 class ControlPlaneUnderTheHostTest(WebApiTestCase):

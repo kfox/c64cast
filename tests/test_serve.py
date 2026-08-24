@@ -25,6 +25,7 @@ import signal
 import threading
 import unittest
 from collections.abc import Callable
+from typing import Any
 from unittest import mock
 
 from _fakes import fake_system_stack, quiet_logging
@@ -729,6 +730,207 @@ class RunDaemonSignalTest(unittest.TestCase):
             "second signal did not warn about the escape hatch",
         )
         self.assertIn((signal.SIGTERM, signal.SIG_DFL), calls)
+
+
+class RunDaemonMdnsTest(unittest.TestCase):
+    """`run_daemon` starts and stops a `ConsoleMdnsAdvertiser` alongside its
+    `ControlServer`, once per loop iteration — faked out here the same way
+    `ControlServer` is, since the real thing opens a multicast socket and
+    `test_console_mdns.py` already covers its own start/stop behavior."""
+
+    def setUp(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp.name}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_advertiser_is_built_started_and_stopped_around_the_pump(self):
+        class _FakeControlServer:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+        calls: list[str] = []
+        built: list[tuple[Any, ...]] = []
+
+        class _FakeAdvertiser:
+            def __init__(self, host, port, *, pending):
+                built.append((host, port, pending))
+
+            def start(self):
+                calls.append("start")
+
+            def stop(self):
+                calls.append("stop")
+
+        registered: dict[int, Callable[[int, object], None]] = {}
+        sigterm_installed = threading.Event()
+
+        def recording_signal(signum, handler):
+            registered[signum] = handler
+            if signum == signal.SIGTERM:
+                sigterm_installed.set()
+            return signal.SIG_DFL
+
+        web_cfg = cfgmod.WebCfg(host="0.0.0.0", port=9999, autostart=False)
+        result: dict[str, int] = {}
+
+        def load(_path):
+            raise AssertionError("autostart is off; load must not be called")
+
+        def run():
+            result["code"] = serve.run_daemon(web_cfg, load)
+
+        with mock.patch("c64cast.control.control_plane.ControlServer", _FakeControlServer):
+            with mock.patch("c64cast.control.console_mdns.ConsoleMdnsAdvertiser", _FakeAdvertiser):
+                with mock.patch.object(signal, "signal", side_effect=recording_signal):
+                    thread = threading.Thread(target=run, daemon=True)
+                    thread.start()
+                    try:
+                        self.assertTrue(
+                            sigterm_installed.wait(timeout=WAIT),
+                            "SIGTERM handler never installed",
+                        )
+                        handler = registered[signal.SIGTERM]
+                        handler(signal.SIGTERM, None)
+                        handler(signal.SIGTERM, None)
+                    finally:
+                        thread.join(timeout=WAIT)
+        self.assertFalse(thread.is_alive(), "run_daemon did not return after the stop signal")
+        self.assertEqual(result.get("code"), 0)
+        self.assertEqual(built, [("0.0.0.0", 9999, False)])
+        self.assertEqual(calls, ["start", "stop"])
+
+
+class RunDaemonSetupWizardTest(unittest.TestCase):
+    """`[web].setup_wizard`'s restart loop: the first app built serves the
+    setup form and blocks everything else; completing it rebuilds a second,
+    ordinary app with neither the form nor the gate — same fake-ControlServer
+    technique as RunDaemonSignalTest, but here the built *app* itself is
+    inspected via TestClient rather than the server ever really listening.
+
+    Every path the run touches is redirected into a temporary directory, and
+    the one write that has nothing to do with the loop — the machine-settings
+    overlay, which `test_setup_api.py` covers on its own — is mocked out
+    rather than performed: a test that reaches `~/.config` is a test that
+    edits the machine it runs on."""
+
+    def setUp(self):
+        import tempfile
+
+        try:
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                from fastapi.testclient import TestClient  # noqa: F401
+        except (ImportError, RuntimeError):
+            self.skipTest("fastapi.testclient (httpx) not installed")
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(
+            os.environ,
+            {
+                "C64CAST_DATA_DIR": tmp.name,
+                "C64CAST_SETTINGS": os.path.join(tmp.name, "settings.toml"),
+            },
+            clear=False,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        writes = mock.patch("c64cast.control.setup_api._write_connection")
+        self.write_connection = writes.start()
+        self.addCleanup(writes.stop)
+
+    def test_completing_setup_restarts_into_the_normal_console(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from fastapi.testclient import TestClient
+
+        built_apps: list[Any] = []
+        app_built = threading.Event()
+
+        class _FakeControlServer:
+            def __init__(self, _host, _port, app, *, label=""):
+                built_apps.append(app)
+                app_built.set()
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+        registered: dict[int, Callable[[int, object], None]] = {}
+
+        def recording_signal(signum, handler):
+            registered[signum] = handler
+            return signal.SIG_DFL
+
+        web_cfg = cfgmod.WebCfg(setup_wizard=True, autostart=False)
+        result: dict[str, int] = {}
+
+        def load(_path):
+            raise AssertionError("autostart is off; load must not be called")
+
+        def run():
+            result["code"] = serve.run_daemon(web_cfg, load)
+
+        with mock.patch("c64cast.control.control_plane.ControlServer", _FakeControlServer):
+            with mock.patch.object(signal, "signal", side_effect=recording_signal):
+                thread = threading.Thread(target=run, daemon=True)
+                thread.start()
+                try:
+                    self.assertTrue(app_built.wait(timeout=WAIT), "first app never built")
+                    app_built.clear()
+                    first_client = TestClient(built_apps[0])
+                    self.assertTrue(first_client.get("/api/setup").json()["pending"])
+                    self.assertEqual(first_client.get("/status").status_code, 503)
+                    # The form is a screen of the ordinary console bundle, so
+                    # the shell, its assets and the address it puts itself at
+                    # all have to load with no token — the gate lets them by,
+                    # and `shell_paths()` is what exempts them from the token
+                    # check one layer in.
+                    for path in ("/", "/assets/app.js", "/assets/app.css", "/setup"):
+                        with self.subTest(path=path):
+                            self.assertEqual(first_client.get(path).status_code, 200)
+
+                    resp = first_client.post(
+                        "/api/setup", json={"connection": "u64://192.168.2.64"}
+                    )
+                    self.assertEqual(resp.status_code, 200)
+                    self.assertIn("/api/login?token=", resp.json()["login_url"])
+                    self.assertEqual(self.write_connection.call_count, 1)
+
+                    self.assertTrue(app_built.wait(timeout=WAIT), "restart never rebuilt the app")
+                    self.assertEqual(len(built_apps), 2)
+                    second_client = TestClient(built_apps[1])
+                    # setup_api was never registered on this app, but the
+                    # token gate (which now wraps /api/setup too — the
+                    # public_paths exemption is per-app-build, not per-route)
+                    # answers before the catch-all can report a 404.
+                    self.assertEqual(second_client.get("/api/setup").status_code, 401)
+                    self.assertEqual(second_client.get("/status").status_code, 401)
+
+                    handler = registered[signal.SIGTERM]
+                    handler(signal.SIGTERM, None)
+                    handler(signal.SIGTERM, None)
+                finally:
+                    thread.join(timeout=WAIT)
+        self.assertFalse(thread.is_alive(), "run_daemon did not return after the stop signal")
+        self.assertEqual(result.get("code"), 0)
 
 
 if __name__ == "__main__":

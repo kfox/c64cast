@@ -159,6 +159,111 @@ class ParserContractTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("up to date", out)
 
+    def test_check_for_updates_write_state_records_the_answer(self):
+        # The write path itself (round trip, tolerant read) is
+        # test_update_state.py's job; this only pins that the flag reaches it
+        # with the same answer this invocation printed.
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            with (
+                mock.patch.object(upgrade, "latest_release", return_value="9.9.9"),
+                mock.patch.object(paths, "update_check_path", return_value=state_path),
+            ):
+                rc, out = _run(["--check-for-updates", "--write-state"])
+            self.assertEqual(rc, 0)
+            self.assertIn("9.9.9", out)
+            from c64cast.app.update_state import read_update_state
+
+            recorded = read_update_state(path=state_path)
+        assert recorded is not None
+        self.assertEqual(recorded.latest_version, "9.9.9")
+        self.assertIs(recorded.newer, True)
+
+    def test_write_state_with_pypi_unreachable_keeps_the_last_answer(self):
+        # A check that couldn't reach PyPI learned only when it ran.
+        # Recording its empty hands would retract a pending upgrade over one
+        # lost DNS lookup, and leave it retracted until a later check
+        # succeeded — a day away on the appliance's timer.
+        from c64cast.app.update_state import UpdateCheck, read_update_state, write_update_state
+
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            write_update_state(
+                UpdateCheck(
+                    checked_at=1.0,
+                    running_version=__version__,
+                    latest_version="9.9.9",
+                    newer=True,
+                ),
+                path=state_path,
+            )
+            with (
+                mock.patch.object(upgrade, "latest_release", return_value=None),
+                mock.patch.object(paths, "update_check_path", return_value=state_path),
+                contextlib.redirect_stderr(err),
+            ):
+                rc, _out = _run(["--check-for-updates", "--write-state"])
+            kept = read_update_state(path=state_path)
+        self.assertEqual(rc, 4)  # "couldn't determine" — the answer is kept anyway
+        assert kept is not None
+        self.assertEqual(kept.latest_version, "9.9.9")
+        self.assertIs(kept.newer, True)
+        self.assertGreater(kept.checked_at, 1.0)
+        self.assertIn("Could not reach PyPI", err.getvalue())
+
+    def test_motd_line_dispatches_before_config_load_and_reports_a_pending_upgrade(self):
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            from c64cast.app.update_state import UpdateCheck, write_update_state
+
+            write_update_state(
+                UpdateCheck(
+                    checked_at=1.0, running_version="0.1.0", latest_version="9.9.9", newer=True
+                ),
+                path=state_path,
+            )
+            with mock.patch.object(paths, "update_check_path", return_value=state_path):
+                rc, out = _run(["--motd-line", "--config", str(Path(d) / "missing.toml")])
+        self.assertEqual(rc, 0)
+        self.assertIn("9.9.9", out)
+        self.assertIn("c64cast --upgrade", out)
+
+    def test_motd_line_reports_a_host_that_has_not_heard_from_pypi_in_months(self):
+        # The appliance-off-the-internet case: no upgrade to name, but what
+        # it holds is too old to quote as current.
+        import time
+
+        from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
+
+        with tempfile.TemporaryDirectory() as d:
+            state_path = Path(d) / "update_check.json"
+            now = time.time()
+            write_update_state(
+                UpdateCheck(
+                    checked_at=now,
+                    running_version=__version__,
+                    latest_version=__version__,
+                    newer=False,
+                    unanswered_since=now - (STALE_AFTER_DAYS + 30) * 86400,
+                ),
+                path=state_path,
+            )
+            with mock.patch.object(paths, "update_check_path", return_value=state_path):
+                rc, out = _run(["--motd-line"])
+        self.assertEqual(rc, 0)
+        self.assertIn(str(STALE_AFTER_DAYS), out)
+        self.assertIn("c64cast --check-for-updates", out)
+
+    def test_motd_line_is_silent_with_no_recorded_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(
+                paths, "update_check_path", return_value=Path(d) / "missing.json"
+            ):
+                rc, out = _run(["--motd-line"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "")
+
     def test_upgrade_dispatches_before_config_load(self):
         # "unknown" install prints its explanation to stderr, not stdout —
         # capture both so nothing leaks into the test run's own output.
@@ -177,12 +282,42 @@ class ParserContractTest(unittest.TestCase):
         self.assertIs(ns.check_for_updates, False)
         self.assertIs(ns.upgrade, False)
         self.assertIs(ns.yes, False)
+        self.assertIs(ns.reset_setup, False)
+        self.assertIs(ns.write_state, False)
+        self.assertIs(ns.motd_line, False)
 
     def test_check_for_updates_and_upgrade_and_yes_parse(self):
-        ns = build_parser().parse_args(["--check-for-updates", "--upgrade", "--yes"])
+        ns = build_parser().parse_args(
+            ["--check-for-updates", "--write-state", "--upgrade", "--yes", "--motd-line"]
+        )
         self.assertIs(ns.check_for_updates, True)
         self.assertIs(ns.upgrade, True)
         self.assertIs(ns.yes, True)
+        self.assertIs(ns.write_state, True)
+        self.assertIs(ns.motd_line, True)
+
+    def test_reset_setup_parses(self):
+        self.assertIs(build_parser().parse_args(["--reset-setup"]).reset_setup, True)
+
+    def test_reset_setup_removes_an_existing_marker_and_dispatches_before_config_load(self):
+        # A nonexistent --config path proves this exits before load_master
+        # would ever try (and fail) to read it.
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "setup.json"
+            marker.write_text('{"completed_at": 1}\n', encoding="utf-8")
+            with mock.patch.object(paths, "setup_state_path", return_value=marker):
+                rc, out = _run(["--reset-setup", "--config", str(Path(d) / "missing.toml")])
+            self.assertEqual(rc, 0)
+            self.assertFalse(marker.exists())
+        self.assertIn(str(marker), out)
+
+    def test_reset_setup_with_no_marker_is_a_no_op(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "setup.json"
+            with mock.patch.object(paths, "setup_state_path", return_value=marker):
+                rc, out = _run(["--reset-setup"])
+            self.assertEqual(rc, 0)
+        self.assertIn("No setup marker", out)
 
     def test_system_choices_are_the_two_video_standards(self):
         self.assertEqual(build_parser().parse_args(["-s", "PAL"]).system, "PAL")

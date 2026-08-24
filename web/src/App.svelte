@@ -5,6 +5,7 @@
   import { Console } from "$lib/console.svelte";
   import Button from "$lib/components/Button.svelte";
   import LogDrawer from "$lib/components/LogDrawer.svelte";
+  import UpdateBanner from "$lib/components/UpdateBanner.svelte";
   import { drafts } from "$lib/drafts.svelte";
   import { describeError } from "$lib/errorsLogic";
   import { Router, type Screen } from "$lib/router.svelte";
@@ -106,6 +107,8 @@
       {/if}
     </p>
   </header>
+
+  <UpdateBanner />
 
   <nav class="flex flex-wrap items-center gap-1 border-b border-[var(--edge)]" aria-label="Screens">
     {#each tabs as tab (tab.screen)}

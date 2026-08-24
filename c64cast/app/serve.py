@@ -825,16 +825,34 @@ def build_daemon_app(
     library: console_library.ConsoleLibrary | None = None,
     media: media_store.MediaStore | None = None,
     screen_fps: float = 10.0,
+    setup_pending: bool = False,
+    token_settable: bool = True,
+    on_setup_complete: Callable[[], None] | None = None,
 ) -> Any:
     """The host's FastAPI app: the control plane over the *current* session,
     plus the ``/api/*`` routes that create and destroy sessions.
 
-    One app, built once and never rebuilt: tearing it down per session would
-    drop the listening socket and every connected console on each show
-    change, which is exactly what the registry providers exist to avoid."""
+    One app, built once per :func:`run_daemon` loop iteration — never rebuilt
+    while it is serving, since tearing it down per session would drop the
+    listening socket and every connected console on each show change, which is
+    exactly what the registry providers exist to avoid. The loop *does* rebuild
+    this whole app, once, when setup completes (``on_setup_complete`` fires):
+    a token chosen during setup has to reach ``TokenAuthMiddleware``'s
+    constructor, which takes a plain string, so there is no cheaper way to
+    pick it up than building the app this function returns a second time.
+
+    ``setup_pending`` — see :mod:`c64cast.control.setup_gate` — adds the setup
+    form's API and, **last**, the gate that hides everything else behind it;
+    both are omitted entirely once setup has completed, rather than switched
+    off, so there is nothing left here for a stray request to reach.
+    ``token_settable`` rides along to that API: only :func:`run_daemon` knows
+    whether ``token`` was generated (and so can be replaced by the form) or
+    named by configuration (and so cannot)."""
     from c64cast.control.control_plane import build_app_for_registry
+    from c64cast.control.setup_api import register_setup_routes
+    from c64cast.control.setup_gate import SETUP_PAGE_PATH, SETUP_PATH, install_setup_gate
     from c64cast.control.web_api import register_web_routes
-    from c64cast.control.web_static import mount_web_app
+    from c64cast.control.web_static import mount_web_app, shell_paths
 
     def playlists() -> dict[str, Any]:
         sess = manager.session
@@ -854,6 +872,15 @@ def build_daemon_app(
         lambda: _registries(1),
         token=token,
         viewer_token=viewer_token,
+        # The setup form has to answer with no token at all — nothing has
+        # generated one the admin has seen yet — so it, the shell that draws
+        # it, and the shell's own address for it need the same allowlist
+        # `auth.PUBLIC_PATHS` gives the login exchange. This is
+        # `TokenAuthMiddleware`'s exemption, not `SetupGateMiddleware`'s: the
+        # gate below only decides what's blocked *while pending*, and by
+        # itself would still hand these paths on into a token check they
+        # can't pass.
+        public_paths=((SETUP_PATH, SETUP_PAGE_PATH, *shell_paths()) if setup_pending else ()),
     )
     register_web_routes(
         app,
@@ -869,9 +896,23 @@ def build_daemon_app(
         viewer=viewer_token if isinstance(viewer_token, ViewerCredential) else None,
         screen_fps=screen_fps,
     )
-    # Last: its fallback is a catch-all, so anything registered after it would
-    # be unreachable.
+    if setup_pending:
+        if on_setup_complete is None:
+            raise ValueError("setup_pending needs an on_setup_complete callback")
+        register_setup_routes(
+            app,
+            token=token,
+            token_settable=token_settable,
+            on_complete=on_setup_complete,
+        )
+    # mount_web_app is last among the *route* registrations: its fallback is a
+    # catch-all, so anything registered after it would be unreachable. The
+    # setup gate goes even later than that — it reads the app's complete route
+    # table (`setup_gate.install_setup_gate` -> `web_static.owned_segments`) to
+    # decide what to block, so it has to see everything above first.
     mount_web_app(app)
+    if setup_pending:
+        install_setup_gate(app)
     return app
 
 
@@ -895,9 +936,15 @@ def _close_previews(windows: list[PreviewWindow]) -> None:
             log.exception("preview window failed to close")
 
 
-def pump_forever(manager: SessionManager, shutdown: threading.Event, poll_s: float = 0.05) -> None:
-    """Park the main thread for the life of the host, servicing whatever
-    preview windows the current session owns.
+def pump_forever(
+    manager: SessionManager,
+    shutdown: threading.Event,
+    poll_s: float = 0.05,
+    *,
+    restart: threading.Event | None = None,
+) -> None:
+    """Park the main thread for the life of one :func:`run_daemon` loop
+    iteration, servicing whatever preview windows the current session owns.
 
     HighGUI may only create and service a window on the process's main thread,
     and under ``--serve`` that thread is here rather than in a join. Opening
@@ -905,11 +952,20 @@ def pump_forever(manager: SessionManager, shutdown: threading.Event, poll_s: flo
     least-exercised corner of this design — ``[preview]`` under a host is
     documented as "works from a terminal", not a supported deployment — so
     every call into a window is contained rather than allowed to take the host
-    down with it."""
+    down with it.
+
+    ``restart`` — set once the appliance setup form completes — ends this call
+    exactly like ``shutdown`` does, but ``run_daemon`` tells the two apart on
+    return: a shutdown ends the process, a restart rebuilds the app and calls
+    back in. Callers outside ``run_daemon`` never pass it."""
+
+    def _stopping() -> bool:
+        return shutdown.is_set() or (restart is not None and restart.is_set())
+
     opened: list[PreviewWindow] = []
     generation = -1
     try:
-        while not shutdown.is_set():
+        while not _stopping():
             sess = manager.session
             gen = sess.generation if sess is not None else 0
             if gen != generation:
@@ -942,12 +998,25 @@ def run_daemon(
 
     Ordering is load-bearing on the way out: stop the session *before* the
     server, so a console watching the state feed sees the machine come down
-    rather than the socket vanish mid-teardown."""
-    try:
-        token, viewer_token = resolve_tokens(web_cfg)
-    except RuntimeError as e:
-        log.error("%s", e)
-        return 2
+    rather than the socket vanish mid-teardown.
+
+    Normally this builds one app and pumps it until a signal arrives. With
+    ``[web].setup_wizard`` there is a second way out of the pump: the setup
+    form finishing (see :mod:`c64cast.control.setup_api`) sets a *restart*
+    event rather than the *shutdown* one, and the ``while True`` below rebuilds
+    the app — this time without the setup gate, and with whatever the form
+    just wrote — instead of returning. A shutdown signal still ends the loop
+    (and the process) exactly as before; a restart never does.
+
+    Each iteration also (re)advertises the console over mDNS (see
+    :mod:`c64cast.control.console_mdns`), with a fresh
+    :class:`~c64cast.control.console_mdns.ConsoleMdnsAdvertiser` rather than
+    updating one in place, so a setup completion's flip from pending to
+    configured shows up in the TXT record a discovery client reads."""
+    from c64cast.control.console_mdns import ConsoleMdnsAdvertiser
+    from c64cast.control.control_plane import ControlServer
+    from c64cast.control.setup_gate import SETUP_PAGE_PATH
+    from c64cast.control.web_static import landing_path
 
     log_buffer = SessionLogBuffer()
     log_buffer.install()
@@ -957,25 +1026,6 @@ def run_daemon(
     factory = make_request_factory(load, config_path=config_path)
     store = config_store.ConfigStore(web_cfg.config_roots)
     media = media_store.MediaStore(web_cfg.media_read_write, web_cfg.media_read_only)
-
-    try:
-        from c64cast.control.control_plane import ControlServer
-
-        app = build_daemon_app(
-            manager,
-            factory,
-            token=token,
-            viewer_token=viewer_token,
-            screen_fps=web_cfg.screen_fps,
-            log_buffer=log_buffer,
-            store=store,
-            media=media,
-        )
-        server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
-    except RuntimeError as e:
-        log.error("web console unavailable: %s", e)
-        log_buffer.uninstall()
-        return 2
 
     shutdown = threading.Event()
     _on_stop_signal = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
@@ -993,37 +1043,90 @@ def run_daemon(
     if sighup is not None:
         signal.signal(sighup, _on_sighup)
 
-    server.start()
-    # Straight to the console when there is one, and to the zero-dependency
-    # `/perf` page when the bundle was never built — the printed URL is the
-    # only entry point a phone gets, so it has to land somewhere useful.
-    from c64cast.control.web_static import landing_path
-
-    log.info(
-        "web console: open http://%s:%d/api/login?token=%s&next=%s",
-        web_cfg.host,
-        web_cfg.port,
-        token,
-        landing_path(),
-    )
-    if viewer_token:
-        log.info("web console: a read-only token is configured as well")
-    else:
-        log.info("web console: ask it for a read-only link when you want to share the screen")
-    log.info(
-        "web console: editable config roots: %s",
-        ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",
-    )
-
     try:
-        if web_cfg.autostart:
+        while True:
             try:
-                manager.start(factory(None))
-            except Exception:
-                log.exception("autostart failed; the host is up and idle")
-        pump_forever(manager, shutdown)
+                token, viewer_token = resolve_tokens(web_cfg)
+            except RuntimeError as e:
+                log.error("%s", e)
+                return 2
+
+            pending = web_cfg.setup_wizard and not paths.setup_state_path().is_file()
+            # Only a token this function *generated* can be replaced by the
+            # setup form: `resolve_tokens` reads the file the form writes last
+            # of all four sources, so a configured one would silently outrank a
+            # replacement and lock the admin out on the very next restart.
+            token_settable = not (
+                os.environ.get("C64CAST_WEB_TOKEN") or web_cfg.token or web_cfg.token_file
+            )
+            restart = threading.Event()
+
+            try:
+                app = build_daemon_app(
+                    manager,
+                    factory,
+                    token=token,
+                    viewer_token=viewer_token,
+                    screen_fps=web_cfg.screen_fps,
+                    log_buffer=log_buffer,
+                    store=store,
+                    media=media,
+                    setup_pending=pending,
+                    token_settable=token_settable,
+                    on_setup_complete=restart.set,
+                )
+                server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
+            except RuntimeError as e:
+                log.error("web console unavailable: %s", e)
+                return 2
+
+            mdns = ConsoleMdnsAdvertiser(web_cfg.host, web_cfg.port, pending=pending)
+            server.start()
+            mdns.start()
+            if pending:
+                log.info(
+                    "web console: setup required — open http://%s:%d%s to configure this appliance",
+                    web_cfg.host,
+                    web_cfg.port,
+                    SETUP_PAGE_PATH,
+                )
+            else:
+                # Straight to the console when there is one, and to the
+                # zero-dependency `/perf` page when the bundle was never built
+                # — the printed URL is the only entry point a phone gets, so
+                # it has to land somewhere useful.
+                log.info(
+                    "web console: open http://%s:%d/api/login?token=%s&next=%s",
+                    web_cfg.host,
+                    web_cfg.port,
+                    token,
+                    landing_path(),
+                )
+                if viewer_token:
+                    log.info("web console: a read-only token is configured as well")
+                else:
+                    log.info(
+                        "web console: ask it for a read-only link when you want to share the screen"
+                    )
+                log.info(
+                    "web console: editable config roots: %s",
+                    ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",
+                )
+
+            try:
+                if web_cfg.autostart and not pending:
+                    try:
+                        manager.start(factory(None))
+                    except Exception:
+                        log.exception("autostart failed; the host is up and idle")
+                pump_forever(manager, shutdown, restart=restart)
+            finally:
+                mdns.stop()
+                server.stop()
+
+            if shutdown.is_set():
+                return 0
+            log.info("web console: setup completed — restarting to pick it up")
     finally:
         manager.close()
-        server.stop()
         log_buffer.uninstall()
-    return 0

@@ -997,6 +997,11 @@
           "description": "Start the config the host was launched with as soon as it comes up, rather than waiting for a browser to ask (headless / launchd boxes).",
           "default": false
         },
+        "setup_wizard": {
+          "type": "boolean",
+          "description": "Serve a one-time, unauthenticated setup form (connection target + token choice) until it is completed, instead of the normal token-gated console. For a pre-provisioned appliance image only \u2014 leave this off on a console you configure yourself. See `c64cast --reset-setup`.",
+          "default": false
+        },
         "screen_fps": {
           "type": "number",
           "description": "How often the console's live screen picture is refreshed, in frames per second (0 turns the screen off entirely). The picture is the Ultimate 64's own VIC stream, so this caps how often the host encodes a frame, not how fast the machine sends. Ultimate 64 only \u2014 an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path.",

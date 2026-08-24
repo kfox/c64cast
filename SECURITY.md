@@ -39,6 +39,8 @@ That is a lock on the door, not a reason to expose the port.
 |---|---|---|
 | HTTP control plane (`[control]`) | off; binds `127.0.0.1:8765`; **no token** | Unauthenticated by default: any `POST /pause`, `/skip`, `/reload` from anything that can reach the port controls the run. Localhost-only unless you change `host`. Setting `[control].token` (or `$C64CAST_CONTROL_TOKEN`) requires that token on every route, including the console and its WebSocket; `viewer_token` grants reads only. |
 | Web console host (`--serve` / `[web]`) | off; binds `127.0.0.1:8123`; **always token-gated** | The only surface that starts and stops hardware on request, so it has no unauthenticated mode: with no token configured, one is generated, stored `0600` under the data directory, and printed at startup. The control-plane routes and the performance console ride the same port and the same token. The browser console it serves is behind the same gate — no page, script or stylesheet of it is public, and an unauthenticated navigation gets a form asking for the token rather than the application. `viewer_token` grants reads only. A full token is remote control of the machine — the sessions it starts open whatever media paths and URLs the configuration names. |
+| Appliance setup window (`[web].setup_wizard`) | **off** | The one deliberate exception to the row above, and off by default — a pre-provisioned OS image is the only intended caller, never a console you configure yourself. While pending, `/api/setup` (connection target + token choice) and the console shell that draws its form are reachable with no token at all, and everything else answers `503` rather than reaching any hardware/config/media route. The form is never told the host's token; it learns it only by completing setup. See the note below on how narrow that is and when it closes. |
+| Console mDNS advertisement (`control/console_mdns.py`) | on whenever `--serve` binds a non-loopback `host` | No new route — it announces one that already exists. A `_c64cast._tcp` browse on the LAN sees this host's hostname, IP, and port, plus a TXT record naming the c64cast version and whether the appliance setup window above is still open. That last bit is the one worth weighing: it tells anything listening which boxes on the LAN still have their setup window open, same LAN as the window itself already trusts. Silent (no `zeroconf` import attempted) while `host` is loopback, which is `[web]`'s own default — an ordinary `--serve` on a laptop advertises nothing unless you deliberately open it to the network. |
 | Web console config browser (`[web].config_roots`) | the directory the host was launched from | The only surface that reads and writes files on the host. Confined to the configured roots (resolved, so a symbolic link out of one is refused) and to `.toml` names, and a write must load before it lands. A full token is required — `viewer_token` cannot write. See the note below on what that access is actually worth. |
 | Web console media picker + uploader (`[web].media_read_write` / `media_read_only`) | the four default asset directories, uploadable | Confined to the configured roots the same way the config browser is (resolved, symlinks included). `media_read_write` directories are both browsable and a valid upload destination; `media_read_only` adds browse-only directories. An upload's name must be a bare filename with an extension a known media kind ends in, is capped at 512 MiB, and is never overwritten — a name already taken is renamed rather than replacing what's there. Nothing is ever deleted here. A full token is required to upload; a `viewer` token may still browse, same as it may watch the screen. |
 | Phone/web performance console | off; shares the control-plane server | Rides the same port, so reaching it from a phone means binding the control plane to a LAN address — which exposes the control plane too, under the same token or the same absence of one. |
@@ -61,6 +63,33 @@ The web console's token works the same way and is supplied the same way
 `token_file` / `viewer_token`, no CLI flag). The difference is that it has no
 "off": that surface has no history to preserve and it owns the hardware, so a
 host with no token configured mints one rather than binding open.
+
+**The setup window's exposure is bounded by construction, not by an allowlist.**
+`setup_gate.py` blocks every route the app already knows about except the
+console's own static assets and `/api/setup` itself — nothing that starts
+hardware, reads a config, or browses media is reachable while it is pending,
+and it closes the moment the form is submitted with a valid connection
+target: the process rebuilds its app from scratch, without the exemption or
+the gate, before serving another request. Whoever reaches the form first on
+the LAN configures the box, the same trust model a home router's first boot
+uses — this is a real widening of what an unauthenticated LAN peer can do
+(name where the console talks to next) for as long as the window is open, and
+is the reason it is off unless something has deliberately turned it on.
+`c64cast --reset-setup` reopens it; there is no HTTP equivalent, on purpose —
+anyone who can already run that command has shell access to the box, and a
+route that did the same thing over HTTP would hand that reopening power to
+anyone who could merely reach the port.
+
+**Nothing the window exposes leaks the token.** `GET /api/setup` reports only
+whether a token may be *set* — never the token, redacted or otherwise, because
+that route answers anyone on the LAN for as long as the window is open. The
+full token is handed back exactly once, in the login link of a *completed*
+setup, to the caller who just configured the box; that is the same trust
+decision the paragraph above describes, and on an appliance with no terminal it
+is the only way an admin ever learns it. A token named by `[web].token`,
+`[web].token_file` or `$C64CAST_WEB_TOKEN` cannot be replaced through the form
+at all: those outrank the file the form would write, so accepting one would
+answer "ok" and then lock the admin out on the next restart.
 
 **Treat a full web-console token as shell-equivalent on that host.** The root
 list bounds *which files the browser may edit*, not what a saved file can then

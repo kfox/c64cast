@@ -82,6 +82,10 @@ _COVERAGE_EXEMPT = {
     # metadata.internal) — it's set from whether a cc_map key was authored, never
     # written to TOML. See MidiControlCfg.
     ("midi_control", "cc_map_is_default"),
+    # setup_wizard is appliance-only (a pre-provisioned OS image sets it, never
+    # a config someone hand-writes) — documenting it as a live example key would
+    # invite exactly the "leave this on" mistake SECURITY.md warns against.
+    ("web", "setup_wizard"),
 }
 
 
