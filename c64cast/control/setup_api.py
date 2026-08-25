@@ -175,7 +175,20 @@ def register_setup_routes(
             target, spec = _connection_from(body)
             chosen = _token_from(body, settable=token_settable)
         except SetupRefused as e:
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+            # Every message that reaches here is authored prose, not a
+            # traceback: `SetupRefused` is raised only in this module and in
+            # `_connection_from`, which relays `ConnectionURIError`, and every
+            # one of those is an f-string in `connect.py` quoting nothing but
+            # the target the caller just submitted. The detail is the point —
+            # "u64:// needs a host (e.g. u64://192.168.2.64)" is the same
+            # advice `-u` prints, and it is all an admin staring at a refused
+            # form has to go on. CodeQL flags `str()` of any caught exception
+            # and cannot tell the two apart, hence the waiver; the marker sits
+            # on the line it reports, the argument's own.
+            return JSONResponse(
+                {"ok": False, "error": str(e)},  # codeql[py/stack-trace-exposure]
+                status_code=400,
+            )
 
         if chosen:
             _write_token(chosen)

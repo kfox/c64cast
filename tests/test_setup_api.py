@@ -84,7 +84,12 @@ class WriteHelpersTest(_TmpRootsTestCase):
         _write_token("a-chosen-token-value")
         path = paths.web_token_path()
         self.assertEqual(path.read_text().strip(), "a-chosen-token-value")
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        # Windows has no POSIX mode bits — `chmod` there only toggles the
+        # read-only flag, and the file reads back 0o666 — so the same
+        # POSIX-only assertion `test_web_api` makes about `serve`'s generated
+        # token is made here about the one this form writes.
+        if os.name != "nt":
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_mark_complete_writes_after_the_fact(self):
         from c64cast.control.setup_api import _mark_complete
