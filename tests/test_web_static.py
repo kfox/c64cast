@@ -183,6 +183,33 @@ class OwnedSegmentsTest(unittest.TestCase):
         self.assertEqual(web_static.owned_segments(_App()), frozenset({"api", "perf", "status"}))
 
 
+class ShellPathsTest(unittest.TestCase):
+    """`shell_paths` is what `serve.build_daemon_app` hands the token gate
+    during the appliance setup window, so it has to name every file the shell
+    loads and nothing else."""
+
+    def test_the_shell_and_its_assets(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = _bundle(Path(tmp))
+            self.assertEqual(
+                web_static.shell_paths(root),
+                ("/", "/assets/app.css", "/assets/app.js"),
+            )
+
+    def test_a_file_the_server_would_not_serve_is_not_listed(self) -> None:
+        # Same allowlist `mount_web_app` catalogs by: a path offered to the
+        # token gate that the asset route then 404s would be an exemption for
+        # nothing.
+        with TemporaryDirectory() as tmp:
+            root = _bundle(Path(tmp))
+            (root / "assets" / "notes.txt").write_text("nope", encoding="utf-8")
+            self.assertNotIn("/assets/notes.txt", web_static.shell_paths(root))
+
+    def test_no_bundle_offers_no_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(web_static.shell_paths(Path(tmp) / "never-built"), ())
+
+
 class CommittedBundleTest(unittest.TestCase):
     """The bundle under `c64cast/web/dist` is build output that is committed on
     purpose, so that installing c64cast never needs Node. These assertions are
@@ -208,6 +235,7 @@ class CommittedBundleTest(unittest.TestCase):
                     "content-hashed names would 404 and make every rebuild a new file",
                 )
                 self.assertTrue((dist / name.lstrip("/")).is_file())
+                self.assertIn(name, web_static.shell_paths())
 
 
 if __name__ == "__main__":

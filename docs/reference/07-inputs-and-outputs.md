@@ -467,6 +467,7 @@ shows those routes answer `503`: the machine is idle, not broken.
 | `POST /api/session/reload` | The same reload the control plane offers |
 | `POST /api/session/live-tune` | Keep (or drop) the knob changes made since the show started |
 | `GET /api/introspect` | Every configuration section, scene type, overlay, display mode and live target, as JSON |
+| `GET /api/update` | The last recorded `c64cast --check-for-updates --write-state` check — never queries PyPI itself |
 | `GET /api/screen` | Which systems can show a picture, without starting anything |
 | `GET /api/screen.png` | One still frame of the machine's actual screen |
 | `GET /api/screen/stream` | The screen as a live `multipart/x-mixed-replace` stream, which one `<img>` renders with no script |

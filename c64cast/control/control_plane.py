@@ -26,7 +26,7 @@ one-shot CLI's fixed-map form of it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from c64cast._pollthread import PollThread
@@ -118,6 +118,7 @@ def build_app_for_registry(
     *,
     token: str = "",
     viewer_token: str | ViewerCredential = "",
+    public_paths: Iterable[str] = (),
 ):
     """Build the FastAPI app over registry providers, consulted per request.
 
@@ -129,7 +130,10 @@ def build_app_for_registry(
     `token` gates the whole app (see `auth.install_auth`); empty leaves it
     open, which is the historical behavior. The gate is installed here rather
     than by the caller so an app built somewhere new can't ship unauthenticated
-    by omission."""
+    by omission. `public_paths` names any *additional* routes that need to
+    stay reachable with no token at all, on top of the login exchange
+    `auth.PUBLIC_PATHS` always covers — the appliance setup form is the one
+    caller today (`serve.build_daemon_app`)."""
     try:
         from fastapi import FastAPI, HTTPException, Query
     except ImportError as e:
@@ -251,9 +255,14 @@ def build_app_for_registry(
 
     # Last, so the middleware wraps every route above — including /perf/ws,
     # which a per-route dependency could only reject after accept().
-    from .auth import install_auth
+    from .auth import PUBLIC_PATHS, install_auth
 
-    install_auth(app, token=token, viewer_token=viewer_token)
+    install_auth(
+        app,
+        token=token,
+        viewer_token=viewer_token,
+        public_paths=PUBLIC_PATHS | frozenset(public_paths),
+    )
 
     return app
 

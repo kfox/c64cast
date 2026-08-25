@@ -91,6 +91,45 @@ def bundle_dir(directory: Path | None = None) -> Path | None:
     return base if (base / INDEX_NAME).is_file() else None
 
 
+def _asset_catalog(dist: Path) -> dict[str, tuple[Path, str]]:
+    """The bundle's servable asset files, keyed by the name a request may ask
+    for.
+
+    Cataloged once rather than resolved per request, so a request *names a key*
+    and never contributes a path component: there is no traversal question to
+    answer, and no ``is_relative_to`` check standing between a user string and
+    the filesystem. The bundle is a handful of files with fixed names, so the
+    map is cheap and complete. A rebuild while the host is up therefore needs a
+    restart — which is what ``npm run dev`` is for, and not something a
+    deployment does."""
+    assets = (dist / ASSETS_NAME).resolve()
+    if not assets.is_dir():
+        return {}
+    catalog: dict[str, tuple[Path, str]] = {}
+    for entry in sorted(assets.iterdir()):
+        media_type = _CONTENT_TYPES.get(entry.suffix.lower())
+        if media_type is not None and entry.is_file():
+            catalog[entry.name] = (entry, media_type)
+    return catalog
+
+
+def shell_paths(directory: Path | None = None) -> tuple[str, ...]:
+    """Every exact path a browser needs to load the console shell and nothing
+    more — ``/`` and each of the bundle's assets — or ``()`` with no bundle.
+
+    Read off the same catalog :func:`mount_web_app` serves from, because the
+    one caller is :func:`c64cast.app.serve.build_daemon_app` handing them to
+    ``TokenAuthMiddleware``'s exact-match ``public_paths`` during the appliance
+    setup window (:mod:`c64cast.control.setup_gate`), where the shell has to
+    load before any credential exists. A hand-written list here would be a
+    second copy of the bundle's file names, and one that goes stale silently:
+    the page would come up with no stylesheet."""
+    dist = bundle_dir(directory)
+    if dist is None:
+        return ()
+    return ("/", *(f"/{ASSETS_NAME}/{name}" for name in _asset_catalog(dist)))
+
+
 def landing_path() -> str:
     """Where a successful login should drop somebody: the console when its
     bundle was built, else the zero-dependency ``/perf`` page.
@@ -120,20 +159,7 @@ def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
         return False
 
     index = dist / INDEX_NAME
-    assets = (dist / ASSETS_NAME).resolve()
-    # Cataloged once at mount rather than resolved per request, so a request
-    # *names a key* and never contributes a path component: there is no
-    # traversal question to answer, and no `is_relative_to` check standing
-    # between a user string and the filesystem. The bundle is a handful of
-    # files with fixed names, so the map is cheap and complete. A rebuild while
-    # the host is up therefore needs a restart — which is what `npm run dev`
-    # is for, and not something a deployment does.
-    catalog: dict[str, tuple[Path, str]] = {}
-    if assets.is_dir():
-        for entry in sorted(assets.iterdir()):
-            media_type = _CONTENT_TYPES.get(entry.suffix.lower())
-            if media_type is not None and entry.is_file():
-                catalog[entry.name] = (entry, media_type)
+    catalog = _asset_catalog(dist)
     # Plus the asset prefix itself: a path under it that no file backs is a
     # broken bundle, not a client route, and answering it with the shell would
     # hide that behind a page that loads and does nothing.

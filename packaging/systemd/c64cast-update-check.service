@@ -1,0 +1,26 @@
+# Runs `c64cast --check-for-updates --write-state` once, on behalf of
+# c64cast-update-check.timer. Never installs anything — see `c64cast
+# --upgrade` for the command that does. Installed by the appliance image
+# build; not read by c64cast itself.
+
+[Unit]
+Description=Check for a newer c64cast release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Must be the user c64cast.service itself runs as: what this writes lands
+# under *that* account's data root (`~/.local/share/c64cast/`, or
+# $C64CAST_DATA_DIR if the image sets one), and the console and the MOTD
+# line read it from theirs. A mismatch fails silently — the check succeeds,
+# and no surface ever shows what it found.
+User=c64cast
+# `env` rather than an absolute path, so the image may install c64cast
+# wherever it likes as long as that lands on systemd's default PATH; a `uv
+# tool` install into ~/.local/bin does not, and wants a /usr/local/bin
+# symlink (or an absolute ExecStart here) instead.
+ExecStart=/usr/bin/env c64cast --check-for-updates --write-state
+# A nonzero exit here (4 — PyPI unreachable) is not a service failure: there
+# is nothing to restart or alert on, and the next run tries again.
+SuccessExitStatus=0 4

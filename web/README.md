@@ -66,6 +66,7 @@ reason.
 | `src/lib/actions.ts` | Cross-screen actions (`launch`) that touch `console.svelte.ts` state |
 | `src/lib/console.svelte.ts` | The `/api/ws` feed as one reactive object |
 | `src/lib/router.svelte.ts` | Which screen is showing, kept in the address bar |
+| `src/lib/setup.ts` | The appliance first-run form's own three-call client — the only endpoints reachable without a token |
 | `src/lib/configListLogic.ts` | `ConfigList`'s search/sort/name-display, as plain functions — see Testing |
 | `src/lib/debounce.ts` | Coalesce a burst of calls into one — the media picker's search-as-you-type |
 | `src/lib/errorsLogic.ts` | `describeError`: the one status-code→sentence mapping every screen's `problem` line uses |
@@ -76,6 +77,7 @@ reason.
 | `src/lib/components/` | Presentational pieces |
 | `src/lib/components/FieldInput.svelte` | One config field's control, chosen by its declared type |
 | `src/lib/screens/` | One file per screen |
+| `src/lib/screens/Setup.svelte` | The appliance first-run form. Mounted by `main.ts` *instead of* the shell — see below |
 
 Two rules the screens follow and a new one should too. Panels are `min-w-0`
 grid items — a grid item is min-content-sized by default, so one long log line
@@ -83,6 +85,22 @@ otherwise makes the whole *page* wider than the phone reading it. And a control
 under the finger ignores the echo: values round-trip through the parent and come
 back formatted, so a text input holds its raw text while it has the caret
 (`FieldInput`) and a slider holds its position through a gesture (`FxSlider`).
+
+## The first-run form
+
+`main.ts` asks `GET /api/setup` once before it mounts anything, and mounts
+`screens/Setup.svelte` rather than `App.svelte` when the host answers "pending".
+That probe exists because while the appliance setup window is open
+([`setup_gate.py`](../c64cast/control/setup_gate.py)) *every* other route
+answers `503` — a console that mounted first would come up with nothing but
+errors. Anything other than "pending" (including the `401` an ordinary host
+answers, and no answer at all from one still coming up) mounts the console.
+
+The form is a screen of this same bundle rather than a page the server renders,
+because the gate deliberately leaves the shell and `/assets` reachable while
+everything else is blocked. It never sees the host's token: the host reports
+only whether one may be *set*, and hands the real one back exactly once, in the
+`login_url` of a completed submission, which the page then navigates to.
 
 Design notes — why the bundle is committed, why the fallback is a catch-all,
 why the assets are served by hand — are in

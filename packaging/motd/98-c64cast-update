@@ -1,0 +1,10 @@
+#!/bin/sh
+# Prints the pending-upgrade line from the last update check — or, for a box
+# that has not reached PyPI in a month, that it cannot say whether what it
+# runs is current. Nothing at all when there is nothing to say.
+# Reads a local file only (c64cast/app/update_state.py, via `--motd-line`) —
+# never touches the network, so it can never hang an SSH login. Installed by
+# the appliance image build into /etc/update-motd.d/; not read by c64cast
+# itself.
+
+c64cast --motd-line 2>/dev/null || true

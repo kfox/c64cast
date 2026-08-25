@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 20 sections and 176 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 177 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -472,6 +472,7 @@ autostart = false
 | **`token_file`**<br>*Type:* `str`<br>*Default:* `''` | Read the shared token from this file instead of storing it in the config (one line, whitespace-stripped). Ignored when `token` or C64CAST_WEB_TOKEN is set. |
 | **`viewer_token`**<br>*Type:* `str`<br>*Default:* `''` | Optional second token granting read-only access (GET/HEAD only): watch the state feed, but never start, stop or edit. Prefer the C64CAST_WEB_VIEWER_TOKEN env var. |
 | **`autostart`**<br>*Type:* `bool`<br>*Default:* `False` | Start the config the host was launched with as soon as it comes up, rather than waiting for a browser to ask (headless / launchd boxes). |
+| **`setup_wizard`**<br>*Type:* `bool`<br>*Default:* `False` | Serve a one-time, unauthenticated setup form (connection target + token choice) until it is completed, instead of the normal token-gated console. For a pre-provisioned appliance image only — leave this off on a console you configure yourself. See `c64cast --reset-setup`. |
 | **`screen_fps`**<br>*Type:* `float`<br>*Default:* `10.0` | How often the console's live screen picture is refreshed, in frames per second (0 turns the screen off entirely). The picture is the Ultimate 64's own VIC stream, so this caps how often the host encodes a frame, not how fast the machine sends. Ultimate 64 only — an Ultimate II+ has no VIC of its own and a TeensyROM+ no video path. |
 | **`settle_s`**<br>*Type:* `float`<br>*Default:* `3.0` | Seconds to leave the hardware alone between tearing one session down and building the next: the U64's DMA service refuses new connections for a few seconds after one closes, and a camera will not reopen instantly. |
 | **`config_roots`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Directories the web console may browse and edit .toml configs in. Empty = the directory the host was launched from. Nothing outside these is readable or writable, symlinks included; a config saved here can still name media anywhere, so treat write access as shell-equivalent. |

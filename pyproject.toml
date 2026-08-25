@@ -161,15 +161,16 @@ wled = [
     "websockets>=16.1.1,<18",
 ]
 # The web console host (`c64cast --serve`): the control plane's server plus the
-# session-lifecycle API and its live state feed. Nothing new enters the
-# dependency tree — `control` already declares fastapi + uvicorn — but
-# `websockets` must be named here for the same reason `wled` names it: bare
-# uvicorn ships no ASGI WebSocket implementation, so the upgrade fails and the
-# console silently never updates.
+# session-lifecycle API and its live state feed. `websockets` must be named
+# here for the same reason `wled` names it: bare uvicorn ships no ASGI
+# WebSocket implementation, so the upgrade fails and the console silently
+# never updates. `zeroconf` is for `console_mdns.py`'s LAN advertisement —
+# lazily imported, so a `web` install missing it just isn't discoverable.
 web = [
     "fastapi>=0.140.0,<1",
     "uvicorn>=0.51.0,<1",
     "websockets>=16.1.1,<18",
+    "zeroconf>=0.150.0,<1",
 ]
 # Everything optional, for users who want the full experience. Hand-maintained,
 # so it must stay exactly the union of every other extra above —

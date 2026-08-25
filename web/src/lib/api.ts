@@ -13,6 +13,7 @@ import type {
   SceneChanged,
   ScreenAvailability,
   SessionStatus,
+  UpdateState,
   ValidationReport,
   ViewerLink,
 } from "./types";
@@ -121,6 +122,7 @@ export interface SessionSnapshot extends SessionStatus {
 export const api = {
   session: () => request<SessionSnapshot>("GET", "/api/session"),
   configs: () => request<ConfigIndex>("GET", "/api/configs"),
+  update: () => request<UpdateState>("GET", "/api/update"),
 
   /** Media a `file =` field could name — a plain GET, so it can be issued
    *  freely (once per kind a loaded config's scenes actually use, memoized

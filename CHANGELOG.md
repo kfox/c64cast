@@ -83,6 +83,52 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`[web].setup_wizard` — a one-time, unauthenticated first-run form for a
+  pre-provisioned appliance.** Off by default, and meant only for an OS image
+  that ships c64cast pre-installed with no connection target and no token
+  anyone has seen yet: while pending, the console shell and `/api/setup`
+  (connection target + a choice to keep the generated token or set one) are
+  reachable with no credential at all, and every other route answers `503`
+  rather than reaching any hardware, config, or media route. The form itself
+  is a screen of the ordinary console — the browser is redirected to it — and
+  it is never told the host's token; completing it writes to machine settings
+  the same way `--save-settings` does, restarts the host in place, and signs
+  the browser in to the ordinary token-gated console that comes back. A token
+  fixed by `[web].token`, `[web].token_file` or `$C64CAST_WEB_TOKEN` is shown
+  as unchangeable rather than accepted and then ignored. `c64cast
+  --reset-setup` clears the marker so the next `--serve` asks again. See
+  [SECURITY.md](SECURITY.md) for the exposure this deliberately opens and
+  when it closes, and
+  [docs/architecture/control.md](docs/architecture/control.md#setup_gatepy--setup_apipy--the-appliance-first-run-setup-window)
+  for how narrowly it's bounded. A normal console you configure yourself is
+  entirely unaffected — this is opt-in, not a change to `--serve`'s default
+  behavior.
+
+- **The web console advertises itself over mDNS (`_c64cast._tcp.local.`)
+  when `--serve` binds a non-loopback `host`.** The TXT record carries the
+  c64cast version and whether the appliance setup window above is still
+  open, so a discovery client can tell an unconfigured box from a configured
+  one without a browser first knowing its IP. Requires the `web` extra's new
+  `zeroconf` dependency; missing it just means the console isn't
+  discoverable, same as a registration failure — the console itself is
+  unaffected either way. Silent on `--serve`'s own loopback default, so a
+  laptop console advertises nothing unless you deliberately open it to the
+  LAN. See
+  [docs/architecture/control.md](docs/architecture/control.md#console_mdnspy--mdns-advertisement-of-the-web-console).
+
+- **`c64cast --check-for-updates --write-state` records the answer**, and two
+  new read-only surfaces report it without querying PyPI themselves: the web
+  console's dismissible update banner (`GET /api/update`), and, on the
+  appliance image, an `/etc/update-motd.d/` line printed at SSH login via the
+  new config-free `c64cast --motd-line`. A check that can't reach PyPI records
+  only that it tried, so one lost DNS lookup never retracts a pending-upgrade
+  notice; after 30 days with no answer at all, both surfaces say *that*
+  instead of quoting an answer that old — the console in a banner dismissible
+  until this install is next upgraded, the MOTD in a line at every login. As always, nothing is ever
+  installed automatically — see `--upgrade` for the command every one of these
+  surfaces points at. See
+  [docs/architecture/config.md](docs/architecture/config.md#update_statepy).
+
 - **A video scene's "UP NEXT" name prefers the file's own title over its
   filename.** `alien_ad_1983_remaster_v3.mp4` used to be the name a directory-
   pool video scene announced on the interstitial card, even when the file

@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 449 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 453 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -78,7 +78,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `channel_boost` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [`color` (A)](20-appendix-a-configuration.md#color) |
 | character ROM | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [The Three Network Services (1)](02-config-rules.md#the-three-network-services), [The Character ROM (5)](06-under-the-hood.md#the-character-rom) |
 | `charset_path` | [`preview` (A)](20-appendix-a-configuration.md#preview), [`big_text` (C)](22-appendix-c-overlays.md#big_text) |
-| `--check-for-updates` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
+| `--check-for-updates` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | clip grid | [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [The Performance Console (6)](07-inputs-and-outputs.md#the-performance-console), [The Clip Grid (6)](07-inputs-and-outputs.md#the-clip-grid) |
 | `clips` | [The Console (6)](07-inputs-and-outputs.md#the-console), [Performing (6)](07-inputs-and-outputs.md#performing), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `clock` | [The Overlays (2)](03-vocabulary.md#the-overlays), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [`clock` (C)](22-appendix-c-overlays.md#clock) |
@@ -350,6 +350,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `mod_source` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
 | `model_path` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `moire2` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `--motd-line` | [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | `motion_smoothing` | [`motion_smoothing` (3)](04-display-pipeline.md#motion_smoothing), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
 | `motion_smoothing` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 
@@ -444,6 +445,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `[recording]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`recording` (A)](20-appendix-a-configuration.md#recording) |
 | `refresh_minutes` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`rss` (C)](22-appendix-c-overlays.md#rss), [`weather` (C)](22-appendix-c-overlays.md#weather) |
 | `refresh_s` | [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown), [`network` (C)](22-appendix-c-overlays.md#network) |
+| `--reset-setup` | [`web` (A)](20-appendix-a-configuration.md#web), [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 | `reset_before_launch` | [`launcher` (B)](21-appendix-b-scene-types.md#launcher) |
 | `reu_pump_governor` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `rgb_shift` | [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain), [What Reads the Features (4)](05-sound-and-music.md#what-reads-the-features), [`generative` (B)](21-appendix-b-scene-types.md#generative) |
@@ -478,6 +480,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `--serve` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Living Through a Crash (6)](07-inputs-and-outputs.md#living-through-a-crash), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `settle_s` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [`web` (A)](20-appendix-a-configuration.md#web) |
 | `setup_progress_bar` | [`video` (A)](20-appendix-a-configuration.md#video) |
+| `setup_wizard` | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `shape` (source) | [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `show_date` | [`clock` (C)](22-appendix-c-overlays.md#clock) |
 | `show_dropped` | [`obs_status` (C)](22-appendix-c-overlays.md#obs_status) |
@@ -584,6 +587,7 @@ Every name c64cast answers to — 449 of them — and the pages that discuss eac
 | `[wled]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`wled` (2)](03-vocabulary.md#wled), [`wled` (A)](20-appendix-a-configuration.md#wled) |
 | `wled` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | write budget | [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
+| `--write-state` | [The Web Console Host (6)](07-inputs-and-outputs.md#the-web-console-host), [Updates (G)](26-appendix-g-cli-flags.md#updates) |
 
 ## Y
 
