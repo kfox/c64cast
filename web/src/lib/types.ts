@@ -488,6 +488,10 @@ export interface TunedState {
   changes: TuneChange[];
   savable: number;
   config_path: string;
+  /** `config_path`'s bare filename, no directory and no `.toml` — the same
+   *  spelling `refDisplayLabel` gives a config everywhere else. `""` for a
+   *  quick-playback run with no file. */
+  config_name: string;
   snippet?: string;
 }
 

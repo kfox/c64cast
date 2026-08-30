@@ -4,6 +4,7 @@
   import { launch, PreflightRefused } from "$lib/actions";
   import { Console } from "$lib/console.svelte";
   import Button from "$lib/components/Button.svelte";
+  import { refDisplayLabel } from "$lib/configListLogic";
   import LogDrawer from "$lib/components/LogDrawer.svelte";
   import UpdateBanner from "$lib/components/UpdateBanner.svelte";
   import { drafts } from "$lib/drafts.svelte";
@@ -143,7 +144,7 @@
         >
           {running ? "Switch to" : "Start"}
           {#if selectedConfig}
-            <span class="max-w-32 truncate font-mono">{selectedConfig}</span>
+            <span class="max-w-32 truncate font-mono">{refDisplayLabel(selectedConfig)}</span>
           {/if}
         </Button>
       </span>

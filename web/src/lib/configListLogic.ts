@@ -12,6 +12,16 @@ export function displayLabel(file: ConfigFile): string {
   return file.rel.replace(/\.toml$/i, "");
 }
 
+/** The same label from a bare ref (`<root-label>/<relative>`) when the
+ *  `ConfigFile` isn't in hand — the shell's Start/Switch button, the Live
+ *  breadcrumb, a favorite whose file has since moved. Drops the leading root
+ *  segment and the `.toml` suffix so it reads identically to `displayLabel`
+ *  for the same file. One name for a config, everywhere it is shown. */
+export function refDisplayLabel(ref: string): string {
+  const slash = ref.indexOf("/");
+  return (slash >= 0 ? ref.slice(slash + 1) : ref).replace(/\.toml$/i, "");
+}
+
 const COMPARATORS: Record<ConfigSort, (a: ConfigFile, b: ConfigFile) => number> = {
   "name-asc": (a, b) => displayLabel(a).localeCompare(displayLabel(b)),
   "name-desc": (a, b) => displayLabel(b).localeCompare(displayLabel(a)),

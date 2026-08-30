@@ -433,15 +433,27 @@ Nothing yet.
 ### Fixed
 
 - **The console's config list stops showing the packaged examples with the
-  Examples box unchecked.** Started from a source checkout with no
-  `[web].config_roots` set, `--serve` roots the browser's config list at the
-  working directory — the repo — and its walk reached `c64cast/examples/` and
-  listed every packaged config a second time as an ordinary writable file. The
-  Examples toggle keys on a file being in the read-only examples root, so it
-  couldn't hide that copy, and the duplicates couldn't be edited in place
-  anyway. That directory is now pruned from any other root's walk, leaving the
-  examples to the one read-only root that was always meant to carry them. An
-  install (examples outside the working directory) was never affected.
+  Examples box unchecked, and the rest of a checkout's stray `.toml` with it.**
+  Started from a source checkout with no `[web].config_roots` set, `--serve`
+  roots the browser's config list at the working directory — the repo — and its
+  walk reached `c64cast/examples/` and listed every packaged config a second
+  time as an ordinary writable file. The Examples toggle keys on a file being in
+  the read-only examples root, so it couldn't hide that copy, and the
+  duplicates couldn't be edited in place anyway. That directory is now pruned
+  from any other root's walk, leaving the examples to the one read-only root
+  that was always meant to carry them. The same walk also skips a checkout's own
+  non-config TOML — `pyproject.toml`, `mise.toml`, each book's `book.toml`, and
+  the `scripts/` and `docs/` trees — none of which is a show. A normal show
+  folder has none of this, and a directory named in `config_roots` is still
+  listed in full.
+
+- **One name for a configuration, everywhere the console shows one.** The file
+  list called it `config/journey`; the shell's Start / Switch button, the Live
+  breadcrumb and the editor header called the same file
+  `c64cast/config/journey.toml` — the internal ref, root label and suffix and
+  all. Every surface now renders the short form (`refDisplayLabel`): the root
+  label dropped, the `.toml` dropped, any subdirectory kept. The tune-save
+  button ("Keep 3 in …") shows the bare name for the same reason.
 
 - **A recorded scene's description no longer hands you a `TODO`.** Every video
   scene's `SCENE_CONFIG_JSON` carried

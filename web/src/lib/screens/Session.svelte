@@ -7,11 +7,11 @@
   import Diagnostics from "$lib/components/Diagnostics.svelte";
   import StateBadge from "$lib/components/StateBadge.svelte";
   import ViewerLink from "$lib/components/ViewerLink.svelte";
-  import { displayLabel } from "$lib/configListLogic";
+  import { refDisplayLabel } from "$lib/configListLogic";
   import type { Console } from "$lib/console.svelte";
   import { describeError } from "$lib/errorsLogic";
   import type { Router } from "$lib/router.svelte";
-  import type { ConfigIndex, LibraryState, ValidationReport } from "$lib/types";
+  import type { LibraryState, ValidationReport } from "$lib/types";
 
   interface Props {
     host: Console;
@@ -25,7 +25,6 @@
 
   let { host, router, selected, onselect }: Props = $props();
 
-  let index = $state<ConfigIndex | null>(null);
   let library = $state<LibraryState | null>(null);
   let problem = $state("");
   // A pre-flight refusal's full report, alongside `problem`'s one-line
@@ -57,18 +56,8 @@
   const busy = $derived(sending || phase === "starting" || phase === "stopping");
 
   onMount(() => {
-    void refreshIndex();
     void refreshLibrary();
   });
-
-  async function refreshIndex(): Promise<void> {
-    try {
-      index = await api.configs();
-    } catch (e) {
-      problem = describeError(e);
-      report = null;
-    }
-  }
 
   async function refreshLibrary(): Promise<void> {
     try {
@@ -93,16 +82,7 @@
     }
   }
 
-  /** `rel` with `.toml` stripped when the ref is still in the index; a plain
-   *  fallback (root label dropped, suffix stripped) when it isn't — a starred
-   *  or recent config that has since been moved or deleted still has to
-   *  render as *something*. */
-  function displayName(ref: string): string {
-    const file = index?.files.find((f) => f.path === ref);
-    if (file) return displayLabel(file);
-    const slash = ref.indexOf("/");
-    return (slash >= 0 ? ref.slice(slash + 1) : ref).replace(/\.toml$/i, "");
-  }
+  const displayName = refDisplayLabel;
 
   async function toggleFavorite(ref: string, on: boolean): Promise<void> {
     try {
@@ -168,7 +148,7 @@
     <dl class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)]">
       <dt class="text-[var(--ink-dim)]">Configuration</dt>
       <dd class="flex items-center gap-2 font-mono break-all">
-        {status?.config_path || "—"}
+        {status?.config_ref ? refDisplayLabel(status.config_ref) : status?.config_path || "—"}
         {#if status?.config_ref}
           <button
             class="shrink-0 text-xs underline underline-offset-2"

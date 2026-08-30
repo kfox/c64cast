@@ -1030,6 +1030,51 @@ class ExamplesRootTest(unittest.TestCase):
         self.assertTrue([f for f in files if f["root"] == "examples" and f["readonly"]])
 
 
+class NonConfigNoiseTest(unittest.TestCase):
+    """A `--serve` rooted at a source checkout should not list the checkout's
+    own tooling `.toml` files beside the real configs."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        (self.root / "gig.toml").write_text(GOOD, encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        (self.root / "mise.toml").write_text("[tools]\n", encoding="utf-8")
+        (self.root / "docs" / "guide").mkdir(parents=True)
+        (self.root / "docs" / "guide" / "book.toml").write_text("title = 'x'\n", encoding="utf-8")
+        (self.root / "docs" / "guide" / "shots" / "fig.toml").parent.mkdir(parents=True)
+        (self.root / "docs" / "guide" / "shots" / "fig.toml").write_text(GOOD, encoding="utf-8")
+        (self.root / "scripts" / "diags" / "out").mkdir(parents=True)
+        (self.root / "scripts" / "diags" / "out" / "capture.toml").write_text(
+            GOOD, encoding="utf-8"
+        )
+        self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
+
+    def _rels(self) -> set[str]:
+        return {f["rel"] for f in self.store.index()["files"]}
+
+    def test_a_real_config_at_the_root_is_listed(self):
+        self.assertIn("gig.toml", self._rels())
+
+    def test_tooling_manifests_are_not_listed(self):
+        self.assertEqual(self._rels() & {"pyproject.toml", "mise.toml"}, set())
+
+    def test_the_scripts_and_docs_trees_are_skipped_whole(self):
+        rels = self._rels()
+        self.assertNotIn("docs/guide/book.toml", rels)
+        self.assertNotIn("docs/guide/shots/fig.toml", rels)
+        self.assertNotIn("scripts/diags/out/capture.toml", rels)
+
+    def test_a_root_named_scripts_is_not_skipped_itself(self):
+        # The rule skips a *subdirectory* named `scripts`, never a root the
+        # operator pointed at.
+        store = config_store.ConfigStore(
+            [str(self.root / "scripts" / "diags" / "out")], include_examples=False
+        )
+        self.assertIn("capture.toml", {f["rel"] for f in store.index()["files"]})
+
+
 class CreateTest(StoreTestCase):
     def test_a_blank_starter_is_created_and_validates(self):
         out = self.store.create("shows/new_show.toml")

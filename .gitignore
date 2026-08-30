@@ -41,6 +41,10 @@ env/
 !/mise.toml
 !/pyproject.toml
 config/*.toml
+# `.bak` sibling a console config save leaves behind (config_store._rewrite),
+# anywhere in the tree — never source.
+*.toml.bak
+.*.toml.bak
 # diag tool captures/fixtures; the tools are tracked
 scripts/diags/out/
 # per-system DAC calibration tables (captured from real hardware via

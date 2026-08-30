@@ -7,6 +7,7 @@
   import ConfigForm from "$lib/components/ConfigForm.svelte";
   import ConfigList from "$lib/components/ConfigList.svelte";
   import TomlEditor from "$lib/components/TomlEditor.svelte";
+  import { refDisplayLabel } from "$lib/configListLogic";
   import type { Console } from "$lib/console.svelte";
   import { drafts } from "$lib/drafts.svelte";
   import { describeError } from "$lib/errorsLogic";
@@ -328,11 +329,11 @@
         Session screen is where one gets started.
       </p>
     {:else if loading && detail === null}
-      <p class="text-sm text-[var(--ink-dim)]">Loading {selected}…</p>
+      <p class="text-sm text-[var(--ink-dim)]">Loading {refDisplayLabel(selected)}…</p>
     {:else if detail}
       <header class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="font-mono text-lg font-semibold break-all">{detail.path}</h2>
+          <h2 class="font-mono text-lg font-semibold break-all">{refDisplayLabel(detail.path)}</h2>
           <p class="mt-1 text-xs text-[var(--ink-dim)]">
             {detail.size} bytes · {clock(detail.mtime)}
             {#if detail.kind === "ensemble"}

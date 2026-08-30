@@ -549,6 +549,8 @@ class TunedBlockTest(unittest.TestCase):
         tuned = bridge.state()["systems"][0]["tuned"]
         self.assertEqual(tuned["savable"], 1)
         self.assertEqual(tuned["config_path"], "/shows/demo.toml")
+        # The bare name is what both consoles show — no directory, no `.toml`.
+        self.assertEqual(tuned["config_name"], "demo")
         self.assertEqual(tuned["changes"][0]["field"], "dither_strength")
         self.assertEqual(tuned["changes"][0]["old"], 0.5)
         self.assertEqual(tuned["changes"][0]["new"], 0.8)
@@ -595,6 +597,7 @@ class TunedBlockTest(unittest.TestCase):
         pl.live_tracker.record("mode.dither_strength", 0.5, 0.8)
         tuned = bridge.state()["systems"][0]["tuned"]
         self.assertEqual(tuned["config_path"], "")
+        self.assertEqual(tuned["config_name"], "")
         self.assertIn("[color]", tuned["snippet"])
         self.assertIn("dither_strength", tuned["snippet"])
 

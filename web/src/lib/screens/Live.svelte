@@ -12,6 +12,7 @@
   import TransportBar from "$lib/components/TransportBar.svelte";
   import TunePanel from "$lib/components/TunePanel.svelte";
   import TunedChanges from "$lib/components/TunedChanges.svelte";
+  import { refDisplayLabel } from "$lib/configListLogic";
   import type { Console } from "$lib/console.svelte";
   import { describeError } from "$lib/errorsLogic";
   import { DocIndex, documentation } from "$lib/introspect";
@@ -181,9 +182,11 @@
         <Button variant="primary" disabled={starting || host.busy} onclick={start}>
           Start the host default
         </Button>
-        {#if host.session?.config_path}
+        {#if host.session?.config_ref || host.session?.config_path}
           <span class="truncate font-mono text-xs text-[var(--ink-dim)]">
-            {host.session.config_path}
+            {host.session?.config_ref
+              ? refDisplayLabel(host.session.config_ref)
+              : host.session?.config_path}
           </span>
         {/if}
         {#if host.session?.config_ref}
@@ -206,7 +209,7 @@
   <div class="space-y-4">
     <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--ink-dim)]">
       {#if host.session?.config_ref}
-        <span class="truncate font-mono">{host.session.config_ref}</span>
+        <span class="truncate font-mono">{refDisplayLabel(host.session.config_ref)}</span>
         <button
           class="underline underline-offset-2"
           onclick={() => router.go("config", host.session?.config_ref ?? "")}
