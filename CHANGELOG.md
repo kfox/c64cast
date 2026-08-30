@@ -432,6 +432,17 @@ Nothing yet.
 
 ### Fixed
 
+- **The console's config list stops showing the packaged examples with the
+  Examples box unchecked.** Started from a source checkout with no
+  `[web].config_roots` set, `--serve` roots the browser's config list at the
+  working directory — the repo — and its walk reached `c64cast/examples/` and
+  listed every packaged config a second time as an ordinary writable file. The
+  Examples toggle keys on a file being in the read-only examples root, so it
+  couldn't hide that copy, and the duplicates couldn't be edited in place
+  anyway. That directory is now pruned from any other root's walk, leaving the
+  examples to the one read-only root that was always meant to carry them. An
+  install (examples outside the working directory) was never affected.
+
 - **A recorded scene's description no longer hands you a `TODO`.** Every video
   scene's `SCENE_CONFIG_JSON` carried
   `copyright: TODO: add source link / license / attribution`, and

@@ -27,7 +27,7 @@ from unittest import mock
 from _fakes import MachineSettingsIsolation
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store
+from c64cast.app import config_store, paths
 
 # Every read and every patch measures against the machine-settings layer, so a
 # real settings file on the developer's machine would change what `is_default`
@@ -1012,6 +1012,22 @@ class ExamplesRootTest(unittest.TestCase):
     def test_include_examples_false_leaves_them_out(self):
         store = config_store.ConfigStore([str(self.shows)], include_examples=False)
         self.assertNotIn("examples", {r.label for r in store.roots})
+
+    def test_a_root_that_contains_the_packaged_examples_does_not_relist_them(self):
+        # A `--serve` started from a source checkout has its cwd root at the
+        # repo, whose walk reaches `c64cast/examples/`. Those files belong to
+        # the trailing read-only `examples` root; they must not also appear as
+        # writable files under the configured root, where the console's
+        # "Examples" toggle (which keys on `readonly`) could not hide them.
+        pkg_dir = paths.examples_dir().parent
+        store = config_store.ConfigStore([str(pkg_dir)], cwd=pkg_dir)
+        files = store.index()["files"]
+        relisted = [
+            f for f in files if f["root"] != "examples" and "examples" in f["rel"].split("/")
+        ]
+        self.assertEqual(relisted, [], f"packaged examples re-listed as writable: {relisted}")
+        # The read-only root still carries them.
+        self.assertTrue([f for f in files if f["root"] == "examples" and f["readonly"]])
 
 
 class CreateTest(StoreTestCase):

@@ -535,6 +535,17 @@ class ConfigStore:
         self._roots = tuple(resolved)
         self._by_label = {r.label: r for r in self._roots}
         self._ref_for_cache: tuple[str, str | None] | None = None
+        # The packaged examples have their own trailing read-only root (added
+        # just above). A run started from a source checkout has cwd at the repo
+        # root, and that root's walk would otherwise descend into
+        # `c64cast/examples/` and list every packaged config a *second* time —
+        # as a writable file under the cwd root, which the console's "Examples"
+        # toggle keys on `readonly` and so cannot hide. Pruned from every other
+        # root's walk in `_walk`, but only while the read-only root is present
+        # to carry them: with `include_examples=False` there is nothing else
+        # listing them and the prune would drop them outright.
+        examples_root = next((r for r in self._roots if r.readonly), None)
+        self._packaged_examples: Path | None = examples_root.path if examples_root else None
 
     @staticmethod
     def _append_examples_root(resolved: list[Root], taken: set[str]) -> None:
@@ -668,7 +679,12 @@ class ConfigStore:
         }
 
     def _walk(self, root: Root) -> Iterator[Path]:
+        prune = None if root.readonly else self._packaged_examples
         for here, filenames in walk_dirs(root.path):
+            if prune is not None:
+                resolved_here = here.resolve()
+                if resolved_here == prune or prune in resolved_here.parents:
+                    continue
             for name in sorted(filenames):
                 if name.startswith(".") or not name.lower().endswith(SUFFIX):
                     continue
