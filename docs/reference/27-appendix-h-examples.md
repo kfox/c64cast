@@ -19,7 +19,7 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`c64cast.example`** | c64cast config — annotated reference + feature showcase. |
 | **`color-dither`** | spatial dither ([color].dither) on a slideshow. *(needs your own media)* |
 | **`color-force-palette`** | the EXTREME forced-palette remap ([color].force_palette). *(needs your own media)* |
-| **`effect-chain`** | Layerable effect chain demo (Live DJ/VJ Phase 3): stack several pixel effects on one scene, each independently tunable and bypass-toggleable live, … |
+| **`effect-chain`** | Layerable effect chain demo (Live DJ/VJ Phase 3): stack several pixel effects on one scene, each independently tunable and bypass-toggleable live, with the whole stack tempo-locked to the [performance] beat grid. |
 | **`effect-reactive`** | a MUSIC-REACTIVE pixel effect over a generative source + SID-file playback. |
 | **`effect-trails`** | a per-scene pixel EFFECT layered on a generative source. |
 | **`hello`** | c64cast "hello world" — the simplest thing that puts something on the screen. |
@@ -37,17 +37,17 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`overlay-spectrum_bitmap`** | multicolor-bitmap spectrum analyzer over a generative plasma, driven by live audio input. |
 | **`overlay-spectrum_petscii`** | PETSCII webcam + audio spectrum analyzer. |
 | **`overlay-weather`** | PETSCII webcam + weather overlay. |
-| **`performance-clips`** | Clip-launch grid demo (Live DJ/VJ Phase 2): fire scenes from a MIDI controller, quantized to a musical beat grid — a "video sampler" in the spirit of … |
+| **`performance-clips`** | Clip-launch grid demo (Live DJ/VJ Phase 2): fire scenes from a MIDI controller, quantized to a musical beat grid — a "video sampler" in the spirit of a Roland P-10. |
 | **`scene-asid`** | ASID stream → real SID + oscilloscope. |
 | **`scene-blank`** | blank PETSCII canvas with a big_text overlay. |
 | **`scene-generative-colored-bursts`** | "Colored Bursts" — a WLED-effect port. |
 | **`scene-generative-dna`** | "DNA" — a WLED-effect port. |
-| **`scene-generative-dotswarm`** | "Dot Swarm" — a WLED-effect port covering the shared shape of several kin effects: a handful of points, each independently orbiting via a bounded … |
+| **`scene-generative-dotswarm`** | "Dot Swarm" — a WLED-effect port covering the shared shape of several kin effects: a handful of points, each independently orbiting via a bounded sine at its own frequency, color-cycled and blended, plus a fixed white center dot (Black Hole's signature). |
 | **`scene-generative-drift`** | "Drift" — a WLED-effect port. |
 | **`scene-generative-epicycle`** | a Fourier epicycle chain (circles spinning around the tip of the previous circle) rendered as a multicolor bitmap. |
 | **`scene-generative-fire`** | a generative FIRE source paired with SID-file playback — the most viscerally music-reactive generator. |
-| **`scene-generative-fireworks`** | "Fireworks" — a WLED-effect port of WLED's shared particle-system engine's flagship preset: shells launch, arc under gravity, and explode into a … |
-| **`scene-generative-game-of-life`** | "Game Of Life" — a WLED-effect port of Conway's Game of Life on a coarse grid, with WLED's signature "parent color inheritance": a newly-born cell's … |
+| **`scene-generative-fireworks`** | "Fireworks" — a WLED-effect port of WLED's shared particle-system engine's flagship preset: shells launch, arc under gravity, and explode into a fading burst of particles. |
+| **`scene-generative-game-of-life`** | "Game Of Life" — a WLED-effect port of Conway's Game of Life on a coarse grid, with WLED's signature "parent color inheritance": a newly-born cell's color is the blend of its live parents'. |
 | **`scene-generative-halo`** | several soft-edged halos drifting on independent orbits, additively blended (bright where they overlap), rendered as a multicolor bitmap. |
 | **`scene-generative-hiphotic`** | "Hiphotic" — a WLED-effect port. |
 | **`scene-generative-hopalong`** | the Hopalong chaotic point-map attractor (Barry Martin's `x' = y - sign(x)*sqrt(\|b*x - c\|)`, `y' = a - x`) rendered as a multicolor bitmap. |
@@ -60,7 +60,7 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`scene-generative-rorschach`** | a mirrored-symmetric ink-blot rendered as a multicolor bitmap. |
 | **`scene-generative-rotozoomer`** | "Rotozoomer" — a WLED-effect port. |
 | **`scene-generative-sid`** | a generative plasma paired with SID-file playback — the headline of the composable building blocks. |
-| **`scene-generative-soap`** | "Soap" — a WLED-effect port of a persistent color buffer smeared/advected each tick by a slowly-rotating noise-driven flow field — the classic … |
+| **`scene-generative-soap`** | "Soap" — a WLED-effect port of a persistent color buffer smeared/advected each tick by a slowly-rotating noise-driven flow field — the classic swirling soap-film look. |
 | **`scene-launcher`** | launch a native C64 program (game or demo) on the U64 and hand the machine over to it. *(needs your own media)* |
 | **`scene-midi`** | MIDI → SID synth + oscilloscope. |
 | **`scene-slideshow`** | cycle through still images on the C64 display. *(needs your own media)* |
@@ -81,4 +81,4 @@ A demo tagged *needs your own media* points at `assets/`, which ships empty beca
 | **`ensemble/left`** | Per-system config for the leftmost screen in the ensemble. |
 | **`ensemble/master`** | Master config for a 3-system ensemble (a row of three Ultimate 64s laid out left → middle → right, viewed from the front). |
 | **`ensemble/middle`** | Per-system config for the middle screen. |
-| **`ensemble/right`** | Per-system config for the rightmost screen — also the *conductor* for the cross-system big_text broadcast (since the message scrolls right-to-left, … |
+| **`ensemble/right`** | Per-system config for the rightmost screen — also the *conductor* for the cross-system big_text broadcast (since the message scrolls right-to-left, it enters on the rightmost screen). |

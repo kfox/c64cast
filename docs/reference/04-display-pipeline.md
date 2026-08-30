@@ -498,7 +498,7 @@ A scene takes either one effect or an ordered chain, and the two spellings are
 mutually exclusive:
 
 ```toml
-effect = "trails"                          # one
+effect = "trails"                             # one
 effects = ["trails", "rgb_shift", "strobe"]   # a chain
 ```
 

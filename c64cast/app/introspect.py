@@ -926,7 +926,7 @@ def render_describe(name: str) -> str:
 _SUMMARY_MAX = 150
 
 
-def example_summary(path: Path) -> str:
+def example_summary(path: Path, *, full: bool = False) -> str:
     """One-line summary of an example config, read from its own header: the
     leading comment paragraph (skipping the `#:schema` directive, stopping at
     the first blank comment line), first sentence only.
@@ -934,7 +934,11 @@ def example_summary(path: Path) -> str:
     The `Single-scene demo:` prefix nearly every file opens with is dropped —
     it is true of all but a handful and repeating it 45 times crowds out the
     part that differs. So are the `(see <upstream URL>)` citations the
-    WLED-effect ports carry: provenance belongs in the file, not in an index."""
+    WLED-effect ports carry: provenance belongs in the file, not in an index.
+
+    A fixed-width terminal listing also caps the sentence at about two lines
+    (`_SUMMARY_MAX`) so the list stays scannable; `full=True` — for the book's
+    example appendix, where the column wraps — keeps the whole sentence."""
     para: list[str] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -955,8 +959,9 @@ def example_summary(path: Path) -> str:
         text = text[: match.end()]
     text = re.sub(r"^Single-scene demo(?: of|:)\s*", "", text)
     # A few files open with one very long sentence; hold every entry to about
-    # two terminal lines so the list stays scannable.
-    if len(text) > _SUMMARY_MAX:
+    # two terminal lines so the list stays scannable. The book's appendix has a
+    # column that wraps, so it asks for the sentence in full.
+    if not full and len(text) > _SUMMARY_MAX:
         text = text[:_SUMMARY_MAX].rsplit(" ", 1)[0] + " …"
     return text
 

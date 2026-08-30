@@ -742,14 +742,20 @@ def _slab_segment(
         _iso(u0, depth, SLAB_H, origin),
     ]
     front = [_iso(u0, 0, 0, origin), _iso(u1, 0, 0, origin), top[1], top[0]]
-    _face(d, front, _shade(color, 0.74))
-    _face(d, top, color)
+    # The end caps are laid down before the front and the top, not after. In
+    # this projection the far cap's parallelogram rides up over the top face
+    # rather than meeting it at an edge, so drawing it last folded a darker
+    # wedge across the top-right corner of every slab whose regions did not
+    # already cover it. Painted first, the front and the top cover that
+    # overlap and leave only the true sliver of end grain showing.
     if u0 <= 0:  # the left end cap, visible only on the first segment
         cap = [_iso(0, 0, 0, origin), _iso(0, depth, 0, origin), top[3], top[0]]
         _face(d, cap, _shade(color, 0.86))
     if u1 >= length:  # and the right one, on the last
         cap = [_iso(length, 0, 0, origin), _iso(length, depth, 0, origin), top[2], top[1]]
         _face(d, cap, _shade(color, 0.86))
+    _face(d, front, _shade(color, 0.74))
+    _face(d, top, color)
     return ((top[0][0] + top[2][0]) / 2, (top[0][1] + top[2][1]) / 2)
 
 

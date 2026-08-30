@@ -676,7 +676,9 @@
     lang: "en",
     hyphenate: true,
   )
-  set par(justify: true, leading: 0.62em, spacing: 0.85em)
+  // Paragraph spacing at 0.85em -- the first cut -- sat close enough to the
+  // 0.62em line leading that a paragraph break read like a line break.
+  set par(justify: true, leading: 0.62em, spacing: 1.25em)
   show: elements.with(body-size)
 
   // Front matter -----------------------------------------------------------
