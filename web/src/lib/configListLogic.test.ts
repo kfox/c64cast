@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { displayLabel, visibleRows } from "./configListLogic";
+import { displayLabel, refDisplayLabel, visibleRows } from "./configListLogic";
 import type { ConfigFile } from "./types";
 
 function file(overrides: Partial<ConfigFile> & Pick<ConfigFile, "path" | "rel">): ConfigFile {
@@ -27,6 +27,25 @@ describe("displayLabel", () => {
     expect(displayLabel(file({ path: "shows/sets/opener.toml", rel: "sets/opener.toml" }))).toBe(
       "sets/opener",
     );
+  });
+});
+
+describe("refDisplayLabel", () => {
+  it("drops the root label and the .toml suffix", () => {
+    expect(refDisplayLabel("c64cast/config/journey.toml")).toBe("config/journey");
+  });
+
+  it("agrees with displayLabel for the same file", () => {
+    const f = file({ path: "shows/sets/opener.toml", rel: "sets/opener.toml" });
+    expect(refDisplayLabel(f.path)).toBe(displayLabel(f));
+  });
+
+  it("handles a ref with no slash", () => {
+    expect(refDisplayLabel("gig.toml")).toBe("gig");
+  });
+
+  it("is case-insensitive about the suffix", () => {
+    expect(refDisplayLabel("shows/gig.TOML")).toBe("gig");
   });
 });
 

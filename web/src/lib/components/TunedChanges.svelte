@@ -16,7 +16,9 @@
   let done = $state("");
 
   const savable = $derived(tuned.savable > 0 && tuned.config_path !== "");
-  const file = $derived(tuned.config_path.split(/[\\/]/).pop() ?? "");
+  // The host already resolved this to a bare name (no directory, no `.toml`) —
+  // the same spelling a config gets everywhere else in the console.
+  const file = $derived(tuned.config_name);
   const lost = $derived(tuned.changes.length - tuned.savable);
 
   /** The answer has to outlive the thing it answers: a save empties the record,

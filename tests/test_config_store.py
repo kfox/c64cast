@@ -27,7 +27,7 @@ from unittest import mock
 from _fakes import MachineSettingsIsolation
 
 from c64cast.app import config as cfgmod
-from c64cast.app import config_store
+from c64cast.app import config_store, paths
 
 # Every read and every patch measures against the machine-settings layer, so a
 # real settings file on the developer's machine would change what `is_default`
@@ -1012,6 +1012,67 @@ class ExamplesRootTest(unittest.TestCase):
     def test_include_examples_false_leaves_them_out(self):
         store = config_store.ConfigStore([str(self.shows)], include_examples=False)
         self.assertNotIn("examples", {r.label for r in store.roots})
+
+    def test_a_root_that_contains_the_packaged_examples_does_not_relist_them(self):
+        # A `--serve` started from a source checkout has its cwd root at the
+        # repo, whose walk reaches `c64cast/examples/`. Those files belong to
+        # the trailing read-only `examples` root; they must not also appear as
+        # writable files under the configured root, where the console's
+        # "Examples" toggle (which keys on `readonly`) could not hide them.
+        pkg_dir = paths.examples_dir().parent
+        store = config_store.ConfigStore([str(pkg_dir)], cwd=pkg_dir)
+        files = store.index()["files"]
+        relisted = [
+            f for f in files if f["root"] != "examples" and "examples" in f["rel"].split("/")
+        ]
+        self.assertEqual(relisted, [], f"packaged examples re-listed as writable: {relisted}")
+        # The read-only root still carries them.
+        self.assertTrue([f for f in files if f["root"] == "examples" and f["readonly"]])
+
+
+class NonConfigNoiseTest(unittest.TestCase):
+    """A `--serve` rooted at a source checkout should not list the checkout's
+    own tooling `.toml` files beside the real configs."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        (self.root / "gig.toml").write_text(GOOD, encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        (self.root / "mise.toml").write_text("[tools]\n", encoding="utf-8")
+        (self.root / "docs" / "guide").mkdir(parents=True)
+        (self.root / "docs" / "guide" / "book.toml").write_text("title = 'x'\n", encoding="utf-8")
+        (self.root / "docs" / "guide" / "shots" / "fig.toml").parent.mkdir(parents=True)
+        (self.root / "docs" / "guide" / "shots" / "fig.toml").write_text(GOOD, encoding="utf-8")
+        (self.root / "scripts" / "diags" / "out").mkdir(parents=True)
+        (self.root / "scripts" / "diags" / "out" / "capture.toml").write_text(
+            GOOD, encoding="utf-8"
+        )
+        self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
+
+    def _rels(self) -> set[str]:
+        return {f["rel"] for f in self.store.index()["files"]}
+
+    def test_a_real_config_at_the_root_is_listed(self):
+        self.assertIn("gig.toml", self._rels())
+
+    def test_tooling_manifests_are_not_listed(self):
+        self.assertEqual(self._rels() & {"pyproject.toml", "mise.toml"}, set())
+
+    def test_the_scripts_and_docs_trees_are_skipped_whole(self):
+        rels = self._rels()
+        self.assertNotIn("docs/guide/book.toml", rels)
+        self.assertNotIn("docs/guide/shots/fig.toml", rels)
+        self.assertNotIn("scripts/diags/out/capture.toml", rels)
+
+    def test_a_root_named_scripts_is_not_skipped_itself(self):
+        # The rule skips a *subdirectory* named `scripts`, never a root the
+        # operator pointed at.
+        store = config_store.ConfigStore(
+            [str(self.root / "scripts" / "diags" / "out")], include_examples=False
+        )
+        self.assertIn("capture.toml", {f["rel"] for f in store.index()["files"]})
 
 
 class CreateTest(StoreTestCase):

@@ -96,6 +96,33 @@ SUFFIX = ".toml"
 #: request into minutes of I/O, not a security boundary.
 MAX_BYTES = 1 << 20
 
+#: `.toml` files that are never a c64cast show config, skipped by the listing
+#: walk. All of them are project-tooling manifests: a `--serve` rooted at a
+#: source checkout (the cwd fallback when `[web].config_roots` is unset) would
+#: otherwise list them beside the real configs. Matched by exact basename, so a
+#: root you name explicitly that happens to contain one still won't show it —
+#: which is fine, it isn't a config either way. Not a security check.
+NON_CONFIG_NAMES = frozenset(
+    {
+        "pyproject.toml",
+        "mise.toml",
+        "uv.toml",
+        "ruff.toml",
+        "poetry.toml",
+        "rustfmt.toml",
+        "Cargo.toml",
+        "book.toml",  # scripts/bookdoc.py's per-book manifest
+    }
+)
+
+#: Directories the listing walk does not descend into, on top of
+#: `fs_walk.SKIP_DIRS`. `scripts/` and `docs/` are the c64cast checkout's own
+#: code and prose trees — a `--serve` from the repo root would otherwise surface
+#: `scripts/diags/`'s captured `.toml` fixtures and `docs/`'s figure configs.
+#: The walk never skips a *root* by this rule (only a subdirectory of one), so
+#: naming such a directory in `[web].config_roots` still works.
+NON_CONFIG_DIRS = frozenset({"scripts", "docs"})
+
 
 class ConfigStoreError(Exception):
     """Base for every refusal from this module. Messages are end-user readable."""
@@ -535,6 +562,17 @@ class ConfigStore:
         self._roots = tuple(resolved)
         self._by_label = {r.label: r for r in self._roots}
         self._ref_for_cache: tuple[str, str | None] | None = None
+        # The packaged examples have their own trailing read-only root (added
+        # just above). A run started from a source checkout has cwd at the repo
+        # root, and that root's walk would otherwise descend into
+        # `c64cast/examples/` and list every packaged config a *second* time —
+        # as a writable file under the cwd root, which the console's "Examples"
+        # toggle keys on `readonly` and so cannot hide. Pruned from every other
+        # root's walk in `_walk`, but only while the read-only root is present
+        # to carry them: with `include_examples=False` there is nothing else
+        # listing them and the prune would drop them outright.
+        examples_root = next((r for r in self._roots if r.readonly), None)
+        self._packaged_examples: Path | None = examples_root.path if examples_root else None
 
     @staticmethod
     def _append_examples_root(resolved: list[Root], taken: set[str]) -> None:
@@ -668,9 +706,20 @@ class ConfigStore:
         }
 
     def _walk(self, root: Root) -> Iterator[Path]:
+        prune = None if root.readonly else self._packaged_examples
         for here, filenames in walk_dirs(root.path):
+            resolved_here = here.resolve()
+            if prune is not None and (resolved_here == prune or prune in resolved_here.parents):
+                continue
+            # A subdirectory (never the root itself) that only ever holds a
+            # checkout's own tooling — see NON_CONFIG_DIRS. `root.path` is
+            # already resolved, so `here` is under it.
+            if any(part in NON_CONFIG_DIRS for part in here.relative_to(root.path).parts):
+                continue
             for name in sorted(filenames):
                 if name.startswith(".") or not name.lower().endswith(SUFFIX):
+                    continue
+                if name in NON_CONFIG_NAMES:
                     continue
                 path = here / name
                 # `followlinks=False` keeps the walk out of symlinked

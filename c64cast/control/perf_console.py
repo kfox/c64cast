@@ -51,6 +51,7 @@ import logging
 import math
 import time
 from collections.abc import Callable, Mapping
+from pathlib import PurePath
 from typing import Any
 
 from c64cast.app.playlist import Playlist
@@ -249,6 +250,11 @@ def _tuned_dict(pl: Playlist) -> dict[str, Any]:
         # Whether there is a file to write to at all. A quick-playback run has
         # no config, and gets the same pasteable [color] block the CLI prints.
         "config_path": pl.config_path or "",
+        # The file's bare name, no directory and no `.toml` — the same spelling
+        # a config gets everywhere else in the console. No `ConfigStore` reaches
+        # this surface, so a root-relative label (`config/journey`) isn't
+        # available; the name alone is what both consoles show for a tune save.
+        "config_name": (PurePath(pl.config_path).stem if pl.config_path else ""),
     }
     if savable and not pl.config_path:
         out["snippet"] = pl.live_tracker.toml_snippet()
@@ -1072,7 +1078,7 @@ function tunedActions(sys, tuned) {
   if (tuned.config_path && tuned.savable) {
     const save = document.createElement('button');
     save.textContent = 'KEEP ' + tuned.savable;
-    save.title = 'Write these into ' + tuned.config_path;
+    save.title = 'Write these into ' + tuned.config_name;
     save.onclick = () => liveTune(sys, 'save');
     acts.appendChild(save);
   }

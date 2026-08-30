@@ -19,6 +19,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] - 2026-08-30
+
 ### Upgrade notes
 
 - **New: `[color].flicker_tolerance` blends two screen pages at the VIC field
@@ -428,6 +432,29 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The console's config list stops showing the packaged examples with the
+  Examples box unchecked, and the rest of a checkout's stray `.toml` with it.**
+  Started from a source checkout with no `[web].config_roots` set, `--serve`
+  roots the browser's config list at the working directory — the repo — and its
+  walk reached `c64cast/examples/` and listed every packaged config a second
+  time as an ordinary writable file. The Examples toggle keys on a file being in
+  the read-only examples root, so it couldn't hide that copy, and the
+  duplicates couldn't be edited in place anyway. That directory is now pruned
+  from any other root's walk, leaving the examples to the one read-only root
+  that was always meant to carry them. The same walk also skips a checkout's own
+  non-config TOML — `pyproject.toml`, `mise.toml`, each book's `book.toml`, and
+  the `scripts/` and `docs/` trees — none of which is a show. A normal show
+  folder has none of this, and a directory named in `config_roots` is still
+  listed in full.
+
+- **One name for a configuration, everywhere the console shows one.** The file
+  list called it `config/journey`; the shell's Start / Switch button, the Live
+  breadcrumb and the editor header called the same file
+  `c64cast/config/journey.toml` — the internal ref, root label and suffix and
+  all. Every surface now renders the short form (`refDisplayLabel`): the root
+  label dropped, the `.toml` dropped, any subdirectory kept. The tune-save
+  button ("Keep 3 in …") shows the bare name for the same reason.
+
 - **A recorded scene's description no longer hands you a `TODO`.** Every video
   scene's `SCENE_CONFIG_JSON` carried
   `copyright: TODO: add source link / license / attribution`, and
@@ -592,6 +619,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   whether it is the last one named.
 
 ### Changed
+
+- **c64cast is Beta, not Alpha.** The PyPI trove classifier moves from
+  `Development Status :: 3 - Alpha` to `4 - Beta` — four tagged releases in, with
+  a settled CLI, config schema and data-directory layout that a documented
+  breaking change now goes through a version bump to touch. Nothing about
+  running it changes; the `0.x` line still carries no API-stability promise.
 
 - **British spellings are gone from the prose, the code and the console.** The
   0.3.0 pass spelled the books in American English; everything written since had
@@ -2104,7 +2137,8 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kfox/c64cast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kfox/c64cast/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kfox/c64cast/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kfox/c64cast/compare/v0.1.0...v0.2.0
