@@ -19,6 +19,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] - 2026-08-30
+
 ### Upgrade notes
 
 - **New: `[color].flicker_tolerance` blends two screen pages at the VIC field
@@ -592,6 +596,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   whether it is the last one named.
 
 ### Changed
+
+- **c64cast is Beta, not Alpha.** The PyPI trove classifier moves from
+  `Development Status :: 3 - Alpha` to `4 - Beta` — four tagged releases in, with
+  a settled CLI, config schema and data-directory layout that a documented
+  breaking change now goes through a version bump to touch. Nothing about
+  running it changes; the `0.x` line still carries no API-stability promise.
 
 - **British spellings are gone from the prose, the code and the console.** The
   0.3.0 pass spelled the books in American English; everything written since had
@@ -2104,7 +2114,8 @@ host-side code, real hardware for the pipeline. The one platform difference wort
 knowing is that `SIGHUP` config reload is POSIX-only; `POST /reload` on the
 control plane does the same thing everywhere.
 
-[Unreleased]: https://github.com/kfox/c64cast/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kfox/c64cast/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kfox/c64cast/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/kfox/c64cast/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kfox/c64cast/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kfox/c64cast/compare/v0.1.0...v0.2.0
