@@ -265,6 +265,29 @@ class TestReleaseWorkflow(unittest.TestCase):
                 bv.main([flag, "--definitely-not-a-flag", "1.2.3"])
             self.assertNotIn(f"unrecognized arguments: {flag}", err.getvalue())
 
+    def test_the_wheel_smoke_test_accepts_what_version_actually_prints(self) -> None:
+        # `c64cast --version` prints "c64cast <ver> (<install path>)" -- the
+        # path was added after this check was written, and an exact-equality
+        # match against "c64cast <ver>" fails every release build. Only a tag
+        # runs the smoke test, so nothing else catches a drift here.
+        from fnmatch import fnmatch
+        from unittest import mock
+
+        from c64cast.app import cli
+
+        smoke = self.code.split("Smoke-test the wheel", 1)[1].split("Set up Typst", 1)[0]
+        arm = re.search(r"^\s*(\S.*?)\)\s*;;\s*$", smoke, re.M)
+        self.assertIsNotNone(arm, "the wheel smoke test no longer case-matches --version")
+        assert arm is not None
+        glob = arm.group(1).replace('"', "").replace("$expected", "9.9.9")
+
+        with mock.patch.object(cli, "__version__", "9.9.9"):
+            printed = cli._version_text()
+        self.assertTrue(
+            fnmatch(printed, glob),
+            f"the smoke test pattern {glob!r} rejects `--version` output {printed!r}",
+        )
+
     def _smoke_test_imports(self) -> list[tuple[str, str, object]]:
         """Every `from c64cast... import X` in the workflow, resolved."""
         pairs = re.findall(r"(?m)^\s*from (c64cast[\w.]*) import (\w+)$", self.code)

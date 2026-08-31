@@ -77,10 +77,16 @@ jobs:
 
           got="$(uv run --no-project --with "$wheel" c64cast --version)"
           echo "c64cast --version -> $got"
-          [ "$got" = "c64cast $expected" ] || {
-            echo "::error::wheel reports '$got', expected 'c64cast $expected'"
-            exit 1
-          }
+          # `--version` is "c64cast <ver> (<install path>)": the path answers
+          # "which environment is this running from", so match the prefix, not
+          # the whole line.
+          case "$got" in
+            "c64cast $expected ("*")") ;;
+            *)
+              echo "::error::wheel reports '$got', expected 'c64cast $expected (<install path>)'"
+              exit 1
+              ;;
+          esac
 
           uv run --no-project --with "$wheel" c64cast --list-examples > /dev/null
           uv run --no-project --with "$wheel" c64cast --print-example hello > /dev/null
