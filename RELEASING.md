@@ -119,8 +119,20 @@ a look the first time.
 
 ## If it goes wrong
 
-**Failed before the publish step.** Nothing was uploaded. Fix the tree, move the
-tag (`git push --delete origin v0.2.0`, re-tag, push), or re-run the job.
+**Failed before the publish step.** Nothing was uploaded. Re-run the job if the
+tree is fine; otherwise land the fix through a PR as usual, then move the tag
+onto the merge commit:
+
+```bash
+git switch main && git pull
+git push --delete origin v0.2.0
+git tag -d v0.2.0
+git tag -a v0.2.0 -m "c64cast v0.2.0"
+git push origin v0.2.0
+```
+
+The local `git tag -d` is the step a bare "re-tag" skips — without it `git tag -a`
+stops at `tag 'v0.2.0' already exists` and the tag stays on the old commit.
 
 **PyPI published but the GitHub release failed.** Re-run the workflow if the tag
 does not have to move — the upload skips files already on PyPI (`--check-url`).
