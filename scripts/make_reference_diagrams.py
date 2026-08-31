@@ -728,12 +728,18 @@ def _slab_segment(
     color: tuple[int, int, int],
     length: float = SLAB_LEN,
     depth: float = SLAB_DEPTH,
+    aim: float = 0.5,
 ) -> tuple[float, float]:
-    """Color the run of addresses u0..u1 through a slab. Returns its top center.
+    """Color the run of addresses u0..u1 through a slab. Returns a leader anchor.
 
     A region is a section of the bar rather than a block standing on it. Drawn
     the other way round -- an extruded block over a flat plate -- each region
     reads as an L hovering above the memory instead of being part of it.
+
+    `aim` slides the returned point along the region's front-to-back diagonal:
+    0.5 is the center, and two regions a kilobyte apart -- whose centers
+    project only a dozen pixels apart -- take opposite ends so their leaders
+    don't converge into a near-miss.
     """
     top = [
         _iso(u0, 0, SLAB_H, origin),
@@ -756,7 +762,10 @@ def _slab_segment(
         _face(d, cap, _shade(color, 0.86))
     _face(d, front, _shade(color, 0.74))
     _face(d, top, color)
-    return ((top[0][0] + top[2][0]) / 2, (top[0][1] + top[2][1]) / 2)
+    return (
+        top[0][0] + aim * (top[2][0] - top[0][0]),
+        top[0][1] + aim * (top[2][1] - top[0][1]),
+    )
 
 
 def _slab_outline(
@@ -788,38 +797,42 @@ _CODE = (0x77, 0x7C, 0x82)
 _SOUND = (0x3E, 0x46, 0x50)
 
 # bank -> (label, its base address, [(start, end, color, name, address, label y
-# relative to the plate's own origin)]). The label heights are set by hand:
-# screen RAM and the BASIC program are 1 KB apart in a 16 KB bank, so their
-# natural label positions are five pixels apart.
-_MEMORY: list[tuple[str, str, list[tuple[int, int, tuple[int, int, int], str, str, float]]]] = [
+# relative to the plate's own origin, leader aim along the region's diagonal)]).
+# The label heights are set by hand: a pair is spaced ~140px from the next so
+# the gap between two pairs plainly beats the gap within one. Where two regions
+# a kilobyte apart share a corner (bank 0's screen/BASIC, bank 3's two), the
+# aim sends one leader to the near end and the other to the far end so the
+# straight lines stay apart.
+_Region = tuple[int, int, tuple[int, int, int], str, str, float, float]
+_MEMORY: list[tuple[str, str, list[_Region]]] = [
     (
         "VIC bank 0",
         "$0000",
         [
-            (0x0400, 0x07E7, _PICTURE, "Screen RAM", "$0400–$07E7", -30),
-            (0x0801, 0x0A00, _CODE, "The BASIC program", "$0801", -140),
-            (0x2000, 0x3F3F, _PICTURE, "Bitmap, 8 KB", "$2000–$3F3F", -250),
+            (0x0400, 0x07E7, _PICTURE, "Screen RAM", "$0400–$07E7", -10, 0.15),
+            (0x0801, 0x0A00, _CODE, "The BASIC program", "$0801", -150, 0.85),
+            (0x2000, 0x3F3F, _PICTURE, "Bitmap, 8 KB", "$2000–$3F3F", -290, 0.5),
         ],
     ),
     (
         "VIC bank 1",
         "$4000",
-        [(0x4000, 0x5FFF, _SOUND, "The audio ring, 8 KB", "$4000–$5FFF", -120)],
+        [(0x4000, 0x5FFF, _SOUND, "The audio ring, 8 KB", "$4000–$5FFF", -125, 0.5)],
     ),
     (
         "VIC bank 2",
         "$8000",
         [
-            (0x8400, 0x87E7, _SPARE, "Screen RAM, spare bank", "$8400–$87E7", -30),
-            (0xA000, 0xBF3F, _SPARE, "Bitmap, spare bank", "$A000–$BF3F", -250),
+            (0x8400, 0x87E7, _SPARE, "Screen RAM, spare bank", "$8400–$87E7", -60, 0.5),
+            (0xA000, 0xBF3F, _SPARE, "Bitmap, spare bank", "$A000–$BF3F", -240, 0.5),
         ],
     ),
     (
         "VIC bank 3",
         "$C000",
         [
-            (0xC020, 0xC2FF, _SOUND, "The audio handlers", "$C020–$C2FF", -30),
-            (0xC300, 0xC70F, _CODE, "The SID player and friends", "$C300–$C70F", -140),
+            (0xC020, 0xC2FF, _SOUND, "The audio handlers", "$C020–$C2FF", -20, 0.15),
+            (0xC300, 0xC70F, _CODE, "The SID player and friends", "$C300–$C70F", -160, 0.85),
         ],
     ),
 ]
@@ -828,11 +841,8 @@ _MEMORY: list[tuple[str, str, list[tuple[int, int, tuple[int, int, int], str, st
 # so every region gets a floor. The caption says the map is schematic.
 MIN_REGION = 22.0
 
-# Labels sit in a column clear of the stack. A horizontal run at any plate's
-# own height passes under every plate above it, so a leader out to this column
-# never crosses one.
+# Labels sit in a column clear of the stack, to the right of every plate.
 LABEL_X = 980.0
-ELBOW_X = 900.0
 
 
 def fig_memory() -> Image.Image:
@@ -845,6 +855,14 @@ def fig_memory() -> Image.Image:
     name_f = font("body", 40)
     note_f = font("body", 36)
 
+    # Leaders are drawn last, over every slab: a region painted after the one a
+    # leader points at used to bury part of it, and the pale edge color the
+    # leaders were drawn in vanished over the wash and the spare-bank blues.
+    # Each is one straight segment from the label pair's vertical center to the
+    # middle of its region -- the label heights in _MEMORY are picked so none
+    # of them has to bend to miss a neighbor.
+    leaders: list[tuple[tuple[float, float], tuple[float, float]]] = []
+
     for i, (bank, bank_addr, regions) in enumerate(_MEMORY):
         origin = (base[0], base[1] - i * SLAB_RISE)
         _slab_segment(d, origin, 0, SLAB_LEN, ACCENT_WASH)
@@ -853,20 +871,20 @@ def fig_memory() -> Image.Image:
         text(d, (edge[0] - 24, edge[1] - 22), bank, bank_f, INK, anchor="rm")
         text(d, (edge[0] - 24, edge[1] + 18), bank_addr, addr_f, MUTED, anchor="rm")
 
-        for start, end, color, name, addr, label_y in regions:
+        for start, end, color, name, addr, label_y, aim in regions:
             u0 = _addr_u(start)
             u1 = max(u0 + MIN_REGION, _addr_u(end))
-            center = _slab_segment(d, origin, u0, u1, color)
+            center = _slab_segment(d, origin, u0, u1, color, aim=aim)
             ly = origin[1] + label_y
-            line(
-                d,
-                [center, (ELBOW_X, center[1]), (ELBOW_X, ly), (LABEL_X - 16, ly)],
-                ACCENT_PALE,
-                1.5,
-            )
-            text(d, (LABEL_X, ly - 34), name, name_f, INK, anchor="ls")
-            text(d, (LABEL_X, ly + 6), addr, addr_f, ACCENT, anchor="la")
+            # The name rides just above the range so the two read as one pair;
+            # the wider gap in _MEMORY's label heights separates pair from pair.
+            text(d, (LABEL_X, ly - 6), name, name_f, INK, anchor="ls")
+            text(d, (LABEL_X, ly + 8), addr, addr_f, ACCENT, anchor="la")
+            leaders.append((center, (LABEL_X - 16, ly)))
         _slab_outline(d, origin)
+
+    for center, anchor in leaders:
+        line(d, [center, anchor], ACCENT, 1.8)
 
     # Color RAM is drawn as a region with no plate under it, because that is
     # the fact worth drawing: there is one of it, it belongs to no bank, and
