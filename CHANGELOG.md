@@ -25,41 +25,24 @@ Nothing yet.
 
 ### Upgrade notes
 
-- **New: `[color].flicker_tolerance` blends two screen pages at the VIC field
-  rate (25 Hz PAL / 30 Hz NTSC) to fake colors the C64 can't draw — and that
-  rate sits inside the ITU-R BT.1702 photosensitive-seizure band.** It's
-  opt-in and off by default. `[color].flicker_max_luma_delta` (default
-  0.075) bounds how far apart in brightness a blended pair may be — the
-  quantity that governs the hazard — but it warns rather than refuses, so
-  read [caveats.md](docs/caveats.md) before turning this on.
+- **`[color].flicker_tolerance` is new, and its flicker sits inside the ITU-R
+  BT.1702 photosensitive-seizure band.** It is opt-in and off by default.
+  `[color].flicker_max_luma_delta` (default 0.075) bounds the brightness gap
+  that governs the hazard, but it warns rather than refuses — read
+  [caveats.md](docs/caveats.md) before turning this on.
 
-- **A `[control]` plane bound to a LAN address now needs a token.** `[control].host`
-  set to anything other than `127.0.0.1`, `localhost` or `::1` with
-  `[control].token` empty used to start anyway and log a warning — which arrives
-  with a show already on screen, where nobody reads it. It is now a
-  configuration error, refused before the hardware is opened and reported by
-  `c64cast --doctor`, because anything that can reach that port can drive the
-  run. Loopback is unchanged and needs no token: the audience there is whoever
-  already has a shell on the machine.
+- **A `[control]` plane bound to a non-loopback address now needs a token.**
+  With `[control].host` set to anything other than `127.0.0.1`, `localhost` or
+  `::1` and `[control].token` empty, the run used to start with a warning; it is
+  now a configuration error, refused before the hardware is opened and reported
+  by `c64cast --doctor`. Set `C64CAST_CONTROL_TOKEN` (preferred) or
+  `[control].token`, or open the port deliberately with `[control]
+  allow_unauthenticated = true`. Loopback is unchanged. `--serve` is unaffected
+  — that surface has never had an open mode.
 
-  Set `C64CAST_CONTROL_TOKEN` in the environment (preferred — it keeps the
-  secret out of a file you might commit), or `[control].token`. If the network
-  is one you trust and you want the port open anyway, say so explicitly:
-
-  ```toml
-  [control]
-  allow_unauthenticated = true
-  ```
-
-  The `--serve` web console is unaffected: that surface has never had an open
-  mode, and generates a token when you don't set one.
-
-- **The browser console needs the new `web` extra**, which did not exist in
-  0.3.0. `uv tool upgrade c64cast` keeps the extras you installed *with*, and
-  re-reads what each of them now contains — so a `c64cast[all]` install picks
-  the console up on a plain upgrade with nothing to do. A narrower install does
-  not: extras don't accumulate, so add `web` to the set and name every one you
-  want in a single command.
+- **The browser console needs the new `web` extra.** A `c64cast[all]` install
+  picks it up on a plain `uv tool upgrade c64cast`; a narrower install does not,
+  because extras do not accumulate — name every extra you want in one command:
 
   ```bash
   uv tool install --force 'c64cast[video,midi,web]'
@@ -68,1273 +51,562 @@ Nothing yet.
   Without it, `--serve` reports the missing extra instead of starting. `c64cast
   --doctor` lists what the running install can import.
 
-- **If your config's first line is a `#:schema` URL, replace it.** Earlier
-  versions of the User's Guide told you to write one with a version number in
-  it and edit that number when you upgraded — a maintenance task disguised as a
-  one-time setup step. Your editor is otherwise still checking the file against
-  whichever release you first installed: harmless at run time (nothing reads
-  that line) and misleading while you edit, since it underlines settings that
-  work and offers settings that don't. `c64cast --doctor` now reports it and
-  prints the replacement, which you can also get on its own:
-
-  ```bash
-  c64cast --print-schema-path
-  ```
-
-  Put its answer on line 1 with `#:schema ` in front. That one names the schema
-  inside your install, so every future upgrade updates it too and this is the
-  last time you touch the line.
+- **If your config's first line is a version-pinned `#:schema` URL, replace
+  it.** `c64cast --doctor` now reports a directive that has stopped describing
+  this install and prints the replacement; `c64cast --print-schema-path` gives
+  it on its own. Put its answer on line 1 with `#:schema ` in front — it names
+  the schema inside your install, so every future upgrade updates it too and
+  this is the last time you touch the line.
 
 ### Added
 
+- **`c64cast --serve` runs a web console host** (with the new `web` extra). The
+  program becomes a server that owns the Commodore and starts, stops and
+  switches shows on request, re-reading the config from disk on every start.
+  New `[web]` section: `enabled`, `host`, `port`, `autostart`, `settle_s`.
+  Lifecycle routes are `GET /api/session` and
+  `POST /api/session/{start,stop,switch,reload}`; `GET /api/introspect` returns
+  the whole config model as JSON; `WS /api/ws` carries live state and log lines
+  as they happen. A start answers `202` and reports over the socket; a start
+  while something runs is a `409`; a config that will not run is a `422` refused
+  before anything touches the machine. Everything `[control]` already served
+  rides the same port and answers `503` between shows.
+
+- **The `--serve` host is never unauthenticated.** With no token configured it
+  generates one, stores it `0600` under the data directory, and prints a
+  ready-to-open login URL. `[web].token` / `token_file` / `$C64CAST_WEB_TOKEN`
+  set your own; `[web].viewer_token` grants a read-only role. A browser arriving
+  without the cookie gets a token-paste form; scripted callers keep their
+  plain-text `401`.
+
+- **The browser console ships prebuilt inside the package** — `uv sync` and
+  `pip install` both give a working console with no Node. Node is needed only to
+  change it: the sources are Svelte 5 + Vite + TypeScript + Tailwind under
+  `web/`, `make web` rebuilds them, and CI fails if the committed bundle and its
+  sources disagree. A checkout that has never run `make web` falls back to the
+  zero-dependency `/perf` page with a line in the log saying so.
+
+- **The console browses a config library, not a raw file list.** The Session tab
+  shows Favorites and Recently launched; the full searchable, sortable list —
+  with a show/hide toggle for the packaged examples — lives on the Editor tab.
+  Favorites and recents are server-side state
+  (`~/.local/share/c64cast/console.json`), shared across devices, and a launch
+  from any surface counts as a recent. Files show a short name (the config root
+  and `.toml` stripped, subdirectories kept); double-clicking one starts it; a
+  persistent Start/Switch button tracks the selection on every tab; starting a
+  show switches to the Live tab once it comes up. There is no more "host
+  default" config — the supervisor reports `config_ref` before the first start.
+
+- **The console reads and edits configs.** `[web].config_roots` bounds which
+  directories it may read and write `.toml` files in — nothing outside a root
+  (including through a symlink planted inside one), nothing that is not `.toml`.
+  The *Settings* view gives every scene field and setting a typed control with
+  the same one-line explanation `--describe` prints, a `live` mark on the ones a
+  reload picks up, and the value the loader actually resolved; a finder searches
+  all 167 settings past the "only what this file changes" filter. Edited rows
+  are marked and counted; **Save** writes them in one request, **Undo** and
+  **Discard** drop them, and **Clear** stops the file setting a field and shows
+  what applies instead. The browser never writes TOML — `PATCH
+  /api/configs/{ref}` takes named field edits and the host composes the file
+  through the loader's own dataclasses, so two consoles editing different
+  sections do not clobber each other. A save that would not load is refused with
+  the loader's own reason, the file untouched, the prior text kept as a hidden
+  `.bak` sibling. The *Source* editor is still how you write a config you have
+  annotated by hand, and the only way to edit an ensemble master.
+
+- **Structural edits from the console.** Each scene has **Duplicate** and
+  **Remove**; **Add scene** has a type picker; **↑**/**↓** reorder it
+  (`PATCH /api/configs/{ref}/scenes/{index}`). New / Duplicate / Delete on the
+  Editor work on a packaged example too — the intended way to fork one into an
+  editable starting point. These write immediately, so staged edits have to be
+  saved or discarded first; removing the last scene is refused; a new scene with
+  no media saves with a report of what is still missing rather than being
+  refused. A config carrying a DMA password is refused outright.
+
+- **A media picker and browser upload.** `GET /api/media?kind=&q=` browses
+  `[web].media_read_write` — a *kind → directory* table, replacing the
+  unreleased `media_roots` — and `media_read_only`, defaulting to the four
+  directories the loader already defaults to. A `file =` field is a combobox
+  (free text, a glob, a comma-separated list and a directory all stay typeable)
+  and is its own search box, debouncing into a live query with a "truncated"
+  note past the cap. **Upload…** or a drag-drop streams the file straight to
+  disk (`PUT /api/media/{name}`, never buffered whole in memory), PATCHes the
+  field, and never overwrites — a taken name becomes `clip-2.mp4`. A real
+  progress bar with a Cancel button; a `viewer` token is refused; an unknown
+  `media_read_write` kind fails at startup.
+
+- **A Live performance screen** — the beat grid, the clip grid, the effect rack
+  and the look pads on one page. The tempo with a pulse on the current beat and
+  **Tap**; a pad per `[[performance.clips]]` entry lit for what is playing and
+  what is queued, with the count-in in beats; a bypass button and a slider for
+  every knob the current scene's effects declare; eight pads that recall or
+  store a look. It drives the same engine a MIDI controller drives, off the same
+  live feed the rest of the console reads. Pads are pressed and released, so a
+  `gate` clip holds while your finger is down. An ensemble puts each machine on
+  its own tab and address (`/live/left`). A read-only token watches all of it
+  and drives none of it.
+
+- **A Tune panel on the Live screen** — the color pipeline, the generator and
+  the scope from a phone: dither strength and method, palette mode, color
+  matching, cell strategy, motion smoothing, auto-fit, every generator's speed
+  and scale, the scope's gain. It is generated from what the running scene
+  declares, so no control on it does nothing, and a knob turned in the browser
+  is recorded exactly like a MIDI CC.
+
+- **Keep what you tuned, from the browser.** The Tune panel shows every
+  color-pipeline change since the show started — where it began and where it is
+  now — and writes it into the running config on one tap. The write is a patch
+  of the file *on disk*, not a dump of the loaded configuration, and is refused
+  if it would leave the config unable to load. A change no field carries is
+  listed and marked *runtime only* rather than dropped; a quick-playback run
+  gets the same pasteable block the command line prints. `palette_mode` and
+  `cell_pick` save back now too — `palette_mode` into whichever `[[scenes]]`
+  block was on screen when you turned it, kept separately per scene, and *runtime
+  only* for a scene the config never named.
+
+- **Per-scene `[color]` overrides.** Any `[[scenes]]` block can override part of
+  the global `[color]` section for itself alone in a `[scenes.color]`
+  sub-table; a field left out follows the show-wide default. This is what lets
+  one playlist mix a grayscale-forced `mhires` video with a full-color one. A
+  live-tuned color knob saves into the scene's own block when that scene
+  overrides the field, and into `[color]` otherwise.
+
+- **Transport in the console.** Pause / resume, skip and jump-to-scene (a jump
+  is a cut — no interstitial in front of it). The Live tab's **Freeze** freezes
+  a video in place with the audio muted, distinct from the machine-level pause
+  the C= key does, and appears only for a scene that has a transport; alongside
+  it, a scrub bar, press-and-hold rewind / fast-forward, and A/B loop set/clear
+  plus recall pads for a video's saved loop points. The old pause/skip moved to
+  the legacy `/perf` page.
+
+- **The `/perf` page reaches everything the host will take** — Tune, the tune
+  record with a **Keep**, Scenes with a jump, and pause / skip beside the tap
+  tempo, alongside the clips, effect rack, tempo and looks it already had. It
+  stays the zero-dependency gig-day fallback.
+
+- **The Live screen can be driven from the keyboard** — Space pauses, `t` taps
+  the tempo, `n` skips, `f` freezes, `l` toggles the A/B loop, `[`/`]` rewind
+  and fast-forward while held, `1`–`8` launch a clip slot, `?` shows or hides
+  the scene list. Every shortcut backs off the moment a text field, select or
+  button has the focus, and none reaches past a read-only console.
+
+- **Hand somebody a read-only link.** The Session screen mints a viewer link on
+  the first ask — not at startup — and then keeps it, so it still opens after a
+  restart. It follows the show and can do nothing else: no start, no stop, no
+  tuning, no config writes. Setting `[web].viewer_token` yourself still works
+  and is used as-is.
+
+- **The C64's screen, in the browser.** The Live screen shows the picture, and
+  it comes from the machine rather than from c64cast: the Ultimate 64's FPGA
+  taps the VIC's own output and sends it as UDP, taking no C64 cycles — so it is
+  what the VIC actually painted, right even for a game under the launcher or a
+  machine somebody is typing on. Press **Watch** to start it and **Stop** to end
+  it; leaving the screen ends it too. `[web].screen_fps` sets how often the host
+  encodes a frame, and `0` turns the picture off. Ultimate 64 only, and the
+  console says so on a U2+ or TeensyROM+ rather than showing a blank panel.
+  `/perf` gets the picture too, as one scriptless `<img>`.
+
+- **A color field is the sixteen colors.** `border` and `background` accept a
+  C64 color name or an index, with a selector saying which you are writing, and
+  a color field draws the palette as swatches from the host's own emitted
+  colors. `force_palette_colors` gains the same treatment — a count, or a
+  whitelist picked from the swatches.
+
+- **The log follows you** — a collapsed bar on every screen showing the latest
+  line, opening in place, so a refused save or a scene that failed mid-show is
+  not a tab away from wherever you were.
+
+- **The console says what a reload will apply.** A reload re-reads the file and
+  rebuilds the scenes, but `[audio]`, `[video]` and `[ultimate64]` are read once
+  when the session starts. The save now says which of your changes a reload
+  covers and which need a restart, the staged-edit bar warns before you save
+  rather than after, and the running-show banner offers a **Restart on this
+  config** when a reload would not be enough. The Configs screen flags the
+  running show and offers **Reload scenes** there.
+
 - **`[web].setup_wizard` — a one-time, unauthenticated first-run form for a
   pre-provisioned appliance.** Off by default, and meant only for an OS image
-  that ships c64cast pre-installed with no connection target and no token
-  anyone has seen yet: while pending, the console shell and `/api/setup`
-  (connection target + a choice to keep the generated token or set one) are
-  reachable with no credential at all, and every other route answers `503`
-  rather than reaching any hardware, config, or media route. The form itself
-  is a screen of the ordinary console — the browser is redirected to it — and
-  it is never told the host's token; completing it writes to machine settings
-  the same way `--save-settings` does, restarts the host in place, and signs
-  the browser in to the ordinary token-gated console that comes back. A token
-  fixed by `[web].token`, `[web].token_file` or `$C64CAST_WEB_TOKEN` is shown
-  as unchangeable rather than accepted and then ignored. `c64cast
+  that ships c64cast with no connection target and no token anyone has seen:
+  while pending, the console shell and `/api/setup` are reachable with no
+  credential and every other route answers `503`. Completing it writes machine
+  settings the same way `--save-settings` does, restarts the host in place, and
+  signs the browser in to the ordinary token-gated console. `c64cast
   --reset-setup` clears the marker so the next `--serve` asks again. See
-  [SECURITY.md](SECURITY.md) for the exposure this deliberately opens and
-  when it closes, and
-  [docs/architecture/control.md](docs/architecture/control.md#setup_gatepy--setup_apipy--the-appliance-first-run-setup-window)
-  for how narrowly it's bounded. A normal console you configure yourself is
-  entirely unaffected — this is opt-in, not a change to `--serve`'s default
-  behavior.
+  [SECURITY.md](SECURITY.md) for the exposure this opens and when it closes.
 
-- **The web console advertises itself over mDNS (`_c64cast._tcp.local.`)
-  when `--serve` binds a non-loopback `host`.** The TXT record carries the
-  c64cast version and whether the appliance setup window above is still
-  open, so a discovery client can tell an unconfigured box from a configured
-  one without a browser first knowing its IP. Requires the `web` extra's new
-  `zeroconf` dependency; missing it just means the console isn't
-  discoverable, same as a registration failure — the console itself is
-  unaffected either way. Silent on `--serve`'s own loopback default, so a
-  laptop console advertises nothing unless you deliberately open it to the
-  LAN. See
-  [docs/architecture/control.md](docs/architecture/control.md#console_mdnspy--mdns-advertisement-of-the-web-console).
+- **The web console advertises itself over mDNS** (`_c64cast._tcp.local.`) when
+  `--serve` binds a non-loopback `host`, so a discovery client can tell an
+  unconfigured box from a configured one without first knowing its IP. The TXT
+  record carries the c64cast version and whether the setup window is still open.
+  Needs the `web` extra's new `zeroconf` dependency; silent on the loopback
+  default.
 
-- **`c64cast --check-for-updates --write-state` records the answer**, and two
-  new read-only surfaces report it without querying PyPI themselves: the web
-  console's dismissible update banner (`GET /api/update`), and, on the
-  appliance image, an `/etc/update-motd.d/` line printed at SSH login via the
-  new config-free `c64cast --motd-line`. A check that can't reach PyPI records
-  only that it tried, so one lost DNS lookup never retracts a pending-upgrade
-  notice; after 30 days with no answer at all, both surfaces say *that*
-  instead of quoting an answer that old — the console in a banner dismissible
-  until this install is next upgraded, the MOTD in a line at every login. As always, nothing is ever
-  installed automatically — see `--upgrade` for the command every one of these
-  surfaces points at. See
-  [docs/architecture/config.md](docs/architecture/config.md#update_statepy).
+- **A session supervisor (`c64cast/app/serve.py`).** `SessionManager` moves one
+  session through `idle → starting → running → stopping → idle`, with a settle
+  window between teardown and the next start (the U64's DMA service refuses new
+  connections for a few seconds after one closes, and a camera refuses to reopen
+  straight after release), a poller that notices a non-looping show ending by
+  itself, a bounded log tail, and a run marker that resets the machine on the
+  next start if the last run died mid-show.
 
-- **A video scene's "UP NEXT" name prefers the file's own title over its
-  filename.** `alien_ad_1983_remaster_v3.mp4` used to be the name a directory-
-  pool video scene announced on the interstitial card, even when the file
-  itself carries a real `title` container tag. That tag is now checked first
-  — a cheap header-only probe with no frame decode, so it costs nothing on
-  the files that don't have one — for both a single `file` and a directory/
-  glob pool's per-pick name. URLs are unaffected: their real title already
-  comes from yt-dlp.
-
-- **A recorded video's `copyright` line is now real when the source offers
-  one.** A URL resolved through yt-dlp carries its site-declared `license`
-  and `uploader` into the `SCENE_CONFIG_JSON` snapshot (most sites, YouTube
-  included, leave `license` blank — the uploader's name is reported alongside
-  it as an attribution lead either way), and a local file's own
-  `copyright`/`rights` container tag is read when one is present. Falls back
-  to `unknown` exactly as before when the source has nothing to offer.
-
-- **Per-scene `[color]` overrides.** Any `[[scenes]]` block can now override
-  part of the global `[color]` section for itself alone, in a
-  `[scenes.color]` sub-table — every `[color]` field is overridable, and a
-  field left out still follows the show-wide default. This is what lets one
-  playlist mix a grayscale-forced `mhires` video with a faithful full-color
-  one, or any other combination, without a `[color]` change in between. A
-  live-tuned color knob (MIDI/web console) now saves into the scene's own
-  block when that scene overrides the field, and into `[color]` otherwise, so
-  the save-back always lands where the running show actually reads it.
+- **The `[control]` plane can be locked with a shared token.**
+  `[control].token` (or `$C64CAST_CONTROL_TOKEN`, which wins) is then required
+  on every route including `/perf` and its WebSocket — `Authorization: Bearer`,
+  `X-C64Cast-Token` or `?token=` for scripts, `/api/login?token=…` then an
+  `HttpOnly; SameSite=Strict` cookie for a browser. `[control].viewer_token`
+  grants reads only. The default is empty — today's behavior — and binding a
+  non-loopback `host` without a token now warns the run is drivable by anyone
+  who can reach it.
 
 - **`--upgrade` and `--check-for-updates` — one command, any install method.**
-  `--version` printing its install directory (0.3.0) still left recognizing
-  `uv/tools/` or `pipx/venvs/` in that path, and running the matching command,
-  as something the reader had to do. `--upgrade` does both itself: it detects
-  whether this install is `uv tool`, pipx, plain pip, or a development
-  checkout, and runs that installer's own upgrade command — keeping whichever
-  extras (`[all]`, `[video,midi,web]`, ...) are already installed, since `uv
-  tool upgrade` and `pipx upgrade` both replay their own recorded install spec.
-  It prints the exact command first and asks before running it (`--yes` skips
-  the prompt for scripts/CI); a development checkout additionally refuses on
+  `--upgrade` detects whether this install is `uv tool`, pipx, plain pip or a
+  development checkout and runs that installer's own upgrade command, keeping the
+  extras already installed. It prints the exact command first and asks before
+  running it (`--yes` skips the prompt); a development checkout refuses on
   uncommitted changes rather than `git pull` over them. `--check-for-updates`
-  asks the same question — a newer release exists, or it doesn't — without
-  touching anything, and `--doctor` folds the same check into its ENVIRONMENT
-  section (skipped under `--skip-probe`, same as the U64 reachability probe).
+  asks the same question without touching anything, and `--doctor` folds the
+  check into its ENVIRONMENT section (skipped under `--skip-probe`).
+
+- **`c64cast --check-for-updates --write-state` records the answer**, and two
+  read-only surfaces report it without querying PyPI themselves: the web
+  console's dismissible update banner (`GET /api/update`), and, on the appliance
+  image, a login line via the new config-free `c64cast --motd-line`. After 30
+  days with no answer at all, both say *that* instead of quoting one that old.
+  Nothing is ever installed automatically.
+
+- **`[ultimate64].system` defaults to `"auto"`** and is read from the Ultimate's
+  live System Mode at startup. It feeds the CPU clock, the frame rate, the DAC
+  NMI latches and the SID PLAY rate; a hand-set value that disagrees with the
+  machine now logs a warning and is an error-level `--doctor` finding. Falls
+  back to NTSC under `--skip-probe` or on a backend without the setting.
+
+- **`[ultimate64].sid_play_rate`** (default `"auto"`) sets the CIA #1 Timer A
+  latch to a vsync tune's own frame rate — see the PAL-tempo fix below. `"off"`
+  restores the previous behavior, and a number in Hz pins every vsync tune to
+  one rate. CIA-timed (multispeed) tunes self-time and are never overridden.
+
+- **`[ultimate64].sid_video_mode`** (default `"off"`) switches the U64's System
+  Mode so its PAL/NTSC timing matches `[ultimate64].system`, correcting SID
+  *pitch* — about two thirds of a semitone. Opt-in because it retimes the HDMI
+  output (576p50 rather than 480p60); applied live and volatile, followed by a
+  C64 reset, and restored at teardown. Ultimate 64 only.
+
+- **`[ultimate64].hdmi_scan_resolution`** (default `"auto"`) drives the U64's
+  HDMI upscaler. `"auto"` raises SD to HD only when `sid_video_mode` retimed the
+  machine; `"keep"` never touches it; a scan-mode label pins it for the run.
+  Newer U64 boards only.
+
+- **`[hardware].host_sid_model`** (`auto` | `6581` | `8580` | `unknown`) —
+  declare the SID chip model in the C64 being driven, for links that cannot read
+  the SID hardware state. `auto` assumes 6581 on NTSC / 8580 on PAL and warns
+  once per run; `unknown` opts out; ignored where the live SID state is readable
+  (Ultimate 64).
+
+- **`[hardware].host_sid_chips`** describes a machine with an internal dual-SID
+  mod (`{ d400 = "6581", d420 = "8580" }`), so each declared chip gets its own
+  verdict against a tune on links that cannot read the SID hardware. Supersedes
+  `host_sid_model`.
+
+- **`[hardware].host_sid_tune_match`** (default `"off"`) picks tunes your C64's
+  own SID chips can play when a `waveform` scene points at a directory or glob:
+  `"prefer"` tries the fits first, `"require"` drops the misfits, and both fall
+  back to the whole pool with a warning when nothing fits. Needs `host_sid_chips`
+  or an explicit `host_sid_model`.
+
+- **The Ultimate II+'s emulated stereo SIDs are routed, panned and leveled like
+  the U64 mixer.** A spare *enabled* side is retargeted to any uncovered chip
+  address, `sid_panning` / `sid_volume` are applied to `Pan/Vol EmuSid1/2`, and
+  your config comes back at teardown (a side that was disabled is never
+  touched). `sid_model` now matches chip models here too, rather than only
+  reporting them, moving `Filter Curve` and `Combined Waveforms` together.
+
+- **One log line saying what you will actually hear.** After routing, model
+  matching, panning and volume have settled, c64cast reads the hardware back and
+  reports the source, model, level and pan answering each of the tune's chip
+  addresses, plus anything else still audible. A chip that ends up unmapped,
+  muted or on a model the tune did not ask for makes the line a warning.
+
+- **The connect-time log identifies the device** — model, serial and firmware
+  (`Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)`, or a TeensyROM+'s USB
+  serial number) — because an IP or serial path names an endpoint, not a
+  machine, and `192.168.2.64` is the factory default any number of Ultimates
+  answer to.
+
+- **New audio warnings**, each once per run: a multi-SID tune on a link that
+  cannot route chips (naming the address and both readings of it); a tune
+  loading into the RAM under `$D400-$D7FF` on an Ultimate II+; an undeclared
+  host SID model; and, when the two audio outputs disagree, which one to listen
+  to. Extra SID chips are now also silenced at scene teardown, not just `$D400`.
+
+- **`--doctor` reports unknown config keys as findings** — a warn-level row
+  under a new `CONFIG` heading, named by file, table and key, and counted in the
+  summary, instead of a stray warning printed above the report. **"Did you
+  mean"** now also searches every other section, so a key that is spelled right
+  but lives elsewhere (`palette_mode` under `[color]`) is told where it belongs.
+
+- **A video scene's "UP NEXT" name prefers the file's own `title` tag** over its
+  filename — a cheap header-only probe, so it costs nothing on files without
+  one. URLs already had a real title from yt-dlp.
+
+- **A recorded video's `copyright` line is real when the source offers one** —
+  yt-dlp's site-declared `license` and `uploader`, or a local file's
+  `copyright` / `rights` container tag. Falls back to `unknown` exactly as
+  before when the source has nothing.
+
+- **Video scenes draw a buffering bar on the C64 while they load** — a
+  diagonal-striped bar along screen row 22 through the blocking setup work, in
+  every display mode; the first video frame wipes it.
+  `[video].setup_progress_bar = false` turns it off.
+
+- **`--calibrate-dac` says so on the C64 itself** — a centered title and a
+  computed duration line, painted before the first capture; the screen is never
+  touched again, so mid-run DMA cannot drop NMI samples and skew the
+  measurement.
+
+- **`scripts/diags/video_render_probe.py` now times the host as well as the
+  link** — decode / render / total milliseconds per frame, which side binds the
+  source frame rate, a `--threads N` pin so two machines compare by single-core
+  speed, and `decode_ms` / `render_ms` in the per-frame CSV. Compose cost tracks
+  the *source resolution*, not the display mode, so pre-scaling the media is
+  usually the fix.
 
 - **`[color].flicker_tolerance` — colors the C64 cannot draw, by alternating two
   of the ones it can.** The bitmap modes hold two screen pages over one shared
   bitmap and flip between them every video field, so the eye fuses each cell's
-  pair into an
-  intermediate shade — the trick Dragon Breed and Mayhem in Monsterland used. The
-  alternation is driven by a C64-side raster IRQ and free-runs at the VIC field
-  rate no matter how fast the host is pushing, so it needs no unusual link speed,
-  no REU and no sampler; the host just uploads the pair, for one extra
-  1000-byte page per frame. What it actually fixes is **gradient banding**, not
-  the palette in general — spatial dither already synthesizes intermediate colors
-  wherever there is texture to hide them in, so a chromatic gradient improves
-  27-34% — how much depends on which pairs the machine's palette makes
-  eligible — while a photograph improves ~1%.
-
-  **In mhires it is worth much more, and on ordinary content.** Four colors
-  across a 4-pixel-wide cell leave spatial dither far less room than hires' 8,
-  so a photograph improves 4-32% rather than ~1%, and a chromatic gradient
-  4-31%, depending on palette and setting. Two of a cell's four colors can
-  blend: the pair the screen byte carries. Its third lives in color RAM at
-  `$D800`, which is not VIC-banked and which both fields read from the one copy,
-  and its background is a single register the swap writes once per frame — so
-  both of those stay real hardware colors. Blending the background was measured
-  and dropped rather than skipped: the frame's dominant color came out a real
-  one on every fixture, so alternating `$D021` too would have bought a
-  bit-identical picture. Needs `palette_mode = "percell"`; the global-4 modes
-  choose one color set for the whole frame, so no cell has a decision for a pair
-  to win, and arming says so.
-
-  Widening the palette also forces the per-cell pick onto `error-min` (see
-  `cell_strategy` below), which scores each frame's own reconstruction error
-  rather than a temporally-smoothed histogram — and a pair's fused color sits
-  deliberately close to a solid or another pair, so on video that pick
-  routinely near-ties frame to frame. Fixed before this shipped: the pick now
-  keeps the previous frame's trio unless a challenger's error is at least 25%
-  lower, so a near-tie stops flip-flopping while a genuine color change still
-  wins on a single frame. Unscaled by `motion_smoothing` — unlike the mode's
-  other temporal smoothing, a genuinely-better trio's error improvement clears
-  the margin on a single frame regardless, so there's no responsiveness cost
-  to buy back by scaling it down.
-
-  **Which pairs fuse was measured, not derived.** Nothing computed from the two
-  colors predicts it: brightness distance correlates with scored verdicts at
-  r=+0.26, chroma distance at +0.04, and a red-orange "warmth" axis fitted to an
-  earlier session reached +0.32 before a blind re-score showed it excluding five
-  of the eight steadiest pairs. So every pair the safety cap admits was scored
-  by eye, blind, with shuffled positions and hidden solid controls, and
-  `flicker_tolerance` is a cut across that table: `"off"` (default), `"clean"`
-  (only pairs that fused — 24 colors on an Ultimate 64), `"subtle"` (30),
-  `"visible"` (39, where the flicker is the point rather than a side effect).
-  Pairs scored worse than `"visible"` are kept as a record but offered by no
-  setting — measured, they reconstruct no better than `"visible"` does, so a
-  setting for them would trade flicker for nothing. Pairs another `host_palette` brings under the
-  cap that the sitting never judged are excluded rather than guessed at, and
-  `scripts/diags/flicker_score_grid.py` is how the table grows — via
-  `[color].flicker_score_pairs`, a diagnostic key that replaces the blend set
-  with an explicit list, ignoring both the tiers and the luma cap. The tool that
-  produces the table cannot be restricted by it, or a wrong tier would be
-  permanent: a pair scored as flickering is in no blend table, so it could never
-  be rendered to be re-judged. It cannot switch blending on by itself.
-
-  **Off by default, deliberately** — see Upgrade notes above for why.
-  `[color].flicker_max_luma_delta` (default 0.075) limits
-  how far apart in brightness a pair may be, which is the quantity that governs
-  the hazard. It **warns rather than refuses** — above 0.10, and again above
-  0.12 where modulation depth approaches the 20%-of-peak-white flash criterion —
-  because a pair someone has looked at and accepted outranks a computed
-  threshold; an earlier clamp at 0.12 withheld five of the eight cleanly-fusing
-  pairs on the VIC-II rendering. Nothing unscored gets in however wide it is
-  set. It is a safety control only, not a quality knob — see above for
-  what decides whether a pair fuses — though it does bound what `flicker_tolerance`
-  can reach: at the 0.075 default `"clean"` gets 5 of its 8 pairs on an
-  Ultimate 64 and 3 of 8 on the VIC-II table. Which pairs
-  qualify follows `[hardware].host_palette`, because what fuses is the light a
-  particular machine emits. It also does not
-  survive a 30 fps capture: a card records the flicker, not the fusion. c64cast's
-  own preview and `[recording]` do show the fused result correctly, because they
-  reconstruct from the write stream instead of filming the screen.
-
-- **The C64's screen, in the browser.** The console could author a show, start
-  it, tune it and save it without ever showing you what any of that did —
-  checking meant looking at the television the Commodore is plugged into. The
-  Live screen now shows the picture, and it comes from the machine rather than
-  from c64cast: the Ultimate 64's FPGA taps the VIC's own output and sends it
-  as UDP, taking no C64 cycles and disturbing nothing a show is doing. So it is
-  what the VIC actually painted, not what the render pipeline believes it
-  wrote — and it is right for scenes c64cast does not draw at all, like a game
-  under the launcher or a machine somebody is typing on.
-
-  It runs only while you are watching. Press **Watch** to start it and **Stop**
-  to end it; leaving the screen ends it too. That matters because the stream is
-  a couple of megabytes a second, and the machine is also told to stop by
-  itself if this host goes away without saying so. `[web].screen_fps` sets how
-  often the host encodes a frame — not how fast the machine sends — and `0`
-  turns the picture off entirely.
-
-  Ultimate 64 only, and the console says so rather than showing a blank panel:
-  an Ultimate II+ is a cartridge in someone else's C64 with no VIC of its own,
-  and a TeensyROM+ has no video path at all. The zero-dependency `/perf` page
-  gets the picture too — it is one `<img>`, with no script and no decoder.
-
-- **Add a scene from the console.** Adding or removing a scene meant opening the
-  *Source* editor, which made the most common change there is to a show file —
-  "another clip like that one" — the one thing the generated form could not do.
-  Each scene now has **Duplicate** and **Remove**, and there is an **Add scene**
-  with a type picker under the list. A duplicate is a verbatim copy, name
-  included, so a clip you have already tuned is one tap from a second. Removing
-  the last scene is refused: a show needs one to play. These write immediately,
-  so staged edits have to be saved or discarded first — inserting a scene
-  renumbers the ones after it.
-
-  A new scene has not named its media yet, which is the one thing a show needs
-  before it will start. That saves, with the report saying what is still
-  missing, rather than being refused — the first step of building a show cannot
-  require the show to already run. Anything else that would stop it running is
-  still refused with the file untouched, and a hand-written save in the *Source*
-  editor is held to the old standard: it is a finished statement about the show.
-
-- **Hand somebody a read-only link.** The console has had a viewer role since it
-  had a token, and no way to give one out: sharing the screen meant sharing the
-  credential that can stop the show. The Session screen now asks the host for a
-  read-only link and shows it ready to copy. The token is minted on the first
-  ask rather than at startup — a credential nobody asked for is one more thing
-  to leak — and then kept, so the link still opens after a restart. It follows
-  the show and can do nothing else: no start, no stop, no tuning, no config
-  writes. Setting `[web].viewer_token` yourself still works and is used as-is.
-
-- **A color field is the sixteen colors.** `border` and `background` accept a
-  C64 color name *or* an index, and the form only ever offered the number —
-  directly under help text saying you could write "light blue". A field that
-  takes two kinds of value now offers both, with a selector saying which you are
-  writing, and a color field draws the palette as swatches. The colors come
-  from the host, so one that has matched the machine's own emitted palette shows
-  the colors it really produces. `force_palette_colors` gains the same
-  treatment: a count, or a whitelist picked from the swatches.
-
-- **Keep what you tuned, from the browser.** A knob turned on a phone changed
-  the show and then ended with it. A run started from the command line asks
-  "save these?" as it exits; the host has no terminal to ask on, and a host that
-  rewrote every show file it stopped would be unusable — so under `--serve` the
-  changes were recorded and nothing ever acted on them.
-
-  The Live screen's Tune panel now shows that record — every color-pipeline
-  change since the show started, where it began and where it is now — and keeps
-  it in the config the show is running from on one tap. The write is a patch of
-  the file *on disk*, not a dump of the configuration the run was built from, so
-  a field edited in the Settings view since the show started is still there
-  afterwards; a save that would leave the config unable to load is refused with
-  the file untouched and the changes still held, exactly as any other save from
-  the console is. **Discard** drops the offer and touches nothing that is
-  playing.
-
-  A change no configuration field carries is listed and marked *runtime only*
-  rather than silently dropped on the way to the file. A quick-playback run has
-  no file to write to and gets the same pasteable block the command line prints.
-
-- **A palette mode is kept too, in the scene it was tuned on.** `palette_mode`
-  is the one live knob whose home is a `[[scenes]]` block rather than the shared
-  `[color]` section, and for that reason nothing had ever written it back: every
-  surface offered it, every save-back skipped it, and a palette dialled in
-  during a show was gone at the end of it.
-
-  It is now recorded with the scene that was on screen when you turned it, and
-  written into that scene's own block — from the console's Save, from the exit
-  prompt, and from `--overwrite` alike. Turn it during two different scenes and
-  both are kept, separately: they are two settings, not one setting moved twice.
-  A `[color]` knob swept across a scene change is still one change, as before.
-
-  A palette turned on a scene the config never named — a launched clip, or a
-  video the playlist inserted between scenes — has no block to be written into.
-  Those are listed as *runtime only* rather than written into whichever scene
-  happens to sit at that position.
-
-- **A Tune panel on the console's Live screen** — the color pipeline, the
-  generator and the scope, from a phone. A MIDI controller and the C64's own
-  menu could always reach these 20-odd knobs; the browser reached the effect
-  chain and nothing else, which made a phone a weaker controller than a MIDI
-  box. Dither strength and method, palette mode, color matching, cell strategy,
-  motion smoothing, auto-fit, every generator's speed and scale, the scope's
-  gain: sliders for the numbers, pickers for the choices.
-
-  The panel is generated from what the **running scene** actually declares, so
-  every control on it writes somewhere — a blank scene has no generator and a
-  PETSCII scene has no dither, and neither shows a slider that does nothing. And
-  because the browser now turns a knob the same way a MIDI CC does, a
-  color-pipeline change made from a phone is recorded like any other live tune
-  — the same record a `c64cast --config …` run offers to write back into the
-  config when it ends, and the console now makes that offer too (below).
-
-- **Pause, resume, skip and jump-to-scene in the console.** The control plane
-  has answered these since before the console existed, and the console offered
-  none of them — so skipping a scene that was running long meant a keyboard at
-  the machine or a `curl`. Transport now sits in the Live screen's tempo bar
-  where a thumb already is, next to a scene list that says what is playing and
-  jumps to any of it. A jump is a cut: it goes straight to the scene rather than
-  playing the interstitial in front of it.
-
-- **The `/perf` phone console reaches everything the host will take.** It is
-  the zero-dependency page — the one a checkout that never built the browser
-  console still serves, and the one to reach for when the bundle is not there
-  on a gig day. It drew clips, the effect rack, the tempo and the looks, while
-  pause, skip, jump, and every tune knob were things the host would accept and
-  the page had no button for: skipping a scene running long meant a keyboard at
-  the machine.
-
-  It now carries the same panels the browser console does — **Tune** for the
-  current scene's knobs, the record of turning them with a **Keep** that writes
-  them into the running config, **Scenes** with a jump, and pause/skip beside
-  the tap tempo. A run started from a terminal keeps its own exit-time offer,
-  and says so if you tap Keep there.
-
-- **The log follows you.** It lives in a collapsed bar on every screen showing
-  the latest line, and opens in place. A save refused or a scene that failed
-  mid-show is the host's own account of what happened, and it used to be a tab
-  away from wherever you were when it landed.
-
-- **The web console's Settings view now edits.** Every scene field and every
-  setting in a configuration gets the control its type asks for — a switch, a
-  picker holding exactly the values the loader accepts, a number, a box of JSON
-  for a list or a table — with the same one-line explanation `--describe`
-  prints beside it. Edited rows are marked and counted; **Save** writes them in
-  one request, **Undo** drops one and **Discard** drops all of them. **Clear**
-  is the other direction: it stops the file setting a field at all, and shows
-  you what will apply instead before you commit to it. A save that would
-  produce a file that cannot run is refused with the loader's own reason, the
-  file untouched and your edits still on screen.
-
-  The browser never writes TOML: `PATCH /api/configs/{ref}` takes named field
-  edits and the host composes the file through the same dataclasses the loader
-  reads, so a form save is a load-modify-dump of the tested serializer — and
-  two consoles editing different settings do not overwrite each other's
-  sections. What the form deliberately cannot do is structural: adding or
-  removing a scene, changing a scene's `type`, and editing an overlay each
-  rewrite a block rather than set a value in it, and stay with the *Source*
-  editor.
-
-- **A finder above the form.** "Only what this file changes" is the right
-  default for reading a config and the wrong one for adding to it — the field
-  you want is the one the file doesn't mention yet. Typing a name into *Find a
-  setting* searches all 167 of them regardless of the filter, and a row you
-  have edited is never hidden by either.
-
-- **The Configs screen says when you are looking at the running show**, and
-  offers **Reload scenes** there. Saving to disk and putting the change on the
-  C64 are two different acts, and the reflex for the second one — restart the
-  show — costs a machine reset.
-
-- **The console says which of your changes a reload will actually apply.** A
-  reload re-reads the file and rebuilds the scenes; `[audio]`, `[video]` and
-  `[ultimate64]` were read once when the session started and their threads are
-  already running. So the save now says so — *"Saved 3 changes. `[audio]` needs
-  the session restarted; the rest apply on a reload"* — the staged-edit bar
-  warns before you save rather than after, and when a reload would not be
-  enough the running-show banner stops pretending it is and offers a **Restart
-  on this config** beside it.
-
-### Fixed
-
-- **The console's config list stops showing the packaged examples with the
-  Examples box unchecked, and the rest of a checkout's stray `.toml` with it.**
-  Started from a source checkout with no `[web].config_roots` set, `--serve`
-  roots the browser's config list at the working directory — the repo — and its
-  walk reached `c64cast/examples/` and listed every packaged config a second
-  time as an ordinary writable file. The Examples toggle keys on a file being in
-  the read-only examples root, so it couldn't hide that copy, and the
-  duplicates couldn't be edited in place anyway. That directory is now pruned
-  from any other root's walk, leaving the examples to the one read-only root
-  that was always meant to carry them. The same walk also skips a checkout's own
-  non-config TOML — `pyproject.toml`, `mise.toml`, each book's `book.toml`, and
-  the `scripts/` and `docs/` trees — none of which is a show. A normal show
-  folder has none of this, and a directory named in `config_roots` is still
-  listed in full.
-
-- **One name for a configuration, everywhere the console shows one.** The file
-  list called it `config/journey`; the shell's Start / Switch button, the Live
-  breadcrumb and the editor header called the same file
-  `c64cast/config/journey.toml` — the internal ref, root label and suffix and
-  all. Every surface now renders the short form (`refDisplayLabel`): the root
-  label dropped, the `.toml` dropped, any subdirectory kept. The tune-save
-  button ("Keep 3 in …") shows the bare name for the same reason.
-
-- **A recorded scene's description no longer hands you a `TODO`.** Every video
-  scene's `SCENE_CONFIG_JSON` carried
-  `copyright: TODO: add source link / license / attribution`, and
-  `scripts/scene_config_to_description.py` printed it straight into the block
-  you paste under a video — so an unedited paste published an instruction to
-  itself. The line now reads `unknown`, and says why: c64cast records what it
-  played, not what you are allowed to publish. A tune is unaffected — a PSID
-  header's own author and year were always reported as written.
-
-- **Double-buffered bitmap video no longer tears when the link is busy.** The
-  bank swap is committed by a raster IRQ at line 248, which is inside vblank —
-  but a host DMA write halts the C64's CPU for about a microsecond per byte, so
-  an 8 KB bitmap push stalls it through roughly 128 raster lines. A swap IRQ
-  that fired during one of those halts did not run until the halt ended, and by
-  then the raster was deep into the visible picture: the top band kept showing
-  the previous frame while the rest showed the new one. Measured over HDMI while
-  sustaining ~231 KiB/s, 1.2% of frames were split this way, with the seam
-  around a third of the way down.
-
-  The handler now checks where the raster actually is before committing, and if
-  it has been pushed past the safe window it leaves the frame staged and commits
-  on a later field instead. A late frame is held one field longer rather than
-  torn in half, and the frame rate is unchanged — capping write size also stops
-  the tearing, but costs roughly 26 fps down to 15, so that is not what this
-  does. Re-measured the same way afterwards: plain double-buffer split zero
-  frames out of 1796, flicker blending 0.28%, at unchanged throughput.
-
-- **The preview window and recording follow a double-buffered bitmap scene to
-  the bank it actually swapped to.** `[video].double_buffer` and
-  `[color].flicker_tolerance` both flip `$DD00` from inside the C64-side raster
-  IRQ, which the host never issues and so never reaches the shadow the preview
-  and recording reconstruct from — `render()` still read a fixed `$2000`/
-  `$0400` regardless. Every other push the real swap lands on bank 2, so the
-  mirror showed content one push stale (bitmap and screen matrix both), most
-  visibly as ghosting/lag under motion and — because `[color].flicker_tolerance`
-  reuses the same swap — as a wrong-bank fusion under blending, which is the
-  one place `caveats.md` specifically recommends judging the result *from* the
-  recording rather than a capture card. `render()` now follows the frame
-  tracker's own pending-bank byte (the same one the IRQ reads to decide what
-  to commit), accurate to within the raster gate's one-field bound rather than
-  wrong on every other frame.
-
-- **The console's token no longer travels further than the terminal.** The host
-  logs its login URL with the token in it, because that URL is the only way a
-  phone gets in. Two destinations carried the same line and should not have:
-  `--log-file` wrote it to a file that outlives the run and is not created
-  `0600` — while the token's own store deliberately is — and the console's log
-  buffer is served over the state feed to *every* client, a **read-only viewer
-  included**. That second one was the worse of the two: a viewer link exists
-  precisely so somebody can watch without being able to stop the show, and a
-  token sitting in the log tail it receives handed it the ability to do exactly
-  that. Since the host keeps its token across restarts, neither leak aged out.
-
-  Both destinations now redact to `token=REDACTED`, keyed on the parameter's
-  `token=` suffix so `viewer_token` and anything added later are covered too.
-  The rest of the line survives, so the log still says which address was
-  printed. The terminal is unchanged and still prints a URL you can open: it is
-  the operator's own screen, and it is the one place the token has to work.
-
-  If you have logs or bug reports from an earlier version, treat any token in
-  them as public and restart the host to mint a fresh one.
-
-- **Check says when a scene names media that isn't there.** A `video` scene
-  pointing at a path that does not exist passed both **Check** and **Save**, and
-  failed a few seconds into the run — after the link was open and the C64 had
-  been reset. It is now reported in the same panel the loader's own diagnostics
-  use, on a check and on a save. A warning rather than a refusal, because a file
-  may legitimately arrive before showtime or belong to another machine in an
-  ensemble; URLs and globs are left alone, the first because it is not a local
-  path and the second because an empty glob is already an error.
-
-- **`[ultimate64].url` takes the address you already know how to write.** The
-  connection target `-u/--url` accepts — `u64://192.168.2.64` — went into a
-  configuration file unchanged and then straight to an HTTP client that has no
-  idea what that scheme is. The run failed with "could not reach the C64
-  hardware", which points at the network, and the real reason sat at debug
-  level. The field now reads `u64://HOST`, and the bare `192.168.2.64` the
-  shipped example has always promised, as the `http://HOST` both of them mean.
-
-  A `?query` knob is refused rather than applied, because in a file each of
-  those is a field of its own and two ways to set `dma_port` in one document
-  is a question about precedence nobody should have to ask; so is a `tr://`
-  target, which names a backend the section it sits in has already named.
-
-- **The hires cell picker can be saved.** `cell_pick` is offered as a live knob
-  by every control surface — a MIDI controller, a WLED slider, the C64's own
-  menu and now the browser — but nothing connected it to `[color]
-  hires_cell_pick`, the setting it is the live face of. Turning it worked and
-  the change was recorded; every save-back then quietly skipped it. It is now
-  written like the rest of the color pipeline, and the mapping is held to the
-  display modes' own registries by a test, so the next live knob cannot ship
-  half-connected.
-
-- **A validation error now says which file it came from.** A configuration is
-  checked with your machine settings underneath it, so one stray value in
-  `~/.config/c64cast/settings.toml` refused *every* configuration on the host —
-  with an error naming a section, and nothing anywhere saying the value was not
-  in the file on screen. The reflex is to hunt for a key in a file that does not
-  contain it. Both editors now name the setting, its value and the file it came
-  from, and only when all three are true: your machine supplies it, the file
-  being edited is silent about it, and the failure mentions it by name.
-
-- **Unsaved config edits survive leaving the screen.** Switching to Live to
-  check something against the running show and coming back used to discard
-  whatever was typed. Edits are now the console's rather than the screen's, and
-  the Configs tab carries a dot while any are outstanding, so an unsaved change
-  is visible from anywhere instead of only from the file it belongs to.
-
-- **The console's finder falls back to descriptions.** Searching settings by
-  name is right until you do not know the name — `cell_strategy` is not a word
-  anybody guesses. A query that matches no name now searches what each setting
-  *does*, and says that is what it did.
-
-- **A saved configuration no longer absorbs your machine's settings.** Machine
-  settings (`~/.config/c64cast/settings.toml`) are a layer *under* a config
-  file: they say what this machine is, so a show file never has to. But every
-  save-back measured "is this worth writing?" against the shipped defaults
-  instead of against that layer — so saving a show config on the machine with
-  the capture card wrote that machine's `[video] device` into the file, and the
-  file then overrode the *next* machine's own setting. It applied to all three
-  save-backs: the web console's form, the `--init` wizard, and the on-C64
-  menu's live-tune save. They now measure against the machine layer, so a save
-  writes what the *show* says and leaves what the *machine* says where it was
-  set. Overriding a machine setting from a config still works and is still
-  written — including overriding it back to the shipped default, which is a
-  real answer and the only way to record it.
-
-  Two consequences in the console: the Settings view marks a value that comes
-  from your machine settings as unchanged (it shows the resolved value, but the
-  file does not set it), and **Clear** on a field puts the machine's value back
-  rather than the shipped default. A DMA password living in the machine
-  settings, where it is legal, no longer blocks editing an unrelated config.
-
-- **The console no longer scrolls sideways on a phone.** One long log line or
-  one absolute path made the whole page wider than the screen — 1195 px of it
-  in a 430 px viewport — because a panel grew to fit its widest content instead
-  of letting that content scroll inside it. Every screen fits its viewport now.
-
-- **Colors are now matched against the palette your machine actually emits.**
-  The 16 C64 colors are fixed, but what they *are* depends on the machine: an
-  Ultimate 64's video output and a real VIC-II's are about 25 counts per channel
-  apart, and 60 apart on Orange. c64cast measured everything against the VIC-II
-  rendering regardless, which is not a tint that the eye discounts — the
-  quantizer picks colors by distance, so the wrong table sends pixels to the
-  wrong color outright. On an Ultimate 64 that was **18.8% of pixels** and
-  **+12.9% mean perceptual error**, worst on the grays, browns and orange.
-
-  The new `[hardware].host_palette` defaults to `"auto"`, which asks the machine
-  and needs no configuration: an Ultimate 64 reports its own palette, and
-  anything else is driving a real C64 (an Ultimate II+ and a TeensyROM+ both do,
-  and neither has a palette of its own) so the VIC-II rendering is assumed. Set
-  it to `"u64"` or `"pepto"` to state it outright, or to the path of a VICE
-  `.vpl` file to describe a machine with a custom palette loaded — an Ultimate
-  won't serve its own `.vpl` over the network, so point this at a local copy.
-
-- **Deleting a config no longer says "stop it" after you already have.**
-  `DELETE /api/configs/{ref}` refused with *"…is the running config — stop or
-  switch away first"* even once the session was idle, because the status
-  feed's `config_path` deliberately keeps naming the last-started config after
-  a stop (so the browser has something to preselect). The route now checks
-  whether the supervisor is actually mid-show with that config, not just
-  whether it is the last one named.
+  pair into an intermediate shade — the trick Dragon Breed and Mayhem in
+  Monsterland used. A C64-side raster IRQ drives the alternation at the VIC field
+  rate no matter how fast the host is pushing, so it needs no unusual link
+  speed, no REU and no sampler — just one extra ~1000-byte page per frame. What
+  it fixes is **gradient banding**: a chromatic gradient improves 27-34% in the
+  hires modes and a photograph ~1%, but in `mhires`, where four colors share a
+  4-pixel-wide cell, a photograph improves 4-32%. Needs `palette_mode =
+  "percell"`; the global-4 modes have no per-cell decision for a pair to win,
+  and arming says so. `flicker_tolerance` is a cut across a table of pairs
+  scored by eye, blind — `"off"` (default), `"clean"`, `"subtle"`, `"visible"` —
+  and which pairs qualify follows `[hardware].host_palette`, because what fuses
+  is the light a particular machine emits. `[color].flicker_max_luma_delta`
+  (default 0.075) bounds the brightness gap that governs the seizure hazard and
+  warns rather than refuses. The fused result does not survive a 30 fps capture,
+  but c64cast's own preview and `[recording]` reconstruct it correctly.
+  `scripts/diags/flicker_score_grid.py` and `[color].flicker_score_pairs` are
+  how the table grows. **Off by default, deliberately — see Upgrade notes.**
 
 ### Changed
 
 - **c64cast is Beta, not Alpha.** The PyPI trove classifier moves from
   `Development Status :: 3 - Alpha` to `4 - Beta` — four tagged releases in, with
-  a settled CLI, config schema and data-directory layout that a documented
-  breaking change now goes through a version bump to touch. Nothing about
-  running it changes; the `0.x` line still carries no API-stability promise.
+  a settled CLI, config schema and data-directory layout. Nothing about running
+  it changes; the `0.x` line still carries no API-stability promise.
 
-- **British spellings are gone from the prose, the code and the console.** The
-  0.3.0 pass spelled the books in American English; everything written since had
-  drifted back — `colour` in the web console's own field labels and swatch
-  summary, `serialise`/`normalise`/`recognise` through the config store and the
-  control plane, `behaviour`, `honours`, `artefact`, `judgement`, `catalogue`,
-  `analyser`, `centre` across the architecture notes and the Reference. American
-  English is now the rule for prose, code, comments, identifiers and commit
-  messages alike, written down in CLAUDE.md and CONTRIBUTING.md so it stops
-  drifting. `grey`/`gray` and `canceled`/`cancelled` are interchangeable and both
-  stay; the `grey` color alias still resolves, as it always has.
+- **British spellings are gone from the prose, the code and the console.**
+  American English is now the rule for prose, code, comments, identifiers and
+  commit messages alike, written down in CLAUDE.md and CONTRIBUTING.md so it
+  stops drifting. `grey`/`gray` and `canceled`/`cancelled` are interchangeable
+  and both stay; the `grey` color alias still resolves, as it always has.
 
-- **Hires picks each cell's color by fitting the whole cell, not by sampling one
-  pixel of it.** A hires cell gets two colors and one is the global background,
-  so the remaining choice decides most of the frame — and it was being made by
-  reading a single pixel per 8×8 cell. Fitting the cell instead cuts
-  reconstruction error by about a quarter on photographic content (−24 % mean
-  Lab, holding across every `dither` setting), and the gain scales with how much
-  a cell's own pixels disagree: nothing on a smooth gradient, ≈−32 % on
-  high-frequency detail. It also turns out to be *stabler* than what it
-  replaced, which is the opposite of the trade the old approach was made for — a
-  one-pixel read follows sensor noise directly, while a whole-cell fit averages
-  it out, so a static subject under noise now stops rewriting the screen
-  entirely instead of churning ≈33 bytes a frame. Costs ≈0.8 ms/frame, reusing
-  the distance matrix the quantizer already builds. Set
-  `[color].hires_cell_pick = "sample"` for the old behavior under a tight CPU
-  budget.
+- **`--version` reports the install directory** after the number. `__version__`
+  reads the *installed* distribution's metadata, so unpacking a release archive
+  into a working directory moves nothing and the old number keeps being correct
+  — a true statement about a different install than the reader changed. The path
+  names the environment and the tool that owns it: `uv/tools/`, `pipx/venvs/`,
+  or a checkout.
 
-- **A bad scene is now refused before the machine is opened.** Config validation
-  checked each system's settings but stopped short of its scenes, so a mistake
-  inside a `[[scenes]]` block — an unknown `type`, a `generative` `source` that
-  doesn't exist, a `duration_s` on a video scene — only surfaced a few seconds
-  into the run, after the link had been opened and the C64 reset. It is caught
-  up front instead, with the same exit code (3) and the same message, plus the
-  name of the scene that failed. Scenes marked `follower_only` are checked too:
-  they are built when a broadcast picks them up, so a bad one used to surface
-  mid-show. The web console gets this for free — **Check** and **Save** now
-  refuse a config whose scenes won't build, rather than accepting it and
-  failing at the next start.
+- **Hires picks each cell's color by fitting the whole cell**, not by sampling
+  one pixel of it. A hires cell gets two colors and one is the global
+  background, so the remaining choice decides most of the frame — fitting the
+  cell cuts reconstruction error about a quarter on photographic content
+  (−24% mean Lab, holding across every `dither` setting), and it is *stabler*
+  than a one-pixel read, which follows sensor noise directly: a static subject
+  under noise now stops rewriting the screen. Costs ≈0.8 ms/frame.
+  `[color].hires_cell_pick = "sample"` restores the old behavior.
 
-- **The session lifecycle moved out of `cli.py` into a new `c64cast/app/session.py`.**
-  Building each system's stack, running the playlists and tearing it all down
-  were inlined in the CLI's `_run_session`, which meant a session could only
-  exist for as long as the process did — there was no way to start, stop and
-  restart one from a longer-lived host. They are now five composable steps
-  (`validate_configs`, `build_session`, `start_services`, `run_foreground`,
-  `teardown_session`) over a `Session` object, and `_run_session` is their
-  composition plus the signal handling only a foreground CLI can do.
+- **A bad scene is refused before the machine is opened.** Config validation now
+  checks each `[[scenes]]` block — an unknown `type`, a `generative` `source`
+  that does not exist, a `duration_s` on a video scene — including
+  `follower_only` scenes, with the same exit code (3) and message plus the name
+  of the scene that failed. The web console's **Check** and **Save** get this
+  for free.
 
-  Nothing about running c64cast changes. `cli` re-exports every moved name
-  (`build_stack`, `teardown_stack`, `_run_playlists`, `StackBuildError`, …), so
-  anything importing them from `c64cast.app.cli` — including the diag scripts
-  under `scripts/` — keeps working. The one split worth knowing about is that
-  config validation is now hardware-free and separable from the build, which is
-  what lets a caller reject a bad config without disturbing a running session.
+- **The session lifecycle moved out of `cli.py` into
+  `c64cast/app/session.py`** — five composable steps (`validate_configs`,
+  `build_session`, `start_services`, `run_foreground`, `teardown_session`) over
+  a `Session` object, so a longer-lived host can start, stop and restart a
+  session. `cli` re-exports every moved name (`build_stack`, `teardown_stack`,
+  `_run_playlists`, `StackBuildError`, …), so anything importing them keeps
+  working, and config validation is now hardware-free and separable from the
+  build.
 
-### Added
+- **The `#:schema` line no longer needs maintaining.** `c64cast
+  --print-schema-path` prints the value for a config's first line — the schema
+  inside the running install — and since an upgrade rewrites that file in place,
+  the line stays true release after release. `c64cast --doctor` reports a
+  directive that has gone stale (pinned to another version, a path that no
+  longer resolves, or a copy of the schema whose contents differ), judged by
+  content rather than location, and never rewrites the file. The User's Guide
+  now tells you to ask for the path rather than type a version-pinned URL.
 
-- **A configuration can be changed a setting at a time, without composing TOML.**
-  `PATCH /api/configs/{path}` takes named changes — a section (or a scene index)
-  and a field, with a value or `reset` to put it back to its default — and the
-  host loads the file, applies them, writes it back through the config
-  serializer and validates the result. This is what the console's generated
-  *Settings* view will save through; today it is the API, and the *Source*
-  editor is still how the console writes. A change that would produce a config that
-  can't run is refused with the file untouched, and the text it replaced is kept
-  as a hidden sibling either way. Two things it deliberately won't do: it can't
-  add or remove scenes (that stays with the text editor), and it refuses a file
-  carrying a DMA password outright, because writing that file back out would
-  drop the password. Comments do not survive a save this way — the raw editor is
-  still the right surface for a config you've annotated by hand.
-
-- **The HTTP control plane can be locked with a shared token.** `[control].token`
-  (or `$C64CAST_CONTROL_TOKEN`, which wins) is required on every route from then
-  on — including the `/perf` console page and its WebSocket. Scripts send it as
-  `Authorization: Bearer`, `X-C64Cast-Token` or `?token=`; a browser visits
-  `/api/login?token=…` once and gets an `HttpOnly; SameSite=Strict` cookie, after
-  which the console authenticates itself. An optional `[control].viewer_token`
-  grants reads only: the console watches the show and displays a `read-only`
-  chip, but pause, skip, reload and clip launches are refused.
-
-  The default is empty, which is exactly today's behavior — open to anything
-  that can reach the port. What changes without a token is one log line: binding
-  a non-loopback `host` now warns that the run is drivable by anyone who can
-  reach it. Being a shared secret over plain HTTP, the token is a lock on the
-  door and not a reason to expose the port; `SECURITY.md` says where it stops.
-
-- **A session supervisor (`c64cast/app/serve.py`), groundwork for the web
-  console.** `SessionManager` owns one session at a time and moves it through
-  `idle → starting → running → stopping → idle`, so a single process can start,
-  stop and switch shows instead of ending when its show does. It carries the
-  parts that only matter once a session outlives the command that started it:
-  a settle window between teardown and the next start (the U64's DMA service
-  refuses new connections for a few seconds after one closes, and a camera
-  refuses to reopen straight after release), a poller that notices when a
-  non-looping show ends by itself, a bounded log tail so a failure to start can
-  be read somewhere other than the terminal, and a run marker that resets the
-  machine on the next start if the previous run died mid-show.
-
-  Nothing runs it yet — there is no new flag, config key or endpoint in this
-  release, and running c64cast is unchanged. The daemon that drives it comes
-  next.
-
-- **`c64cast --serve` runs a web console host.** With the new `web` extra, the
-  program stops being a one-shot command and becomes a server that owns the
-  Commodore and starts and stops shows on request — the practical shape for a
-  machine you would rather drive from a phone than from the terminal it is
-  plugged into. Everything `[control]` already served (`/status`, `/reload`, the
-  `/perf` console) rides the same port; between shows those routes answer `503`
-  rather than pretending a session exists.
-
-  The new routes are `GET /api/session` and `POST /api/session/{start,stop,
-  switch,reload}` for the lifecycle, `GET /api/introspect` for the whole config
-  model as JSON (including the `apply` and `applies_to` metadata the JSON Schema
-  drops), and `WS /api/ws` for live state — the performance payload, the session
-  state, and new log lines as they happen. The configuration is re-read from
-  disk on every start, so editing a file and starting again runs the edit with
-  no restart of the host. A start answers `202` and reports through the socket,
-  because building a session takes seconds of hardware time; a start while
-  something is running is a `409` rather than a silent replacement (that is what
-  `switch` is for); and a config that will not run is a `422` refused before
-  anything touches the machine.
-
-  **This surface is never unauthenticated.** Unlike `[control]`, which stays
-  open by default because that is what it has always done, a host with no token
-  configured generates one, stores it `0600` under the data directory, and
-  prints a ready-to-open login URL at startup. `[web].token` /
-  `$C64CAST_WEB_TOKEN` / `token_file` choose your own, and `viewer_token` grants
-  the same read-only role the control plane's does. New `[web]` section:
-  `enabled` (the same switch as `--serve`), `host`, `port`, `autostart` and
-  `settle_s`. The browser interface over this API is below.
-
-- **The web console can browse and edit configs, and start the one you pick.**
-  `[web].config_roots` lists the directories it may read and write `.toml` files
-  in (empty = wherever the host was launched from), and `GET /api/configs`,
-  `GET`/`PUT /api/configs/{path}` and `POST /api/configs/{path}/validate` are how
-  a show gets authored without a shell. `POST /api/session/start` now takes an
-  optional `{"config": "shows/gig.toml"}` naming any of them, so one host can run
-  a whole folder of shows rather than only the file it was launched with.
-
-  Files are named by root (`shows/gig.toml`) rather than by path, and nothing
-  outside a root is readable or writable — including through a symbolic link
-  planted inside one — nor is anything that is not a `.toml`. A save is loaded
-  and validated before it lands, so text that cannot run is refused with `422`
-  and the file is untouched; what was there is copied to a hidden sibling
-  (`.gig.toml.bak`) first. A read returns the raw text *and* a per-field view
-  marking everything still at its default, which is what the form editor will
-  render. Ensemble masters read but have no such view — they are authored across
-  several files — so they are edited as text.
-
-  **A full token is now shell-equivalent on that host.** The root list bounds
-  which files may be edited, not what a saved file can reach: a config names
-  media paths and URLs a session will open. `viewer_token` cannot write at all,
-  and `SECURITY.md` has the full note.
-
-- **The web console has a console.** Opening a `--serve` host's address in a
-  browser now gets a page rather than a route list: which configuration is
-  loaded, what the machine is doing, the configurations the host can see,
-  buttons to start, switch, reload and stop, and the host's log as it happens.
-  State arrives over `WS /api/ws` instead of by polling, so the page follows a
-  show started from anywhere else — another browser, a MIDI controller, `curl` —
-  without being told.
-
-  It ships **inside the package**, already built, so `uv sync` and `pip install`
-  both give you a working console and neither needs Node. Node is required only
-  to change the interface: the sources are Svelte 5 + Vite + TypeScript +
-  Tailwind under `web/` in the repository, `make web` rebuilds them, and CI
-  fails if the committed bundle and its sources disagree.
-
-  The page is gated exactly like the API it talks to — nothing about it is
-  public — so a browser arriving without the cookie is now given a form to paste
-  the token into rather than a line of plain text. Scripted callers keep the
-  plain-text `401` they had. The zero-dependency `/perf` performance console is
-  unchanged and still on the same host, and a checkout that has never run
-  `make web` falls back to it with a line in the log saying so.
-
-- **The console can read and edit configurations.** A second screen lists the
-  `.toml` files under `[web].config_roots` and opens one two ways. *Settings* is
-  generated: every scene and every setting the file changes, each with the same
-  explanation `--describe` prints, what it may be set to, and a `live` mark on
-  the ones a running show picks up without a restart — and the values are what
-  the loader actually resolved, so a machine setting or a default the file never
-  mentions still shows through. Untick *only what this file changes* to see all
-  167 of them. *Source* is the file itself, with **Check** to load it without
-  saving and **Save** to write it back; a save that would not load is refused
-  and the file is untouched, and what was there is kept in a hidden sibling.
-
-  Editing is only as strong as the loader's own validation, which does not check
-  scene `type` or a `generative` `source` against the registry — a typo there
-  saves cleanly and fails when the show is built. `--doctor` still catches it.
-
-  An unsaved edit survives clicking away to another file and is marked in the
-  list, and a configuration has its own address (`/config/shows/gig.toml`) that
-  a reload and the back button both respect.
-
-- **The console has a performance screen.** *Live* is the beat grid, the clip
-  grid, the effect rack and the look pads on one page: the tempo with a pulse on
-  the current beat and **Tap** to set it by hand, a pad per
-  `[[performance.clips]]` entry lit for what is playing and for what is waiting
-  on its quantize boundary (with the count-in in beats), a bypass button and a
-  slider for every knob the current scene's effects declare, and eight pads that
-  recall a saved look — or store one, with **SAVE** armed.
-
-  It drives the same engine a MIDI controller drives, so a pad tapped in a
-  browser and a pad tapped on a grid are the same launch, and it is the same
-  live feed the rest of the console already reads rather than a second
-  connection. Pads are pressed and released rather than clicked, so a `gate`
-  clip holds while your finger is down. An ensemble puts each machine on its own
-  tab and its own address (`/live/left`). A read-only token watches all of it and
-  drives none of it.
-
-  The zero-dependency `/perf` console is unchanged and still the gig-day
-  fallback; this is the same surface with the rest of the host beside it.
-
-- **`scripts/diags/video_render_probe.py` now times the host as well as the
-  link.** It reported the modeled cost of getting a frame *onto the wire* but
-  nothing about the cost of producing one, so it could not answer whether a
-  given machine is fast enough to drive c64cast at all — the question that
-  decides whether the host can be a small single-board computer instead of a
-  laptop. It now reports decode / render / total wall-clock milliseconds per
-  frame alongside the existing per-region write cost, and names which side, if
-  either, actually binds the source frame rate. `--threads N` pins decode and
-  OpenCV to N threads so two machines can be compared by single-core speed
-  rather than by core count, and the per-frame CSV gains `decode_ms` and
-  `render_ms`.
-
-  The measurement it makes easy to see: compose cost tracks the **source
-  resolution**, not the display mode, because every mode resizes the source down
-  to its own small target and that resize reads every source pixel. One frame
-  costs ~30 ms from 4K in any mode and ~3.4-6.7 ms from 720p. So the media, not
-  the renderer, is usually what decides whether the host or the link is the
-  bottleneck — which is why the verdict line names pre-scaling as the fix.
+- **The User's Guide has an
+  [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading)
+  section** — extras do not accumulate, there is a way to check that an upgrade
+  worked, and the one mistake the three-line version invites (unpacking a
+  release archive over a working directory) is answered in both troubleshooting
+  appendices. A release's own notes now lead with how to install or upgrade,
+  with the wheel and tarball labeled for the installers that fetch them.
 
 ### Fixed
 
-- **PAL SID tunes no longer play ~20% fast.** The C64-side SID player chains
-  PLAY onto the kernal's CIA #1 Timer A interrupt, which the KERNAL runs at
-  ≈60 Hz on *both* standards — it is a wall-clock service (TI$, SCNKEY, cursor
-  blink), not a frame interrupt. Nothing in the `.sid` path ever reprogrammed
-  it, so a tune composed for PAL's 50.12 Hz ran at 60.0 on a PAL machine as
-  much as an NTSC one: **+19.7% tempo**, across roughly 80% of a full HVSC.
-  New `[ultimate64].sid_play_rate` (default `"auto"`) sets the latch to the
-  tune's own frame rate. `"off"` restores the previous behavior for anyone who
-  knows these tunes at NTSC speed and prefers them that way, and an explicit
-  number in Hz pins every vsync tune to one rate. CIA-timed (multispeed) tunes
-  self-time from their own INIT and are never overridden — the correction is
-  gated on both the header's per-subtune speed flag and the timer value
-  actually in place after INIT, so a tune whose header lies is still safe. The
-  oscilloscope's host emulator now ticks at the real PLAY rate rather than
-  assuming the video frame rate, which also fixes a latent scope/audio desync
+- **PAL SID tunes no longer play ~20% fast.** The C64-side player chained PLAY
+  onto the KERNAL's CIA #1 Timer A interrupt, which the KERNAL runs at ≈60 Hz on
+  *both* standards — so a tune composed for PAL's 50.12 Hz ran at 60.0 (**+19.7%
+  tempo**), across roughly 80% of a full HVSC. `[ultimate64].sid_play_rate` sets
+  the latch to the tune's own frame rate; the oscilloscope's host emulator now
+  ticks at the real PLAY rate too, which also fixes a latent scope/audio desync
   under `system = "PAL"`.
-- **The kernal CIA #1 restore latch was the wrong standard's.** Both the ASID
-  ring player and the REU audio pump wrote `$4025` back at teardown while
-  documenting it as the NTSC default; `$4025` is PAL's and NTSC's is `$4295`.
-  The jiffy clock therefore ran ~3.8% fast on NTSC after either teardown, until
-  the next reset. Both now go through `c64.kernal_cia1_latch(system)`.
 
-### Added
+- **The KERNAL CIA #1 restore latch was the wrong standard's.** The ASID ring
+  player and the REU audio pump both wrote `$4025` (PAL's) back at teardown, so
+  the jiffy clock ran ~3.8% fast on NTSC after either one until the next reset.
+  Both now go through `c64.kernal_cia1_latch(system)`.
 
-- **`[ultimate64].system` defaults to `"auto"`** and is read from the
-  Ultimate's live System Mode at startup. This one field feeds the CPU clock,
-  the frame rate, the DAC NMI latches and the SID PLAY rate, and a hand-set
-  value that disagreed with the machine moved all of them at once, silently.
-  An explicit value still wins — it remains how you describe a machine the
-  probe can't ask, such as a TeensyROM-driven C64 — but a disagreement now logs
-  a warning and is an error-level `--doctor` finding. Falls back to NTSC under
-  `--skip-probe` or on a backend without the setting.
-- **`[ultimate64].sid_video_mode`** (default `"off"`) switches the Ultimate
-  64's System Mode so the machine's PAL/NTSC timing matches
-  `[ultimate64].system`, correcting SID *pitch* — the CPU clock differs 3.8%
-  between the standards, about two thirds of a semitone. Independent of the
-  tempo fix above and opt-in because it retunes the HDMI output (576p50 rather
-  than 480p60), so every display and capture device has to re-lock. Applied
-  live and volatile, followed by a C64 reset so the KERNAL re-runs its PAL/NTSC
-  autodetect, and restored at teardown. Ultimate 64 only.
-- **`[ultimate64].hdmi_scan_resolution`** (default `"auto"`) drives the
-  Ultimate 64's HDMI upscaler. PAL timing at SD puts 576p50 on the wire and
-  some capture devices cannot lock to it — the same machine at 720p50 captures
-  cleanly. `"auto"` raises SD to HD only when `sid_video_mode` retimed the
-  machine, so c64cast cleans up after its own change and leaves a machine it
-  didn't retime alone; `"keep"` never touches it, and a scan-mode label pins it
-  for the run. Newer U64 boards only (older firmware doesn't register the
-  setting, and c64cast stays quiet when it's absent).
+- **Colors are matched against the palette your machine actually emits.**
+  c64cast measured everything against the VIC-II rendering regardless — an
+  Ultimate 64's output is about 25 counts per channel away, 60 on Orange — so on
+  a U64 the quantizer sent **18.8% of pixels** to the wrong color, worst on the
+  grays, browns and orange. New `[hardware].host_palette` defaults to `"auto"`,
+  which asks the machine (an Ultimate 64 reports its own palette; anything else
+  is driving a real VIC-II). Set `"u64"`, `"pepto"`, or the path of a VICE
+  `.vpl` file to state it outright.
 
-- **`--doctor` now reports unknown config keys as findings.** A key no section
-  accepts is dropped as before, but it is now a warn-level row under a new
-  `CONFIG` heading — named file, table, and key — and it counts in the summary
-  tally. Previously it was a single `log.warning` printed *above* the report,
-  where it reads as preamble next to the formatted rows: the run continued on
-  defaults and the misplaced setting silently did nothing, so a broken config
-  could look like a clean report. Normal (non-`--doctor`) runs still log the
-  same warnings to stderr.
-- **"Did you mean" now searches every config section.** When an unknown key is
-  a valid key of some *other* table, the hint says so and names it — e.g.
-  `palette_mode` under `[color]` reports that `[[scenes]]` accepts it and to
-  move it there. That case is invisible to a within-section near-miss search,
-  since the key is spelled correctly and simply lives elsewhere. Same-section
-  typos still get the near-miss suggestion.
+- **Double-buffered bitmap video no longer tears when the link is busy.** A host
+  DMA write halts the C64 CPU for about a microsecond per byte, so an 8 KB
+  bitmap push stalls it through ~128 raster lines and a bank-swap IRQ meant for
+  vblank could run deep in the visible picture — 1.2% of frames split, seam
+  about a third of the way down. The handler now checks where the raster is and,
+  if it has been pushed past the safe window, stages the frame and commits on a
+  later field. Frame rate unchanged; re-measured at zero splits over 1796
+  frames (0.28% with flicker blending).
 
-- **A multi-SID tune on a single-SID machine now says so.** On a link that
-  can't route chips (TeensyROM+, Ultimate II+), a tune driving an address past
-  `$D400` that no `[hardware].host_sid_chips` entry covers gets a warning once
-  per run, naming the address and both readings of it: a multi-SID tune picked
-  by mistake, or a dual-SID mod that hasn't been declared. Previously only a
-  machine that *had* declared its chips was told — which is backwards, since
-  the default configuration declares nothing and is where a mistaken pick is
-  likeliest to land. On an Ultimate II+ the warning points at the Ultimate's
-  own audio jack, where the tune does play as authored.
+- **The preview window and recording follow a double-buffered scene to the bank
+  it actually swapped to.** `render()` read a fixed `$2000`/`$0400` while the
+  real swap — driven by a C64-side raster IRQ the host never issues — lands on
+  the other bank, so the mirror was a frame stale (ghosting under motion) and
+  showed a wrong-bank fusion under `flicker_tolerance`, the one place
+  `caveats.md` says to judge from the recording. It now follows the frame
+  tracker's own pending-bank byte.
 
-- **`[hardware].host_sid_tune_match` picks tunes your C64's own SID chips can
-  play.** When a `waveform` scene points at a directory or glob, `"prefer"`
-  tries tunes that fit the chips you've declared before the rest — the right
-  model, and a chip at every address the tune drives — so a single-SID machine
-  stops landing on 2SID tunes whose second voice-set goes nowhere, and a 6581
-  machine stops landing on tunes composed on an 8580. `"require"` drops the
-  misfits outright. Both fall back to the whole pool (with a warning) when
-  nothing fits, so a mistyped chip table shows up in the log instead of as a
-  scene that never starts. Default `"off"`. It never acts on the NTSC/PAL
-  guess: declare `host_sid_chips`, or set `host_sid_model` explicitly, to turn
-  it on. Only `host_sid_chips` can skip a 2SID tune — `host_sid_model` names one
-  chip without claiming it is the only one.
+- **The console's token no longer travels further than the terminal.** The login
+  URL carries the token, and both `--log-file` and the console's log buffer
+  (served over the state feed to every client, a read-only viewer included)
+  carried it too. Both now redact to `token=REDACTED`, keyed on the `token=`
+  suffix so `viewer_token` and anything added later are covered; the rest of the
+  line survives. Treat any token in an older log or bug report as public and
+  restart the host to mint a fresh one.
 
-- **`[hardware].host_sid_chips` describes a machine with an internal dual-SID
-  mod.** A C64 fitted with an ARM2SID, SIDFX or DualSID answers at a second
-  address in its own hardware, often at the other chip model — much of the
-  reason for fitting one. Such tunes already played correctly on those machines
-  and still do, with nothing routed: the tune writes to both addresses and the
-  chips are already there. What was wrong was what c64cast *said* about it, on
-  links that can't read the SID hardware state — it assumed one chip and
-  reported the second as inaudible while you were listening to it. Declare the
-  chips (`host_sid_chips = { d400 = "6581", d420 = "8580" }`) and each one gets
-  its own verdict against the tune. The declaration supersedes
-  `host_sid_model`, so the NTSC/PAL guess and its warning drop away with it.
+- **A saved configuration no longer absorbs your machine's settings.** Every
+  save-back measured "is this worth writing?" against the shipped defaults
+  instead of the machine-settings layer, so saving a show config on the machine
+  with the capture card wrote that machine's `[video] device` into the file —
+  which then overrode the *next* machine. The web console form, the `--init`
+  wizard and the on-C64 menu now measure against the machine layer. In the
+  console, a machine-supplied value shows as unchanged and **Clear** puts the
+  machine's value back rather than the shipped default; a DMA password living in
+  machine settings no longer blocks editing an unrelated config.
 
-- **When the two audio outputs disagree, c64cast now says which one to listen
-  to.** Matching a tune to an 8580 emulation is the right move on a machine
-  whose internal chip is a 6581 — but the tune then plays on that unchanged
-  6581 through the AV cable, sounding thin and scratchy while every line in the
-  log reports a match. That reads like a dying SID, and someone can lose an
-  evening to it before suspecting the cable. The mismatch was already reported;
-  it is now accompanied, once per run, by what it means and what to do about
-  it. Not emitted when the emulations are wrong too — then the problem really
-  is configuration, and pointing at a cable would misdirect.
+- **A validation error names the file it came from.** A config is checked with
+  your machine settings underneath it, so one stray value in
+  `~/.config/c64cast/settings.toml` refused *every* config with an error naming
+  only a section. Both editors now name the setting, its value and the source
+  file — and only when all three are true: the machine supplies it, the edited
+  file is silent about it, and the failure mentions it by name.
 
-- **A tune loading into the RAM under `$D400-$D7FF` now warns on an Ultimate
-  II+.** Its emulated SIDs take writes off the cartridge port, which carries no
-  signal separating an I/O access from one to the RAM below — so a tune living
-  there is heard as register writes, and arrives as clicks and stray notes on
-  the Ultimate's audio output. A warning, never a refusal: the tune plays
-  correctly, and the C64's own output is fed by real chips that decode
-  properly.
+- **The console's config list stops showing the packaged examples** with the
+  Examples box unchecked, and a checkout's stray `.toml` with them —
+  `pyproject.toml`, `mise.toml`, each book's `book.toml`, and the `scripts/` and
+  `docs/` trees. A directory named in `config_roots` is still listed in full.
 
-- **`sid_model` now matches chip models on the Ultimate II+ too, instead of
-  only reporting them.** The resolved-audio line could already tell you a tune
-  had asked for an 8580 and was playing on a 6581 emulation — and nothing could
-  act on it, because model matching existed only for the U64's sockets and
-  UltiSID cores. The U2+ needs none of that machinery: its audio jack is fed by
-  two SID emulations, so the side already snooping a tune's chip is simply told
-  which model to be. `Filter Curve` and `Combined Waveforms` move together,
-  since a side split between the two emulates neither chip, and your settings
-  come back at teardown. The host C64's own SID still plays the tune unmatched
-  on the machine's own output — nothing can change which model that internal
-  chip is — so a mismatch there is still reported rather than papered over.
+- **One name for a configuration, everywhere the console shows one** — every
+  surface now renders the short form, the config root label and the `.toml`
+  suffix dropped, any subdirectory kept.
 
-- **An undeclared host SID model now warns instead of mentioning it.** On a
-  link where the machine's own chip can't be read, every model verdict rests on
-  the NTSC=6581 / PAL=8580 convention — a rule that is frequently wrong, since
-  NTSC machines carrying an 8580 are common. That guess used to be stated at
-  INFO, where it scrolled past between the lines that depended on it; it is now
-  a once-per-run warning naming the field that settles it. Declaring
-  `[hardware].host_sid_model` silences it for good, and `"unknown"` opts out of
-  host-chip verdicts entirely.
+- **Check and Save flag a scene that names media that is not there** — a warning
+  rather than a refusal, since a file may arrive before showtime or belong to
+  another machine in an ensemble. URLs and globs are left alone.
 
-- **Video scenes now draw a buffering bar on the C64 while they load.** A
-  diagonal-striped bar grows along screen row 22 through the blocking setup
-  work (container open, color pre-scan, audio encode, REU upload) in every
-  display mode — no text or numbers, the right edge is 100%, and the first
-  video frame wipes it. `[video].setup_progress_bar = false` turns it off.
+- **Unsaved config edits survive leaving the screen** — edits belong to the
+  console now, not the screen, and the Configs tab carries a dot while any are
+  outstanding.
 
-- **`--calibrate-dac` now says so on the C64 itself.** The machine used to sit
-  on a blank screen for the whole ~50 s-per-socket run; it now shows a
-  centered title plus a computed duration line (e.g. `MEASURING 2 SIDS -
-  ABOUT 90 SECONDS`). Both lines are painted before the first capture and the
-  screen is never touched again — mid-run screen DMA could drop NMI samples
-  and skew the measurement.
+- **The console's finder falls back to descriptions** when a query matches no
+  setting name — `cell_strategy` is not a word anybody guesses.
 
-### Fixed
+- **The console no longer scrolls sideways on a phone** — one long log line or
+  one absolute path used to make the whole page wider than the viewport.
+
+- **A refused start says why, everywhere it can be tried.**
+  `session.SessionConfigError` now carries the same diagnostic `validate_configs`
+  logs, so the `422` names the actual scene or setting; the shell's tab-bar
+  Start button hands the refusal to the Session screen instead of swallowing it
+  into the browser console.
+
+- **The web console pre-flights a config before claiming a start or switch.**
+  `launch()` — the one function every launch surface goes through — checks the
+  config first and refuses locally if it would not run.
+  `POST /api/configs/{ref}/validate` now returns a `diagnostics` list
+  (`doctor.validate_load_result`), so a bad config names everything wrong at
+  once instead of one problem per click, and validates the file as it stands on
+  disk when called with no body.
+
+- **Deleting a config no longer says "stop it" after you already have** — the
+  route now checks whether the supervisor is actually mid-show with that config,
+  not just whether it is the last one named.
+
+- **`[ultimate64].url` takes the address you already know how to write** —
+  `u64://HOST`, or the bare `192.168.2.64` the shipped example promises, as the
+  `http://HOST` both of them mean. A `?query` knob or a `tr://` target in that
+  field is refused rather than applied.
+
+- **The hires cell picker can be saved.** `cell_pick` is offered as a live knob
+  by every control surface but was never connected to `[color]
+  hires_cell_pick`; every save-back skipped it. It is now written like the rest
+  of the color pipeline, and a test holds the mapping to the display modes' own
+  registries so the next live knob cannot ship half-connected.
+
+- **A recorded scene's description no longer hands you a `TODO`** — every video
+  scene's `SCENE_CONFIG_JSON` carried `copyright: TODO: add source link /
+  license / attribution`, printed straight into the block you paste under a
+  video. It now reads `unknown`, and says why.
 
 - **Video scenes on the Ultimate Audio sampler path no longer stall ~2 seconds
-  at startup.** `VideoScene` started the sampler's blocking prebuffer collection
-  before starting the demuxer that feeds it, so every video began by waiting
-  out the full prebuffer timeout on silence. The demuxer now starts first —
-  the same ordering the audio-file path has always documented and used.
+  at startup** — `VideoScene` started the sampler's blocking prebuffer before
+  the demuxer that feeds it. The demuxer starts first now.
 
-- **`--calibrate-dac` no longer logs 404 tracebacks while isolating the
-  mixer.** The per-source volume list spans both config surfaces (U2+
-  `EmuSid` vs U64 `UltiSid`), and the isolation step blind-PUT all of them —
-  so every U64 run dumped two "Not Found" tracebacks per socket into the
-  `-vv` log. Isolation now only touches the items the machine's own mixer
-  snapshot reported; a write that still fails aborts the run instead of
-  silently measuring a half-isolated mixer.
+- **`--calibrate-dac` no longer logs 404 tracebacks while isolating the mixer**
+  — it now touches only the mixer items the machine's own snapshot reported, and
+  a write that still fails aborts the run rather than silently measuring a
+  half-isolated mixer.
 
-- **An Ultimate II+ now says up front that it has no SID config surface,
-  instead of planning against config that isn't there.** The U64's SID
-  routing / chip-model / mixer configuration lives in three REST categories
-  the U2+ doesn't have — and the firmware answers queries for missing
-  categories with an empty success, so every SID-playing scene silently read
-  empty state and planned against it. Connecting now probes the device's
-  actual category list once (after reachability is already proven; `--skip-probe`
-  costs nothing new) and logs a single line when the surface is absent; SID
-  tunes then play on whatever answers their addresses, with the model verdict
-  coming from `[hardware].host_sid_model`. Capability detection is by config
-  category presence, not the product name, so it tracks firmware differences
-  within one product too.
+- **An Ultimate II+ says up front that it has no SID config surface** instead of
+  reading the firmware's empty-success answer for a missing category as real
+  state and planning against it. The device's category list is probed once,
+  after reachability is proven; SID tunes then play on whatever answers their
+  addresses, with the model verdict from `[hardware].host_sid_model`.
 
-- **The Ultimate II+'s Ultimate Audio sampler is detected again.** The sampler
-  probe read the mixer volumes from the U64's `Audio Mixer` config category; the
-  U2+ carries the same `Vol Sampler L/R` fields in `Audio Output Settings`, and
-  its firmware answers a query for a category it doesn't have with an empty
-  success rather than an error — so the probe concluded the sampler was absent
-  and silently downgraded video audio to the 4-bit `$D418` DAC even with the
-  sampler mapped and audible. The probe now searches both categories and every
-  mixer write (including the teardown restore) follows the one the device
-  actually carries.
+- **The Ultimate II+'s Ultimate Audio sampler is detected again** — the probe
+  now reads the sampler volumes from `Audio Output Settings` as well as the
+  U64's `Audio Mixer` category, so a mapped and audible sampler is no longer
+  silently downgraded to the 4-bit `$D418` DAC.
 
-- **A tune routed onto an UltiSID core to match its chip model is now actually
-  audible.** SID Player Autoconfig pointed a core at the chip's address and set
-  its filter curve, but left `Auto Address Mirroring` on and left the physical
-  socket enabled at that same address — so the socket's real chip kept answering,
-  the mixer pass unmuted *it* and muted the core, and an 8580-tagged tune played
-  on a 6581 while the log said it had been routed to an FPGA core. Nothing
-  errored: every config write succeeded. The UltiSID fallback now disables
-  mirroring and the socket it displaces (both already covered by the
-  snapshot/restore, so your config comes back at teardown). Verified on hardware.
+- **A tune routed onto an UltiSID core to match its chip model is now audible**
+  — the fallback now disables `Auto Address Mirroring` and the physical socket
+  it displaces, both already covered by the snapshot/restore.
 
-### Added
-
-- **The Ultimate II+'s emulated stereo SIDs are now routed, panned, and
-  leveled like the U64 mixer.** The U2+'s audio jack carries two FPGA SID
-  emulations, each snooping one configurable bus address — and the stock
-  right-side base is not `$D420`, so a 2SID tune played half-silent with no
-  error anywhere (the host C64's own output can't help: a real SID answers
-  the whole `$D4xx-$D7xx` range, so multi-SID tunes collapse onto one chip
-  there). SID-playing scenes now retarget a spare *enabled* side to any
-  uncovered chip address, apply `sid_panning` / `sid_volume` to
-  `Pan/Vol EmuSid1/2`, and restore the user's config at teardown — a side
-  that was disabled is never touched. The resolved-audio line reads the same
-  surface back (`$D400 → emusid1 (6581) @ 0 dB Left 3`), with the declared
-  host-SID verdict appended, since the machine's own SID still plays the tune
-  on its own output. Teardown silences every routed chip *before* putting the
-  snoop bases back: the emulation's voice state survives a machine reset
-  (hardware-verified), so a side moved home mid-note would otherwise keep
-  droning where no write could ever reach it.
-
-- **Extra SID chips are now silenced at scene teardown.** Waveform and
-  SID-audio scenes only silenced `$D400`; a multi-SID tune's other chips kept
-  whatever note was sounding when the scene ended — inaudible in practice on
-  a U64 only because the mixer restore usually muted them or the app's exit
-  reset cleared the real chips. Every tune chip is now zeroed at the address
-  it played, in the same teardown step ASID scenes already had.
-
-- **`[hardware].host_sid_model`** — declare the SID chip model in the C64 being
-  driven (`auto` | `6581` | `8580` | `unknown`). On links that can't read the
-  SID hardware state (TeensyROM has no config API), the resolved-audio line can
-  now still warn when a tune asks for the other model — previously it was
-  skipped entirely there. `auto` (the default) assumes 6581 on NTSC / 8580 on
-  PAL and logs that assumption once per run; `unknown` opts out. Ignored where
-  the live SID state is readable (Ultimate 64).
-
-- **One log line saying what you will actually hear.** After SID routing, model
-  matching, panning and volume have settled, c64cast reads the hardware back and
-  reports the source answering each of the tune's chip addresses, the chip model
-  that source presents, and its mixer level and pan — plus anything else still
-  audible that the tune isn't using. A chip that ends up unmapped, muted, or on a
-  model the tune didn't ask for makes the line a warning. Until now every step
-  logged its *intent* and none logged the outcome, so a chip that was configured
-  but inaudible looked identical in the log to one that was playing.
-
-- **The connect-time log now identifies the device, not just its address.** Runs
-  report the unit's model, serial and firmware — `Ultimate II+ 5D327C (firmware
-  3.14d, FPGA 122)`, or a TeensyROM+'s USB serial number — because an IP or
-  serial path names an endpoint, not a machine: two devices can trade addresses
-  between runs, and `192.168.2.64` is the Ultimate's factory default that any
-  number of units answer to. It also makes a U64-versus-U2+ mismatch legible from
-  a log alone, which a bare HTTP 404 against a config URL is not.
-
-### Changed
-
-- **`--version` now says which install it is.** It reports the directory the
-  running code sits in after the number —
-  `c64cast 0.3.0 (~/.local/share/uv/tools/c64cast/lib/python3.13/site-packages)`
-  — because the number alone cannot answer the question people actually bring to
-  it. `__version__` reads the *installed* distribution's metadata, so unpacking a
-  release archive into a working directory moves nothing and the old number keeps
-  being correct; the reader is then looking at a true statement about a different
-  install than the one they changed. The path names the environment, and the tool
-  that owns it: `uv/tools/`, `pipx/venvs/`, or a checkout.
-
-- **The User's Guide says what an upgrade is.** "Keeping It Up To Date" was
-  `uv tool upgrade c64cast` and nothing else — no way to check that it worked, no
-  mention that extras don't accumulate, and no answer for the one mistake the
-  three-line version invites, which is to treat c64cast as a folder of files and
-  unpack a release over it. It is now an
-  [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading)
-  section of its own, and the same symptom is answered in both troubleshooting
-  appendices. A release's own notes now lead with how to install or upgrade, with
-  the wheel and tarball labeled for the installers that fetch them.
-
-- **The `#:schema` line no longer needs maintaining, and says so when it does.**
-  Two new surfaces and one changed instruction. `c64cast --print-schema-path`
-  prints the value for a config's first line — the schema *inside* the running
-  install, worked out for where the config sits — and since an upgrade rewrites
-  that file in place, the line stays true release after release. `c64cast
-  --doctor` reports a directive that has stopped describing this install: pinned
-  to another version, naming a path that no longer resolves, or naming a copy of
-  the schema whose contents differ from the one this build generates (a leftover
-  virtualenv from before a Python-version bump answers the path and describes a
-  different program). It judges a path by content rather than location, so a
-  vendored copy that matches raises nothing, and it never rewrites the file —
-  a shared team schema and a deliberate pin are both legitimate, and neither is
-  distinguishable from staleness by looking. And the User's Guide now tells you
-  to ask for the path rather than to type a version-pinned URL and remember to
-  edit it, which is the instruction that put stale pins in configs in the first
-  place — the URL it printed as the example had itself said `v0.1.0` since 0.1.0.
-
-  Pointing an editor at a *newer* schema than the program would be worse than
-  pointing it at an older one, so nothing offers a moving "latest" address: it
-  would stop flagging real mistakes and start suggesting keys the installed
-  version rejects.
-
-### Added
-
-- **The web console's config browser is now a library, not a raw file
-  listing.** The Session tab shows **Favorites** and **Recently launched**
-  instead of every `.toml` under every root; the full, searchable list —
-  sortable by name or by date, with a show/hide toggle for the packaged
-  example configs — lives on the renamed **Editor** tab (`Configs` before).
-  Any config can be starred from either tab. A file's name is now shown with
-  its config root's path and `.toml` suffix stripped (subdirectories kept),
-  double-clicking one starts it, and a persistent Start/Switch button in the
-  tab bar tracks whatever config is currently selected, on every tab. Starting
-  a show from any of these now switches to the Live tab once it actually comes
-  up.
-- **New and Duplicate buttons on the Editor**, alongside a Delete. Duplicate
-  works on a packaged example too — the intended way to turn one into an
-  editable starting point, since the examples root is otherwise read-only.
-- **There is no more "host default" config.** Every surface used to treat "no
-  config chosen" as a stand-in for whatever `--config` named at launch; the
-  supervisor now reports that config's ref (`config_ref`) even before the
-  first start, so the browser can preselect and show it like any other
-  config instead of special-casing an empty selection.
-- Favorites and recently-launched configs are **server-side state**
-  (`~/.local/share/c64cast/console.json`), not one browser's `localStorage` —
-  a phone and a laptop pointed at the same host see the same list. A launch
-  from any surface (MIDI, a script, another console) counts as a recent, not
-  only one started from this browser.
-
-### Added
-
-- **The web console's Live tab freezes a video in place instead of stopping the
-  show.** Its old Pause button set the same machine-level `pause_event` the
-  C64's own C= key does — a full halt, not what a performer reaching for
-  Pause mid-set wants. A new **Freeze** button (and the rest of the Live DJ/VJ
-  transport: a scrub bar, press-and-hold rewind/fast-forward, and A/B loop
-  set/clear plus recall pads for a video's saved loop points) instead drives
-  the same engine the MIDI transport surface has used since Phase 2 — pause
-  in place with the audio muted, not a stop. It appears only for a scene that
-  actually has a transport (a playing video), since a generator or a picture
-  has nothing to scrub. The old pause/skip moved off the Live tab; they are
-  still reachable from the legacy `/perf` page.
-- **A visual color picker on the Live tab**, for a blank scene's border and
-  background — the first `mode.*` live-tune target whose values are colors
-  rather than a mode keyword, so it renders as the same palette swatches the
-  config Editor already offers instead of a `<select>`.
-- The Looks pads on the Live tab no longer look broken with a sparse set of
-  saved slots: an empty pad now reads **+** rather than sitting disabled at
-  30% opacity, and a tap on one saves the current look immediately (there is
-  nothing there to lose) instead of requiring the SAVE toggle first.
-
-### Added
-
-- **A media picker for the Editor's `file =` fields**, so a video, `.sid`,
-  image or program is chosen from a list of what is actually on disk instead
-  of typed from memory. `GET /api/media?kind=&q=` browses
-  `[web].media_read_write` and `media_read_only`, defaulting to the four
-  directories the loader itself already defaults to (`assets/videos`,
-  `assets/sids`, `assets/pictures`, `assets/programs`) — and offers the
-  result as a combobox: free text, a glob, a comma-separated list and a
-  directory (a per-play random pick, same as an unset `file =`) all stay
-  typeable. Dropping a URL onto a scene sets its `file =` field directly.
-
-### Added
-
-- **Uploading media from the browser**, so a clip reaches the host without a
-  shell. Drop a file onto a scene's card, or press the new **Upload…** button
-  on any `file =` field: `PUT /api/media/{name}` streams it straight to disk
-  (never buffered whole in memory — the host may be encoding video for a
-  running show at the same moment) and PATCHes the field to wherever it
-  landed. `[web].media_read_write` — a *kind → directory* table (`video` →
-  `assets/videos`, and so on; empty means the four loader defaults, same as
-  before) — replaces the unreleased `media_roots`, because which directory an
-  upload of a given kind lands in has to be stated rather than guessed: a
-  directory renamed `clips/` says nothing about what it holds. The kind comes
-  off the file's own extension, so there is nothing to pick for a two-kind
-  `generative` scene either. `[web].media_read_only` adds directories that
-  are browsable but never a destination. Nothing already there is ever
-  overwritten — a name already taken is renamed `clip-2.mp4`, `clip-3.mp4`,
-  and so on — and a `viewer` token is refused the same way it is refused a
-  config write. A `media_read_write` key that isn't one of the five known
-  kinds (a typo like `vidoe`) now fails at startup instead of silently
-  resolving to a directory no upload could ever reach.
-
-### Fixed
-
-- **SIGINT/SIGTERM now always end the process.** A stuck teardown thread used
-  to leave a run that would not exit and would not log why: `daemon=False`
-  playlist/supervisor threads are joined with a timeout and logged as
-  abandoned, but the interpreter's own shutdown joins those same threads again
-  on the way out — untimed, with no signal delivery, after `main()` had
-  already returned its exit code. The installed entry point now force-exits
-  once nothing can stall it (flushing output and `--log-file` first), so a run
-  that cannot finish its own teardown releases the machine instead of hanging
-  forever holding the DMA socket.
-- A second SIGINT or SIGTERM now restores the default disposition for
-  whichever signal actually arrived, rather than always SIGINT — so a repeated
-  SIGTERM from a service manager is no longer caught forever, and a third
-  signal genuinely kills the process. `--serve`'s host gained the same
+- **SIGINT/SIGTERM always end the process.** A stuck teardown thread used to
+  leave a run that would not exit and would not log why. The installed entry
+  point now force-exits once nothing can stall it (flushing output and
+  `--log-file` first), a second signal restores the default disposition for
+  whichever signal actually arrived, and a paused scene's resume waits on the
+  stop event rather than a bare `sleep(1)`. `--serve`'s host gained the same
   three-strike escape hatch the one-shot CLI already had.
-- A paused scene's resume no longer sleeps through a stop signal: the
-  post-reset wait now waits on the stop event instead of a bare `sleep(1)`, so
-  a signal received during that second is honored immediately instead of after
-  it elapses.
-
-### Fixed
-
-- **A refused start now says why, everywhere it can be tried.** A start or
-  switch that failed its config validation used to answer `config did not
-  validate (exit code 3); see the log` — the reason existed only in the log,
-  because `session.SessionConfigError` carried an exit code and no message.
-  It now carries the same diagnostic `validate_configs` already logs, so the
-  422 names the actual scene or setting that was wrong. The shell's tab-bar
-  Start button — reachable from every tab, and the most-used way to launch a
-  show — used to swallow that failure into the browser's console instead of
-  showing it anywhere; it now hands the refusal to the Session screen, which
-  already owns a permanent problem line for it.
-- **The web console pre-flights a config before ever claiming a start or
-  switch**, rather than finding out from the 202 that followed it. `launch()`
-  — the one function every launch surface (the tab-bar button, Session's own
-  Start/Switch, a favorite's quick-launch, a double-click in the Editor) goes
-  through — now checks the config first and refuses locally if it would not
-  run. The check exposes `doctor.validate_load_result` (`--doctor
-  --skip-probe`'s collect-all pass, never reachable over HTTP before) as a new
-  `diagnostics` list on `POST /api/configs/{ref}/validate`'s report, so a bad
-  config names everything wrong with it at once instead of one problem per
-  click. That route also no longer silently validates an empty string when
-  called with no body — an absent `text` key now checks the file as it
-  stands on disk, which is what a pre-flight actually needs to ask about.
-  The pre-flight's diagnostics list skips the installation-level checks
-  (venv, hard deps, uv.lock, machine settings, data dirs, char ROM, extras)
-  that `--doctor` still runs — those answer "is this machine set up right",
-  not "is this config good to launch", and don't change from one Start click
-  to the next. Live's own Start-the-host-default button now reports a
-  refusal through the same `describeError` every other screen's problem
-  line uses, instead of the bare exception text.
-
-### Added
-
-- **A `file =` field's picker searches the host instead of filtering the first
-  500 entries a plain listing reached.** Typing into a media picker used to
-  filter whatever `mediaOfKind` had already cached — one unfiltered listing per
-  kind, capped at `MAX_FILES` — so an HVSC-sized tree or a large asset
-  directory hid almost everything behind the ones the walk happened to reach
-  first, and the `truncated` flag saying so was fetched and then dropped on
-  the floor. The field itself is the search box: typing now debounces into a
-  live `GET /api/media?kind=&q=` (the parameter has existed since uploads
-  shipped; nothing called it with one before this), and a search past the cap
-  is offered a "truncated" note instead of silently narrowing.
-- **Reorder a show's scenes from the web console**, without opening the text
-  editor. `add_scene` and `remove_scene` had a route each; the order of a show
-  was still a text-editor job, which was the one structural change that never
-  got one. **↑**/**↓** chips on each scene block move it earlier or later
-  (`PATCH /api/configs/{ref}/scenes/{index}`, body `{"to": n}`), reusing the
-  same `_rewrite` spine as every other structural edit — the `.bak` sibling, the
-  ensemble and secret refusals, `partial=True` so reordering a half-built show
-  isn't refused for a scene that names no media yet. Disabled while an edit is
-  staged, the same as *Duplicate* and *Remove*, since renumbering the staged
-  edits to match a reorder is exactly the reconciliation those two already
-  refuse rather than attempt.
-- **A real progress bar for media uploads, with a Cancel button.** Dropping a
-  large clip onto a scene, or picking one with the **Upload…** button, used to
-  show `Uploading clip.mp4…` and nothing else until it finished or failed — no
-  percentage, no way to stop it. `uploadMedia` now goes over
-  `XMLHttpRequest` instead of `fetch` (the only browser API that reports
-  request-body progress), so the console's first `<progress>` fills in as the
-  bytes actually land, going indeterminate if the browser can't measure a
-  total. Canceling aborts the request through an `AbortController`; nothing
-  changes on the server side — the aborted read already drives the same
-  cleanup path a network failure does, and the partial file is unlinked either
-  way.
-
-### Added
-
-- **The Live screen can now be driven from the keyboard.** Space
-  pauses/resumes, `t` taps the tempo, `n` skips to the next scene, `f`
-  freezes/unfreezes the video, `l` toggles the A/B loop, `[`/`]` rewind/fast-
-  forward while held, `1`–`8` launch a clip slot, and `?` shows or hides the
-  list on screen. Every shortcut backs off the moment a text field, a select
-  or a button has the focus — so tabbing to a button and pressing Space still
-  activates that button rather than pausing the show — and none of them
-  reaches past a read-only console.
 
 ## [0.3.0] - 2026-08-09
 
