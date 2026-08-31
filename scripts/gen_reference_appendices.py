@@ -926,7 +926,7 @@ def appendix_examples() -> list[str]:
     ]
     rows = []
     for path in paths:
-        summary = cell(introspect.example_summary(path))
+        summary = cell(introspect.example_summary(path, full=True))
         if introspect.example_needs_media(path):
             summary += " *(needs your own media)*"
         rows.append([identity(code(pathsmod.example_name(path))), summary])

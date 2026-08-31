@@ -3,8 +3,8 @@
 # shape of several kin effects (see https://github.com/wled-dev/WLED
 # wled00/FX.cpp `mode_2DBlackHole`, `mode_2DFrizzles`, `mode_2DSindots`,
 # `mode_2Dsquaredswirl`, `mode_2Ddriftrose`): a handful of points, each
-# independently orbiting via a bounded sine at its own frequency, color-
-# cycled and blended, plus a fixed white center dot (Black Hole's
+# independently orbiting via a bounded sine at its own frequency,
+# color-cycled and blended, plus a fixed white center dot (Black Hole's
 # signature). Rather than port each near-identical effect separately, this
 # ports the shared "beatsin dot swarm" primitive once.
 #

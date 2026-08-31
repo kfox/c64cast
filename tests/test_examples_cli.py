@@ -65,6 +65,15 @@ class ListExamplesTest(unittest.TestCase):
         # ...and it reaches the listing (which wraps, so match the opening).
         self.assertIn(summary.split(" — ")[0], _run(["--list-examples"])[1])
 
+    def test_a_long_summary_is_capped_for_the_terminal_but_not_for_the_book(self):
+        # The terminal listing holds an entry to about two lines; the book's
+        # example appendix has a column that wraps and asks for it in full.
+        path = paths.resolve_example("performance-clips")
+        self.assertTrue(introspect.example_summary(path).endswith(" …"))
+        full = introspect.example_summary(path, full=True)
+        self.assertNotIn("…", full)
+        self.assertTrue(full.endswith("."))
+
     def test_demos_needing_user_media_are_tagged(self):
         _, out = _run(["--list-examples"])
         self.assertIn("needs your own media", out)

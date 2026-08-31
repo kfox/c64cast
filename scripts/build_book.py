@@ -132,6 +132,30 @@ def escape(text: str) -> str:
     return "".join("\\" + c if c in _TYPST_SPECIAL else c for c in text)
 
 
+# A converted table cell is wrapped in `[...]`, and Typst reads `+ `, `- `, `= `
+# or `N. ` at the head of a content block as a list or heading marker -- so a
+# cell that opens with one (Appendix D's `+ pairs that flicker mildly`) comes
+# out as a one-item list. None of them ever mean that in a cell.
+_CELL_LEADING_MARKUP = re.compile(r"^(\d+\.|[-+=])(?=\s)")
+
+
+# Zero-width space: a break opportunity Typst honors even though neither
+# vendored face carries the glyph. Used to let an all-underscore index term
+# wrap inside its fixed column. Lives only in the generated .typ.
+_ZWSP = "\u200b"  # U+200B
+
+
+def guard_cell_markup(body: str) -> str:
+    """Backslash-escape a Typst block marker that opens a converted cell."""
+
+    def esc(m: re.Match[str]) -> str:
+        mark = m.group(1)
+        # `N.` -> `N\.` (the dot is the marker); `+`/`-`/`=` -> `\+` etc.
+        return f"{mark[:-1]}\\{mark[-1]}"
+
+    return _CELL_LEADING_MARKUP.sub(esc, body, count=1)
+
+
 def typst_string(text: str) -> str:
     """Quote a Python string as a Typst string literal."""
     body = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -249,7 +273,15 @@ class TypstEmitter(Emitter):
         # the foot of one page with its body at the top of the next.
         parts.append("  table.header(" + ", ".join(f"[{c}]" for c in header) + "),")
         for row in rows:
-            parts.append("  " + ", ".join(f"[{c}]" for c in row) + ",")
+            cells = [guard_cell_markup(c) for c in row]
+            if kind == "index" and cells:
+                # A term with no space in it -- `hue_corrections_replace_defaults`
+                # -- cannot wrap and runs over the locator column, so an
+                # identifier gets a zero-width break opportunity after each
+                # underscore. In the .typ only; the Markdown a font check reads
+                # stays clean.
+                cells[0] = cells[0].replace("_", "_" + _ZWSP)
+            parts.append("  " + ", ".join(f"[{c}]" for c in cells) + ",")
         parts.append(")\n")
         return "\n".join(parts)
 

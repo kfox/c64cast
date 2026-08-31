@@ -289,6 +289,24 @@ class BlockConversionTest(unittest.TestCase):
         self.assertIn("nowhere yet", out)
         self.assertNotIn("#pagerefs", out)
 
+    def test_a_long_index_term_can_wrap_inside_its_column(self):
+        # `hue_corrections_replace_defaults` has no space to break at and ran
+        # over the locator column; each underscore now carries a zero-width
+        # break opportunity, in the .typ only.
+        out = convert(
+            "<!-- table: index -->\n| Term | See |\n|---|---|\n"
+            "| `hue_corrections_replace_defaults` | [A (1)](#a) |\n",
+            anchors=frozenset({"sec-99-test-a"}),
+        )
+        self.assertIn(f"hue_{bg._ZWSP}corrections_{bg._ZWSP}replace_{bg._ZWSP}defaults", out)
+
+    def test_a_cell_opening_with_a_typst_marker_is_neutralized(self):
+        # `+ pairs that flicker mildly` at the head of a cell is not a list.
+        out = convert("| A | B |\n|---|---|\n| x | + pairs that flicker mildly |\n")
+        self.assertIn("[\\+ pairs that flicker mildly]", out)
+        out = convert("| A | B |\n|---|---|\n| x | 3. of a kind |\n")
+        self.assertIn("[3\\. of a kind]", out)
+
     def test_br_becomes_a_line_break(self):
         out = convert("| A | B |\n|---|---|\n| one<br>two | 2 |\n")
         self.assertIn("one#linebreak()two", out)
