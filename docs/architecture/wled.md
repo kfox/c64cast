@@ -137,7 +137,7 @@ WLED "presets" capture the current look and recall it in one tap.
 
 **Dispatch.** `apply(partial)` handles the WLED preset verbs before any state application:
 
-* `psave` / `n` — snapshot the current transport plus per-segment echo into a preset dict and store it, auto-picking the next free id when `psave<1`.
+* `psave` / `n` — snapshot the current transport plus per-segment echo into a preset dict and store it, auto-picking the next free id whenever `psave` is outside 1..250 (unset, `0`, or a stale id past the client's own free-slot count). `PresetStore.next_free_id` returns `0` (WLED's reserved empty slot) to signal "store is full" rather than reusing the last valid id, and `_save_preset_locked` no-ops on that rather than overwriting an existing preset. `n` is clamped to `_MAX_PRESET_NAME_LEN` (64) — it's the only attacker-controlled field in a saved preset (the segment dict is built server-side from echo state), so bounding it bounds how much an unauthenticated LAN write can grow the presets file.
 * `pdel` — delete.
 * `ps` — recall.
 * Anything else is a genuine manual change: it resets `_active_preset` to −1 and delegates to the extracted `_apply_locked(partial, *, force_palcol=False)`.
@@ -147,6 +147,8 @@ Recall calls `_apply_locked(preset, force_palcol=True)` so the stored palette an
 `state.ps` reports `_active_preset`, and `info.fs.pmt` is the presets-file mtime in ms so clients can cache and re-fetch `/presets.json`.
 
 **Storage.** `PresetStore` keeps one JSON file per device name at `paths.presets_dir()`/`wled-<slug>.json` — the canonical `<data root>/presets/`, `$C64CAST_DATA_DIR`-overridable and resolved at use time (see [`paths.py`](config.md#pathspy)); machine/taste-specific captured data, never committed. It holds the WLED preset map `{"1": {...}}`, ids 1–250, with id 0 reserved empty. The presets/looks/loops resolvers each call `transport.warn_if_legacy_presets_orphaned()`, a one-time log heads-up for a source checkout that still has presets at the repo `presets/` dir, which nothing reads. It fires from the resolver rather than `--doctor` because only the resolver knows which store was actually looked for.
+
+**Cross-origin POST.** Neither `/json` nor `/json/state` requires a body content-type FastAPI treats as needing a CORS preflight, so a browser page on any other origin (or reached via DNS rebinding) could POST a state change with no preflight and no readable response — the classic CSRF shape. `_is_cross_origin` rejects (403) any POST whose `Origin` header names a host other than the request's own `Host`; a same-origin fetch from the served `/` page and a non-browser client (python-wled, Home Assistant, curl) both send no `Origin` at all on same-origin/non-browser requests and are unaffected.
 
 Loads are tolerant — missing or corrupt yields empty. Writes are atomic: a temp file in the same dir, `fsync`, then `os.replace`. So it survives restarts like real WLED. The path is injectable so tests can point it at a tempdir. That whole contract is `transport.JsonSlotStore`'s (`PresetStore` is a subclass — see the transport notes in [control.md](control.md)), shared with `performance.LookStore` and `transport.LoopPresetStore` rather than maintained as three copies.
 

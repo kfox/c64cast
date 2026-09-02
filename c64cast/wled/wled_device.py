@@ -71,6 +71,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
@@ -611,6 +612,11 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
 _PRESET_ID_MIN = 1
 _PRESET_ID_MAX = 250
 
+# The only attacker-controlled field in a saved preset (the segment dict is
+# built server-side from echo state) — clamped so an unauthenticated LAN
+# client can't grow the presets file without bound.
+_MAX_PRESET_NAME_LEN = 64
+
 
 def _sanitize_name(name: str) -> str:
     """Filesystem-safe slug for a device name (the gitignored preset filename)."""
@@ -634,11 +640,14 @@ class PresetStore(JsonSlotStore):
         return self.load()
 
     def next_free_id(self) -> int:
+        """The lowest unused preset id, or 0 (WLED's reserved empty slot) if
+        every slot is taken — 0 signals exhaustion rather than silently
+        reusing (and overwriting) the last valid slot."""
         used = {int(k) for k in self.load()}
         for pid in range(_PRESET_ID_MIN, _PRESET_ID_MAX + 1):
             if pid not in used:
                 return pid
-        return _PRESET_ID_MAX
+        return 0
 
     def mtime_ns(self) -> int:
         try:
@@ -1042,9 +1051,16 @@ class WledBridge:
 
     def _save_preset_locked(self, partial: Mapping[str, Any]) -> None:
         pid = int(partial.get("psave", 0))
-        if pid < _PRESET_ID_MIN:
+        if not _PRESET_ID_MIN <= pid <= _PRESET_ID_MAX:
+            # Out of range in either direction (unset, or a stale/invalid id
+            # from a client whose own free-slot count disagreed with ours) —
+            # reassign through the real free-slot search rather than either
+            # silently no-op'ing (JsonSlotStore.save rejects an out-of-range
+            # slot) or falling through to a fixed id that might already exist.
             pid = self._presets.next_free_id()
-        name = str(partial.get("n") or self._default_preset_name(pid))
+            if pid == 0:
+                return  # store is full: nothing to reassign to
+        name = str(partial.get("n") or self._default_preset_name(pid))[:_MAX_PRESET_NAME_LEN]
         self._presets.save(pid, self._snapshot_preset(name))
         self._active_preset = pid
 
@@ -1064,6 +1080,19 @@ class WledBridge:
         self._active_preset = pid
 
 
+def _is_cross_origin(request: Any) -> bool:
+    """True if the request carries an `Origin` header that names a different
+    host than its own `Host` header — a cross-origin browser request (CSRF /
+    DNS-rebinding), as opposed to a same-origin fetch from the served `/`
+    page or a non-browser client (python-wled, Home Assistant, curl), none of
+    which send `Origin` on a same-origin/non-browser POST."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    host = (request.headers.get("host") or "").lower()
+    return urlsplit(origin).netloc.lower() != host
+
+
 def build_wled_app(bridge: WledBridge, port: int = 80):
     """Build the FastAPI app serving the WLED JSON HTTP + WS API subset.
 
@@ -1074,7 +1103,14 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     Raises RuntimeError if FastAPI isn't installed (the `wled`/`control` extra)."""
     try:
-        from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+        from fastapi import (
+            FastAPI,
+            HTTPException,
+            Request,
+            Response,
+            WebSocket,
+            WebSocketDisconnect,
+        )
     except ImportError as e:
         raise RuntimeError(
             "WLED device requires fastapi: uv tool install --force 'c64cast[all]'"
@@ -1144,18 +1180,24 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
         # WLED serves its saved presets here; clients cache it against info.fs.pmt.
         return bridge.presets_json()
 
-    async def _apply_body(body: Any) -> dict[str, Any]:
+    async def _apply_body(request: Request) -> dict[str, Any]:
+        if _is_cross_origin(request):
+            # A browser page on another origin (or reached via DNS rebinding)
+            # POSTing here needs no CORS preflight since the body just looks
+            # like a simple text/plain request — reject before it's parsed.
+            raise HTTPException(status_code=403, detail="cross-origin request rejected")
+        body = await request.json()
         if isinstance(body, Mapping):
             bridge.apply(body)
         return {"success": True}
 
     @app.post("/json")
     async def post_json(request: Request) -> dict[str, Any]:
-        return await _apply_body(await request.json())
+        return await _apply_body(request)
 
     @app.post("/json/state")
     async def post_state(request: Request) -> dict[str, Any]:
-        return await _apply_body(await request.json())
+        return await _apply_body(request)
 
     async def _broadcast_state() -> None:
         state_msg = {"state": bridge.state_dict()}
