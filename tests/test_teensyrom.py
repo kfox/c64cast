@@ -10,6 +10,7 @@ against the firmware protocol.
 from __future__ import annotations
 
 import struct
+import time
 import unittest
 from dataclasses import replace
 from unittest import mock
@@ -27,6 +28,8 @@ from c64cast.hw.teensyrom_dma import (
     TOK_FAIL,
     TOK_FW_FULL,
     TOK_READ_C64_MEM,
+    SerialTransport,
+    TcpTransport,
     TRBusyError,
     TRClient,
     TRError,
@@ -235,6 +238,63 @@ class ErrorSurfacingTest(unittest.TestCase):
         with self.assertRaises(TRError) as cm:
             self.client.write_segment(0xD020, b"\x01")
         self.assertNotIn("—", str(cm.exception))
+
+
+class PathValidationTest(unittest.TestCase):
+    """delete_file/post_file/launch_file all frame the path via _encode_path,
+    which must raise TRError (not a bare UnicodeEncodeError, not a wire
+    desync) for a non-ASCII path or one with an embedded NUL — and must do
+    so before anything reaches the wire."""
+
+    def setUp(self):
+        self.t = LoopbackTransport()
+        self.client = TRClient(self.t)
+
+    def test_delete_file_rejects_non_ascii_path_without_touching_the_wire(self):
+        with self.assertRaises(TRError):
+            self.client.delete_file("café.prg")
+        self.assertEqual(self.t.sent, b"")
+
+    def test_post_file_rejects_embedded_nul_without_touching_the_wire(self):
+        with self.assertRaises(TRError):
+            self.client.post_file(b"AB", "a\x00b.prg")
+        self.assertEqual(self.t.sent, b"")
+
+    def test_launch_file_rejects_non_ascii_path_without_touching_the_wire(self):
+        with self.assertRaises(TRError):
+            self.client.launch_file("日本語.prg")
+        self.assertEqual(self.t.sent, b"")
+
+    def test_plain_ascii_path_is_unaffected(self):
+        self.t.queue_token(TOK_ACK)  # open
+        self.t.queue_token(TOK_ACK)  # launch
+        self.client.launch_file("c64cast/x.prg")  # must not raise
+
+
+class DrainAfterCommandTest(unittest.TestCase):
+    """drain_after_command is the locked replacement for reaching into
+    self.transport directly after a command's own lock is released (the
+    _settle_after_launch finding)."""
+
+    def test_drain_after_command_holds_the_lock(self):
+        t = LoopbackTransport()
+        client = TRClient(t)
+        seen_locked = []
+        orig = t.drain_text
+
+        def spy(quiet_s: float = 0.2) -> str:
+            seen_locked.append(client._lock.locked())
+            return orig(quiet_s)
+
+        t.drain_text = spy  # type: ignore[method-assign]
+        client.drain_after_command(0.05)
+        self.assertEqual(seen_locked, [True])
+
+    def test_drain_after_command_returns_the_transport_text(self):
+        t = LoopbackTransport()
+        client = TRClient(t)
+        t.queue_stale(b"hello")
+        self.assertEqual(client.drain_after_command(), "hello")
 
 
 class BackendTest(unittest.TestCase):
@@ -592,6 +652,173 @@ class BackendTest(unittest.TestCase):
         # last write_segment frame ends with the value byte 0x80
         self.assertEqual(b.stats["writes"], 1)
 
+    def test_probe_returns_the_status_line(self):
+        b, t = self._backend()
+        t.queue_stale(b"TR ready\r\n")
+        self.assertEqual(b.probe(), "TR ready")
+
+    def test_probe_returns_none_on_an_empty_reply_instead_of_faking_liveness(self):
+        # ping()'s drain_text never raises on a timeout, so a hung/disconnected
+        # TR that sends back zero bytes must be reported as "couldn't tell",
+        # not fabricated into a firmware-label success string.
+        b, _ = self._backend()
+        self.assertIsNone(b.probe())
+
+    def test_describe_device_omits_serial_number_when_the_transport_has_none(self):
+        # LoopbackTransport doesn't override TRTransport.serial_number, so the
+        # ABC's default (None) applies -- same as a TCP-attached board.
+        b, _t = self._backend()
+        self.assertEqual(b.describe_device(), "TeensyROM+ (full firmware, loopback)")
+
+    def test_settle_after_launch_goes_through_the_client_lock(self):
+        # _settle_after_launch runs after launch_file() has already released
+        # the lock; it must reacquire it via drain_after_command rather than
+        # reading self.tr.transport directly, or a concurrent keyboard-poller
+        # read_memory() could steal these bytes (or vice versa).
+        b, t = self._backend()
+        seen_locked = []
+        orig = t.drain_text
+
+        def spy(quiet_s: float = 0.2) -> str:
+            seen_locked.append(b.tr._lock.locked())
+            return orig(quiet_s)
+
+        t.drain_text = spy  # type: ignore[method-assign]
+        b._settle_after_launch()
+        self.assertEqual(seen_locked, [True])
+
+
+class _FakeSerial:
+    """Minimal stand-in for pyserial's Serial, enough for SerialTransport's
+    recv_exact/drain_text. `chunks` is popped one per read() call; once
+    exhausted, read() returns b"" (idle, matching a real .timeout expiry)."""
+
+    def __init__(self, chunks: list[bytes] | None = None, delay_s: float = 0.0):
+        self.timeout = 2.0
+        self.timeouts_seen: list[float] = []
+        self._chunks = list(chunks or [])
+        self._delay_s = delay_s
+
+    def read(self, n: int) -> bytes:
+        self.timeouts_seen.append(self.timeout)
+        if self._delay_s:
+            time.sleep(self._delay_s)
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def write(self, data: bytes) -> None: ...
+
+    def flush(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class SerialTransportDeadlineTest(unittest.TestCase):
+    """SerialTransport.recv_exact/drain_text against a fake pyserial object —
+    no real hardware, no real elapsed-time waiting beyond the short sleeps
+    a couple of tests use to force real wall-clock progress."""
+
+    def test_drain_text_overrides_ser_timeout_to_quiet_s_and_restores_it(self):
+        # Without this, read(64) blocks up to the fixed io_timeout (2s)
+        # waiting for any bytes, so the common "nothing to drain" case would
+        # pay a 2s stall instead of returning after quiet_s.
+        transport = SerialTransport("COM_FAKE")
+        fake = _FakeSerial()
+        transport._ser = fake
+        result = transport.drain_text(quiet_s=0.05)
+        self.assertEqual(result, "")
+        self.assertTrue(fake.timeouts_seen)
+        self.assertTrue(all(t == 0.05 for t in fake.timeouts_seen))
+        self.assertEqual(fake.timeout, 2.0)  # restored afterward
+
+    def test_drain_text_strips_control_characters(self):
+        transport = SerialTransport("COM_FAKE")
+        transport._ser = _FakeSerial([b"AB\x07CD\x1b[31m"])
+        self.assertEqual(transport.drain_text(quiet_s=0.05), "ABCD[31m")
+
+    def test_drain_text_hard_cap_stops_a_device_that_never_goes_quiet(self):
+        transport = SerialTransport("COM_FAKE")
+        transport._ser = _FakeSerial([b"x"] * 10_000, delay_s=0.01)
+        with mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05):
+            with self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"):
+                start = time.monotonic()
+                transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
+                elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 2.0)
+
+    def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
+        # The old code only checked its deadline when a read() returned
+        # nothing; a link that delivers >=1 byte on every call never tripped
+        # it and could hold TRClient._lock indefinitely.
+        transport = SerialTransport("COM_FAKE", io_timeout=0.05)
+        transport._ser = _FakeSerial([b"x"] * 10_000, delay_s=0.01)
+        start = time.monotonic()
+        with self.assertRaises(TRError):
+            transport.recv_exact(1000)
+        self.assertLess(time.monotonic() - start, 2.0)
+
+    def test_serial_number_delegates_to_usb_serial_number(self):
+        transport = SerialTransport("/dev/cu.usbmodemABC")
+        with mock.patch("c64cast.hw.teensyrom_dma.usb_serial_number", return_value="XYZ123") as m:
+            self.assertEqual(transport.serial_number, "XYZ123")
+        m.assert_called_once_with("/dev/cu.usbmodemABC")
+
+
+class _FakeSocket:
+    """Minimal stand-in for a connected socket, enough for TcpTransport's
+    recv_exact/drain_text."""
+
+    def __init__(self, chunks: list[bytes] | None = None, delay_s: float = 0.0):
+        self._timeout: float | None = None
+        self._chunks = list(chunks or [])
+        self._delay_s = delay_s
+
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+    def settimeout(self, value: float | None) -> None:
+        self._timeout = value
+
+    def recv(self, n: int) -> bytes:
+        if self._delay_s:
+            time.sleep(self._delay_s)
+        if not self._chunks:
+            raise TimeoutError("no more fake data")
+        return self._chunks.pop(0)
+
+
+class TcpTransportDeadlineTest(unittest.TestCase):
+    """TcpTransport.recv_exact/drain_text against a fake socket."""
+
+    def test_drain_text_strips_control_characters(self):
+        transport = TcpTransport("host")
+        transport._sock = _FakeSocket([b"AB\x07CD\x1b[31m"])  # type: ignore[assignment]
+        self.assertEqual(transport.drain_text(quiet_s=0.05), "ABCD[31m")
+
+    def test_drain_text_hard_cap_stops_a_device_that_never_goes_quiet(self):
+        transport = TcpTransport("host")
+        transport._sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01)  # type: ignore[assignment]
+        with mock.patch("c64cast.hw.teensyrom_dma._DRAIN_MAX_S", 0.05):
+            with self.assertLogs("c64cast.hw.teensyrom_dma", level="WARNING"):
+                start = time.monotonic()
+                transport.drain_text(quiet_s=10.0)  # would never go quiet on its own
+                elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 2.0)
+
+    def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
+        # Unlike SerialTransport's (buggy) attempt, the old code tracked no
+        # deadline at all here -- every individual recv() got its own fresh
+        # per-call timeout budget, so a trickling peer never tripped anything.
+        transport = TcpTransport("host", io_timeout=0.05)
+        transport._sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01)  # type: ignore[assignment]
+        start = time.monotonic()
+        with self.assertRaises(TRError):
+            transport.recv_exact(1000)
+        self.assertLess(time.monotonic() - start, 2.0)
+
+    def test_has_no_serial_number(self):
+        transport = TcpTransport("host")
+        self.assertIsNone(transport.serial_number)
+
 
 class ReuCoercionTest(unittest.TestCase):
     """cli._coerce_reu_for_backend drops REU-staged opt-ins on a no-REU backend
@@ -744,6 +971,12 @@ class MakeBackendTest(unittest.TestCase):
         ):
             make_backend(cfg)
         self.assertEqual(captured["port"], "/dev/cu.usbmodemAUTO1")
+        # The resolved device must be written back onto the config too —
+        # dac_calibration_store.resolve_calibration_key only looks up the
+        # board's USB serial number when serial_port is set, so leaving it
+        # empty here would collide two different TR+ boards on one host
+        # onto the same "tr-serial-auto" calibration file.
+        self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodemAUTO1")
 
     def test_explicit_serial_port_skips_autodetect(self):
         # An explicit serial_port wins — auto-detect is never consulted.

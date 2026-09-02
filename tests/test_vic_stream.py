@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import struct
 import unittest
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from c64cast.hw import vic_stream
-from c64cast.hw.socket_dma import CMD_VICSTREAM_OFF, CMD_VICSTREAM_ON, STREAM_TICK_S
+from c64cast.hw.socket_dma import CMD_VICSTREAM_OFF, CMD_VICSTREAM_ON, STREAM_TICK_S, SocketDMAError
 
 WIDTH = 384
 LINE_BYTES = WIDTH // 2
@@ -155,6 +156,56 @@ class ReassemblyTest(unittest.TestCase):
         self._feed(3, frame=1, end=False)
         self.rx._expire_partial()
         self.assertEqual(self.rx.stats["dropped"], 0)
+
+    def test_a_partial_flood_that_never_ends_is_capped_not_unbounded(self):
+        # A flood of non-final packets (forged or just a firmware bug) must
+        # not grow `_parts` forever while waiting for `_expire_partial`'s
+        # silence-based timeout — it has to give up on its own.
+        chunk = LINE_BYTES
+        n = vic_stream._MAX_PARTIAL_BYTES // chunk + 2
+        self._feed(n, frame=1, end=False)
+        self.assertLessEqual(sum(len(p) for p in self.rx._parts), vic_stream._MAX_PARTIAL_BYTES)
+        self.assertEqual(self.rx.stats["dropped"], 1)
+
+
+class SourceFilterTest(unittest.TestCase):
+    """The wire protocol is unauthenticated UDP — the receiver must ignore
+    datagrams that don't come from the machine it asked to stream, or any
+    host on the segment that guesses the bound port can inject frames."""
+
+    def setUp(self) -> None:
+        self.dma = _FakeDMA()
+        self.rx = vic_stream.VicStreamReceiver(self.dma, machine_host="192.0.2.64")
+        self.rx._machine_addr = "192.0.2.64"
+
+    def test_accepts_the_machines_own_address(self):
+        self.assertTrue(self.rx._is_from_machine(("192.0.2.64", 40000)))
+
+    def test_rejects_any_other_source(self):
+        self.assertFalse(self.rx._is_from_machine(("192.0.2.99", 40000)))
+
+
+class StartLeakTest(unittest.TestCase):
+    """start() must close the socket it opened even when the DMA command
+    fails with `SocketDMAError` rather than a bare `OSError` — otherwise a
+    failed start() leaks one fd per retry."""
+
+    def test_a_dma_error_during_start_still_closes_the_socket(self):
+        class _BoomDMA:
+            def vicstream_on(self, destination: str, *, stop_after_s: float = 0.0) -> None:
+                raise SocketDMAError("nope")
+
+        main_sock = MagicMock()
+        main_sock.getsockname.return_value = ("0.0.0.0", 40000)
+        probe_sock = MagicMock()
+        probe_sock.getsockname.return_value = ("192.0.2.1", 0)
+
+        with patch.object(vic_stream.socket, "socket", side_effect=[main_sock, probe_sock]):
+            rx = vic_stream.VicStreamReceiver(_BoomDMA(), machine_host="127.0.0.1")
+            with self.assertRaises(SocketDMAError):
+                rx.start()
+
+        main_sock.close.assert_called_once()
 
 
 class WatchdogTest(unittest.TestCase):

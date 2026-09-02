@@ -186,6 +186,22 @@ class MakeBackendTest(unittest.TestCase):
             api_pal = make_backend(self._cfg(system="PAL"))
             self.assertEqual(api_pal.profile.default_fps, 50.0)
 
+    def test_system_fold_is_case_insensitive(self):
+        # Nothing at config load enforces SYSTEM_CHOICES' canonical
+        # spelling, and every other consumer of this field normalizes with
+        # .upper() — a bare comparison here used to fold "ntsc" onto the
+        # PAL fps with no diagnostic.
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
+            api = make_backend(self._cfg(system="ntsc"))
+            self.assertEqual(api.profile.default_fps, 60.0)
+            self.assertEqual(api.profile.system, "NTSC")
+
+            api_pal = make_backend(self._cfg(system="pal"))
+            self.assertEqual(api_pal.profile.default_fps, 50.0)
+
+            api_auto = make_backend(self._cfg(system="AUTO"))
+            self.assertEqual(api_auto.profile.default_fps, 60.0)
+
     def test_host_sid_model_resolved_onto_the_profile(self):
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             cfg = self._cfg(system="PAL")
@@ -253,6 +269,16 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.write_memory_file("0400", b"\x01\x02\x03")
         self.assertEqual(b.emits, [(0x0400, b"\x01\x02\x03")])
         self.assertEqual(b.stats["bytes"], 3)
+
+    def test_write_memory_counts_bytes_too(self):
+        # write_memory used to be the one write path that didn't touch
+        # stats["bytes"] — every write_regs call (VIC/$D418 registers, the
+        # per-frame traffic) was invisible in the byte counter as a result.
+        b = self._b()
+        b.write_memory("d020", "0e")
+        self.assertEqual(b.stats["bytes"], 1)
+        b.write_regs("d020", 0x0E, 0x06, 0x01, 0x02)
+        self.assertEqual(b.stats["bytes"], 5)
 
     def test_write_regs_coalesces_into_one_emit(self):
         b = self._b()
@@ -420,6 +446,30 @@ class BufferedWriteBackendTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.backend", level="ERROR"):
             b.write_memory("d020", "0e")  # must not propagate
         self.assertEqual(b.emits, [(0xD020, b"\x0e")])
+
+    def test_persistently_failing_listener_is_throttled_not_logged_every_write(self):
+        # A listener that fails on every write (a full disk, a preview
+        # widget after a mode switch) used to log a full traceback per
+        # write — up to ~200/sec. Only the 1st/10th/50th/200th should log.
+        b = self._b()
+        b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
+        with self.assertLogs("c64cast.hw.backend", level="ERROR") as cap:
+            for _ in range(10):
+                b.write_memory("d020", "0e")
+        self.assertEqual(len(cap.records), 2)  # failures #1 and #10 only
+
+    def test_listener_failure_ladder_resets_on_a_working_listener(self):
+        # Order matters for this ladder (it isn't per-listener): a failing
+        # listener followed by one that succeeds ends the write with the
+        # counter cleared, same as _consecutive_errors in the emit ladder.
+        b = self._b()
+        calls: list[tuple[int, bytes]] = []
+        b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
+        b.add_write_listener(lambda a, d: calls.append((a, bytes(d))))
+        with self.assertLogs("c64cast.hw.backend", level="ERROR"):
+            b.write_memory("d020", "0e")
+        self.assertEqual(b._consecutive_listener_errors, 0)
+        self.assertEqual(calls, [(0xD020, b"\x0e")])
 
     # ---- failure ladder --------------------------------------------------
     def test_emit_failure_ladder_logs_and_counts(self):

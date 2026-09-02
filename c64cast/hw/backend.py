@@ -329,8 +329,13 @@ TEENSYROM_PROFILE = HardwareProfile(
     audio_ring_addr=0x4000,
 )
 
-# Registry of selectable backend families. Maps the `[hardware].backend`
-# token to its base profile.
+# The `[hardware].backend` tokens the CLI/config layer offers (`--describe`,
+# schema `choices`). This is NOT a dispatch table — it maps to nothing; the
+# actual dispatch is the `if backend == ... / elif backend == ...` chain in
+# `make_backend` below. `test_backend_choices_match_registry` pins this tuple
+# against the CLI's own choices — so a token added here without a matching
+# `make_backend` branch fails a test instead of surfacing at runtime as
+# `ValueError: unknown [hardware].backend ...` after --help already offered it.
 BACKENDS: tuple[str, ...] = ("ultimate", "teensyrom")
 
 
@@ -604,6 +609,8 @@ class BufferedWriteBackend(C64Backend):
         # error ladder (_note_emit_success / _note_emit_failure). Reset to 0
         # on any success so the ladder only escalates on a sustained outage.
         self._consecutive_errors = 0
+        # Same idea, for _notify's listener-failure ladder — see _notify.
+        self._consecutive_listener_errors = 0
 
     # ---- transport primitive (subclass implements) ------------------------
     # Labels for the shared _emit failure-log ladder. Subclasses override so
@@ -668,7 +675,15 @@ class BufferedWriteBackend(C64Backend):
             try:
                 cb(address, data)
             except Exception:
-                log.exception("write listener raised; continuing")
+                self._consecutive_listener_errors += 1
+                # Same idea as _note_emit_failure's ladder: a listener that
+                # fails on every write (a full disk, a preview widget after
+                # a mode switch) would otherwise get a full traceback per
+                # write, up to ~200/sec — log a few, then go quiet.
+                if self._consecutive_listener_errors in (1, 10, 50, 200):
+                    log.exception("write listener raised; continuing")
+                continue
+            self._consecutive_listener_errors = 0
 
     # ---- write path -------------------------------------------------------
     def write_memory(self, address: str, data_hex: str) -> None:
@@ -676,6 +691,7 @@ class BufferedWriteBackend(C64Backend):
         addr = int(address, 16)
         payload = bytes.fromhex(data_hex)
         self._emit(addr, payload)
+        self._stats["bytes"] += len(payload)
         if self._listeners:
             self._notify(addr, payload)
 
@@ -700,6 +716,12 @@ class BufferedWriteBackend(C64Backend):
         """Push data, but only the changed sub-range if we have a cached copy.
 
         Returns bytes actually uploaded (0 = unchanged, skipped).
+
+        Caller's responsibility: `address + len(data)` must stay within the
+        16-bit C64 address space (0x0000-0xFFFF). This isn't checked here —
+        a violation reaches `dmawrite`'s `struct.pack("<H", addr)` as a bare
+        `struct.error`, not an `OSError`, so it escapes both the transport's
+        reconnect handling and `_emit`'s failure ladder.
 
         Strategy:
           * No prior cache OR length mismatch → full upload.
@@ -885,7 +907,14 @@ def make_backend(cfg: Config) -> C64Backend:
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
     # there is no API until this function returns) — assume NTSC and let
     # cli._resolve_system re-fold these three fields once the answer is in.
-    system = "NTSC" if cfg.ultimate64.system == "auto" else cfg.ultimate64.system
+    # Normalize once: nothing at config load enforces SYSTEM_CHOICES'
+    # canonical spelling, so `system = "ntsc"` reaches here intact, and
+    # every other consumer of this field (resolve_host_sid_model below,
+    # c64.py, hw_provision.py, scene_factory.py, music_features.py)
+    # compares with `.upper()`. An un-normalized bare `== "NTSC"` here would
+    # fold "ntsc" onto the PAL fps with no diagnostic.
+    configured_system = cfg.ultimate64.system.upper()
+    system = "NTSC" if configured_system == "AUTO" else configured_system
     fps = 60.0 if system == "NTSC" else 50.0
     host_model, host_model_assumed = resolve_host_sid_model(cfg.hardware.host_sid_model, system)
     host_chips = resolve_host_sid_chips(cfg.hardware.host_sid_chips)

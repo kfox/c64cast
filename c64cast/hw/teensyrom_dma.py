@@ -84,6 +84,40 @@ DRIVE_SD = 1
 # (RegMenuTypes also defines Teensy = 2, but it's launch-target-only — never a
 # PostFile destination — so c64cast has no use for it.)
 
+# Hard ceiling on a single drain_text() call, independent of the quiet-window
+# reset that both transports do on every byte that arrives. A misbehaving or
+# hostile device that trickles bytes faster than quiet_s forever (a stuck
+# chatter loop, or a deliberate drip) would otherwise keep drain_text -- and
+# the TRClient._lock every write/read command also needs -- from ever
+# returning.
+_DRAIN_MAX_S = 5.0
+_DRAIN_MAX_BYTES = 65536
+
+
+def _sanitize_device_text(text: str) -> str:
+    """Strip non-printable characters from device-supplied text before it
+    reaches a log record or an exception message. The TR's status lines and
+    NAK reasons are free text from a LAN/USB peripheral with no framing of
+    their own; keeping only printable characters stops a hostile or
+    malfunctioning device from forging ANSI escapes or embedded newlines into
+    ``--log-file`` output or a rendered error message."""
+    return "".join(c for c in text if c.isprintable())
+
+
+def _encode_path(path: str) -> bytes:
+    """NUL-terminated path bytes for the wire, as delete_file/post_file/
+    launch_file all frame it. Validated here so a bad path raises the same
+    TRError family every caller in this module already expects, instead of
+    a bare UnicodeEncodeError (non-ASCII) or a wire-level desync (an embedded
+    NUL truncates the device's parse early, leaving the rest of the encoded
+    path as extra bytes that misalign whatever command follows)."""
+    if "\x00" in path:
+        raise TRError(f"TR path must not contain an embedded NUL: {path!r}")
+    try:
+        return path.encode("ascii") + b"\x00"
+    except UnicodeEncodeError as e:
+        raise TRError(f"TR paths must be ASCII: {path!r}") from e
+
 
 class TRError(Exception):
     """Raised when the TR can't be reached, a command is NAK'd (FailToken),
@@ -119,7 +153,11 @@ class TRTransport(ABC):
     def drain_text(self, quiet_s: float = 0.2) -> str:
         """Read whatever bytes are currently available (e.g. a text status
         line from Reset/Ping), stopping after `quiet_s` of silence. Best
-        effort — never raises on timeout, returns what it got."""
+        effort — never raises on timeout, returns what it got. Implementations
+        sanitize the result (printable characters only) before returning it —
+        this text reaches exception messages and log records, and the device
+        is a LAN/USB peripheral in the trust model, not a fully trusted
+        source."""
         ...
 
     @abstractmethod
@@ -128,6 +166,15 @@ class TRTransport(ABC):
     @property
     @abstractmethod
     def description(self) -> str: ...
+
+    @property
+    def serial_number(self) -> str | None:
+        """Best-effort per-unit hardware identifier, or None if this
+        transport doesn't have one (a TCP-attached board offers none) or it
+        isn't currently resolvable. Default: None; SerialTransport overrides
+        it. A property (not abstract) so a future transport doesn't have to
+        implement it just to be a TRTransport."""
+        return None
 
 
 # The TeensyROM is a Teensy 4.1 enumerating as a USB-CDC device under PJRC's
@@ -265,20 +312,43 @@ class SerialTransport(TRTransport):
             chunk = self._ser.read(n - len(buf))  # type: ignore[attr-defined]
             if chunk:
                 buf.extend(chunk)
-            elif time.monotonic() > deadline:
+            # Checked every iteration, not only when chunk is empty: a link
+            # that trickles in at least one byte per read() call would
+            # otherwise never trip this, holding TRClient._lock indefinitely
+            # (violates the ABC's own "n bytes or the io timeout" contract).
+            if len(buf) < n and time.monotonic() > deadline:
                 raise TRError(f"serial read timed out ({len(buf)}/{n} bytes)")
         return bytes(buf)
 
     def drain_text(self, quiet_s: float = 0.2) -> str:
         assert self._ser is not None
         buf = bytearray()
-        deadline = time.monotonic() + quiet_s
-        while time.monotonic() < deadline:
-            chunk = self._ser.read(64)  # type: ignore[attr-defined]
-            if chunk:
-                buf.extend(chunk)
-                deadline = time.monotonic() + quiet_s
-        return buf.decode("ascii", errors="replace")
+        hard_deadline = time.monotonic() + _DRAIN_MAX_S
+        quiet_deadline = time.monotonic() + quiet_s
+        # read(64) blocks up to self._ser.timeout waiting for ANY bytes, which
+        # stays fixed at io_timeout (2s default) from __init__ -- without this
+        # override, the common "nothing to drain" case pays a full io_timeout
+        # stall instead of returning after quiet_s, on every delete_file/
+        # post_file/launch_file/connect call.
+        prev_timeout = self._ser.timeout  # type: ignore[attr-defined]
+        self._ser.timeout = quiet_s  # type: ignore[attr-defined]
+        try:
+            while time.monotonic() < quiet_deadline:
+                if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
+                    log.warning(
+                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
+                        "a misbehaving device may be flooding the link",
+                        _DRAIN_MAX_S,
+                        _DRAIN_MAX_BYTES,
+                    )
+                    break
+                chunk = self._ser.read(64)  # type: ignore[attr-defined]
+                if chunk:
+                    buf.extend(chunk)
+                    quiet_deadline = time.monotonic() + quiet_s
+        finally:
+            self._ser.timeout = prev_timeout  # type: ignore[attr-defined]
+        return _sanitize_device_text(buf.decode("ascii", errors="replace"))
 
     def close(self) -> None:
         if self._ser is not None:
@@ -289,6 +359,10 @@ class SerialTransport(TRTransport):
     @property
     def description(self) -> str:
         return f"serial {self.port}@{self.baud}"
+
+    @property
+    def serial_number(self) -> str | None:
+        return usb_serial_number(self.port)
 
 
 class TcpTransport(TRTransport):
@@ -327,6 +401,12 @@ class TcpTransport(TRTransport):
     def recv_exact(self, n: int) -> bytes:
         assert self._sock is not None
         buf = bytearray()
+        # Each recv() gets its own fresh io_timeout budget from the socket's
+        # settimeout() at connect time, so a peer that delivers at least one
+        # byte within every io_timeout window (never a fully empty read)
+        # would never trip a per-call TimeoutError. Tracked here as a
+        # cumulative deadline instead, checked every iteration.
+        deadline = time.monotonic() + self.io_timeout
         while len(buf) < n:
             try:
                 chunk = self._sock.recv(n - len(buf))
@@ -335,15 +415,26 @@ class TcpTransport(TRTransport):
             if not chunk:
                 raise TRError("tcp socket closed mid-read")
             buf.extend(chunk)
+            if len(buf) < n and time.monotonic() > deadline:
+                raise TRError(f"tcp read timed out ({len(buf)}/{n} bytes)")
         return bytes(buf)
 
     def drain_text(self, quiet_s: float = 0.2) -> str:
         assert self._sock is not None
         buf = bytearray()
+        hard_deadline = time.monotonic() + _DRAIN_MAX_S
         prev = self._sock.gettimeout()
         self._sock.settimeout(quiet_s)
         try:
             while True:
+                if time.monotonic() > hard_deadline or len(buf) >= _DRAIN_MAX_BYTES:
+                    log.warning(
+                        "teensyrom: drain_text hit its hard cap (%.1fs / %d bytes) — "
+                        "a misbehaving device may be flooding the link",
+                        _DRAIN_MAX_S,
+                        _DRAIN_MAX_BYTES,
+                    )
+                    break
                 try:
                     chunk = self._sock.recv(64)
                 except (TimeoutError, OSError):
@@ -353,7 +444,7 @@ class TcpTransport(TRTransport):
                 buf.extend(chunk)
         finally:
             self._sock.settimeout(prev)
-        return buf.decode("ascii", errors="replace")
+        return _sanitize_device_text(buf.decode("ascii", errors="replace"))
 
     def close(self) -> None:
         if self._sock is not None:
@@ -370,9 +461,18 @@ class TcpTransport(TRTransport):
 # Client
 # ---------------------------------------------------------------------------
 class TRClient:
-    """Frames TR protocol commands over a `TRTransport`. Thread-safe: a lock
-    serializes each command's send+ack so render and audio threads can't
-    interleave on the wire (mirrors SocketDMAClient's per-command mutex).
+    """Frames TR protocol commands over a `TRTransport`. Thread-safe *per
+    command*: a lock serializes each command's own send+ack so render and
+    audio threads can't interleave their own commands on the wire (mirrors
+    SocketDMAClient's per-command mutex).
+
+    That guarantee stops at the ack. The TR can keep streaming unsolicited
+    chatter after a command's ack is read and the lock released (see the
+    launcher-upload race in docs/architecture/hardware-io.md), and a
+    different thread's next command can consume that stray chatter. Code
+    that reaches into `self.transport` directly, instead of through a locked
+    TRClient method, reopens exactly that gap — use `drain_after_command`
+    rather than touching the transport post-command.
 
     Every memory write is acknowledged, so there is no separate flush step —
     by the time `write_segment` returns, the TR has executed the write."""
@@ -514,11 +614,22 @@ class TRClient:
             if "Reset" not in line:
                 log.debug("teensyrom reset: unexpected response %r", line)
 
+    def drain_after_command(self, quiet_s: float = 0.2) -> str:
+        """Drain unsolicited post-command chatter, under the lock. Use this
+        instead of reaching into `self.transport` directly after a command's
+        lock has already been released (e.g. waiting out LaunchFile's
+        post-launch console text) — see the class docstring's note on why
+        the per-command lock alone doesn't cover asynchronous chatter."""
+        with self._lock:
+            return self.transport.drain_text(quiet_s)
+
     def delete_file(self, path: str, drive: int = DRIVE_SD) -> None:
         """Delete `path` from storage. Workflow: token -> ack ->
         storage(1)+path\\0 -> ack/fail. Raises TRError if the file doesn't
-        exist (callers that delete-before-write should ignore that)."""
-        payload = bytes([drive & 0xFF]) + path.encode("ascii") + b"\x00"
+        exist (callers that delete-before-write should ignore that), and
+        also (see `_encode_path`) if `path` is non-ASCII or contains an
+        embedded NUL."""
+        payload = bytes([drive & 0xFF]) + _encode_path(path)
         with self._lock:
             self._drain_stale()
             self.transport.send_all(self._u16(TOK_DELETE_FILE))
@@ -529,7 +640,13 @@ class TRClient:
     def post_file(self, data: bytes, dest_path: str, drive: int = DRIVE_SD) -> None:
         """Upload `data` to `dest_path` on the given storage (DRIVE_SD /
         DRIVE_USB). Requires the TR menu to be the active handler, else the
-        firmware replies "Busy!". Checksum = sum(bytes) mod 2^16.
+        firmware replies "Busy!". Checksum = sum(bytes) mod 2^16, checked
+        device-side against the bytes it actually received — this guards the
+        transfer itself, but the protocol has no ReadFile-from-storage token,
+        so there is no way for the host to read back and independently verify
+        the file that ends up on SD/USB before launch_file() runs it. Raises
+        TRError (see `_encode_path`) if `dest_path` is non-ASCII or contains
+        an embedded NUL.
 
         NOTE: the firmware REFUSES to overwrite — PostFile to an existing path
         returns FailToken ("File already exists."). Callers that re-upload the
@@ -539,7 +656,7 @@ class TRClient:
         ack/fail -> file data -> ack/fail.
         """
         checksum = sum(data) & 0xFFFF
-        path_bytes = dest_path.encode("ascii") + b"\x00"
+        path_bytes = _encode_path(dest_path)
         header = self._u32(len(data)) + self._u16(checksum) + bytes([drive & 0xFF]) + path_bytes
         with self._lock:
             self._drain_stale()  # clear post-reset/menu boot chatter
@@ -552,8 +669,9 @@ class TRClient:
 
     def launch_file(self, path: str, drive: int = DRIVE_SD) -> None:
         """Launch a file already present on storage. Workflow: token -> ack ->
-        drive(1)+path\\0 -> ack -> C64 launches."""
-        path_bytes = bytes([drive & 0xFF]) + path.encode("ascii") + b"\x00"
+        drive(1)+path\\0 -> ack -> C64 launches. Raises TRError (see
+        `_encode_path`) if `path` is non-ASCII or contains an embedded NUL."""
+        path_bytes = bytes([drive & 0xFF]) + _encode_path(path)
         with self._lock:
             self._drain_stale()  # clear post-reset/menu boot chatter
             self.transport.send_all(self._u16(TOK_LAUNCH_FILE))

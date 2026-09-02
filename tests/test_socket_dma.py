@@ -177,6 +177,13 @@ class WireEncodingTest(unittest.TestCase):
         expected = struct.pack("<HH", CMD_KEYB, 4) + b"RUN\r"
         self.assertEqual(self._new(), expected)
 
+    def test_keyb_over_ten_bytes_raises_without_touching_the_wire(self):
+        # The firmware does NOT clamp this (see the docstring) — the client
+        # must, or a write past the kernal buffer reaches $0291 and beyond.
+        with self.assertRaisesRegex(SocketDMAError, "10"):
+            self.client.keyb(b"01234567890")
+        self.assertEqual(self._new(), b"")
+
     def test_reuwrite_encoding(self):
         # REUWRITE carries a 24-bit little-endian REU offset (3 bytes, not
         # the 16-bit C64 address DMAWRITE uses) before the data. Every REU
@@ -213,6 +220,142 @@ class FlushTest(unittest.TestCase):
         flushed = bytes(fake.sent[before:])
         self.assertEqual(flushed, struct.pack("<HH", CMD_IDENTIFY, 0))
 
+    def test_flush_timeout_closes_the_socket_instead_of_leaving_it_desynced(self):
+        # TimeoutError is an OSError subclass, so flush()'s except arm used
+        # to re-raise with self._sock still assigned and an IDENTIFY reply
+        # possibly still in flight — the next flush would then read that
+        # stale reply as its own, permanently one reply behind.
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+
+        def _timed_out_recv(n):
+            raise TimeoutError("timed out")
+
+        fake.recv = _timed_out_recv  # type: ignore[method-assign]
+        with self.assertRaises(OSError):
+            c.flush()
+        self.assertIsNone(c._sock)
+
+
+class VicstreamOnValidationTest(unittest.TestCase):
+    """vicstream_on's watchdog encoding: 0 is the documented 'unbounded'
+    sentinel, so rounding must never land there by accident."""
+
+    def setUp(self):
+        self.fake = FakeSocket([_IDENT_REPLY])
+        self.client = _client_with(self.fake)
+        self.connect_len = len(self.fake.sent)
+
+    def _ticks(self) -> int:
+        (ticks,) = struct.unpack(
+            "<H", bytes(self.fake.sent[self.connect_len + 4 : self.connect_len + 6])
+        )
+        return ticks
+
+    def test_zero_stays_the_unbounded_sentinel(self):
+        self.client.vicstream_on("1.2.3.4:9", stop_after_s=0.0)
+        self.assertEqual(self._ticks(), 0)
+
+    def test_sub_tick_duration_rounds_up_to_one_tick_not_down_to_unbounded(self):
+        self.client.vicstream_on("1.2.3.4:9", stop_after_s=0.001)
+        self.assertEqual(self._ticks(), 1)
+
+    def test_negative_duration_raises_rather_than_silently_going_unbounded(self):
+        with self.assertRaises(ValueError):
+            self.client.vicstream_on("1.2.3.4:9", stop_after_s=-1.0)
+        self.assertEqual(bytes(self.fake.sent[self.connect_len :]), b"")
+
+
+class ClosedAndAuthRejectedTest(unittest.TestCase):
+    """close() and a rejected password are both terminal: a later write
+    must not silently re-dial (and, for a rejected password, re-offer the
+    cleartext credential) — it should raise until connect() is called."""
+
+    def test_write_after_close_raises_instead_of_reopening(self):
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.close()
+        with self.assertRaises(SocketDMAError):
+            c.dmawrite(0xD020, b"\x0e")
+
+    def test_connect_after_close_reopens_normally(self):
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        c.close()
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            c.connect()
+        c.dmawrite(0xD020, b"\x0e")  # does not raise
+
+    def test_rejected_auth_is_not_retried_on_the_next_write(self):
+        fake1 = FakeSocket([b"\x00"])  # AUTHENTICATE rejected
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake1):
+            c = SocketDMAClient("test-host", port=64, password="wrong")
+            with self.assertRaises(SocketDMAError):
+                c.connect()
+        # A second connect() attempt (e.g. from a real reconnect elsewhere)
+        # would re-offer the same cleartext password — the next implicit
+        # write must refuse instead of trying.
+        with patch("c64cast.hw.socket_dma.socket.create_connection") as create:
+            with self.assertRaisesRegex(SocketDMAError, "not be retried"):
+                c.dmawrite(0xD020, b"\x0e")
+        create.assert_not_called()
+
+    def test_explicit_connect_clears_the_rejected_auth_state(self):
+        fake1 = FakeSocket([b"\x00"])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake1):
+            c = SocketDMAClient("test-host", port=64, password="wrong")
+            with self.assertRaises(SocketDMAError):
+                c.connect()
+        fake2 = FakeSocket([b"\x01", _IDENT_REPLY])  # correct password this time
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            c.connect()
+        c.dmawrite(0xD020, b"\x0e")  # does not raise
+
+
+class WireBoundsTest(unittest.TestCase):
+    def test_oversized_payload_raises_socketdmaerror_not_struct_error(self):
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        with self.assertRaises(SocketDMAError):
+            c.dmawrite(0x0400, b"\x00" * 70000)
+
+
+class IdentifySanitizationTest(unittest.TestCase):
+    def test_control_bytes_are_stripped_and_length_is_capped(self):
+        dirty = "X" * 80 + "\n\r\x1b[31mFAKE ERROR"
+        reply = dirty.encode("utf-8")
+        fake = FakeSocket([bytes([len(reply)]) + reply])
+        c = _client_with(fake)
+        self.assertNotIn("\n", c.product)
+        self.assertNotIn("\r", c.product)
+        self.assertLessEqual(len(c.product), 64)
+
+
+class CumulativeReadDeadlineTest(unittest.TestCase):
+    def test_a_dribbling_peer_times_out_after_one_io_timeout_total_not_per_byte(self):
+        # Each individual recv() arrives well inside io_timeout, but the
+        # reply as a whole never finishes — the read must still give up
+        # after one cumulative io_timeout rather than resetting the clock
+        # on every byte.
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.io_timeout = 0.05
+
+        class DribblingSocket(FakeSocket):
+            # Every individual recv() is instant — a per-recv timeout alone
+            # would never fire — but each delivers only one byte, so the
+            # *sequence* of them takes longer than io_timeout overall.
+            def recv(self, n):
+                time.sleep(0.02)
+                return b"\x05"
+
+        # Swap the already-connected socket directly — flush() only
+        # reconnects when self._sock is None, and it isn't here.
+        c._sock = DribblingSocket([])  # type: ignore[assignment]
+        with self.assertRaises(TimeoutError):
+            c.flush()
+
 
 class ReconnectTest(unittest.TestCase):
     def test_dmawrite_reconnects_on_broken_pipe(self):
@@ -224,14 +367,15 @@ class ReconnectTest(unittest.TestCase):
 
         # Pre-load a second FakeSocket for the reconnect.
         fake2 = FakeSocket([_IDENT_REPLY])
-        # The reconnect path logs a WARNING — capture it (so it doesn't
-        # spam stderr) and verify the expected message was emitted.
+        # The reconnect path logs at debug (it self-heals here, so it never
+        # reaches backend.py's escalating failure ladder) — capture it (so
+        # it doesn't spam stderr) and verify the expected message.
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
-            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING") as cap:
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG") as cap:
                 c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
             any("send failed (scripted failure) — reconnecting" in line for line in cap.output),
-            f"expected reconnect-warning log, got: {cap.output!r}",
+            f"expected reconnect-debug log, got: {cap.output!r}",
         )
 
         # fake1's failed sendall didn't append anything.
@@ -241,7 +385,10 @@ class ReconnectTest(unittest.TestCase):
         self.assertTrue(fake1.closed)
 
     def test_second_failure_propagates(self):
-        # Both the original and the retry fail — the OSError should escape.
+        # The original sendall fails, and so does the reconnect's own
+        # handshake (fake2's first sendall is its IDENTIFY, not the
+        # retried DMAWRITE) — that now surfaces as SocketDMAError, not a
+        # raw OSError escaping past connect()'s documented contract.
         fake1 = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake1)
         fake1.fail_sendalls_remaining = 1
@@ -249,13 +396,44 @@ class ReconnectTest(unittest.TestCase):
         fake2 = FakeSocket([_IDENT_REPLY])
         fake2.fail_sendalls_remaining = 1
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
-            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING") as cap:
-                with self.assertRaises(OSError):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG") as cap:
+                with self.assertRaises(SocketDMAError):
                     c.dmawrite(0xD020, b"\x0e")
         self.assertTrue(
             any("send failed (scripted failure) — reconnecting" in line for line in cap.output),
-            f"expected reconnect-warning log, got: {cap.output!r}",
+            f"expected reconnect-debug log, got: {cap.output!r}",
         )
+
+    def test_second_failure_on_the_retried_command_itself_closes_the_socket(self):
+        # Reconnect succeeds, but the retried DMAWRITE (not the handshake)
+        # fails too — the socket must be closed rather than left assigned
+        # mid-command, or the next write on it would be misframed.
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.fail_sendalls_remaining = 1
+
+        # Reconnect's own IDENTIFY succeeds; the retried DMAWRITE is the
+        # *second* sendall on fake2, so let the first (IDENTIFY) through.
+        fake2 = FakeSocket([_IDENT_REPLY])
+
+        class FailSecondSendSocket(FakeSocket):
+            def __init__(self, replies):
+                super().__init__(replies)
+                self._sends = 0
+
+            def sendall(self, data: bytes) -> None:
+                self._sends += 1
+                if self._sends == 2:
+                    raise BrokenPipeError("scripted failure")
+                super().sendall(data)
+
+        fake2 = FailSecondSendSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                with self.assertRaises(OSError):
+                    c.dmawrite(0xD020, b"\x0e")
+        self.assertIsNone(c._sock)
+        self.assertTrue(fake2.closed)
 
     def test_reconnect_identify_timeout_clears_socket_and_next_call_reconnects(self):
         # Repro of the production crash: a send times out, reconnect
@@ -282,7 +460,7 @@ class ReconnectTest(unittest.TestCase):
         fake3 = FakeSocket([_IDENT_REPLY])
 
         with patch("c64cast.hw.socket_dma.socket.create_connection", side_effect=[fake2, fake3]):
-            with self.assertLogs("c64cast.hw.socket_dma", level="WARNING"):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
                 with self.assertRaises(SocketDMAError):
                     c.dmawrite(0xD020, b"\x0e")
             # The half-open socket must be cleaned up — otherwise the

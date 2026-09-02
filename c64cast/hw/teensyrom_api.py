@@ -248,10 +248,15 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             return None
 
     def probe(self, timeout: float = 2.0) -> str | None:
-        """Liveness probe via Ping; returns the TR's status line or None."""
+        """Liveness probe via Ping; returns the TR's status line or None.
+
+        `TRClient.ping()` -> `drain_text()` never raises on a timeout, so a
+        hung or disconnected TR that sends back zero bytes returns "" rather
+        than raising TRError — that "" must be treated as no answer, not
+        papered over with a fabricated firmware-label string, or a genuinely
+        dead device would be reported as alive."""
         try:
-            line = self.tr.ping()
-            return line or f"TeensyROM ({self.tr.firmware} firmware)"
+            return self.tr.ping() or None
         except TRError as e:
             log.debug("TR ping failed: %s", e)
             return None
@@ -262,14 +267,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         The USB serial number is the only per-unit identifier the TR exposes and
         a TCP-attached board offers none, so the link description carries the
         rest."""
-        from .teensyrom_dma import SerialTransport, usb_serial_number
-
         transport = self.tr.transport
-        serial_number = (
-            usb_serial_number(transport.port) if isinstance(transport, SerialTransport) else None
-        )
         parts = ["TeensyROM+"]
-        if serial_number:
+        if serial_number := transport.serial_number:
             parts.append(serial_number)
         parts.append(f"({self.tr.firmware} firmware, {transport.description})")
         return " ".join(parts)
@@ -369,8 +369,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
     def _settle_after_launch(self) -> None:
         """Wait out the console text LaunchFile streams back after its ack, so
-        the next command's reply doesn't misalign with it (see _LAUNCH_QUIET_S)."""
-        text = self.tr.transport.drain_text(_LAUNCH_QUIET_S)
+        the next command's reply doesn't misalign with it (see
+        _LAUNCH_QUIET_S). Goes through TRClient.drain_after_command, not
+        self.tr.transport directly — this runs after launch_file() has
+        already released the client's lock, and the keyboard/menu poller's
+        concurrent read_memory calls take that same lock, so an unlocked
+        drain here would reopen the exact race this wait exists to avoid
+        (see the launcher-upload race note in docs/architecture/hardware-io.md)."""
+        text = self.tr.drain_after_command(_LAUNCH_QUIET_S)
         if text.strip():
             log.debug("TR post-launch chatter drained: %s", text.strip())
 
@@ -480,7 +486,27 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def _upload(self, data: bytes, dest: str) -> None:
         """Upload `data` to `dest`, replacing any existing file. PostFile
         refuses to overwrite ("File already exists."), so delete first; a
-        missing file makes the delete fail, which is expected and ignored."""
+        missing file makes the delete fail, which is expected and ignored —
+        but so does every other delete failure (busy, disconnect, malformed
+        reply). The firmware's FailToken carries only free text, with no
+        known, stable "file not found" pattern to match against, so this
+        can't reliably narrow the catch further; a non-missing-file failure
+        here just surfaces again, more informatively, from the post_file()
+        call that follows (`_upload_and_launch_retry`'s retry loop gives
+        that a second chance — launch_program's direct call does not).
+
+        This reset+PostFile+LaunchFile sequence shares the link with the
+        keyboard/menu poller's concurrent read_memory calls on read-capable
+        firmware — the documented, still-open launcher-upload race (see
+        docs/architecture/hardware-io.md). Logged here so a field report's
+        cryptic on-screen ?SYNTAX ERROR can be correlated back to this known
+        cause."""
+        if self.profile.supports_read:
+            log.debug(
+                "TR upload: keyboard poller may be active during upload of %s "
+                "— corruption race possible",
+                dest,
+            )
         try:
             self.tr.delete_file(dest, self._drive)
         except (OSError, TRError) as e:
@@ -490,7 +516,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def launch_program(self, path: str, timeout: float = 10.0) -> None:
         """Upload a local .prg/.crt to TR storage and launch it. Unlike the
         clear-loop, failures re-raise — the caller (LauncherScene) needs to
-        know the launch never happened. Requires the TR menu active."""
+        know the launch never happened. Requires the TR menu active.
+
+        No host-side readback/integrity check runs between the upload and the
+        launch: post_file()'s checksum is computed and verified device-side
+        only, and the wire protocol has no ReadFile-from-storage token, so
+        there is nothing this method could read back and compare even if it
+        wanted to. A corrupted or desynced upload (see the launcher-upload
+        race above) is launched exactly as trustingly as a clean one."""
         ext = os.path.splitext(path)[1].lower()
         if ext not in (".prg", ".crt"):
             raise ValueError(
