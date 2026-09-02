@@ -12,6 +12,13 @@
 # `sink_width`/`sink_height` are the virtual matrix the sender targets — set
 # them to match the sender's configured pixel layout. No audio, no SID.
 #
+# Neither wire protocol authenticates its sender, so this is trusted-segment
+# only: anyone who can reach the bound ports controls what's on screen.
+# `sink_allow` restricts accepted senders to an IP allowlist (empty accepts
+# any sender, matching real WLED's own behavior); `sink_ddp_port` /
+# `sink_wled_port` move the sink off the two standard ports if something
+# else on this host already owns one.
+#
 # This is the OTHER direction from wled-control.toml (Mode 1, where c64cast
 # presents itself as a virtual WLED device the WLED app can discover and
 # control). The WLED app is a *controller* and can't stream pixels, so it
@@ -35,3 +42,6 @@ display = "mhires"
 sink_width = 320
 sink_height = 200
 duration_s = 0.0     # run forever (the sink has no natural end)
+# sink_allow = ["192.168.2.10"]   # restrict senders to this LAN allowlist
+# sink_ddp_port = 4048            # override if something else owns 4048
+# sink_wled_port = 21324          # override if something else owns 21324

@@ -290,7 +290,7 @@ Display modes: `mhires`, `hires`, `hires_edges`, `mcm`, `petscii`.
 type = "wled"
 sink_width = 320
 sink_height = 200
-mod_source = "audio"  # audio | clock | off
+sink_ddp_port = 4048
 ```
 
 <!-- table: fields -->
@@ -299,6 +299,9 @@ mod_source = "audio"  # audio | clock | off
 | **`display`**<br>*Type:* `str \| None`<br>*Default:* `None` | VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random'). Choices: `hires_edges`, `hires`, `petscii`, `mcm`, `mhires`, `blank`, `random`. |
 | **`sink_width`**<br>*Type:* `int`<br>*Default:* `320` | WLED sink: virtual LED-matrix width in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 320. |
 | **`sink_height`**<br>*Type:* `int`<br>*Default:* `200` | WLED sink: virtual LED-matrix height in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 200. |
+| **`sink_ddp_port`**<br>*Type:* `int`<br>*Default:* `4048` | WLED sink: UDP port for DDP-protocol senders (LedFx / xLights / Jinx!, wled scenes only). Override when another process on this host already owns the standard port. Default 4048. |
+| **`sink_wled_port`**<br>*Type:* `int`<br>*Default:* `21324` | WLED sink: UDP port for WLED's own realtime protocol (wled scenes only). Override when another process on this host already owns the standard port. Default 21324. |
+| **`sink_allow`**<br>*Type:* `list[str]`<br>*Default:* `[]` | WLED sink: sender IP addresses allowed to write pixels (wled scenes only), e.g. ["192.168.2.10"]. Empty (default) accepts any sender that reaches the bound port — DDP and WLED realtime carry no authentication of their own, so this is the only barrier against another host on the LAN injecting frames into the broadcast. |
 | **`effect`**<br>*Type:* `str \| None`<br>*Default:* `None` | Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to). Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`effects`**<br>*Type:* `list[str]`<br>*Default:* `[]` | Ordered pixel-effect chain applied before quantization, e.g. effects = ["trails", "rgb_shift", "strobe"]. Each is one of the `effect` choices; layers apply in order and are individually tunable (map a CC to fx0.<param>/fx1.<param>…) and bypass-toggleable live (fx_toggle). Mutually exclusive with the single `effect` field. Empty = none. Choices: `trails`, `pulse`, `rgb_shift`, `blur`, `strobe`, `invert`, `mirror`, `posterize`. |
 | **`mod_source`**<br>*Type:* `str`<br>*Default:* `'audio'` | What drives this scene's reactive effect layers: 'audio' (the SID feature stream — needs a music-reactive scene, i.e. generative + audio_source = 'sid'), 'clock' (the [performance] beat grid, so effects lock to MIDI/tap tempo on any scene — the way to tempo-lock a 'strobe'), or 'off' (never react — layers use their static baseline). Applies to every effect layer on the scene. Choices: `audio`, `clock`, `off`. |

@@ -25,6 +25,14 @@ datagram (a sender only needs to speak one):
 E1.31/sACN (multi-universe reassembly) is a deliberate follow-up — LedFx and
 xLights can both emit DDP, so it buys little for a lot of protocol surface.
 
+Neither wire protocol carries authentication, so this sink is trusted-segment
+only: any host that can reach the bound ports controls what c64cast renders
+(and, since c64cast casts/streams, what any viewer sees). `sink_allow`
+(`[scenes.*]` config) restricts accepted senders to an IP allowlist; leaving
+it empty accepts any sender that reaches the port, matching real WLED's own
+receive-side behavior. `sink_ddp_port` / `sink_wled_port` move the sink off
+the two standard ports if another local process already owns one.
+
 Pure stdlib (`socket`/`struct`/`select`) + numpy — no new dependency and no
 `wled` extra (unlike Modes 1/3, which need zeroconf/fastapi). The parsers are
 side-effect-free so they unit-test against the documented byte layouts.
@@ -38,6 +46,7 @@ import select
 import socket
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -188,6 +197,10 @@ class WledPixelReceiver:
     # select() wakeup cadence so the blocking loop can honor the stop event.
     _SELECT_TIMEOUT = 0.25
     _RECV_BUF = 65535
+    # Publish at most this often: bounds the per-datagram frame-copy cost
+    # (snapshot_bgr) to a real display frame budget regardless of how fast a
+    # sender (or an attacker) pushes datagrams.
+    _PUBLISH_MIN_INTERVAL_S = 1.0 / 60.0
 
     def __init__(
         self,
@@ -197,17 +210,23 @@ class WledPixelReceiver:
         host: str = "0.0.0.0",
         ddp_port: int = DDP_PORT,
         wled_port: int = WLED_REALTIME_PORT,
+        sender_allowlist: frozenset[str] | None = None,
     ):
         self._assembler = PixelFrameAssembler(width, height)
         self._host = host
         self._ddp_port = ddp_port
         self._wled_port = wled_port
+        self._sender_allowlist = sender_allowlist
         self._sockets: list[socket.socket] = []
         self._ddp_sock: socket.socket | None = None
         self._latest: np.ndarray | None = None
         self._lock = threading.Lock()
         self._poll: PollThread | None = None
         self._saw_ddp_push = False
+        self._last_publish_ts = 0.0
+        self._logged_first_datagram = False
+        self._logged_ddp_reject = False
+        self._logged_wled_reject = False
         self.bind_error: OSError | None = None
 
     def _bind(self, port: int) -> socket.socket | None:
@@ -279,14 +298,35 @@ class WledPixelReceiver:
             return self._latest
 
     def _publish(self) -> None:
+        # Rate-limited: a sender (or an attacker) can push datagrams far
+        # faster than any display refreshes, and snapshot_bgr copies the
+        # whole frame twice — so cap the copy rate to a frame budget rather
+        # than the datagram rate. The assembler buffer itself is unaffected;
+        # a skipped publish is simply caught by the next one, moments later.
+        now = time.monotonic()
+        if now - self._last_publish_ts < self._PUBLISH_MIN_INTERVAL_S:
+            return
+        self._last_publish_ts = now
         with self._lock:
             self._latest = self._assembler.snapshot_bgr()
 
-    def _handle(self, sock: socket.socket, datagram: bytes) -> None:
+    def _handle(self, sock: socket.socket, datagram: bytes, addr: tuple[str, int]) -> None:
+        if self._sender_allowlist is not None and addr[0] not in self._sender_allowlist:
+            return
         if sock is self._ddp_sock:
             pkt = parse_ddp(datagram)
             if pkt is None:
+                if not self._logged_ddp_reject:
+                    self._logged_ddp_reject = True
+                    log.warning(
+                        "WLED sink: rejected a DDP datagram from %s (not a V1 data "
+                        "packet — query/reply/storage flag or wrong version)",
+                        addr[0],
+                    )
                 return
+            if not self._logged_first_datagram:
+                self._logged_first_datagram = True
+                log.info("WLED sink: first DDP pixel datagram from %s", addr[0])
             self._assembler.apply_ddp(pkt.offset, pkt.payload)
             if pkt.push:
                 self._saw_ddp_push = True
@@ -298,7 +338,18 @@ class WledPixelReceiver:
             return
         writes = parse_wled_realtime(datagram)
         if not writes:
+            if writes is None and not self._logged_wled_reject:
+                self._logged_wled_reject = True
+                log.warning(
+                    "WLED sink: rejected a WLED-realtime datagram from %s "
+                    "(unsupported protocol byte %r)",
+                    addr[0],
+                    datagram[0] if datagram else None,
+                )
             return  # None (unsupported protocol) or [] (too short for one pixel)
+        if not self._logged_first_datagram:
+            self._logged_first_datagram = True
+            log.info("WLED sink: first WLED-realtime pixel datagram from %s", addr[0])
         self._assembler.apply_pixels(writes)
         self._publish()
 
@@ -310,10 +361,10 @@ class WledPixelReceiver:
                 break  # sockets closed under us during stop()
             for sock in ready:
                 try:
-                    datagram = sock.recvfrom(self._RECV_BUF)[0]
+                    datagram, addr = sock.recvfrom(self._RECV_BUF)
                 except OSError:
                     continue
-                self._handle(sock, datagram)
+                self._handle(sock, datagram, addr)
 
 
 class WLEDSource(BaseFrameSource):
@@ -326,8 +377,24 @@ class WLEDSource(BaseFrameSource):
     can't be bound, `setup` flags `_bind_failed` so the scene aborts and the
     playlist advances (mirrors a failed audio source)."""
 
-    def __init__(self, width: int, height: int, *, host: str = "0.0.0.0"):
-        self._receiver = WledPixelReceiver(width, height, host=host)
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        *,
+        host: str = "0.0.0.0",
+        ddp_port: int = DDP_PORT,
+        wled_port: int = WLED_REALTIME_PORT,
+        sender_allowlist: frozenset[str] | None = None,
+    ):
+        self._receiver = WledPixelReceiver(
+            width,
+            height,
+            host=host,
+            ddp_port=ddp_port,
+            wled_port=wled_port,
+            sender_allowlist=sender_allowlist,
+        )
         self._bind_failed = False
 
     def setup(self) -> None:
