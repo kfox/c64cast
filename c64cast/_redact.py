@@ -25,13 +25,32 @@ import re
 #: any real token — a fixed-width mask invites the reader to guess.
 REDACTED = "REDACTED"
 
-# Keyed on the `token=` suffix rather than on each parameter's full name, so
-# `viewer_token=` and any later `…_token=` are covered by construction. The
-# value stops at a query-string separator or quote, which leaves the rest of a
-# login URL (`&next=/`) readable — the point is to keep the line diagnostic.
-_TOKEN_VALUE = re.compile(r"(token=)[^\s&\"']+", re.IGNORECASE)
+# Keyed on a `*token=`/`*password=`/`*secret=`/`*api[_-]key=` suffix rather
+# than on each parameter's full name, so `viewer_token=`, `token:` (JSON) and
+# any later `…_token=` are covered by construction rather than by naming each
+# one here — plus an `Authorization: Bearer …` header value, the other shape
+# the console's admin token can appear in. The value stops at whitespace, a
+# query-string separator, or a quote/brace, which leaves the rest of a login
+# URL (`&next=/`) or a JSON document's other fields readable — the point is
+# to keep the line diagnostic, not to blank the whole thing.
+_SECRET_VALUE = re.compile(
+    r"""
+    (?P<kv_prefix> \b\w*(?:token|password|secret|api[_-]?key)\b "? \s* [=:] \s* "? )
+    (?P<kv_value>[^\s&"',}]+)
+    |
+    (?P<bearer_prefix>\bBearer\s+) (?P<bearer_value>[^\s"',}]+)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _mask(m: re.Match[str]) -> str:
+    prefix = m.group("kv_prefix")
+    return f"{prefix if prefix is not None else m.group('bearer_prefix')}{REDACTED}"
 
 
 def redact_secrets(text: str) -> str:
-    """`text` with every ``token=VALUE`` reduced to ``token=REDACTED``."""
-    return _TOKEN_VALUE.sub(rf"\g<1>{REDACTED}", text)
+    """`text` with every recognized secret value reduced to ``REDACTED`` —
+    `token=VALUE`, `password: VALUE`, `api_key=VALUE` (`=` or `:`, quoted or
+    not) and `Bearer VALUE`."""
+    return _SECRET_VALUE.sub(_mask, text)

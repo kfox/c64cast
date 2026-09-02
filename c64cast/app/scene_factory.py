@@ -1027,10 +1027,17 @@ def validate_nmi_sample_rate(cfg: Config) -> None:
     handler on the target system (NMIs queue → pitch drop); logs a warning for
     rates inside the entry-latency margin. Thin pass-through to
     `c64.nmi_rate_safety` so the rule lives in one place (shared with --doctor).
-    No-op when audio is disabled."""
+    No-op when audio is disabled.
+
+    Runs before hardware opens (see `validate_configs`'s docstring), so
+    `[ultimate64].system` may still be the unresolved "auto" — assume NTSC,
+    matching that field's own documented fallback and `hw_provision.
+    resolve_system`'s convention, rather than falling through to PAL the way
+    `c64.py`'s helpers used to for any non-"NTSC" string."""
     if not cfg.audio.enabled:
         return
-    level, message = nmi_rate_safety(cfg.ultimate64.system, cfg.audio.sample_rate)
+    system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system
+    level, message = nmi_rate_safety(system, cfg.audio.sample_rate)
     if level == "error":
         raise ConfigError(f"[audio].sample_rate: {message}")
     if level == "warn":

@@ -742,12 +742,17 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
 def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
     """Flag [audio].sample_rate values that overrun (error) or risk overrunning
     (warn) the $D418 NMI handler on each system's target standard. Offline —
-    pure cycle-budget math via c64.nmi_rate_safety, no hardware needed."""
+    pure cycle-budget math via c64.nmi_rate_safety, no hardware needed.
+
+    An unresolved "auto" assumes NTSC here, matching `[ultimate64].system`'s
+    own documented fallback and `hw_provision.resolve_system`'s convention —
+    `c64.py`'s helpers reject "auto" outright rather than quietly picking PAL
+    for it the way they used to."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         if not cfg.audio.enabled:
             continue
-        system = cfg.ultimate64.system
+        system = "NTSC" if cfg.ultimate64.system.upper() == "AUTO" else cfg.ultimate64.system
         rate = cfg.audio.sample_rate
         level, message = nmi_rate_safety(system, rate)
         if level != "ok":

@@ -39,9 +39,14 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
     anything else is matched as a case-insensitive substring of the available
     port names, so users don't need to paste the exact rtmidi string. Raises
     RuntimeError (prefixed with ``label``, the caller's user-facing name)
-    when no port is available or nothing matches.
+    when the ``midi`` extra isn't installed, when no port is available, or
+    when nothing matches.
     """
-    assert mido is not None
+    if not MIDI_AVAILABLE:
+        raise RuntimeError(
+            f"{label}: MIDI support requires the 'midi' extra "
+            "(uv sync --all-extras, or pip install 'c64cast[midi]')"
+        )
     names = mido.get_input_names()
     if spec in (None, "", "default"):
         if not names:

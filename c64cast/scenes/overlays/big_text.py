@@ -126,7 +126,7 @@ RASTER_IRQ_HANDLER = bytes(
         0xEA,  # JMP $EA31   ; chain to kernal (kbd scan + jiffy)
     ]
 )
-RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first VBLANK line on PAL/NTSC
+RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first line past the last badline
 
 _VALID_ROWS = ("top", "middle", "bottom")
 _VALID_MSG_KEYS = {"text", "color"}

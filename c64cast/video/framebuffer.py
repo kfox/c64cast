@@ -20,13 +20,10 @@ dump as `charset_path` (read from a real C64 / VICE / U64).
 
 from __future__ import annotations
 
-import logging
 import threading
-from pathlib import Path
 
 import numpy as np
 
-from c64cast.app import paths
 from c64cast.hw.c64 import SCREEN, VECTORS, VIC, VIC_BANK_0, VIC_BANK_2
 
 from .flicker import fuse_indices
@@ -41,8 +38,6 @@ from .modes_irq import (
     HOSTDMA_TRACKER_OFF_BANK,
 )
 from .palette import C64_PALETTE_BGR
-
-log = logging.getLogger(__name__)
 
 
 def _builtin_charset() -> bytes:
@@ -108,18 +103,12 @@ class Framebuffer:
         self._lock = threading.Lock()
         # Resolve through char_rom so the preview shows the same glyphs the C64
         # does (a dumped ROM under the data dir, or `charset_path` when set).
-        # A configured-but-unreadable path degrades to the builtin font with a
-        # warning: this window is a mirror, and killing the whole run over a
-        # mistyped preview path would be a spectacularly bad trade.
+        # A configured-but-unreadable (or unverifiable) path degrades to the
+        # builtin font with a warning from char_rom itself: this window is a
+        # mirror, and killing the whole run over a mistyped preview path would
+        # be a spectacularly bad trade.
         from c64cast.hw.char_rom import load_glyphs
 
-        if charset_path and not Path(paths.expand_user(charset_path)).is_file():
-            log.warning(
-                "[preview] charset_path %s does not exist — falling back to the "
-                "built-in font. Leave it unset to use the character ROM c64cast "
-                "dumps off your C64.",
-                charset_path,
-            )
         self.charset = load_glyphs(charset_path)
 
     def on_write(self, address: int, data: bytes):

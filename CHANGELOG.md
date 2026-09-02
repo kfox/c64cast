@@ -297,6 +297,106 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   now constrain only the string branch via `anyOf`, leaving the other
   branch(es) unconstrained. `_field_schema`'s `name` parameter, passed at
   every call site and never read in the body, is removed.
+- `PollThread` (`_pollthread.py`) could resurrect a worker it had just
+  abandoned: `stop()` joined with a bounded `join_timeout` (0.5 s default)
+  and then unconditionally cleared `self._thread` even when the join timed
+  out and the target was still running (e.g. `RssOverlay`/`WeatherOverlay`'s
+  `requests.get(timeout=5.0)` outliving it on a slow feed). A later `start()`
+  then saw `is_running() == False`, called `self._stop.clear()` — which the
+  still-running worker reads through the same shared `Event` — and spawned a
+  second thread on top of the first, un-stopped. `stop()` now keeps the
+  thread reference on a timed-out join (logging a warning) instead of
+  discarding it, so `is_running()` stays truthful and `start()`'s existing
+  "already running" no-op refuses the duplicate until the abandoned worker
+  actually exits. Separately, an unhandled exception from a target used to
+  end the thread via `threading.excepthook`, which prints straight to raw
+  stderr and bypasses `--log-file`/`SessionLogBuffer` entirely — `_run` now
+  catches it and calls `log.exception`, stopping the loop the same way as
+  before but leaving a record in both durable sinks. `__init__`'s single
+  `Callable` annotation also hid that periodic and manual mode want
+  incompatible target signatures (`() -> None` vs. `(Event) -> None`); it
+  now `@overload`s two constructor shapes so a wrong-arity target is a type
+  error at the call site, with no change to any of the 21 consumer call
+  sites. New `tests/test_pollthread.py` cases pin the abandon-then-refuse
+  sequence and the exception-to-logging path.
+- `silence_native_stderr` (`_native_io.py`) had two independent descriptor
+  leaks on its own failure paths (`saved = os.dup(2)` sat outside its `try`,
+  so a failing `os.open(os.devnull, ...)` leaked it; `os.close(devnull)` sat
+  after `os.dup2(devnull, 2)` inside the `try`, so a failing `dup2` leaked
+  `devnull`), and no mutex or nesting depth around its dup/dup2/close
+  sequence on the process-global fd 2 — two overlapping (non-nested) callers
+  (reachable in practice: `video._ensure_pyav` is a lazily-triggered entrant
+  from playlist worker threads, one per system in an ensemble) left the
+  second caller's `os.dup(2)` capturing the first caller's `/dev/null`
+  redirect as its own "saved" fd, so whichever exited last pinned the
+  process's real stderr to `/dev/null` permanently. A module-level depth
+  counter behind a lock now makes the redirect reentrant across both nesting
+  and overlap (only the outermost enter/exit touches fd 2), and both
+  descriptors are released on every failure path. New `tests/test_native_io.py`
+  — previously nothing imported this module at all — pins silencing,
+  restoration, the overlapping-threads case, and a 200-cycle no-fd-growth
+  check.
+- `_midi.open_input_port`'s only guard against a missing `midi` extra was a
+  bare `assert mido is not None`, stripped entirely under `python -O` and
+  otherwise surfacing as `AttributeError: 'NoneType' object has no attribute
+  'get_input_names'` — a message naming nothing about the extra a caller
+  forgot to check. It now raises `RuntimeError` naming the install command,
+  matching the contract every other precondition on this shared resolver
+  already documents. New `tests/test_midi.py`.
+- `_redact.py`'s pattern matched only a literal `token=` immediately followed
+  by the value — the shape of today's console login-URL log line, but not
+  `token = "…"` (spaces, as a TOML/config rendering would produce), `"token":
+  "…"` (JSON), or an `Authorization: Bearer …` header, any of which could put
+  the console's admin token into `--log-file` or a viewer's `SessionLogBuffer`
+  tail in a future rendering with no test catching it. The pattern now covers
+  `token`/`password`/`secret`/`api[_-]key` with `=` or `:`, quoted or not,
+  plus a `Bearer <value>` alternative.
+- `hw/c64.py`'s `cpu_clock`/`frame_rate`/`kernal_cia1_latch` silently treated
+  any system string other than exactly `"NTSC"` as PAL — including the
+  unresolved `"auto"` config default (which `config.SYSTEM_CHOICES`
+  explicitly allows) and any typo or trailing whitespace — giving every
+  clock-derived constant (CIA latch, NMI safety band, SID PLAY rate) the
+  wrong standard's numbers with zero diagnostic; `hw/api.py` already
+  hand-guarded one call site against exactly this. They now accept only
+  `"NTSC"`/`"PAL"` (case-insensitive, whitespace-tolerant, matching every
+  other consumer's own `.upper()` convention) and raise `ValueError`
+  otherwise. `scene_factory.validate_nmi_sample_rate` and
+  `doctor._validate_audio_nmi_rate` both run before hardware opens (so
+  `[ultimate64].system` can still be the unresolved `"auto"` there) and now
+  resolve it to NTSC first, matching that field's own documented fallback
+  and `hw_provision.resolve_system`'s convention, instead of reaching the
+  PAL branch by accident. `actual_rate_for_latch` now raises on a negative
+  latch instead of a bare `ZeroDivisionError` on `latch == -1`. Two register
+  annotations were also corrected (`VIC_BANK_0.BITMAP`'s `$D018` bitmap
+  nibble is `8`, not `4`; `CPU.PORT_IO_OUT` = `$34` has CHAREN, bit 2, still
+  set — LORAM=HIRAM=0 is what maps RAM instead of ROM/I/O), and
+  `RASTER_VBLANK_LINE`'s comment no longer calls line 248 the start of
+  vblank (it is the first line past the last badline — a narrower property
+  that breaks if YSCROLL or the row count changes; vblank itself is lines
+  ~300+ on PAL, ~13-40 on NTSC). New `tests/test_c64.py` pins the
+  system-string handling and the two negative/zero-rate guards.
+- `char_rom.py`'s load path (`_read_glyphs`, behind every `load_glyphs`
+  call) only length-checked a resolved charset, while `install_data` ran the
+  full structural `verify()` — so a stale hand-copied file, a wrong file at
+  a configured `charset_path`, or any other 2 KB file at a resolved path
+  rendered garbage glyphs with no diagnostic, and (since `ensure_installed`
+  treated any non-`None` `resolve()` as "already have one") permanently
+  suppressed the auto-dump that would have fixed it. The load path now runs
+  the same `verify()`, falling back to the builtin font with a warning
+  naming the reason; `ensure_installed`'s gate now requires that resolved
+  file to actually verify before it counts as "nothing to do". A configured
+  `charset_path` that doesn't exist at all was also silently absorbed by
+  `resolve()`'s fall-through with no record anywhere despite the module's
+  own docstring promising "a warning from the caller" — `_read_glyphs` now
+  logs one, naming the configured path and what it fell back to.
+  `video.framebuffer.Framebuffer`'s own duplicate pre-check for exactly this
+  case is removed now that every caller gets the same diagnostic centrally.
+  Also fixed: an inverted verification-rationale docstring (an all-`$00`/
+  all-`$FF` buffer *fails* the reverse-video complement check outright; the
+  `$20`-blank/`$01`-not-blank pair is what catches a buffer whose halves
+  complement *by construction*, which the complement check cannot see
+  anything wrong with) and a British "synthesises" in the module docstring.
+  New/updated cases in `tests/test_char_rom.py` and `tests/test_framebuffer.py`.
 
 ## [0.4.0] - 2026-08-30
 
