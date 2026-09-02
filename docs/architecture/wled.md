@@ -114,17 +114,19 @@ The self-served `/` page exposes brightness as a single **master** slider drivin
 
 #### `_seg_caps` — per-control capability hints
 
-`_seg_dict` rides a `c64` vendor key of `{pal, col, sx, ix}` booleans, computed by `_seg_caps(pl)` to mirror exactly the write-path applicability guards:
+`_seg_dict` rides a `c64` vendor key of `{pal, col, sx, ix}` booleans, computed by `_seg_caps(pl)` to mirror exactly the write-path applicability guards — via `_can_swap_palette(mode, api)` / `_can_force_colors(mode, api)`, the single predicate pair `_apply_palette`/`_apply_force_colors` (the write paths) and `_seg_caps` (the hint) both call, so the two can't drift apart the way two independent `hasattr` copies eventually would:
 
 | Key | True when |
 | --- | --- |
-| `pal` | The current scene's mode exposes `set_palette_mode` (what `_apply_palette` needs) |
-| `col` | It *also* exposes `set_color_map` (what `_apply_force_colors` needs) |
+| `pal` | `_can_swap_palette`: the current scene's mode exposes `set_palette_mode` |
+| `col` | `_can_force_colors`: it *also* exposes `set_color_map` |
 | `sx` / `ix` | `_resolve_live_target` (now a thin name over `live_tune.resolve_first`) finds a matching `LIVE_PARAM` on `_SX_TARGETS`/`_IX_TARGETS` |
 
 No scene means all False.
 
 Our own `GET /` page reads it as `seg.c64`, defaulting all-true so an older payload never over-disables, and grays out the palette select, color picker, and speed/intensity sliders when their bool is false — disabling them, adding a dimmed `.cap-off` class, and a tooltip. Scene, Power, and Brightness always apply and are never gated.
+
+**Render guard vs. focus.** `render()` skips its rebuild whenever `document.activeElement` is an INPUT/SELECT, so it doesn't yank a control out from under the user mid-interaction. That only works if every control actually *drops* focus once the interaction ends — a range input keeps focus after pointerup, a checkbox and the color picker keep it after their own change, and a text input obviously keeps it while being typed in. The scene `<select>`'s `sel.blur()` (right after a pick) was the first fix for this; the master brightness slider, per-segment speed/intensity sliders, the color picker, the power checkbox, and the preset-name field all got the same treatment (`onpointerup`/`onchange` → `.blur()`) once it became clear a single drag on any of them froze every future render() until an unrelated element happened to get focus instead.
 
 The key rides both the `/json` poll and the proactive WS push, so hints refresh on auto-advance for free. WLED clients ignore the unknown seg key, though they must still *parse* the payload — that was the load-bearing hardware check.
 

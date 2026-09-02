@@ -19,7 +19,13 @@ from typing import cast
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
 from c64cast.app.playlist import Playlist
-from c64cast.wled.wled_device import PresetStore, WledBridge, build_wled_app
+from c64cast.wled.wled_device import (
+    PresetStore,
+    WledBridge,
+    _can_force_colors,
+    _can_swap_palette,
+    build_wled_app,
+)
 
 try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
@@ -573,6 +579,37 @@ class SegCapsTests(unittest.TestCase):
         self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
 
+class SharedCapabilityPredicateTests(unittest.TestCase):
+    """`_can_swap_palette`/`_can_force_colors` are the single predicate pair
+    shared by `_seg_caps` (the hint) and `_apply_palette`/`_apply_force_colors`
+    (the write paths) — this pins their contract directly."""
+
+    def test_no_mode_or_api_is_false(self):
+        self.assertFalse(_can_swap_palette(None, None))
+        self.assertFalse(_can_force_colors(None, None))
+
+    def test_bare_mode_is_false(self):
+        class _Bare:
+            pass
+
+        self.assertFalse(_can_swap_palette(_Bare(), object()))
+        self.assertFalse(_can_force_colors(_Bare(), object()))
+
+    def test_palette_only_mode_swaps_but_cant_force(self):
+        class _PalOnly:
+            def set_palette_mode(self, api, mode, *, force_palette=None):
+                return mode
+
+        mode = _PalOnly()
+        self.assertTrue(_can_swap_palette(mode, object()))
+        self.assertFalse(_can_force_colors(mode, object()))
+
+    def test_full_mode_swaps_and_forces(self):
+        mode = _FakeMode()
+        self.assertTrue(_can_swap_palette(mode, object()))
+        self.assertTrue(_can_force_colors(mode, object()))
+
+
 # --- preset storage ---------------------------------------------------------
 
 
@@ -812,6 +849,14 @@ class WledApiTests(unittest.TestCase):
         # A scene pick blurs the <select> so the hints don't freeze behind the
         # focused-select render guard.
         self.assertIn("sel.blur()", r.text)
+        # Every other control that keeps focus past its interaction (slider
+        # drag end, checkbox click, color picker close, preset-name save) also
+        # blurs, for the same reason — see the wled_device.py PR fixing the
+        # served page's permanent-freeze-after-one-drag bug.
+        self.assertIn("slider.onpointerup = () => slider.blur()", r.text)
+        self.assertIn("picker.onchange = () => picker.blur()", r.text)
+        self.assertIn("e.target.blur()", r.text)
+        self.assertIn("nameEl.blur()", r.text)
         # Live state now arrives over WebSocket (/ws), with a poll fallback.
         self.assertIn("new WebSocket(", r.text)
         self.assertIn("/ws", r.text)

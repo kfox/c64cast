@@ -76,8 +76,9 @@ from urllib.parse import urlsplit
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
 from c64cast.control import live_tune
-from c64cast.control.transport import JsonSlotStore
+from c64cast.control.transport import JsonSlotStore, warn_if_legacy_presets_orphaned
 from c64cast.video.modes import PALETTE_MODES
+from c64cast.video.palette import build_fixed_color_map, nearest_palette_index
 
 # NOTE: this module deliberately does NOT use `from __future__ import
 # annotations`. The FastAPI route handlers below annotate params with types
@@ -284,6 +285,11 @@ function segmentEl(i, seg, effects, palettes) {
       body.seg[0][key] = parseInt(slider.value, 10);
       post(body);
     };
+    // A range input keeps focus after the drag ends (mouseup/touchend), which
+    // would freeze render()'s re-renders forever (see the scene <select>'s
+    // own blur() above, and #on/#bri/color picker below) — drop it once the
+    // drag is actually done, not on every oninput tick mid-drag.
+    slider.onpointerup = () => slider.blur();
     row.appendChild(l);
     row.appendChild(slider);
     if (!enabled) markOff(row, slider);
@@ -303,6 +309,10 @@ function segmentEl(i, seg, effects, palettes) {
                  parseInt(h.slice(5, 7), 16)];
     post({seg: [{id: i, col: [rgb]}]});
   };
+  // 'change' fires once the picker UI closes (unlike 'input', which fires
+  // continuously while dragging inside it) — blur then, same freeze fix as
+  // the sliders above.
+  picker.onchange = () => picker.blur();
   colRow.appendChild(colLabel);
   colRow.appendChild(picker);
   if (!caps.col) markOff(colRow, picker);
@@ -423,6 +433,9 @@ async function savePreset() {
   if (nameEl.value) body.n = nameEl.value;
   await post(body);
   nameEl.value = '';
+  // Save is exactly the moment a refresh is most wanted, and a focused
+  // <input> blocks render() from running at all — blur so it actually lands.
+  nameEl.blur();
   setTimeout(async () => { await fetchPresets(); render(); }, 300);
 }
 
@@ -451,11 +464,16 @@ function startWS() {
 function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(fetchMeta, 4000); }
 function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-document.getElementById('on').onchange = (e) => post({on: e.target.checked});
+// Blur after each: all three keep focus past their interaction (a checkbox
+// after click, a range after drag, per the browser), which would otherwise
+// freeze render()'s re-renders forever — same fix as the per-segment
+// controls above.
+document.getElementById('on').onchange = (e) => { post({on: e.target.checked}); e.target.blur(); };
 // Master brightness → top-level `bri`, the same field the WLED app's own
 // brightness slider drives, so the two stay in sync. A real screen dim; 0 =
 // black, never a pause.
 document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
+document.getElementById('bri').onpointerup = (e) => e.target.blur();
 document.getElementById('presetApply').onclick = applyPreset;
 document.getElementById('presetSave').onclick = savePreset;
 document.getElementById('presetDelete').onclick = deletePreset;
@@ -522,12 +540,9 @@ def _seg_caps(pl: Playlist) -> dict[str, bool]:
     if scene is None:
         return {"pal": False, "col": False, "sx": False, "ix": False}
     mode, api = _current_mode_api(pl)
-    live = mode is not None and api is not None
-    pal = live and hasattr(mode, "set_palette_mode")
-    col = pal and hasattr(mode, "set_color_map")
     return {
-        "pal": bool(pal),
-        "col": bool(col),
+        "pal": _can_swap_palette(mode, api),
+        "col": _can_force_colors(mode, api),
         "sx": _resolve_live_target(scene, _SX_TARGETS) is not None,
         "ix": _resolve_live_target(scene, _IX_TARGETS) is not None,
     }
@@ -544,6 +559,22 @@ def _current_mode_api(pl: Playlist) -> tuple[Any, Any]:
     return getattr(scene, "display_mode", None), getattr(scene, "api", None)
 
 
+def _can_swap_palette(mode: Any, api: Any) -> bool:
+    """True if a live scene's mode can swap its palette_mode (hires/petscii/
+    blank can't — they have no `set_palette_mode`). Shared by `_apply_palette`
+    (the write path) and `_seg_caps` (the `/` page's hint) so they can't drift
+    apart."""
+    return mode is not None and api is not None and hasattr(mode, "set_palette_mode")
+
+
+def _can_force_colors(mode: Any, api: Any) -> bool:
+    """True if a live scene's mode can also take a forced color map (only
+    mcm/mhires do). Implies `_can_swap_palette` — forcing colors also snaps
+    the palette mode to "percell". Shared by `_apply_force_colors` and
+    `_seg_caps`."""
+    return _can_swap_palette(mode, api) and hasattr(mode, "set_color_map")
+
+
 def _apply_palette(pl: Playlist, index: int) -> None:
     """Live-swap the current scene's palette_mode from a WLED `pal` index, and
     clear any active color-picker force (the "back to normal palette" path).
@@ -554,7 +585,7 @@ def _apply_palette(pl: Playlist, index: int) -> None:
     if not (0 <= index < len(PALETTE_MODES)):
         return
     mode, api = _current_mode_api(pl)
-    if mode is None or api is None or not hasattr(mode, "set_palette_mode"):
+    if not _can_swap_palette(mode, api):
         return
     if hasattr(mode, "set_color_map"):
         mode.set_color_map(None)  # drop a prior color-picker force
@@ -571,15 +602,8 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
     if not isinstance(cols, (list, tuple)):
         return
     mode, api = _current_mode_api(pl)
-    if (
-        mode is None
-        or api is None
-        or not hasattr(mode, "set_color_map")
-        or not hasattr(mode, "set_palette_mode")
-    ):
+    if not _can_force_colors(mode, api):
         return
-    from c64cast.video.palette import build_fixed_color_map, nearest_palette_index
-
     indices: list[int] = []
     for slot in cols[:3]:
         if isinstance(slot, (list, tuple)) and len(slot) >= 3:
@@ -674,7 +698,7 @@ class WledBridge:
         # Real WLED "mac" is 12 hex digits; some clients validate/parse it as
         # such. Derive a stable pseudo-MAC from the name rather than embedding
         # non-hex characters.
-        self._mac = hashlib.md5(name.encode()).hexdigest()[:12]
+        self._mac = hashlib.md5(name.encode(), usedforsecurity=False).hexdigest()[:12]
         self._uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"c64cast-{name}"))
         self._lock = threading.Lock()
         self._global_bri = 128
@@ -682,8 +706,6 @@ class WledBridge:
         self._started = time.monotonic()
         # Persisted WLED presets (one file per device name) + the currently
         # active preset id (state.ps; -1 = none / a manual change since recall).
-        from c64cast.control.transport import warn_if_legacy_presets_orphaned
-
         warn_if_legacy_presets_orphaned()
         self._presets = PresetStore(paths.presets_dir() / f"wled-{_sanitize_name(name)}.json")
         self._active_preset = -1

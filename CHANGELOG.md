@@ -54,6 +54,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   slot, and omitting `psave` on a full store silently overwrote preset 250 —
   both now go through the same free-slot search, which reports the store as
   full (rather than picking a stale id) once every slot is taken.
+- The virtual WLED device's served `/` control page stopped re-rendering
+  after touching almost any control — a slider drag, the color picker, the
+  power switch, or saving a preset — because those all keep keyboard focus
+  past the interaction, and `render()` skips its rebuild while any input is
+  focused (so it won't yank a control mid-drag). Each now blurs once its own
+  interaction actually ends, matching what the scene dropdown already did.
+- `WledBridge`'s pseudo-MAC now passes `usedforsecurity=False` to
+  `hashlib.md5`, so constructing it no longer hard-fails on a FIPS-enforcing
+  OpenSSL build (the hash is a cosmetic 12-hex-digit identifier, not a
+  security primitive).
 
 ## [0.4.0] - 2026-08-30
 
