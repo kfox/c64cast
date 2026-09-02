@@ -628,7 +628,10 @@ def provision_video_output(api: object, cfg: Config) -> dict[str, str] | None:
         So "auto" raises SD to HD *only when this function also changed the
         timing* — c64cast fixes what it broke and leaves a machine it didn't
         retime alone. ``"keep"`` never touches it; an explicit label sets it
-        for the run regardless.
+        for the run — but only once the current video config could actually
+        be read back (see the early return below): this function never
+        writes config against an unknown starting state, explicit label or
+        not.
 
     Returns the original ``{field: value}`` for `restore_video_output`, or None
     when nothing changed. Gated so `session.build_stack` can call it

@@ -127,6 +127,12 @@ PRIME_AFTER_S = 1.5
 #: `line & 0x8000` that would have finished it is never coming.
 _STALE_FRAME_S = 1.0
 
+# Far above one real frame (~52 KB across ~68 packets, per the class
+# docstring). The wire protocol has no auth, so a flood of forged packets
+# that never sets the LAST_PACKET bit must not be allowed to grow the partial
+# buffer without limit while it waits for `_expire_partial`'s timeout.
+_MAX_PARTIAL_BYTES = 1 << 19
+
 
 @dataclass(frozen=True)
 class VicFrame:
@@ -192,7 +198,9 @@ class VicStreamReceiver:
         self._poll: PollThread | None = None
         self._lock = threading.Lock()
         self._latest: VicFrame | None = None
+        self._machine_addr = ""
         self._parts: list[bytes] = []
+        self._parts_bytes = 0
         self._width = 0
         self._last_packet_at = 0.0
         self._rearm_at = 0.0
@@ -217,8 +225,9 @@ class VicStreamReceiver:
             sock.bind((self._bind_host, 0))
             port = sock.getsockname()[1]
             self._destination = f"{self._reachable_address()}:{port}"
+            self._machine_addr = socket.gethostbyname(self._machine_host)
             self._dma.vicstream_on(self._destination, stop_after_s=WATCHDOG_S)
-        except OSError:
+        except (OSError, SocketDMAError):
             sock.close()
             raise
         self._sock = sock
@@ -242,6 +251,7 @@ class VicStreamReceiver:
         with self._lock:
             self._latest = None
             self._parts = []
+            self._parts_bytes = 0
         log.info("vic stream: stopped (%d frames, %d dropped)", self._frames, self._dropped)
 
     # ---- reading ----------------------------------------------------------
@@ -253,7 +263,8 @@ class VicStreamReceiver:
 
     @property
     def stats(self) -> dict[str, int]:
-        return {"frames": self._frames, "dropped": self._dropped}
+        with self._lock:
+            return {"frames": self._frames, "dropped": self._dropped}
 
     # ---- the receive loop -------------------------------------------------
 
@@ -261,15 +272,26 @@ class VicStreamReceiver:
         sock = self._sock
         while not stop.is_set() and sock is not None:
             try:
-                packet = sock.recv(_RECV_BYTES)
+                packet, addr = sock.recvfrom(_RECV_BYTES)
             except TimeoutError:
                 self._expire_partial()
                 self._maybe_rearm()
                 continue
             except OSError:
                 return  # closed under us by stop(); nothing to say about it
+            if not self._is_from_machine(addr):
+                continue
             self._accept(packet)
             self._maybe_rearm()
+
+    def _is_from_machine(self, addr: tuple[str, int]) -> bool:
+        """True if a datagram's source is the machine we told to stream.
+
+        The wire protocol has no authentication, so without this check
+        anyone on the segment who guesses the bound port can inject frames
+        or, worse, a flood of forged partial packets — this is the only
+        thing standing between "the receiver" and "an open UDP relay"."""
+        return addr[0] == self._machine_addr
 
     def _accept(self, packet: bytes) -> None:
         if len(packet) <= HEADER_BYTES:
@@ -280,11 +302,22 @@ class VicStreamReceiver:
             # A width change is a mode change on the machine; the frame in hand
             # was measured in the old one.
             self._parts = []
+            self._parts_bytes = 0
             self._width = width
         self._parts.append(packet[HEADER_BYTES:])
+        self._parts_bytes += len(packet) - HEADER_BYTES
+        if self._parts_bytes > _MAX_PARTIAL_BYTES:
+            # A frame that never sets LAST_PACKET would otherwise grow this
+            # buffer forever — `_expire_partial`'s timeout only fires on
+            # silence, not on a packet flood.
+            self._parts = []
+            self._parts_bytes = 0
+            self._dropped += 1
+            return
         if not line & _LAST_PACKET:
             return
         payload, self._parts = b"".join(self._parts), []
+        self._parts_bytes = 0
         try:
             indices = unpack_pixels(payload, width)
         except ValueError:
@@ -303,6 +336,7 @@ class VicStreamReceiver:
         if time.monotonic() - self._last_packet_at < _STALE_FRAME_S:
             return
         self._parts = []
+        self._parts_bytes = 0
         self._dropped += 1
 
     def _maybe_rearm(self) -> None:
