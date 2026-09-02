@@ -19,7 +19,13 @@ from typing import cast
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
 from c64cast.app.playlist import Playlist
-from c64cast.wled.wled_device import PresetStore, WledBridge, build_wled_app
+from c64cast.wled.wled_device import (
+    PresetStore,
+    WledBridge,
+    _can_force_colors,
+    _can_swap_palette,
+    build_wled_app,
+)
 
 try:
     # The WLED JSON API tests drive the real FastAPI app via TestClient, which
@@ -573,6 +579,37 @@ class SegCapsTests(unittest.TestCase):
         self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
 
+class SharedCapabilityPredicateTests(unittest.TestCase):
+    """`_can_swap_palette`/`_can_force_colors` are the single predicate pair
+    shared by `_seg_caps` (the hint) and `_apply_palette`/`_apply_force_colors`
+    (the write paths) — this pins their contract directly."""
+
+    def test_no_mode_or_api_is_false(self):
+        self.assertFalse(_can_swap_palette(None, None))
+        self.assertFalse(_can_force_colors(None, None))
+
+    def test_bare_mode_is_false(self):
+        class _Bare:
+            pass
+
+        self.assertFalse(_can_swap_palette(_Bare(), object()))
+        self.assertFalse(_can_force_colors(_Bare(), object()))
+
+    def test_palette_only_mode_swaps_but_cant_force(self):
+        class _PalOnly:
+            def set_palette_mode(self, api, mode, *, force_palette=None):
+                return mode
+
+        mode = _PalOnly()
+        self.assertTrue(_can_swap_palette(mode, object()))
+        self.assertFalse(_can_force_colors(mode, object()))
+
+    def test_full_mode_swaps_and_forces(self):
+        mode = _FakeMode()
+        self.assertTrue(_can_swap_palette(mode, object()))
+        self.assertTrue(_can_force_colors(mode, object()))
+
+
 # --- preset storage ---------------------------------------------------------
 
 
@@ -666,6 +703,28 @@ class BridgePresetTests(unittest.TestCase):
     def test_psave_auto_picks_id_when_zero(self):
         self.bridge.apply({"psave": 0, "n": "Auto"})
         self.assertIn("1", self.bridge.presets_json())
+
+    def test_psave_out_of_range_id_reassigns_through_free_slot(self):
+        # Client posts an id past 250 (its own free-slot count disagreed with
+        # ours) — must land on a real free slot, not silently no-op.
+        self.bridge.apply({"psave": 251, "n": "Overflow"})
+        self.assertIn("1", self.bridge.presets_json())
+        self.assertEqual(self.bridge.presets_json()["1"]["n"], "Overflow")
+
+    def test_psave_when_store_full_does_not_overwrite(self):
+        for pid in range(1, 251):
+            self.bridge._presets.save(pid, {"n": f"P{pid}", "seg": []})
+        self.bridge.apply({"psave": 251, "n": "Should not land"})  # out of range, store full
+        self.assertEqual(self.bridge.presets_json()["250"]["n"], "P250")
+
+    def test_next_free_id_signals_exhaustion_with_zero(self):
+        for pid in range(1, 251):
+            self.bridge._presets.save(pid, {"n": f"P{pid}", "seg": []})
+        self.assertEqual(self.bridge._presets.next_free_id(), 0)
+
+    def test_psave_name_is_clamped(self):
+        self.bridge.apply({"psave": 1, "n": "x" * 500})
+        self.assertEqual(len(self.bridge.presets_json()["1"]["n"]), 64)
 
     def test_psave_default_name_falls_back_to_scene_name(self):
         # No explicit `n` → the current scene's name (fake scene[0] = "Waveform").
@@ -790,6 +849,14 @@ class WledApiTests(unittest.TestCase):
         # A scene pick blurs the <select> so the hints don't freeze behind the
         # focused-select render guard.
         self.assertIn("sel.blur()", r.text)
+        # Every other control that keeps focus past its interaction (slider
+        # drag end, checkbox click, color picker close, preset-name save) also
+        # blurs, for the same reason — see the wled_device.py PR fixing the
+        # served page's permanent-freeze-after-one-drag bug.
+        self.assertIn("slider.onpointerup = () => slider.blur()", r.text)
+        self.assertIn("picker.onchange = () => picker.blur()", r.text)
+        self.assertIn("e.target.blur()", r.text)
+        self.assertIn("nameEl.blur()", r.text)
         # Live state now arrives over WebSocket (/ws), with a poll fallback.
         self.assertIn("new WebSocket(", r.text)
         self.assertIn("/ws", r.text)
@@ -817,6 +884,26 @@ class WledApiTests(unittest.TestCase):
     def test_post_json_jumps(self):
         self.client.post("/json", json={"seg": [{"id": 0, "fx": 1}]})
         self.assertEqual(self.pl.jumps, [1])
+
+    def test_post_rejects_cross_origin(self):
+        r = self.client.post(
+            "/json/state", json={"on": False}, headers={"origin": "http://evil.example"}
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(self.pl.pause_event.is_set())
+
+    def test_post_allows_same_origin(self):
+        r = self.client.post(
+            "/json/state", json={"on": False}, headers={"origin": "http://testserver"}
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(self.pl.pause_event.is_set())
+
+    def test_post_allows_no_origin_header(self):
+        # Non-browser clients (python-wled, Home Assistant, curl) send no
+        # Origin at all on a POST — must not be mistaken for cross-origin.
+        r = self.client.post("/json/state", json={"on": False})
+        self.assertEqual(r.status_code, 200)
 
     def test_presets_json_empty_reserves_id_zero(self):
         self.assertEqual(self.client.get("/presets.json").json(), {"0": {}})

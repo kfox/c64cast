@@ -21,6 +21,7 @@ in config.py), so the single source of truth is unmoved.
 from __future__ import annotations
 
 import glob
+import ipaddress
 import logging
 import math
 import os
@@ -969,6 +970,20 @@ def _validate_wled(s: SceneCfg, cfg: Config) -> DisplayMode:
     for label, value in (("sink_width", s.sink_width), ("sink_height", s.sink_height)):
         if not 1 <= value <= 1024:
             raise ValueError(f"wled scene {label} must be 1..1024, got {value!r}")
+    for label, port in (("sink_ddp_port", s.sink_ddp_port), ("sink_wled_port", s.sink_wled_port)):
+        if not 1 <= port <= 65535:
+            raise ValueError(f"wled scene {label} must be 1..65535, got {port!r}")
+    if s.sink_ddp_port == s.sink_wled_port:
+        raise ValueError(
+            f"wled scene sink_ddp_port and sink_wled_port must differ, both are {s.sink_ddp_port!r}"
+        )
+    for addr in s.sink_allow:
+        try:
+            ipaddress.ip_address(addr)
+        except ValueError:
+            raise ValueError(
+                f"wled scene sink_allow entry {addr!r} is not a valid IP address"
+            ) from None
     return _display_mode_for_scene(s.display, s, cfg)
 
 
@@ -2155,7 +2170,13 @@ def _build_wled(ctx: _SceneBuildContext) -> Scene:
     # It's just another FrameSource behind the SourceScene seam — the display
     # mode quantizes the received BGR frame to the C64 unchanged.
     mode = ctx.display_mode(s.display)
-    wled_source = WLEDSource(s.sink_width, s.sink_height)
+    wled_source = WLEDSource(
+        s.sink_width,
+        s.sink_height,
+        ddp_port=s.sink_ddp_port,
+        wled_port=s.sink_wled_port,
+        sender_allowlist=frozenset(s.sink_allow) if s.sink_allow else None,
+    )
     name = s.name or "WLED sink"
     scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=ctx.color)
     # Bitmap displays push a full ~9-10 KB frame per update; default to half

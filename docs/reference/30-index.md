@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 453 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 456 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -492,8 +492,11 @@ Every name c64cast answers to — 453 of them — and the pages that discuss eac
 | `sid_video_mode` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `sid_volume` | [`sid_volume` (4)](05-sound-and-music.md#sid_volume), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | single-scene mode | [Single-Scene Mode (1)](02-config-rules.md#single-scene-mode), [Between One Scene and the Next (2)](03-vocabulary.md#between-one-scene-and-the-next), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
+| `sink_allow` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
+| `sink_ddp_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_height` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_width` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
+| `sink_wled_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
 | `skip_probe` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `slideshow` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |

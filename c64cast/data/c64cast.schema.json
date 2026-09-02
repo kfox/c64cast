@@ -2746,6 +2746,21 @@
             "type": "integer",
             "description": "WLED sink: virtual LED-matrix height in pixels a sender streams to (wled scenes only). Must match the sender's configured matrix; the display mode downscales it to the C64. Default 200.",
             "default": 200
+          },
+          "sink_ddp_port": {
+            "type": "integer",
+            "description": "WLED sink: UDP port for DDP-protocol senders (LedFx / xLights / Jinx!, wled scenes only). Override when another process on this host already owns the standard port. Default 4048.",
+            "default": 4048
+          },
+          "sink_wled_port": {
+            "type": "integer",
+            "description": "WLED sink: UDP port for WLED's own realtime protocol (wled scenes only). Override when another process on this host already owns the standard port. Default 21324.",
+            "default": 21324
+          },
+          "sink_allow": {
+            "type": "array",
+            "description": "WLED sink: sender IP addresses allowed to write pixels (wled scenes only), e.g. [\"192.168.2.10\"]. Empty (default) accepts any sender that reaches the bound port \u2014 DDP and WLED realtime carry no authentication of their own, so this is the only barrier against another host on the LAN injecting frames into the broadcast.",
+            "default": []
           }
         },
         "allOf": [

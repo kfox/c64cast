@@ -186,6 +186,8 @@ class WledAudioSyncBroadcaster:
             with contextlib.suppress(OSError):
                 self._sock.close()
             self._sock = None
+        if self._send_errors:
+            log.info("WLED audio sync: %d send(s) failed over this run", self._send_errors)
 
     def _derive_peak(self, mod: MusicModulation) -> bool:
         """True on a reported transient or a rising gate since the last packet."""
@@ -194,11 +196,19 @@ class WledAudioSyncBroadcaster:
         self._prev_gates = gates
         return mod.onset >= _ONSET_PEAK_THRESHOLD or rose
 
+    @property
+    def send_errors(self) -> int:
+        """Total failed `sendto` calls since `start()`. Only the first is
+        logged (a broadcast hiccup must never spam), so this is the only way
+        to tell a broadcaster that's failing every send from a healthy one."""
+        return self._send_errors
+
     def _emit(self) -> None:
         """One tick: pull features (skip if none), build + send a packet.
         Socket errors are counted and logged once — a broadcast hiccup must
         never disturb playback."""
-        if self._sock is None:
+        sock = self._sock  # stable local: stop() may null self._sock mid-tick
+        if sock is None:
             return
         mod = self._features_fn()
         if mod is None:
@@ -206,7 +216,7 @@ class WledAudioSyncBroadcaster:
         peak = self._derive_peak(mod)
         packet = build_audio_sync_packet(mod, peak)
         try:
-            self._sock.sendto(packet, (self._host, self._port))
+            sock.sendto(packet, (self._host, self._port))
         except OSError as e:
             self._send_errors += 1
             if self._send_errors == 1:

@@ -37,6 +37,7 @@ from c64cast.video.palette import (
     HIRES_CELL_PICKS,
     resolve_color,
 )
+from c64cast.wled.wled_sink import DDP_PORT, WLED_REALTIME_PORT
 
 from . import connect, paths
 
@@ -1345,6 +1346,37 @@ class SceneCfg:
             "help": "WLED sink: virtual LED-matrix height in pixels a sender "
             "streams to (wled scenes only). Must match the sender's configured "
             "matrix; the display mode downscales it to the C64. Default 200.",
+            "applies_to": ("wled",),
+        },
+    )
+    sink_ddp_port: int = field(
+        default=DDP_PORT,
+        metadata={
+            "help": "WLED sink: UDP port for DDP-protocol senders (LedFx / "
+            "xLights / Jinx!, wled scenes only). Override when another "
+            "process on this host already owns the standard port. "
+            f"Default {DDP_PORT}.",
+            "applies_to": ("wled",),
+        },
+    )
+    sink_wled_port: int = field(
+        default=WLED_REALTIME_PORT,
+        metadata={
+            "help": "WLED sink: UDP port for WLED's own realtime protocol "
+            "(wled scenes only). Override when another process on this host "
+            f"already owns the standard port. Default {WLED_REALTIME_PORT}.",
+            "applies_to": ("wled",),
+        },
+    )
+    sink_allow: list[str] = field(
+        default_factory=list,
+        metadata={
+            "help": "WLED sink: sender IP addresses allowed to write pixels "
+            '(wled scenes only), e.g. ["192.168.2.10"]. Empty (default) '
+            "accepts any sender that reaches the bound port — DDP and WLED "
+            "realtime carry no authentication of their own, so this is the "
+            "only barrier against another host on the LAN injecting frames "
+            "into the broadcast.",
             "applies_to": ("wled",),
         },
     )

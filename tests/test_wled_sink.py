@@ -54,8 +54,8 @@ class DdpParserTest(unittest.TestCase):
         # flags without the 0x40 version bit → not a V1 data packet.
         self.assertIsNone(parse_ddp(struct.pack(">BBBBIH", 0x00, 0, 0, 1, 0, 0)))
 
-    def test_query_and_reply_rejected(self):
-        for flag in (0x08, 0x04):  # query, reply
+    def test_query_reply_and_storage_rejected(self):
+        for flag in (0x02, 0x04, 0x08):  # query, reply, storage
             dg = struct.pack(">BBBBIH", 0x40 | flag, 0, 0, 1, 0, 0)
             self.assertIsNone(parse_ddp(dg), f"flag {flag:#x} should be rejected")
 
@@ -65,6 +65,16 @@ class DdpParserTest(unittest.TestCase):
         pkt = parse_ddp(dg)
         assert pkt is not None
         self.assertEqual(pkt.payload, bytes([1, 2, 3]))
+
+    def test_time_flag_offsets_header_by_four_bytes(self):
+        # TIME (0x10) prepends a 4-byte timecode, so the header is 14 bytes.
+        timecode = bytes([0xAA, 0xBB, 0xCC, 0xDD])
+        payload = bytes([1, 2, 3])
+        dg = struct.pack(">BBBBIH", 0x40 | 0x10 | 0x01, 0, 0, 1, 0, len(payload))
+        dg += timecode + payload
+        pkt = parse_ddp(dg)
+        assert pkt is not None
+        self.assertEqual(pkt.payload, payload)
 
 
 # --- WLED realtime parser ---------------------------------------------------
@@ -181,6 +191,79 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(list(f[0, 0]), [3, 2, 1])
         self.assertEqual(list(f[0, 1]), [6, 5, 4])
 
+    def test_sender_allowlist_rejects_other_senders(self):
+        rx = WledPixelReceiver(
+            2,
+            1,
+            host="127.0.0.1",
+            ddp_port=0,
+            wled_port=0,
+            sender_allowlist=frozenset({"10.0.0.1"}),
+        )
+        self.assertTrue(rx.start())
+        self.addCleanup(rx.stop)
+        ports = rx.bound_ports()
+        assert ports is not None
+        ddp_port, _ = ports
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        s.sendto(_ddp(0, bytes([255, 0, 0, 0, 255, 0])), ("127.0.0.1", ddp_port))
+        time.sleep(0.2)
+        self.assertIsNone(rx.latest())  # sender (127.0.0.1) isn't in the allowlist
+
+    def test_sender_allowlist_accepts_listed_sender(self):
+        rx = WledPixelReceiver(
+            2,
+            1,
+            host="127.0.0.1",
+            ddp_port=0,
+            wled_port=0,
+            sender_allowlist=frozenset({"127.0.0.1"}),
+        )
+        self.assertTrue(rx.start())
+        self.addCleanup(rx.stop)
+        ports = rx.bound_ports()
+        assert ports is not None
+        ddp_port, _ = ports
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        s.sendto(_ddp(0, bytes([255, 0, 0, 0, 255, 0])), ("127.0.0.1", ddp_port))
+        self._wait_frame(rx)
+
+    def test_publish_skipped_within_budget(self):
+        # Deterministic, no socket/thread timing: calling _publish() twice in
+        # quick succession must not re-snapshot the buffer the second time.
+        rx = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=0, wled_port=0)
+        rx._publish()
+        first = rx.latest()
+        rx._assembler._buf[0] = 42
+        rx._publish()
+        self.assertIs(rx.latest(), first)
+
+    def test_publish_refreshes_once_budget_elapses(self):
+        rx = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=0, wled_port=0)
+        rx._publish()
+        rx._last_publish_ts -= rx._PUBLISH_MIN_INTERVAL_S * 2  # pretend it's stale
+        rx._assembler._buf[0] = 42  # buf[0] is pixel (0,0)'s R byte
+        rx._publish()
+        f = rx.latest()
+        assert f is not None
+        self.assertEqual(int(f[0, 0, 2]), 42)  # BGR: channel 2 is R
+
+    def test_rejected_datagram_is_logged_once(self):
+        rx = self._make()
+        ports = rx.bound_ports()
+        assert ports is not None
+        _, wled_port = ports
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(s.close)
+        with self.assertLogs("c64cast.wled.wled_sink", level="WARNING") as cm:
+            s.sendto(bytes([99, 0, 1, 2, 3]), ("127.0.0.1", wled_port))
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not rx._logged_wled_reject:
+                time.sleep(0.01)
+        self.assertTrue(any("rejected" in r.getMessage() for r in cm.records))
+
     def test_bind_conflict_reports_error(self):
         # Occupy a port, then a receiver told to use it fails to start.
         blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -191,6 +274,34 @@ class ReceiverTest(unittest.TestCase):
         with self.assertLogs("c64cast.wled.wled_sink", level="WARNING"):
             self.assertFalse(rx.start())
         self.assertIsNotNone(rx.bind_error)
+
+    def test_stale_bind_error_cleared_on_later_success(self):
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        blocker.bind(("127.0.0.1", 0))
+        busy = blocker.getsockname()[1]
+        rx = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=busy, wled_port=0)
+        with self.assertLogs("c64cast.wled.wled_sink", level="WARNING"):
+            self.assertFalse(rx.start())
+        self.assertIsNotNone(rx.bind_error)
+        blocker.close()  # free the port
+        self.assertTrue(rx.start())
+        self.addCleanup(rx.stop)
+        self.assertIsNone(rx.bind_error)
+
+    def test_restart_after_dead_worker_closes_old_sockets(self):
+        rx = self._make()
+        old_sockets = list(rx._sockets)
+        # Simulate the worker thread dying without stop() ever being called.
+        assert rx._poll is not None
+        rx._poll.stop_event.set()
+        deadline = time.time() + 2.0
+        while rx._poll.is_running() and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(rx.start())
+        self.addCleanup(rx.stop)
+        for old in old_sockets:
+            with self.assertRaises(OSError):
+                old.getsockname()  # closed, not leaked
 
 
 # --- WLEDSource lifecycle ---------------------------------------------------
@@ -275,6 +386,45 @@ class ConfigWledSinkTest(unittest.TestCase):
             s = SceneCfg(type="wled", display="mhires", sink_width=w, sink_height=h)
             with self.assertRaises(ValueError):
                 validate_scene_cfg(s, self.cfg, audio_enabled=False)
+
+    def test_reject_out_of_range_ports(self):
+        for s in (
+            SceneCfg(type="wled", display="mhires", sink_ddp_port=0),
+            SceneCfg(type="wled", display="mhires", sink_wled_port=70000),
+        ):
+            with self.assertRaises(ValueError):
+                validate_scene_cfg(s, self.cfg, audio_enabled=False)
+
+    def test_reject_colliding_ports(self):
+        s = SceneCfg(type="wled", display="mhires", sink_ddp_port=5555, sink_wled_port=5555)
+        with self.assertRaises(ValueError):
+            validate_scene_cfg(s, self.cfg, audio_enabled=False)
+
+    def test_reject_invalid_allow_entry(self):
+        s = SceneCfg(type="wled", display="mhires", sink_allow=["not-an-ip"])
+        with self.assertRaises(ValueError):
+            validate_scene_cfg(s, self.cfg, audio_enabled=False)
+
+    def test_build_wires_ports_and_allowlist(self):
+        s = SceneCfg(
+            type="wled",
+            display="mhires",
+            sink_ddp_port=15000,
+            sink_wled_port=15001,
+            sink_allow=["192.168.2.10"],
+        )
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        recv = cast(WLEDSource, scene.source)._receiver
+        self.assertEqual((recv._ddp_port, recv._wled_port), (15000, 15001))
+        self.assertEqual(recv._sender_allowlist, frozenset({"192.168.2.10"}))
+
+    def test_build_default_allowlist_is_none(self):
+        s = SceneCfg(type="wled", display="mhires")
+        scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), None, None)
+        assert isinstance(scene, SourceScene)
+        recv = cast(WLEDSource, scene.source)._receiver
+        self.assertIsNone(recv._sender_allowlist)
 
     def test_effect_allowed(self):
         # wled is a frame-bearing scene, so a pixel effect validates (no raise).

@@ -148,6 +148,63 @@ class BroadcasterPeakTests(unittest.TestCase):
         self.assertFalse(bc._derive_peak(_mod()))
 
 
+class _FakeSocket:
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+
+    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+        self.sent.append(data)
+
+
+class EmitTests(unittest.TestCase):
+    """`_emit` binds `self._sock` to a local once, so a concurrent `stop()`
+    nulling `self._sock` mid-tick can't turn the send into `None.sendto(...)`
+    (an AttributeError `except OSError` wouldn't catch)."""
+
+    def test_survives_sock_nulled_between_check_and_send(self):
+        bc = WledAudioSyncBroadcaster(lambda: None)
+        fake_sock = _FakeSocket()
+        bc._sock = fake_sock  # type: ignore[assignment]
+
+        def features_fn() -> MusicModulation:
+            # Simulate stop() racing in between the None-check and the send.
+            bc._sock = None
+            return _mod(level=0.5)
+
+        bc._features_fn = features_fn  # type: ignore[assignment]
+        bc._emit()  # must not raise
+        self.assertEqual(len(fake_sock.sent), 1)
+        self.assertIsNone(bc._sock)  # stop()'s null is left in place
+
+    def test_send_errors_counted_and_exposed(self):
+        bc = WledAudioSyncBroadcaster(lambda: _mod(level=0.5))
+
+        class _BrokenSocket:
+            def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+                raise OSError("network unreachable")
+
+        bc._sock = _BrokenSocket()  # type: ignore[assignment]
+        self.assertEqual(bc.send_errors, 0)
+        with self.assertLogs("c64cast.wled.wled_sync", level="WARNING"):
+            bc._emit()
+        self.assertEqual(bc.send_errors, 1)
+        bc._emit()  # second failure: counted, not re-logged
+        self.assertEqual(bc.send_errors, 2)
+
+    def test_stop_logs_send_error_summary(self):
+        bc = WledAudioSyncBroadcaster(lambda: None)
+        bc._send_errors = 3
+        with self.assertLogs("c64cast.wled.wled_sync", level="INFO") as cm:
+            bc.stop()
+        self.assertTrue(any("3" in r.getMessage() for r in cm.records))
+
+    def test_stop_is_quiet_with_no_send_errors(self):
+        bc = WledAudioSyncBroadcaster(lambda: None)
+        with self.assertRaises(AssertionError):
+            with self.assertLogs("c64cast.wled.wled_sync"):
+                bc.stop()
+
+
 class _FakeApi:
     def __init__(self) -> None:
         self.stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}

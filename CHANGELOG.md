@@ -19,7 +19,56 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- The WLED sink (`wled_sink.py`, bridge Mode 2) rejected the wrong DDP flag as
+  a "query" (`0x08` is STORAGE; QUERY is `0x02`), so a real discovery probe
+  from LedFx/xLights/Jinx! slipped through as if it were pixel data and a
+  STORAGE-flagged pixel packet was silently dropped. A TIME-flagged DDP packet
+  (a 4-byte timecode ahead of the pixel payload) was also misparsed — the
+  payload slice started 4 bytes early instead of accounting for the longer
+  header. Both are now decoded per the DDP flag layout.
+- The WLED sink no longer leaks its two UDP sockets when `start()` is called
+  again after the receive thread has died with the sockets still open — the
+  old sockets are closed first, and a stale `bind_error` from a prior failed
+  start no longer survives into a later successful one.
+- The WLED sink no longer re-copies the whole frame buffer on every single
+  incoming datagram — publishing is now rate-limited to a real display frame
+  budget (1/60s), closing off a minimal-datagram flood as a way to peg a
+  core in memcpy. New `[[scenes]]` fields for `type = "wled"`: `sink_allow`
+  restricts accepted senders to an IP allowlist (neither wire protocol
+  authenticates, so this is the only barrier against another LAN host
+  injecting frames into the broadcast), and `sink_ddp_port` / `sink_wled_port`
+  move the sink off its two standard ports if something else on the host
+  already owns one. The receiver also now logs the first accepted datagram's
+  source, and the first datagram a parser rejects, so a silent "nothing on
+  screen" is attributable.
+- The virtual WLED device (`wled_device.py`, bridge Mode 1) accepted a state
+  change POSTed from any origin — a page the operator merely had open in a
+  browser tab could pause the show, black the screen, or delete presets, with
+  no CORS preflight to stop it. `POST /json` and `/json/state` now reject a
+  request whose `Origin` header names a different host than its own; a
+  same-origin fetch from the served `/` page or a non-browser client
+  (python-wled, Home Assistant) is unaffected. Separately, a client posting a
+  preset id past 250 used to silently no-op instead of landing on a free
+  slot, and omitting `psave` on a full store silently overwrote preset 250 —
+  both now go through the same free-slot search, which reports the store as
+  full (rather than picking a stale id) once every slot is taken.
+- The virtual WLED device's served `/` control page stopped re-rendering
+  after touching almost any control — a slider drag, the color picker, the
+  power switch, or saving a preset — because those all keep keyboard focus
+  past the interaction, and `render()` skips its rebuild while any input is
+  focused (so it won't yank a control mid-drag). Each now blurs once its own
+  interaction actually ends, matching what the scene dropdown already did.
+- `WledBridge`'s pseudo-MAC now passes `usedforsecurity=False` to
+  `hashlib.md5`, so constructing it no longer hard-fails on a FIPS-enforcing
+  OpenSSL build (the hash is a cosmetic 12-hex-digit identifier, not a
+  security primitive).
+- The WLED audio-sync broadcaster (`wled_sync.py`, bridge Mode 3) could raise
+  an unhandled `AttributeError` out of its emit thread if `stop()` ran between
+  a tick's null-check and its `sendto` call; `_emit` now binds the socket to a
+  local first. Its running failed-send count is now readable (`send_errors`)
+  and `stop()` logs it as a one-line summary when nonzero.
 
 ## [0.4.0] - 2026-08-30
 
