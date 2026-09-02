@@ -64,6 +64,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `hashlib.md5`, so constructing it no longer hard-fails on a FIPS-enforcing
   OpenSSL build (the hash is a cosmetic 12-hex-digit identifier, not a
   security primitive).
+- The WLED audio-sync broadcaster (`wled_sync.py`, bridge Mode 3) could raise
+  an unhandled `AttributeError` out of its emit thread if `stop()` ran between
+  a tick's null-check and its `sendto` call; `_emit` now binds the socket to a
+  local first. Its running failed-send count is now readable (`send_errors`)
+  and `stop()` logs it as a one-line summary when nonzero.
 
 ## [0.4.0] - 2026-08-30
 
