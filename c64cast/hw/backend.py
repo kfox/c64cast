@@ -333,10 +333,9 @@ TEENSYROM_PROFILE = HardwareProfile(
 # schema `choices`). This is NOT a dispatch table — it maps to nothing; the
 # actual dispatch is the `if backend == ... / elif backend == ...` chain in
 # `make_backend` below. `test_backend_choices_match_registry` pins this tuple
-# against the CLI's own choices, and `test_every_backends_token_is_dispatched`
-# pins it against `make_backend` — so a token added here without a matching
-# branch fails a test instead of surfacing at runtime as `ValueError: unknown
-# [hardware].backend ...` after --help already offered it.
+# against the CLI's own choices — so a token added here without a matching
+# `make_backend` branch fails a test instead of surfacing at runtime as
+# `ValueError: unknown [hardware].backend ...` after --help already offered it.
 BACKENDS: tuple[str, ...] = ("ultimate", "teensyrom")
 
 
