@@ -766,7 +766,10 @@ def resolve_system(cfg: Config, api: object) -> None:
     from .backend import resolve_host_sid_model
 
     profile = getattr(api, "profile", None)
-    configured = cfg.ultimate64.system
+    # Normalize once: nothing at config load enforces SYSTEM_CHOICES'
+    # canonical spelling, and make_backend's own fold normalizes the same
+    # way — see the comment there for why a bare comparison is a trap.
+    configured = cfg.ultimate64.system.upper()
     live = (
         read_system_timing(api)
         if profile is not None
@@ -774,7 +777,7 @@ def resolve_system(cfg: Config, api: object) -> None:
         and getattr(profile, "supports_system_mode", False)
         else None
     )
-    if configured == "auto":
+    if configured == "AUTO":
         if live is None:
             log.info(
                 "[ultimate64].system = auto: this backend can't report its "
@@ -785,7 +788,7 @@ def resolve_system(cfg: Config, api: object) -> None:
         else:
             log.info("[ultimate64].system = auto -> %s (read from the machine)", live)
         cfg.ultimate64.system = live or "NTSC"
-    elif live is not None and live != configured.upper():
+    elif live is not None and live != configured:
         log.warning(
             "[ultimate64].system = %s but the machine is running %s timing. "
             "Frame rate, CPU clock and SID PLAY rate will all be computed for "
@@ -798,7 +801,7 @@ def resolve_system(cfg: Config, api: object) -> None:
         return
     # The profile was built from the pre-resolution value; rebuild what derives
     # from it.
-    system = cfg.ultimate64.system
+    system = cfg.ultimate64.system.upper()
     host_model, host_model_assumed = resolve_host_sid_model(cfg.hardware.host_sid_model, system)
     if profile.host_sid_chips:
         host_model_assumed = False

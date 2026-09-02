@@ -744,6 +744,12 @@ class MakeBackendTest(unittest.TestCase):
         ):
             make_backend(cfg)
         self.assertEqual(captured["port"], "/dev/cu.usbmodemAUTO1")
+        # The resolved device must be written back onto the config too —
+        # dac_calibration_store.resolve_calibration_key only looks up the
+        # board's USB serial number when serial_port is set, so leaving it
+        # empty here would collide two different TR+ boards on one host
+        # onto the same "tr-serial-auto" calibration file.
+        self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodemAUTO1")
 
     def test_explicit_serial_port_skips_autodetect(self):
         # An explicit serial_port wins — auto-detect is never consulted.

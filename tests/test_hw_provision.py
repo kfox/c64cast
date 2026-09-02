@@ -584,6 +584,17 @@ class ResolveSystemTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.system, "PAL")
         self.assertEqual(api.profile.system, "PAL")
 
+    def test_a_lowercase_explicit_value_is_normalized_not_treated_as_a_mismatch(self):
+        # Nothing at config load enforces SYSTEM_CHOICES' canonical
+        # spelling; a bare (non-.upper()) comparison here used to warn
+        # about a mismatch against the live machine that doesn't exist,
+        # and fold the profile's fps for the wrong standard.
+        api = self._api(system_mode="PAL")
+        cfg = _video_cfg("pal")
+        hw_provision.resolve_system(cfg, api)
+        self.assertEqual(api.profile.system, "PAL")
+        self.assertEqual(api.profile.default_fps, 50.0)
+
 
 def _palette_cfg(host_palette: str = "auto") -> cfgmod.Config:
     return _cfg(

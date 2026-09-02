@@ -116,10 +116,10 @@ class DmaLatencyTest(unittest.TestCase):
         avg, p50, p95, mx, n = self.api.socket_dma.latency_summary()
         self.assertEqual(n, 100)
         self.assertAlmostEqual(avg, sum(range(1, 101)) / 100 / 1000.0)
-        # nearest-rank: int(0.50 * 100) = 50 → sorted[50] = 51 ms.
-        self.assertAlmostEqual(p50, 0.051)
-        # int(0.95 * 100) = 95 → sorted[95] = 96 ms.
-        self.assertAlmostEqual(p95, 0.096)
+        # nearest-rank: ceil(0.50 * 100) - 1 = 49 → sorted[49] = 50 ms.
+        self.assertAlmostEqual(p50, 0.050)
+        # ceil(0.95 * 100) - 1 = 94 → sorted[94] = 95 ms.
+        self.assertAlmostEqual(p95, 0.095)
         self.assertAlmostEqual(mx, 0.100)
 
 
