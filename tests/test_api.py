@@ -641,6 +641,19 @@ class RunSidPlayerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "before run_sid_player"):
             self.api.cue_song_reinit(2)
 
+    def test_cue_song_reinit_out_of_range_song_raises(self):
+        # song<=0 used to reach ParsedPsid.song_is_vsync's bit = song - 1,
+        # then `speed >> bit` with a negative bit — a ValueError from the
+        # shift, not a clear "out of range" message. Same class of bug for
+        # song > num_songs. Caught before any DMA write goes out.
+        self.api.run_sid_player(self._make_sid(num_songs=4))
+        n_setup = len(self.dma_writes)
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            self.api.cue_song_reinit(0)
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            self.api.cue_song_reinit(5)
+        self.assertEqual(len(self.dma_writes), n_setup, "no partial DMA writes on rejection")
+
     # ---- relocation -------------------------------------------------
     def test_relocates_player_when_payload_overlaps_default(self):
         # A SID that loads at $C200 and runs 0x800 bytes covers
@@ -707,6 +720,15 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(addr2, relocated_player + _SID_PATCH_PLAYBANK)
         self.assertEqual(addr3, VECTORS.IRQ)
         self.assertEqual(payload3, bytes([relocated_stub & 0xFF, (relocated_stub >> 8) & 0xFF]))
+
+    def test_flush_failure_aborts_before_the_run_prg_post(self):
+        # _launch_sid_player must not fire run_prg past a flush it can't
+        # confirm landed — the player MC / re-INIT stub it depends on may
+        # not actually be in place yet.
+        self.api._last_flush_failed = True
+        with self.assertRaises(RuntimeError):
+            self.api.run_sid_player(self._make_sid())
+        self.assertEqual(self.posts, [])
 
 
 class FootprintLayoutTest(unittest.TestCase):
@@ -957,6 +979,17 @@ class LaunchProgramTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(requests.HTTPError):
                 self.api.launch_program(self._write(tmp, "game.prg"))
+
+    def test_flush_failure_aborts_before_posting(self):
+        import tempfile
+
+        # A launch that can't confirm its pending DMA writes landed must
+        # not fire the (irreversible) run_prg reset anyway.
+        self.api._last_flush_failed = True
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                self.api.launch_program(self._write(tmp, "game.prg"))
+        self.post.assert_not_called()
 
 
 class PutConfigItemTest(unittest.TestCase):
@@ -1320,9 +1353,67 @@ class DumpCharRomTest(unittest.TestCase):
         with self.assertRaises(BackendCapabilityError):
             self.api.dump_char_rom()
 
+    def test_flush_failure_aborts_before_the_run_prg_post(self):
+        # A flush() that fails to confirm the stub upload landed must not
+        # let the kick proceed into a run_prg reset anyway.
+        self.api._last_flush_failed = True
+        with self.assertRaises(RuntimeError):
+            self.api.dump_char_rom()
+        self.assertEqual(self.posts, [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenVideoStreamTest(unittest.TestCase):
+    """open_video_stream's two refusal branches: a device profile without
+    the capability, and a base_url pyright can't extract a host from."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+
+    def tearDown(self):
+        patch.stopall()
+        with patch.object(self.api.socket_dma, "close"):
+            self.api.close()
+
+    def test_refused_without_video_stream_support(self):
+        self.api.profile = replace(self.api.profile, supports_video_stream=False)
+        with self.assertRaisesRegex(BackendCapabilityError, "VIC of its own"):
+            self.api.open_video_stream()
+
+    def test_refused_without_a_hostname_in_base_url(self):
+        self.api.profile = replace(self.api.profile, supports_video_stream=True)
+        self.api.base_url = "not-a-url"
+        with self.assertRaisesRegex(BackendCapabilityError, "no host"):
+            self.api.open_video_stream()
+
+    def test_supported_profile_and_url_return_a_receiver(self):
+        from c64cast.hw.vic_stream import VicStreamReceiver
+
+        self.api.profile = replace(self.api.profile, supports_video_stream=True)
+        self.assertIsInstance(self.api.open_video_stream(), VicStreamReceiver)
+
+
+class ParsePsidEdgeCaseTest(unittest.TestCase):
+    """Malformed PSID headers parse_psid_for_player must reject with a
+    ValueError rather than crash on."""
+
+    def test_load_addr_zero_with_no_room_for_the_inline_header_raises(self):
+        # load_addr=0 tells the parser the real load address lives in the
+        # payload's first 2 bytes (PSID v1+ convention). A data_offset that
+        # leaves fewer than 2 payload bytes used to raise a bare
+        # IndexError instead of a clear ValueError.
+        sid = bytearray(make_psid(load=0x1000))
+        sid[8:10] = (0).to_bytes(2, "big")  # load_addr = 0
+        data_offset = int.from_bytes(sid[6:8], "big")
+        truncated = bytes(sid[: data_offset + 1])  # exactly 1 payload byte
+        with self.assertRaisesRegex(ValueError, "no room"):
+            parse_psid_for_player(truncated)
 
 
 class ParsedPsidTimingTest(unittest.TestCase):

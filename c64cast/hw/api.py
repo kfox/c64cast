@@ -40,7 +40,7 @@ import time
 from abc import abstractmethod
 from dataclasses import dataclass, replace
 from typing import NamedTuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -788,6 +788,12 @@ def parse_psid_for_player(sid_bytes: bytes, song: int = 0) -> ParsedPsid:
     # real load address (PSID v1+ convention).
     payload = sid_bytes[data_offset:]
     if load_addr == 0:
+        if len(payload) < 2:
+            raise ValueError(
+                f"SID data_offset ${data_offset:04X} leaves no room for the "
+                f"inline load-address header load_addr=0 requires "
+                f"(file is {len(sid_bytes)} bytes)"
+            )
         load_addr = payload[0] | (payload[1] << 8)
         payload = payload[2:]
     if init_addr == 0:
@@ -1119,6 +1125,9 @@ class _SidPlayerMixin(BufferedWriteBackend):
                 "cue_song_reinit called before run_sid_player — the "
                 "re-INIT stub hasn't been uploaded yet"
             )
+        parsed = self._sid_parsed
+        if parsed is not None and not (1 <= song <= parsed.num_songs):
+            raise ValueError(f"song {song} out of range 1..{parsed.num_songs}")
         self.write_memory(
             f"{layout.stub_base + _REINIT_PATCH_SONG:04X}", f"{(song - 1) & 0xFF:02X}"
         )
@@ -1622,7 +1631,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self.base_url = base_url.rstrip("/")
         self.read_url = f"{self.base_url}{U64_API.READ_MEM}"
         self.reset_url = f"{self.base_url}{U64_API.RESET}"
-        self.timeout = 0.5
+        # Set by flush() so _flush_or_raise can tell a swallowed failure
+        # from a clean round-trip without changing flush()'s own -> None
+        # contract (every other caller ignores its return).
+        self._last_flush_failed = False
 
         self.session = requests.Session()
 
@@ -1689,8 +1701,6 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         ``requests.RequestException`` on transport/HTTP failure; callers treat
         provisioning as best-effort (a config we can't write just leaves the
         existing doctor/probe degradation in place)."""
-        from urllib.parse import quote
-
         url = f"{self.base_url}/v1/configs/{quote(category)}/{quote(item)}"
         r = self.session.put(url, params={"value": value}, timeout=timeout)
         r.raise_for_status()
@@ -1705,9 +1715,11 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         AsidScene to read `SID Detected Socket 1/2` (prefer-physical policy) and
         to snapshot the `SID Addressing` map so teardown can restore it. Raises
         ``requests.RequestException`` on transport/HTTP failure; callers treat
-        the read as best-effort."""
-        from urllib.parse import quote
+        the read as best-effort.
 
+        Not to be confused with `get_config_categories` (plural) — that
+        returns the *names* of every category this firmware exposes, not
+        one category's items."""
         url = f"{self.base_url}/v1/configs/{quote(category)}"
         r = self.session.get(url, timeout=timeout)
         r.raise_for_status()
@@ -1759,11 +1771,14 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         return " ".join(parts)
 
     def get_config_categories(self, *, timeout: float = 3.0) -> list[str]:
-        """The config categories this device's firmware exposes
+        """The config category *names* this device's firmware exposes
         (``GET /v1/configs`` → ``{"categories": [...]}``) — the capability
         contract `refine_capabilities` checks the multi-SID surface against.
         Raises ``requests.RequestException`` on transport/HTTP failure; an
-        unrecognized response shape returns ``[]``."""
+        unrecognized response shape returns ``[]``.
+
+        Not to be confused with `get_config_category` (singular) — that
+        reads one category's ``{item: value}`` map."""
         r = self.session.get(f"{self.base_url}/v1/configs", timeout=timeout)
         r.raise_for_status()
         body = r.json()
@@ -1886,25 +1901,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         with open(path, "rb") as fh:
             payload = fh.read()
 
-        self.flush()
+        self._flush_or_raise("launch_program")
         self.invalidate_cache()
-        url = f"{self.base_url}{endpoint}"
-        name = os.path.basename(path)
-        try:
-            r = self.session.post(
-                url,
-                files={"file": (name, payload)},
-                timeout=timeout,
-            )
-            r.raise_for_status()
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                raise RuntimeError(
-                    f"U64 endpoint {url} returned 404 — the {ext} runner "
-                    "is required to launch this program (check firmware "
-                    "version)."
-                ) from e
-            raise
+        self._post_prg(
+            endpoint,
+            os.path.basename(path),
+            payload,
+            timeout=timeout,
+            what=f"the {ext} runner is required to launch this program (check firmware version).",
+        )
 
     def reset(self) -> None:
         """Hard machine reset. Invalidates the delta cache since the C64 side
@@ -1955,23 +1960,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         bitmap display *after* this call as it always has."""
         self.blank_display()
         self._write_sid_blobs(launch)
-        self.flush()
+        self._flush_or_raise("run_sid_player")
         basic_stub = _build_basic_sys_stub(launch.layout.player_base)
-        url = f"{self.base_url}{U64_API.RUN_PRG}"
-        try:
-            r = self.session.post(
-                url,
-                files={"file": ("sidplayer.prg", basic_stub)},
-                timeout=launch.timeout,
-            )
-            r.raise_for_status()
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                raise RuntimeError(
-                    f"U64 endpoint {url} returned 404 — run_prg is "
-                    "required for the SID player path."
-                ) from e
-            raise
+        self._post_prg(
+            U64_API.RUN_PRG,
+            "sidplayer.prg",
+            basic_stub,
+            timeout=launch.timeout,
+            what="run_prg is required for the SID player path.",
+        )
         return True
 
     def _kick_char_rom_dump(self, stub_addr: int, timeout: float) -> None:
@@ -1987,22 +1984,14 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         and why the BASIC clear loop is re-established afterwards — the caller
         gets the machine back in the idle state it handed over."""
         self.blank_display()
-        self.flush()
-        url = f"{self.base_url}{U64_API.RUN_PRG}"
-        try:
-            r = self.session.post(
-                url,
-                files={"file": ("chargen.prg", _build_basic_sys_stub(stub_addr))},
-                timeout=timeout,
-            )
-            r.raise_for_status()
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                raise RuntimeError(
-                    f"U64 endpoint {url} returned 404 — run_prg is "
-                    "required for the character-ROM dump."
-                ) from e
-            raise
+        self._flush_or_raise("dump_char_rom")
+        self._post_prg(
+            U64_API.RUN_PRG,
+            "chargen.prg",
+            _build_basic_sys_stub(stub_addr),
+            timeout=timeout,
+            what="run_prg is required for the character-ROM dump.",
+        )
 
     def dump_char_rom(self, timeout: float = 10.0) -> bytes:
         """Dump the character ROM, then put the machine back in the BASIC
@@ -2039,6 +2028,39 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             self.socket_dma.flush()
         except (OSError, SocketDMAError) as e:
             log.warning("dma flush failed: %s", e)
+            self._last_flush_failed = True
+        else:
+            self._last_flush_failed = False
+
+    def _flush_or_raise(self, action: str) -> None:
+        """`flush()`, but raise instead of only logging when it fails.
+
+        For call sites that flush right before firing an irreversible REST
+        runner (run_prg soft-resets the C64): proceeding on a failed flush
+        risks the runner racing ahead of writes it depends on having landed
+        (the SID payload, the re-INIT stub, ...), so those call sites abort
+        the launch instead."""
+        self.flush()
+        if self._last_flush_failed:
+            raise RuntimeError(f"{action}: dma flush failed — refusing to launch")
+
+    def _post_prg(
+        self, endpoint: str, filename: str, payload: bytes, *, timeout: float, what: str
+    ) -> None:
+        """POST a PRG/CRT payload to a REST runner endpoint, translating a
+        404 (older firmware, wrong endpoint) into a clear RuntimeError
+        instead of letting an opaque HTTPError surface. Shared by every
+        `run_prg`-style kick — `launch_program`, `_launch_sid_player`,
+        `_kick_char_rom_dump` — which otherwise duplicated this exact
+        try/except."""
+        url = f"{self.base_url}{endpoint}"
+        try:
+            r = self.session.post(url, files={"file": (filename, payload)}, timeout=timeout)
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                raise RuntimeError(f"U64 endpoint {url} returned 404 — {what}") from e
+            raise
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:
         """Bus-clean write into FPGA-mapped REU SRAM at 24-bit ``reu_offset``.
