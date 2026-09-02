@@ -397,6 +397,84 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   complement *by construction*, which the complement check cannot see
   anything wrong with) and a British "synthesises" in the module docstring.
   New/updated cases in `tests/test_char_rom.py` and `tests/test_framebuffer.py`.
+- The web console's media browser (`media_store.py`) listed a directory as a
+  browsable entry straight off its unfiltered file list, before the per-file
+  symlink-escape check below it ever ran — so a directory whose only
+  kind-matching member was a symlink pointing outside its root
+  (`ln -s /home/other/private.mp4 assets/videos/leak.mp4`) was still offered
+  as a listed entry, and `resolve_file_spec` treats a listed directory as a
+  randomizer that picks a member at each scene `setup()`, following that
+  symlink onto HDMI — reachable by anyone with local or group write access to
+  a media root, not the HTTP surface (uploads only ever create regular
+  files). `_candidates` now filters a directory's hits against the jail check
+  before deciding whether to yield the containing directory at all, so the
+  directory and file listings agree about what's actually inside the root.
+- `MediaStore.receive`'s upload commit (`media_store.py`) had three related
+  gaps. A failed `flush()`/`fsync()` (disk full) left the abort handler's own
+  `file.close()` re-raising the same `OSError` a second time before
+  `os.unlink` ever ran, orphaning the up-to-512-MB `.part` file the module's
+  own docstring promises never survives a failure. Separately, `_unique_name`'s
+  `-2`/`-3` collision suffix could lengthen an already-at-the-cap name past
+  the filesystem's own limit, and an embedded NUL byte passed every
+  structural check (`Path.exists()` silently swallows the `ValueError` a NUL
+  raises) — both then died inside `os.replace` as an untyped
+  `OSError`/`ValueError` that no caller's `MediaStoreError` mapping could
+  classify, turning a name the store meant to refuse into an unhandled 500
+  after the whole body had already been streamed. And `destination()`'s
+  docstring promised a jail re-check against the joined path that no caller
+  actually ran; on Windows — a first-class target per `paths.py`'s
+  `os.name == "nt"` branches — that's exploitable outright, since
+  `PureWindowsPath('D:/media') / 'C:evil.prg'` discards the left operand
+  entirely, landing a drive-relative name wherever the process happened to
+  be on that drive. `receive` now suppresses `OSError` from its own cleanup
+  so it can never replace the failure that triggered it, re-validates the
+  final name and re-checks `directory / final_name` against the root before
+  `os.replace`, and wraps a commit-time `OSError`/`ValueError` as
+  `MediaStoreError`; `_reject_unless_bare_filename` refuses a drive-relative
+  name (`ntpath.splitdrive`) and an embedded NUL outright. Every aborted or
+  committed upload is now logged, where before this module's one
+  long-running, network-reachable write left no trace of a failure anywhere
+  in `--log-file`.
+- `MediaStore.index`'s `q`-filtered search (`media_store.py`) applied its
+  needle match *before* the `MAX_FILES` display cap so a search could reach
+  media a plain listing had already truncated away — but that also meant a
+  query matching nothing never tripped `truncated`, so it walked every
+  configured root to `MAX_DEPTH` in full (resolving every kind-matching file
+  along the way) with no way for the response to say the scan was unbounded;
+  a search against a host rooted at `~` or an HVSC mirror could stall the
+  console on one trivial `GET /api/media?q=` while it's also encoding video
+  for a running show. `index` now also counts every candidate it visits
+  against a new `_MAX_SCAN` ceiling (independent of `MAX_FILES`, an order of
+  magnitude above it) and sets `truncated` once that trips.
+- `MediaStore.destination` (`media_store.py`) reported a kind whose
+  configured directory doesn't exist yet with the same "not configured on
+  this host" message as a kind nobody ever named for upload — sending an
+  operator looking for a TOML setting that was already correct, since the
+  host *is* configured and only the directory is missing. The two cases are
+  now distinguished in the refusal message. Separately, `MediaRoot.writable`
+  silently disagreeing with `_write_roots` — reachable only if a future
+  refactor resolved read-only roots before write roots — is now an assertion
+  in `resolve_root` rather than an invariant that depended on `__init__`'s
+  two loops staying in this order with nothing to say so if they didn't.
+- `ConsoleLibrary._load` (`console_library.py`) iterated
+  `raw.get("favorites", [])`/`raw.get("recents", [])` unguarded —
+  `dict.get`'s default only applies when the key is *absent*, so a foreign
+  or half-written `console.json` containing `{"favorites": null}` (or a bare
+  string or number) raised `TypeError` straight out of `as_dict`,
+  contradicting the documented "a missing, corrupt, or wrong-shaped file
+  reads as an empty library" contract and taking `GET /api/library` down
+  with a 500 instead of self-healing. Both containers are now type-checked
+  as lists before iterating.
+- `record_recent` capped its list at `MAX_RECENTS`, but `set_favorite`
+  (`console_library.py`) had no equivalent — a client holding the write
+  token could loop distinct refs and grow `console.json` (read-modify-
+  written whole, on every call, and served back to every browser and phone
+  pointed at the host) without bound. Favorites are now capped at a new
+  `MAX_FAVORITES`, and both `set_favorite` and `record_recent` reject a ref
+  over 512 bytes. Separately, an empty ref used to be accepted, appended,
+  and returned, only to be silently dropped by `_load`'s own filter on the
+  very next read — both methods now treat a falsy ref as a no-op, so the
+  return value never disagrees with what's actually persisted.
 
 ## [0.4.0] - 2026-08-30
 

@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import ntpath
 import os
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
@@ -124,6 +125,13 @@ _DEFAULT_WRITE: dict[str, str] = {
 
 #: I/O bounding, not a security boundary — same spirit as `fs_walk.MAX_FILES`.
 MAX_UPLOAD_BYTES = 512 << 20
+
+#: Independent of `MAX_FILES` (which caps what `index` *returns*) — bounds
+#: how many candidates a `q`-filtered scan may examine, so a query matching
+#: nothing can't turn one request into a walk of the whole root. An order of
+#: magnitude above `MAX_FILES` so an ordinary search past that cap still
+#: completes.
+_MAX_SCAN = MAX_FILES * 10
 
 #: A name is rejected past this many collisions rather than renamed forever;
 #: hitting it means something else is wrong (a script re-uploading in a loop).
@@ -193,19 +201,27 @@ def _spec(root: MediaRoot, rel_parts: Sequence[str]) -> str:
 
 def _candidates(root: MediaRoot, exts: tuple[str, ...]) -> Iterator[tuple[str, bool, Path]]:
     """Yield `(spec, is_dir, path)` for every directory under `root` that
-    directly holds a file ending in `exts`, and for every such file itself."""
+    directly holds a file ending in `exts` *and* passing the jail check, and
+    for every such file itself."""
     for here, filenames in _walk(root):
-        hits = [f for f in filenames if f.lower().endswith(exts)]
-        if hits:
+        # Filtered before the directory is offered as an entry, not after —
+        # `resolve_file_spec` treats a listed directory as a randomizer that
+        # picks a member at each scene `setup()`, so a directory entry built
+        # from an unfiltered `hits` would hand back exactly the out-of-jail
+        # file the per-file check below refuses to list directly. A symlinked
+        # file pointing out of the root is an ordinary walk entry
+        # (followlinks=False only keeps the walk out of symlinked
+        # *directories*) — same escape config_store's own `_walk` guards
+        # against.
+        kept = [
+            f
+            for f in filenames
+            if f.lower().endswith(exts) and (here / f).resolve().is_relative_to(root.path)
+        ]
+        if kept:
             yield _spec(root, here.relative_to(root.path).parts), True, here
-        for name in hits:
+        for name in kept:
             path = here / name
-            # A symlinked file pointing out of the root is an ordinary walk
-            # entry (followlinks=False only keeps the walk out of symlinked
-            # *directories*) — same escape config_store's own `_walk` guards
-            # against.
-            if not path.resolve().is_relative_to(root.path):
-                continue
             yield _spec(root, path.relative_to(root.path).parts), False, path
 
 
@@ -268,8 +284,18 @@ def _reject_unless_bare_filename(name: str) -> None:
         raise MediaNameRejected("a file name is required")
     if "/" in name or "\\" in name:
         raise MediaNameRejected(f"{name!r} is not a bare file name")
+    if ntpath.splitdrive(name)[0]:
+        # No separator survives this: `PureWindowsPath('D:/media') /
+        # 'C:evil.prg'` is `PureWindowsPath('C:evil.prg')`, discarding the
+        # left operand entirely — Windows is a first-class target
+        # (paths.py's `os.name == "nt"` branches), so a drive-relative name
+        # has to be refused by itself, not caught by the separator check
+        # above.
+        raise MediaNameRejected(f"{name!r} names a drive, not a bare file name")
     if name.startswith("."):
         raise MediaNameRejected(f"{name!r} may not start with a dot")
+    if "\x00" in name:
+        raise MediaNameRejected(f"{name!r} contains a NUL byte")
     if len(name.encode("utf-8")) > _MAX_NAME_BYTES:
         raise MediaNameRejected(f"{name!r} is longer than {_MAX_NAME_BYTES} bytes")
 
@@ -319,6 +345,7 @@ class MediaStore:
         resolved: list[MediaRoot] = []
         seen: dict[Path, MediaRoot] = {}
         write_roots: dict[str, MediaRoot] = {}
+        write_missing: dict[str, str] = {}
 
         def resolve_root(spelling: str, *, writable: bool) -> MediaRoot | None:
             # `spelling` is what a listed entry's spec is built from — the
@@ -329,6 +356,16 @@ class MediaStore:
             real = location.resolve()
             existing = seen.get(real)
             if existing is not None:
+                # Write roots resolve first (below), so a path reached a
+                # second time here can only be read-only re-naming an
+                # already-writable root — never the other way around. If a
+                # future refactor reorders the two loops, this catches the
+                # drift immediately rather than letting `writable` silently
+                # disagree with `_write_roots`.
+                assert not (writable and not existing.writable), (
+                    f"{spelling!r} resolved to an existing non-writable root "
+                    "— write roots must be resolved before read-only ones"
+                )
                 return existing
             if not real.is_dir():
                 log.warning("web console: media root %s is not a directory — ignored", real)
@@ -344,6 +381,8 @@ class MediaStore:
             root = resolve_root(spelling, writable=True)
             if root is not None:
                 write_roots[kind] = root
+            else:
+                write_missing[kind] = spelling
 
         for spelling in read_only:
             spelling = str(spelling)
@@ -352,6 +391,7 @@ class MediaStore:
 
         self._roots = tuple(resolved)
         self._write_roots = write_roots
+        self._write_missing = write_missing
 
     @property
     def roots(self) -> tuple[MediaRoot, ...]:
@@ -364,23 +404,29 @@ class MediaStore:
     def destination(self, name: str) -> tuple[str, Path]:
         """The `(kind, directory)` an upload named `name` would land in.
 
-        Structural checks first — a bare file name, no `..`, no leading dot,
-        not empty, not absurdly long — then the kind read off the extension
-        (unambiguous; see `MEDIA_EXTS`), then whether that kind has anywhere
-        configured to write to at all. The jail check that actually holds is
-        the one a caller still has to run against the *result*:
-        `joinpath(name).resolve().is_relative_to(root.path)`, same as every
-        other entry this module lists — this only says which root, not that
-        the final path is safe."""
+        Structural checks first — a bare file name, no `..`, no drive
+        prefix, no NUL, no leading dot, not empty, not absurdly long — then
+        the kind read off the extension (unambiguous; see `MEDIA_EXTS`),
+        then whether that kind has anywhere configured to write to at all.
+        This only says which root the name belongs to; `receive` — its only
+        caller — is what re-checks the joined path against that root before
+        the rename that actually lands the file, since `_unique_name` runs
+        after this and could in principle lengthen the name back past the
+        jail."""
         _reject_unless_bare_filename(name)
         ext = Path(name).suffix.lower()
         kind = MEDIA_EXTS.get(ext)
         if kind is None:
             raise MediaNameRejected(f"{name!r} has no extension a known media kind ends in")
         root = self._write_roots.get(kind)
-        if root is None:
-            raise MediaNotUploadable(f"uploading a {kind} file is not configured on this host")
-        return kind, root.path
+        if root is not None:
+            return kind, root.path
+        missing = self._write_missing.get(kind)
+        if missing is not None:
+            raise MediaNotUploadable(
+                f"the {kind} upload directory {missing!r} is configured but does not exist"
+            )
+        raise MediaNotUploadable(f"uploading a {kind} file is not configured on this host")
 
     @contextlib.contextmanager
     def receive(self, name: str) -> Iterator[Upload]:
@@ -389,34 +435,73 @@ class MediaStore:
         Writes to a `.part` temp file in that directory (never visible to
         `index`, since `.part` ends no kind's extension tuple) so a crash or a
         refused chunk mid-transfer leaves nothing behind; on a clean exit the
-        file is `fsync`'d and `os.replace`'d onto its final name, chosen right
-        then by `_unique_name` so nothing already there is ever overwritten.
-        `upload.result` is set only after that commit succeeds."""
+        file is `fsync`'d, `_unique_name` picks the final name, and the
+        joined `directory / final_name` is re-checked against the root
+        before `os.replace` lands it — the check `destination`'s docstring
+        promises a caller runs against the *result*, run here since `receive`
+        is that only caller. A commit-time `OSError`/`ValueError` (a full
+        disk, a name `os.replace` itself refuses) surfaces as
+        `MediaStoreError`, same as every other refusal from this module,
+        rather than an untyped exception a caller's error mapping can't
+        classify. The `.part` is unlinked on any failure — streaming or
+        commit — and cleanup itself never replaces the failure that
+        triggered it. `upload.result` is set, and the commit logged, only
+        once that succeeds."""
         kind, directory = self.destination(name)
         fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".part")
         file = os.fdopen(fd, "wb")
         upload = Upload(kind, file)
+
+        def abort(exc: BaseException) -> None:
+            with contextlib.suppress(OSError):
+                file.close()
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            log.warning(
+                "web console: upload of %r aborted after %d bytes (%s)",
+                name,
+                upload.bytes_written,
+                type(exc).__name__,
+            )
+
         try:
             yield upload
+        except BaseException as e:
+            abort(e)
+            raise
+
+        try:
             file.flush()
             os.fsync(file.fileno())
             file.close()
             final_name, renamed = _unique_name(directory, name)
-            os.replace(tmp_path, directory / final_name)
-        except BaseException:
-            file.close()
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
-        else:
-            root = self._write_roots[kind]
-            upload.result = {
-                "spec": _spec(root, (final_name,)),
-                "name": final_name,
-                "kind": kind,
-                "bytes": upload.bytes_written,
-                "renamed": renamed,
-            }
+            _reject_unless_bare_filename(final_name)
+            target = directory / final_name
+            if not target.resolve().is_relative_to(directory):
+                raise MediaNameRejected(f"{final_name!r} would land outside its media root")
+            os.replace(tmp_path, target)
+        except BaseException as e:
+            abort(e)
+            if isinstance(e, MediaStoreError) or not isinstance(e, (OSError, ValueError)):
+                raise
+            raise MediaStoreError(f"could not commit upload {name!r} to {directory}: {e}") from e
+
+        root = self._write_roots[kind]
+        upload.result = {
+            "spec": _spec(root, (final_name,)),
+            "name": final_name,
+            "kind": kind,
+            "bytes": upload.bytes_written,
+            "renamed": renamed,
+        }
+        log.info(
+            "web console: received %r as %s (kind=%s, %d bytes%s)",
+            name,
+            final_name,
+            kind,
+            upload.bytes_written,
+            ", renamed" if renamed else "",
+        )
 
     def index(self, kind: str, q: str = "") -> dict[str, Any]:
         """Every entry of `kind` across every root, plus whichever of their
@@ -424,7 +509,10 @@ class MediaStore:
 
         `q` is a case-insensitive substring match on the entry's spec, applied
         during the walk — so a search reaches past `MAX_FILES` instead of
-        being limited to whatever the cap let through first."""
+        being limited to whatever the cap let through first. That means a
+        query matching nothing would otherwise walk every root in full, so a
+        scan past `_MAX_SCAN` candidates also sets `truncated`, independent
+        of how many (if any) entries matched."""
         exts = _KIND_EXTS.get(kind)
         if exts is None:
             raise MediaKindUnknown(
@@ -433,9 +521,14 @@ class MediaStore:
         needle = q.strip().lower()
         entries: list[dict[str, Any]] = []
         truncated = False
+        visited = 0
 
         for root in self._roots:
             for spec, is_dir, path in _candidates(root, exts):
+                visited += 1
+                if visited > _MAX_SCAN:
+                    truncated = True
+                    break
                 if needle and needle not in spec.lower():
                     continue
                 if len(entries) >= MAX_FILES:
