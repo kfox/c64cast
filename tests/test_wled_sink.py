@@ -54,8 +54,8 @@ class DdpParserTest(unittest.TestCase):
         # flags without the 0x40 version bit → not a V1 data packet.
         self.assertIsNone(parse_ddp(struct.pack(">BBBBIH", 0x00, 0, 0, 1, 0, 0)))
 
-    def test_query_and_reply_rejected(self):
-        for flag in (0x08, 0x04):  # query, reply
+    def test_query_reply_and_storage_rejected(self):
+        for flag in (0x02, 0x04, 0x08):  # query, reply, storage
             dg = struct.pack(">BBBBIH", 0x40 | flag, 0, 0, 1, 0, 0)
             self.assertIsNone(parse_ddp(dg), f"flag {flag:#x} should be rejected")
 
@@ -65,6 +65,16 @@ class DdpParserTest(unittest.TestCase):
         pkt = parse_ddp(dg)
         assert pkt is not None
         self.assertEqual(pkt.payload, bytes([1, 2, 3]))
+
+    def test_time_flag_offsets_header_by_four_bytes(self):
+        # TIME (0x10) prepends a 4-byte timecode, so the header is 14 bytes.
+        timecode = bytes([0xAA, 0xBB, 0xCC, 0xDD])
+        payload = bytes([1, 2, 3])
+        dg = struct.pack(">BBBBIH", 0x40 | 0x10 | 0x01, 0, 0, 1, 0, len(payload))
+        dg += timecode + payload
+        pkt = parse_ddp(dg)
+        assert pkt is not None
+        self.assertEqual(pkt.payload, payload)
 
 
 # --- WLED realtime parser ---------------------------------------------------

@@ -65,8 +65,10 @@ assert _DDP_HEADER_LEN == 10, "DDP header must be 10 bytes"
 
 _DDP_FLAG_VER1 = 0x40  # version bits (V1) — set on a valid data packet
 _DDP_FLAG_PUSH = 0x01  # last packet of a frame → display it now
-_DDP_FLAG_QUERY = 0x08  # a query/discovery packet, not pixel data
+_DDP_FLAG_QUERY = 0x02  # a query/discovery packet, not pixel data
 _DDP_FLAG_REPLY = 0x04  # a reply packet, not pixel data
+_DDP_FLAG_STORAGE = 0x08  # config-storage data, not pixel data
+_DDP_FLAG_TIME = 0x10  # a 4-byte timecode follows the 10-byte header
 
 # --- WLED realtime UDP -----------------------------------------------------
 _WLED_WARLS = 1  # [index, r, g, b] per pixel
@@ -94,9 +96,10 @@ def parse_ddp(datagram: bytes) -> DdpPacket | None:
     flags, offset, length = header[0], header[4], header[5]
     if (flags & _DDP_FLAG_VER1) == 0:
         return None  # not a V1 packet
-    if flags & (_DDP_FLAG_QUERY | _DDP_FLAG_REPLY):
-        return None  # discovery/reply traffic, no pixels
-    payload = datagram[_DDP_HEADER_LEN : _DDP_HEADER_LEN + length]
+    if flags & (_DDP_FLAG_QUERY | _DDP_FLAG_REPLY | _DDP_FLAG_STORAGE):
+        return None  # discovery/reply/config traffic, no pixels
+    header_len = _DDP_HEADER_LEN + (4 if flags & _DDP_FLAG_TIME else 0)
+    payload = datagram[header_len : header_len + length]
     return DdpPacket(offset=offset, payload=payload, push=bool(flags & _DDP_FLAG_PUSH))
 
 
@@ -227,8 +230,11 @@ class WledPixelReceiver:
     def start(self) -> bool:
         """Bind the sockets and start the receive thread. Returns False (and
         stores `bind_error`) if either port is unavailable."""
-        if self._poll is not None and self._poll.is_running():
-            return True
+        if self._poll is not None:
+            if self._poll.is_running():
+                return True
+            self.stop()  # worker died with sockets still open — close them first
+        self.bind_error = None
         ddp = self._bind(self._ddp_port)
         wled = self._bind(self._wled_port)
         if ddp is None or wled is None:
@@ -291,8 +297,8 @@ class WledPixelReceiver:
                 self._publish()
             return
         writes = parse_wled_realtime(datagram)
-        if writes is None:
-            return
+        if not writes:
+            return  # None (unsupported protocol) or [] (too short for one pixel)
         self._assembler.apply_pixels(writes)
         self._publish()
 
