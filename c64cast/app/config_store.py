@@ -70,7 +70,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
+import threading
 import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -93,15 +95,25 @@ SUFFIX = ".toml"
 
 #: Cap on a single file's size. Same rationale as `fs_walk.MAX_FILES`/
 #: `MAX_DEPTH`: keeping a hostile or merely enormous file from turning one
-#: request into minutes of I/O, not a security boundary.
+#: request into minutes of I/O, not a security boundary. One function so every
+#: text entry point shares it rather than each remembering its own spelling —
+#: `write` and `_validate_text_and_load` both call it before doing anything
+#: with the text.
 MAX_BYTES = 1 << 20
 
-#: `.toml` files that are never a c64cast show config, skipped by the listing
-#: walk. All of them are project-tooling manifests: a `--serve` rooted at a
-#: source checkout (the cwd fallback when `[web].config_roots` is unset) would
-#: otherwise list them beside the real configs. Matched by exact basename, so a
-#: root you name explicitly that happens to contain one still won't show it —
-#: which is fine, it isn't a config either way. Not a security check.
+
+def _require_within_limit(text: str) -> None:
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        raise ConfigTooLarge(f"config is larger than {MAX_BYTES} bytes")
+
+
+#: `.toml` basenames that are never a c64cast show config. All of them are
+#: project-tooling manifests: a `--serve` rooted at a source checkout (the cwd
+#: fallback when `[web].config_roots` is unset) would otherwise list — and,
+#: via :meth:`ConfigStore.resolve`, read or write — them beside the real
+#: configs. Matched by exact basename, so a root you name explicitly that
+#: happens to contain one still won't show it or answer for it — which is
+#: fine, it isn't a config either way.
 NON_CONFIG_NAMES = frozenset(
     {
         "pyproject.toml",
@@ -115,11 +127,11 @@ NON_CONFIG_NAMES = frozenset(
     }
 )
 
-#: Directories the listing walk does not descend into, on top of
-#: `fs_walk.SKIP_DIRS`. `scripts/` and `docs/` are the c64cast checkout's own
-#: code and prose trees — a `--serve` from the repo root would otherwise surface
-#: `scripts/diags/`'s captured `.toml` fixtures and `docs/`'s figure configs.
-#: The walk never skips a *root* by this rule (only a subdirectory of one), so
+#: Directories this store won't list into or address a file inside of, on top
+#: of `fs_walk.SKIP_DIRS`. `scripts/` and `docs/` are the c64cast checkout's
+#: own code and prose trees — a `--serve` from the repo root would otherwise
+#: surface `scripts/diags/`'s captured `.toml` fixtures and `docs/`'s figure
+#: configs. Never applies to a *root* itself (only a subdirectory of one), so
 #: naming such a directory in `[web].config_roots` still works.
 NON_CONFIG_DIRS = frozenset({"scripts", "docs"})
 
@@ -175,19 +187,37 @@ def _label_for(path: Path, taken: set[str]) -> str:
     return label
 
 
+#: Bound on how many records one `_capture_errors` call collects. Not a
+#: security boundary (see `MAX_BYTES`) — just keeping a long validate under a
+#: noisy log from growing a report without limit.
+_MAX_CAPTURED_MESSAGES = 200
+
+
 @contextmanager
 def _capture_errors() -> Iterator[list[str]]:
-    """Collect what the validators log while they run.
+    """Collect what the validators log while they run, on this thread only.
 
     ``validate_configs`` writes the diagnostic to the log and raises an exit
     code — fine for a CLI whose user is looking at the terminal, useless for a
     browser. Rather than restructure eight validators to return messages, read
-    the messages they already produce."""
+    the messages they already produce.
+
+    Filtered to the thread that entered this context manager: a `--serve`
+    process runs a live session's render/audio/DMA workers on other threads
+    under the same `c64cast` logger, and an unfiltered handler would fold
+    that thread's ERRORs into an unrelated request's report — including, via
+    `_blame_layers`, misattributing a validation failure to a machine
+    setting."""
     messages: list[str] = []
+    owner = threading.get_ident()
 
     class _Collector(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            if record.levelno >= logging.ERROR:
+            if (
+                record.levelno >= logging.ERROR
+                and record.thread == owner
+                and len(messages) < _MAX_CAPTURED_MESSAGES
+            ):
                 messages.append(record.getMessage())
 
     handler = _Collector()
@@ -242,6 +272,11 @@ def _media_warnings(cfgs: Sequence[cfgmod.Config], names: Sequence[str]) -> list
     an ensemble. Reported in the same report the console already renders, so
     the answer arrives before the C64 is opened and reset rather than seconds
     into the run."""
+    # Deferred, not for a cycle (there isn't one — scene_factory never imports
+    # this module): `scene_factory` and `session` pull the optional hardware
+    # extras (cv2, sounddevice, mediapipe) transitively, which a ConfigStore
+    # caller that never validates (e.g. `--list-examples`) shouldn't have to
+    # have installed.
     from .scene_factory import missing_media
 
     out: list[dict[str, Any]] = []
@@ -263,6 +298,24 @@ def _media_warnings(cfgs: Sequence[cfgmod.Config], names: Sequence[str]) -> list
     return out
 
 
+def _blame_mentions(blame: str, section: str, key: str) -> bool:
+    """True when `blame` names both `key` and `section` as whole words, not
+    as fragments of unrelated prose.
+
+    A bare substring test (`key not in blame`) fires on almost any failure
+    text for a short, common key like `url`, `path`, `port` or `device` —
+    every one of those is also a legal machine-settings key, so an unrelated
+    validator message ("no such file or path") used to blame the wrong
+    section. Requiring the section too is deliberately conservative: many
+    validator messages never name their section at all, so this attributes
+    less often than the old check did — a wrong pointer is worse than none,
+    the same rule the docstring above already argues for the other two
+    conditions."""
+    key_re = re.compile(rf"\b{re.escape(key)}\b")
+    section_re = re.compile(rf"\[{re.escape(section)}\]|\b{re.escape(section)}\b")
+    return bool(key_re.search(blame)) and bool(section_re.search(blame))
+
+
 def _machine_layer_notes(text: str, blame: str) -> list[dict[str, Any]]:
     """Machine settings that `text` does not set and that `blame` names.
 
@@ -274,9 +327,12 @@ def _machine_layer_notes(text: str, blame: str) -> list[dict[str, Any]]:
 
     This is the attribution, done structurally rather than by re-loading: a key
     the machine layer supplies, the edited text is silent about, and the failure
-    mentions by name. All three have to hold, so a machine setting the file
-    overrides is never blamed and neither is one the failure never mentioned —
-    a wrong pointer is worse than none."""
+    mentions by name (see :func:`_blame_mentions`). All three have to hold, so
+    a machine setting the file overrides is never blamed and neither is one
+    the failure never mentioned — a wrong pointer is worse than none. A
+    `SECRET_FIELDS` key is skipped outright and never carries a `value`: this
+    is the one place in the module that would otherwise echo a machine
+    setting's value with no secret filter at all."""
     try:
         machine = cfgmod.load_machine_settings()
     except cfgmod.ConfigError as e:
@@ -294,17 +350,18 @@ def _machine_layer_notes(text: str, blame: str) -> list[dict[str, Any]]:
         if not isinstance(values, dict):
             continue
         here = own.get(section)
-        for key, value in values.items():
+        for key in values:
+            if (section, key) in config_serialize.SECRET_FIELDS:
+                continue
             if isinstance(here, dict) and key in here:
                 continue
-            if key not in blame:
+            if not _blame_mentions(blame, section, key):
                 continue
             notes.append(
                 {
                     "path": str(paths.settings_path()),
                     "section": section,
                     "key": key,
-                    "value": _value(value),
                     "error": None,
                 }
             )
@@ -335,13 +392,13 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
     for sd in introspect.config_sections():
         section = getattr(cfg, sd.name)
         default_section = getattr(blank, sd.name)
-        fields: list[dict[str, Any]] = []
+        section_fields: list[dict[str, Any]] = []
         for fd in sd.fields:
             if (sd.name, fd.name) in config_serialize.SECRET_FIELDS:
                 continue
             value = getattr(section, fd.name)
             default = getattr(default_section, fd.name)
-            fields.append(
+            section_fields.append(
                 {
                     "name": fd.name,
                     "value": _value(value),
@@ -349,20 +406,20 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
                     "is_default": value == default,
                 }
             )
-        sections.append({"name": sd.name, "fields": fields})
+        sections.append({"name": sd.name, "fields": section_fields})
 
     field_docs = {st.name: st.fields for st in introspect.scene_types()}
     blank_scene = cfgmod.SceneCfg()
     scenes: list[dict[str, Any]] = []
     for sc in cfg.scenes:
         docs = field_docs.get(sc.type, ())
-        fields = []
+        scene_fields = []
         for fd in docs:
             if fd.name in ("overlays", "color"):
                 continue
             value = getattr(sc, fd.name)
             default = getattr(blank_scene, fd.name)
-            fields.append(
+            scene_fields.append(
                 {
                     "name": fd.name,
                     "value": _value(value),
@@ -374,7 +431,7 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
             {
                 "type": sc.type,
                 "name": sc.name,
-                "fields": fields,
+                "fields": scene_fields,
                 "overlays": [_value(ov) for ov in sc.overlays],
                 # [scenes.color]: the scene's own sparse override, not merged
                 # with the global [color] section — a console renders this
@@ -439,6 +496,28 @@ def _require_scene_index(scenes: Sequence[cfgmod.SceneCfg], index: int, verb: st
         raise EditRejected(f"{verb} {index} (the config has {len(scenes)})")
 
 
+def _check_edit_shape(owner: type, field: str, value: object) -> None:
+    """Raise :class:`EditRejected` when `value`'s JSON shape can't be what
+    `owner`'s `field` annotation promises.
+
+    An edit arrives as arbitrary JSON and `_apply_edit` setattrs it directly.
+    A container field (``overlays``, ``[scenes.color]``, ``hue_corrections``,
+    ``clips``) reaches `config_serialize`'s ``[[...]]`` emitters, which index
+    into the value assuming this shape and otherwise raise a bare
+    `TypeError`/`AttributeError` from inside `dumps()` — the class of failure
+    `EditRejected` exists to turn into a 4xx instead. Scalar fields are
+    unchecked here; a wrong scalar type still fails, later, in
+    `config_serialize._fmt_value`."""
+    type_str = next(f.type for f in fields(owner) if f.name == field)
+    if not isinstance(type_str, str):
+        return
+    if type_str.startswith("list[dict"):
+        if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+            raise EditRejected(f"{field}: expected a list of tables, got {value!r}")
+    elif type_str.startswith("dict[") and not isinstance(value, dict):
+        raise EditRejected(f"{field}: expected a table, got {value!r}")
+
+
 def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> dict[str, Any]:
     """Set one field on a loaded config, and describe what was set.
 
@@ -479,6 +558,7 @@ def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> di
             return {"scene": scene, "subsection": "color", "field": field, "value": None}
         if "value" not in edit:
             raise EditRejected(f"{field}: an edit needs a `value`, or `reset = true`")
+        _check_edit_shape(cfgmod.ColorCfg, field, edit["value"])
         sc_color[field] = edit["value"]
         return {
             "scene": scene,
@@ -517,6 +597,7 @@ def _apply_edit(cfg: cfgmod.Config, edit: object, baseline: cfgmod.Config) -> di
         value = edit["value"]
     else:
         raise EditRejected(f"{field}: an edit needs a `value`, or `reset = true`")
+    _check_edit_shape(type(target), field, value)
     setattr(target, field, value)
     return {**where, "field": field, "value": _value(value)}
 
@@ -601,15 +682,32 @@ class ConfigStore:
 
     @staticmethod
     def _ref_parts(ref: str) -> list[str]:
-        """Split a wire ref into its non-empty, non-`.` segments.
-
-        Shared by :meth:`resolve` and :meth:`_require_writable` so a leading
-        `/` or `./` (or a doubled slash) is filtered out the same way in both
-        places — re-deriving the root label with a naive `split("/", 1)` let
-        such a ref name a root :meth:`resolve` had correctly found, while the
-        write-side readonly check looked up an empty label and skipped
-        itself."""
+        """Split a wire ref into its non-empty, non-`.` segments — a leading
+        `/` or `./` (or a doubled slash) is filtered out the same way a naive
+        `split("/", 1)` would not, so a root label can't be mis-derived from
+        one of those forms."""
         return [p for p in str(ref).replace("\\", "/").split("/") if p not in ("", ".")]
+
+    @staticmethod
+    def _require_addressable(rest: Sequence[str], ref: str) -> None:
+        """Refuse a ref this store would not list either.
+
+        `NON_CONFIG_NAMES`/`NON_CONFIG_DIRS` and the dotfile skip used to be
+        listing-only filters (their own comments said so), which made them
+        cosmetic rather than jail rules: a ref could still name — and
+        `resolve` would still hand back — a file the listing hides, which is
+        a read/write primitive for `.cargo/config.toml`, `pyproject.toml`,
+        `.git/config` and the like on the cwd-fallback root. A file this
+        store won't show is not one the network should be able to address by
+        naming it directly, so the same rules apply here."""
+        if rest[-1] in NON_CONFIG_NAMES:
+            raise PathRejected(f"{ref!r} is not a config file")
+        for part in rest:
+            if part.startswith("."):
+                raise PathRejected(f"{ref!r} is not a config file")
+        for part in rest[:-1]:
+            if part in NON_CONFIG_DIRS:
+                raise PathRejected(f"{ref!r} is not a config file")
 
     def resolve(self, ref: str) -> Path:
         """Turn a wire ref into an absolute path inside a root, or refuse.
@@ -630,6 +728,7 @@ class ConfigStore:
             raise PathRejected(f"{ref!r} names a config root, not a file in it")
         if not rest[-1].lower().endswith(SUFFIX):
             raise PathRejected(f"{ref!r} is not a {SUFFIX} file")
+        self._require_addressable(rest, ref)
         target = root.path.joinpath(*rest).resolve()
         if not target.is_relative_to(root.path):
             raise PathRejected(f"{ref!r} leaves its config root")
@@ -659,15 +758,18 @@ class ConfigStore:
     def _require_writable(self, ref: str) -> Path:
         """:meth:`resolve`, plus a refusal for the packaged examples root.
 
-        A ref's own label says which root it is in, so this needs no second
-        walk of ``self._roots`` — the same label :meth:`resolve` just checked
-        is looked up again here. Copy an example (:meth:`create` with
-        ``copy_of``) to get an editable file from one."""
+        Decided by containment, not by the ref's own label: a label only says
+        which root a ref was *addressed through*, and a source checkout's cwd
+        root physically contains the packaged examples underneath it (pruned
+        from that root's own listing in :meth:`_walk`, but still reachable by
+        path) — so a ref naming the same file through the writable label would
+        bypass the examples root's refusal if this checked the label instead.
+        Copy an example (:meth:`create` with ``copy_of``) to get an editable
+        file from one."""
         path = self.resolve(ref)
-        label = self._ref_parts(ref)[0]
-        root = self._by_label.get(label)
-        if root is not None and root.readonly:
-            raise PathRejected(f"{ref!r} is a read-only example — duplicate it to edit")
+        for root in self._roots:
+            if root.readonly and path.is_relative_to(root.path):
+                raise PathRejected(f"{ref!r} is a read-only example — duplicate it to edit")
         return path
 
     # -- listing ------------------------------------------------------------
@@ -736,7 +838,16 @@ class ConfigStore:
         """The file's text, plus whatever the loader can say about it.
 
         A file that doesn't parse still returns its text with an ``error`` — the
-        console's first job when a config is broken is to show it to you."""
+        console's first job when a config is broken is to show it to you.
+
+        ``text`` is the file's bytes verbatim, including any
+        `config_serialize.SECRET_FIELDS` value it carries (`token`,
+        `dma_password`, ...) — `describe()`'s `form` withholds those (see its
+        own docstring), but this raw string does not, because this store has
+        no notion of *who* is asking. Gating raw text behind the full-token
+        role, or masking a secret assignment in it, is a decision for
+        whatever calls this with a role in hand (`web_api`/`auth`), not for
+        this store."""
         path = self.resolve(ref)
         text = self._read_text(path)
         try:
@@ -755,6 +866,10 @@ class ConfigStore:
             "error": None,
             "form": None,
         }
+        escape = self._ensemble_escape(text, path.parent)
+        if escape is not None:
+            out["error"] = escape
+            return out
         try:
             loaded = cfgmod.load_master(str(path))
         except (cfgmod.ConfigError, ValueError) as e:
@@ -782,6 +897,44 @@ class ConfigStore:
             raise ConfigNotFound(f"could not read {path.name}: {e}") from e
         except UnicodeDecodeError as e:
             raise PathRejected(f"{path.name} is not UTF-8 text") from e
+
+    def _ensemble_escape(self, text: str, base_dir: Path) -> str | None:
+        """None, or a fixed refusal when `text` declares an `[ensemble]` whose
+        `systems[].config` would resolve outside every configured root.
+
+        `config.load_master` uses an absolute `systems[].config` verbatim and
+        a relative one joined to `base_dir` — neither passes through this
+        store's jail — and a parse failure on the named target embeds its
+        path, a source line and a caret (`config._format_toml_error`). So
+        this has to be checked *before* the text ever reaches the loader, on
+        both the submitted-text path and the on-disk one: a file already
+        inside a root that carries such a block is a standing read primitive
+        for anything on the host, reachable on every later read or validate
+        of it — not just the one request that planted it. The message is
+        fixed rather than naming the offending path, for the same reason:
+        echoing it is the disclosure this exists to prevent."""
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return None  # the loader's own parse error is the right refusal
+        ensemble = data.get("ensemble")
+        if not isinstance(ensemble, dict):
+            return None
+        systems = ensemble.get("systems")
+        if not isinstance(systems, list):
+            return None
+        for entry in systems:
+            if not isinstance(entry, dict):
+                continue
+            sub_path = entry.get("config")
+            if not isinstance(sub_path, str):
+                continue
+            candidate = Path(sub_path)
+            if not candidate.is_absolute():
+                candidate = base_dir / candidate
+            if not any(candidate.resolve().is_relative_to(r.path) for r in self._roots):
+                return "an [ensemble] system names a config outside the config roots"
+        return None
 
     # -- validate + write ---------------------------------------------------
 
@@ -830,6 +983,7 @@ class ConfigStore:
         same report instead. Every other failure still refuses, including a bad
         value the form itself produced: that one is wrong now and wrong later,
         and the save is the last chance to say so."""
+        _require_within_limit(text)
         report: dict[str, Any] = {
             "ok": False,
             "error": None,
@@ -846,28 +1000,41 @@ class ConfigStore:
             # unsaved text has no file on disk for the doctor to look at.
             "diagnostics": [],
         }
+        base_dir = _load_path.parent if _load_path is not None else self._scratch_dir(ref)
+        escape = self._ensemble_escape(text, base_dir)
+        if escape is not None:
+            report["error"] = escape
+            return self._blame_layers(report, text), None
         tmp: Path | None = None
-        if _load_path is None:
-            directory = self._scratch_dir(ref)
-            try:
-                fd, tmp_name = tempfile.mkstemp(
-                    prefix=".c64cast-check-", suffix=SUFFIX, dir=directory
-                )
-            except OSError as e:
-                # `directory` is the target's own (possibly read-only-by-policy,
-                # or on a wheel install genuinely unwritable) directory — see the
-                # docstring for why it has to be that one. A denied write belongs
-                # in the report, not an unhandled 500.
-                raise PathRejected(f"cannot check a config in {directory}: {e}") from e
-            tmp = Path(tmp_name)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-        load_path = tmp if _load_path is None else _load_path
-        unplayable: list[dict[str, Any]] = []
         try:
+            if _load_path is None:
+                # mkstemp and the write that follows share one `except`: both
+                # sit inside this `try`, ahead of its own `finally` below, so
+                # a write failure (ENOSPC, a remount to read-only) is refused
+                # the same way a denied mkstemp already was, rather than
+                # propagating as a bare OSError with the half-written scratch
+                # file left behind for `finally` to clean up.
+                try:
+                    fd, tmp_name = tempfile.mkstemp(
+                        prefix=".c64cast-check-", suffix=SUFFIX, dir=base_dir
+                    )
+                    tmp = Path(tmp_name)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(text)
+                except OSError as e:
+                    # `base_dir` is the target's own (possibly read-only-by-
+                    # policy, or on a wheel install genuinely unwritable)
+                    # directory — see the docstring for why it has to be that
+                    # one.
+                    raise PathRejected(f"cannot check a config in {base_dir}: {e}") from e
+            load_path = tmp if _load_path is None else _load_path
+            unplayable: list[dict[str, Any]] = []
             with _capture_errors() as messages:
                 try:
                     loaded = cfgmod.load_master(str(load_path))
+                    # Same deferral reason as `_media_warnings`: no cycle, just
+                    # keeping session's/scene_factory's heavy optional extras
+                    # off a caller that never validates.
                     from .scene_factory import MediaNotChosen
                     from .session import SessionConfigError, validate_configs
 
@@ -925,6 +1092,8 @@ class ConfigStore:
         report, loaded = self._validate_text_and_load(self._read_text(path), ref, _load_path=path)
         if loaded is None:
             return report
+        # Deferred for the same reason as the imports above — `doctor` pulls
+        # its own probes' optional extras, and only this pre-flight touches it.
         from .doctor import validate_load_result
 
         report["diagnostics"] = [
@@ -937,9 +1106,13 @@ class ConfigStore:
     def _blame_layers(report: dict[str, Any], text: str) -> dict[str, Any]:
         """Point a failed report at the layer under the file, when there is one
         to point at. A no-op on the usual failure, where the file itself is
-        wrong."""
-        blame = " ".join([str(report["error"] or ""), *report["messages"]])
-        report["layers"] = _machine_layer_notes(text, blame)
+        wrong.
+
+        Blame is matched against ``report["error"]`` only, not the captured
+        log messages: `error` is the one string this report is built to be
+        *about*, where a captured message can carry prose from anywhere else
+        the validators logged during the same call."""
+        report["layers"] = _machine_layer_notes(text, str(report["error"] or ""))
         return report
 
     def _scratch_dir(self, ref: str | None) -> Path:
@@ -958,8 +1131,7 @@ class ConfigStore:
 
         `partial` is :meth:`validate_text`'s, and reaches it unchanged."""
         path = self._require_writable(ref)
-        if len(text.encode("utf-8")) > MAX_BYTES:
-            raise ConfigTooLarge(f"config is larger than {MAX_BYTES} bytes")
+        _require_within_limit(text)
         if not path.parent.is_dir():
             raise PathRejected(f"{ref}: {path.parent} does not exist")
         report = self.validate_text(text, ref, partial=partial)
@@ -1200,7 +1372,12 @@ class ConfigStore:
                 schema_path=_schema_directive(original),
                 baseline=baseline,
             )
-        except config_serialize.SerializeError as e:
+        except (config_serialize.SerializeError, TypeError, AttributeError, ValueError) as e:
+            # Belt-and-braces beyond `SerializeError`: `_apply_edit` type-checks
+            # a container field's shape before `setattr` (see its docstring),
+            # but an edit reaching a scalar field with the wrong JSON type
+            # (e.g. a list where `_fmt_value` expects a string) still has to
+            # come back as this 4xx rather than an unhandled 500.
             raise EditRejected(f"{ref} can't be written back: {e}") from e
         out = self.write(ref, text, partial=True)
         out["result"] = result

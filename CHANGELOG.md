@@ -198,6 +198,105 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   failure, not only "file doesn't exist", because the firmware's FailToken
   carries only free text with no known, stable "not found" pattern to
   narrow the catch against.
+- The web console's config store (`config_store.py`) treated `[web].token`/
+  `token_file`/`viewer_token` and `[control].token`/`viewer_token` as
+  ordinary fields: `config_serialize.SECRET_FIELDS` only ever named the DMA
+  password, so `describe()`'s form data and `_editable_fields()` handed a
+  viewer-role `GET /api/configs/{ref}` the console's own admin token —
+  turning a shared "watch the show" link into full control of the host.
+  `SECRET_FIELDS` now also names the five token fields, which (matching the
+  DMA password) makes `describe()`/`patch()` withhold them and makes a form
+  save refuse a file that carries one rather than silently drop it on
+  re-serialize. `read()`'s raw `text` still carries any secret verbatim —
+  gating that behind the full-token role, or masking a secret assignment in
+  it, needs a role in hand and belongs to `web_api`/`auth`, not this store;
+  documented on `read()` rather than guessed at here. Alongside it: the
+  ref/write jail (`resolve()`) enforced `.toml`-suffix and root-containment
+  but let a ref name a file `NON_CONFIG_NAMES`/`NON_CONFIG_DIRS`/the dotfile
+  rule already hides from the listing — a read/write primitive for
+  `.cargo/config.toml`, `pyproject.toml` and the like on the cwd-fallback
+  root; those rules now gate `resolve()` itself, not just `_walk`.
+  `_require_writable` decided read-only by the ref's *label* rather than by
+  path containment, so a source checkout's cwd root (which physically
+  contains the packaged examples underneath it) could reach and overwrite
+  them through its own writable label; it now checks containment against
+  every root. `_validate_text_and_load` and `read()` handed submitted text
+  (or a file already on disk) straight to `config.load_master`, which opens
+  an `[ensemble].systems[].config` path verbatim when absolute — a read
+  primitive for any file on the host, since a parse failure on the named
+  target embeds its path, a source line and a caret; both now refuse before
+  the text ever reaches the loader, with a fixed, non-echoing message.
+- The web console's validate/edit paths (`config_store.py`) had a cluster of
+  bugs stemming from the same design: `_capture_errors` attached its
+  collector to the shared `c64cast` logger with no thread filter, so a
+  `--serve` process's live-session workers (render/audio/DMA, on other
+  threads) had their unrelated ERRORs folded into another request's report
+  — and, via `_machine_layer_notes`'s unanchored `key not in blame`
+  substring test, could misattribute a validation failure to a machine
+  setting a short common key (`url`, `path`, `port`, `device`) merely
+  happened to share with the failure text. The collector is now filtered to
+  its own thread and capped at 200 records; blame now requires a
+  word-boundary match on both the key and its section, checked only against
+  `report["error"]` (not the captured log); and `_machine_layer_notes` now
+  skips `SECRET_FIELDS` keys outright and never echoes a machine setting's
+  `value` (only `path`/`section`/`key` — the attribution its own docstring
+  argues for). `_validate_text_and_load`'s scratch-file `mkstemp` and the
+  write that followed sat above the `try` whose `finally` unlinks it, so a
+  write failure (ENOSPC, a remount to read-only) left `.c64cast-check-*.toml`
+  behind — invisible to the listing — and escaped as a bare `OSError`
+  instead of the `PathRejected` report the `mkstemp` half was already
+  careful to produce; both now share one `try`/`except`. `validate_text`
+  (and so `write`/`create`) had no size cap of its own — `write` enforced
+  `MAX_BYTES` but the scratch file could still take an unbounded POST body
+  onto disk first — now shared via one `_require_within_limit` every text
+  entry point calls. Lastly, `_apply_edit` setattr'd an edit's raw JSON onto
+  a container field (`overlays`, `[scenes.color]`, `hue_corrections`,
+  `clips`) with no shape check, so a wrong-shaped value (a string for a
+  list, a list of non-tables) reached `config_serialize`'s `[[...]]`
+  emitters and raised a bare `TypeError`/`AttributeError`/`ValueError` —
+  an unhandled 500 on an authenticated route — instead of `EditRejected`;
+  `_apply_edit` now checks the value's shape against the field's own
+  dataclass annotation before `setattr`, and `_rewrite`'s re-serialize call
+  widens its `except` as a backstop. `describe()` also no longer shadows
+  the module's `dataclasses.fields` import with a same-named local (latent
+  today, but one field-list lookup away from `TypeError: 'list' object is
+  not callable` from inside a request handler).
+- `config_serialize.py`: `_emit_table_array`'s `annotate` parameter was
+  never read in its body, so `[[color.hue_corrections]]`/`[[scenes.overlays]]`/
+  `[[scenes.color.hue_corrections]]` blocks got no per-param help comments
+  even when the caller asked for them — the parameter is dropped rather
+  than wired up, since nothing needed it. The four hardcoded
+  `if sd.name == "color"`/`"performance"` branches inside `_emit_section`
+  deciding which field renders as a `[[...]]` block are now one
+  `_SECTION_TABLE_ARRAYS` lookup — which caught a real, independent gap in
+  the same class while adding the drift test the fix calls for:
+  `[midi_control] cc_map` (`list[dict[...]]`, and documented as
+  `[[midi_control.cc_map]]` in its own help text) was falling through to
+  `_fmt_value` and rendering as an inline array of inline tables; it now
+  routes through the same block emitter. `_emit_scene` iterated only the
+  fields `introspect` lists for a scene's current `type`, so a field the
+  type doesn't claim but that carries a non-default value anyway (set
+  while the scene was a different type, or by a structured edit) was
+  silently dropped on every re-serialize — `load` never enforces
+  `applies_to`, so this broke `load(dumps(cfg)) == cfg`, the module's own
+  contract; such a field is now emitted alongside the type's own. A scene
+  color override of exactly `{"hue_corrections": []}` serialized to a bare
+  `[scenes.color]` header with nothing under it, reloading as `{}` — an
+  empty override is still an authored key on the scene's sparse dict, so it
+  now round-trips as an explicit `hue_corrections = []`. `SECRET_FIELDS`
+  gained the `[web]`/`[control]` token pairs (see the config_store entry
+  above) — it governs `dumps()`, `describe()`'s form and
+  `_editable_fields()`, not `config_store.read()`'s raw text (documented on
+  `SECRET_FIELDS` itself).
+- `schema.py`: a `choices`-bearing union-typed field (`[ultimate64]
+  sid_play_rate`, `str | float`) emitted a top-level `enum` alongside its
+  `type: ["string", "number"]`, so the documented numeric form ("a number
+  pins every vsync tune to that rate in Hz") failed schema validation in
+  every editor pointed at the committed schema — `jsonschema.validate` on
+  `50.0` raised `50.0 is not one of ['auto', 'off']`. Choices on a union
+  now constrain only the string branch via `anyOf`, leaving the other
+  branch(es) unconstrained. `_field_schema`'s `name` parameter, passed at
+  every call site and never read in the body, is removed.
 
 ## [0.4.0] - 2026-08-30
 

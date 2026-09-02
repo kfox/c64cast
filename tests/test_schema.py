@@ -16,7 +16,7 @@ import json
 import tomllib
 import unittest
 
-from c64cast.app import paths, schema
+from c64cast.app import introspect, paths, schema
 
 _COMMITTED = paths.packaged_schema_path()
 
@@ -38,6 +38,53 @@ class SchemaBuildTest(unittest.TestCase):
         for key in ("ultimate64", "audio", "scenes", "playlist"):
             self.assertIn(key, s["properties"])
         self.assertEqual(s["properties"]["scenes"]["type"], "array")
+
+
+class UnionChoicesTest(unittest.TestCase):
+    """`sid_play_rate` (`str | float`) carries `choices` on only its string
+    branch — a bare top-level `enum` used to apply to the whole union and
+    reject the documented numeric form."""
+
+    def setUp(self):
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:
+            self.skipTest("jsonschema not installed (dev dependency)")
+        self.validator = Draft202012Validator(schema.build_schema())
+
+    def test_the_numeric_form_validates(self):
+        errors = list(self.validator.iter_errors({"ultimate64": {"sid_play_rate": 50.0}}))
+        self.assertEqual(errors, [])
+
+    def test_a_choice_string_validates(self):
+        errors = list(self.validator.iter_errors({"ultimate64": {"sid_play_rate": "auto"}}))
+        self.assertEqual(errors, [])
+
+    def test_an_unlisted_string_is_still_rejected(self):
+        errors = list(self.validator.iter_errors({"ultimate64": {"sid_play_rate": "nonsense"}}))
+        self.assertTrue(errors)
+
+
+class SceneFieldMetadataTest(unittest.TestCase):
+    """`_scenes_schema` merges each shared field name's `choices`/`default`
+    from whichever scene type `introspect.scene_types()` lists first
+    (`field_docs.setdefault`) — silently correct only as long as no two
+    types disagree. Nothing else pins that invariant, so this does."""
+
+    def test_a_field_shared_by_several_scene_types_agrees_on_its_metadata(self):
+        seen: dict[str, tuple[str, tuple[str, ...], object]] = {}
+        for sd in introspect.scene_types():
+            for fd in sd.fields:
+                shape = (fd.type, fd.choices, fd.default)
+                if fd.name in seen:
+                    self.assertEqual(
+                        seen[fd.name],
+                        shape,
+                        f"{fd.name!r} has diverging (type, choices, default) across scene "
+                        "types — the schema's merged field docs would silently pick one.",
+                    )
+                else:
+                    seen[fd.name] = shape
 
 
 class SchemaValidatesExamplesTest(unittest.TestCase):
