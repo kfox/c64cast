@@ -11,15 +11,18 @@ bundle (``web/src/lib/screens/Setup.svelte``), reachable because
 ``setup_gate`` leaves the shell and its assets alone; this module is only its
 API.
 
-**No second parser, no second serializer.** The connection target goes through
-:func:`c64cast.app.connect.parse_connection_uri`, the same one ``-u``,
-``--save-settings`` and quickcast use, and lands in machine settings through
-the same shape ``cli_commands.run_save_settings`` writes with — a fresh
-:class:`~c64cast.app.config.Config` seeded from the existing machine layer
-(so a repeat visit merges rather than clobbers), then
-:func:`c64cast.app.config_serialize.dumps` with no ``baseline``, because the
-machine layer *is* the baseline (measuring it against itself would write
-nothing).
+**No second parser, no second serializer, no second writer.** The connection
+target goes through :func:`c64cast.app.connect.parse_connection_uri`, the same
+one ``-u``, ``--save-settings`` and quickcast use, and lands in machine
+settings through :func:`c64cast.app.config_serialize.save_machine_settings` —
+the same function ``cli_commands.run_save_settings`` calls, not a hand-copy of
+its shape. That distinction is the whole point: this module used to *assert* in
+prose that it mirrored the CLI's save path "exactly" while missing the one
+guard that path had, and the result was a form that erased every secret already
+in ``settings.toml`` (the ``dma_password`` a password-protected U64 needs, and
+the ``[web] token`` pin ``token_settable`` exists to protect) on the first
+successful POST. The seed-and-overlay is still per-caller, because each
+overlays something different; everything from the serialize onward is shared.
 
 **No credential leaves here until setup completes.** ``GET`` reports only
 whether the token is *settable*; it never carries the token itself, because
@@ -57,15 +60,17 @@ from c64cast.app.connect import (
     parse_connection_uri,
 )
 
-from .auth import LOGIN_PATH
+from .auth import LOGIN_PATH, MIN_TOKEN_LENGTH, BodyTooLarge, read_body
 from .transport import atomic_write_text
 from .web_static import landing_path
 
 log = logging.getLogger(__name__)
 
-#: A generated token is 32 url-safe bytes; anything an admin types by hand
-#: only needs to be long enough that guessing it isn't the LAN's weak point.
-MIN_TOKEN_LENGTH = 16
+# `MIN_TOKEN_LENGTH` is imported above rather than declared here, and is named
+# in `__all__` because this module's callers and tests still spell it here: the
+# policy itself belongs to `auth`, since one enforced on one of four entry
+# points is a policy nobody owns.
+__all__ = ["MIN_TOKEN_LENGTH", "SetupRefused", "login_url", "register_setup_routes"]
 
 
 class SetupRefused(ValueError):
@@ -89,12 +94,29 @@ def _token_from(body: dict[str, Any], *, settable: bool) -> str:
 
     The "not settable" refusal comes before the length check on purpose: when
     the token is pinned by configuration, *no* replacement is acceptable, and
-    telling somebody to type a longer one would be advice that cannot work."""
+    telling somebody to type a longer one would be advice that cannot work.
+
+    **Stripped before every check**, because the two ends of this contract
+    disagreed otherwise: :func:`_write_token` persists what it is given and
+    ``serve._generated_token`` reads that file back with ``.strip()``. A token
+    pasted from a password manager with a trailing space went out in
+    ``login_url`` urlencoded *with* the space and came back after the restart
+    without it, so the one link an appliance admin was handed answered 401
+    forever — and a whitespace-only token of 16 characters passed the length
+    check, stripped to ``""`` on read, and made the host mint a brand-new
+    credential nobody has ever seen with the setup window already closed. An
+    interior newline is refused for the adjacent reason: ``_write_token`` adds
+    its own, so the file's shape would be ambiguous."""
     chosen = body.get("token")
     if chosen is None or chosen == "":
         return ""
     if not isinstance(chosen, str):
         raise SetupRefused("token must be a string")
+    chosen = chosen.strip()
+    if not chosen:
+        return ""
+    if "\n" in chosen or "\r" in chosen:
+        raise SetupRefused("token must be a single line")
     if not settable:
         raise SetupRefused(
             "this host's token is fixed by its configuration ([web] token or "
@@ -107,12 +129,13 @@ def _token_from(body: dict[str, Any], *, settable: bool) -> str:
 
 def _write_connection(spec: ConnectionSpec) -> None:
     """Overlay ``spec`` onto machine settings, merged with what is already
-    there — mirrors ``cli_commands.run_save_settings``'s save path exactly."""
+    there, through the one writer ``--save-settings`` also uses — which is what
+    keeps the secrets this merge just read out of the file from being dropped
+    on the way back in (see this module's docstring)."""
     cfg = cfgmod.Config()
     cfgmod.apply_machine_settings(cfg)
     apply_to_config(cfg, spec)
-    text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
-    atomic_write_text(paths.settings_path(), text)
+    config_serialize.save_machine_settings(cfg)
 
 
 def _write_token(token: str) -> None:
@@ -130,7 +153,8 @@ def _write_token(token: str) -> None:
 def _mark_complete(connection: str) -> None:
     """Write the completion marker **last**, after the connection and any
     token are already on disk — a failure partway through this route leaves
-    setup pending rather than half-configured."""
+    setup pending rather than half-configured, and every write before this one
+    is idempotent under the retry that then becomes possible."""
     path = paths.setup_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"completed_at": time.time(), "connection": connection}
@@ -166,7 +190,11 @@ def register_setup_routes(
     @app.post("/api/setup")
     async def post_setup(request: Request) -> Response:
         try:
-            body = await request.json()
+            body = json.loads(await read_body(request))
+        except BodyTooLarge as e:
+            # This route is unauthenticated while the window is open, so the
+            # body has to be refused before it is resident (see `read_body`).
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
         except Exception:
             body = None
         try:
@@ -190,10 +218,33 @@ def register_setup_routes(
                 status_code=400,
             )
 
-        if chosen:
-            _write_token(chosen)
-        _write_connection(spec)
-        _mark_complete(target)
+        # The connection first, then the token, then the marker. The token used
+        # to go first, so a full disk or a read-only settings dir left the
+        # host's credential already replaced by one the 500 never handed back —
+        # on a box whose only interface is this form, a self-inflicted lockout
+        # window even though the retry stays possible.
+        try:
+            _write_connection(spec)
+            if chosen:
+                _write_token(chosen)
+            _mark_complete(target)
+        except OSError as e:
+            # The admin's only interface is this form, so a bare 500 with
+            # FastAPI's empty body leaves them with no next step. Name the path
+            # instead: `e.filename` is the file that could not be written, and
+            # `strerror` is the OS's own reason, neither of which is a
+            # traceback.
+            log.exception("web console: setup could not write its state")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"could not write {e.filename or 'the host state'}: "
+                    f"{e.strerror or 'the write failed'}. Setup is still pending, so "
+                    "this can be retried once the host can write to its own data "
+                    "directory.",
+                },
+                status_code=500,
+            )
         log.info("web console: setup completed (%s)", spec.backend)
         on_complete()
         return JSONResponse({"ok": True, "login_url": login_url(chosen or token)})

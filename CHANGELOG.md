@@ -19,7 +19,133 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+### Security
+
+- **A `viewer_token` was a full-control credential.** `GET
+  /api/configs/{ref}` had no role check at all, and the auth gate's only
+  viewer restriction is the HTTP method — so every `GET` passed for a
+  read-only token, and that route returns the config file's *raw text*,
+  including any `[web]`/`[control]` `token` and `[ultimate64].dma_password`
+  it carries. Since `[web].config_roots` defaults to the directory the host
+  was launched from, and `./c64cast.toml` is the documented home of
+  `dma_password`, the file a guest could read was exactly the one holding
+  the secrets: `GET /api/configs` for a name, `GET /api/configs/<ref>` for
+  the admin token, and a link handed out to be read-only became remote
+  control of the machine. Authorization now has a per-route seam
+  (`auth.require_full`, with `SCOPE_ROLE_KEY`/`ROLE_FULL`/`ROLE_VIEWER` and
+  `is_viewer` replacing six bare string literals across three modules — a
+  misspelling in any of them evaluated False and *granted* write access),
+  that route refuses a viewer with a `403`, and a contract test walks the
+  assembled app and fails on any viewer-reachable route that nobody has
+  classified, which is the part that stops the next one. Browsing config
+  *names*, the media listing, the screen and the state feed stay
+  viewer-readable — that is what a read-only link is for.
+- **The appliance setup form erased every secret in `settings.toml`.**
+  `POST /api/setup` — unauthenticated while the setup window is open —
+  seeded a `Config` from the machine-settings file (secrets included),
+  overlaid the connection target, and rewrote the same file through
+  `config_serialize.dumps`, which suppresses every secret field. So the
+  first successful setup silently dropped `[ultimate64].dma_password`
+  (leaving an appliance unable to talk to its own password-protected U64)
+  and `[web].token`/`token_file`/`viewer_token` — including a `[web].token`
+  pin, which is the one thing `token_settable` exists to protect: the form
+  correctly refused to *replace* a pinned token and then deleted it anyway,
+  so the next restart minted a brand-new credential and the URL the admin
+  had been handed was dead. Both writers of that file now go through one
+  `config_serialize.save_machine_settings`, which preserves what the merge
+  read; `--save-settings` stops warning that it is about to drop a
+  hand-written `dma_password` because it no longer does, prints the
+  secret-free rendering of what it saved (naming the preserved keys, never
+  quoting them), and the file is restricted to `0600` when it carries one.
+  `setup_api._write_connection`'s docstring used to *assert* it mirrored
+  the CLI's save path "exactly" while missing the guard that path had.
+- A setup token was written unstripped and read back stripped, so a token
+  pasted with a trailing space went out in the form's login link with the
+  space and came back after the restart without it — the one link an
+  appliance admin is given answering `401` forever, with no other way to
+  learn the real token. Worse, 16 spaces passed the minimum-length check,
+  stripped to `""` on read, and made the host mint a credential nobody had
+  ever seen with the setup window already closed: recovery needed shell
+  access or a reflash. Tokens are now stripped before every check, an
+  interior newline is refused, and `MIN_TOKEN_LENGTH` moved to
+  `control/auth.py` — enforced on the setup route as before, and now also
+  warned about for a short `[web]`/`[control]` token from any source, since
+  nothing here throttles login attempts.
+- One malformed cookie anywhere on the `Cookie` header discarded the whole
+  jar, `c64cast_token` included — CPython's `SimpleCookie` bails on the
+  first segment its pattern rejects and drops the morsels it already
+  collected, *without raising*, so the `except Exception` that looked like
+  the guard for this could never fire. Because browser cookies are scoped
+  by host and ignore the port, any other service on the same box setting a
+  cookie with an illegal character made the console permanently unreachable
+  in that browser: a `401`, the login form, a fresh `Set-Cookie` that
+  replaced ours and not the offender, and a `401` again — a login loop with
+  nothing logged. The one morsel that matters is now parsed out of the
+  header directly.
+- `POST /api/login` and `POST /api/setup` are both reachable with no
+  credential and both called `await request.json()`, which buffers a body of
+  any size — a remote memory exhaustion on a 1–2 GB appliance, taking down a
+  process that owns live hardware. Both now read through a shared capped
+  reader (`Content-Length` refused up front, then the stream abandoned past
+  the cap, which is the only check a chunked body cannot lie about) and
+  answer `413`. `web_api`'s own body reader shares it, so `ConfigStore`'s
+  `ConfigTooLarge` — which protects the *file* — stops being the only limit.
+- `GET /api/screen/stream` is a `GET`, so a read-only token reached it, and
+  nothing capped concurrent watchers. Each open stream holds one thread of
+  the *default* executor essentially continuously (the fps sleep happens
+  inside the frame generator), and that executor is also where media-upload
+  chunk writes and every synchronous route run — so a dozen parallel
+  requests from one viewer credential starved the whole console, with a
+  healthy process and an empty log. The streams now have a dedicated
+  bounded pool and a watcher cap, refusing past it with `503`.
+- `auth._safe_next` rejected `//host` but not `/\host`, which a browser also
+  resolves offsite; what kept the login redirect on-site was Starlette's
+  percent-encoding rather than the validator's own check.
+
 ### Fixed
+
+- A command frame could be silently dropped from either console WebSocket.
+  Both push loops wrapped `receive_json()` in `asyncio.wait_for`, which
+  *cancels* the receive every 0.35 s — and a frame delivered in the same
+  event-loop turn as the timeout is popped off the queue and then thrown
+  `CancelledError`, so it was consumed and never acted on, with `except
+  TimeoutError: continue` making the loss invisible. A pad tap or a
+  `{"session": "stop"}` on a host that owns live hardware simply did
+  nothing. The receive is now a long-lived task that survives a timeout.
+- One stray WebSocket frame tore down the console's only state feed: a text
+  frame that is not JSON raises `JSONDecodeError` and a *binary* frame
+  raises `KeyError`, neither of which is a disconnect, so both fell through
+  to a blanket `except Exception: log.debug(...)` — the socket closed and
+  the browser reconnected into the same failure, with nothing in the log at
+  default verbosity. Unparseable frames are now ignored and the loop
+  survives; an abrupt transport close stays at debug and everything else is
+  logged at `exception`, since a socket nobody asked to close is not a debug
+  detail.
+- An `OSError` from any of the appliance setup form's three writes escaped as
+  a bare `500` with no body, to an admin whose only interface to the box
+  *is* that form. It now answers with the path that could not be written and
+  the OS's own reason, and says that setup is still pending so a retry can
+  recover. The token is also written *after* the connection now: it used to
+  go first, so a failure writing `settings.toml` left the host's credential
+  already replaced by one the `500` never handed back.
+- `register_web_routes`' `library`/`media` parameters defaulted to `None` and
+  constructed real stores on demand, which resolve into the data directory
+  and write there — a caller who forgot one got a component quietly writing
+  under `~/.local/share/c64cast` instead of a `TypeError`. Both are now
+  required, built once where `run_daemon` builds the config store.
+- `web_static.landing_path` ignored the `directory` override its four
+  siblings honor, so a host serving the console from a non-packaged bundle
+  computed `/perf` for the startup URL, the read-only link and the setup
+  form's login link. Latent (production never passes one), but it made
+  `landing_path` the one function there whose answer could not agree with
+  what was mounted.
+- `TokenAuthMiddleware` now unions `PUBLIC_PATHS` into `public_paths` itself
+  rather than trusting each caller to, which is what `install_auth`'s
+  docstring already promised; the introspection cache is built under a lock,
+  so the "built once" comment above it is true even when two cold requests
+  arrive together; and an empty `Authorization: Bearer` header (what some
+  proxies emit for an unset credential) falls through to the next token
+  source instead of suppressing a valid cookie and answering `401`.
 
 - `-u`/`--url`/`$C64CAST_URL` accepted a `user:pass@` netloc (`u64://admin:s3cret@host`)
   and carried it verbatim into `[ultimate64].url` — from which `requests`

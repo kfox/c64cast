@@ -130,14 +130,20 @@ def shell_paths(directory: Path | None = None) -> tuple[str, ...]:
     return ("/", *(f"/{ASSETS_NAME}/{name}" for name in _asset_catalog(dist)))
 
 
-def landing_path() -> str:
+def landing_path(directory: Path | None = None) -> str:
     """Where a successful login should drop somebody: the console when its
     bundle was built, else the zero-dependency ``/perf`` page.
 
     One answer, shared by the URL the daemon prints at startup and the
     read-only link the console hands out — a shared link that landed somewhere
-    else would be a second answer to the same question."""
-    return "/" if bundle_dir() is not None else "/perf"
+    else would be a second answer to the same question.
+
+    ``directory`` for the same reason every other function here takes one: this
+    used to probe :data:`DIST_DIR` unconditionally, so a host mounted with
+    ``mount_web_app(app, directory=other)`` served the console fine and then
+    answered ``/perf`` to all three of its callers — the one function in this
+    module whose answer could not be made to agree with what was mounted."""
+    return "/" if bundle_dir(directory) is not None else "/perf"
 
 
 def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:

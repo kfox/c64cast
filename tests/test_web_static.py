@@ -210,6 +210,24 @@ class ShellPathsTest(unittest.TestCase):
             self.assertEqual(web_static.shell_paths(Path(tmp) / "never-built"), ())
 
 
+class LandingPathTest(unittest.TestCase):
+    """`landing_path` answers the same question for three callers — the URL
+    the daemon prints at startup, `/api/viewer-link`'s path, and the setup
+    form's `login_url` — so it has to agree with what was actually mounted."""
+
+    def test_a_bundle_lands_on_the_console(self) -> None:
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(web_static.landing_path(_bundle(Path(tmp))), "/")
+
+    def test_no_bundle_falls_back_to_the_perf_page(self) -> None:
+        # It used to probe the packaged DIST_DIR unconditionally, so a host
+        # mounted with `mount_web_app(app, directory=other)` served the console
+        # fine and then sent everyone to /perf — the one function here whose
+        # answer could not be made to agree with what was mounted.
+        with TemporaryDirectory() as tmp:
+            self.assertEqual(web_static.landing_path(Path(tmp) / "never-built"), "/perf")
+
+
 class CommittedBundleTest(unittest.TestCase):
     """The bundle under `c64cast/web/dist` is build output that is committed on
     purpose, so that installing c64cast never needs Node. These assertions are

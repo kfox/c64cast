@@ -400,14 +400,14 @@ def run_save_settings(args: argparse.Namespace) -> int:
     Merges onto the existing file (start from a machine-overlaid Config, apply
     this invocation's flags on top), writes it sparsely (only non-default
     fields) and atomically, prints the path + contents, and returns 0. If
-    nothing savable was provided, prints what's savable and returns 2. The DMA
-    password can never be *written* by this command (``config_serialize``
-    suppresses it) — but if the existing file already has one, this merge
-    can't see it (the secret suppression that protects the write path also
-    hides the field from this read), so a save quietly drops it; warn instead
-    of silently losing it."""
-    from c64cast.control import transport
+    nothing savable was provided, prints what's savable and returns 2.
 
+    A secret already in that file — a hand-written ``dma_password``, a
+    ``[web] token`` — survives the merge, because the write goes through
+    :func:`config_serialize.save_machine_settings` rather than a plain `dumps`.
+    What is printed here is the secret-free rendering of the same content: this
+    command echoes what it saved, and a terminal is not where a credential
+    belongs, so the preserved keys are named rather than quoted."""
     from . import config_serialize, paths
     from .connect import apply_to_config, parse_connection_uri
 
@@ -431,15 +431,6 @@ def run_save_settings(args: argparse.Namespace) -> int:
     cfg = cfgmod.Config()
     cfgmod.apply_machine_settings(cfg)
 
-    if cfg.ultimate64.dma_password is not None:
-        log.warning(
-            "--save-settings: %s already has a dma_password, which this command "
-            "can never re-write (secrets are suppressed on save) — the merged "
-            "file below will NOT carry it. Re-add it by hand afterward, or set "
-            "C64CAST_DMA_PASSWORD instead of committing it to this file.",
-            paths.settings_path(),
-        )
-
     if args.url is not None:
         apply_to_config(cfg, parse_connection_uri(args.url))
     for flag_dest, section, field, _ in SAVABLE_SETTINGS_FIELDS:
@@ -447,14 +438,11 @@ def run_save_settings(args: argparse.Namespace) -> int:
         if value is not None:
             setattr(getattr(cfg, section), field, value)
 
-    # No `baseline` here, unlike every other save-back: this *is* the machine
-    # layer, so the dataclass defaults are what it sits on. Measuring it against
-    # itself would write an empty file.
-    text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
-    dest = paths.settings_path()
-    transport.atomic_write_text(dest, text)
+    dest, text, kept = config_serialize.save_machine_settings(cfg)
     print(f"Saved machine settings → {dest}\n")
     print(text, end="" if text.endswith("\n") else "\n")
+    if kept:
+        print(f"\nKept (not shown): {', '.join(kept)}")
     return 0
 
 

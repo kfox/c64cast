@@ -36,9 +36,22 @@ where the checks get reordered.
 
 Roles: the token grants ``full``, the optional second token grants ``viewer``,
 and a viewer may only issue read methods — which covers ``/pause``, ``/skip``,
-``/reload`` and ``/perf/command`` with no per-route code. The **one hole the
-middleware cannot plug** is the bidirectional ``/perf/ws``: it reads
-``scope["c64cast_role"]`` itself and drops inbound command frames from viewers.
+``/reload`` and ``/perf/command`` with no per-route code. The method *is* the
+authorization for every route where the verb tells the truth about the intent,
+and :func:`require_full` is the seam for the ones where it doesn't: a ``GET``
+that hands back host-authored text or a credential is a read to HTTP and an
+administrative act to this system, and it has to say so itself. ``GET
+/api/configs/{ref}`` is the reason that seam exists — its raw ``text`` is the
+file verbatim, tokens and DMA password included, so a shared read-only link
+would otherwise escalate to full control. The **other hole the middleware
+cannot plug** is the bidirectional ``/perf/ws``: it reads the role off the
+scope itself (:func:`is_viewer`) and drops inbound command frames from viewers.
+
+Every role comparison goes through :data:`SCOPE_ROLE_KEY` / :data:`ROLE_FULL` /
+:data:`ROLE_VIEWER` and :func:`is_viewer` rather than a bare string, because
+every consumer spells the check ``== "viewer"`` and a misspelling on either
+side of that comparison evaluates False and *grants* write access — a fail-open
+typo neither pyright nor mypy can see, since both sides are ``str``.
 
 Like :mod:`perf_console`, this module deliberately does **not** ``from __future__
 import annotations``: the login routes annotate their params with names imported
@@ -48,10 +61,10 @@ FastAPI mis-read them as query params.
 
 import hmac
 import html
+import json
 import logging
 import secrets
-from collections.abc import Callable, Iterable, MutableMapping
-from http.cookies import SimpleCookie
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -69,7 +82,30 @@ PUBLIC_PATHS = frozenset({LOGIN_PATH})
 # Methods a `viewer` token may use. Anything else is a write in this API.
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+#: Where the middleware records the caller's role, and the one spelling of it.
+#: A literal in each consumer fails *open* on a typo (see the module note), and
+#: there are three modules reading this.
+SCOPE_ROLE_KEY = "c64cast_role"
+ROLE_FULL = "full"
+ROLE_VIEWER = "viewer"
+
+#: A generated token is 32 url-safe bytes; anything an operator sets by hand
+#: only needs to be long enough that guessing it isn't the LAN's weak point.
+#: One home for the policy: it used to be declared in `setup_api` and enforced
+#: on that one route, which is a policy nobody owns.
+MIN_TOKEN_LENGTH = 16
+
 _DEFAULT_NEXT = "/perf"
+
+#: Cap on a request body read through :func:`read_body`. `/api/login` and
+#: `/api/setup` are both reachable with **no credential at all**, and
+#: Starlette's `Request.json()` accumulates a body of any size — so an
+#: unauthenticated caller who can reach the port could exhaust RAM on a 1-2 GB
+#: appliance and take down a process that owns live hardware. Generous next to
+#: any real body (a login is a few hundred bytes; a config PUT is capped at
+#: `config_store.MAX_BYTES`, 1 MB, and JSON escaping can inflate that) and
+#: small next to the host's memory.
+MAX_BODY_BYTES = 8 << 20
 
 Scope = MutableMapping[str, Any]
 
@@ -105,6 +141,18 @@ _LOGIN_PAGE = """<!doctype html>
  <button type="submit">Unlock</button>
 </form></body></html>
 """
+
+
+class RoleRequired(Exception):
+    """A ``viewer`` reached a route that needs the full token.
+
+    Raised by :func:`require_full` and mapped to a ``403`` by the handler
+    :func:`install_auth` registers, so a route declares the requirement without
+    importing FastAPI and a test can assert it without standing up an app."""
+
+
+class BodyTooLarge(Exception):
+    """A request body past the cap — refused, not buffered (:func:`read_body`)."""
 
 
 class ViewerCredential:
@@ -155,9 +203,63 @@ def match_role(presented: str | None, token: str, viewer_token: str = "") -> str
         return None
     candidate = presented.encode("utf-8")
     if token and hmac.compare_digest(candidate, token.encode("utf-8")):
-        return "full"
+        return ROLE_FULL
     if viewer_token and hmac.compare_digest(candidate, viewer_token.encode("utf-8")):
-        return "viewer"
+        return ROLE_VIEWER
+    return None
+
+
+def role_of(scope: Mapping[str, Any]) -> str | None:
+    """The role the gate recorded, or ``None`` when it isn't gating at all
+    (``[control]``'s legitimately-open mode — see :func:`install_auth`)."""
+    return scope.get(SCOPE_ROLE_KEY)
+
+
+def is_viewer(scope: Mapping[str, Any]) -> bool:
+    """Whether this caller holds the read-only token.
+
+    The one place the ``viewer`` comparison is spelled. ``None`` (no gate) is
+    not a viewer, which is the historical open behavior and deliberate — but it
+    is now one decision in one function rather than the same fail-open string
+    comparison copied into three modules."""
+    return role_of(scope) == ROLE_VIEWER
+
+
+def require_full(scope: Mapping[str, Any]) -> None:
+    """Refuse a ``viewer`` on a route that needs the full token.
+
+    The per-route half of the authorization model. The middleware's own check
+    is method-shaped, which is right for every route whose verb matches its
+    intent and blind to a ``GET`` that returns host-authored text or a
+    credential — so a route in that second class calls this as its first
+    statement. Raises :class:`RoleRequired`, not an ``HTTPException``: this has
+    to stay sayable (and testable) with no FastAPI in scope, and
+    :func:`install_auth` is what turns it into the 403."""
+    if is_viewer(scope):
+        raise RoleRequired("this needs the full token, not the read-only one")
+
+
+def _cookie_token(header: str) -> str | None:
+    """The ``c64cast_token`` morsel out of a raw ``Cookie`` header.
+
+    Hand-parsed rather than handed to :class:`~http.cookies.SimpleCookie`,
+    which is not usable for *extraction* from a header this app did not write:
+    CPython's ``BaseCookie.__parse_string`` stages every morsel and, on the
+    first segment its pattern rejects, executes a bare ``return`` — discarding
+    the ones it had already collected, ours included, without raising. So
+    ``load("bad cookie here; c64cast_token=SECRET")`` and
+    ``load("c64cast_token=SECRET; bad cookie here")`` both yield ``{}``.
+    Browser cookies are scoped by host and ignore the port, so any *other*
+    service on the same box setting a cookie whose value carries a character
+    outside the legal set made this console permanently unreachable in that
+    browser: a 401, the login form, a fresh ``Set-Cookie`` that replaces our
+    morsel and not the offending one, and a 401 again — a login loop with
+    nothing logged. Splitting on ``;`` and then on the first ``=`` cannot be
+    hidden by a sibling cookie we never set."""
+    for part in header.split(";"):
+        name, _, value = part.partition("=")
+        if name.strip() == COOKIE_NAME:
+            return value.strip().strip('"')
     return None
 
 
@@ -170,7 +272,14 @@ def _presented_token(scope: Scope) -> str | None:
 
     auth = headers.get(b"authorization", b"").decode("latin-1")
     if auth[:7].lower() == "bearer ":
-        return auth[7:].strip()
+        # Fall through on an *empty* Bearer value rather than returning it: the
+        # precedence order is deliberate for a wrong token, but `Authorization:
+        # Bearer ` (what some proxies and client wrappers emit for an unset
+        # credential) carries no claim at all, and returning "" here suppressed
+        # a perfectly good cookie or `?token=` and answered 401.
+        presented = auth[7:].strip()
+        if presented:
+            return presented
 
     header_token = headers.get(TOKEN_HEADER)
     if header_token:
@@ -182,15 +291,34 @@ def _presented_token(scope: Scope) -> str | None:
 
     cookie_header = headers.get(b"cookie")
     if cookie_header:
-        jar = SimpleCookie()
-        try:
-            jar.load(cookie_header.decode("latin-1"))
-        except Exception:
-            return None
-        morsel = jar.get(COOKIE_NAME)
-        if morsel is not None:
-            return morsel.value
+        return _cookie_token(cookie_header.decode("latin-1"))
     return None
+
+
+async def read_body(request: Any, *, max_bytes: int | None = None) -> bytes:
+    """The request's body, refused past ``max_bytes`` rather than buffered.
+    ``None`` means :data:`MAX_BODY_BYTES`, read at call time.
+
+    Streamed rather than ``await request.body()``. ``Content-Length`` is only
+    the caller's claim, so it is checked first as the cheap refusal and then the
+    chunks are accumulated and abandoned the moment they pass the cap — which
+    is the only check a chunked body cannot lie about. Lives here because the
+    two routes that need it most (``/api/login``, ``/api/setup``) are the two
+    this module lets through with no credential; ``web_api._body`` shares it so
+    the store's own size limit is the second line of defense rather than the
+    only one."""
+    cap = MAX_BODY_BYTES if max_bytes is None else max_bytes
+    claimed = request.headers.get("content-length")
+    if claimed is not None and claimed.isdigit() and int(claimed) > cap:
+        raise BodyTooLarge(f"request body is larger than {cap} bytes")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise BodyTooLarge(f"request body is larger than {cap} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _wants_html(scope: Scope) -> bool:
@@ -213,10 +341,11 @@ def login_page(next_path: str = "") -> str:
 class TokenAuthMiddleware:
     """Pure-ASGI shared-token gate over an entire app.
 
-    Sets ``scope["c64cast_role"]`` to ``"full"`` or ``"viewer"`` and hands off;
-    denies with ``401`` (no/unknown token) or ``403`` (viewer attempting a
-    write) without ever reaching the app. Non-``http``/``websocket`` scopes
-    (``lifespan``) pass straight through.
+    Sets ``scope[SCOPE_ROLE_KEY]`` to :data:`ROLE_FULL` or :data:`ROLE_VIEWER`
+    and hands off; denies with ``401`` (no/unknown token) or ``403`` (viewer
+    attempting a write) without ever reaching the app. Non-``http``/
+    ``websocket`` scopes (``lifespan``) pass straight through. A route needing
+    more than "is this a write?" calls :func:`require_full` itself.
 
     ``viewer`` is read per request rather than copied at construction: the
     read-only token can be minted while the host is running, and the app —
@@ -239,7 +368,11 @@ class TokenAuthMiddleware:
             if isinstance(viewer_token, ViewerCredential)
             else ViewerCredential(viewer_token)
         )
-        self._public = frozenset(public_paths)
+        # The floor lives in the class that owns the invariant, not in one
+        # caller that happens to union it: a caller passing a set without
+        # `/api/login` would otherwise get an app whose 401 serves a login form
+        # that posts back to a route that can only 401 again.
+        self._public = PUBLIC_PATHS | frozenset(public_paths)
 
     async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -255,11 +388,11 @@ class TokenAuthMiddleware:
             return
         # A websocket handshake has no `method`; treat it as the read it is at
         # connect time and let the route drop inbound writes (see perf_ws).
-        if role == "viewer" and scope.get("method", "GET") not in READ_METHODS:
+        if role == ROLE_VIEWER and scope.get("method", "GET") not in READ_METHODS:
             await self._deny(scope, receive, send, 403, "read-only token")
             return
 
-        scope["c64cast_role"] = role
+        scope[SCOPE_ROLE_KEY] = role
         await self.app(scope, receive, send)
 
     async def _deny(self, scope: Scope, receive: Any, send: Any, status: int, detail: str) -> None:
@@ -291,8 +424,18 @@ class TokenAuthMiddleware:
 def _safe_next(target: str | None) -> str:
     """Constrain the login redirect to a path on this server. ``//host`` and
     ``https://host`` are both absolute to a browser, so anything but a single
-    leading slash falls back to the console."""
-    if not target or not target.startswith("/") or target.startswith("//"):
+    leading slash falls back to the console.
+
+    ``/\\host`` is rejected on the same grounds and for a reason worth stating:
+    per the WHATWG URL spec's relative-slash state a special-scheme relative
+    URL beginning ``/\\`` enters special-authority-ignore-slashes, so a browser
+    resolves ``/\\evil.com`` against ``http://console/`` as
+    ``http://evil.com/``. What saves it today is outside this function —
+    Starlette's ``RedirectResponse`` percent-encodes the backslash because it
+    isn't in ``quote``'s safe set — and a guarantee this docstring makes should
+    not live in a third-party quoting table one non-redirect use site away from
+    not holding."""
+    if not target or not target.startswith("/") or target[1:2] in ("/", "\\"):
         return _DEFAULT_NEXT
     return target
 
@@ -318,7 +461,7 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
         reordering can't step around it (CodeQL py/cookie-injection)."""
         response.set_cookie(
             COOKIE_NAME,
-            token if role == "full" else viewer.token,
+            token if role == ROLE_FULL else viewer.token,
             httponly=True,
             samesite="strict",
             path="/",
@@ -344,7 +487,9 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
         presented = request.query_params.get("token")
         if presented is None:
             try:
-                body = await request.json()
+                body = json.loads(await read_body(request))
+            except BodyTooLarge as e:
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
             except Exception:
                 body = None
             if isinstance(body, dict) and isinstance(body.get("token"), str):
@@ -355,6 +500,22 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
         ok = JSONResponse({"ok": True, "role": role})
         _set_cookie(ok, role)
         return ok
+
+
+def _register_role_handler(app: Any) -> None:
+    """Turn :class:`RoleRequired` into the ``403`` it means.
+
+    Registered here rather than in :mod:`web_api` so the exception and the
+    status it answers with are owned by one module: a route in any other
+    module can call :func:`require_full` and get the same refusal, with the
+    same wording, without knowing how it is rendered."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse, Response
+
+    def _refused(request: Request, exc: Exception) -> Response:
+        return JSONResponse({"detail": str(exc)}, status_code=403)
+
+    app.add_exception_handler(RoleRequired, _refused)
 
 
 def install_auth(
@@ -380,7 +541,14 @@ def install_auth(
     reachable with no token at all — the appliance setup form
     (:mod:`c64cast.control.setup_api`) is the one user today, threaded through
     :func:`c64cast.control.control_plane.build_app_for_registry`. Defaults to
-    :data:`PUBLIC_PATHS` (just the login exchange), never narrower than that."""
+    :data:`PUBLIC_PATHS` (just the login exchange), never narrower than that —
+    the floor is :class:`TokenAuthMiddleware`'s, which owns the invariant.
+
+    A token shorter than :data:`MIN_TOKEN_LENGTH` is warned about rather than
+    refused. Neither login route nor the middleware throttles attempts, so a
+    short operator-set token is a console that falls to a few thousand
+    unanswered requests — but refusing one outright would break runs that work
+    today, which isn't a trade this can make for the user."""
     viewer = (
         viewer_token
         if isinstance(viewer_token, ViewerCredential)
@@ -392,7 +560,15 @@ def install_auth(
         return False
     if viewer.token and hmac.compare_digest(token.encode("utf-8"), viewer.token.encode("utf-8")):
         raise ValueError("viewer_token must differ from token")
+    if len(token) < MIN_TOKEN_LENGTH:
+        log.warning(
+            "the configured token is %d characters; %d or more is the floor this "
+            "project assumes, and nothing here throttles login attempts",
+            len(token),
+            MIN_TOKEN_LENGTH,
+        )
     _register_login_routes(app, token=token, viewer=viewer)
+    _register_role_handler(app)
     app.add_middleware(
         TokenAuthMiddleware, token=token, viewer_token=viewer, public_paths=public_paths
     )

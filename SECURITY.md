@@ -64,6 +64,22 @@ The web console's token works the same way and is supplied the same way
 "off": that surface has no history to preserve and it owns the hardware, so a
 host with no token configured mints one rather than binding open.
 
+**If you put a reverse proxy in front of this, suppress query strings from its
+access log.** A token legitimately rides in a URL in three places — the login
+link the daemon prints at startup, the read-only link the console hands out,
+and the `?token=` escape hatch for `curl` — because a browser can set no
+headers on a plain navigation or a WebSocket handshake. c64cast's own logging
+handles that (uvicorn runs with `access_log=False`, and the log the console
+shows redacts on the way in), but nothing it does can reach nginx's
+`$request_uri`. Nothing here needs a proxy; this is for the deployments that
+add one anyway.
+
+**A token you set by hand should be long.** Neither login route nor the gate
+throttles attempts, and nothing refuses a short token — `[web].token = "c64"`
+is a console that falls to a few thousand unanswered requests. A generated one
+is 32 URL-safe bytes; c64cast warns below 16 characters and otherwise honors
+what you configured.
+
 **The setup window's exposure is bounded by construction, not by an allowlist.**
 `setup_gate.py` blocks every route the app already knows about except the
 console's own static assets and `/api/setup` itself — nothing that starts

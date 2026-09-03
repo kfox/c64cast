@@ -822,8 +822,8 @@ def build_daemon_app(
     viewer_token: str | ViewerCredential = "",
     log_buffer: SessionLogBuffer | None = None,
     store: config_store.ConfigStore | None = None,
-    library: console_library.ConsoleLibrary | None = None,
-    media: media_store.MediaStore | None = None,
+    library: console_library.ConsoleLibrary,
+    media: media_store.MediaStore,
     screen_fps: float = 10.0,
     setup_pending: bool = False,
     token_settable: bool = True,
@@ -847,7 +847,14 @@ def build_daemon_app(
     off, so there is nothing left here for a stray request to reach.
     ``token_settable`` rides along to that API: only :func:`run_daemon` knows
     whether ``token`` was generated (and so can be replaced by the form) or
-    named by configuration (and so cannot)."""
+    named by configuration (and so cannot).
+
+    ``library`` and ``media`` are required, because both constructors resolve
+    into the data dir and write there: a ``None`` default meant a caller who
+    forgot one got a component quietly writing under
+    ``~/.local/share/c64cast`` instead of a ``TypeError``. :func:`run_daemon`
+    builds them where it builds ``store``, which is the one place that owns
+    the data dir."""
     from c64cast.control.control_plane import build_app_for_registry
     from c64cast.control.setup_api import register_setup_routes
     from c64cast.control.setup_gate import SETUP_PAGE_PATH, SETUP_PATH, install_setup_gate
@@ -1026,6 +1033,7 @@ def run_daemon(
     factory = make_request_factory(load, config_path=config_path)
     store = config_store.ConfigStore(web_cfg.config_roots)
     media = media_store.MediaStore(web_cfg.media_read_write, web_cfg.media_read_only)
+    library = console_library.ConsoleLibrary()
 
     shutdown = threading.Event()
     _on_stop_signal = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
@@ -1070,6 +1078,7 @@ def run_daemon(
                     screen_fps=web_cfg.screen_fps,
                     log_buffer=log_buffer,
                     store=store,
+                    library=library,
                     media=media,
                     setup_pending=pending,
                     token_settable=token_settable,

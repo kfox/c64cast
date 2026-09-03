@@ -47,6 +47,7 @@ make FastAPI mis-read it as a query param and skip the WebSocket injection.
 """
 
 import asyncio
+import contextlib
 import logging
 import math
 import time
@@ -57,6 +58,7 @@ from typing import Any
 from c64cast.app.playlist import Playlist
 
 from . import live_tune
+from .auth import SCOPE_ROLE_KEY, is_viewer
 from .performance import ClipEvent
 from .transport import TransportEvent
 
@@ -94,6 +96,72 @@ TRANSPORT_VERBS = (
 # count-in readout feel live. ~3/sec is trivially cheap (one small JSON to a
 # couple of phones) and nowhere near any I/O ceiling.
 _PUSH_INTERVAL_S = 0.35
+
+
+class SocketReader:
+    """One long-lived ``receive_json`` on a console socket, polled per push.
+
+    Shared with :func:`c64cast.control.web_api.register_web_routes`'s
+    ``/api/ws``, which is the same push-then-poll loop over the same payload.
+
+    **The receive is never cancelled.**
+    ``asyncio.wait_for(websocket.receive_json(), timeout=…)`` cancels it every
+    cycle, and that loses frames: ``receive_json`` awaits uvicorn's queue and
+    then ``json.loads`` with no ``await`` between them, so a frame delivered in
+    the same event-loop turn the timeout fires in finds ``_fut_waiter`` already
+    resolved, gets ``_must_cancel`` set, and is thrown ``CancelledError``
+    *after* the message has been popped off the queue. The frame is consumed
+    and never returned, and ``except TimeoutError: continue`` made the loss
+    silent — a pad tap or a ``{"session": "stop"}`` that does nothing, with
+    nothing logged, on a host that owns live hardware. So the task is created
+    once, waited on with a timeout, and left **pending** across a timeout for
+    the next cycle; :meth:`close` is the one place a cancel is safe, because
+    the loop is over by then.
+
+    A frame that does not decode is reported as ``None`` rather than raised,
+    which the callers' existing ``isinstance(msg, Mapping)`` guard already
+    drops. That is the other half of this class's job: one stray frame used to
+    close the console's only feed (see :meth:`poll`)."""
+
+    def __init__(self, websocket: Any, *, label: str) -> None:
+        self._ws = websocket
+        self._label = label
+        self._task: Any = None
+
+    async def poll(self, timeout: float) -> tuple[bool, Any]:
+        """``(arrived, frame)``, or ``(False, None)`` if nothing came in time.
+
+        ``arrived`` with a ``None`` frame is a frame that did not decode: a text
+        frame that isn't JSON raises ``JSONDecodeError`` and a **binary** one
+        raises ``KeyError("text")``, neither of which is a
+        ``WebSocketDisconnect``. Both used to reach the loop's outer handler and
+        tear down the socket — the sole channel for session state and log
+        lines — on one stray frame from a console build sending a ping, a stale
+        bundle, or a ``wscat`` probe, and the decode happens *before* the
+        read-only check, so a viewer could do it too. Compare ``web_api._body``,
+        which maps exactly this input to a 400 and keeps serving.
+
+        A disconnect still propagates, which is what ends the loop."""
+        if self._task is None:
+            self._task = asyncio.create_task(self._ws.receive_json())
+        done, _ = await asyncio.wait({self._task}, timeout=timeout)
+        if not done:
+            return False, None
+        task, self._task = self._task, None
+        try:
+            return True, task.result()
+        except (ValueError, KeyError, TypeError):
+            log.debug("%s: ignoring an unparseable frame", self._label)
+            return True, None
+
+    async def close(self) -> None:
+        """Cancel a still-pending receive on the way out of the loop."""
+        if self._task is None:
+            return
+        task, self._task = self._task, None
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
 
 
 def _tempo_dict(pl: Playlist) -> dict[str, Any]:
@@ -1242,7 +1310,7 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
         runs without a token). The page greys itself out for a ``viewer``
         rather than letting taps fail silently against the 403 the auth
         middleware answers writes with."""
-        state["role"] = scope.get("c64cast_role")
+        state["role"] = scope.get(SCOPE_ROLE_KEY)
         return state
 
     @app.get("/perf")
@@ -1265,7 +1333,8 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
         ws_clients.add(websocket)
         # The one gap the auth middleware can't cover: a socket is a single
         # `GET` handshake, so inbound command frames have to be dropped here.
-        read_only = websocket.scope.get("c64cast_role") == "viewer"
+        read_only = is_viewer(websocket.scope)
+        reader = SocketReader(websocket, label="perf console")
         try:
             # Push a fresh snapshot on a fixed cadence; the client extrapolates the
             # beat pulse locally in between. A receive with timeout lets a client
@@ -1281,15 +1350,18 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
                     log.exception("performance console: could not build a state frame")
                     break
                 await websocket.send_json(frame)
-                try:
-                    msg = await asyncio.wait_for(websocket.receive_json(), timeout=_PUSH_INTERVAL_S)
-                except TimeoutError:
-                    continue
-                if isinstance(msg, Mapping) and not read_only:
+                arrived, msg = await reader.poll(_PUSH_INTERVAL_S)
+                if arrived and isinstance(msg, Mapping) and not read_only:
                     bridge.apply(msg)
         except WebSocketDisconnect:
             pass
-        except Exception:
+        except (ConnectionError, RuntimeError):
+            # An abrupt client close surfaces as a transport error rather than
+            # a `WebSocketDisconnect`, so these stay at debug — but everything
+            # else below is a socket nobody asked to close.
             log.debug("perf console: websocket closed", exc_info=True)
+        except Exception:
+            log.exception("perf console: websocket closed unexpectedly")
         finally:
+            await reader.close()
             ws_clients.discard(websocket)

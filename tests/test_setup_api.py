@@ -78,6 +78,31 @@ class WriteHelpersTest(_TmpRootsTestCase):
         self.assertEqual(merged.hardware.backend, "teensyrom")
         self.assertEqual(merged.video.device, "3")
 
+    def test_write_connection_keeps_the_secrets_the_file_already_carried(self):
+        # The critical defect this unit closed. `_write_connection` seeds a
+        # Config from the machine layer (secrets included) and rewrites the
+        # same file; `config_serialize.dumps` suppresses every SECRET_FIELDS
+        # value, so the rewrite used to come back without the `dma_password` a
+        # password-protected U64 needs and without the `[web] token` pin
+        # `token_settable` exists to protect — silently, on an appliance whose
+        # POST is unauthenticated while the setup window is open.
+        from c64cast.app.connect import parse_connection_uri
+        from c64cast.control.setup_api import _write_connection
+
+        paths.settings_path().parent.mkdir(parents=True, exist_ok=True)
+        paths.settings_path().write_text(
+            '[ultimate64]\ndma_password = "hunter2"\n\n[web]\ntoken = "a-pinned-web-token"\n',
+            encoding="utf-8",
+        )
+
+        # Not the default host, or `minimal=True` would have nothing to write.
+        _write_connection(parse_connection_uri("u64://10.0.0.9"))
+
+        text = paths.settings_path().read_text(encoding="utf-8")
+        self.assertIn('dma_password = "hunter2"', text)
+        self.assertIn('token = "a-pinned-web-token"', text)
+        self.assertIn("10.0.0.9", text)
+
     def test_write_token_persists_0600(self):
         from c64cast.control.setup_api import _write_token
 
@@ -203,6 +228,90 @@ class RouteTest(_TmpRootsTestCase):
         client = self._client()
         resp = client.post("/api/setup", content=b"not json")
         self.assertEqual(resp.status_code, 400)
+
+    def test_an_oversized_body_is_refused_before_it_is_buffered(self):
+        # Unauthenticated while the window is open, so `request.json()`'s
+        # unbounded accumulation was a remote memory exhaustion on a box with
+        # 1-2 GB — taking down a process that owns live hardware.
+        from c64cast.control import auth
+
+        client = self._client()
+        with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
+            resp = client.post("/api/setup", content=b"x" * 512)
+        self.assertEqual(resp.status_code, 413)
+        self.assertFalse(paths.setup_state_path().is_file())
+
+    def test_a_whitespace_padded_token_round_trips_to_the_link_it_hands_back(self):
+        # `_write_token` persisted what it was given and `serve._generated_token`
+        # reads that file back stripped, so a token pasted with a trailing
+        # space went out in `login_url` with the space and came back after the
+        # restart without it: the one link an appliance admin was handed
+        # answered 401 forever, with no other way to learn the real token.
+        chosen = "z" * MIN_TOKEN_LENGTH
+        client = self._client()
+        body = client.post(
+            "/api/setup", json={"connection": "u64://192.168.2.64", "token": f"  {chosen}\t"}
+        ).json()
+        self.assertEqual(paths.web_token_path().read_text().strip(), chosen)
+        self.assertEqual(body["login_url"], login_url(chosen))
+
+    def test_a_whitespace_only_token_keeps_the_hosts_own(self):
+        # 16 spaces passed MIN_TOKEN_LENGTH, stripped to "" on read, and made
+        # the host mint a brand-new credential nobody had ever seen — with the
+        # setup window already closed by the completion marker, so recovery
+        # needed shell access or a reflash.
+        client = self._client(token="the-current-token")
+        resp = client.post(
+            "/api/setup", json={"connection": "u64://192.168.2.64", "token": " " * 20}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(paths.web_token_path().is_file())
+        self.assertEqual(resp.json()["login_url"], login_url("the-current-token"))
+
+    def test_a_multiline_token_is_refused(self):
+        # `_write_token` appends its own newline, so the file's shape would be
+        # ambiguous.
+        client = self._client()
+        resp = client.post(
+            "/api/setup",
+            json={"connection": "u64://192.168.2.64", "token": "a" * 10 + "\n" + "b" * 10},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("single line", resp.json()["error"])
+        self.assertFalse(paths.setup_state_path().is_file())
+
+    def test_a_failed_write_answers_with_the_path_and_leaves_setup_pending(self):
+        # The admin's only interface is this form, so an OSError used to leave
+        # them with FastAPI's bare 500 and no next step.
+        client = self._client()
+        boom = OSError(13, "Permission denied")
+        boom.filename = "/nowhere/settings.toml"
+        with mock.patch("c64cast.control.setup_api._write_connection", side_effect=boom):
+            with self.assertLogs("c64cast.control.setup_api", level="ERROR"):
+                resp = client.post("/api/setup", json={"connection": "u64://192.168.2.64"})
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("/nowhere/settings.toml", resp.json()["error"])
+        self.assertIn("Permission denied", resp.json()["error"])
+        self.assertFalse(paths.setup_state_path().is_file())
+        self.assertEqual(self.completed, [])
+
+    def test_the_connection_lands_before_the_token_is_replaced(self):
+        # Reordered: the token used to be written first, so a failure writing
+        # the connection left the host's credential already replaced by one
+        # the 500 never handed back.
+        client = self._client()
+        with mock.patch(
+            "c64cast.control.setup_api._write_connection", side_effect=OSError("no disk")
+        ):
+            with self.assertLogs("c64cast.control.setup_api", level="ERROR"):
+                client.post(
+                    "/api/setup",
+                    json={
+                        "connection": "u64://192.168.2.64",
+                        "token": "q" * MIN_TOKEN_LENGTH,
+                    },
+                )
+        self.assertFalse(paths.web_token_path().is_file())
 
 
 if __name__ == "__main__":

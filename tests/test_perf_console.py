@@ -27,6 +27,7 @@ from c64cast.control.perf_console import (
     _PERF_HTML,
     TRANSPORT_VERBS,
     PerfBridge,
+    SocketReader,
     _beats_remaining,
     _system_state,
 )
@@ -778,6 +779,75 @@ class PerfIdleTest(unittest.TestCase):
     def test_ws_pushes_the_empty_state(self):
         with self._client().websocket_connect("/perf/ws") as ws:
             self.assertEqual(ws.receive_json()["systems"], [])
+
+
+class SocketReaderTest(unittest.TestCase):
+    """The inbound half of both console sockets, driven with a fake WebSocket.
+
+    Shared by `/perf/ws` and `web_api`'s `/api/ws`, which is why it is a class
+    rather than the `asyncio.wait_for` one-liner both used to spell
+    separately."""
+
+    class _Socket:
+        """Hands out queued frames, then blocks forever — the shape a real
+        socket has between a client's messages, and the shape the old
+        `wait_for` cancelled into."""
+
+        def __init__(self, frames: list[Any]) -> None:
+            self.frames = list(frames)
+            self.receives = 0
+
+        async def receive_json(self) -> Any:
+            import asyncio
+
+            self.receives += 1
+            if not self.frames:
+                await asyncio.Event().wait()
+            frame = self.frames.pop(0)
+            if isinstance(frame, BaseException):
+                raise frame
+            return frame
+
+    def _drive(self, socket: Any, polls: int, timeout: float = 0.05) -> list[Any]:
+        import asyncio
+
+        async def run() -> list[Any]:
+            reader = SocketReader(socket, label="test console")
+            try:
+                return [await reader.poll(timeout) for _ in range(polls)]
+            finally:
+                await reader.close()
+
+        return asyncio.run(run())
+
+    def test_a_frame_arrives_and_the_next_poll_waits_for_the_next_one(self):
+        socket = self._Socket([{"action": "tap"}])
+        self.assertEqual(self._drive(socket, 2), [(True, {"action": "tap"}), (False, None)])
+
+    def test_a_timeout_leaves_the_receive_pending_rather_than_cancelling_it(self):
+        # The whole point: cancelling a receive that has already popped a
+        # message off uvicorn's queue consumes the frame and never returns it.
+        # One `receive_json` call across many polls is what proves the task
+        # survives a timeout.
+        socket = self._Socket([])
+        self.assertEqual(self._drive(socket, 4), [(False, None)] * 4)
+        self.assertEqual(socket.receives, 1)
+
+    def test_an_undecodable_frame_is_reported_as_none_rather_than_raised(self):
+        # A text frame that isn't JSON raises JSONDecodeError; a binary one
+        # raises KeyError("text"). Both used to close the console's only feed.
+        for boom in (ValueError("not json"), KeyError("text")):
+            with self.subTest(boom=type(boom).__name__):
+                socket = self._Socket([boom, {"action": "tap"}])
+                self.assertEqual(self._drive(socket, 2), [(True, None), (True, {"action": "tap"})])
+
+    def test_a_disconnect_still_propagates(self):
+        class _Gone(Exception):
+            pass
+
+        socket = self._Socket([_Gone()])
+        with self.assertRaises(_Gone):
+            self._drive(socket, 1)
 
 
 if __name__ == "__main__":
