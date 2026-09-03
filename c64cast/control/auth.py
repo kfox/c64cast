@@ -155,6 +155,12 @@ class BodyTooLarge(Exception):
     """A request body past the cap — refused, not buffered (:func:`read_body`)."""
 
 
+# What a refused body is told. The exception's own message names the cap and the
+# size, which is operator diagnostics; the two routes that can raise this are
+# reachable without a credential, so they log that detail and answer with this.
+BODY_TOO_LARGE_ERROR = "request body too large"
+
+
 class ViewerCredential:
     """The read-only token, which may not exist yet.
 
@@ -489,7 +495,10 @@ def _register_login_routes(app: Any, *, token: str, viewer: ViewerCredential) ->
             try:
                 body = json.loads(await read_body(request))
             except BodyTooLarge as e:
-                return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
+                # The detail (which cap, how big) goes to the operator's log,
+                # not to an unauthenticated caller who has no use for it.
+                log.debug("login body refused: %s", e)
+                return JSONResponse({"ok": False, "error": BODY_TOO_LARGE_ERROR}, status_code=413)
             except Exception:
                 body = None
             if isinstance(body, dict) and isinstance(body.get("token"), str):

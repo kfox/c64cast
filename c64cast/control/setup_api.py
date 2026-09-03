@@ -60,7 +60,7 @@ from c64cast.app.connect import (
     parse_connection_uri,
 )
 
-from .auth import LOGIN_PATH, MIN_TOKEN_LENGTH, BodyTooLarge, read_body
+from .auth import BODY_TOO_LARGE_ERROR, LOGIN_PATH, MIN_TOKEN_LENGTH, BodyTooLarge, read_body
 from .transport import atomic_write_text
 from .web_static import landing_path
 
@@ -193,8 +193,11 @@ def register_setup_routes(
             body = json.loads(await read_body(request))
         except BodyTooLarge as e:
             # This route is unauthenticated while the window is open, so the
-            # body has to be refused before it is resident (see `read_body`).
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
+            # body has to be refused before it is resident (see `read_body`),
+            # and the cap it tripped is the operator's business, not the
+            # caller's.
+            log.debug("setup body refused: %s", e)
+            return JSONResponse({"ok": False, "error": BODY_TOO_LARGE_ERROR}, status_code=413)
         except Exception:
             body = None
         try:

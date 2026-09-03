@@ -239,6 +239,10 @@ class RouteTest(_TmpRootsTestCase):
         with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
             resp = client.post("/api/setup", content=b"x" * 512)
         self.assertEqual(resp.status_code, 413)
+        # The cap it tripped is operator diagnostics, not something an
+        # unauthenticated caller is told.
+        self.assertEqual(resp.json()["error"], auth.BODY_TOO_LARGE_ERROR)
+        self.assertNotIn("64", resp.json()["error"])
         self.assertFalse(paths.setup_state_path().is_file())
 
     def test_a_whitespace_padded_token_round_trips_to_the_link_it_hands_back(self):

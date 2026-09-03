@@ -506,6 +506,10 @@ class LoginTest(unittest.TestCase):
         with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
             r = TestClient(app).post("/api/login", content=b"x" * 512)
         self.assertEqual(r.status_code, 413)
+        # The cap it tripped is operator diagnostics, not something an
+        # unauthenticated caller is told.
+        self.assertEqual(r.json()["error"], auth.BODY_TOO_LARGE_ERROR)
+        self.assertNotIn("64", r.json()["error"])
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
