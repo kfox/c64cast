@@ -12,6 +12,7 @@ still leaves fd 2 exactly as the test found it.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import unittest
 from unittest import mock
@@ -34,13 +35,19 @@ class _Fd2PipeTestCase(unittest.TestCase):
 
     def read_all(self) -> bytes:
         """Everything written to fd 2 so far, without blocking past it."""
-        os.set_blocking(self.read_fd, False)
+        if sys.platform != "win32":
+            os.set_blocking(self.read_fd, False)
         try:
             return os.read(self.read_fd, 65536)
         except BlockingIOError:
             return b""
 
 
+@unittest.skipIf(
+    os.name == "nt",
+    "os.set_blocking has no Windows implementation, so this fixture's non-blocking "
+    "pipe read can't be made to work there",
+)
 class SilenceNativeStderrTest(_Fd2PipeTestCase):
     def test_writes_inside_the_block_are_silenced(self):
         with silence_native_stderr():

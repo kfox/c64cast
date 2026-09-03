@@ -415,7 +415,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   descriptors are released on every failure path. New `tests/test_native_io.py`
   — previously nothing imported this module at all — pins silencing,
   restoration, the overlapping-threads case, and a 200-cycle no-fd-growth
-  check.
+  check; it skips on Windows, where `os.set_blocking` (the fixture's way of
+  draining fd 2's pipe without blocking) doesn't exist.
 - `_midi.open_input_port`'s only guard against a missing `midi` extra was a
   bare `assert mido is not None`, stripped entirely under `python -O` and
   otherwise surfacing as `AttributeError: 'NoneType' object has no attribute
@@ -507,12 +508,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `PureWindowsPath('D:/media') / 'C:evil.prg'` discards the left operand
   entirely, landing a drive-relative name wherever the process happened to
   be on that drive. `receive` now suppresses `OSError` from its own cleanup
-  so it can never replace the failure that triggered it, re-validates the
-  final name and re-checks `directory / final_name` against the root before
-  `os.replace`, and wraps a commit-time `OSError`/`ValueError` as
-  `MediaStoreError`; `_reject_unless_bare_filename` refuses a drive-relative
-  name (`ntpath.splitdrive`) and an embedded NUL outright. Every aborted or
-  committed upload is now logged, where before this module's one
+  so it can never replace the failure that triggered it, and re-checks
+  `directory / final_name` against the root before `os.replace`;
+  `_unique_name` now rejects a `-2`/`-3` candidate that would cross
+  `_MAX_NAME_BYTES` itself (`MediaNameRejected`, before `os.replace` ever
+  sees it) rather than leaving that to a raw, host-dependent `ENAMETOOLONG`,
+  and `_reject_unless_bare_filename` refuses a drive-relative name
+  (`ntpath.splitdrive`) and an embedded NUL outright. A commit-time
+  `OSError`/`ValueError` that isn't one of those refusals (a full disk mid-
+  `os.replace`, say) is still wrapped as `MediaStoreError`. Every aborted or
+  committed upload is now logged — `%r`, not `%s`, since the name comes
+  straight from an untrusted upload — where before this module's one
   long-running, network-reachable write left no trace of a failure anywhere
   in `--log-file`.
 - `MediaStore.index`'s `q`-filtered search (`media_store.py`) applied its

@@ -268,13 +268,24 @@ def _unique_name(directory: Path, name: str) -> tuple[str, bool]:
     same scheme `config_store._label_for` uses to disambiguate a root label —
     one way in this repository to say "that name was taken".
 
+    An incoming name already at `_MAX_NAME_BYTES` is only lengthened by the
+    `-2`/`-3`/… suffix, so `taken` rejects any candidate that would cross the
+    cap rather than handing it to `os.replace` for a raw, unmapped
+    `ENAMETOOLONG`.
+
     Checked here and used immediately by the caller's `os.replace` — the
     remaining TOCTOU window is the same one `ConfigStore.create` already
     accepts, and `os.replace`'s atomicity means the loser of a genuine race
     replaces rather than corrupts."""
+
+    def taken(candidate: str) -> bool:
+        if len(candidate.encode("utf-8")) > _MAX_NAME_BYTES:
+            raise MediaNameRejected(f"{candidate!r} is longer than {_MAX_NAME_BYTES} bytes")
+        return (directory / candidate).exists()
+
     stem, suffix = Path(name).stem, Path(name).suffix
     try:
-        return disambiguate(stem, suffix, lambda c: (directory / c).exists(), _MAX_RENAME_ATTEMPTS)
+        return disambiguate(stem, suffix, taken, _MAX_RENAME_ATTEMPTS)
     except LookupError as e:
         raise MediaNameRejected(str(e)) from e
 
@@ -459,7 +470,11 @@ class MediaStore:
                 os.unlink(tmp_path)
             log.warning(
                 "web console: upload of %r aborted after %d bytes (%s)",
-                name,
+                # `%r` rather than `%s` because `name` is an untrusted upload
+                # filename that `_reject_unless_bare_filename` never rejects
+                # for an embedded newline — `repr` cannot emit one, so the
+                # waiver is for CodeQL modeling neither as a sanitizer.
+                name,  # codeql[py/log-injection]
                 upload.bytes_written,
                 type(exc).__name__,
             )
@@ -495,9 +510,13 @@ class MediaStore:
             "renamed": renamed,
         }
         log.info(
-            "web console: received %r as %s (kind=%s, %d bytes%s)",
-            name,
-            final_name,
+            "web console: received %r as %r (kind=%s, %d bytes%s)",
+            # Both `%r`, and both waived for the same reason as `abort`'s log
+            # line above: `name` is the untrusted upload filename itself, and
+            # `final_name` inherits whatever `name` put in its stem —
+            # `disambiguate` only ever appends a numeric `-N` suffix to it.
+            name,  # codeql[py/log-injection]
+            final_name,  # codeql[py/log-injection]
             kind,
             upload.bytes_written,
             ", renamed" if renamed else "",
