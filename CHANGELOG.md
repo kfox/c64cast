@@ -101,8 +101,188 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 - `auth._safe_next` rejected `//host` but not `/\host`, which a browser also
   resolves offsite; what kept the login redirect on-site was Starlette's
   percent-encoding rather than the validator's own check.
+- **A quoted `"false"` in a TOML config turned a security gate on.**
+  `[control] allow_unauthenticated = "false"` and `[web] setup_wizard =
+  "false"` stored the *string* `"false"`, and every consumer of a bool field
+  is a plain truthiness test — so both read as **on**, which for
+  `allow_unauthenticated` short-circuits the refusal that stops an
+  unauthenticated control plane binding to the LAN, and for `setup_wizard`
+  serves the one-time *unauthenticated* setup form (whoever reaches it first
+  picks the connection target and the console token) instead of the
+  token-gated app. A field annotated exactly `bool` now refuses a non-bool
+  value, naming the section and key; the tri-states (`bool | str`, e.g.
+  `[video].use_reu_staged`) are untouched.
+- **A parse error in a config file copied the offending line's secret into
+  the log.** `_format_toml_error` quotes the source line the TOML parser
+  choked on, cli.py logs the resulting `ConfigError` at error level, and
+  `--log-file` mirrors it to disk — so a syntax error anywhere on a
+  `dma_password = "…"` or `token = "…"` line wrote the credential to a file
+  that outlives the run, in the one situation where the log gets pasted into
+  an issue. Such a line is now redacted (the position and the parser's
+  message carry the diagnostic value; the value does not).
+- **Refusing a credential-bearing connection target logged the
+  credential.** `connect._reject_userinfo` refuses a `user:pass@host` target
+  precisely so a secret cannot reach `[ultimate64].url`, from which
+  `--save-settings` writes it to `settings.toml` and echoes it to stdout —
+  and then interpolated the whole target, credential included, into the
+  error. Every parse failure now reports the target through
+  `connect.redact_target`, which masks userinfo and secret-shaped query
+  values while keeping the host, and `[ultimate64].url`'s own messages and
+  its debug line use the same spelling.
+- **A bare host in `[ultimate64].url` skipped URI validation entirely.** A
+  value with no `://` was prefixed with `http://` and returned without ever
+  reaching `connect.parse_connection_uri`, so `url =
+  "admin:hunter2@192.168.2.64"` was accepted verbatim and handed to
+  `requests` as Basic auth — the same `user:pass@` refusal that the
+  scheme-carrying spelling gets, reached from a different door. The value is
+  normalized first and validated always, which also closes the sibling
+  bypass: `url = "192.168.2.64?dma_port=9999"` was passing a query param
+  straight into the base URL that this field's own help says cannot carry
+  one.
 
 ### Fixed
+
+- **The ensemble master silently discarded six of its own sections.**
+  `load_master` applied the master TOML through a hand-written tuple of
+  `(section, dataclass)` pairs instead of the shared apply loop, and the two
+  had drifted: `[hardware]`, `[teensyrom]`, `[vision]`, `[dsp]`,
+  `[audio_features]` and `[wled]` never reached `_apply_section` at all, so
+  they produced neither an applied value nor an unknown-key record — no
+  warning, no `--doctor` row, nothing. `[hardware]` and `[teensyrom]` are
+  *listed as cascading*, so the cascade dutifully ran over a
+  `defaults.hardware` nothing had populated: a master `[hardware] backend =
+  "teensyrom"` read as nothing while every system in the wall quietly dialed
+  the default Ultimate URL. The tuple also ran 3 of the 10 load-time
+  validators, so a master `[ultimate64].sid_panning = [99]` was copied into
+  every system and failed mid-show when the mixer was configured — exactly
+  what that validator's docstring says it exists to prevent. The master now
+  goes through `_apply_toml_sections` like any other file, so it inherits
+  every validator, the unknown-key hints and the `[color]` handling.
+  `[hardware]`, `[teensyrom]`, `[dsp]`, `[audio_features]`, `[vision]` and
+  `[wled]` cascade from a master for the first time.
+- A section's cascade behavior is now spelled out in exactly one place. The
+  cascading list and a not-cascading list (each entry with its reason)
+  together classify every scalar section plus `[color]` exactly once, and a
+  test asserts the partition *and* that every section listed as cascading
+  really does receive a master value — the check that would have caught the
+  drift above. A master section that reaches nothing (today `[video]` alone)
+  is now called out with a warning instead of being dropped in silence.
+- The master cascade shared mutable values by reference: `hue_corrections`,
+  `performance.clips`, `host_sid_chips` and `sid_panning`/`sid_volume` were
+  handed to every inheriting system as the *same* list or dict object as the
+  master's and each other's, so one system mutating one in place would have
+  mutated every system's, invisibly at the config layer. They are deep-copied
+  now.
+- `C64CAST_CONTROL_TOKEN` and `C64CAST_CONTROL_VIEWER_TOKEN` were dead in
+  ensemble mode. The plane that binds reads the master's `[control]`, an
+  object no `merge_cli` call ever touches, so the env fold landed on N
+  per-system configs nothing reads while the plane came up on whatever token
+  the shared master file declared — the opposite of what the field's own help
+  promises. An operator who rotated the real token into the environment was
+  running on the placeholder anyone with repo access had already read.
+- An exported-but-empty `C64CAST_CONTROL_TOKEN` /
+  `C64CAST_CONTROL_VIEWER_TOKEN` / `C64CAST_DMA_PASSWORD` blanked a
+  configured value. `VAR=$UNSET_OTHER` in a service unit or `docker -e VAR`
+  exports a string, not nothing, so the fold overwrote the token the config
+  had legitimately set. Empty now counts as unset; to run with no token,
+  leave the field empty and the variable unset.
+- `[color].hue_corrections` concatenated across layers instead of overriding.
+  Machine settings declaring band X plus a project TOML declaring band Y gave
+  `[X, Y]`, with no way for the project file to replace, reorder or remove X —
+  against the documented precedence, and against `scene_color`, which has
+  always treated the same field as an all-or-nothing replace. It also made the
+  `load(dumps(cfg)) == cfg` round trip lossy (a list-of-tables is written whole
+  or not at all, so `[X, Y]` reloaded as `[X, X, Y]`). A layer that declares
+  the key now replaces the list; one that stays silent inherits it.
+  `hue_corrections_replace_defaults` keeps its own separate meaning against the
+  built-in purple rescue.
+- A CLI flag or an env var wrote past every load-time validator. All ten fired
+  at parse time, one layer *below* the last layer that writes, so `--system
+  nonsense` or a blank `--audio-device` reached the run unchecked and failed
+  mid-show. `merge_cli` re-runs the battery on the final config.
+- `choices` metadata is enforced generically for the scalar config sections,
+  rather than by a hand-written validator per field. The fields nobody had
+  written one for failed *open*, and `[ultimate64].sid_video_mode` failed open
+  into a machine retiming plus an HDMI output-mode switch (it is read as
+  `!= "off"`), while `[hardware].host_sid_model`, `[teensyrom].storage` and
+  `[ultimate64].hdmi_scan_resolution` silently did nothing. Two documented
+  exemptions stay: `sid_play_rate` also takes a rate in Hz, and
+  `[ultimate64].system` is matched case-insensitively because the hardware
+  layer normalizes its case.
+- `resolve_recording_path` measured "the user named this file" against the
+  dataclass default rather than the machine-overlaid baseline every other
+  layering decision uses — so a `settings.toml` carrying `[recording].path`
+  made every system in an ensemble look explicit, skip the per-system stem,
+  and point N `cv2.VideoWriter`s at one file. That is the collision the
+  never-cascade entry exists to prevent, reached through the one layer that is
+  supposed to count as unset, and only `--doctor` caught it.
+- `[midi_control].cc_map_is_default` was settable from any TOML layer. It is
+  derived run state — set False only when a layer really authored a `cc_map` —
+  and writing it directly inverted the controller-profile merge with no
+  `cc_map` in sight, because the `internal` metadata hides a field from
+  `--describe`/the schema/the serializer but never gated the apply path. Fields
+  marked internal are now treated like unknown keys.
+- `[ultimate64].sid_panning = 0` and `sid_volume = 0` passed validation and
+  then silently auto-spread. Both validators opened with a truthiness guard
+  meant for the empty list, which also swallowed a falsy *scalar* — and 0 is a
+  meaningful value in both vocabularies (Center, and 0 dB), so a user asking
+  for centered got `[-3, +3]`, the opposite. The scalar `-3` spelling of the
+  same mistake was correctly rejected all along. `[hardware].host_sid_chips`
+  had the same guard.
+- Two `[[performance.clips]]` entries could claim one pad. The loader checked
+  `slot` uniqueness but only range-checked `pad`, and
+  `midi_control._add_clip_pad_mappings` skips a `(kind, number)` it has already
+  bound — so the second clip was simply unfirable, with no message. A repeat is
+  now refused, naming both slots. (A collision *across* systems at that call
+  site stays deliberate.)
+- A misspelled config *table* vanished without a diagnostic. Unknown *keys*
+  were only ever found inside tables the loader applies, so `[hardwear]` or
+  `[ultimate65]` produced nothing at all; a whole unrecognized table is now
+  collected like a stray key, with a "did you mean" of its own, and `--doctor`
+  renders it as a table rather than a key.
+- An all-generative playlist with `audio_source = "sid"` never got the
+  ensemble audio-contention warning. `_scene_contends_for_audio` claims to
+  mirror `Scene.competes_for_audio_lock()` and omitted `generative`, whose
+  SID arm builds a source with `wants_audio_lock = True` — so the exact
+  footgun that warning exists for shipped silently: the system idled whenever
+  another held the slot and the user was told nothing. The mirror is pinned by
+  a test now.
+- `machine_baseline()` logged stray machine-settings keys inline instead of
+  collecting them, so under `--doctor` one stray key produced both a bare
+  warning above the formatted report — the presentation the collect-then-present
+  split exists to avoid — and a report row, with the dedupe unable to help
+  because the escaping record never entered the list.
+- The machine-settings INFO line and its banned-table warning fired N+2 times
+  on an N-system ensemble (once per system, plus the master defaults and the
+  cascade baseline) — the same repetition the unknown-key dedupe exists to
+  collapse. Both are now logged once per file state, and the INFO line names
+  the tables the layer supplied instead of only a field count, because "(4
+  fields)" cannot tell an operator that this is the layer which turned a
+  network switch on.
+
+### Changed
+
+- Config field metadata corrections, all of which render into `--describe`, the
+  committed JSON Schema, the annotated example TOML and the web console:
+  `applies_to` now means scene types and nothing else (three `[color]` flicker
+  fields were passing *display-mode* names and two `[ultimate64]` fields a
+  *backend* name through the same key, which the first generic consumer would
+  have read as "matches no scene type"; those five say it in their help
+  instead, and a test pins the vocabulary); `[[scenes]].overlays` declares the
+  types that accept one, so `--describe scene:launcher`, the wizard and the
+  console stop offering a key the loader hard-rejects;
+  `[midi_control].cc_map`'s help builds its `action` list from the constant
+  the loader validates against, having fallen four actions behind it
+  (`tempo_tap`, `clip_launch`, `fx_toggle`, `osd.position`);
+  `[audio].sampler_sample_rate`'s help pointed at a 6.25 MHz reference clock
+  the code no longer divides by, contradicting its own sibling field and the
+  shipped default; `[[performance.clips]]`' help states the five defaults that
+  previously existed only inside the validator (`quantize` defaults to the
+  bar, not to the `"off"` its help listed first); `[web].viewer_token`'s help
+  says what the read-only tier can actually see; three more C64-color fields
+  declare the `c64color` vocabulary so the console offers swatches instead of
+  a blind text box; and two comments pointing at `config.resolve_*` resolvers
+  that live in `scene_factory` are requalified.
 
 - A command frame could be silently dropped from either console WebSocket.
   Both push loops wrapped `receive_json()` in `asyncio.wait_for`, which

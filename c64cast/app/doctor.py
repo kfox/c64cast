@@ -550,13 +550,17 @@ def _validate_unknown_keys(loaded: LoadResult) -> list[Diagnostic]:
     stale key from an older schema unbootable."""
     out: list[Diagnostic] = []
     for rec in loaded.unknown_keys:
-        subject = f"{rec.source}: [{rec.section}]" if rec.source else f"[{rec.section}]"
+        # An empty `section` means `key` names an unrecognized *table* — a
+        # whole misspelled or misplaced block, not one key inside a real one.
+        where = f"[{rec.section}]" if rec.section else "file root"
+        subject = f"{rec.source}: {where}" if rec.source else where
+        what = "key" if rec.section else "table"
         out.append(
             Diagnostic(
                 level="warn",
                 category="config",
                 subject=subject,
-                message=f"unknown key {rec.key!r} — ignored, this setting has no effect",
+                message=f"unknown {what} {rec.key!r} — ignored, this setting has no effect",
                 hint=rec.hint,
             )
         )

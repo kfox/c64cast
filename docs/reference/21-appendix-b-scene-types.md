@@ -17,7 +17,6 @@ These apply whatever the scene's `type` is. The per-type sections below list onl
 | **`type`**<br>*Type:* `str`<br>*Default:* `'webcam'` | Scene kind. Choices: `webcam`, `blank`, `video`, `waveform`, `midi`, `asid`, `slideshow`, `launcher`, `generative`, `wled`. |
 | **`name`**<br>*Type:* `str \| None`<br>*Default:* `None` | Display name (shown in interstitials/logs; ensemble match key). |
 | **`target_fps`**<br>*Type:* `float \| None`<br>*Default:* `None` | Per-scene frame-rate cap; unset = playlist default (60/50). Bitmap (hires/mhires) video/webcam/generative scenes default lower to stay under the DMA bus-halt ceiling: 20 fps while streaming digitized audio, else half rate (30/25). Generative and webcam scenes take that 20 fps cap in CHAR modes too whenever audio is on the 4-bit DAC — they repaint every tick (no dedup), so the frame writes contend with the audio ring for the DMA socket. Off-bus Ultimate Audio sampler playback keeps the high default. Waveform/midi/asid default to half rate too. *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
-| **`overlays`**<br>*Type:* `list[dict[str, Any]]`<br>*Default:* `[]` | List of overlay tables ([[scenes.overlays]]); see `--list-overlays`. |
 | **`orchestrate`**<br>*Type:* `bool`<br>*Default:* `False` | Ensemble: make this system the conductor and broadcast this scene to all others (requires name; ignored single-system). |
 | **`follower_only`**<br>*Type:* `bool`<br>*Default:* `False` | Ensemble: exclude from normal rotation; used only as a broadcast follower override (requires name; excludes orchestrate). |
 
@@ -27,6 +26,13 @@ Every type but `video` takes these as well.
 | Key | Description |
 |---|---|
 | **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
+
+Every type but `launcher` takes these as well.
+
+<!-- table: fields -->
+| Key | Description |
+|---|---|
+| **`overlays`**<br>*Type:* `list[dict[str, Any]]`<br>*Default:* `[]` | List of overlay tables ([[scenes.overlays]]); see `--list-overlays`. |
 
 ## `asid`
 

@@ -18,11 +18,13 @@ import difflib
 import functools
 import logging
 import os
+import pathlib
 import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from c64cast._redact import redact_secrets
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -219,7 +221,12 @@ AUDIO_BACKEND_CHOICES = ("auto", "dac", "sampler")
 
 # The scene types (mirrors validate_scene_cfg). Used by the introspection
 # layer's `applies_to` filtering; declared here so SceneCfg metadata can name
-# them symbolically.
+# them symbolically. `applies_to` means scene types and nothing else — only
+# SceneCfg fields carry it, and every value is a member of this tuple
+# (tests/test_introspect.py pins both halves). A section field that is
+# meaningful only on some backend or display mode says so in its `help`:
+# one metadata key silently spanning three vocabularies is a trap for the
+# first consumer that applies the documented rule generically.
 SCENE_TYPES = (
     "webcam",
     "blank",
@@ -439,7 +446,6 @@ class Ultimate64Cfg:
             "3.8% between standards). 'off' leaves it alone. Ultimate 64 only; live "
             "and volatile, restored at teardown. Changes the HDMI output mode.",
             "choices": SID_VIDEO_MODE_CHOICES,
-            "applies_to": ("ultimate",),
         },
     )
     hdmi_scan_resolution: str = field(
@@ -454,7 +460,6 @@ class Ultimate64Cfg:
             "volatile, restored at teardown. Newer U64 boards only (older firmware "
             "has no such setting).",
             "choices": HDMI_SCAN_RESOLUTION_CHOICES,
-            "applies_to": ("ultimate",),
         },
     )
     # See docs/guide/04-setting-up.md for how to enable the DMA service on the
@@ -578,7 +583,7 @@ class VideoCfg:
     #     video never silently freezes on a box without a (enabled) REU.
     #   * true forces staging on for every mode that supports it.
     #   * false forces it off everywhere.
-    # Resolution is per-scene at build time (config.resolve_use_reu_staged),
+    # Resolution is per-scene at build time (scene_factory.resolve_use_reu_staged),
     # so a `display = "random"` slideshow re-decides per concrete mode.
     # Pairs cleanly with [audio].use_reu_pump on any scene (the bank-swap
     # installer picks a merged $0314 dispatcher that services both IRQ
@@ -608,7 +613,7 @@ class VideoCfg:
     #     no REU at all (so this is its only tear-free path). The U64's fast DMA
     #     doesn't visibly tear single-buffered, so auto leaves it on host-DMA.
     #   * true forces it on for bitmap modes (on any backend); false off.
-    # Resolved per-scene at build time (config.resolve_double_buffer).
+    # Resolved per-scene at build time (scene_factory.resolve_double_buffer).
     double_buffer: bool | str = field(
         default="auto",
         metadata={
@@ -691,8 +696,12 @@ class AudioCfg:
         metadata={
             "help": "Sample rate (Hz) for the Ultimate Audio sampler backend. "
             "1000..48000; default 44100 (CD quality). The FPGA plays at the nearest "
-            "divider of its 6.25 MHz reference (a <0.5% constant pitch offset, "
-            "drift-free)."
+            "divider of the reference clock in [audio].sampler_clock_hz, which is "
+            "also the resample target — so the quantization is a small constant "
+            "pitch offset, drift-free. Do not read a 6.25 MHz nominal into this: "
+            "the shipped default clock is the measured ~6.16 MHz (see "
+            "sampler_clock_hz), and the divider is computed against whatever that "
+            "field says."
         },
     )
     sampler_bits: int = field(
@@ -1108,7 +1117,10 @@ class InterstitialCfg:
     )
     text_color: str = field(
         default="rainbow",
-        metadata={"help": "Interstitial text color: a C64 color name, 'rainbow', or 'random'."},
+        metadata={
+            "help": "Interstitial text color: a C64 color name, 'rainbow', or 'random'.",
+            "vocabulary": "c64color",
+        },
     )
     background: str = field(
         default="random",
@@ -1458,6 +1470,7 @@ class SceneCfg:
         default_factory=list,
         metadata={
             "help": "Per-voice trace colors (C64 color names) for color_mode=per_voice.",
+            "vocabulary": "c64color",
             "applies_to": ("waveform", "midi", "asid"),
         },
     )
@@ -1465,6 +1478,7 @@ class SceneCfg:
         default_factory=dict,
         metadata={
             "help": "Per-waveform-type colors (e.g. pulse=cyan) for color_mode=per_waveform.",
+            "vocabulary": "c64color",
             "applies_to": ("waveform", "midi", "asid"),
         },
     )
@@ -1745,9 +1759,16 @@ class SceneCfg:
         },
     )
     # Free-form dicts; each overlay class validates its own kwargs.
+    # `applies_to` omits `launcher` because scene_factory._validate_launcher
+    # hard-rejects overlays there (the launched program owns screen + color
+    # RAM) — without it, --describe, the wizard and the web console all offer
+    # a key the loader refuses. _CLIP_SCENE_FIELD_DENY encodes the same fact.
     overlays: list[dict[str, Any]] = field(
         default_factory=list,
-        metadata={"help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays."},
+        metadata={
+            "help": "List of overlay tables ([[scenes.overlays]]); see --list-overlays.",
+            "applies_to": tuple(t for t in SCENE_TYPES if t != "launcher"),
+        },
     )
     # Per-scene [color] override, stored as the raw authored keys (not a
     # materialized ColorCfg) so a scene can override a field back to its
@@ -2020,8 +2041,9 @@ class ColorCfg:
     flicker_tolerance: str = field(
         default=DEFAULT_TOLERANCE,
         metadata={
-            "help": "Temporal color blending for the bitmap modes, and how much "
-            "visible flicker you'll accept to get it: hold two screen pages and "
+            "help": "Temporal color blending for the hires/mhires display modes, "
+            "and how much visible flicker you'll accept to get it: hold two "
+            "screen pages and "
             "alternate them at the VIC field rate, so the eye fuses each cell's "
             "pair of hardware colors into a shade the VIC cannot draw. Targets "
             "gradient banding — spatial dither already synthesizes intermediate "
@@ -2044,14 +2066,14 @@ class ColorCfg:
             "whole frame, so no cell has a decision for a pair to win) and "
             "pins color_match and cell_strategy, which blending measurably needs.",
             "choices": tuple(FLICKER_TOLERANCES),
-            "applies_to": ("hires", "mhires"),
         },
     )
     flicker_max_luma_delta: float = field(
         default=0.075,
         metadata={
             "help": "How far apart in brightness the two colors of a flicker pair "
-            "may be, as a fraction of peak white in linear light. This is a "
+            "may be, as a fraction of peak white in linear light (hires/mhires "
+            "display modes, with flicker_tolerance on). This is a "
             "photosensitivity control, not a quality knob: alternation at the "
             "field rate is hazardous in proportion to luminance modulation "
             "depth. WARNS above 0.10, and again above 0.12 where modulation "
@@ -2066,13 +2088,13 @@ class ColorCfg:
             "and to 3 of 8 on the VIC-II rendering, whose luminances put five "
             "cleanly-fusing pairs above 0.12. Which pairs qualify depends on "
             "[hardware].host_palette, since it is the emitted light that fuses.",
-            "applies_to": ("hires", "mhires"),
         },
     )
     flicker_score_pairs: list[str] = field(
         default_factory=list,
         metadata={
-            "help": "DIAGNOSTIC. Replace the flicker blend set with exactly these "
+            "help": "DIAGNOSTIC (hires/mhires display modes). Replace the flicker "
+            "blend set with exactly these "
             'color pairs, written as "Blue+Brown" or "6+9" — the same shape the '
             "arming log prints. Ignores both the scored tiers and "
             "flicker_max_luma_delta, so it can put pairs on screen that no "
@@ -2083,7 +2105,6 @@ class ColorCfg:
             "only this way was excluded on evidence. Cannot switch blending on by "
             "itself: flicker_tolerance must still be set, and every structural gate "
             "still applies. Empty (default) uses the scored set.",
-            "applies_to": ("hires", "mhires"),
         },
     )
     motion_smoothing: float = field(
@@ -2427,8 +2448,13 @@ class WebCfg:
         default="",
         metadata={
             "help": "Optional second token granting read-only access (GET/HEAD only): "
-            "watch the state feed, but never start, stop or edit. Prefer the "
-            "C64CAST_WEB_VIEWER_TOKEN env var."
+            "watch the state feed, but never start, stop or edit. Read-only is not "
+            "telemetry-only — the tier also lists the `media_read_only`/"
+            "`media_read_write` trees and reads the session log tail, so hand the "
+            "link to someone you would let browse those. Reading a `config_roots` "
+            "config body is NOT included (that route refuses a viewer, because a "
+            "config may carry [ultimate64].dma_password and the [web]/[control] "
+            "tokens inline). Prefer the C64CAST_WEB_VIEWER_TOKEN env var."
         },
     )
     autostart: bool = field(
@@ -2560,7 +2586,7 @@ _MIDI_ACTION_CHOICES = (
 )
 # MMC transport command bytes recognized in a `type: "mmc"` cc_map entry —
 # mirrors midi_control._MMC_COMMANDS (kept independent per the module's
-# "config stays import-light" rule; see validate_midi_control_cfg).
+# "config stays import-light" rule; see scene_factory.validate_midi_control_cfg).
 _MIDI_MMC_COMMAND_CHOICES = (0x01, 0x02, 0x04, 0x05, 0x06, 0x09)
 
 # Shipped out of the box so MIDI control works with no config edits, per a
@@ -2662,11 +2688,13 @@ class MidiControlCfg:
             "the shipped defaults, or override/extend individual entries. Each "
             "entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; "
             "an MMC command byte — 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 "
-            "record, 0x09 pause — for mmc), action ('pause'|'resume'|"
-            "'toggle_pause'|'skip'|'cycle_style'|'jump'|'param'|"
-            "'transport.play_pause'|'transport.stop'|'transport.loop_toggle'|"
-            "'transport.rw'|'transport.ff'|'transport.jog'|'transport.record'|"
-            "'loop_slot'); 'jump' also needs an int scene; 'param' also needs "
+            # Built from the constant rather than re-typed: this help is the
+            # only per-key documentation a list[dict] field can carry to
+            # --describe, the JSON schema and the wizard, and the hand-written
+            # enumeration had fallen four actions behind _MIDI_ACTION_CHOICES.
+            "record, 0x09 pause — for mmc), action ("
+            + "|".join(repr(a) for a in _MIDI_ACTION_CHOICES)
+            + "); 'jump' also needs an int scene; 'param' also needs "
             "a string target ('effect.<name>', 'source.<name>', 'scene.<name>' "
             "for scope scenes, or 'mode.<name>' for the display mode's live "
             "color knobs — dither_strength/method, motion_smoothing, "
@@ -2729,6 +2757,22 @@ _CLIP_LAUNCH_KEYS: tuple[str, ...] = ("slot", "pad", "pad_type", "launch", "quan
 # Scene-spec fields a clip may NOT carry (deferred to a later phase / ensemble-
 # only). Overlays + orchestrate/follower belong to declared [[scenes]] only.
 _CLIP_SCENE_FIELD_DENY: frozenset[str] = frozenset({"overlays", "orchestrate", "follower_only"})
+# What a [[performance.clips]] table means for each launch key it omits. Named
+# here because `clips` is a list[dict]: the per-key `default` metadata machinery
+# never sees these, so _validate_clips, clip_scene_cfg and the field's own help
+# (the only surface --describe / the schema / the wizard can render for a
+# list-of-tables field) all have to read one source.
+_CLIP_DEFAULTS: dict[str, Any] = {
+    "type": "webcam",
+    "launch": "trigger",
+    "quantize": "bar",
+    "pad_type": "note",
+    "loop": True,
+}
+
+# [performance].tempo_source. Named so the field metadata and
+# _validate_performance read one tuple instead of two hand-kept copies.
+_TEMPO_SOURCE_CHOICES = ("internal", "midi", "audio")
 
 
 @dataclass
@@ -2753,7 +2797,7 @@ class PerformanceCfg:
             "audio_source = 'mic'/'listen' scene's reactive tempo drives launch "
             "quantize, mod_source='clock' effects and WLED tempo). With 'midi' or "
             "'audio' the grid idles until the first clock byte / detected tempo.",
-            "choices": ("internal", "midi", "audio"),
+            "choices": _TEMPO_SOURCE_CHOICES,
         },
     )
     bpm: float = field(
@@ -2819,7 +2863,12 @@ class PerformanceCfg:
             "`loop` (repeat until another clip fires). Fired from a controller "
             "or the web console; the scene is built on a background thread "
             "during the count-in and swapped in on the grid boundary. Empty = "
-            "no grid."
+            "no grid. Only `slot` is required; the keys a table omits default to "
+            + ", ".join(f"{k} = {v!r}" for k, v in _CLIP_DEFAULTS.items())
+            + ' — note that `quantize` defaults to the bar, not to "off", and '
+            "that a looping continuous-frame clip (webcam/blank/slideshow/"
+            "generative/wled) is pinned to duration_s = 0 so it holds until the "
+            "next launch."
         },
     )
 
@@ -3014,9 +3063,17 @@ def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
         lines = doc.splitlines()
         if 0 < lineno <= len(lines):
             offending = lines[lineno - 1]
-            caret = " " * (colno - 1) + "^"
-            out.append(f"    {offending}")
-            out.append(f"    {caret}")
+            # A syntax error on a credential-bearing line would otherwise copy
+            # the credential into this message, which cli.py logs at error level
+            # and --log-file mirrors to disk — and a TOML typo is exactly the
+            # error whose log someone pastes into an issue. The position and the
+            # parser's message carry all the diagnostic value; the value does
+            # not. The caret is dropped when the line was redacted because the
+            # substitution moves the columns it would point at.
+            safe = redact_secrets(offending)
+            out.append(f"    {safe}")
+            if safe == offending:
+                out.append(f"    {' ' * (colno - 1)}^")
     else:
         out.append(f"  {msg}")
     return "\n".join(out)
@@ -3033,6 +3090,9 @@ class UnknownKey:
     formatted `[WARN]` rows, which is how a misplaced key stayed invisible
     long enough to be mistaken for a working config)."""
 
+    #: The table the key was found in, or "" when `key` names an unrecognized
+    #: *table* — the shape the per-section walk cannot see, since a table the
+    #: loader applies to nothing never reaches `_apply_section` at all.
     section: str
     key: str
     source: str | None = None
@@ -3041,6 +3101,8 @@ class UnknownKey:
     def describe(self) -> str:
         """One-line rendering shared by the log path and the doctor row."""
         where = f"{self.source}: " if self.source else ""
+        if not self.section:
+            return f"{where}unknown config table [{self.key}] — ignored"
         return f"{where}[{self.section}] unknown config key {self.key!r} — ignored"
 
 
@@ -3077,6 +3139,8 @@ def _known_key_index() -> dict[str, tuple[str, ...]]:
     probe = Config()
     for name in (*_TOML_SCALAR_SECTIONS, "color"):
         for f in fields(getattr(probe, name)):
+            if f.metadata.get("internal"):
+                continue  # derived run state, not a key any table accepts
             index.setdefault(f.name, []).append(name)
     for f in fields(SceneCfg):
         index.setdefault(f.name, []).append("[scenes]")
@@ -3121,8 +3185,21 @@ def _apply_section(
     When `unknown` is None the key is logged immediately (the standalone
     `load()` callers — SIGHUP reload, the interstitial factory — have no
     collector to drain). Otherwise it is appended for the caller to present.
-    """
-    valid = {f.name for f in fields(dc)}
+
+    A field whose annotation is exactly ``bool`` refuses a non-bool value. Every
+    consumer of a bool field is a plain truthiness test, so a quoted TOML
+    ``allow_unauthenticated = "false"`` stored the truthy string "false" and
+    meant the *opposite* of what it read as — on two of the switches that decide
+    network exposure. The tri-states (``bool | str``) are unaffected: their
+    annotation is not ``bool``, and their own validators own them.
+
+    A field carrying ``internal`` metadata is derived run state, not a config
+    key, so it is treated like an unknown one: ``cc_map_is_default`` is set
+    False only when a layer really authored a ``cc_map``, and authoring the
+    flag directly inverted the controller-profile merge with no cc_map in
+    sight."""
+    valid = {f.name for f in fields(dc) if not f.metadata.get("internal")}
+    annotations = {f.name: f.type for f in fields(dc)}
     for k, v in data.items():
         if k not in valid:
             rec = UnknownKey(section_name, k, source, _unknown_key_hint(section_name, k, valid))
@@ -3131,6 +3208,11 @@ def _apply_section(
             else:
                 unknown.append(rec)
             continue
+        if annotations[k] in ("bool", bool) and not isinstance(v, bool):
+            raise ConfigError(
+                f"[{section_name}].{k} must be true or false, got {v!r} — "
+                "a quoted value is a string, and a non-empty string reads as true"
+            )
         setattr(dc, k, v)
 
 
@@ -3175,15 +3257,16 @@ def _ultimate_base_url(raw: str) -> str:
         spec = connect.parse_connection_uri(raw)
     except connect.ConnectionURIError as e:
         raise ConfigError(f"[ultimate64].url: {e}") from e
+    shown = connect.redact_target(raw)
     if spec.backend != "ultimate":
         raise ConfigError(
-            f"[ultimate64].url: {raw!r} selects the {spec.backend} backend. In a config "
+            f"[ultimate64].url: {shown!r} selects the {spec.backend} backend. In a config "
             "the backend is [hardware].backend and the endpoint is that backend's own "
             "section — this field is the Ultimate's base URL."
         )
     if spec.dma_port is not None:
         raise ConfigError(
-            f"[ultimate64].url: {raw!r} carries a query param. Those exist for -u/--url, "
+            f"[ultimate64].url: {shown!r} carries a query param. Those exist for -u/--url, "
             "which has nowhere else to put a per-link knob; in a config, set the field "
             f"itself (dma_port = {spec.dma_port})."
         )
@@ -3203,11 +3286,24 @@ def _normalize_ultimate_url(u64: Ultimate64Cfg) -> None:
     A bare host is taken too — the shipped example has always said so, and it is
     where the two surfaces are *right* to differ: a scheme is how ``-u`` picks a
     backend, so it has to insist on one, while a value already inside the
-    ``[ultimate64]`` section has nothing left to pick."""
+    ``[ultimate64]`` section has nothing left to pick.
+
+    Normalize first, then validate *always*. Prefixing a scheme-less value with
+    ``http://`` and returning it unchecked let a bare host skip
+    :func:`connect.parse_connection_uri` entirely, so the two refusals this
+    field's own help promises — no ``user:pass@`` netloc (which
+    ``--save-settings`` would then write to ``settings.toml`` and echo to
+    stdout) and no ``?query`` knob — applied to ``http://host`` and not to
+    ``host``."""
     raw = u64.url.strip()
-    resolved = f"http://{raw}" if raw and "://" not in raw else _ultimate_base_url(raw)
+    candidate = f"http://{raw}" if raw and "://" not in raw else raw
+    resolved = _ultimate_base_url(candidate)
     if resolved != u64.url:
-        log.debug("[ultimate64].url %r reads as %r", u64.url, resolved)
+        log.debug(
+            "[ultimate64].url %r reads as %r",
+            connect.redact_target(u64.url),
+            connect.redact_target(resolved),
+        )
     u64.url = resolved
 
 
@@ -3224,9 +3320,10 @@ def _validate_performance(perf: PerformanceCfg) -> None:
     """Range/choice-check [performance] at load time so a bad tempo grid surfaces
     before the run, not mid-performance. Raises ValueError (wrapped like the
     other section validators here)."""
-    if perf.tempo_source not in ("internal", "midi", "audio"):
+    if perf.tempo_source not in _TEMPO_SOURCE_CHOICES:
         raise ValueError(
-            "[performance].tempo_source must be 'internal', 'midi' or 'audio', "
+            "[performance].tempo_source must be one of "
+            f"{', '.join(repr(c) for c in _TEMPO_SOURCE_CHOICES)}, "
             f"got {perf.tempo_source!r}"
         )
     if isinstance(perf.bpm, bool) or not isinstance(perf.bpm, (int, float)):
@@ -3263,12 +3360,19 @@ def _clip_allowed_keys() -> set[str]:
 def _validate_clips(clips: list[dict[str, Any]]) -> None:
     """Validate the [[performance.clips]] grid at load time: each entry is a
     table with a unique int `slot` >= 1, launch/quantize/pad_type within their
-    choice sets, an in-range `pad`, a real scene `type`, and no unknown keys
-    (difflib "did you mean"). The embedded scene spec's deeper validation
-    (display/file per type) is deferred to build time — build_scene runs the
-    full validate_scene_cfg when the clip is fired."""
+    choice sets, an in-range `pad` bound at most once, a real scene `type`, and
+    no unknown keys (difflib "did you mean"). The embedded scene spec's deeper
+    validation (display/file per type) is deferred to build time — build_scene
+    runs the full validate_scene_cfg when the clip is fired.
+
+    `pad` uniqueness is checked for the same reason `slot`'s is: midi_control.
+    _add_clip_pad_mappings skips a (kind, number) it has already bound, so a pad
+    declared twice inside one file leaves the second clip unfirable with no
+    message. (A collision *across* systems at that call site is deliberate and
+    documented there; one inside a single grid is an authoring mistake.)"""
     allowed = _clip_allowed_keys()
     seen_slots: set[int] = set()
+    seen_pads: dict[tuple[str, int], int] = {}
     for i, clip in enumerate(clips):
         if not isinstance(clip, dict):
             raise ValueError(f"[[performance.clips]][{i}] must be a table, got {clip!r}")
@@ -3283,25 +3387,25 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
         if slot in seen_slots:
             raise ValueError(f"[[performance.clips]][{i}] duplicate slot {slot}")
         seen_slots.add(slot)
-        stype = clip.get("type", "webcam")
+        stype = clip.get("type", _CLIP_DEFAULTS["type"])
         if stype not in SCENE_TYPES:
             raise ValueError(
                 f"[[performance.clips]][{i}] (slot {slot}) type must be one of "
                 f"{SCENE_TYPES}, got {stype!r}"
             )
-        launch = clip.get("launch", "trigger")
+        launch = clip.get("launch", _CLIP_DEFAULTS["launch"])
         if launch not in _CLIP_LAUNCH_CHOICES:
             raise ValueError(
                 f"[[performance.clips]][{i}] (slot {slot}) launch must be one of "
                 f"{_CLIP_LAUNCH_CHOICES}, got {launch!r}"
             )
-        quantize = clip.get("quantize", "bar")
+        quantize = clip.get("quantize", _CLIP_DEFAULTS["quantize"])
         if quantize not in _CLIP_QUANTIZE_CHOICES:
             raise ValueError(
                 f"[[performance.clips]][{i}] (slot {slot}) quantize must be one of "
                 f"{_CLIP_QUANTIZE_CHOICES}, got {quantize!r}"
             )
-        pad_type = clip.get("pad_type", "note")
+        pad_type = clip.get("pad_type", _CLIP_DEFAULTS["pad_type"])
         if pad_type not in _CLIP_PAD_TYPE_CHOICES:
             raise ValueError(
                 f"[[performance.clips]][{i}] (slot {slot}) pad_type must be one of "
@@ -3314,6 +3418,14 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
             raise ValueError(
                 f"[[performance.clips]][{i}] (slot {slot}) pad must be 0..127, got {pad!r}"
             )
+        if pad is not None:
+            owner = seen_pads.get((pad_type, pad))
+            if owner is not None:
+                raise ValueError(
+                    f"[[performance.clips]][{i}] (slot {slot}) {pad_type} pad {pad} "
+                    f"is already bound by slot {owner} — one pad fires one clip"
+                )
+            seen_pads[(pad_type, pad)] = slot
         loop = clip.get("loop")
         if loop is not None and not isinstance(loop, bool):
             raise ValueError(
@@ -3335,7 +3447,11 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     scene_keys = {k: v for k, v in clip.items() if k not in _CLIP_LAUNCH_KEYS}
     sc = SceneCfg()
     _apply_section(sc, scene_keys, "performance.clips")
-    if clip.get("loop", True) and sc.type in _CLIP_CONTINUOUS_TYPES and sc.duration_s is None:
+    if (
+        clip.get("loop", _CLIP_DEFAULTS["loop"])
+        and sc.type in _CLIP_CONTINUOUS_TYPES
+        and sc.duration_s is None
+    ):
         # Loop forever: hold the continuous-frame scene on screen until the next
         # clip launch, rather than auto-advancing at the scene-type default
         # (e.g. 30 s). Audio-bearing/video clips instead re-setup on is_done (the
@@ -3353,13 +3469,20 @@ def _validate_sid_panning(u64: Ultimate64Cfg) -> None:
     """Range-check [ultimate64].sid_panning at load/doctor time so a bad pan
     value surfaces before the playlist runs, not mid-scene when the mixer is
     configured. Values stay as authored (ints or labels); sid_panning.
-    resolve_panning normalizes them at apply time."""
-    if not u64.sid_panning:
-        return
+    resolve_panning normalizes them at apply time.
+
+    The guard is on shape, not truthiness: 0 is a *legal* pan value (Center),
+    so `if not u64.sid_panning` would have let a scalar `sid_panning = 0` past
+    the list check below — and resolve_panning's own falsy test then applies
+    the auto-spread, which for two sources is [-3, +3], the opposite of
+    centered. A non-falsy scalar (`sid_panning = -3`) was already rejected, so
+    the two spellings of one mistake got opposite treatment."""
     if not isinstance(u64.sid_panning, list):
         raise ValueError(
             f"ultimate64.sid_panning must be a list of pan values, got {u64.sid_panning!r}"
         )
+    if not u64.sid_panning:
+        return
     if len(u64.sid_panning) > MAX_PANNED_SOURCES:
         raise ValueError(
             f"ultimate64.sid_panning accepts at most {MAX_PANNED_SOURCES} entries "
@@ -3376,11 +3499,16 @@ def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
     """Range-check [ultimate64].sid_volume at load/doctor time so a level the
     mixer can't represent surfaces before the playlist runs, not mid-scene when
     the mixer is configured. Values stay as authored (ints or labels);
-    sid_volume.resolve_volumes normalizes them at apply time."""
-    if not u64.sid_volume:
-        return
+    sid_volume.resolve_volumes normalizes them at apply time.
+
+    Shape-guarded rather than truthiness-guarded for the same reason as
+    _validate_sid_panning: 0 means 0 dB here, so a scalar `sid_volume = 0`
+    would otherwise skip the list check and be silently replaced by the
+    auto-spread downstream."""
     if not isinstance(u64.sid_volume, list):
         raise ValueError(f"ultimate64.sid_volume must be a list of levels, got {u64.sid_volume!r}")
+    if not u64.sid_volume:
+        return
     if len(u64.sid_volume) > MAX_VOLUME_SOURCES:
         raise ValueError(
             f"ultimate64.sid_volume accepts at most {MAX_VOLUME_SOURCES} entries "
@@ -3396,13 +3524,16 @@ def _validate_sid_volume(u64: Ultimate64Cfg) -> None:
 def _validate_host_sid_chips(hw: HardwareCfg) -> None:
     """Range-check [hardware].host_sid_chips at load/doctor time. A typo'd
     address here would otherwise surface as a chip silently missing from the
-    resolved-audio verdict — the one line whose job is to be trusted."""
-    if not hw.host_sid_chips:
-        return
+    resolved-audio verdict — the one line whose job is to be trusted.
+
+    Shape before emptiness, as in _validate_sid_panning: a falsy non-table
+    (`host_sid_chips = 0`) must still reach the type check."""
     if not isinstance(hw.host_sid_chips, dict):
         raise ValueError(
             f"hardware.host_sid_chips must be a table of address = model, got {hw.host_sid_chips!r}"
         )
+    if not hw.host_sid_chips:
+        return
     for address, model in hw.host_sid_chips.items():
         try:
             value = int(str(address).lstrip("$"), 16)
@@ -3456,6 +3587,63 @@ def _validate_force_palette(color: ColorCfg) -> None:
         )
     elif not (2 <= fp <= 16):
         raise ValueError(f"color.force_palette_colors must be in 2..16, got {fp}")
+
+
+# `choices` metadata is enforced generically over the scalar sections (see
+# _validate_choice_fields), so a newly added choices field is checked by
+# construction instead of by somebody remembering to hand-write a validator.
+# These are the documented exceptions; a test asserts every name here is still
+# a real choices field, so an exemption cannot outlive the field it excuses.
+#
+# SceneCfg is deliberately out of scope: scene_factory.validate_scene_cfg
+# checks scene fields per type, with messages that know which type is building.
+# So is [color], for a second reason on top of that one — every choices field
+# it has is already enforced by a session/mode validator, and the web console's
+# layer-blame report (config_store._blame_layers) is built on those refusals
+# arriving from validate_configs with a *loadable* config in hand.
+_CHOICES_OPEN: dict[str, str] = {
+    # "auto"/"off" plus any positive float (Hz) — see the field's own help.
+    "ultimate64.sid_play_rate": "also accepts a rate in Hz",
+}
+# Fields matched case-insensitively rather than exactly, because the value is
+# case-normalized downstream (hw/backend.py and hw/hw_provision.py both
+# `.upper()` it, each with a comment saying nothing at load enforces the
+# canonical spelling) — so `system = "ntsc"` works today and has to keep
+# working, while `system = "ntscc"` should not.
+_CHOICES_CASE_INSENSITIVE: frozenset[str] = frozenset({"ultimate64.system"})
+
+
+def _validate_choice_fields(cfg: Config) -> None:
+    """Reject a scalar-section string value that is outside its declared
+    `choices`.
+
+    The metadata is this module's single source of truth, but nothing used to
+    hold a value to it: enforcement was a hand-written per-field validator, and
+    the fields nobody wrote one for failed *open*. `sid_video_mode` is the
+    sharp one — hw_provision tests it as `!= "off"`, so any typo retimed the
+    machine and switched the HDMI output mode. `host_sid_tune_match`'s own
+    validator already states the principle ("a typo would otherwise read as
+    'off' and silently do nothing, which is indistinguishable from the feature
+    not working"); this applies it to every choices field at once."""
+    for section_name in _TOML_SCALAR_SECTIONS:
+        section = getattr(cfg, section_name)
+        for f in fields(section):
+            choices = f.metadata.get("choices")
+            key = f"{section_name}.{f.name}"
+            if not choices or key in _CHOICES_OPEN:
+                continue
+            value = getattr(section, f.name)
+            if not isinstance(value, str):
+                continue
+            if key in _CHOICES_CASE_INSENSITIVE:
+                if value.casefold() in {str(c).casefold() for c in choices}:
+                    continue
+            elif value in choices:
+                continue
+            raise ValueError(
+                f"[{section_name}].{f.name} = {value!r} — want one of "
+                f"{', '.join(repr(c) for c in choices)}"
+            )
 
 
 def resolved_force_palette(color: ColorCfg) -> tuple[int, list[int] | None]:
@@ -3523,37 +3711,48 @@ _TOML_SCALAR_SECTIONS: tuple[str, ...] = (
 )
 
 
-def _apply_toml_sections(
-    cfg: Config,
-    data: dict[str, Any],
-    *,
-    source: str,
-    unknown: list[UnknownKey] | None = None,
-) -> None:
-    """Apply the scalar + [color] sections of a parsed TOML dict onto `cfg`
-    in place.
+# Top-level TOML keys that are a real table somewhere in the loader, so a key
+# outside this set is a misspelled or misplaced *table* — the one stray-key
+# shape the per-section walk could never see, because a table nobody applies
+# never reaches _apply_section.
+_KNOWN_TOML_TABLES: frozenset[str] = frozenset(
+    {*_TOML_SCALAR_SECTIONS, "color", "scenes", "ensemble"}
+)
 
-    Shared by :func:`load` (a project / per-system file) and
-    :func:`apply_machine_settings` (the machine-settings file) so both go
-    through identical unknown-key difflib warnings, the tri-state / device
-    validations, and the [color]/hue_corrections special case. Deliberately
-    does NOT handle [[scenes]] or [ensemble] — those are load- / master-
-    specific. `source` names the origin — it rides along on each collected
-    UnknownKey so an ensemble report can say which file the stray key is in."""
-    log.debug("applying config sections from %s", source)
-    for name in _TOML_SCALAR_SECTIONS:
-        if name in data:
-            _apply_section(getattr(cfg, name), data[name], name, unknown, source=source)
 
-    # Record whether any layer explicitly authored a cc_map. Monotonic (only ever
-    # set False, default True): once machine settings OR the project/per-system
-    # file specifies cc_map, the effective mapping is the user's own, not the
-    # shipped defaults — which flips the profile-merge order (see
-    # midi_control.resolve_effective_cc_map). Both layers route through here.
-    mc = data.get("midi_control")
-    if isinstance(mc, dict) and "cc_map" in mc:
-        cfg.midi_control.cc_map_is_default = False
+def _hue_correction_rows(raw: Any) -> list[dict[str, Any]]:
+    """The authored [[color.hue_corrections]] tables, as a fresh list of dicts.
 
+    A layer that declares the key REPLACES the list; it does not extend it.
+    Appending made the layers *concatenate* — machine settings declaring band X
+    plus a project TOML declaring band Y gave [X, Y], with no way for the
+    project file to override, reorder or remove X — against the documented
+    "every layer above the defaults overrides the ones below it", and against
+    :func:`scene_color`, which has always treated the same field as an
+    all-or-nothing replace. It also broke the serializer's round trip:
+    config_serialize writes a list-of-tables whole or not at all, so [X] + [X,
+    Y] wrote [X, Y] and reloading appended onto the machine layer again to give
+    [X, X, Y]."""
+    if not isinstance(raw, list):
+        raise ValueError(f"color.hue_corrections must be a list of tables, got {raw!r}")
+    rows: list[dict[str, Any]] = []
+    for hc in raw:
+        if not isinstance(hc, dict):
+            raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
+        rows.append(dict(hc))
+    return rows
+
+
+def validate_sections(cfg: Config) -> None:
+    """Run every load-time section validator over `cfg`.
+
+    Called from :func:`_apply_toml_sections`, so a bad value is refused in the
+    layer that wrote it (machine settings, a project/per-system file, or the
+    ensemble master), and again from :func:`merge_cli`, which is the last
+    layer: the CLI and the env vars write straight into an already-validated
+    Config, so a value arriving that way used to reach the run unchecked and
+    fail mid-show instead — the exact thing each of these validators' own
+    docstring says it exists to prevent."""
     _validate_use_reu_staged(cfg.video)
     _validate_double_buffer(cfg.video)
     _validate_video_device(cfg.video)
@@ -3564,19 +3763,78 @@ def _apply_toml_sections(
     _validate_sid_volume(cfg.ultimate64)
     _validate_host_sid_chips(cfg.hardware)
     _validate_host_sid_tune_match(cfg.hardware)
+    _validate_choice_fields(cfg)
+    _validate_force_palette(cfg.color)
+
+
+def _apply_toml_sections(
+    cfg: Config,
+    data: dict[str, Any],
+    *,
+    source: str,
+    unknown: list[UnknownKey] | None = None,
+) -> None:
+    """Apply the scalar + [color] sections of a parsed TOML dict onto `cfg`
+    in place.
+
+    Shared by :func:`load` (a project / per-system file),
+    :func:`apply_machine_settings` (the machine-settings file) and
+    :func:`load_master` (the ensemble master's own sections) so all three go
+    through identical unknown-key difflib warnings, the full validator battery,
+    and the [color]/hue_corrections special case. Deliberately does NOT handle
+    [[scenes]] or [ensemble] — those are load- / master-specific. `source`
+    names the origin — it rides along on each collected UnknownKey so an
+    ensemble report can say which file the stray key is in."""
+    log.debug("applying config sections from %s", source)
+    for name in _TOML_SCALAR_SECTIONS:
+        if name in data:
+            _apply_section(getattr(cfg, name), data[name], name, unknown, source=source)
+
+    # Record whether any layer explicitly authored a cc_map. Monotonic (only ever
+    # set False, default True): once machine settings OR the project/per-system
+    # file OR the ensemble master specifies cc_map, the effective mapping is the
+    # user's own, not the shipped defaults — which flips the profile-merge order
+    # (see midi_control.resolve_effective_cc_map). Every layer routes through here.
+    mc = data.get("midi_control")
+    if isinstance(mc, dict) and "cc_map" in mc:
+        cfg.midi_control.cc_map_is_default = False
 
     # [color] is handled separately from the scalar section loop because it
     # carries a list-of-tables field (hue_corrections) that must be pulled out
     # before _apply_section, same as [[scenes.overlays]] in load().
     if "color" in data:
         raw_color = dict(data["color"])
-        raw_hc = raw_color.pop("hue_corrections", [])
+        raw_hc = raw_color.pop("hue_corrections", None)
         _apply_section(cfg.color, raw_color, "color", unknown, source=source)
-        for hc in raw_hc:
-            if not isinstance(hc, dict):
-                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
-            cfg.color.hue_corrections.append(dict(hc))
-        _validate_force_palette(cfg.color)
+        if raw_hc is not None:
+            cfg.color.hue_corrections = _hue_correction_rows(raw_hc)
+
+    for table in data:
+        if table in _KNOWN_TOML_TABLES:
+            continue
+        close = difflib.get_close_matches(table, _KNOWN_TOML_TABLES, n=1)
+        rec = UnknownKey("", table, source, f"did you mean [{close[0]}]?" if close else None)
+        if unknown is None:
+            log.warning("%s%s", rec.describe(), f" ({rec.hint})" if rec.hint else "")
+        else:
+            unknown.append(rec)
+
+    validate_sections(cfg)
+
+
+def _settings_state_key(path: pathlib.Path) -> tuple[str, int, int]:
+    """(path, mtime_ns, size) — a machine-settings file's identity *and*
+    content state, so a once-per-process diagnostic still fires again after
+    `--save-settings` rewrites the file mid-run."""
+    try:
+        st = path.stat()
+    except OSError:
+        return (str(path), 0, 0)
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+#: Banned tables already reported for a given machine-settings file state.
+_warned_banned_settings_tables: set[tuple[str, int, int, str]] = set()
 
 
 def load_machine_settings() -> dict[str, Any]:
@@ -3601,15 +3859,32 @@ def load_machine_settings() -> dict[str, Any]:
         raise ConfigError(_format_toml_error(str(path), e)) from e
 
     for banned in ("scenes", "ensemble"):
-        if banned in data:
+        if banned not in data:
+            continue
+        # Deduped on the same schedule as the INFO line below: one stray table
+        # in this file is one problem, not N+2 of them on an ensemble run.
+        seen_key = (*_settings_state_key(path), banned)
+        if seen_key not in _warned_banned_settings_tables:
+            _warned_banned_settings_tables.add(seen_key)
             log.warning(
                 "machine settings %s: [%s] ignored — machine settings hold "
                 "cross-run defaults (connection, device, …), not playlists",
                 path,
                 banned,
             )
-            data.pop(banned, None)
+        data.pop(banned, None)
     return data
+
+
+# Machine-settings files this process has already announced, keyed on
+# (path, mtime_ns, size). The layer is re-applied once per system in ensemble
+# mode plus twice more (the master defaults and the cascade baseline), so an
+# N-system wall printed the same INFO line N+2 times for one file — the exact
+# repetition `_dedupe_unknown` exists to collapse for unknown keys, and one
+# line was the whole point of a line whose job is making a surprising default's
+# origin discoverable. Keyed on the file's state, not just its path, so a run
+# that saves machine settings and re-reads them announces the new content.
+_announced_machine_settings: set[tuple[str, int, int]] = set()
 
 
 def apply_machine_settings(cfg: Config, unknown: list[UnknownKey] | None = None) -> Config:
@@ -3619,18 +3894,29 @@ def apply_machine_settings(cfg: Config, unknown: list[UnknownKey] | None = None)
     This is the lowest layer above the dataclass defaults; everything that
     applies afterward still wins (project / per-system TOML, the master
     cascade, CLI flags, the ``C64CAST_DMA_PASSWORD`` env var). When a file was
-    actually loaded, one INFO line logs its path + a rough field count so the
-    origin of a surprising default is discoverable."""
+    actually loaded, one INFO line per process logs its path, the tables it
+    supplied and a rough field count, so the origin of a surprising default is
+    discoverable — naming the tables, because "(4 fields)" cannot tell an
+    operator that this is the layer that turned a network switch on."""
     data = load_machine_settings()
     if not data:
         return cfg
-    _apply_toml_sections(cfg, data, source=str(paths.settings_path()), unknown=unknown)
-    n_fields = sum(len(v) for v in data.values() if isinstance(v, dict))
-    log.info("machine settings: %s (%d fields)", paths.settings_path(), n_fields)
+    path = paths.settings_path()
+    _apply_toml_sections(cfg, data, source=str(path), unknown=unknown)
+    seen_key = _settings_state_key(path)
+    if seen_key not in _announced_machine_settings:
+        _announced_machine_settings.add(seen_key)
+        n_fields = sum(len(v) for v in data.values() if isinstance(v, dict))
+        log.info(
+            "machine settings: %s (%d fields in %s)",
+            path,
+            n_fields,
+            ", ".join(f"[{k}]" for k in sorted(data)),
+        )
     return cfg
 
 
-def machine_baseline() -> Config:
+def machine_baseline(unknown: list[UnknownKey] | None = None) -> Config:
     """A fresh Config carrying the machine-settings layer and nothing above it.
 
     This is the "nothing was set *here*" reference for every layer that has to
@@ -3642,8 +3928,15 @@ def machine_baseline() -> Config:
 
     Reads the settings file on every call, which is what makes it correct rather
     than cached: a run that saves machine settings and then serializes a config
-    must measure against the file as it now is."""
-    return apply_machine_settings(Config())
+    must measure against the file as it now is.
+
+    `unknown` exists so a caller that is already collecting stray keys can hand
+    its list over. Without one, `_apply_section` falls back to logging each
+    stray machine-settings key on the spot — a bare `log.warning` above
+    `--doctor`'s formatted report, which is the exact out-of-band presentation
+    the collect-then-present split exists to avoid, and which `_dedupe_unknown`
+    cannot collapse because the record never enters the list."""
+    return apply_machine_settings(Config(), unknown)
 
 
 def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
@@ -3771,14 +4064,13 @@ def _parse_ensemble_section(data: dict[str, Any]) -> EnsembleCfg:
 # each section that should NEVER cascade (e.g. ultimate64.url is per-system
 # only — every U64 has its own IP, no sensible global default).
 #
-# Sections deliberately omitted from this list:
-#   [[scenes]] — playlists are per-system by nature; sharing scenes across
-#                systems is what the [ensemble] orchestrate hook is for, not
-#                a side-effect of config cascading.
-#   [video]    — device index identifies a physical capture device.
-#   [control]  — there is one control plane shared across the ensemble (see
-#                control_plane refactor), wired from the master config.
-#   [web]      — likewise process-wide: one host serves the whole ensemble.
+# Together with _NEVER_CASCADE_SECTIONS below this is a TOTAL classification of
+# the scalar sections plus [color]: every one is listed exactly once, and
+# tests/test_ensemble_config.py asserts the partition. It used to be a
+# don't-list in a comment, which is how six sections came to be missing from the
+# master apply path with nothing to notice — including [hardware] and
+# [teensyrom], listed here as cascading while `defaults.hardware` was never
+# populated from the master file at all.
 _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("hardware", frozenset()),
     # serial_port + host are per-system (each TR has its own device/IP),
@@ -3786,6 +4078,18 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("teensyrom", frozenset({"serial_port", "host"})),
     ("ultimate64", frozenset({"url"})),
     ("audio", frozenset()),
+    # The audio-pipeline shaping sections, on the same footing as [audio]
+    # itself: nothing in either names a per-system identity, and a wall wants
+    # one DSP chain / one analyzer tuning.
+    ("dsp", frozenset()),
+    ("audio_features", frozenset()),
+    # Gesture control is built per system, but the camera it reads comes from
+    # [video].device (which never cascades), so the tuning here is a wall-wide
+    # default like any other.
+    ("vision", frozenset()),
+    # [wled].listen is read off cfgs[0] for the whole process (like [control]),
+    # so a master [wled] that did not cascade could not be honored at all.
+    ("wled", frozenset()),
     ("interstitial", frozenset()),
     ("playlist", frozenset()),
     ("debug", frozenset()),
@@ -3798,6 +4102,23 @@ _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("performance", frozenset()),
     ("menu", frozenset()),
 )
+
+# The scalar sections that never cascade, each with the reason. [[scenes]] is
+# absent from both lists because it is not a scalar section: playlists are
+# per-system by nature, and sharing scenes across systems is what the
+# [ensemble] orchestrate hook is for, not a side-effect of config cascading.
+_NEVER_CASCADE_SECTIONS: dict[str, str] = {
+    "video": "device names one physical capture device",
+    "control": "one control plane serves the whole ensemble (LoadResult.master_control)",
+    "web": "process-wide: one host serves the whole ensemble (LoadResult.master_web)",
+    "midi_control": "process-wide control surface (LoadResult.master_midi_control)",
+}
+
+# The never-cascade sections a master TOML can still put to work, because
+# LoadResult hands them to the runtime directly. Anything else in
+# _NEVER_CASCADE_SECTIONS reaches nothing from a master file, which load_master
+# says out loud rather than discarding in silence.
+_MASTER_PROCESS_WIDE_SECTIONS: frozenset[str] = frozenset({"control", "web", "midi_control"})
 
 
 def apply_master_defaults(
@@ -3826,6 +4147,16 @@ def apply_master_defaults(
     "if you want to override a master default with the dataclass default,
     set the master to the dataclass default too" — usually a non-issue.
 
+    Mutable values are deep-copied on the way in. A bare `setattr` handed every
+    inheriting system the *same* list/dict object as the master and as each
+    other — `color.hue_corrections`, `performance.clips`,
+    `hardware.host_sid_chips`, `ultimate64.sid_panning`/`sid_volume` are all
+    mutable — so one system mutating one in place would mutate every system's,
+    invisibly at the config layer. Nothing does that today; the rest of this
+    module copies defensively anyway (`dict(hc)` per hue band, a per-instance
+    default cc_map, `scene_color`'s deepcopy) precisely so shared state cannot
+    leak between Configs, and the cascade runs once per system at startup.
+
     Returns the same `sys_cfg` instance (mutated in place)."""
     for section_name, skip_fields in _CASCADE_SECTIONS:
         master_section = getattr(defaults, section_name)
@@ -3838,11 +4169,17 @@ def apply_master_defaults(
             master_val = getattr(master_section, f.name)
             sys_val = getattr(sys_section, f.name)
             if sys_val == blank_val and master_val != blank_val:
-                setattr(sys_section, f.name, master_val)
+                setattr(sys_section, f.name, copy.deepcopy(master_val))
     return sys_cfg
 
 
-def resolve_recording_path(recording: RecordingCfg, system_name: str, *, is_ensemble: bool) -> str:
+def resolve_recording_path(
+    recording: RecordingCfg,
+    system_name: str,
+    *,
+    is_ensemble: bool,
+    baseline: RecordingCfg | None = None,
+) -> str:
     """Per-system output file for `[recording]`, unexpanded.
 
     cv2.VideoWriter has no notion of sharing a file, so N systems opening one
@@ -3854,11 +4191,22 @@ def resolve_recording_path(recording: RecordingCfg, system_name: str, *, is_ense
     An explicit per-system `path` is honored verbatim: the user naming the file
     outranks a scheme for naming it, and two systems pointed at one name are
     caught by doctor rather than silently renamed. "Explicit" is the same
-    approximation :func:`apply_master_defaults` makes — a value differing from
-    the dataclass default — so a per-system file that spells out the default
-    is treated as not having set it, and still gets a distinct name.
+    approximation :func:`apply_master_defaults` makes, measured against the
+    same reference: the **machine-overlaid** baseline, not the dataclass
+    default. That distinction is the whole finding — `[recording]` goes through
+    the machine-settings layer, so a `settings.toml` carrying `path` made every
+    system in an ensemble look explicit, skip the per-system stem, and point N
+    `cv2.VideoWriter`s at one file, through the one layer every other layering
+    decision in this module treats as unset.
+
+    `baseline` lets a caller that already built one (`machine_baseline()`, or
+    the cascade baseline `load_master` reuses) pass it in; without one it is
+    read here, which costs a settings-file read per call.
     """
-    if not is_ensemble or recording.path != RecordingCfg.path:
+    if not is_ensemble:
+        return recording.path
+    blank = baseline if baseline is not None else machine_baseline().recording
+    if recording.path != blank.path:
         return recording.path
     stem, ext = os.path.splitext(recording.path)
     return f"{stem}-{system_name}{ext}"
@@ -3963,54 +4311,39 @@ def load_master(path: str | None) -> LoadResult:
 
     # Master defaults start from the machine layer (defaults → machine →
     # master), so a machine setting is the baseline the master TOML overrides.
+    #
+    # The master's own sections go through the SAME apply loop as a project or
+    # per-system file. A hand-written tuple of (section, dataclass) pairs used
+    # to stand in for it here, and had drifted: six sections a master file may
+    # legally carry (hardware, teensyrom, vision, dsp, audio_features, wled)
+    # never reached _apply_section at all, so they produced neither an applied
+    # value nor an UnknownKey — and [hardware]/[teensyrom] are in
+    # _CASCADE_SECTIONS, so `[hardware] backend = "teensyrom"` in a master read
+    # as nothing while the cascade dutifully copied the machine layer instead.
+    # It also ran 3 of the 10 validators, so a master [ultimate64].sid_panning
+    # was cascaded into every system without the check whose whole purpose is
+    # to fire before the mixer is configured.
     defaults = Config()
     apply_machine_settings(defaults, unknown)
-    for section, dc in (
-        ("ultimate64", defaults.ultimate64),
-        ("video", defaults.video),
-        ("audio", defaults.audio),
-        ("interstitial", defaults.interstitial),
-        ("playlist", defaults.playlist),
-        ("debug", defaults.debug),
-        ("preview", defaults.preview),
-        ("recording", defaults.recording),
-        ("control", defaults.control),
-        ("web", defaults.web),
-        ("midi_control", defaults.midi_control),
-        ("performance", defaults.performance),
-        ("menu", defaults.menu),
-    ):
-        if section in raw:
-            _apply_section(dc, raw[section], section, unknown, source=path)
+    _apply_toml_sections(defaults, raw, source=path, unknown=unknown)
 
-    # Same cc_map-authored tracking as _apply_toml_sections, for the master TOML
-    # (which applies its sections through this separate path). [midi_control] is
-    # process-wide, so the master is the authoritative layer in ensemble mode.
-    master_mc = raw.get("midi_control")
-    if isinstance(master_mc, dict) and "cc_map" in master_mc:
-        defaults.midi_control.cc_map_is_default = False
-
-    _validate_use_reu_staged(defaults.video)
-    _validate_double_buffer(defaults.video)
-    _validate_performance(defaults.performance)
-
-    # [color] master defaults — handled separately for the list-of-tables
-    # field, mirroring load() above.
-    if "color" in raw:
-        raw_color = dict(raw["color"])
-        raw_hc = raw_color.pop("hue_corrections", [])
-        _apply_section(defaults.color, raw_color, "color", unknown, source=path)
-        for hc in raw_hc:
-            if not isinstance(hc, dict):
-                raise ValueError(f"color.hue_corrections entry must be a table, got {hc!r}")
-            defaults.color.hue_corrections.append(dict(hc))
-        _validate_force_palette(defaults.color)
+    inert = sorted(
+        s for s in raw if s in _NEVER_CASCADE_SECTIONS and s not in _MASTER_PROCESS_WIDE_SECTIONS
+    )
+    if inert:
+        log.warning(
+            "[%s] ensemble master carries %s — ignored (%s), so put these in the "
+            "per-system configs",
+            path,
+            ", ".join(f"[{s}]" for s in inert),
+            "; ".join(f"[{s}]: {_NEVER_CASCADE_SECTIONS[s]}" for s in inert),
+        )
 
     # The "unset" baseline for the per-system cascade is a machine-overlaid
     # Config (not a blank one): a field coming only from the machine layer must
     # still be treated as "this system didn't set it" so the master TOML can
     # override it — machine < master < per-system. Built once, reused per system.
-    cascade_baseline = machine_baseline()
+    cascade_baseline = machine_baseline(unknown)
 
     master_dir = os.path.dirname(os.path.abspath(path))
     cfgs: list[Config] = []
@@ -4028,6 +4361,10 @@ def load_master(path: str | None) -> LoadResult:
         cfgs.append(sys_cfg)
         sys_paths.append(sub_path)
     _warn_audio_only_ensemble(cfgs, [e.name for e in ensemble.systems])
+    # The process-wide sections come off `defaults`, which no merge_cli call
+    # ever sees — so the env layer has to be applied here or it never reaches
+    # the control plane the ensemble actually binds.
+    apply_env_credentials(defaults)
     return LoadResult(
         cfgs=cfgs,
         names=[e.name for e in ensemble.systems],
@@ -4040,7 +4377,16 @@ def load_master(path: str | None) -> LoadResult:
     )
 
 
-_AUDIO_BEARING_SCENE_TYPES = frozenset({"video", "waveform", "midi", "asid", "launcher"})
+# Scene types that can hold the ensemble audio slot. `generative` is here for
+# one arm only: scene_factory._build_generative builds a SidFileAudioSource
+# (`wants_audio_lock = True`) for `audio_source = "sid"`, which
+# ComposableScene.competes_for_audio_lock then reports — so a playlist of
+# generative+sid scenes really does contend, and omitting the type meant
+# _warn_audio_only_ensemble stayed silent on the exact contention footgun it
+# exists to catch. tests/test_ensemble_config.py pins the mirror.
+_AUDIO_BEARING_SCENE_TYPES = frozenset(
+    {"video", "waveform", "midi", "asid", "launcher", "generative"}
+)
 
 
 def _scene_contends_for_audio(s: SceneCfg) -> bool:
@@ -4055,6 +4401,10 @@ def _scene_contends_for_audio(s: SceneCfg) -> bool:
     # A muted video falls through like a non-audio scene.
     if s.type == "video" and s.audio is False:
         return False
+    # A generative scene contends only when its audio source drives the real
+    # chip; mic/listen/file/none all leave the slot alone.
+    if s.type == "generative":
+        return s.audio_source == "sid"
     # A launcher with bypass_audio_lock never waits on the slot (it plays
     # its own SID concurrently), so it doesn't contend either.
     return not (s.type == "launcher" and s.bypass_audio_lock)
@@ -4113,16 +4463,57 @@ CLI_TO_CFG = {
 }
 
 
+def apply_env_credentials(cfg: Config) -> Config:
+    """Fold the credential env vars onto `cfg`, returning it.
+
+    ``C64CAST_DMA_PASSWORD`` → ``[ultimate64].dma_password``,
+    ``C64CAST_CONTROL_TOKEN`` → ``[control].token``,
+    ``C64CAST_CONTROL_VIEWER_TOKEN`` → ``[control].viewer_token`` — so a
+    credential can be supplied without putting it in a checked-in TOML file.
+    (``C64CAST_WEB_TOKEN``/``C64CAST_WEB_VIEWER_TOKEN`` are re-read by
+    ``serve.py`` at bind time and are not folded here.)
+
+    Separate from :func:`merge_cli` because the ensemble's process-wide
+    ``[control]`` section is not any per-system Config: it is
+    ``LoadResult.master_control``, an object no ``merge_cli`` call ever
+    touches, so the env tokens landed on N Configs the runtime does not read
+    while the plane came up on whatever the shared master TOML declared — the
+    opposite of what the field's own help promises ("env var > this field, so
+    a config that lives in a shared repo doesn't have to carry the
+    credential"). :func:`load_master` calls this on the master defaults.
+
+    **An exported-but-empty variable counts as unset**, not as "blank it".
+    `VAR=$UNSET_OTHER` in a service unit or `docker -e VAR` is the classic way
+    to get one, and clearing a configured token there means the run either
+    refuses to start (a non-loopback bind) or comes up with no authentication
+    (loopback) — neither of which is what the empty value was trying to say.
+    To run with no token, leave the field empty and the variable unset."""
+    env_pw = os.environ.get("C64CAST_DMA_PASSWORD")
+    if env_pw:
+        cfg.ultimate64.dma_password = env_pw
+    env_token = os.environ.get("C64CAST_CONTROL_TOKEN")
+    if env_token:
+        cfg.control.token = env_token
+    env_viewer = os.environ.get("C64CAST_CONTROL_VIEWER_TOKEN")
+    if env_viewer:
+        cfg.control.viewer_token = env_viewer
+    return cfg
+
+
 def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
     """For each CLI option whose value is not None, overwrite the matching
     config field. Argparse must use ``default=None`` for every overridable
     option (so "user didn't pass it" is distinguishable from "user passed
     the default").
 
-    Also folds in the C64CAST_DMA_PASSWORD, C64CAST_CONTROL_TOKEN and
-    C64CAST_CONTROL_VIEWER_TOKEN env vars as the final layer of precedence
-    (env > config > default) so credentials can be supplied without putting
-    them in a checked-in TOML file."""
+    Then folds in the credential env vars (:func:`apply_env_credentials`) and
+    re-runs the section validators (:func:`validate_sections`), because this is
+    the last layer that writes into the Config and every validator until now
+    fired at parse time, one layer below.
+
+    Not quite the last word on the *connection*: `cli._resolve_configs` applies
+    the scheme-aware ``-u/--url`` / ``$C64CAST_URL`` target after this, since
+    one string has to be able to pick the backend and the endpoint together."""
     for dest, (section, key) in CLI_TO_CFG.items():
         if not hasattr(args, dest):
             continue
@@ -4130,13 +4521,6 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
         if val is None:
             continue
         setattr(getattr(cfg, section), key, val)
-    env_pw = os.environ.get("C64CAST_DMA_PASSWORD")
-    if env_pw is not None:
-        cfg.ultimate64.dma_password = env_pw
-    env_token = os.environ.get("C64CAST_CONTROL_TOKEN")
-    if env_token is not None:
-        cfg.control.token = env_token
-    env_viewer = os.environ.get("C64CAST_CONTROL_VIEWER_TOKEN")
-    if env_viewer is not None:
-        cfg.control.viewer_token = env_viewer
+    apply_env_credentials(cfg)
+    validate_sections(cfg)
     return cfg

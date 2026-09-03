@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import os
 import tempfile
@@ -288,6 +289,15 @@ class SidPanningConfigTest(unittest.TestCase):
             self._load('[ultimate64]\nsid_panning = ["Middle"]\n')
         self.assertIn("Middle", str(ctx.exception))
 
+    def test_a_scalar_zero_is_refused_like_any_other_scalar(self):
+        # 0 is a legal pan value (Center), so a truthiness guard let
+        # `sid_panning = 0` past the list check while `sid_panning = -3` was
+        # correctly rejected — and resolve_panning's own falsy test then
+        # auto-spreads to [-3, +3], the opposite of centered.
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[ultimate64]\nsid_panning = 0\n")
+        self.assertIn("must be a list", str(ctx.exception))
+
 
 class SidVolumeConfigTest(unittest.TestCase):
     """[ultimate64].sid_volume — a level the mixer can't represent must fail at
@@ -327,6 +337,12 @@ class SidVolumeConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self._load("[ultimate64]\nsid_volume = [0, 0, 0, 0, 0]\n")
         self.assertIn("sid_volume", str(ctx.exception))
+
+    def test_a_scalar_zero_is_refused_like_any_other_scalar(self):
+        # 0 dB is a legal level here, so the truthiness guard swallowed it.
+        with self.assertRaises(ValueError) as ctx:
+            self._load("[ultimate64]\nsid_volume = 0\n")
+        self.assertIn("must be a list", str(ctx.exception))
 
 
 class HostSidChipsConfigTest(unittest.TestCase):
@@ -687,6 +703,26 @@ class UltimateUrlTest(unittest.TestCase):
         )
         self.assertEqual(cfg.ultimate64.url, "http://10.0.0.5")
 
+    def test_a_bare_host_cannot_smuggle_credentials_past_the_parser(self):
+        # The scheme-less fast path used to prefix http:// and return without
+        # ever calling connect.parse_connection_uri, so the refusal this field
+        # documents applied to "http://user:pass@host" and not to
+        # "user:pass@host" — and --save-settings writes [ultimate64].url to
+        # disk and echoes it to stdout.
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._url("admin:hunter2@10.0.0.5")
+        self.assertIn("username/password", str(ctx.exception))
+
+    def test_the_refusal_does_not_echo_the_credential(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._url("admin:hunter2@10.0.0.5")
+        self.assertNotIn("hunter2", str(ctx.exception))
+
+    def test_a_bare_host_query_param_is_refused_like_a_scheme_carrying_one(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._url("10.0.0.5?dma_port=9999")
+        self.assertIn("dma_port = 9999", str(ctx.exception))
+
 
 class AudioDeviceTest(unittest.TestCase):
     """[audio].device accepts an int index or a device name substring."""
@@ -747,6 +783,32 @@ class FormatTomlErrorTest(unittest.TestCase):
         out = cfgmod._format_toml_error("cfg.toml", err)
         self.assertIn("totally opaque parser failure", out)
         self.assertIn("cfg.toml", out)
+
+    def test_a_credential_bearing_offending_line_is_redacted(self):
+        # cli.py logs a ConfigError at error level and --log-file mirrors it to
+        # disk, so echoing the offending source line copied the credential
+        # there — and a TOML typo is exactly the error whose log gets pasted
+        # into an issue. The position still carries the diagnostic value.
+        err = type(
+            "E",
+            (),
+            {
+                "lineno": 2,
+                "colno": 26,
+                "msg": "bad value",
+                "doc": '[ultimate64]\ndma_password = "hunter2" oops\n',
+            },
+        )()
+        out = cfgmod._format_toml_error("cfg.toml", err)
+        self.assertNotIn("hunter2", out)
+        self.assertIn("dma_password", out)
+        self.assertIn("line 2, column 26", out)
+
+    def test_an_innocent_line_keeps_its_caret(self):
+        err = type(
+            "E", (), {"lineno": 2, "colno": 5, "msg": "bad value", "doc": "a = 1\nb = ?\n"}
+        )()
+        self.assertIn("^", cfgmod._format_toml_error("cfg.toml", err))
 
 
 class LoadSonglengthsTest(unittest.TestCase):
@@ -945,6 +1007,77 @@ class MachineSettingsTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.sid_model, "6581")  # config wins
         self.assertEqual(cfg.ultimate64.system, "PAL")  # machine-only field kept
 
+    def test_hue_corrections_are_replaced_by_the_layer_above_not_appended(self):
+        # Appending made the two layers concatenate, so the project file could
+        # not override, reorder or remove a band the machine layer set —
+        # against "every layer above the defaults overrides the ones below it",
+        # and against scene_color()'s replace semantics for the same field.
+        self._write_settings(
+            '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
+        )
+        cfg_path = self._write_config(
+            '[color]\n[[color.hue_corrections]]\nname = "project"\nhue_lo_deg = 20\n'
+        )
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+        self.assertEqual([hc["name"] for hc in cfg.color.hue_corrections], ["project"])
+
+    def test_a_project_file_silent_on_hue_corrections_keeps_the_machine_bands(self):
+        self._write_settings(
+            '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
+        )
+        cfg_path = self._write_config('[color]\ndither = "none"\n')
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+        self.assertEqual([hc["name"] for hc in cfg.color.hue_corrections], ["machine"])
+
+    def test_two_layers_round_trip_through_the_serializer(self):
+        # config_serialize writes a list-of-tables whole or not at all, so
+        # appending made dumps() -> load() apply the machine band twice.
+        from c64cast.app import config_serialize as ser
+
+        self._write_settings(
+            '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
+        )
+        cfg_path = self._write_config(
+            '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
+            '[[color.hue_corrections]]\nname = "project"\nhue_lo_deg = 20\n'
+        )
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+            reloaded = cfgmod.load(self._write_config(ser.dumps(cfg)))
+        self.assertEqual(cfg.color.hue_corrections, reloaded.color.hue_corrections)
+
+    def test_an_empty_hue_corrections_list_clears_the_machine_bands(self):
+        self._write_settings(
+            '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
+        )
+        cfg_path = self._write_config("[color]\nhue_corrections = []\n")
+        with self._env():
+            cfg = cfgmod.load(cfg_path)
+        self.assertEqual(cfg.color.hue_corrections, [])
+
+    def test_the_info_line_names_the_tables_it_supplied(self):
+        # "(4 fields)" cannot tell an operator that this is the layer which
+        # turned a network switch on.
+        self._write_settings('[ultimate64]\nurl = "http://machine.lan"\n')
+        with self._env():
+            with self.assertLogs("c64cast.app.config", level="INFO") as logs:
+                cfgmod.load(None)
+        self.assertTrue(any("[ultimate64]" in m and "machine settings:" in m for m in logs.output))
+
+    def test_the_info_line_is_logged_once_per_file_state(self):
+        # In ensemble mode the layer is re-applied once per system plus twice
+        # more (master defaults, cascade baseline), so one file used to print
+        # N+2 identical lines.
+        self._write_settings('[ultimate64]\nurl = "http://machine.lan"\n')
+        with self._env():
+            with self.assertLogs("c64cast.app.config", level="INFO") as logs:
+                for _ in range(4):
+                    cfgmod.apply_machine_settings(cfgmod.Config())
+        announced = [m for m in logs.output if "machine settings:" in m]
+        self.assertEqual(len(announced), 1)
+
     def test_cli_overrides_machine_and_config(self):
         # defaults < machine < config < CLI
         self._write_settings('[ultimate64]\nsid_model = "8580"\n')
@@ -1141,6 +1274,210 @@ class ControlTokenEnvTest(unittest.TestCase):
             merged = cfgmod.merge_cli(cfgmod.Config(), self._args())
         self.assertEqual(merged.control.token, "")
         self.assertEqual(merged.control.viewer_token, "")
+
+    def test_an_exported_but_empty_var_counts_as_unset(self):
+        # `VAR=$UNSET_OTHER` in a service unit exports "" — a string, not None,
+        # so an `is not None` fold silently blanked a configured token, which
+        # on loopback means no authentication at all.
+        cfg = cfgmod.Config()
+        cfg.control.token = "from-config"
+        cfg.control.viewer_token = "viewer-from-config"
+        cfg.ultimate64.dma_password = "pw-from-config"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "C64CAST_CONTROL_TOKEN": "",
+                "C64CAST_CONTROL_VIEWER_TOKEN": "",
+                "C64CAST_DMA_PASSWORD": "",
+            },
+        ):
+            merged = cfgmod.merge_cli(cfg, self._args())
+        self.assertEqual(merged.control.token, "from-config")
+        self.assertEqual(merged.control.viewer_token, "viewer-from-config")
+        self.assertEqual(merged.ultimate64.dma_password, "pw-from-config")
+
+
+class MergeCliValidatesTest(unittest.TestCase):
+    """merge_cli is the last layer that writes into a Config, and every section
+    validator used to fire one layer below it — at parse time — so a CLI flag or
+    an env var reached the run unchecked and failed mid-show instead."""
+
+    def _args(self, **over: object) -> argparse.Namespace:
+        ns = argparse.Namespace(**dict.fromkeys(cfgmod.CLI_TO_CFG))
+        for k, v in over.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_a_cli_choice_outside_the_vocabulary_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            cfgmod.merge_cli(cfgmod.Config(), self._args(system="ntscc"))
+        self.assertIn("[ultimate64].system", str(ctx.exception))
+
+    def test_a_cli_audio_device_that_is_blank_is_refused(self):
+        with self.assertRaises(cfgmod.ConfigError):
+            cfgmod.merge_cli(cfgmod.Config(), self._args(audio_device="   "))
+
+    def test_a_valid_cli_value_still_merges(self):
+        merged = cfgmod.merge_cli(cfgmod.Config(), self._args(system="PAL"))
+        self.assertEqual(merged.ultimate64.system, "PAL")
+
+
+class ChoiceEnforcementTest(unittest.TestCase):
+    """`choices` metadata is the single source of truth, and it is now enforced
+    generically for the scalar sections — the fields nobody hand-wrote a
+    validator for used to fail *open*, and `sid_video_mode` failed open into a
+    machine retiming plus an HDMI output-mode switch (hw_provision tests it as
+    `!= "off"`)."""
+
+    def _load(self, body: str) -> cfgmod.Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write(body)
+            return cfgmod.load(path)
+
+    def test_sid_video_mode_typo_is_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._load('[ultimate64]\nsid_video_mode = "on"\n')
+        self.assertIn("sid_video_mode", str(ctx.exception))
+
+    def test_host_sid_model_typo_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._load('[hardware]\nhost_sid_model = "6851"\n')
+
+    def test_teensyrom_storage_typo_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._load('[teensyrom]\nstorage = "sdcard"\n')
+
+    def test_hdmi_scan_resolution_typo_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._load('[ultimate64]\nhdmi_scan_resolution = "1080"\n')
+
+    def test_a_declared_choice_is_accepted(self):
+        self.assertEqual(
+            self._load('[ultimate64]\nsid_video_mode = "auto"\n').ultimate64.sid_video_mode,
+            "auto",
+        )
+
+    def test_system_is_matched_case_insensitively(self):
+        # hw/backend.py and hw/hw_provision.py both .upper() this, so the
+        # lowercase spelling works today and has to keep working.
+        self.assertEqual(self._load('[ultimate64]\nsystem = "ntsc"\n').ultimate64.system, "ntsc")
+
+    def test_a_system_typo_is_still_refused(self):
+        with self.assertRaises(ValueError):
+            self._load('[ultimate64]\nsystem = "ntscc"\n')
+
+    def test_an_open_vocabulary_still_takes_its_other_shape(self):
+        # sid_play_rate is "auto"/"off" *plus* any rate in Hz.
+        self.assertEqual(
+            self._load("[ultimate64]\nsid_play_rate = 50.1\n").ultimate64.sid_play_rate, 50.1
+        )
+
+    def test_every_exemption_names_a_real_choices_field(self):
+        # An exemption must not outlive the field it excuses.
+        probe = cfgmod.Config()
+        for key in (*cfgmod._CHOICES_OPEN, *cfgmod._CHOICES_CASE_INSENSITIVE):
+            section, _, name = key.partition(".")
+            self.assertIn(section, cfgmod._TOML_SCALAR_SECTIONS, key)
+            fld = {f.name: f for f in dataclasses.fields(getattr(probe, section))}[name]
+            self.assertTrue(fld.metadata.get("choices"), key)
+
+
+class BoolFieldTypingTest(unittest.TestCase):
+    """Every consumer of a bool field is a plain truthiness test, so a quoted
+    TOML `"false"` stored the truthy string "false" and meant the opposite of
+    what it read as — on the two switches that decide network exposure."""
+
+    def _load(self, body: str) -> cfgmod.Config:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write(body)
+            return cfgmod.load(path)
+
+    def test_a_quoted_false_on_a_security_gate_is_refused(self):
+        with self.assertRaises(cfgmod.ConfigError) as ctx:
+            self._load('[control]\nallow_unauthenticated = "false"\n')
+        self.assertIn("allow_unauthenticated", str(ctx.exception))
+
+    def test_a_quoted_false_on_the_setup_wizard_is_refused(self):
+        with self.assertRaises(cfgmod.ConfigError):
+            self._load('[web]\nsetup_wizard = "false"\n')
+
+    def test_an_int_for_a_bool_is_refused(self):
+        with self.assertRaises(cfgmod.ConfigError):
+            self._load("[control]\nenabled = 1\n")
+
+    def test_a_real_bool_is_accepted(self):
+        self.assertTrue(
+            self._load("[control]\nallow_unauthenticated = true\n").control.enabled is False
+        )
+
+    def test_the_tri_states_are_untouched(self):
+        # use_reu_staged is `bool | str`, so "auto" is legal and its own
+        # validator owns the vocabulary.
+        self.assertEqual(
+            self._load('[video]\nuse_reu_staged = "auto"\n').video.use_reu_staged, "auto"
+        )
+
+
+class InternalFieldNotAuthorableTest(unittest.TestCase):
+    """`cc_map_is_default` is derived run state: it is set False only when a
+    layer really authored a cc_map. Authoring the flag directly inverted
+    midi_control.resolve_effective_cc_map's precedence with no cc_map in
+    sight — the `internal` metadata only hid the field from the four rendering
+    surfaces, never from the apply path."""
+
+    def test_it_is_reported_as_an_unknown_key(self):
+        unknown: list[cfgmod.UnknownKey] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write("[midi_control]\ncc_map_is_default = false\n")
+            cfg = cfgmod.load(path, unknown)
+        self.assertTrue(cfg.midi_control.cc_map_is_default)
+        self.assertEqual(
+            [(r.section, r.key) for r in unknown], [("midi_control", "cc_map_is_default")]
+        )
+
+    def test_authoring_a_cc_map_still_clears_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write("[midi_control]\ncc_map = []\n")
+            cfg = cfgmod.load(path, [])
+        self.assertFalse(cfg.midi_control.cc_map_is_default)
+
+
+class UnknownTableTest(unittest.TestCase):
+    """A misspelled *table* is the one stray-key shape the per-section walk
+    could never see, because a table the loader applies to nothing never
+    reaches _apply_section at all — which is how a master `[hardware]` block
+    could vanish with no diagnostic anywhere."""
+
+    def _load(self, body: str) -> list[cfgmod.UnknownKey]:
+        unknown: list[cfgmod.UnknownKey] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.toml")
+            with open(path, "w") as f:
+                f.write(body)
+            cfgmod.load(path, unknown)
+        return unknown
+
+    def test_an_unrecognized_table_is_collected(self):
+        recs = self._load('[ultimate65]\nurl = "http://x"\n')
+        self.assertEqual([(r.section, r.key) for r in recs], [("", "ultimate65")])
+        self.assertIn("ultimate64", recs[0].describe() + (recs[0].hint or ""))
+
+    def test_it_describes_itself_as_a_table(self):
+        recs = self._load("[nonsense]\nx = 1\n")
+        self.assertIn("unknown config table [nonsense]", recs[0].describe())
+
+    def test_known_tables_are_silent(self):
+        self.assertEqual(
+            self._load('[ultimate64]\nurl = "http://x"\n[[scenes]]\ntype = "blank"\n'), []
+        )
 
 
 class BuildersTableTest(unittest.TestCase):

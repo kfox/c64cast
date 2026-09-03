@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import unittest
 
+from c64cast.app import connect
 from c64cast.app.config import Config
 from c64cast.app.connect import ConnectionURIError, apply_to_config, parse_connection_uri
 
@@ -159,6 +160,39 @@ class UserinfoRejectedTest(unittest.TestCase):
     def test_tr_userinfo_rejected(self):
         with self.assertRaises(ConnectionURIError):
             parse_connection_uri("tr://admin:s3cret@teensy.lan")
+
+    def test_the_refusal_does_not_write_the_credential_to_the_log(self):
+        # cli.py logs a ConnectionURIError at error level and --log-file
+        # mirrors it to disk, so the guard whose whole purpose is keeping the
+        # credential off those paths was itself putting it there.
+        for target in (
+            "u64://admin:s3cret@192.168.2.64",
+            "http://admin:s3cret@u64.lan",
+            "tr://admin:s3cret@teensy.lan",
+        ):
+            with self.assertRaises(ConnectionURIError) as cm:
+                parse_connection_uri(target)
+            self.assertNotIn("s3cret", str(cm.exception), target)
+            # The host is still named, so the message stays diagnostic.
+            self.assertIn("REDACTED", str(cm.exception), target)
+
+
+class RedactTargetTest(unittest.TestCase):
+    """`redact_target` is what every parse failure reports the target through."""
+
+    def test_an_ordinary_target_is_unchanged(self):
+        for target in ("u64://192.168.2.64", "http://u64.lan:8080/x", "tr:///dev/cu.usbmodem1"):
+            self.assertEqual(connect.redact_target(target), target)
+
+    def test_a_password_in_the_netloc_is_masked_with_the_host_kept(self):
+        out = connect.redact_target("u64://admin:s3cret@192.168.2.64")
+        self.assertNotIn("s3cret", out)
+        self.assertNotIn("admin", out)
+        self.assertIn("192.168.2.64", out)
+
+    def test_a_secret_looking_query_value_is_masked(self):
+        out = connect.redact_target("u64://u64.lan?token=abc123")
+        self.assertNotIn("abc123", out)
 
 
 class ApplyToConfigTest(unittest.TestCase):

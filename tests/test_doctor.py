@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, MachineSettingsIsolation
 
 import c64cast
 from c64cast.app import config as cfgmod
@@ -21,6 +21,19 @@ from c64cast.app import config_serialize as ser
 from c64cast.app import doctor, paths
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
+
+# The doctor loads configs, and loading reads the machine-settings file — so
+# point $C64CAST_SETTINGS at a missing path for the module. Tests that want a
+# machine layer write their own file and re-patch over this.
+_iso = MachineSettingsIsolation()
+
+
+def setUpModule():
+    _iso.start()
+
+
+def tearDownModule():
+    _iso.stop()
 
 
 def _write(path: str, body: str) -> None:

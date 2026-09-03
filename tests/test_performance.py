@@ -287,10 +287,29 @@ class ClipConfigTest(unittest.TestCase):
             [{"slot": 1, "loop": "yes"}],  # non-bool loop
             [{"slot": 1, "overlays": []}],  # denied scene field
             [{"slot": 1, "flie": "x"}],  # unknown key
+            # One pad fires one clip: midi_control._add_clip_pad_mappings skips
+            # a (kind, number) it has already bound, so the second declaration
+            # here would be silently unfirable.
+            [{"slot": 1, "pad": 36}, {"slot": 2, "pad": 36}],
         ]
         for bad in cases:
             with self.assertRaises(ValueError, msg=f"should reject {bad!r}"):
                 cfgmod._validate_clips(bad)
+
+    def test_the_same_pad_number_on_two_pad_types_is_fine(self):
+        # note 36 and PC 36 are different messages, so they are not a clash.
+        cfgmod._validate_clips(
+            [
+                {"slot": 1, "pad": 36, "pad_type": "note"},
+                {"slot": 2, "pad": 36, "pad_type": "pc"},
+            ]
+        )
+
+    def test_the_duplicate_pad_message_names_both_slots(self):
+        with self.assertRaises(ValueError) as ctx:
+            cfgmod._validate_clips([{"slot": 4, "pad": 36}, {"slot": 9, "pad": 36}])
+        self.assertIn("slot 9", str(ctx.exception))
+        self.assertIn("slot 4", str(ctx.exception))
 
     def test_validate_accepts_a_good_grid(self):
         cfgmod._validate_clips(

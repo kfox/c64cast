@@ -11,6 +11,7 @@ CLI/playlist suites.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import tempfile
@@ -233,11 +234,22 @@ class BuildConfigTest(unittest.TestCase):
         """
         args = _parse(["a.mp4"])
         # A value that is distinguishable from every default, per field type.
+        # A field with a `choices` vocabulary takes another member of it rather
+        # than a made-up string: merge_cli is the last layer and now re-runs the
+        # section validators, so a junk value is refused there (which is the
+        # point — a CLI flag used to write past every load-time check).
+        fields_by_section = {
+            name: {f.name: f for f in dataclasses.fields(getattr(quickcast.Config(), name))}
+            for name in {section for section, _ in CLI_TO_CFG.values()}
+        }
         sentinels: dict[str, object] = {}
         for dest, (section, key) in CLI_TO_CFG.items():
             current = getattr(getattr(quickcast.Config(), section), key)
-            if isinstance(current, bool):
-                value: object = not current
+            choices = fields_by_section[section][key].metadata.get("choices")
+            if choices:
+                value: object = next(c for c in choices if c != current)
+            elif isinstance(current, bool):
+                value = not current
             elif isinstance(current, int):
                 value = (current or 0) + 7
             elif isinstance(current, float):

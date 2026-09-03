@@ -553,22 +553,26 @@ These sections cascade from the master into every system:
 
 | Section | Notes |
 |---|---|
+| `[hardware]` | which backend the wall talks to |
+| `[teensyrom]` | except `serial_port` and `host` — every TeensyROM+ has its own device node or address |
 | `[ultimate64]` | except `url` — every machine has its own address |
-| `[audio]`, `[color]`, `[playlist]`, `[interstitial]` | the show's global look and sound |
+| `[audio]`, `[dsp]`, `[audio_features]` | the show's global sound and its analyzer |
+| `[color]`, `[playlist]`, `[interstitial]` | the show's global look |
+| `[vision]`, `[wled]` | the gesture surface and the LED bridge |
 | `[preview]`, `[recording]`, `[debug]`, `[menu]`, `[performance]` | except `recording.path` — every system needs its own file |
 
-`[control]` and `[midi_control]` are read from the master and are **not**
-cascaded: there is one control plane and one MIDI surface for the process, not
-one per system.
+`[control]`, `[web]` and `[midi_control]` are read from the master and are
+**not** cascaded: there is one control plane, one console host and one MIDI
+surface for the process, not one per system.
 
 `[[scenes]]` and `[video]` never cascade. A playlist and a capture device
 belong to one machine by their nature; sharing a scene across systems is what
 `orchestrate` is for, not a side effect of inheritance. `[[scenes]]` in a
-master file is ignored with a warning.
+master file is ignored with a warning, and so is `[video]` — nothing reads it
+from there.
 
-Anything else in a master file — `[hardware]`, `[teensyrom]`, `[dsp]`,
-`[vision]`, `[wled]` — is not read at all. Those belong in the per-system
-files.
+Every other table in a master file is reported as an unknown table, so a
+misspelled `[hardwear]` is named rather than silently doing nothing.
 
 > [!NOTE]
 > The cascade's test for "this system set the field itself" is "the value
