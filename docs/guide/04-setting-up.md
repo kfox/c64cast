@@ -230,6 +230,14 @@ that installer's own upgrade command, so you never have to remember which
 one applies to you. It asks before doing anything (`--yes` skips the prompt
 for a script) and keeps whichever optional features you already installed.
 
+An install has an hour to finish before `--upgrade` stops it, which is long
+enough to download a release that moved a large dependency, or to build one
+from source on a small single-board machine. If yours is slower than that —
+a very thin link, or a host with no prebuilt wheels at all — set
+`C64CAST_UPGRADE_TIMEOUT_S` to a larger number of seconds, or to `0` for no
+limit. If a run ever *is* stopped, it says so and says that the upgrade may
+be only partly applied: re-run the same command to finish it.
+
 To ask without touching anything, `c64cast --check-for-updates` reports
 whether a newer release exists and stops there. Add `--write-state` and it
 also records the answer to disk, which two other surfaces read without ever
