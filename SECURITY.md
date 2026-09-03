@@ -64,6 +64,22 @@ The web console's token works the same way and is supplied the same way
 "off": that surface has no history to preserve and it owns the hardware, so a
 host with no token configured mints one rather than binding open.
 
+**If you put a reverse proxy in front of this, suppress query strings from its
+access log.** A token legitimately rides in a URL in three places — the login
+link the daemon prints at startup, the read-only link the console hands out,
+and the `?token=` escape hatch for `curl` — because a browser can set no
+headers on a plain navigation or a WebSocket handshake. c64cast's own logging
+handles that (uvicorn runs with `access_log=False`, and the log the console
+shows redacts on the way in), but nothing it does can reach nginx's
+`$request_uri`. Nothing here needs a proxy; this is for the deployments that
+add one anyway.
+
+**A token you set by hand should be long.** Neither login route nor the gate
+throttles attempts, and nothing refuses a short token — `[web].token = "c64"`
+is a console that falls to a few thousand unanswered requests. A generated one
+is 32 URL-safe bytes; c64cast warns below 16 characters and otherwise honors
+what you configured.
+
 **The setup window's exposure is bounded by construction, not by an allowlist.**
 `setup_gate.py` blocks every route the app already knows about except the
 console's own static assets and `/api/setup` itself — nothing that starts
@@ -79,6 +95,17 @@ is the reason it is off unless something has deliberately turned it on.
 anyone who can already run that command has shell access to the box, and a
 route that did the same thing over HTTP would hand that reopening power to
 anyone who could merely reach the port.
+
+**A lost data directory does not reopen it.** The completion marker lives
+under the data root (`~/.local/share/c64cast/setup.json` by default), and its
+absence used to be the only evidence consulted — so a data root that is a
+container layer with no volume, a tmpfs, or a swept cache reopened the window
+on a host that was still fully configured, since machine settings live under
+the *config* dir instead. The window now also requires that machine settings
+not already name a connection target; a provisioned host with a missing
+marker logs a warning and stays shut, and `--reset-setup` writes an explicit
+reopen marker beside removing the completion one so an admin with shell
+access can still ask for it. Opening the window logs a warning, every time.
 
 **Nothing the window exposes leaks the token.** `GET /api/setup` reports only
 whether a token may be *set* — never the token, redacted or otherwise, because

@@ -11,6 +11,7 @@ CLI/playlist suites.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import tempfile
@@ -121,7 +122,7 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
 
     def _touch(self, *names: str):
         for n in names:
-            open(os.path.join(self.tmp, n), "w").close()
+            open(os.path.join(self.tmp, n), "w", encoding="utf-8").close()
 
     def test_directory_of_sids(self):
         self._touch("a.sid", "b.sid")
@@ -233,11 +234,22 @@ class BuildConfigTest(unittest.TestCase):
         """
         args = _parse(["a.mp4"])
         # A value that is distinguishable from every default, per field type.
+        # A field with a `choices` vocabulary takes another member of it rather
+        # than a made-up string: merge_cli is the last layer and now re-runs the
+        # section validators, so a junk value is refused there (which is the
+        # point — a CLI flag used to write past every load-time check).
+        fields_by_section = {
+            name: {f.name: f for f in dataclasses.fields(getattr(quickcast.Config(), name))}
+            for name in {section for section, _ in CLI_TO_CFG.values()}
+        }
         sentinels: dict[str, object] = {}
         for dest, (section, key) in CLI_TO_CFG.items():
             current = getattr(getattr(quickcast.Config(), section), key)
-            if isinstance(current, bool):
-                value: object = not current
+            choices = fields_by_section[section][key].metadata.get("choices")
+            if choices:
+                value: object = next(c for c in choices if c != current)
+            elif isinstance(current, bool):
+                value = not current
             elif isinstance(current, int):
                 value = (current or 0) + 7
             elif isinstance(current, float):
@@ -291,7 +303,7 @@ class BuildConfigTest(unittest.TestCase):
         # no -u/-d is given on the command line.
         with tempfile.TemporaryDirectory() as tmp:
             settings = os.path.join(tmp, "settings.toml")
-            with open(settings, "w") as f:
+            with open(settings, "w", encoding="utf-8") as f:
                 f.write('[ultimate64]\nurl = "http://machine.lan"\n[video]\ndevice = 5\n')
             env = {k: v for k, v in os.environ.items() if k != "C64CAST_URL"}
             env["C64CAST_SETTINGS"] = settings
@@ -304,7 +316,7 @@ class BuildConfigTest(unittest.TestCase):
         # An explicit -u overrides the machine-settings connection.
         with tempfile.TemporaryDirectory() as tmp:
             settings = os.path.join(tmp, "settings.toml")
-            with open(settings, "w") as f:
+            with open(settings, "w", encoding="utf-8") as f:
                 f.write('[ultimate64]\nurl = "http://machine.lan"\n')
             with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings}):
                 cfg = quickcast.build_config(_parse(["-u", "u64://10.9.9.9", "a.mp4"]))
@@ -605,7 +617,7 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
     def test_existing_file_with_glob_chars_is_literal(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "clip [abc123].mp4")
-            open(path, "w").close()
+            open(path, "w", encoding="utf-8").close()
             self.assertEqual(resolve_file_spec(path, (".mp4",), label="video"), [path])
 
 

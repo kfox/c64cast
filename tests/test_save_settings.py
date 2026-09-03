@@ -128,34 +128,58 @@ class SaveSettingsTest(unittest.TestCase):
         self.assertNotIn("s3cret", out)
 
 
-class SaveSettingsDmaPasswordWarningTest(unittest.TestCase):
-    """Drives run_save_settings directly (not cli.main()) so assertLogs can
-    capture its warning without cli.main()'s configure_logging() installing a
-    real terminal handler alongside it (the two must not nest — see
-    CLAUDE.md's test conventions)."""
+class SaveSettingsSecretsSurviveTest(unittest.TestCase):
+    """A secret already in settings.toml survives the merge-and-rewrite.
+
+    `--save-settings` used to warn that it was about to drop a hand-written
+    `dma_password`, because it serialized through `config_serialize.dumps`,
+    which suppresses every `SECRET_FIELDS` value. Both writers of that file now
+    go through `config_serialize.save_machine_settings`, which puts them back —
+    so there is nothing left to warn about, and the appliance setup form (the
+    other writer, which had no warning at all) stops erasing them silently.
+
+    Drives run_save_settings directly rather than through cli.main(), so
+    nothing installs a real terminal handler over the captured stdout."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self._settings = os.path.join(self._tmp.name, "settings.toml")
         with open(self._settings, "w", encoding="utf-8") as f:
-            f.write('[ultimate64]\ndma_password = "topsecret"\n')
+            f.write(
+                '[ultimate64]\ndma_password = "topsecret"\n\n'
+                '[web]\ntoken = "a-configured-web-token"\n'
+            )
 
-    def test_existing_dma_password_triggers_warning_not_silent_drop(self):
-        # A hand-written dma_password in settings.toml can't survive a save
-        # (config_serialize suppresses it on write) — the loss must be
-        # visible, not silent.
+    def _save(self) -> str:
         args = build_parser().parse_args(["-d", "2", "--save-settings"])
         buf = io.StringIO()
         with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._settings}):
-            with self.assertLogs("c64cast", level="WARNING") as cm:
-                with redirect_stdout(buf):
-                    rc = run_save_settings(args)
-        self.assertEqual(rc, 0)
-        self.assertTrue(any("dma_password" in r for r in cm.output))
+            with quiet_logging(), redirect_stdout(buf):
+                self.assertEqual(run_save_settings(args), 0)
+        return buf.getvalue()
+
+    def test_the_merge_keeps_every_secret_the_file_already_carried(self):
+        self._save()
         with open(self._settings) as f:
             text = f.read()
-        self.assertNotIn("topsecret", text)
+        self.assertIn('dma_password = "topsecret"', text)
+        self.assertIn('token = "a-configured-web-token"', text)
+        # And the flag this invocation actually asked to save.
+        self.assertIn("device = 2", text)
+
+    def test_the_echoed_copy_names_the_secrets_without_quoting_them(self):
+        out = self._save()
+        self.assertNotIn("topsecret", out)
+        self.assertNotIn("a-configured-web-token", out)
+        self.assertIn("[ultimate64].dma_password", out)
+        self.assertIn("[web].token", out)
+
+    def test_a_preserved_secret_restricts_the_file(self):
+        if os.name == "nt":
+            self.skipTest("no POSIX mode bits on Windows")
+        self._save()
+        self.assertEqual(os.stat(self._settings).st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

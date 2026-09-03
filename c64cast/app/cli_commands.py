@@ -14,6 +14,7 @@ assertLogs-style captures and user-facing output are identical.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -27,6 +28,7 @@ from c64cast.audio import dac_calibration
 from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
 from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
+from c64cast.control.transport import atomic_write_text
 from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.backend import make_backend
 
@@ -400,14 +402,14 @@ def run_save_settings(args: argparse.Namespace) -> int:
     Merges onto the existing file (start from a machine-overlaid Config, apply
     this invocation's flags on top), writes it sparsely (only non-default
     fields) and atomically, prints the path + contents, and returns 0. If
-    nothing savable was provided, prints what's savable and returns 2. The DMA
-    password can never be *written* by this command (``config_serialize``
-    suppresses it) — but if the existing file already has one, this merge
-    can't see it (the secret suppression that protects the write path also
-    hides the field from this read), so a save quietly drops it; warn instead
-    of silently losing it."""
-    from c64cast.control import transport
+    nothing savable was provided, prints what's savable and returns 2.
 
+    A secret already in that file — a hand-written ``dma_password``, a
+    ``[web] token`` — survives the merge, because the write goes through
+    :func:`config_serialize.save_machine_settings` rather than a plain `dumps`.
+    What is printed here is the secret-free rendering of the same content: this
+    command echoes what it saved, and a terminal is not where a credential
+    belongs, so the preserved keys are named rather than quoted."""
     from . import config_serialize, paths
     from .connect import apply_to_config, parse_connection_uri
 
@@ -431,15 +433,6 @@ def run_save_settings(args: argparse.Namespace) -> int:
     cfg = cfgmod.Config()
     cfgmod.apply_machine_settings(cfg)
 
-    if cfg.ultimate64.dma_password is not None:
-        log.warning(
-            "--save-settings: %s already has a dma_password, which this command "
-            "can never re-write (secrets are suppressed on save) — the merged "
-            "file below will NOT carry it. Re-add it by hand afterward, or set "
-            "C64CAST_DMA_PASSWORD instead of committing it to this file.",
-            paths.settings_path(),
-        )
-
     if args.url is not None:
         apply_to_config(cfg, parse_connection_uri(args.url))
     for flag_dest, section, field, _ in SAVABLE_SETTINGS_FIELDS:
@@ -447,14 +440,11 @@ def run_save_settings(args: argparse.Namespace) -> int:
         if value is not None:
             setattr(getattr(cfg, section), field, value)
 
-    # No `baseline` here, unlike every other save-back: this *is* the machine
-    # layer, so the dataclass defaults are what it sits on. Measuring it against
-    # itself would write an empty file.
-    text = config_serialize.dumps(cfg, minimal=True, schema_path=None)
-    dest = paths.settings_path()
-    transport.atomic_write_text(dest, text)
+    dest, text, kept = config_serialize.save_machine_settings(cfg)
     print(f"Saved machine settings → {dest}\n")
     print(text, end="" if text.endswith("\n") else "\n")
+    if kept:
+        print(f"\nKept (not shown): {', '.join(kept)}")
     return 0
 
 
@@ -683,17 +673,27 @@ def run_upgrade(args: argparse.Namespace) -> int:
 
 
 def run_reset_setup() -> int:
-    """--reset-setup: clear the appliance's first-run marker, then exit.
+    """--reset-setup: ask the appliance to run first-run setup again, then exit.
 
     Deliberately CLI-only — there is no HTTP route for this. An admin who can
     already run `c64cast --reset-setup` has shell access to the box; an HTTP
     route that did the same thing would reopen the unauthenticated setup
     window to anyone who could reach the port, which is exactly the exposure
-    `setup_gate.py` exists to bound."""
+    `setup_gate.py` exists to bound.
+
+    Two files, because one of them is not evidence. Removing the completion
+    marker is what reopens the window; the reopen marker beside it is what
+    tells `serve._setup_pending` that an admin asked. Without the second one a
+    host that already names a connection target refuses to serve an
+    unauthenticated form — which is what stops a lost data dir from reopening
+    one by itself — so the marker is written even when there was nothing to
+    remove."""
     path = paths.setup_state_path()
-    if not path.is_file():
-        print(f"No setup marker at {path} — the next --serve will ask for setup already.")
-        return 0
-    path.unlink()
-    print(f"Removed {path} — the next --serve with [web].setup_wizard on will ask again.")
+    reopen = paths.setup_reopen_path()
+    existed = path.is_file()
+    path.unlink(missing_ok=True)
+    reopen.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(reopen, json.dumps({"requested_at": time.time()}, indent=2) + "\n")
+    removed = f"Removed {path}. " if existed else f"No setup marker at {path}. "
+    print(f"{removed}Wrote {reopen} — the next --serve with [web].setup_wizard on will ask again.")
     return 0

@@ -26,6 +26,7 @@ one-shot CLI's fixed-map form of it.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,14 @@ InterstitialFactory = Callable[[], Callable[[str], Scene]]
 PlaylistRegistry = Callable[[], Mapping[str, Playlist]]
 LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
 InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
+
+
+#: How long :meth:`ControlServer.start` waits for uvicorn to report a bound
+#: socket, and how often it looks. A successful bind is milliseconds away, so
+#: the ceiling only matters on a loaded box; a bind *failure* is reported the
+#: moment the serve thread dies rather than at the deadline.
+_BIND_TIMEOUT_S = 5.0
+_BIND_POLL_S = 0.02
 
 
 class ControlServer:
@@ -81,9 +90,41 @@ class ControlServer:
             lambda stop: self._server.run(), name="control-plane", manual=True, join_timeout=2.0
         )
 
-    def start(self) -> None:
+    def start(self, *, timeout: float = _BIND_TIMEOUT_S) -> bool:
+        """Bring the server up, and report whether it is really listening.
+
+        uvicorn binds on the background thread rather than here, and on a bind
+        failure — `address already in use`, the likeliest operator error —
+        `Server.startup` calls `sys.exit(1)` *there*: a `SystemExit` that
+        `PollThread` does not catch and `threading.excepthook` discards
+        without a record on any `c64cast` logger. So this used to log
+        "listening on …" for a socket that never existed, and a caller had no
+        way to find out. Waiting on uvicorn's own `started` flag is what makes
+        that log line true; the serve thread dying is what makes the failure
+        prompt rather than a five-second stall."""
         self._poll.start()
+        if not self._wait_until_serving(timeout):
+            log.error(
+                "%s: nothing is listening on %s:%d — the port is most likely already in use",
+                self.label,
+                self.host,
+                self.port,
+            )
+            self.stop()
+            return False
         log.info("%s: listening on http://%s:%d", self.label, self.host, self.port)
+        return True
+
+    def _wait_until_serving(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._server.started:
+                return True
+            if not self._poll.is_running():
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_BIND_POLL_S)
 
     def stop(self) -> None:
         self._server.should_exit = True

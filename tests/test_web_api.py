@@ -88,6 +88,18 @@ PAIR_TOML_ONE_OVERRIDES_COLOR = (
 # audio check (which runs first) can't be what fails instead.
 BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 
+# A config carrying exactly what `config_serialize.SECRET_FIELDS` names, which
+# `ConfigStore.read` hands back verbatim in `text` — the payload behind the
+# viewer-token escalation `api_config_read`'s `require_full` closes. CLAUDE.md
+# names `./c64cast.toml` as the documented home of `dma_password`, and
+# `config_roots` defaults to the host's launch directory, so this is not a
+# contrived file.
+SECRET_TOML = (
+    "[audio]\nenabled = false\n\n"
+    f'[ultimate64]\ndma_password = "hunter2"\n\n[web]\ntoken = "{TOKEN}"\n\n'
+    '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
+)
+
 # Long enough for a loaded CI box, short enough that a stuck transition fails
 # the run rather than hanging it.
 WAIT = 5.0
@@ -686,6 +698,39 @@ class StateFeedTest(WebApiTestCase):
                 ws.receive_json()
         self.assertEqual(self.manager.state, SessionState.RUNNING)
 
+    def test_a_frame_that_is_not_json_does_not_take_the_feed_down(self):
+        # The decode happens before the read-only check, so one stray frame
+        # from a console build sending a ping, a stale bundle, or a `wscat`
+        # probe used to close the console's only channel for session state and
+        # log lines — with nothing above debug in the log.
+        with self.client() as c:
+            with c.websocket_connect("/api/ws", headers=AUTH) as ws:
+                ws.receive_json()
+                ws.send_text("not json at all")
+                self.assertIn("session", ws.receive_json())
+                ws.send_bytes(b"\x00\x01\x02")
+                self.assertIn("session", ws.receive_json())
+                # Still driving commands afterward, so the loop is intact.
+                # `stop` from idle rather than `reload`: a refusal would log,
+                # and a test run prints only pass/fail indicators.
+                ws.send_json({"session": "stop"})
+                self.assertIn("session", ws.receive_json())
+
+    def test_a_command_frame_is_not_lost_to_the_push_cadence(self):
+        # `wait_for(receive_json(), timeout=…)` cancelled the receive every
+        # cycle, and a frame delivered in the same event-loop turn as the
+        # timeout was popped off the queue and then thrown CancelledError —
+        # consumed and never acted on, with `except TimeoutError: continue`
+        # making the loss silent. Sent repeatedly to land inside that window.
+        with self.client() as c:
+            c.post("/api/session/start", headers=AUTH)
+            self.assertReaches(SessionState.RUNNING)
+            with c.websocket_connect("/api/ws", headers=AUTH) as ws:
+                ws.receive_json()
+                for _ in range(12):
+                    ws.send_json({"session": "stop"})
+                self.assertReaches(SessionState.IDLE)
+
 
 class ConfigBrowserTest(WebApiTestCase):
     """The jail itself is tested in tests/test_config_store.py; what these add
@@ -765,6 +810,52 @@ class ConfigBrowserTest(WebApiTestCase):
             self.assertEqual(c.get("/api/configs", headers=VIEWER_AUTH).status_code, 200)
             r = c.put("/api/configs/shows/gig.toml", headers=VIEWER_AUTH, json={"text": GIG_TOML})
         self.assertEqual(r.status_code, 403)
+
+    def test_a_viewer_cannot_read_a_configs_raw_text(self):
+        # The escalation this route's `require_full` closes. `store.read`
+        # returns the file verbatim, so a read-only link handed to a guest
+        # could read `[web] token` out of any config under a root and come
+        # back as the host's administrator.
+        (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
+        with self.client() as c:
+            r = c.get("/api/configs/shows/secrets.toml", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn(TOKEN, r.text)
+        self.assertNotIn("hunter2", r.text)
+
+    def test_the_full_token_still_reads_the_raw_text(self):
+        # The other half: gating this must not cost the config editor its own
+        # reason to exist.
+        (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
+        with self.client() as c:
+            r = c.get("/api/configs/shows/secrets.toml", headers=AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["text"], SECRET_TOML)
+
+    def test_a_viewer_may_still_browse_the_index_and_see_no_secret_in_it(self):
+        # Browsing names is what a read-only link is *for*, and the index
+        # carries no file contents — so the gate belongs on the single-config
+        # read and nowhere wider.
+        (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
+        with self.client() as c:
+            r = c.get("/api/configs", headers=VIEWER_AUTH)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("shows/secrets.toml", [f["path"] for f in r.json()["files"]])
+        self.assertNotIn("hunter2", r.text)
+
+    def test_an_oversized_body_is_refused_by_the_transport_not_the_store(self):
+        # `ConfigStore.MAX_BYTES` protects the *file*; it only ever saw a body
+        # the host had already buffered whole, so the 413 in `_STORE_STATUS`
+        # was the only line of defense and it was behind the exposure.
+        from c64cast.control import auth
+
+        with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
+            with self.client() as c:
+                r = c.put(
+                    "/api/configs/shows/gig.toml", headers=AUTH, content=b'{"text": "' + b"x" * 512
+                )
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual((self.root / "gig.toml").read_text(encoding="utf-8"), GIG_TOML)
 
     def test_a_viewer_cannot_validate(self):
         with self.client() as c:
@@ -1293,12 +1384,23 @@ class ScreenRouteTest(WebApiTestCase):
             r = c.get("/api/screen/stream", headers=AUTH)
         self.assertEqual(r.status_code, 501)
 
+    def _stream_pool(self):
+        """A pool of this test's own — `_until_gone` refuses the default
+        executor by contract (see its docstring)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(pool.shutdown)
+        return pool
+
     def test_the_streaming_adapter_stops_when_the_client_goes(self):
         """`_until_gone` is where a departed client is noticed, and it cannot be
         driven through TestClient — its transport never delivers the ASGI
         `http.disconnect` that a real server sends, so a route-level test of
         this would hang rather than fail. Driven directly instead."""
         import asyncio
+
+        pool = self._stream_pool()
 
         parts: list[bytes] = []
         closed: list[bool] = []
@@ -1320,7 +1422,7 @@ class ScreenRouteTest(WebApiTestCase):
 
         async def drive() -> None:
             request = _Gone()
-            async for part in web_api._until_gone(source(), request):
+            async for part in web_api._until_gone(source(), request, pool):
                 parts.append(part)
 
         asyncio.run(drive())
@@ -1332,6 +1434,7 @@ class ScreenRouteTest(WebApiTestCase):
     def test_the_adapter_closes_the_generator_even_when_it_runs_out(self):
         import asyncio
 
+        pool = self._stream_pool()
         closed: list[bool] = []
 
         def source():
@@ -1345,10 +1448,52 @@ class ScreenRouteTest(WebApiTestCase):
                 return False
 
         async def drive() -> list[bytes]:
-            return [part async for part in web_api._until_gone(source(), _Here())]
+            return [part async for part in web_api._until_gone(source(), _Here(), pool)]
 
         self.assertEqual(asyncio.run(drive()), [b"only"])
         self.assertEqual(closed, [True])
+
+
+class StreamSlotsTest(unittest.TestCase):
+    """The screen stream's concurrency bound, driven directly.
+
+    Same reason `_until_gone` is: TestClient's transport cannot hold a live
+    `multipart/x-mixed-replace` response open, so the route-level version of
+    this test can only hang. What matters is the accounting — a GET reaches
+    this route with a read-only token, and each open stream holds a worker
+    thread across the fps sleep, so unbounded concurrency starved the default
+    executor that uploads and every sync route share."""
+
+    def _slots(self, limit: int) -> Any:
+        slots = web_api.StreamSlots(limit)
+        self.addCleanup(slots.pool.shutdown)
+        return slots
+
+    def test_the_pool_is_no_wider_than_the_cap(self):
+        # One thread per watcher, because one watcher holds one thread.
+        slots = self._slots(3)
+        self.assertEqual(slots.limit, 3)
+        self.assertEqual(slots.pool._max_workers, 3)
+
+    def test_claims_are_refused_past_the_limit_rather_than_queued(self):
+        slots = self._slots(2)
+        self.assertTrue(slots.claim())
+        self.assertTrue(slots.claim())
+        self.assertFalse(slots.claim())
+
+    def test_a_released_slot_comes_back(self):
+        slots = self._slots(1)
+        self.assertTrue(slots.claim())
+        self.assertFalse(slots.claim())
+        slots.release()
+        self.assertTrue(slots.claim())
+
+    def test_releasing_more_than_was_claimed_is_a_bug_that_shows(self):
+        # A `BoundedSemaphore`, so a double release from the response's
+        # background task raises here rather than silently widening the cap.
+        slots = self._slots(1)
+        with self.assertRaises(ValueError):
+            slots.release()
 
 
 class ViewerLinkRouteTest(WebApiTestCase):
@@ -1721,6 +1866,89 @@ class EveryApiRouteIsProtectedTest(WebApiTestCase):
         self.assertEqual(self.build.calls, 0)
 
 
+#: Every path a `viewer` token is *meant* to reach. A read-only guest watches
+#: the screen, sees session state, browses config and media names, and reads
+#: the model the console's forms render from — nothing here carries file
+#: contents or a credential.
+VIEWER_READABLE = frozenset(
+    {
+        "/api/introspect",
+        "/api/update",
+        "/api/screen",
+        "/api/screen.png",
+        "/api/screen/stream",
+        "/api/session",
+        "/api/library",
+        "/api/configs",
+        "/api/media",
+        "/api/ws",
+    }
+)
+
+#: Paths whose GET needs the **full** token, enforced by `require_full` in the
+#: route itself. The middleware's own rule is method-shaped and cannot see
+#: these: the verb says "read", the payload is administrative.
+FULL_ONLY_READS = frozenset({"/api/configs/{ref:path}"})
+
+
+class RouteRoleContractTest(WebApiTestCase):
+    """Every route a `viewer` token can reach is classified, deliberately.
+
+    The escalation this unit closed shipped because there was no such
+    classification: `api_config_read` was a bare `@app.get` and the gate's only
+    viewer rule was `method not in READ_METHODS`, so the route was authorized
+    by the fact that reading a file is spelled GET. This walks the assembled
+    app and fails on any viewer-reachable path that nobody has decided about,
+    which is the part that stops the next one."""
+
+    def _viewer_reachable(self, app) -> set[str]:
+        from c64cast.control.auth import PUBLIC_PATHS, READ_METHODS
+
+        paths = set()
+        for route in app.routes:
+            path = str(getattr(route, "path", ""))
+            if not path.startswith("/api/") or path in PUBLIC_PATHS:
+                continue
+            methods = getattr(route, "methods", None)
+            if methods is None or methods & READ_METHODS:  # None = the socket
+                paths.add(path)
+        return paths
+
+    def test_no_api_route_is_viewer_reachable_without_a_decision(self):
+        app = self.app()
+        reachable = self._viewer_reachable(app)
+        # A walk that found nothing would pass vacuously forever.
+        self.assertEqual(reachable & FULL_ONLY_READS, FULL_ONLY_READS)
+        self.assertLessEqual(VIEWER_READABLE, reachable)
+        unclassified = reachable - VIEWER_READABLE - FULL_ONLY_READS
+        self.assertEqual(
+            unclassified,
+            set(),
+            "a new viewer-reachable route needs a line in VIEWER_READABLE or "
+            "FULL_ONLY_READS (and, for the latter, a require_full call)",
+        )
+
+    def test_every_full_only_read_actually_refuses_a_viewer(self):
+        # The classification is only worth having if it is enforced, so each
+        # entry is exercised rather than asserted about.
+        (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
+        with self.client() as c:
+            for path in sorted(FULL_ONLY_READS):
+                with self.subTest(path=path):
+                    concrete = path.replace("{ref:path}", "shows/secrets.toml")
+                    self.assertEqual(c.get(concrete, headers=VIEWER_AUTH).status_code, 403)
+                    self.assertEqual(c.get(concrete, headers=AUTH).status_code, 200)
+
+    def test_no_viewer_readable_route_echoes_the_configured_token(self):
+        (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
+        with self.client() as c:
+            for path in sorted(VIEWER_READABLE - {"/api/screen/stream", "/api/ws"}):
+                with self.subTest(path=path):
+                    r = c.get(path, headers=VIEWER_AUTH, params={"kind": "video"})
+                    self.assertNotIn(TOKEN, r.text)
+                    self.assertNotIn("hunter2", r.text)
+
+
 class TokenResolutionTest(unittest.TestCase):
     """No HTTP: the credential precedence itself."""
 
@@ -1742,15 +1970,39 @@ class TokenResolutionTest(unittest.TestCase):
             os.environ,
             {"C64CAST_WEB_TOKEN": "from-env", "C64CAST_WEB_VIEWER_TOKEN": "viewer-env"},
         ):
-            token, viewer = serve.resolve_tokens(cfg)
-        self.assertEqual(token, "from-env")
-        self.assertEqual(viewer.token, "viewer-env")
+            creds = serve.resolve_tokens(cfg)
+        self.assertEqual(creds.token, "from-env")
+        self.assertEqual(creds.viewer.token, "viewer-env")
+        self.assertIs(creds.source, serve.TokenSource.ENV)
 
     def test_a_token_file_is_read_and_stripped(self):
         path = self.tmp / "secret"
         path.write_text("  file-token \n", encoding="utf-8")
         cfg = cfgmod.WebCfg(token_file=str(path))
-        self.assertEqual(serve.resolve_tokens(cfg)[0], "file-token")
+        creds = serve.resolve_tokens(cfg)
+        self.assertEqual(creds.token, "file-token")
+        self.assertIs(creds.source, serve.TokenSource.FILE)
+
+    def test_only_a_generated_token_may_be_replaced_by_the_setup_form(self):
+        """`token_settable` is provenance, not a second reading of the same
+        three sources: `resolve_tokens` consults the file the form writes
+        *last*, so a configured token would silently outrank a replacement and
+        lock the admin out on the next restart."""
+        self.assertTrue(serve.resolve_tokens(cfgmod.WebCfg()).token_settable)
+        self.assertFalse(
+            serve.resolve_tokens(cfgmod.WebCfg(token="a-configured-token")).token_settable
+        )
+        with mock.patch.dict(os.environ, {"C64CAST_WEB_TOKEN": "from-env"}):
+            self.assertFalse(serve.resolve_tokens(cfgmod.WebCfg()).token_settable)
+
+    def test_a_viewer_token_equal_to_the_full_one_is_refused(self):
+        """`auth.match_role` compares the full token first, so the same secret
+        in both fields silently granted every holder of the "read-only" link
+        start, stop, config writes and media upload."""
+        cfg = cfgmod.WebCfg(token="the-same-secret", viewer_token="the-same-secret")
+        with self.assertRaises(RuntimeError) as cm:
+            serve.resolve_tokens(cfg)
+        self.assertIn("read-only", str(cm.exception))
 
     def test_an_unreadable_token_file_is_fatal_rather_than_silently_open(self):
         cfg = cfgmod.WebCfg(token_file=str(self.tmp / "missing"))
@@ -1764,19 +2016,21 @@ class TokenResolutionTest(unittest.TestCase):
     def test_an_unconfigured_host_generates_and_persists_a_token(self):
         from c64cast.app import paths
 
-        first, viewer = serve.resolve_tokens(cfgmod.WebCfg())
+        creds = serve.resolve_tokens(cfgmod.WebCfg())
+        first = creds.token
         self.assertTrue(first)
+        self.assertIs(creds.source, serve.TokenSource.GENERATED)
         # The read-only one is *not* generated alongside it: nobody asked for a
         # second credential, and one that exists unasked is one more to leak.
-        self.assertEqual(viewer.token, "")
-        self.assertFalse(viewer)
+        self.assertEqual(creds.viewer.token, "")
+        self.assertFalse(creds.viewer)
         self.assertFalse(paths.web_viewer_token_path().exists())
         stored = paths.web_token_path()
         self.assertEqual(stored.read_text(encoding="utf-8").strip(), first)
         if os.name != "nt":
             self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
         # Stable across restarts: a bookmarked console URL keeps working.
-        self.assertEqual(serve.resolve_tokens(cfgmod.WebCfg())[0], first)
+        self.assertEqual(serve.resolve_tokens(cfgmod.WebCfg()).token, first)
 
 
 class RequestFactoryTest(unittest.TestCase):

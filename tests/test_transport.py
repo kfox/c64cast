@@ -544,7 +544,7 @@ class LegacyPresetsWarnTest(unittest.TestCase):
     def _legacy_with_orphans(self) -> str:
         legacy = os.path.join(self._tmp.name, "repo")
         os.makedirs(os.path.join(legacy, "presets"))
-        with open(os.path.join(legacy, "presets", "wled-x.json"), "w") as f:
+        with open(os.path.join(legacy, "presets", "wled-x.json"), "w", encoding="utf-8") as f:
             f.write("{}")
         return legacy
 

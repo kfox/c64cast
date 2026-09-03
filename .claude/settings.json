@@ -10,7 +10,11 @@
       "Bash(make lint)",
       "Bash(make lint *)",
       "Bash(make doctor)",
-      "Bash(make doctor *)"
+      "Bash(make doctor *)",
+      "Bash(make site-check)",
+      "Bash(make site-check *)",
+      "Bash(make schema)",
+      "Bash(make schema *)"
     ]
   },
   "hooks": {
@@ -27,6 +31,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-make-test.py\"",
             "statusMessage": "Checking that tests run via make"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-uv.py\"",
+            "statusMessage": "Checking that installs and checks go through uv/make"
           }
         ]
       }

@@ -38,6 +38,13 @@ through the config dataclasses (the generated form). Every path goes through
 the jail is not repeated here, because a second copy of it is a second thing to
 get wrong.
 
+Reading **one** config (``GET /api/configs/{ref}``) is the single route here
+that needs more authorization than its verb carries: the store hands back the
+file's raw text, secrets included, so it calls
+:func:`~c64cast.control.auth.require_full` and a ``viewer`` gets a ``403``. The
+index, the media listing and the screen stay readable by a viewer, which is
+what a read-only link is for.
+
 ``/api/media`` is the other half: what a `file =` field could point at, and
 where a dropped or picked file lands, from
 :class:`~c64cast.app.media_store.MediaStore`. ``GET`` browses; ``PUT
@@ -64,7 +71,9 @@ skip the injection entirely.
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -94,7 +103,15 @@ from c64cast.app.serve import STARTABLE, SessionManager, SessionStatus, StartReq
 from c64cast.app.session import SessionConfigError
 
 from . import screen as screen_mod
-from .auth import LOGIN_PATH, ViewerCredential
+from .auth import (
+    LOGIN_PATH,
+    SCOPE_ROLE_KEY,
+    BodyTooLarge,
+    ViewerCredential,
+    is_viewer,
+    read_body,
+    require_full,
+)
 from .screen import ScreenFeed, ScreenUnavailable, multipart_frames
 from .transport import COLOR_FIELD_NAMES, write_live_tune_row
 from .web_static import landing_path
@@ -109,6 +126,14 @@ _PUSH_INTERVAL_S = 0.35
 #: Lines of session log a fresh connection is handed before it starts
 #: following along by sequence number.
 _LOG_BACKLOG = 200
+
+#: How many `GET /api/screen/stream` responses may be open at once, and the
+#: size of the pool that drives them. A constant rather than a `[web]` field
+#: because the number a host can afford is a property of this design (one
+#: thread held continuously per watcher), not of a deployment: four browsers
+#: watching one C64 is already an unusual show, and the refusal past it is a
+#: 503 a console can render.
+MAX_SCREEN_WATCHERS = 4
 
 #: A request factory re-reads the config from disk and validates it, so a
 #: start picks up an edit made since the host launched. Its argument is the
@@ -166,7 +191,9 @@ def _live_tune_edit(row: Mapping[str, Any]) -> dict[str, Any]:
     return {**where, "field": row["field"], "value": row["new"]}
 
 
-async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[bytes]:
+async def _until_gone(
+    frames: Generator[bytes], request: Any, pool: ThreadPoolExecutor
+) -> AsyncIterator[bytes]:
     """Drive a blocking frame generator from the event loop, and stop when the
     client does.
 
@@ -175,6 +202,12 @@ async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[b
     coroutine, so the generator cannot ask it. Pulling each part in a worker
     thread and checking between parts solves both. Without the check, a closed
     tab would leave a thread encoding frames nobody reads.
+
+    ``pool`` is that worker thread's home and must **not** be the default
+    executor: the generator's fps `sleep` happens inside `next()`, so a thread
+    is held for the whole frame period rather than for the encode, and the
+    default executor is shared with `api_media_upload`'s chunk writes and every
+    sync route in this module. See :class:`StreamSlots`, which owns it.
 
     Nothing here closes the generator, which is the correction to the first
     version of this: a disconnect cancels this coroutine *while the worker
@@ -186,10 +219,44 @@ async def _until_gone(frames: Generator[bytes], request: Any) -> AsyncIterator[b
     nothing, and is collected."""
     loop = asyncio.get_running_loop()
     while not await request.is_disconnected():
-        part = await loop.run_in_executor(None, lambda: next(frames, None))
+        part = await loop.run_in_executor(pool, lambda: next(frames, None))
         if part is None:
             return
         yield part
+
+
+class StreamSlots:
+    """How many screen streams may be open at once, and the pool that drives
+    them.
+
+    Both halves belong together because they are the same number: ``_until_gone``
+    holds one worker thread per open stream essentially continuously (the fps
+    `sleep` happens inside the generator's `next()`, not around it), so a pool
+    of ``limit`` threads and a cap of ``limit`` watchers is one decision.
+
+    The pool is dedicated on purpose. `run_in_executor(None, …)` would put the
+    streams on the default executor — ``min(32, cpu + 4)`` threads, 8 on a
+    four-core appliance — which is also where `api_media_upload`'s chunk writes
+    and *every* sync route in this module run. A dozen `GET
+    /api/screen/stream` requests from one read-only credential used to starve
+    all of it, with a healthy process and an empty log.
+
+    :meth:`claim` refuses rather than queues: a queued stream would connect
+    and then show nothing."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.pool = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="c64cast-screen")
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def claim(self) -> bool:
+        """Take a slot, or ``False`` when every one is in use."""
+        return self._slots.acquire(blocking=False)
+
+    def release(self) -> None:
+        """Give a claimed slot back — from the response's own background task,
+        so it happens however the body ended."""
+        self._slots.release()
 
 
 def _opt_index(value: Any, name: str) -> int | None:
@@ -227,8 +294,8 @@ def register_web_routes(
     request_factory: RequestFactory,
     playlists: PlaylistRegistry,
     store: ConfigStore,
-    library: ConsoleLibrary | None = None,
-    media: MediaStore | None = None,
+    library: ConsoleLibrary,
+    media: MediaStore,
     log_buffer: Any = None,
     viewer: ViewerCredential | None = None,
     screen_fps: float = 10.0,
@@ -240,11 +307,21 @@ def register_web_routes(
     is gated by the same token — a route added to this module can't ship
     unauthenticated by omission.
 
+    ``library`` and ``media`` are **required**, unlike the two optional
+    injections below, and the asymmetry is the point: their constructors resolve
+    into the data dir and write there, so a ``None`` default meant a caller who
+    forgot one got a component quietly writing under
+    ``~/.local/share/c64cast`` instead of a ``TypeError`` — the exact footgun
+    this project's "a test never writes outside a temp dir" rule exists to
+    prevent, and invisible at the call site.
+
+    The two that stay optional both mean **absent**, not "use a real default".
     ``viewer`` is the same :class:`~c64cast.control.auth.ViewerCredential` the
     gate holds, so a token issued by ``/api/viewer-link`` is accepted by the
-    next request without a restart. ``None`` leaves the route registered and
+    next request without a restart; ``None`` leaves the route registered and
     answering ``501``, which keeps the console's one code path honest on a host
-    built without one.
+    built without one. ``log_buffer`` ``None`` means there is no buffer, and the
+    state feed reports ``log_seq`` 0 rather than a tail.
 
     ``screen_fps`` caps how often a watched screen is encoded, not how fast the
     machine sends — it is already sending every frame, and the ones not encoded
@@ -253,10 +330,8 @@ def register_web_routes(
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
 
-    from .perf_console import PerfBridge
+    from .perf_console import PerfBridge, SocketReader
 
-    lib = library if library is not None else ConsoleLibrary()
-    med = media if media is not None else MediaStore()
     bridge = PerfBridge(lambda: list(playlists().items()))
     # One playlist per system, each holding the backend that system's writes go
     # through — and the screen is a property of that same machine.
@@ -264,8 +339,14 @@ def register_web_routes(
 
     # Built once: ~150 KB of JSON assembled by walking every config dataclass,
     # every scene type and every overlay. It describes the code, not the run,
-    # so it cannot change while the process is up.
+    # so it cannot change while the process is up. The lock is what makes
+    # "once" true: `api_introspect` is a sync `def`, so FastAPI runs it in the
+    # threadpool and two cold-cache requests would otherwise both walk the
+    # whole model, under the GIL, on the process serving the state socket.
     introspection: dict[str, Any] = {}
+    introspection_lock = threading.Lock()
+
+    streams = StreamSlots(MAX_SCREEN_WATCHERS)
 
     def _make_request(path: str | None) -> StartRequest:
         """Load + validate, mapping either failure to a 422 the browser can
@@ -308,8 +389,16 @@ def register_web_routes(
 
     async def _body(request: Request) -> Mapping[str, Any]:
         """The optional JSON body of a POST. Absent is not an error — a start
-        with no body is a start of whatever the host was launched with."""
-        raw = await request.body()
+        with no body is a start of whatever the host was launched with.
+
+        Capped by `auth.read_body`, so the transport refuses an oversized body
+        before it is resident: `ConfigStore`'s own `ConfigTooLarge` (the 413 in
+        `_STORE_STATUS`) protects the *file*, and only ever saw a body the host
+        had already buffered whole."""
+        try:
+            raw = await read_body(request)
+        except BodyTooLarge as e:
+            raise HTTPException(413, str(e)) from e
         if not raw:
             return {}
         try:
@@ -322,15 +411,16 @@ def register_web_routes(
 
     def _session_state(scope: Mapping[str, Any]) -> dict[str, Any]:
         state = _status_payload(manager.status(), log_buffer, store)
-        state["role"] = scope.get("c64cast_role")
+        state["role"] = scope.get(SCOPE_ROLE_KEY)
         return state
 
     @app.get("/api/introspect")
     def api_introspect() -> dict[str, Any]:
         nonlocal introspection
-        if not introspection:
-            introspection = introspect.as_dict()
-        return introspection
+        with introspection_lock:
+            if not introspection:
+                introspection = introspect.as_dict()
+            return introspection
 
     @app.get("/api/update")
     def api_update() -> dict[str, Any]:
@@ -414,19 +504,33 @@ def register_web_routes(
         except ScreenUnavailable as e:
             raise HTTPException(501, str(e)) from e
 
+        # A viewer token reaches this route (it is a GET) and used to be able
+        # to open as many streams as it liked. See `StreamSlots`.
+        if not streams.claim():
+            raise HTTPException(503, f"this host is already streaming to {streams.limit} watchers")
+
         # The watch is held by the *response*, not by the generator: acquired
         # here and released by a background task, which Starlette runs once the
         # body is done however it ended. Putting the release in the generator's
         # own `finally` is the obvious thing and it does not work — the
         # generator runs on a worker thread, a disconnect cancels the async task
         # while that thread is inside it, and closing it from there raises
-        # rather than unwinding. See `ScreenFeed.release`.
-        read = screen.acquire(name)
+        # rather than unwinding. See `ScreenFeed.release`. The stream slot rides
+        # the same background task for the same reason.
+        def _done() -> None:
+            screen.release(name)
+            streams.release()
+
+        try:
+            read = screen.acquire(name)
+        except BaseException:
+            streams.release()
+            raise
         return StreamingResponse(
-            _until_gone(multipart_frames(read, fps=screen_fps), request),
+            _until_gone(multipart_frames(read, fps=screen_fps), request, streams.pool),
             media_type=f"multipart/x-mixed-replace; boundary={screen_mod.BOUNDARY}",
             headers={"Cache-Control": "no-store"},
-            background=BackgroundTask(screen.release, name),
+            background=BackgroundTask(_done),
         )
 
     # POST, not GET, for two reasons that point the same way: it may mint a
@@ -471,7 +575,7 @@ def register_web_routes(
         # host's own default config, which has nothing to add to a *config*
         # library.
         if ref:
-            lib.record_recent(str(ref))
+            library.record_recent(str(ref))
         return {"ok": True, "generation": generation, "state": str(manager.state)}
 
     @app.post("/api/session/stop", status_code=202)
@@ -489,7 +593,7 @@ def register_web_routes(
         except SupervisorBusy as e:
             raise _busy(e) from e
         if ref:
-            lib.record_recent(str(ref))
+            library.record_recent(str(ref))
         return {"ok": True, "generation": generation, "state": str(manager.state)}
 
     @app.post("/api/session/reload")
@@ -580,7 +684,7 @@ def register_web_routes(
 
     @app.get("/api/library")
     def api_library() -> dict[str, Any]:
-        return lib.as_dict()
+        return library.as_dict()
 
     @app.post("/api/library/favorites")
     async def api_library_favorite(request: Request) -> dict[str, Any]:
@@ -588,7 +692,7 @@ def register_web_routes(
         ref = str(body.get("ref", ""))
         if not ref:
             raise HTTPException(400, 'a favorite needs a "ref"')
-        return {"favorites": lib.set_favorite(ref, bool(body.get("on", True)))}
+        return {"favorites": library.set_favorite(ref, bool(body.get("on", True)))}
 
     # -- the config browser -------------------------------------------------
 
@@ -601,7 +705,7 @@ def register_web_routes(
     @app.get("/api/media")
     def api_media(kind: str, q: str = "") -> dict[str, Any]:
         try:
-            return med.index(kind, q)
+            return media.index(kind, q)
         except MediaKindUnknown as e:
             raise HTTPException(400, str(e)) from e
 
@@ -617,10 +721,17 @@ def register_web_routes(
     # `run_in_executor` same as `_until_gone` does for frame encoding: this
     # is the one event loop also serving the control websocket and status
     # polling for a show that may be running right now.
+    #
+    # The context-manager protocol is driven by hand for that offload, and
+    # three of its contracts are load-bearing here: `__exit__(None, None,
+    # None)` *is* the commit, `handle.result` is only meaningful after that
+    # commit has returned, and a failure mid-body still needs `__exit__` called
+    # with the exception triple to clean the part file up. Turning these back
+    # into a `with` block would block the event loop on fsync.
     @app.put("/api/media/{name}")
     async def api_media_upload(name: str, request: Request) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
-        upload = med.receive(name)
+        upload = media.receive(name)
         try:
             handle = upload.__enter__()
         except MediaStoreError as e:
@@ -665,8 +776,18 @@ def register_web_routes(
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
+    # **Full token only**, and the one route in this module where the HTTP verb
+    # is not the whole authorization story. `ConfigStore.read` returns `text`
+    # as the file verbatim — every `config_serialize.SECRET_FIELDS` value it
+    # carries included, which is what its own docstring says and what
+    # `describe()`'s `form` deliberately withholds — so a read-only link handed
+    # to a guest used to read `[web] token` out of any config under a root and
+    # come back as the host's administrator. `require_full` is the seam
+    # (`auth.py`); `tests/test_web_api.py::RouteRoleContractTest` is what stops
+    # the next GET from shipping unclassified.
     @app.get("/api/configs/{ref:path}")
-    def api_config_read(ref: str) -> dict[str, Any]:
+    def api_config_read(ref: str, request: Request) -> dict[str, Any]:
+        require_full(request.scope)
         try:
             return store.read(ref)
         except ConfigStoreError as e:
@@ -772,11 +893,11 @@ def register_web_routes(
             if action == "start":
                 manager.start(request_factory(path))
                 if ref:
-                    lib.record_recent(str(ref))
+                    library.record_recent(str(ref))
             elif action == "switch":
                 manager.switch(request_factory(path))
                 if ref:
-                    lib.record_recent(str(ref))
+                    library.record_recent(str(ref))
             elif action == "stop":
                 manager.stop()
             elif action == "reload":
@@ -796,7 +917,8 @@ def register_web_routes(
         # The one gap the auth middleware can't cover: a socket is a single
         # `GET` handshake, so inbound command frames are dropped here (see
         # perf_console.perf_ws, which has the same hole for the same reason).
-        read_only = websocket.scope.get("c64cast_role") == "viewer"
+        read_only = is_viewer(websocket.scope)
+        reader = SocketReader(websocket, label="web console")
         sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
         try:
             while True:
@@ -810,7 +932,7 @@ def register_web_routes(
                 screen.sweep()
                 try:
                     frame = bridge.state()
-                    frame["role"] = websocket.scope.get("c64cast_role")
+                    frame["role"] = websocket.scope.get(SCOPE_ROLE_KEY)
                     frame["session"] = _status_payload(manager.status(), log_buffer, store)
                 except Exception:
                     log.exception("web console: could not build a state frame")
@@ -821,13 +943,21 @@ def register_web_routes(
                         sent_seq = lines[-1]["seq"]
                     frame["log"] = lines
                 await websocket.send_json(frame)
-                try:
-                    msg = await asyncio.wait_for(websocket.receive_json(), timeout=_PUSH_INTERVAL_S)
-                except TimeoutError:
-                    continue
-                if isinstance(msg, Mapping) and not read_only:
+                arrived, msg = await reader.poll(_PUSH_INTERVAL_S)
+                if arrived and isinstance(msg, Mapping) and not read_only:
                     _apply_command(msg)
         except WebSocketDisconnect:
             pass
-        except Exception:
+        except (ConnectionError, RuntimeError):
+            # An abrupt client close surfaces as a transport error rather than
+            # a `WebSocketDisconnect`, so these stay at debug. Anything else is
+            # a socket nobody asked to close — a `send_json` that could not
+            # serialize a new payload field, a raise out of `bridge.apply` —
+            # and at debug the symptom was a console that flickered or showed
+            # stale state with a clean log, which on an appliance means an SSH
+            # session and a restart to see anything at all.
             log.debug("web console: websocket closed", exc_info=True)
+        except Exception:
+            log.exception("web console: websocket closed unexpectedly")
+        finally:
+            await reader.close()

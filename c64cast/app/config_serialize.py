@@ -40,6 +40,7 @@ files and aren't what the wizard produces.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -48,6 +49,8 @@ from c64cast import __version__
 
 from . import config as cfgmod
 from . import introspect, paths
+
+log = logging.getLogger(__name__)
 
 _PUBLISHED_SCHEMA_URL = (
     "https://raw.githubusercontent.com/kfox/c64cast/{ref}/c64cast/data/c64cast.schema.json"
@@ -90,7 +93,10 @@ DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 # left one in a config must not have it echoed back as an ordinary field
 # value. This governs `describe()`'s form, `_editable_fields()` and `dumps()` —
 # it does NOT reach `config_store.read()`'s raw `text`, which still carries
-# any of these verbatim (see that method's docstring).
+# any of these verbatim (see that method's docstring, and
+# `web_api.api_config_read`, which is what gates that text behind the full
+# token). `save_machine_settings` is the one writer that deliberately re-emits
+# them, because the machine-settings file is the one file they live in.
 SECRET_FIELDS = frozenset(
     {
         ("ultimate64", "dma_password"),
@@ -253,13 +259,14 @@ def _emit_section(
     annotate: bool,
     minimal: bool,
     baseline: cfgmod.Config | None = None,
+    include_secrets: bool = False,
 ) -> list[str]:
     section = getattr(cfg, sd.name)
     base = getattr(baseline, sd.name) if baseline is not None else None
     table_array = _SECTION_TABLE_ARRAYS.get(sd.name)
     body: list[str] = []
     for fd in sd.fields:
-        if (sd.name, fd.name) in SECRET_FIELDS:
+        if not include_secrets and (sd.name, fd.name) in SECRET_FIELDS:
             continue
         if table_array is not None and fd.name == table_array[0]:
             continue  # emitted as a [[...]] block below
@@ -424,6 +431,7 @@ def dumps(
     minimal: bool = True,
     schema_path: str | None = DEFAULT_SCHEMA_PATH,
     baseline: cfgmod.Config | None = None,
+    include_secrets: bool = False,
 ) -> str:
     """Serialize `cfg` to a TOML string.
 
@@ -438,6 +446,11 @@ def dumps(
                   layer isn't written into the file that inherited it. It must be
                   the Config this one was built on top of — see the module
                   docstring.
+    include_secrets — emit the `SECRET_FIELDS` values too. **One sanctioned
+                  caller**, :func:`save_machine_settings`, and its docstring
+                  says why; anything else writing a config must leave this
+                  alone, because the file it produces may be committed, served
+                  or echoed.
 
     Scene fields always measure against the dataclass defaults: machine settings
     hold cross-run defaults, never playlists, so there is no scene layer under a
@@ -456,7 +469,14 @@ def dumps(
         lines.append("")
 
     for sd in introspect.config_sections():
-        lines += _emit_section(cfg, sd, annotate=annotate, minimal=minimal, baseline=baseline)
+        lines += _emit_section(
+            cfg,
+            sd,
+            annotate=annotate,
+            minimal=minimal,
+            baseline=baseline,
+            include_secrets=include_secrets,
+        )
 
     if cfg.scenes:
         field_docs = {st.name: st.fields for st in introspect.scene_types()}
@@ -474,6 +494,63 @@ def dumps(
     # Collapse the trailing blank line; guarantee a single terminating newline.
     text = "\n".join(lines).rstrip("\n")
     return text + "\n"
+
+
+def _secrets_carried(cfg: cfgmod.Config) -> tuple[str, ...]:
+    """The ``SECRET_FIELDS`` `cfg` actually holds a value for, named the way a
+    config file spells them, sorted."""
+    blank = cfgmod.Config()
+    return tuple(
+        f"[{section}].{name}"
+        for section, name in sorted(SECRET_FIELDS)
+        if getattr(getattr(cfg, section), name) != getattr(getattr(blank, section), name)
+    )
+
+
+def save_machine_settings(cfg: cfgmod.Config) -> tuple[str, str, tuple[str, ...]]:
+    """Write the machine-settings layer for `cfg`. ``(path, echo_text, kept)``.
+
+    **The one writer for that file.** `--save-settings`
+    (:func:`c64cast.app.cli_commands.run_save_settings`) and the appliance
+    setup form (:mod:`c64cast.control.setup_api`) are both merge-and-rewrite
+    paths: they seed a Config from :func:`config.apply_machine_settings`,
+    overlay what this invocation asked for, and write the whole file back. That
+    only works if the rewrite carries what the seed read, and `dumps` suppresses
+    every :data:`SECRET_FIELDS` value — so each of those callers used to rewrite
+    the file *without* the ``dma_password`` or ``[web] token`` an operator had
+    put there by hand. The setup form's did it silently, which on an appliance
+    means a box that can no longer talk to its own password-protected U64 and a
+    ``[web] token`` pin erased by an unauthenticated caller. Preserving them can
+    only be a guarantee if there is one writer, which is this function; the
+    docstring that claimed the two paths matched "exactly" is what a shared
+    function is for.
+
+    No ``baseline``: this *is* the machine layer, so the dataclass defaults are
+    what it sits on. Measuring it against itself would write an empty file.
+
+    ``echo_text`` is the same content **without** the secrets, because
+    ``--save-settings`` prints what it saved to stdout and a terminal is not
+    where a credential belongs; ``kept`` names the keys that were preserved so
+    a caller can say so without quoting a value. A file carrying one is
+    restricted to ``0600`` explicitly — ``atomic_write_text`` already lands at
+    that mode through ``mkstemp``, and stating it here makes it this file's
+    guarantee rather than a helper's implementation detail, the way
+    ``setup_api._write_token`` and ``serve._persist_viewer_token`` do."""
+    from c64cast.control.transport import atomic_write_text
+
+    dest = paths.settings_path()
+    kept = _secrets_carried(cfg)
+    echo_text = dumps(cfg, minimal=True, schema_path=None)
+    on_disk = (
+        dumps(cfg, minimal=True, schema_path=None, include_secrets=True) if kept else echo_text
+    )
+    atomic_write_text(dest, on_disk)
+    if kept:
+        try:
+            dest.chmod(0o600)
+        except OSError:
+            log.warning("could not restrict permissions on %s", dest)
+    return str(dest), echo_text, kept
 
 
 def dump(cfg: cfgmod.Config, path: str, **kwargs: object) -> None:

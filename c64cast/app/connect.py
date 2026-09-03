@@ -49,6 +49,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Protocol
 
+from c64cast._redact import REDACTED, redact_secrets
+
 # Windows serial ports look like a host in a URL (``tr://COM3`` -> netloc
 # "COM3"), so they're matched here and routed to the serial transport instead
 # of TCP. Unix serial nodes are always /dev/... paths (empty netloc), so they
@@ -116,6 +118,26 @@ def _netloc_port(parts: urllib.parse.SplitResult, target: str) -> int | None:
         return parts.port
     except ValueError as e:
         raise ConnectionURIError(f"{target!r}: bad port in {parts.netloc!r}") from e
+
+
+def redact_target(target: str) -> str:
+    """`target` with anything secret-shaped masked, for a message or a log line.
+
+    Every parse failure reports the target back to the user, cli.py logs a
+    :class:`ConnectionURIError` at error level, and ``--log-file`` mirrors that
+    to disk — so :func:`_reject_userinfo`, whose whole purpose is keeping a
+    credential out of ``[ultimate64].url`` and off those paths, was itself
+    writing the credential to them. Userinfo collapses to ``REDACTED@``; a
+    secret-looking ``?token=…`` query value goes through the shared log
+    redactor. A target with neither comes back unchanged, so the diagnostic
+    value of naming the target is kept."""
+    parts = urllib.parse.urlsplit(target)
+    if "@" in parts.netloc:
+        host = parts.netloc.rsplit("@", 1)[1]
+        target = urllib.parse.urlunsplit(
+            (parts.scheme, f"{REDACTED}@{host}", parts.path, parts.query, parts.fragment)
+        )
+    return redact_secrets(target)
 
 
 def _reject_userinfo(parts: urllib.parse.SplitResult, target: str) -> None:
@@ -190,6 +212,10 @@ def parse_connection_uri(target: str) -> ConnectionSpec:
         raise ConnectionURIError("empty connection target")
     parts = urllib.parse.urlsplit(target)
     scheme = parts.scheme.lower()
+    # `target` is only ever reported back to the user from here down (the spec
+    # is built from `parts`), so switch to the redacted spelling once and every
+    # message below is safe to log by construction.
+    target = redact_target(target)
     _reject_userinfo(parts, target)
     query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
     blank = sorted(k for k, v in query.items() if v == "")

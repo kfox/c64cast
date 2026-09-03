@@ -117,7 +117,7 @@ class ScanAssetsTest(unittest.TestCase):
     def test_scans_matching_extensions(self):
         with tempfile.TemporaryDirectory() as d:
             for fn in ("a.sid", "b.SID", "c.txt", "d.mp4"):
-                open(os.path.join(d, fn), "w").close()
+                open(os.path.join(d, fn), "w", encoding="utf-8").close()
             found = wizard.scan_assets(d, (".sid",))
             self.assertEqual([os.path.basename(f) for f in found], ["a.sid", "b.SID"])
 

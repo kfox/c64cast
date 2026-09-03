@@ -9,6 +9,7 @@ keeping config.py import-light can't silently drift).
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 
 from c64cast.app import config as cfgmod
@@ -228,7 +229,15 @@ class AppliesToTest(unittest.TestCase):
         for s in introspect.scene_types():
             names = {f.name for f in s.fields}
             self.assertIn("type", names, s.name)
-            self.assertIn("overlays", names, s.name)
+
+    def test_overlays_is_offered_on_every_type_that_accepts_one(self):
+        # `overlays` is universal except on `launcher`, where
+        # scene_factory._validate_launcher hard-rejects it (the launched program
+        # owns screen + color RAM). Offering it there let --describe, the wizard
+        # and the web console build a scene the loader refuses.
+        for s in introspect.scene_types():
+            names = {f.name for f in s.fields}
+            self.assertEqual("overlays" in names, s.name != "launcher", s.name)
 
 
 class ReloadableSectionsTest(unittest.TestCase):
@@ -280,6 +289,65 @@ class VocabularyTest(unittest.TestCase):
 
     def test_file_declares_the_media_vocabulary(self):
         self.assertEqual(self._scene_field("file").vocabulary, "media")
+
+    def test_every_field_whose_values_are_c64_color_names_declares_it(self):
+        # Without it the console renders a free-text box, so a fuzzy-matchable
+        # color name has to be typed blind and a typo surfaces at scene build.
+        for name in ("border", "background", "voice_colors", "waveform_colors"):
+            self.assertEqual(self._scene_field(name).vocabulary, "c64color", name)
+        sections = {f.name: f for s in introspect.config_sections() for f in s.fields}
+        for name in ("force_palette_colors", "text_color"):
+            self.assertEqual(sections[name].vocabulary, "c64color", name)
+
+
+class MetadataVocabularyTest(unittest.TestCase):
+    """config.py's premise is that the field metadata is the single source of
+    truth, which only holds while each key means one thing everywhere and
+    something reads the values it declares."""
+
+    def test_applies_to_names_scene_types_and_only_scene_types(self):
+        # The key used to carry three vocabularies under one documented
+        # meaning: scene types on SceneCfg, *display mode* names on the
+        # ColorCfg flicker trio, and a *backend* name on two Ultimate64Cfg
+        # fields — inert only because today's consumers iterate SceneCfg.
+        for f in dataclasses.fields(cfgmod.SceneCfg):
+            for value in f.metadata.get("applies_to", ()):
+                self.assertIn(value, cfgmod.SCENE_TYPES, f"{f.name}: {value}")
+
+    def test_no_section_field_carries_applies_to(self):
+        probe = cfgmod.Config()
+        for name in (*cfgmod._TOML_SCALAR_SECTIONS, "color"):
+            for f in dataclasses.fields(getattr(probe, name)):
+                self.assertNotIn("applies_to", f.metadata, f"[{name}].{f.name}")
+
+    def test_every_apply_value_is_a_declared_one(self):
+        # introspect reads the key as md.get("apply", "rebuild"), so a
+        # misspelling ("Live") silently downgrades a live-tunable knob to
+        # read-only on the web console with no error and no test failure.
+        probe = cfgmod.Config()
+        holders = [
+            cfgmod.SceneCfg,
+            *(type(getattr(probe, n)) for n in cfgmod._TOML_SCALAR_SECTIONS),
+        ]
+        seen = 0
+        for dc in [*holders, cfgmod.ColorCfg]:
+            for f in dataclasses.fields(dc):
+                apply = f.metadata.get("apply")
+                if apply is None:
+                    continue
+                seen += 1
+                self.assertIn(apply, cfgmod._APPLY_CHOICES, f"{dc.__name__}.{f.name}")
+        self.assertTrue(seen, "no field carries `apply` — has the key been renamed?")
+
+    def test_the_cc_map_help_documents_every_action_it_accepts(self):
+        # cc_map is a list[dict], so its help is the only surface --describe,
+        # the schema and the wizard can show for the `action` vocabulary — and
+        # the hand-written enumeration had fallen four actions behind.
+        help_text = {f.name: f for f in dataclasses.fields(cfgmod.MidiControlCfg)}[
+            "cc_map"
+        ].metadata["help"]
+        for action in cfgmod._MIDI_ACTION_CHOICES:
+            self.assertIn(repr(action), help_text, action)
 
 
 class MediaKindTest(unittest.TestCase):

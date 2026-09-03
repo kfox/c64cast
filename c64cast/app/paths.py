@@ -177,6 +177,21 @@ def setup_state_path() -> Path:
     return data_root() / "setup.json"
 
 
+def setup_reopen_path() -> Path:
+    """An explicit request to reopen the setup window
+    (``<data root>/setup-reopen``).
+
+    Written by ``c64cast --reset-setup`` and read by
+    :func:`c64cast.app.serve._setup_pending`, which needs it because the
+    absence of :func:`setup_state_path` is *not* evidence of a first boot: a
+    data root that is a container layer with no volume, a tmpfs, or a swept
+    cache loses that marker while the machine settings under the **config**
+    dir stay put. So a host that already names a connection target refuses to
+    reopen an unauthenticated form unless an admin with shell access asked for
+    it here. Spent (removed) once setup completes."""
+    return data_root() / "setup-reopen"
+
+
 def update_check_path() -> Path:
     """The last recorded PyPI update check (``<data root>/update_check.json``).
 

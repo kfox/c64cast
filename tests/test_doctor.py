@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, MachineSettingsIsolation
 
 import c64cast
 from c64cast.app import config as cfgmod
@@ -21,6 +21,19 @@ from c64cast.app import config_serialize as ser
 from c64cast.app import doctor, paths
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
+
+# The doctor loads configs, and loading reads the machine-settings file — so
+# point $C64CAST_SETTINGS at a missing path for the module. Tests that want a
+# machine layer write their own file and re-patch over this.
+_iso = MachineSettingsIsolation()
+
+
+def setUpModule():
+    _iso.start()
+
+
+def tearDownModule():
+    _iso.stop()
 
 
 def _write(path: str, body: str) -> None:
@@ -1108,7 +1121,7 @@ class MachineSettingsProbeTest(unittest.TestCase):
             return doctor._probe_machine_settings()
 
     def _write(self, content: str) -> None:
-        with open(self._path, "w") as f:
+        with open(self._path, "w", encoding="utf-8") as f:
             f.write(content)
 
     def test_absent_is_ok(self):
@@ -1165,12 +1178,58 @@ class DataDirsProbeTest(unittest.TestCase):
         for sub in (("calibration", "dac"), ("presets",)):
             d = os.path.join(legacy, *sub)
             os.makedirs(d)
-            with open(os.path.join(d, "x.json"), "w") as f:
+            with open(os.path.join(d, "x.json"), "w", encoding="utf-8") as f:
                 f.write("{}")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):
                 diags = doctor._probe_data_dirs()
         self.assertEqual([d for d in diags if d.level == "warn"], [])
+
+
+class EnsembleSharedDmaPasswordTest(unittest.TestCase):
+    """`dma_password` cascades from the master where `url` does not, so one
+    secret can unlock every machine — intended, but invisible from any single
+    per-system file, which is what this row states."""
+
+    def _diags(self, master_body: str, members: dict[str, str]) -> list[doctor.Diagnostic]:
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path = os.path.join(tmp, "master.toml")
+            entries = ",\n    ".join(f'{{ name = "{n}", config = "{n}.toml" }}' for n in members)
+            _write(master_path, f"[ensemble]\nsystems = [\n    {entries}\n]\n{master_body}")
+            for name, body in members.items():
+                _write(os.path.join(tmp, f"{name}.toml"), body)
+            loaded = cfgmod.load_master(master_path)
+        return doctor._validate_ensemble_shared_dma_password(loaded)
+
+    def test_a_cascaded_password_names_every_system_it_reached(self):
+        diags = self._diags('[ultimate64]\ndma_password = "hunter2"\n', {"left": "", "right": ""})
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("2 systems", diags[0].message)
+        self.assertIn("left", diags[0].message)
+        self.assertIn("right", diags[0].message)
+        # The whole point is to describe the secret without disclosing it.
+        self.assertNotIn("hunter2", diags[0].message)
+        self.assertNotIn("hunter2", diags[0].hint or "")
+
+    def test_different_per_system_passwords_are_not_sharing(self):
+        # Each named its own, so the cascade filled neither — reporting them
+        # as sharing would be a false alarm.
+        diags = self._diags(
+            "",
+            {
+                "left": '[ultimate64]\ndma_password = "one"\n',
+                "right": '[ultimate64]\ndma_password = "two"\n',
+            },
+        )
+        self.assertEqual(diags, [])
+
+    def test_a_single_system_with_a_password_says_nothing(self):
+        diags = self._diags('[ultimate64]\ndma_password = "hunter2"\n', {"only": ""})
+        self.assertEqual(diags, [])
+
+    def test_no_password_anywhere_says_nothing(self):
+        self.assertEqual(self._diags("", {"left": "", "right": ""}), [])
 
 
 class EnsembleRecordingPathTest(unittest.TestCase):

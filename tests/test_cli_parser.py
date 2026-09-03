@@ -304,19 +304,28 @@ class ParserContractTest(unittest.TestCase):
         # would ever try (and fail) to read it.
         with tempfile.TemporaryDirectory() as d:
             marker = Path(d) / "setup.json"
+            reopen = Path(d) / "setup-reopen"
             marker.write_text('{"completed_at": 1}\n', encoding="utf-8")
             with mock.patch.object(paths, "setup_state_path", return_value=marker):
-                rc, out = _run(["--reset-setup", "--config", str(Path(d) / "missing.toml")])
+                with mock.patch.object(paths, "setup_reopen_path", return_value=reopen):
+                    rc, out = _run(["--reset-setup", "--config", str(Path(d) / "missing.toml")])
             self.assertEqual(rc, 0)
             self.assertFalse(marker.exists())
+            # The reopen marker is what `serve._setup_pending` reads: without
+            # it a host that already names a connection target refuses to
+            # reopen the unauthenticated form.
+            self.assertTrue(reopen.is_file())
         self.assertIn(str(marker), out)
 
-    def test_reset_setup_with_no_marker_is_a_no_op(self):
+    def test_reset_setup_with_no_marker_still_asks_for_the_window(self):
         with tempfile.TemporaryDirectory() as d:
             marker = Path(d) / "setup.json"
+            reopen = Path(d) / "setup-reopen"
             with mock.patch.object(paths, "setup_state_path", return_value=marker):
-                rc, out = _run(["--reset-setup"])
+                with mock.patch.object(paths, "setup_reopen_path", return_value=reopen):
+                    rc, out = _run(["--reset-setup"])
             self.assertEqual(rc, 0)
+            self.assertTrue(reopen.is_file())
         self.assertIn("No setup marker", out)
 
     def test_system_choices_are_the_two_video_standards(self):

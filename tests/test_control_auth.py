@@ -19,6 +19,7 @@ from __future__ import annotations
 import unittest
 import warnings
 from typing import Any
+from unittest import mock
 
 try:
     import fastapi  # noqa: F401
@@ -44,13 +45,23 @@ except (ImportError, RuntimeError):
 
 from c64cast.control.auth import (
     COOKIE_NAME,
+    MIN_TOKEN_LENGTH,
     PUBLIC_PATHS,
+    ROLE_FULL,
+    ROLE_VIEWER,
+    SCOPE_ROLE_KEY,
+    BodyTooLarge,
+    RoleRequired,
     TokenAuthMiddleware,
     _presented_token,
     _safe_next,
     install_auth,
+    is_viewer,
     login_page,
     match_role,
+    read_body,
+    require_full,
+    role_of,
 )
 from c64cast.control.transport import LiveTuneTracker
 
@@ -216,16 +227,125 @@ class AuthHelpersTest(unittest.TestCase):
     def test_cookie_header_without_our_cookie(self):
         self.assertIsNone(_presented_token(_scope(headers=[(b"cookie", b"other=1")])))
 
+    def test_a_malformed_sibling_cookie_does_not_hide_ours(self):
+        # CPython's SimpleCookie discards the WHOLE jar on the first segment
+        # its pattern rejects, without raising — so any other service on the
+        # same host setting a cookie with an illegal character used to make
+        # this console unreachable in that browser: a 401, the login form, a
+        # fresh Set-Cookie that replaces ours and not the offender, and a 401
+        # again. Both orders, because a bad sibling after ours wiped it too.
+        for header in (
+            f"bad cookie here; {COOKIE_NAME}=SECRET".encode(),
+            f"{COOKIE_NAME}=SECRET; bad cookie here".encode(),
+            f'x="un}}quoted; {COOKIE_NAME}=SECRET'.encode(),
+        ):
+            with self.subTest(header=header):
+                self.assertEqual(_presented_token(_scope(headers=[(b"cookie", header)])), "SECRET")
+
+    def test_a_quoted_cookie_value_is_unwrapped(self):
+        self.assertEqual(
+            _presented_token(_scope(headers=[(b"cookie", f'{COOKIE_NAME}="q"'.encode())])),
+            "q",
+        )
+
+    def test_an_empty_bearer_header_falls_through_to_the_next_source(self):
+        # `Authorization: Bearer ` is what some proxies emit for an unset
+        # credential. It carries no claim, so it must not suppress a perfectly
+        # good cookie and turn a valid session into a 401 that looks like a
+        # wrong token.
+        scope = _scope(
+            headers=[
+                (b"authorization", b"Bearer "),
+                (b"cookie", f"{COOKIE_NAME}=from-cookie".encode()),
+            ]
+        )
+        self.assertEqual(_presented_token(scope), "from-cookie")
+        self.assertEqual(
+            _presented_token(_scope(headers=[(b"authorization", b"Bearer ")], query=b"token=q")),
+            "q",
+        )
+        self.assertIsNone(_presented_token(_scope(headers=[(b"authorization", b"Bearer ")])))
+
     def test_safe_next_rejects_anything_offsite(self):
         self.assertEqual(_safe_next("/scenes"), "/scenes")
         self.assertEqual(_safe_next("//evil.example"), "/perf")
         self.assertEqual(_safe_next("https://evil.example"), "/perf")
+        # `/\host` resolves offsite too (the URL spec's relative-slash state).
+        # It is neutralized downstream by Starlette's percent-encoding today,
+        # which is not where this function's own contract should live.
+        self.assertEqual(_safe_next("/\\evil.example"), "/perf")
         self.assertEqual(_safe_next(""), "/perf")
         self.assertEqual(_safe_next(None), "/perf")
 
     def test_middleware_refuses_an_empty_token(self):
         with self.assertRaises(ValueError):
             TokenAuthMiddleware(None, token="")
+
+    def test_the_public_path_floor_is_the_middlewares_own(self):
+        # The docstring promised "never narrower than PUBLIC_PATHS" and only
+        # one caller happened to union it in. A caller passing a set without
+        # the login exchange would get an app whose 401 serves a form that
+        # posts back to a route that can only 401 again.
+        gate = TokenAuthMiddleware(None, token=TOKEN, public_paths=("/api/setup",))
+        self.assertLessEqual(PUBLIC_PATHS, gate._public)
+        self.assertIn("/api/setup", gate._public)
+
+
+class RoleSeamTest(unittest.TestCase):
+    """The per-route half of authorization, with no app in sight.
+
+    The middleware can only say "is this a write?", which is blind to a GET
+    that hands back host-authored text or a credential. `require_full` is
+    where such a route says so, and it raises rather than importing FastAPI
+    precisely so this test needs neither."""
+
+    def test_role_reads_off_the_scope_under_one_key(self):
+        self.assertEqual(role_of({SCOPE_ROLE_KEY: ROLE_FULL}), ROLE_FULL)
+        self.assertIsNone(role_of({}))
+
+    def test_is_viewer_is_the_only_place_the_comparison_is_spelled(self):
+        self.assertTrue(is_viewer({SCOPE_ROLE_KEY: ROLE_VIEWER}))
+        self.assertFalse(is_viewer({SCOPE_ROLE_KEY: ROLE_FULL}))
+        # No gate installed: historically open, and deliberately not a viewer.
+        self.assertFalse(is_viewer({}))
+
+    def test_require_full_refuses_a_viewer_and_passes_everyone_else(self):
+        with self.assertRaises(RoleRequired):
+            require_full({SCOPE_ROLE_KEY: ROLE_VIEWER})
+        self.assertIsNone(require_full({SCOPE_ROLE_KEY: ROLE_FULL}))
+        self.assertIsNone(require_full({}))
+
+
+class ReadBodyTest(unittest.TestCase):
+    """The cap on the two routes reachable with no credential at all."""
+
+    class _Request:
+        def __init__(self, chunks, *, content_length=None):
+            self._chunks = chunks
+            self.headers = {} if content_length is None else {"content-length": content_length}
+
+        async def stream(self):
+            for chunk in self._chunks:
+                yield chunk
+
+    def _read(self, request, **kwargs):
+        import asyncio
+
+        return asyncio.run(read_body(request, **kwargs))
+
+    def test_a_body_under_the_cap_is_returned_whole(self):
+        self.assertEqual(self._read(self._Request([b"ab", b"cd"])), b"abcd")
+
+    def test_a_claimed_content_length_over_the_cap_is_refused_before_reading(self):
+        request = self._Request([b"x"], content_length="99")
+        with self.assertRaises(BodyTooLarge):
+            self._read(request, max_bytes=8)
+
+    def test_a_lying_content_length_is_still_refused_while_streaming(self):
+        # The only check a chunked body cannot lie about.
+        request = self._Request([b"x" * 8, b"x" * 8], content_length="2")
+        with self.assertRaises(BodyTooLarge):
+            self._read(request, max_bytes=8)
 
 
 @unittest.skipUnless(HAVE_FASTAPI, "fastapi not installed (control extra)")
@@ -252,6 +372,19 @@ class InstallAuthTest(unittest.TestCase):
         from fastapi import FastAPI
 
         self.assertTrue(install_auth(FastAPI(), token=TOKEN, viewer_token=VIEWER))
+
+    def test_a_short_token_is_warned_about_but_honored(self):
+        # Nothing in this tree throttles login attempts, so `token = "c64"` is
+        # a console that falls to a few thousand requests. Refusing one
+        # outright would break runs that work today, so it warns — and the
+        # policy is now declared once, here, rather than on the one setup
+        # route that used to own it.
+        from fastapi import FastAPI
+
+        short = "c" * (MIN_TOKEN_LENGTH - 1)
+        with self.assertLogs("c64cast.control.auth", level="WARNING") as logs:
+            self.assertTrue(install_auth(FastAPI(), token=short))
+        self.assertIn(str(MIN_TOKEN_LENGTH), "\n".join(logs.output))
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
@@ -362,6 +495,21 @@ class LoginTest(unittest.TestCase):
         self.assertEqual(client.post("/api/login", content=b"not json").status_code, 401)
         self.assertEqual(client.post("/api/login", json={"token": 7}).status_code, 401)
         self.assertEqual(client.post("/api/login", json={}).status_code, 401)
+
+    def test_post_refuses_an_oversized_body_rather_than_buffering_it(self):
+        # This route is public, so an uncapped `request.json()` is a remote
+        # memory exhaustion on an appliance with 1-2 GB — and the process it
+        # takes down owns live hardware.
+        from c64cast.control import auth
+
+        app, _pl = _app()
+        with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
+            r = TestClient(app).post("/api/login", content=b"x" * 512)
+        self.assertEqual(r.status_code, 413)
+        # The cap it tripped is operator diagnostics, not something an
+        # unauthenticated caller is told.
+        self.assertEqual(r.json()["error"], auth.BODY_TOO_LARGE_ERROR)
+        self.assertNotIn("64", r.json()["error"])
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
