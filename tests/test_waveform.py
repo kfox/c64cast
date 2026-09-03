@@ -1598,7 +1598,7 @@ class WaveformPoolPickTest(unittest.TestCase):
         self._write_sid("b.sid")
         # Drop a non-matching file in the same dir to confirm the glob
         # filters extensions even when the OS would happily list it.
-        with open(os.path.join(self.tmpdir, "ignore.txt"), "w") as f:
+        with open(os.path.join(self.tmpdir, "ignore.txt"), "w", encoding="utf-8") as f:
             f.write("")
         api = FakeAPI()
         random.seed(0)

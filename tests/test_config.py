@@ -884,7 +884,7 @@ class AutodetectSonglengthsTest(unittest.TestCase):
             docs = os.path.join(tmp, "C64Music", "DOCUMENTS")
             os.makedirs(docs)
             expected = os.path.join(docs, "Songlengths.md5")
-            open(expected, "w").close()
+            open(expected, "w", encoding="utf-8").close()
             self.assertEqual(scene_factory._autodetect_songlengths_path(tmp), expected)
 
     def test_finds_contents_only_layout(self):
@@ -892,7 +892,7 @@ class AutodetectSonglengthsTest(unittest.TestCase):
             docs = os.path.join(tmp, "DOCUMENTS")
             os.makedirs(docs)
             expected = os.path.join(docs, "Songlengths.md5")
-            open(expected, "w").close()
+            open(expected, "w", encoding="utf-8").close()
             self.assertEqual(scene_factory._autodetect_songlengths_path(tmp), expected)
 
     def test_falls_back_to_full_scan_for_nonstandard_layout(self):
@@ -900,7 +900,7 @@ class AutodetectSonglengthsTest(unittest.TestCase):
             odd = os.path.join(tmp, "somewhere", "else")
             os.makedirs(odd)
             expected = os.path.join(odd, "Songlengths.md5")
-            open(expected, "w").close()
+            open(expected, "w", encoding="utf-8").close()
             self.assertEqual(scene_factory._autodetect_songlengths_path(tmp), expected)
 
     def test_no_match_returns_none(self):
@@ -912,7 +912,7 @@ class AutodetectSonglengthsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             docs = os.path.join(tmp, "DOCUMENTS")
             os.makedirs(docs)
-            open(os.path.join(docs, "Songlengths.md5"), "w").close()
+            open(os.path.join(docs, "Songlengths.md5"), "w", encoding="utf-8").close()
             first = scene_factory._autodetect_songlengths_path(tmp)
             # A second call with a different (nonexistent) root still
             # returns the memoized first result — proves it isn't re-probed.
@@ -969,7 +969,7 @@ class MachineSettingsTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _write_settings(self, content: str) -> None:
-        with open(self._path, "w") as f:
+        with open(self._path, "w", encoding="utf-8") as f:
             f.write(content)
 
     def _env(self):
@@ -977,7 +977,7 @@ class MachineSettingsTest(unittest.TestCase):
 
     def _write_config(self, content: str) -> str:
         p = os.path.join(self._tmp.name, "c64cast.toml")
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(content)
         return p
 
@@ -1131,7 +1131,7 @@ class UnknownKeyCollectionTest(unittest.TestCase):
     def _master(self, toml: str) -> cfgmod.LoadResult:
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(toml)
             return cfgmod.load_master(path)
 
@@ -1149,7 +1149,7 @@ class UnknownKeyCollectionTest(unittest.TestCase):
         # collector; those keys must still reach stderr.
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("[color]\nbogus_key = 7\n")
             with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
                 cfgmod.load(path)
@@ -1332,7 +1332,7 @@ class ChoiceEnforcementTest(unittest.TestCase):
     def _load(self, body: str) -> cfgmod.Config:
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(body)
             return cfgmod.load(path)
 
@@ -1392,7 +1392,7 @@ class BoolFieldTypingTest(unittest.TestCase):
     def _load(self, body: str) -> cfgmod.Config:
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(body)
             return cfgmod.load(path)
 
@@ -1433,7 +1433,7 @@ class InternalFieldNotAuthorableTest(unittest.TestCase):
         unknown: list[cfgmod.UnknownKey] = []
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("[midi_control]\ncc_map_is_default = false\n")
             cfg = cfgmod.load(path, unknown)
         self.assertTrue(cfg.midi_control.cc_map_is_default)
@@ -1444,7 +1444,7 @@ class InternalFieldNotAuthorableTest(unittest.TestCase):
     def test_authoring_a_cc_map_still_clears_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("[midi_control]\ncc_map = []\n")
             cfg = cfgmod.load(path, [])
         self.assertFalse(cfg.midi_control.cc_map_is_default)
@@ -1460,7 +1460,7 @@ class UnknownTableTest(unittest.TestCase):
         unknown: list[cfgmod.UnknownKey] = []
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "c.toml")
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(body)
             cfgmod.load(path, unknown)
         return unknown
@@ -1522,7 +1522,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "assets", "videos"))
-            with open(os.path.join(tmp, "assets", "videos", "ok.mp4"), "w") as f:
+            with open(os.path.join(tmp, "assets", "videos", "ok.mp4"), "w", encoding="utf-8") as f:
                 f.write("")
             os.chdir(tmp)
             try:
@@ -1598,7 +1598,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "assets", "sids"))
-            with open(os.path.join(tmp, "assets", "sids", "tune.sid"), "w") as f:
+            with open(os.path.join(tmp, "assets", "sids", "tune.sid"), "w", encoding="utf-8") as f:
                 f.write("")
             os.chdir(tmp)
             try:
@@ -1623,7 +1623,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "assets", "pictures"))
-            with open(os.path.join(tmp, "assets", "pictures", "p.jpg"), "w") as f:
+            with open(os.path.join(tmp, "assets", "pictures", "p.jpg"), "w", encoding="utf-8") as f:
                 f.write("")
             os.chdir(tmp)
             try:
@@ -1842,7 +1842,7 @@ class ResolveFileSpecTest(unittest.TestCase):
         paths: list[str] = []
         for n in names:
             p = os.path.join(root, n)
-            with open(p, "w") as f:
+            with open(p, "w", encoding="utf-8") as f:
                 f.write("")
             paths.append(p)
         return sorted(paths)
@@ -2035,7 +2035,7 @@ class ResolveFileSpecTest(unittest.TestCase):
     def test_video_scene_rejects_dir_with_no_videos(self):
         with tempfile.TemporaryDirectory() as tmp:
             # Put only SIDs in a directory the video scene points at.
-            with open(os.path.join(tmp, "nope.sid"), "w") as f:
+            with open(os.path.join(tmp, "nope.sid"), "w", encoding="utf-8") as f:
                 f.write("")
             s = cfgmod.SceneCfg(type="video", file=tmp)
             with self.assertRaisesRegex(ValueError, "contains no files with extension"):

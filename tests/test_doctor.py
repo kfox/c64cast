@@ -1121,7 +1121,7 @@ class MachineSettingsProbeTest(unittest.TestCase):
             return doctor._probe_machine_settings()
 
     def _write(self, content: str) -> None:
-        with open(self._path, "w") as f:
+        with open(self._path, "w", encoding="utf-8") as f:
             f.write(content)
 
     def test_absent_is_ok(self):
@@ -1178,7 +1178,7 @@ class DataDirsProbeTest(unittest.TestCase):
         for sub in (("calibration", "dac"), ("presets",)):
             d = os.path.join(legacy, *sub)
             os.makedirs(d)
-            with open(os.path.join(d, "x.json"), "w") as f:
+            with open(os.path.join(d, "x.json"), "w", encoding="utf-8") as f:
                 f.write("{}")
         with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": data}):
             with mock.patch("c64cast.app.paths.legacy_data_root", return_value=Path(legacy)):

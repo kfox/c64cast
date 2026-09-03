@@ -122,7 +122,7 @@ class ClassifyDirAndGlobTest(unittest.TestCase):
 
     def _touch(self, *names: str):
         for n in names:
-            open(os.path.join(self.tmp, n), "w").close()
+            open(os.path.join(self.tmp, n), "w", encoding="utf-8").close()
 
     def test_directory_of_sids(self):
         self._touch("a.sid", "b.sid")
@@ -303,7 +303,7 @@ class BuildConfigTest(unittest.TestCase):
         # no -u/-d is given on the command line.
         with tempfile.TemporaryDirectory() as tmp:
             settings = os.path.join(tmp, "settings.toml")
-            with open(settings, "w") as f:
+            with open(settings, "w", encoding="utf-8") as f:
                 f.write('[ultimate64]\nurl = "http://machine.lan"\n[video]\ndevice = 5\n')
             env = {k: v for k, v in os.environ.items() if k != "C64CAST_URL"}
             env["C64CAST_SETTINGS"] = settings
@@ -316,7 +316,7 @@ class BuildConfigTest(unittest.TestCase):
         # An explicit -u overrides the machine-settings connection.
         with tempfile.TemporaryDirectory() as tmp:
             settings = os.path.join(tmp, "settings.toml")
-            with open(settings, "w") as f:
+            with open(settings, "w", encoding="utf-8") as f:
                 f.write('[ultimate64]\nurl = "http://machine.lan"\n')
             with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": settings}):
                 cfg = quickcast.build_config(_parse(["-u", "u64://10.9.9.9", "a.mp4"]))
@@ -617,7 +617,7 @@ class ResolveFileSpecUrlTest(unittest.TestCase):
     def test_existing_file_with_glob_chars_is_literal(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "clip [abc123].mp4")
-            open(path, "w").close()
+            open(path, "w", encoding="utf-8").close()
             self.assertEqual(resolve_file_spec(path, (".mp4",), label="video"), [path])
 
 
