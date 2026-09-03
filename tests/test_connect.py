@@ -42,6 +42,23 @@ class ParseUltimateTest(unittest.TestCase):
         with self.assertRaises(ConnectionURIError):
             parse_connection_uri("u64://")
 
+    def test_http_passthrough_strips_query(self):
+        # The query is consumed into `dma_port`, not left in the base URL that
+        # Ultimate64API concatenates every REST path onto.
+        spec = parse_connection_uri("http://192.168.2.64?dma_port=64")
+        self.assertEqual(spec.url, "http://192.168.2.64")
+        self.assertEqual(spec.dma_port, 64)
+
+    def test_u64_bad_port(self):
+        with self.assertRaises(ConnectionURIError) as cm:
+            parse_connection_uri("u64://192.168.2.64:notaport")
+        self.assertIn("bad port", str(cm.exception))
+
+    def test_http_bad_port(self):
+        with self.assertRaises(ConnectionURIError) as cm:
+            parse_connection_uri("http://192.168.2.64:notaport")
+        self.assertIn("bad port", str(cm.exception))
+
 
 class ParseTeensyromTest(unittest.TestCase):
     def test_bare_tr_is_serial_autodetect(self):
@@ -81,6 +98,17 @@ class ParseTeensyromTest(unittest.TestCase):
         spec = parse_connection_uri("tr://host?tcp_port=2200")
         self.assertEqual(spec.tcp_port, 2200)
 
+    def test_bad_port_in_netloc(self):
+        with self.assertRaises(ConnectionURIError) as cm:
+            parse_connection_uri("tr://host:notaport")
+        self.assertIn("bad port", str(cm.exception))
+
+    def test_tcp_port_query_validated_even_with_netloc_port(self):
+        # Regression: `port or _int_query(...)` used to short-circuit past
+        # this validation whenever the netloc already carried a port.
+        with self.assertRaises(ConnectionURIError):
+            parse_connection_uri("tr://host:2113?tcp_port=notanumber")
+
 
 class ParseErrorTest(unittest.TestCase):
     def test_empty(self):
@@ -100,6 +128,37 @@ class ParseErrorTest(unittest.TestCase):
     def test_bad_int_query(self):
         with self.assertRaises(ConnectionURIError):
             parse_connection_uri("u64://host?dma_port=notanumber")
+
+    def test_unknown_query_key_rejected(self):
+        # A typo'd knob (dmaport for dma_port) used to be parsed as absent and
+        # do nothing, with no diagnostic.
+        with self.assertRaises(ConnectionURIError) as cm:
+            parse_connection_uri("u64://host?dmaport=64")
+        self.assertIn("dmaport", str(cm.exception))
+
+    def test_blank_query_value_rejected(self):
+        with self.assertRaises(ConnectionURIError):
+            parse_connection_uri("u64://host?dma_port=")
+
+
+class UserinfoRejectedTest(unittest.TestCase):
+    """A target must never carry a username/password — the Ultimate's REST
+    API has no HTTP auth of its own, `requests` would send it as a Basic-auth
+    header on every call regardless, and accepting it would let
+    --save-settings persist + echo the credential in plaintext."""
+
+    def test_u64_userinfo_rejected(self):
+        with self.assertRaises(ConnectionURIError) as cm:
+            parse_connection_uri("u64://admin:s3cret@192.168.2.64")
+        self.assertIn("username/password", str(cm.exception))
+
+    def test_http_userinfo_rejected(self):
+        with self.assertRaises(ConnectionURIError):
+            parse_connection_uri("http://admin:s3cret@u64.lan")
+
+    def test_tr_userinfo_rejected(self):
+        with self.assertRaises(ConnectionURIError):
+            parse_connection_uri("tr://admin:s3cret@teensy.lan")
 
 
 class ApplyToConfigTest(unittest.TestCase):

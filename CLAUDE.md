@@ -14,7 +14,7 @@ scripts/c64cast.sh -u tr:// clip.mp4 tune.sid assets/pictures/
 
 [scripts/c64cast.sh](scripts/c64cast.sh) is the equivalent launcher for shells where direnv hasn't activated `.venv` — see ["Running from a checkout"](CONTRIBUTING.md#running-from-a-checkout).
 
-**Connection target (`-u/--url`).** One scheme-aware string selects the backend and its endpoint: `u64://HOST` or `http(s)://HOST` (Ultimate 64), `tr://` (TeensyROM+ USB serial, auto-detected), `tr:///dev/cu.usbmodemXYZ` / `tr://COM3` (explicit serial), `tr://HOST[:PORT]` (TeensyROM+ TCP, default 2112); per-link knobs ride as `?query` params, `$C64CAST_URL` is the env fallback. Details: [c64cast/app/connect.py](c64cast/app/connect.py)'s docstring.
+**Connection target (`-u/--url`).** One scheme-aware string selects the backend and its endpoint: `u64://HOST` or `http(s)://HOST` (Ultimate 64), `tr://` (TeensyROM+ USB serial, auto-detected), `tr:///dev/cu.usbmodemXYZ` / `tr://COM3` (explicit serial), `tr://HOST[:PORT]` (TeensyROM+ TCP, default 2112); per-link knobs ride as `?query` params, `$C64CAST_URL` is the env fallback. It must not carry a `user:pass@` netloc — a secret goes in `C64CAST_DMA_PASSWORD` or `[ultimate64].dma_password` instead, never in the URL (which `--save-settings` can write to disk and echo to stdout). Details: [c64cast/app/connect.py](c64cast/app/connect.py)'s docstring.
 
 **Quick playback** (positional `MEDIA` args, mutually exclusive with `--config`) builds an in-memory-only config — one scene per argument by extension/URL, no loop unless `--loop`. Details: [c64cast/app/quickcast.py](c64cast/app/quickcast.py)'s docstring; URL resolution is shared with config-driven video scenes ([`scene_factory.py`](docs/architecture/config.md#scene_factorypy)).
 

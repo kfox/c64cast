@@ -21,6 +21,86 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- `-u`/`--url`/`$C64CAST_URL` accepted a `user:pass@` netloc (`u64://admin:s3cret@host`)
+  and carried it verbatim into `[ultimate64].url` — from which `requests`
+  sent it as an HTTP Basic-auth header on every REST call to a device that
+  has no HTTP auth of its own, and `--save-settings` both wrote it into
+  `settings.toml` and echoed it to stdout in plaintext, directly undercutting
+  this project's "the DMA password is env/config-only, never a CLI flag"
+  posture for anyone who assumed the URL was where a credential went.
+  `connect.parse_connection_uri` now refuses any target carrying userinfo, on
+  every scheme, naming `C64CAST_DMA_PASSWORD`/`[ultimate64].dma_password` as
+  the place a secret actually belongs. Related connect.py hardening in the
+  same pass: the `http(s)://` branch passed the whole target (including its
+  `?query` string) through as the base URL while *also* consuming
+  `dma_port` out of that same query, so `-u 'http://host?dma_port=64'` left
+  `?dma_port=64` inside the string `Ultimate64API` concatenates every REST
+  path onto — it now rebuilds the URL from its parts like the `u64://`
+  branch already did. A netloc port is now validated the same way on every
+  scheme (`u64://host:badport` and `http://host:badport` used to parse
+  cleanly into a URL `requests` would only reject deep in the startup probe,
+  misdiagnosing as "could not reach the hardware"); `tr://host:2113?tcp_port=x`
+  used to skip validating the query param entirely because `port or
+  _int_query(...)` only reached the query when the netloc had no port of its
+  own (the same typo raised on `tr://host?tcp_port=x` but was silently
+  ignored on `tr://host:2113?tcp_port=x`); and an unrecognized or blank
+  `?query` key (`?dmaport=64`, `?dma_port=`) is now rejected instead of
+  silently parsed as absent, matching the strictness a TOML config already
+  gets.
+- `--save-settings` could raise `ConnectionURIError` (a `ValueError`) straight
+  out of `cli.main()` as an uncaught traceback on a bad `-u` target, instead
+  of the exit-2 usage error `connect.py`'s own docstring promises — it is
+  dispatched before `_resolve_configs`' try/except, and had no guard of its
+  own. All of `main()`'s config-free terminal commands (`--save-settings`,
+  `--install-char-rom`, `--check-for-updates`, `--upgrade`, `--motd-line`,
+  `--reset-setup`) are now dispatched through one table wrapped in the same
+  `ValueError`/`RuntimeError` → exit 2 mapping `_resolve_configs` already
+  had, so a new command can't forget it. Separately, if an existing
+  `settings.toml` already carries a hand-written `[ultimate64].dma_password`,
+  `--save-settings` can never re-write it (secrets are suppressed on save) —
+  which used to mean the very next `--save-settings` silently dropped it on
+  the merge; it now warns at save time instead. `--save-settings --help`
+  also stopped listing `-D/--audio-device`, which it has always persisted;
+  the whitelist that drives the help text, the "nothing to save" error, and
+  the apply block is now one table (`cli_commands.SAVABLE_SETTINGS_FIELDS`)
+  instead of three hand-copied lists that could (and did) drift.
+- `--calibrate-dac` opened the backend before the try/finally that closes
+  it, so `hw_provision.resolve_system` — which talks to the machine to
+  settle `system = "auto"` — raising on an unreachable/unresponsive C64
+  abandoned the backend's persistent DMA socket; the U64 DMA service is
+  single-connection and blocks new sockets for seconds after an unclean
+  close, so the operator's very next attempt failed too, looking like an
+  unrelated problem. The resolve call now runs inside the same try/finally
+  that already closes the backend.
+- `--dump-char-rom`'s teardown swallowed a reset failure entirely
+  (`contextlib.suppress(Exception)`) even though the reset exists so the
+  machine "isn't left parked wherever the dump stub ran" — the one outcome
+  worth knowing was exactly what got hidden, at every verbosity, while the
+  success message still printed. It now logs a warning naming the failure
+  instead. `be.close()` in the same `finally` was unprotected, so a close
+  failure on the unresponsive-machine path (the case most likely to hit one)
+  replaced the deliberate `return 3`/`return 4` with a traceback; it is now
+  guarded the same way.
+- `--doctor` rebuilt its merged `LoadResult` field-by-field, which silently
+  dropped `master_web` (added after this code was written) instead of
+  carrying it forward — latent today (nothing in `doctor.py` reads it yet)
+  but one new web-related check away from validating the wrong object on
+  every ensemble config. Now built with `dataclasses.replace(loaded,
+  cfgs=cfgs)`, so a future `LoadResult` field can't be forgotten the same way.
+- A config-resolution failure (`_resolve_configs`, covering `load_master`,
+  `merge_cli`, `quickcast.build_config` and `connect.parse_connection_uri`)
+  logged only `str(e)` with no traceback, even under `-v`/`-vv` — a genuine
+  internal defect anywhere in that tree was indistinguishable from a user
+  typo and left oncall to bisect by hand. A `log.debug(..., exc_info=True)`
+  now runs right before the existing `log.error`, so `-v` recovers the
+  traceback; the exception types caught there are unchanged (still broad
+  `ValueError`/`RuntimeError`, since legitimate config validation throughout
+  `config.py` also raises plain `ValueError` and narrowing the catch would
+  misclassify those as unhandled). The connection target resolved on the
+  config-driven run path is now also logged at INFO with its source
+  (`-u/--url` or `$C64CAST_URL`), so an env-var override can no longer
+  silently repoint a run whose operator is reading a TOML that names a
+  different host.
 - The WLED sink (`wled_sink.py`, bridge Mode 2) rejected the wrong DDP flag as
   a "query" (`0x08` is STORAGE; QUERY is `0x02`), so a real discovery probe
   from LedFx/xLights/Jinx! slipped through as if it were pixel data and a

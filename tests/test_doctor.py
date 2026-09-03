@@ -61,6 +61,40 @@ def _load(toml: str, suffix: str = ".toml") -> cfgmod.LoadResult:
         return cfgmod.load_master(path)
 
 
+class RunDoctorMergedLoadResultTest(unittest.TestCase):
+    """cli_commands.run_doctor rebuilds a LoadResult with the CLI-merged
+    per-system configs — it must carry every field load_master produced
+    forward, not just the ones it happens to list by hand (a hand-listed copy
+    silently dropped `master_web` until this was fixed to `dataclasses.replace`)."""
+
+    def test_master_web_survives_the_merge(self):
+        from c64cast.app.cli_commands import run_doctor
+
+        cfg = cfgmod.Config()
+        cfg.debug.skip_probe = True
+        web = cfgmod.WebCfg()
+        web.token = "distinctive-token"
+        loaded = cfgmod.LoadResult(
+            cfgs=[cfg],
+            names=["system"],
+            paths=[None],
+            is_ensemble=True,
+            master_control=cfg.control,
+            master_midi_control=cfg.midi_control,
+            master_web=web,
+        )
+        captured: dict[str, cfgmod.LoadResult] = {}
+
+        def fake_validate(merged, **kwargs):
+            captured["merged"] = merged
+            return []
+
+        with mock.patch("c64cast.app.doctor.validate_load_result", side_effect=fake_validate):
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_doctor(loaded, [cfg])
+        self.assertIs(captured["merged"].master_web, web)
+
+
 class ValidateScenesTest(unittest.TestCase):
     """Per-scene validation — every misconfig surfaces as its own
     Diagnostic instead of aborting at the first error."""

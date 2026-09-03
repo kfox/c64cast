@@ -93,6 +93,26 @@ class _FakeBackend:
         self.clear_loops += 1
 
 
+class _ResetFailsOnTeardownBackend(_FakeBackend):
+    """`reset()` succeeds on the dump's own reset (the first call) but raises
+    on the second — the teardown call in `run_dump_char_rom`'s `finally`,
+    which must report the failure rather than let it propagate."""
+
+    def reset(self) -> None:
+        self.resets += 1
+        if self.resets > 1:
+            raise RuntimeError("machine did not respond to reset")
+
+
+class _CloseFailsBackend(_FakeBackend):
+    """`close()` always raises — the teardown call must not let this
+    override whatever return code the function already computed."""
+
+    def close(self) -> None:
+        self.closes += 1
+        raise OSError("link already gone")
+
+
 class _CharRomTestCase(unittest.TestCase):
     """Points the data root at a tmpdir and clears the process-wide glyph
     cache, so no test can see (or write to) the developer's real data dir."""
@@ -614,6 +634,38 @@ class DumpCharRomCliTest(_CharRomTestCase):
             self.assertEqual(self._run(be)[0], 4)
         self.assertEqual(be.closes, 1)
         self.assertFalse(char_rom.installed_path().exists())
+
+    def _run_uncaptured(self, be) -> int:
+        # Bypasses cli.main() (and its configure_logging() call) so
+        # assertLogs can capture without a real terminal handler also firing
+        # — see test_save_settings.py's identical note. Still redirects
+        # stdout: run_dump_char_rom prints on success, same as cli.main()'s
+        # own callers redirect.
+        import io
+        from contextlib import redirect_stdout
+
+        from c64cast.app import config as cfgmod
+        from c64cast.app.cli_commands import run_dump_char_rom
+
+        with mock.patch("c64cast.app.cli_commands.make_backend", return_value=be):
+            with redirect_stdout(io.StringIO()):
+                return run_dump_char_rom(cfgmod.Config())
+
+    def test_teardown_reset_failure_is_warned_not_swallowed(self):
+        be = _ResetFailsOnTeardownBackend(_synth_charset())
+        with mock.patch("time.sleep"):
+            with self.assertLogs("c64cast", level="WARNING") as cm:
+                rc = self._run_uncaptured(be)
+        self.assertEqual(rc, 0, "the dump itself still succeeded")
+        self.assertTrue(any("could not reset" in r for r in cm.output))
+
+    def test_close_failure_does_not_override_the_dump_failure_exit_code(self):
+        be = _CloseFailsBackend(error=RuntimeError("stub never signaled"))
+        with mock.patch("time.sleep"):
+            with self.assertLogs("c64cast", level="WARNING") as cm:
+                rc = self._run_uncaptured(be)
+        self.assertEqual(rc, 4, "close() raising must not replace the dump's own exit code")
+        self.assertTrue(any("could not close" in r for r in cm.output))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ assertLogs-style captures and user-facing output are identical.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import os
 import shutil
@@ -373,39 +372,56 @@ def run_introspection(args: argparse.Namespace) -> int | None:
     return None
 
 
+# --save-settings's whitelist, one entry per flag: (args dest, config
+# section, field, flag name for --help/error text). `-u/--url` isn't here —
+# it decomposes into several of these same fields via
+# `connect.apply_to_config` rather than a single setattr, so it stays a
+# special case in `run_save_settings` below — but every flag that IS a plain
+# `setattr` lives in this one table, so `--save-settings`'s `--help` text
+# (cli.py), its "nothing to save" error, and its apply block can't drift
+# out of sync with each other the way three hand-copied lists did.
+SAVABLE_SETTINGS_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+    ("device", "video", "device", "-d/--device"),
+    ("audio_device", "audio", "device", "-D/--audio-device"),
+    ("sid_model", "ultimate64", "sid_model", "--sid-model"),
+    ("system", "ultimate64", "system", "-s/--system"),
+)
+
+
 def run_save_settings(args: argparse.Namespace) -> int:
     """Persist this invocation's machine-relevant flags into the machine-
     settings file, then exit.
 
     Savable whitelist (v1): the ``-u/--url`` connection target (decomposed via
-    :func:`connect.parse_connection_uri` exactly as the run path does),
-    ``-d/--device`` → ``[video].device``, ``-D/--audio-device`` →
-    ``[audio].device``, ``--sid-model`` → ``[ultimate64].sid_model``,
-    ``--system`` → ``[ultimate64].system``. ``$C64CAST_URL`` deliberately does
-    NOT auto-save (explicit flags only).
+    :func:`connect.parse_connection_uri` exactly as the run path does) plus
+    whatever :data:`SAVABLE_SETTINGS_FIELDS` names. ``$C64CAST_URL``
+    deliberately does NOT auto-save (explicit flags only).
 
     Merges onto the existing file (start from a machine-overlaid Config, apply
     this invocation's flags on top), writes it sparsely (only non-default
     fields) and atomically, prints the path + contents, and returns 0. If
     nothing savable was provided, prints what's savable and returns 2. The DMA
-    password can never be written (``config_serialize`` suppresses it)."""
+    password can never be *written* by this command (``config_serialize``
+    suppresses it) — but if the existing file already has one, this merge
+    can't see it (the secret suppression that protects the write path also
+    hides the field from this read), so a save quietly drops it; warn instead
+    of silently losing it."""
     from c64cast.control import transport
 
     from . import config_serialize, paths
     from .connect import apply_to_config, parse_connection_uri
 
-    provided = (
-        args.url is not None
-        or args.device is not None
-        or args.audio_device is not None
-        or args.sid_model is not None
-        or args.system is not None
+    provided = args.url is not None or any(
+        getattr(args, flag_dest) is not None for flag_dest, _, _, _ in SAVABLE_SETTINGS_FIELDS
     )
     if not provided:
+        flags = ", ".join(
+            ["-u/--url (connection)"] + [flag for _, _, _, flag in SAVABLE_SETTINGS_FIELDS]
+        )
         log.error(
-            "--save-settings: nothing to save. Provide at least one of: "
-            "-u/--url (connection), -d/--device, -D/--audio-device, --sid-model, "
-            "--system. Other fields: hand-edit %s (annotated TOML).",
+            "--save-settings: nothing to save. Provide at least one of: %s. "
+            "Other fields: hand-edit %s (annotated TOML).",
+            flags,
             paths.settings_path(),
         )
         return 2
@@ -415,16 +431,21 @@ def run_save_settings(args: argparse.Namespace) -> int:
     cfg = cfgmod.Config()
     cfgmod.apply_machine_settings(cfg)
 
+    if cfg.ultimate64.dma_password is not None:
+        log.warning(
+            "--save-settings: %s already has a dma_password, which this command "
+            "can never re-write (secrets are suppressed on save) — the merged "
+            "file below will NOT carry it. Re-add it by hand afterward, or set "
+            "C64CAST_DMA_PASSWORD instead of committing it to this file.",
+            paths.settings_path(),
+        )
+
     if args.url is not None:
         apply_to_config(cfg, parse_connection_uri(args.url))
-    if args.device is not None:
-        cfg.video.device = args.device
-    if args.audio_device is not None:
-        cfg.audio.device = args.audio_device
-    if args.sid_model is not None:
-        cfg.ultimate64.sid_model = args.sid_model
-    if args.system is not None:
-        cfg.ultimate64.system = args.system
+    for flag_dest, section, field, _ in SAVABLE_SETTINGS_FIELDS:
+        value = getattr(args, flag_dest)
+        if value is not None:
+            setattr(getattr(cfg, section), field, value)
 
     # No `baseline` here, unlike every other save-back: this *is* the machine
     # layer, so the dataclass defaults are what it sits on. Measuring it against
@@ -488,9 +509,21 @@ def run_dump_char_rom(cfg: cfgmod.Config) -> int:
         )
         return 4
     finally:
-        with contextlib.suppress(Exception):
+        # Teardown in a `finally` must never rewrite the `return 3`/`return 4`
+        # the `except` blocks above already computed, so neither call here is
+        # allowed to raise — each is reported instead.
+        try:
             be.reset()
-        be.close()
+        except Exception as e:
+            log.warning(
+                "--dump-char-rom: could not reset after the dump (%s); "
+                "power-cycle if the machine looks wedged",
+                e,
+            )
+        try:
+            be.close()
+        except Exception as e:
+            log.warning("--dump-char-rom: could not close the backend cleanly (%s)", e)
 
     dest = char_rom.install_data(data)
     print(f"Dumped the character ROM from the C64 → {dest}")
@@ -514,11 +547,14 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
         idx = resolve_audio_input_device(args.audio_device)
         dev = idx if idx >= 0 else None
     be = make_backend(cfg)
-    # A calibration is keyed per system, so settle `system = "auto"` against
-    # the machine before measuring — otherwise an unresolved "auto" would file
-    # a PAL machine's curve under NTSC.
-    hw_provision.resolve_system(cfg, be)
     try:
+        # A calibration is keyed per system, so settle `system = "auto"`
+        # against the machine before measuring — otherwise an unresolved
+        # "auto" would file a PAL machine's curve under NTSC. Inside the try
+        # (not before it) so an unreachable/unresponsive machine here still
+        # closes `be` rather than abandoning the U64's single-connection DMA
+        # socket for the next run to trip over.
+        hw_provision.resolve_system(cfg, be)
         run = dac_calibration.run_calibration(
             be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
         )
@@ -547,17 +583,15 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
 def run_doctor(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> int:
     """--doctor: validate + probe using the merged configs, so CLI flags
     (e.g. --skip-probe) and the C64CAST_DMA_PASSWORD env var take effect."""
+    import dataclasses
+
     from .doctor import print_report, validate_load_result
 
-    merged = cfgmod.LoadResult(
-        cfgs=cfgs,
-        names=loaded.names,
-        paths=loaded.paths,
-        is_ensemble=loaded.is_ensemble,
-        master_control=loaded.master_control,
-        master_midi_control=loaded.master_midi_control,
-        unknown_keys=loaded.unknown_keys,
-    )
+    # `replace` rather than a hand-listed field-by-field copy: a `LoadResult`
+    # field this doesn't know to carry forward (e.g. master_web) would
+    # otherwise silently fall back to its dataclass default instead of the
+    # value load_master actually produced.
+    merged = dataclasses.replace(loaded, cfgs=cfgs)
     diagnostics = validate_load_result(
         merged,
         probe_u64=not cfgs[0].debug.skip_probe,
