@@ -113,7 +113,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--motd-line`** | Print the pending-upgrade line from the last `--write-state` check (or nothing, if none is pending), then exit. Never queries PyPI — for an appliance's /etc/update-motd.d/ script. |
 | **`--upgrade`** | Detect how this install was made (uv tool, pipx, pip, or a development checkout) and run that installer's own upgrade command, which preserves whichever extras are already installed. Prompts for confirmation unless `--yes`. |
 | **`--yes`** | Skip `--upgrade`'s confirmation prompt (for scripts/CI). No effect without `--upgrade`. |
-| **`--reset-setup`** | Clear the appliance's first-run setup marker, then exit — the next `--serve` with [web].setup_wizard on will ask again rather than opening the normal token-gated console. No effect on a config with setup_wizard off. |
+| **`--reset-setup`** | Ask the appliance to run first-run setup again, then exit — the next `--serve` with [web].setup_wizard on will serve the setup form rather than the normal token-gated console. Clears the completion marker and records the request, which is what lets an already-configured host reopen the window: without the request, a host that names a connection target refuses to, so a lost data directory cannot reopen one by itself. No effect with setup_wizard off. |
 
 ## Debug
 

@@ -210,6 +210,18 @@ def default_safe_state(req: StartRequest) -> None:
     them would abandon the reset, which is the one thing that has to happen."""
     from c64cast.hw.backend import make_backend
 
+    if len(req.cfgs) != len(req.loaded.names):
+        # `strict=False` below truncates to the shorter of the two, which in
+        # the one function whose whole job is guaranteeing a reset would drop
+        # a machine with nothing said about it. The loop still runs — a reset
+        # that can happen must — but the mismatch is a bug upstream and has to
+        # be visible.
+        log.error(
+            "safe-state reset: %d configs but %d system names; some machines may be missed",
+            len(req.cfgs),
+            len(req.loaded.names),
+        )
+
     for cfg, name in zip(req.cfgs, req.loaded.names, strict=False):
         try:
             api = make_backend(cfg)
@@ -234,7 +246,18 @@ class SessionLogBuffer(logging.Handler):
     A hardware failure's diagnostic is written to the log and nowhere else — in
     the CLI that is fine, the user is looking at the terminal. A daemon's user
     is looking at a browser, so the log has to be readable from there or the
-    only answer the UI can give is "it didn't start"."""
+    only answer the UI can give is "it didn't start".
+
+    **The lock is ``logging.Handler``'s own, and every reader takes it.**
+    ``emit`` is called with it already held (``Handler.handle`` acquires it),
+    which is also what makes ``seq += 1`` safe — a test calling ``emit``
+    directly bypasses that. The readers run on other threads entirely (the
+    state feed's push loop, a threadpool route), and a deque being appended to
+    cannot be iterated at the Python level: an append — or, at ``maxlen``, the
+    eviction that comes with it — raises ``RuntimeError: deque mutated during
+    iteration`` in the reader. So both readers go through
+    :meth:`_snapshot` rather than one of them being written safely and the
+    other not."""
 
     def __init__(self, capacity: int = 500) -> None:
         super().__init__()
@@ -267,18 +290,37 @@ class SessionLogBuffer(logging.Handler):
         except Exception:  # pragma: no cover - logging must never raise
             self.handleError(record)
 
+    def _snapshot(self) -> list[dict[str, Any]]:
+        """A copy of the retained records, taken under the handler lock.
+
+        ``Handler.acquire``/``release`` rather than ``with self.lock``: the
+        attribute is optional on the base class, and these two methods are
+        what handle that. Deadlock-free because nothing in here logs, and the
+        lock is reentrant anyway."""
+        self.acquire()
+        try:
+            return list(self._records)
+        finally:
+            self.release()
+
     def tail(self, limit: int = 100, *, generation: int | None = None) -> list[dict[str, Any]]:
-        """The most recent lines, oldest first, optionally for one generation."""
-        rows = list(self._records)
+        """The most recent ``limit`` lines, oldest first, optionally for one
+        generation. A non-positive ``limit`` asks for nothing and gets nothing
+        — ``rows[-0:]`` is the whole list, which would make ``limit=0`` mean
+        "every retained line" to anything that ever forwards a client's own
+        number."""
+        if limit <= 0:
+            return []
+        rows = self._snapshot()
         if generation is not None:
             rows = [r for r in rows if r["generation"] == generation]
-        return rows[-limit:] if limit > 0 else rows
+        return rows[-limit:]
 
     def since(self, seq: int) -> list[dict[str, Any]]:
         """Lines newer than ``seq``, oldest first. A follower that fell far
         enough behind for its lines to age out of the deque silently skips
         them — the alternative is a console that can never catch up."""
-        return [r for r in self._records if r["seq"] > seq]
+        return [r for r in self._snapshot() if r["seq"] > seq]
 
     def install(self, logger_name: str = "c64cast") -> None:
         logging.getLogger(logger_name).addHandler(self)
@@ -359,6 +401,16 @@ class SessionManager:
         self._last_error: str | None = None
         self._hardware_free_at = 0.0
         self._switching = False
+        #: Set by `stop()` (and by `close()`, through it) while a switch is in
+        #: flight: the switch worker checks it under the lock immediately
+        #: before it starts the replacement show, so a stop that lands in the
+        #: idle gap between the two halves of a switch is honored instead of
+        #: being answered `202` and then overridden.
+        self._abort_switch = False
+        #: Terminal. `close()` sets it, and nothing may take the hardware
+        #: afterward — otherwise a Ctrl+C during a console switch left a
+        #: brand-new session running with nobody left to stop it.
+        self._closing = False
         self._cancel = threading.Event()
         self._workers = _Workers()
         self._reaper = PollThread(
@@ -437,6 +489,7 @@ class SessionManager:
         the one place that has to get stop → settle → start right is the one
         place that does it."""
         with self._lock:
+            self._refuse_if_closing()
             if self._switching:
                 raise SupervisorBusy(self._state, "a switch is already in progress")
             if self._state not in STARTABLE:
@@ -450,18 +503,20 @@ class SessionManager:
 
         A stop during ``starting`` cancels: the build is not interruptible
         (opening a backend blocks), so the flag is honored at the next
-        checkpoint and, failing that, immediately after the build lands."""
+        checkpoint and, failing that, immediately after the build lands.
+
+        A stop during a :meth:`switch` also cancels the *pending* start. It
+        consulted only ``_state`` before, which meant an operator's stop was
+        silently discarded for the whole duration of a switch — refused as
+        "not running" during the teardown, and dropped in the idle gap before
+        the replacement was claimed — and the switch then took the hardware
+        anyway. "Press stop, get 202, machine starts a show" is not a contract
+        this surface gets to have."""
         with self._lock:
-            if self._state == SessionState.STARTING:
-                self._cancel.set()
-                return True
-            if self._state != SessionState.RUNNING:
-                return False
-            sess = self._session
-            gen = self._generation
-            self._transition_locked(SessionState.STOPPING)
-            self._workers.spawn(f"session-stop-{gen}", lambda: self._run_stop(sess))
-            return True
+            aborting = self._switching
+            if aborting:
+                self._abort_switch = True
+            return self._stop_locked() or aborting
 
     def switch(self, req: StartRequest, *, timeout: float = 60.0) -> int:
         """Replace the running show: stop, wait for idle, honor the cooldown,
@@ -469,13 +524,22 @@ class SessionManager:
 
         One endpoint rather than making every caller sequence it, because the
         cooldown and the "don't start until the last teardown is *done*" rule
-        are exactly what a caller gets wrong."""
+        are exactly what a caller gets wrong.
+
+        The returned generation is what the switch *intends*; it is not a
+        promise. A previous session that will not come down, a stop that lands
+        mid-switch, and :meth:`close` all abandon the pending start — each of
+        them leaving the reason in ``last_error`` and re-notifying, so a caller
+        watching the state feed learns why the generation it was given never
+        arrived."""
         with self._lock:
+            self._refuse_if_closing()
             if self._switching:
                 raise SupervisorBusy(self._state, "a switch is already in progress")
             if self._state not in (*STARTABLE, SessionState.RUNNING):
                 raise SupervisorBusy(self._state, f"supervisor is {self._state}")
             self._switching = True
+            self._abort_switch = False
             pending = self._generation + 1
             self._workers.spawn(f"session-switch-{pending}", lambda: self._run_switch(req, timeout))
         return pending
@@ -492,17 +556,47 @@ class SessionManager:
 
     def close(self, *, timeout: float = 30.0) -> None:
         """Stop whatever is running and release the supervisor's own threads.
-        Safe to call from any state, and safe to call twice."""
-        log.info("waiting up to %.0fs for the session to tear down", timeout * 2)
+        Safe to call from any state, and safe to call twice.
+
+        **Terminal**: :meth:`start` and :meth:`switch` refuse afterward, and a
+        switch already in flight abandons its pending start. Without that,
+        ``close()`` woke the parked switch worker on the very transition it was
+        waiting for — the worker cleared ``_switching``, claimed a new
+        generation, and ``_workers.join`` then waited for it to finish
+        *building*, so a Ctrl+C during a console switch returned from
+        ``close()`` with a session running, the marker written and the machine
+        held, straight into ``cli.ensure_exit``'s force-exit."""
+        with self._lock:
+            self._closing = True
+            busy = self._state not in STARTABLE or self._switching
+        if busy:
+            # Only when there is something to wait on: `run_daemon` calls this
+            # on every exit path, including the ones where no session ever
+            # existed, and a host that died resolving its token used to sign
+            # off with a claim that it was waiting a minute on a teardown.
+            log.info("waiting up to %.0fs for the session to tear down", timeout * 2)
         self.stop()
         self.wait_for(STARTABLE, timeout=timeout)
         self._reaper.stop()
         self._workers.join(timeout=timeout)
+        if self.state not in STARTABLE:
+            # A start that squeezed through before `_closing` was visible, or
+            # a teardown that outran its deadline. This is the last chance to
+            # release the hardware, so ask once more.
+            log.warning("the session is still %s after close(); stopping it again", self.state)
+            self.stop()
+            self.wait_for(STARTABLE, timeout=timeout)
+            self._workers.join(timeout=timeout)
 
     # -- internals ----------------------------------------------------------
 
+    def _refuse_if_closing(self) -> None:
+        if self._closing:
+            raise SupervisorBusy(self._state, "the supervisor is shutting down")
+
     def _begin_start_locked(self, req: StartRequest) -> int:
-        gen = self._generation + 1
+        previous = self._generation
+        gen = previous + 1
         self._generation = gen
         self._request = req
         self._session = None
@@ -511,8 +605,48 @@ class SessionManager:
         if self._log_buffer is not None:
             self._log_buffer.generation = gen
         self._transition_locked(SessionState.STARTING)
-        self._workers.spawn(f"session-start-{gen}", lambda: self._run_start(req, gen))
+        try:
+            self._workers.spawn(f"session-start-{gen}", lambda: self._run_start(req, gen))
+        except Exception as e:
+            # Nothing else can leave `starting`: it isn't STARTABLE, `stop()`
+            # from it only arms the cancel flag, and the reaper ignores it — so
+            # a `Thread.start()` that raised (resource exhaustion) wedged the
+            # host until the process restarted. Roll back to a startable state
+            # and still tell the caller.
+            self._generation = previous
+            if self._log_buffer is not None:
+                self._log_buffer.generation = previous
+            self._record_error_locked(f"{type(e).__name__}: {e}")
+            self._transition_locked(SessionState.ERROR)
+            raise
         return gen
+
+    def _stop_locked(self) -> bool:
+        """The body of :meth:`stop`, minus the switch-abort flag — the switch
+        worker's own stop must not abort the switch it is performing."""
+        if self._state == SessionState.STARTING:
+            self._cancel.set()
+            return True
+        if self._state != SessionState.RUNNING:
+            return False
+        sess = self._session
+        gen = self._generation
+        self._transition_locked(SessionState.STOPPING)
+        self._workers.spawn(f"session-stop-{gen}", lambda: self._run_stop(sess))
+        return True
+
+    def _record_error_locked(self, error: str | None) -> None:
+        """Set ``last_error``, redacted on the way *in*.
+
+        Exactly why :meth:`SessionLogBuffer.emit` redacts: the status snapshot
+        goes out on the state feed and from ``GET /api/session`` to every role,
+        read-only viewers included, and a build failure's exception text can
+        quote a connection URL with its link knobs or a value some library
+        echoed back. The sibling ``log`` key on that same frame was already
+        redacted; this was the one field on it that wasn't. Done here rather
+        than in :meth:`SessionStatus.as_dict` so the next field added to the
+        snapshot doesn't get it wrong the same way."""
+        self._last_error = redact_secrets(error) if error else error
 
     def _transition_locked(self, state: SessionState) -> None:
         """Move to ``state`` and wake every waiter. Callers hold the lock, so
@@ -550,7 +684,18 @@ class SessionManager:
             self._settle(SessionState.IDLE, None)
             return
         except BaseException as e:
-            log.exception("session %d failed to start", gen)
+            # `BaseException`, not `Exception`, and load-bearing: a build that
+            # raised `SystemExit` or `GeneratorExit` has already taken the
+            # hardware, and `_settle` is the only thing that releases it —
+            # narrowing this reopens the "no hardware is left held" guarantee
+            # this module is built around. Not re-raised, either: this is a
+            # worker thread, where `threading.excepthook` discards `SystemExit`
+            # outright, so the only useful thing left is to say which it was
+            # rather than letting a deliberate exit read as a dead machine.
+            if isinstance(e, Exception):
+                log.exception("session %d failed to start", gen)
+            else:
+                log.exception("session %d: the build was interrupted by %s", gen, type(e).__name__)
             self._enter_stopping()
             self._settle(SessionState.ERROR, f"{type(e).__name__}: {e}")
             return
@@ -565,6 +710,7 @@ class SessionManager:
             self.stop()
 
     def _run_stop(self, sess: Session | None) -> None:
+        error: str | None = None
         try:
             if sess is not None:
                 if any(t.is_alive() for t in sess.threads):
@@ -572,17 +718,26 @@ class SessionManager:
                 else:
                     # Nothing to interrupt — the playlists ran out on their own.
                     sess.stop_event.set()
-        except Exception:
+        except Exception as e:
             log.exception("session shutdown failed; tearing down anyway")
-        self._settle(SessionState.IDLE, None)
+            # Carried into `last_error` for the same reason a failed *build* is:
+            # a teardown that raised is the one thing an operator most needs to
+            # know about, and settling with `None` left the console reporting a
+            # clean `idle`.
+            error = f"session shutdown failed: {type(e).__name__}: {e}"
+        self._settle(SessionState.IDLE, error)
 
     def _run_switch(self, req: StartRequest, timeout: float) -> None:
         try:
-            self.stop()
+            with self._lock:
+                self._stop_locked()
             if not self.wait_for(STARTABLE, timeout=timeout):
-                log.error("switch abandoned: the previous session is still %s", self.state)
+                self._abandon_switch(f"the previous session is still {self.state}")
                 return
             with self._lock:
+                if self._abort_switch or self._closing:
+                    self._abandon_switch_locked("a stop landed while it was in flight")
+                    return
                 # Cleared inside the lock so the start's own guard passes and
                 # nothing else can claim the supervisor in between.
                 self._switching = False
@@ -590,6 +745,23 @@ class SessionManager:
         finally:
             with self._lock:
                 self._switching = False
+                self._abort_switch = False
+
+    def _abandon_switch(self, reason: str) -> None:
+        with self._lock:
+            self._abandon_switch_locked(reason)
+
+    def _abandon_switch_locked(self, reason: str) -> None:
+        """Give up on the pending start, loudly.
+
+        The generation :meth:`switch` handed its caller is never going to
+        arrive, so the reason goes into ``last_error`` and the current state is
+        re-notified: a browser holding a ``202`` and waiting on that generation
+        would otherwise see nothing at all change, with ``last_error: null``,
+        and the only diagnostic would be on the host's stderr."""
+        log.error("switch abandoned: %s", reason)
+        self._record_error_locked(f"switch abandoned: {reason}")
+        self._transition_locked(self._state)
 
     def _enter_stopping(self) -> None:
         with self._lock:
@@ -611,7 +783,7 @@ class SessionManager:
         with self._lock:
             self._session = None
             self._clear_marker()
-            self._last_error = error
+            self._record_error_locked(error)
             self._arm_cooldown()
             self._transition_locked(final)
 
@@ -652,7 +824,11 @@ class SessionManager:
             log.info("session %d: every playlist finished", self._generation)
             gen = self._generation
             self._transition_locked(SessionState.STOPPING)
-            self._workers.spawn(f"session-stop-{gen}", lambda: self._run_stop(sess))
+            # Named apart from `stop()`'s worker on purpose: `join_bounded`
+            # identifies a straggler by thread name, and "session-stop-7 did
+            # not finish" cannot tell an operator-requested stop (a wedged
+            # playlist) from a self-ending show being reaped (a hung teardown).
+            self._workers.spawn(f"session-reap-stop-{gen}", lambda: self._run_stop(sess))
 
     # -- the run marker -----------------------------------------------------
 
@@ -739,7 +915,17 @@ def make_request_factory(
 
     Validation happens here, on the request thread, so a config that can't run
     is refused before any transition is claimed — see the ``422`` note in
-    :mod:`c64cast.control.web_api`."""
+    :mod:`c64cast.control.web_api`.
+
+    **Validation is not confinement, and this is not where confinement
+    happens.** The ``path`` is handed straight to the injected
+    :data:`ConfigLoader`, which by design opens any path it is given (it is
+    the CLI's own resolver). Keeping a browser-supplied ref inside
+    ``[web].config_roots`` is :class:`~c64cast.app.config_store.ConfigStore`'s
+    job, and every caller resolves through it *before* calling this — a route
+    that forwarded a raw client string would turn this into an arbitrary-file
+    config load, and a loaded config names media paths and URLs a session
+    opens."""
 
     def factory(path: str | None = None) -> StartRequest:
         args, loaded, cfgs = load(path)
@@ -749,17 +935,67 @@ def make_request_factory(
     return factory
 
 
-def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, ViewerCredential]:
-    """Settle the host's credentials: ``(token, viewer)``.
+class TokenSource(StrEnum):
+    """Which of the four sources answered for the full token.
+
+    The values are prose because they are logged verbatim: an operator looking
+    at a host that is answering with a credential they don't recognize needs to
+    know *which* file or variable it came from."""
+
+    ENV = "the C64CAST_WEB_TOKEN environment variable"
+    CONFIG = "[web] token"
+    FILE = "[web] token_file"
+    GENERATED = "the generated token under the data dir"
+
+
+@dataclass(frozen=True)
+class HostCredentials:
+    """What the host authenticates with, and where its full token came from."""
+
+    token: str
+    viewer: ViewerCredential
+    source: TokenSource
+
+    @property
+    def token_settable(self) -> bool:
+        """Whether the appliance setup form may write a replacement token.
+
+        Provenance rather than a second reading of the same three sources.
+        Only a token :func:`resolve_tokens` *generated* can be replaced: it
+        consults the file the form writes last of all four, so a configured
+        token would silently outrank a replacement and lock the admin out on
+        the very next restart. ``run_daemon`` used to re-derive that inline as
+        ``not (os.environ.get(...) or cfg.token or cfg.token_file)``, which is
+        the same knowledge encoded twice with a security-relevant flag as the
+        casualty of any drift."""
+        return self.source is TokenSource.GENERATED
+
+
+def resolve_tokens(cfg: cfgmod.WebCfg) -> HostCredentials:
+    """Settle the host's credentials.
 
     Precedence for the full token is env → config → ``token_file`` →
-    generated-and-persisted, and the last step is why this never returns an
-    empty string. ``[control]`` may run unauthenticated because that is what it
-    has always done and breaking those runs isn't a trade a security feature
-    gets to make; this surface has no history to preserve and starts hardware,
-    so "no token" is not one of its states."""
-    token = os.environ.get("C64CAST_WEB_TOKEN") or cfg.token
+    generated-and-persisted, and the last step is why the token is never
+    empty. ``[control]`` may run unauthenticated because that is what it has
+    always done and breaking those runs isn't a trade a security feature gets
+    to make; this surface has no history to preserve and starts hardware, so
+    "no token" is not one of its states.
+
+    A read-only token equal to the full one is refused here rather than
+    further in: :func:`c64cast.control.auth.match_role` compares the full
+    token first, so the same secret pasted into both fields — or both fed from
+    one secret-manager entry — silently granted every holder of the
+    "read-only" link start, stop, config writes and media upload.
+    :func:`~c64cast.control.auth.install_auth` does refuse it, but with a
+    ``ValueError`` from inside app construction; refusing it here is what
+    turns that into a named reason and a nonzero exit."""
+    source = TokenSource.ENV
+    token = os.environ.get("C64CAST_WEB_TOKEN")
+    if not token:
+        source = TokenSource.CONFIG
+        token = cfg.token
     if not token and cfg.token_file:
+        source = TokenSource.FILE
         path = Path(paths.expand_user(cfg.token_file))
         try:
             token = path.read_text(encoding="utf-8").strip()
@@ -768,6 +1004,7 @@ def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, ViewerCredential]:
         if not token:
             raise RuntimeError(f"[web] token_file {path} is empty")
     if not token:
+        source = TokenSource.GENERATED
         token = _generated_token()
     viewer = os.environ.get("C64CAST_WEB_VIEWER_TOKEN") or cfg.viewer_token
     if not viewer:
@@ -775,7 +1012,16 @@ def resolve_tokens(cfg: cfgmod.WebCfg) -> tuple[str, ViewerCredential]:
         # `ViewerCredential` and `paths.web_viewer_token_path`.
         with contextlib.suppress(OSError):
             viewer = paths.web_viewer_token_path().read_text(encoding="utf-8").strip()
-    return token, ViewerCredential(viewer, store=_persist_viewer_token)
+    if viewer and viewer == token:
+        raise RuntimeError(
+            "[web] viewer_token is the same value as the full token — every holder of "
+            "the read-only link would have full control of the machine"
+        )
+    return HostCredentials(
+        token=token,
+        viewer=ViewerCredential(viewer, store=_persist_viewer_token),
+        source=source,
+    )
 
 
 def _persist_viewer_token(token: str) -> None:
@@ -845,9 +1091,10 @@ def build_daemon_app(
     form's API and, **last**, the gate that hides everything else behind it;
     both are omitted entirely once setup has completed, rather than switched
     off, so there is nothing left here for a stray request to reach.
-    ``token_settable`` rides along to that API: only :func:`run_daemon` knows
-    whether ``token`` was generated (and so can be replaced by the form) or
-    named by configuration (and so cannot).
+    ``token_settable`` rides along to that API: only the credential resolution
+    knows whether ``token`` was generated (and so can be replaced by the form)
+    or named by configuration (and so cannot) — see
+    :attr:`HostCredentials.token_settable`.
 
     ``library`` and ``media`` are required, because both constructors resolve
     into the data dir and write there: a ``None`` default meant a caller who
@@ -995,48 +1242,48 @@ def pump_forever(
         _close_previews(opened)
 
 
-def run_daemon(
-    web_cfg: cfgmod.WebCfg,
-    load: ConfigLoader,
-    *,
-    config_path: str = "",
-) -> int:
-    """Serve the web console until interrupted. The CLI's ``--serve`` body.
+@dataclass(frozen=True)
+class _Host:
+    """Everything :func:`run_daemon` builds once and every serve cycle reuses.
 
-    Ordering is load-bearing on the way out: stop the session *before* the
-    server, so a console watching the state feed sees the machine come down
-    rather than the socket vanish mid-teardown.
+    Bundled so :func:`_serve_once` takes the cycle's own inputs rather than
+    seven loop-invariant ones. Nothing in here changes across a setup restart:
+    only the app, its listener and its mDNS record are per-cycle."""
 
-    Normally this builds one app and pumps it until a signal arrives. With
-    ``[web].setup_wizard`` there is a second way out of the pump: the setup
-    form finishing (see :mod:`c64cast.control.setup_api`) sets a *restart*
-    event rather than the *shutdown* one, and the ``while True`` below rebuilds
-    the app — this time without the setup gate, and with whatever the form
-    just wrote — instead of returning. A shutdown signal still ends the loop
-    (and the process) exactly as before; a restart never does.
+    manager: SessionManager
+    factory: Callable[[str | None], StartRequest]
+    log_buffer: SessionLogBuffer
+    store: config_store.ConfigStore
+    media: media_store.MediaStore
+    library: console_library.ConsoleLibrary
+    shutdown: threading.Event
 
-    Each iteration also (re)advertises the console over mDNS (see
-    :mod:`c64cast.control.console_mdns`), with a fresh
-    :class:`~c64cast.control.console_mdns.ConsoleMdnsAdvertiser` rather than
-    updating one in place, so a setup completion's flip from pending to
-    configured shows up in the TXT record a discovery client reads."""
-    from c64cast.control.console_mdns import ConsoleMdnsAdvertiser
-    from c64cast.control.control_plane import ControlServer
-    from c64cast.control.setup_gate import SETUP_PAGE_PATH
-    from c64cast.control.web_static import landing_path
 
-    log_buffer = SessionLogBuffer()
-    log_buffer.install()
-    manager = SessionManager(
-        settle_s=web_cfg.settle_s, log_buffer=log_buffer, launch_config_path=config_path
-    )
-    factory = make_request_factory(load, config_path=config_path)
-    store = config_store.ConfigStore(web_cfg.config_roots)
-    media = media_store.MediaStore(web_cfg.media_read_write, web_cfg.media_read_only)
-    library = console_library.ConsoleLibrary()
+class _Cycle(StrEnum):
+    """How one serve cycle ended, which is the only thing left for
+    :func:`run_daemon` to act on."""
 
-    shutdown = threading.Event()
-    _on_stop_signal = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
+    SHUTDOWN = "shutdown"
+    RESTART = "restart"
+    FAILED = "failed"
+
+
+#: Machine-settings tables that carry a connection target —
+#: :func:`c64cast.app.connect.apply_to_config` writes into exactly these three,
+#: so any of them being present means somebody already told this host what
+#: hardware to talk to.
+_CONNECTION_TABLES = ("hardware", "ultimate64", "teensyrom")
+
+
+def _install_signal_handlers(manager: SessionManager, shutdown: threading.Event) -> None:
+    """SIGTERM/SIGINT end the host; SIGHUP reloads the running session.
+
+    The ``--serve`` process is a foreground process too, so it gets the same
+    three-strike factory ``cli._run_session`` uses: the first signal sets
+    ``shutdown`` so the pump exits and the session is torn down, the second
+    restores ``SIG_DFL`` for that signal so a service manager's repeated
+    SIGTERM isn't caught forever, and the third actually kills."""
+    on_stop = make_stop_signal_handler(shutdown.set, verb="shutting down the host")
 
     def _on_sighup(_signum: int, _frame: Any) -> None:
         log.info("SIGHUP received")
@@ -1045,96 +1292,235 @@ def run_daemon(
         except SupervisorBusy as e:
             log.warning("reload ignored: %s", e)
 
-    signal.signal(signal.SIGTERM, _on_stop_signal)
-    signal.signal(signal.SIGINT, _on_stop_signal)
+    signal.signal(signal.SIGTERM, on_stop)
+    signal.signal(signal.SIGINT, on_stop)
     sighup = getattr(signal, "SIGHUP", None)
     if sighup is not None:
         signal.signal(sighup, _on_sighup)
 
+
+def _looks_provisioned() -> bool:
+    """Whether machine settings already name a connection target.
+
+    Read from the *config* dir, which is what makes it corroborating evidence
+    for :func:`_setup_pending`: the setup marker lives under the *data* dir,
+    and the whole failure mode is one of those two outliving the other. An
+    unreadable settings file counts as provisioned — the safe answer when the
+    question being decided is "may this host serve an unauthenticated form?"."""
+    try:
+        data = cfgmod.load_machine_settings()
+    except Exception:
+        log.exception("could not read machine settings; assuming this host is provisioned")
+        return True
+    return any(isinstance(data.get(table), dict) and data[table] for table in _CONNECTION_TABLES)
+
+
+def _setup_pending(web_cfg: cfgmod.WebCfg) -> bool:
+    """Whether to open the appliance's unauthenticated setup window.
+
+    The absence of ``setup.json`` used to be the only evidence, and it cannot
+    tell "this is a first boot" from "this host lost its data dir": a container
+    layer with no volume, a tmpfs, or a cleanup sweep then reopened
+    ``/api/setup``, ``/setup`` and the whole shell to the segment on a fully
+    configured appliance — where whoever won the race could repoint the
+    connection at a host they control and, on a host relying on the generated
+    token, write a replacement admin credential. So a missing marker on a host
+    that *looks* provisioned is treated as the loss it is and the window stays
+    shut; ``c64cast --reset-setup`` leaves an explicit reopen marker
+    (:func:`c64cast.app.paths.setup_reopen_path`) precisely so an admin who
+    already has shell access can still ask for it."""
+    if not web_cfg.setup_wizard or paths.setup_state_path().is_file():
+        return False
+    if paths.setup_reopen_path().is_file():
+        log.warning("web console: --reset-setup asked for the setup window; opening it")
+        return True
+    if _looks_provisioned():
+        log.warning(
+            "web console: %s is missing but machine settings already name a connection "
+            "target, so the unauthenticated setup window stays shut. Run "
+            "`c64cast --reset-setup` if you did mean to configure this host again.",
+            paths.setup_state_path(),
+        )
+        return False
+    return True
+
+
+def _clear_setup_reopen() -> None:
+    """Spend the ``--reset-setup`` marker once setup has completed, so a later
+    loss of ``setup.json`` falls back to the provisioning evidence rather than
+    to a reopen nobody asked for twice."""
+    with contextlib.suppress(OSError):
+        paths.setup_reopen_path().unlink(missing_ok=True)
+
+
+def _log_setup_url(web_cfg: cfgmod.WebCfg) -> None:
+    """Announce the setup window — at ``warning``, because what it announces is
+    a host answering with no authentication at all."""
+    from c64cast.control.setup_gate import SETUP_PAGE_PATH
+
+    log.warning(
+        "web console: setup required — this host is answering http://%s:%d%s with no "
+        "authentication until it is configured",
+        web_cfg.host,
+        web_cfg.port,
+        SETUP_PAGE_PATH,
+    )
+
+
+def _log_console_urls(
+    web_cfg: cfgmod.WebCfg, creds: HostCredentials, store: config_store.ConfigStore
+) -> None:
+    """The startup banner for a configured host.
+
+    Straight to the console when there is one, and to the zero-dependency
+    ``/perf`` page when the bundle was never built — the printed URL is the
+    only entry point a phone gets, so it has to land somewhere useful. The
+    token's provenance is named because a planted ``web_token`` under a
+    group-writable data dir is adopted silently otherwise."""
+    from c64cast.control.web_static import landing_path
+
+    log.info(
+        "web console: open http://%s:%d/api/login?token=%s&next=%s",
+        web_cfg.host,
+        web_cfg.port,
+        creds.token,
+        landing_path(),
+    )
+    log.info("web console: the full token comes from %s", creds.source)
+    if creds.viewer:
+        log.info("web console: a read-only token is configured as well")
+    else:
+        log.info("web console: ask it for a read-only link when you want to share the screen")
+    log.info(
+        "web console: editable config roots: %s",
+        ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",
+    )
+
+
+def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
+    """One build-and-pump cycle: credentials, app, listener, mDNS, pump.
+
+    **Shutdown ordering is load-bearing and lives here.** On the way out under
+    ``shutdown`` the session comes down *before* the listener, so a console
+    watching the state feed sees the machine stop rather than the socket
+    vanish mid-teardown — ``close()`` can spend a minute releasing hardware,
+    and an operator with no console for that minute has no way to see whether
+    it happened. On a *restart* the session stays up and only the listener is
+    replaced.
+
+    Each cycle gets a fresh
+    :class:`~c64cast.control.console_mdns.ConsoleMdnsAdvertiser` rather than
+    one updated in place, so a setup completion's flip from pending to
+    configured shows up in the TXT record a discovery client reads."""
+    from c64cast.control.console_mdns import ConsoleMdnsAdvertiser
+    from c64cast.control.control_plane import ControlServer
+
+    try:
+        creds = resolve_tokens(web_cfg)
+    except RuntimeError as e:
+        log.error("%s", e)
+        return _Cycle.FAILED
+
+    pending = _setup_pending(web_cfg)
+    restart = threading.Event()
+
+    def _on_setup_complete() -> None:
+        _clear_setup_reopen()
+        restart.set()
+
+    try:
+        app = build_daemon_app(
+            host.manager,
+            host.factory,
+            token=creds.token,
+            viewer_token=creds.viewer,
+            screen_fps=web_cfg.screen_fps,
+            log_buffer=host.log_buffer,
+            store=host.store,
+            library=host.library,
+            media=host.media,
+            setup_pending=pending,
+            token_settable=creds.token_settable,
+            on_setup_complete=_on_setup_complete,
+        )
+        server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
+    except RuntimeError as e:
+        log.error("web console unavailable: %s", e)
+        return _Cycle.FAILED
+
+    # Before the banner, the beacon and any autostart: uvicorn binds on its own
+    # thread, so a port already in use used to leave the host printing a login
+    # URL, autostarting a show on real hardware, and parking forever with
+    # nothing listening — then exiting 0.
+    if not server.start():
+        return _Cycle.FAILED
+
+    mdns = ConsoleMdnsAdvertiser(web_cfg.host, web_cfg.port, pending=pending)
+    mdns.start()
+    if pending:
+        _log_setup_url(web_cfg)
+    else:
+        _log_console_urls(web_cfg, creds, host.store)
+
+    try:
+        if web_cfg.autostart and not pending:
+            try:
+                host.manager.start(host.factory(None))
+            except Exception:
+                log.exception("autostart failed; the host is up and idle")
+        pump_forever(host.manager, host.shutdown, restart=restart)
+    finally:
+        if host.shutdown.is_set():
+            # `close()` is idempotent, so `run_daemon`'s own call stays the
+            # backstop for every other way out of this function.
+            host.manager.close()
+        mdns.stop()
+        server.stop()
+    return _Cycle.SHUTDOWN if host.shutdown.is_set() else _Cycle.RESTART
+
+
+def run_daemon(
+    web_cfg: cfgmod.WebCfg,
+    load: ConfigLoader,
+    *,
+    config_path: str = "",
+) -> int:
+    """Serve the web console until interrupted. The CLI's ``--serve`` body.
+
+    A loop around :func:`_serve_once`, which owns one build-and-pump cycle and
+    the shutdown ordering inside it. Normally there is exactly one cycle. With
+    ``[web].setup_wizard`` there is a second way out of the pump: the setup
+    form finishing (see :mod:`c64cast.control.setup_api`) sets a *restart*
+    event rather than the *shutdown* one, and the loop rebuilds the app — this
+    time without the setup gate, and with whatever the form just wrote —
+    instead of returning. A shutdown signal ends the loop and the process; a
+    restart never does.
+
+    Exit codes: ``0`` for a clean shutdown, ``2`` for a cycle that could not
+    serve (unreadable credentials, no uvicorn, a port already in use)."""
+    log_buffer = SessionLogBuffer()
+    log_buffer.install()
+    manager = SessionManager(
+        settle_s=web_cfg.settle_s, log_buffer=log_buffer, launch_config_path=config_path
+    )
+    host = _Host(
+        manager=manager,
+        factory=make_request_factory(load, config_path=config_path),
+        log_buffer=log_buffer,
+        store=config_store.ConfigStore(web_cfg.config_roots),
+        media=media_store.MediaStore(web_cfg.media_read_write, web_cfg.media_read_only),
+        library=console_library.ConsoleLibrary(),
+        shutdown=threading.Event(),
+    )
+    _install_signal_handlers(manager, host.shutdown)
+
     try:
         while True:
-            try:
-                token, viewer_token = resolve_tokens(web_cfg)
-            except RuntimeError as e:
-                log.error("%s", e)
-                return 2
-
-            pending = web_cfg.setup_wizard and not paths.setup_state_path().is_file()
-            # Only a token this function *generated* can be replaced by the
-            # setup form: `resolve_tokens` reads the file the form writes last
-            # of all four sources, so a configured one would silently outrank a
-            # replacement and lock the admin out on the very next restart.
-            token_settable = not (
-                os.environ.get("C64CAST_WEB_TOKEN") or web_cfg.token or web_cfg.token_file
-            )
-            restart = threading.Event()
-
-            try:
-                app = build_daemon_app(
-                    manager,
-                    factory,
-                    token=token,
-                    viewer_token=viewer_token,
-                    screen_fps=web_cfg.screen_fps,
-                    log_buffer=log_buffer,
-                    store=store,
-                    library=library,
-                    media=media,
-                    setup_pending=pending,
-                    token_settable=token_settable,
-                    on_setup_complete=restart.set,
-                )
-                server = ControlServer(web_cfg.host, web_cfg.port, app, label="web console")
-            except RuntimeError as e:
-                log.error("web console unavailable: %s", e)
-                return 2
-
-            mdns = ConsoleMdnsAdvertiser(web_cfg.host, web_cfg.port, pending=pending)
-            server.start()
-            mdns.start()
-            if pending:
-                log.info(
-                    "web console: setup required — open http://%s:%d%s to configure this appliance",
-                    web_cfg.host,
-                    web_cfg.port,
-                    SETUP_PAGE_PATH,
-                )
-            else:
-                # Straight to the console when there is one, and to the
-                # zero-dependency `/perf` page when the bundle was never built
-                # — the printed URL is the only entry point a phone gets, so
-                # it has to land somewhere useful.
-                log.info(
-                    "web console: open http://%s:%d/api/login?token=%s&next=%s",
-                    web_cfg.host,
-                    web_cfg.port,
-                    token,
-                    landing_path(),
-                )
-                if viewer_token:
-                    log.info("web console: a read-only token is configured as well")
-                else:
-                    log.info(
-                        "web console: ask it for a read-only link when you want to share the screen"
-                    )
-                log.info(
-                    "web console: editable config roots: %s",
-                    ", ".join(f"{r.label} = {r.path}" for r in store.roots) or "none",
-                )
-
-            try:
-                if web_cfg.autostart and not pending:
-                    try:
-                        manager.start(factory(None))
-                    except Exception:
-                        log.exception("autostart failed; the host is up and idle")
-                pump_forever(manager, shutdown, restart=restart)
-            finally:
-                mdns.stop()
-                server.stop()
-
-            if shutdown.is_set():
+            outcome = _serve_once(host, web_cfg)
+            if outcome is _Cycle.SHUTDOWN:
                 return 0
+            if outcome is _Cycle.FAILED:
+                return 2
             log.info("web console: setup completed — restarting to pick it up")
     finally:
         manager.close()

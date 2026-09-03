@@ -438,9 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
     upd.add_argument(
         "--reset-setup",
         action="store_true",
-        help="Clear the appliance's first-run setup marker, then exit — the next "
-        "`--serve` with [web].setup_wizard on will ask again rather than opening the "
-        "normal token-gated console. No effect on a config with setup_wizard off.",
+        help="Ask the appliance to run first-run setup again, then exit — the next "
+        "`--serve` with [web].setup_wizard on will serve the setup form rather than the "
+        "normal token-gated console. Clears the completion marker and records the "
+        "request, which is what lets an already-configured host reopen the window: "
+        "without the request, a host that names a connection target refuses to, so a "
+        "lost data directory cannot reopen one by itself. No effect with setup_wizard off.",
     )
 
     debug = p.add_argument_group("debug")

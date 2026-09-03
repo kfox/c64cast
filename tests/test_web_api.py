@@ -1970,15 +1970,39 @@ class TokenResolutionTest(unittest.TestCase):
             os.environ,
             {"C64CAST_WEB_TOKEN": "from-env", "C64CAST_WEB_VIEWER_TOKEN": "viewer-env"},
         ):
-            token, viewer = serve.resolve_tokens(cfg)
-        self.assertEqual(token, "from-env")
-        self.assertEqual(viewer.token, "viewer-env")
+            creds = serve.resolve_tokens(cfg)
+        self.assertEqual(creds.token, "from-env")
+        self.assertEqual(creds.viewer.token, "viewer-env")
+        self.assertIs(creds.source, serve.TokenSource.ENV)
 
     def test_a_token_file_is_read_and_stripped(self):
         path = self.tmp / "secret"
         path.write_text("  file-token \n", encoding="utf-8")
         cfg = cfgmod.WebCfg(token_file=str(path))
-        self.assertEqual(serve.resolve_tokens(cfg)[0], "file-token")
+        creds = serve.resolve_tokens(cfg)
+        self.assertEqual(creds.token, "file-token")
+        self.assertIs(creds.source, serve.TokenSource.FILE)
+
+    def test_only_a_generated_token_may_be_replaced_by_the_setup_form(self):
+        """`token_settable` is provenance, not a second reading of the same
+        three sources: `resolve_tokens` consults the file the form writes
+        *last*, so a configured token would silently outrank a replacement and
+        lock the admin out on the next restart."""
+        self.assertTrue(serve.resolve_tokens(cfgmod.WebCfg()).token_settable)
+        self.assertFalse(
+            serve.resolve_tokens(cfgmod.WebCfg(token="a-configured-token")).token_settable
+        )
+        with mock.patch.dict(os.environ, {"C64CAST_WEB_TOKEN": "from-env"}):
+            self.assertFalse(serve.resolve_tokens(cfgmod.WebCfg()).token_settable)
+
+    def test_a_viewer_token_equal_to_the_full_one_is_refused(self):
+        """`auth.match_role` compares the full token first, so the same secret
+        in both fields silently granted every holder of the "read-only" link
+        start, stop, config writes and media upload."""
+        cfg = cfgmod.WebCfg(token="the-same-secret", viewer_token="the-same-secret")
+        with self.assertRaises(RuntimeError) as cm:
+            serve.resolve_tokens(cfg)
+        self.assertIn("read-only", str(cm.exception))
 
     def test_an_unreadable_token_file_is_fatal_rather_than_silently_open(self):
         cfg = cfgmod.WebCfg(token_file=str(self.tmp / "missing"))
@@ -1992,19 +2016,21 @@ class TokenResolutionTest(unittest.TestCase):
     def test_an_unconfigured_host_generates_and_persists_a_token(self):
         from c64cast.app import paths
 
-        first, viewer = serve.resolve_tokens(cfgmod.WebCfg())
+        creds = serve.resolve_tokens(cfgmod.WebCfg())
+        first = creds.token
         self.assertTrue(first)
+        self.assertIs(creds.source, serve.TokenSource.GENERATED)
         # The read-only one is *not* generated alongside it: nobody asked for a
         # second credential, and one that exists unasked is one more to leak.
-        self.assertEqual(viewer.token, "")
-        self.assertFalse(viewer)
+        self.assertEqual(creds.viewer.token, "")
+        self.assertFalse(creds.viewer)
         self.assertFalse(paths.web_viewer_token_path().exists())
         stored = paths.web_token_path()
         self.assertEqual(stored.read_text(encoding="utf-8").strip(), first)
         if os.name != "nt":
             self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
         # Stable across restarts: a bookmarked console URL keeps working.
-        self.assertEqual(serve.resolve_tokens(cfgmod.WebCfg())[0], first)
+        self.assertEqual(serve.resolve_tokens(cfgmod.WebCfg()).token, first)
 
 
 class RequestFactoryTest(unittest.TestCase):

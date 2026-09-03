@@ -96,6 +96,17 @@ anyone who can already run that command has shell access to the box, and a
 route that did the same thing over HTTP would hand that reopening power to
 anyone who could merely reach the port.
 
+**A lost data directory does not reopen it.** The completion marker lives
+under the data root (`~/.local/share/c64cast/setup.json` by default), and its
+absence used to be the only evidence consulted — so a data root that is a
+container layer with no volume, a tmpfs, or a swept cache reopened the window
+on a host that was still fully configured, since machine settings live under
+the *config* dir instead. The window now also requires that machine settings
+not already name a connection target; a provisioned host with a missing
+marker logs a warning and stays shut, and `--reset-setup` writes an explicit
+reopen marker beside removing the completion one so an admin with shell
+access can still ask for it. Opening the window logs a warning, every time.
+
 **Nothing the window exposes leaks the token.** `GET /api/setup` reports only
 whether a token may be *set* — never the token, redacted or otherwise, because
 that route answers anyone on the LAN for as long as the window is open. The

@@ -139,9 +139,110 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   bypass: `url = "192.168.2.64?dma_port=9999"` was passing a query param
   straight into the base URL that this field's own help says cannot carry
   one.
+- **The appliance setup window reopened on any lost `setup.json`, not just
+  `--reset-setup`.** Whether to serve the unauthenticated setup form was
+  decided by the absence of one file under the *data* root, and that cannot
+  tell "this is a first boot" from "this host lost its data dir": a data
+  root that is a container layer with no volume, a tmpfs, or a swept cache
+  reopened `POST /api/setup`, `/setup` and the whole console shell to
+  everything on the segment — while the host stayed fully configured,
+  because machine settings live under the *config* dir — and `console_mdns`
+  announced it with `setup=1`. Whoever won that race could repoint the box's
+  connection at a host they control and, on a host relying on its generated
+  token, write a replacement admin credential and evict the operator's
+  bookmarked link. The window now also requires that machine settings *not*
+  already name a connection target; a provisioned host with no marker logs a
+  warning and stays shut, and `c64cast --reset-setup` writes an explicit
+  reopen marker (`<data root>/setup-reopen`) so an admin who already has
+  shell access can still ask for the window while a lost data dir cannot ask
+  for it by itself. Opening it is a `log.warning` either way.
+- `last_error` reached read-only viewers unredacted. The supervisor stored
+  raw exception text and `SessionStatus.as_dict()` shipped it verbatim into
+  the `session` key of every `/api/ws` frame and of `GET /api/session`, both
+  of which a `viewer` credential may read — so a build failure whose message
+  quoted a connection URL with its `?query` link knobs, or a value a library
+  echoed back, was handed to a guest whose credential exists specifically to
+  withhold control. The sibling `log` key on that same frame was already
+  passed through `redact_secrets` on the way in, with a comment saying
+  exactly why; this was the one field on the frame that bypassed it.
+- `[web].viewer_token` set to the same value as `[web].token` is now refused
+  when the credentials are resolved, rather than at app construction:
+  `auth.match_role` compares the full token first, so one secret pasted into
+  both fields — or both fed from a single secret-manager entry — silently
+  granted every holder of the "read-only" link start, stop, config writes
+  and media upload. The refusal names the reason and exits `2` instead of
+  raising a `ValueError` out of the middle of a FastAPI app build.
 
 ### Fixed
 
+- **`--serve` reported success for a run that never served.** uvicorn binds
+  on its background thread, not in `ControlServer.start()`, and when the port
+  is already in use — a second `--serve` on the same host, the likeliest
+  operator error — it calls `sys.exit(1)` *there*: a `SystemExit` that the
+  poll thread does not catch and that Python's thread hook discards without a
+  record. So the host logged "listening on http://…", printed a login URL,
+  autostarted a show on real hardware, parked forever with nothing listening,
+  and exited `0` on the eventual Ctrl+C. `start()` now waits for uvicorn to
+  confirm the bind before it claims to be listening and answers whether it
+  is; `--serve` exits `2` with the reason named, and never advertises,
+  banners or autostarts a console that isn't there. (This also reaches the
+  WLED device server and the `[control]` plane, which get the error line
+  instead of a false claim.)
+- **The web console's state feed died under its own log volume.** The
+  supervisor's log buffer was read by the push loop with no lock while
+  build and teardown workers appended to it, and iterating a `deque` that is
+  being appended to — or, at its size cap, evicted from — raises
+  `RuntimeError: deque mutated during iteration`. The reader's caller
+  handled that as a closed socket at debug level, so the browser's only
+  channel for session state and log lines dropped and reconnected exactly
+  when the log was busiest: a failing build, which is what the buffer exists
+  for. Both readers now snapshot under the handler's own lock.
+- **The host stopped its listener before its session, the reverse of the
+  documented order.** On a shutdown signal the mDNS record and the HTTP
+  server went down first and the session was torn down only after the loop
+  returned — so every connected console lost its socket and *then* waited out
+  up to a minute of hardware teardown it could no longer watch, which is
+  precisely the failure the docstring and the architecture note both said was
+  avoided. The session now comes down first on the shutdown path (the
+  restart path still replaces only the listener), and a test pins the order
+  rather than leaving it to prose.
+- **A stop pressed during a show switch was discarded, and the switch
+  started the new show anyway.** `stop()` consulted only the supervisor's
+  state, so for the whole duration of a `switch` an operator's stop was
+  refused as "not running" during the teardown and dropped in the idle gap
+  before the replacement was claimed — answered `202` by the route either
+  way. A stop landing anywhere inside a switch now cancels the pending
+  start.
+- Shutting the host down during a switch left a brand-new session holding the
+  machine. `close()` woke the parked switch worker on the very transition it
+  was waiting for, the worker claimed a new generation, and the join then
+  waited for that build to *finish* — so a Ctrl+C during a console switch
+  returned with a session running, the run marker written and the hardware
+  held, straight into the force-exit backstop. `close()` is now terminal (a
+  start or switch afterward is refused, an in-flight switch bails) and
+  re-asserts idle after its join, so a start that squeezed through is still
+  torn down.
+- An abandoned switch was invisible to the console. When the previous session
+  would not come down inside the timeout, the supervisor logged to the host's
+  stderr and returned — no `last_error`, no transition — so a browser holding
+  the `202` and the generation it had been promised saw nothing change at
+  all, with `last_error: null`. Every way a switch can be abandoned now
+  parks the reason in `last_error` and re-notifies the feed, and a teardown
+  that *raised* does the same instead of settling as a clean `idle`.
+- A start worker that could not be spawned wedged the host permanently in
+  `starting`: nothing else leaves that state, so `start`/`switch` refused
+  forever and a stop only armed a flag. The failed spawn now rolls the
+  generation back, lands in `error` (which is startable) and still raises.
+- `--reset-setup` prints what it did in both cases and always leaves the
+  reopen marker, so it works on a host that had already lost `setup.json`.
+- Smaller supervisor fixes: the log buffer's `tail(limit=0)` returned the
+  entire retained tail rather than nothing (`rows[-0:]` is the whole list);
+  the reap path and an operator stop spawned worker threads with identical
+  names, so a straggler logged by name could not be attributed to either; the
+  60-second teardown-wait line was logged on every exit path including the
+  ones where no session ever existed; and a length mismatch between configs
+  and system names in the after-a-crash safe-state reset dropped a machine
+  with nothing logged.
 - **The ensemble master silently discarded six of its own sections.**
   `load_master` applied the master TOML through a hand-written tuple of
   `(section, dataclass)` pairs instead of the shared apply loop, and the two
@@ -262,6 +363,22 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- Whether the appliance setup form may write a replacement admin token is now
+  read off the credential resolution's own answer for *where* the running
+  token came from, instead of being re-derived from the same environment and
+  config reads a few lines away. The two expressions agreed, but a drift in
+  either direction is a security failure — a form-written token silently
+  outranked (locking the admin out at the next restart) or a deliberately
+  configured one overwritten — and one of them was untested. The startup
+  banner now also names which file or variable the running token came from,
+  which is the only signal an operator gets that a pre-planted token file is
+  being adopted.
+- `--serve`'s body is a loop around one build-and-pump cycle rather than a
+  single ~140-line function that also installed signal handlers, resolved
+  credentials, decided whether to open the setup window, printed three
+  banners, autostarted and owned the shutdown ordering. No behavior change
+  beyond the fixes above; each of those decisions is now separately testable,
+  which is what the setup-window and shutdown-order regressions needed.
 - Config field metadata corrections, all of which render into `--describe`, the
   committed JSON Schema, the annotated example TOML and the web console:
   `applies_to` now means scene types and nothing else (three `[color]` flicker

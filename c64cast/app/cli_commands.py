@@ -14,6 +14,7 @@ assertLogs-style captures and user-facing output are identical.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -27,6 +28,7 @@ from c64cast.audio import dac_calibration
 from c64cast.audio.audio import AUDIO_AVAILABLE, resolve_audio_input_device
 from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
+from c64cast.control.transport import atomic_write_text
 from c64cast.hw import char_rom, hw_provision
 from c64cast.hw.backend import make_backend
 
@@ -671,17 +673,27 @@ def run_upgrade(args: argparse.Namespace) -> int:
 
 
 def run_reset_setup() -> int:
-    """--reset-setup: clear the appliance's first-run marker, then exit.
+    """--reset-setup: ask the appliance to run first-run setup again, then exit.
 
     Deliberately CLI-only — there is no HTTP route for this. An admin who can
     already run `c64cast --reset-setup` has shell access to the box; an HTTP
     route that did the same thing would reopen the unauthenticated setup
     window to anyone who could reach the port, which is exactly the exposure
-    `setup_gate.py` exists to bound."""
+    `setup_gate.py` exists to bound.
+
+    Two files, because one of them is not evidence. Removing the completion
+    marker is what reopens the window; the reopen marker beside it is what
+    tells `serve._setup_pending` that an admin asked. Without the second one a
+    host that already names a connection target refuses to serve an
+    unauthenticated form — which is what stops a lost data dir from reopening
+    one by itself — so the marker is written even when there was nothing to
+    remove."""
     path = paths.setup_state_path()
-    if not path.is_file():
-        print(f"No setup marker at {path} — the next --serve will ask for setup already.")
-        return 0
-    path.unlink()
-    print(f"Removed {path} — the next --serve with [web].setup_wizard on will ask again.")
+    reopen = paths.setup_reopen_path()
+    existed = path.is_file()
+    path.unlink(missing_ok=True)
+    reopen.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(reopen, json.dumps({"requested_at": time.time()}, indent=2) + "\n")
+    removed = f"Removed {path}. " if existed else f"No setup marker at {path}. "
+    print(f"{removed}Wrote {reopen} — the next --serve with [web].setup_wizard on will ask again.")
     return 0
