@@ -1186,6 +1186,52 @@ class DataDirsProbeTest(unittest.TestCase):
         self.assertEqual([d for d in diags if d.level == "warn"], [])
 
 
+class EnsembleSharedDmaPasswordTest(unittest.TestCase):
+    """`dma_password` cascades from the master where `url` does not, so one
+    secret can unlock every machine — intended, but invisible from any single
+    per-system file, which is what this row states."""
+
+    def _diags(self, master_body: str, members: dict[str, str]) -> list[doctor.Diagnostic]:
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path = os.path.join(tmp, "master.toml")
+            entries = ",\n    ".join(f'{{ name = "{n}", config = "{n}.toml" }}' for n in members)
+            _write(master_path, f"[ensemble]\nsystems = [\n    {entries}\n]\n{master_body}")
+            for name, body in members.items():
+                _write(os.path.join(tmp, f"{name}.toml"), body)
+            loaded = cfgmod.load_master(master_path)
+        return doctor._validate_ensemble_shared_dma_password(loaded)
+
+    def test_a_cascaded_password_names_every_system_it_reached(self):
+        diags = self._diags('[ultimate64]\ndma_password = "hunter2"\n', {"left": "", "right": ""})
+        self.assertEqual(len(diags), 1)
+        self.assertEqual(diags[0].level, "ok")
+        self.assertIn("2 systems", diags[0].message)
+        self.assertIn("left", diags[0].message)
+        self.assertIn("right", diags[0].message)
+        # The whole point is to describe the secret without disclosing it.
+        self.assertNotIn("hunter2", diags[0].message)
+        self.assertNotIn("hunter2", diags[0].hint or "")
+
+    def test_different_per_system_passwords_are_not_sharing(self):
+        # Each named its own, so the cascade filled neither — reporting them
+        # as sharing would be a false alarm.
+        diags = self._diags(
+            "",
+            {
+                "left": '[ultimate64]\ndma_password = "one"\n',
+                "right": '[ultimate64]\ndma_password = "two"\n',
+            },
+        )
+        self.assertEqual(diags, [])
+
+    def test_a_single_system_with_a_password_says_nothing(self):
+        diags = self._diags('[ultimate64]\ndma_password = "hunter2"\n', {"only": ""})
+        self.assertEqual(diags, [])
+
+    def test_no_password_anywhere_says_nothing(self):
+        self.assertEqual(self._diags("", {"left": "", "right": ""}), [])
+
+
 class EnsembleRecordingPathTest(unittest.TestCase):
     """`resolve_recording_path` only disambiguates systems that left `path`
     alone, so two spelled-out identical paths still collide — and a

@@ -185,6 +185,7 @@ def validate_load_result(
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
         out.extend(_validate_ensemble_recording_paths(loaded))
+        out.extend(_validate_ensemble_shared_dma_password(loaded))
     out.extend(_probe_extras())
 
     # dac_curve resolution ("auto"/"calibrated" -> an actual table) is
@@ -1396,6 +1397,46 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
                     )
                 )
     return out
+
+
+def _validate_ensemble_shared_dma_password(loaded: LoadResult) -> list[Diagnostic]:
+    """Say when one `dma_password` is reaching several systems.
+
+    Unlike `[ultimate64].url`, `dma_password` cascades from the master, so one
+    secret in the master file unlocks every machine in the ensemble. That is
+    deliberate — the alternative forces the same secret into N per-system
+    files, and the master is the one place the serializer already refuses to
+    write it — but it is invisible from any single config file, so an operator
+    reading only a per-system TOML has no way to see that the password came
+    from somewhere else. Reported at `ok` level: the cascade is the intended
+    behavior, and this row exists so it is *stated* rather than inferred.
+
+    Never quotes the password, only counts it and names the systems."""
+    # Grouped by value, not merely counted: two systems that each named their
+    # own different password are not sharing one, and saying they were would
+    # be a false alarm about the exact thing this row is here to clarify.
+    by_secret: dict[str, list[str]] = {}
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        if cfg.ultimate64.dma_password:
+            by_secret.setdefault(cfg.ultimate64.dma_password, []).append(name)
+
+    return [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject="[ultimate64] dma_password",
+            message=(
+                f"{len(names)} systems authenticate with one shared password "
+                f"({', '.join(names)})."
+            ),
+            hint=(
+                "Set `dma_password` in a system's own TOML to give it a "
+                "different one; the master's fills only systems that named none."
+            ),
+        )
+        # Sorted by the systems they name, never by the secret itself.
+        for names in sorted(sorted(v) for v in by_secret.values() if len(v) > 1)
+    ]
 
 
 def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
