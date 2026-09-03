@@ -1426,8 +1426,7 @@ def _validate_ensemble_shared_dma_password(loaded: LoadResult) -> list[Diagnosti
             category="connectivity",
             subject="[ultimate64] dma_password",
             message=(
-                f"{len(names)} systems authenticate with one shared password "
-                f"({', '.join(names)})."
+                f"{len(names)} systems authenticate with one shared password ({', '.join(names)})."
             ),
             hint=(
                 "Set `dma_password` in a system's own TOML to give it a "
