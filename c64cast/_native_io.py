@@ -16,8 +16,16 @@ library-level verbosity flags:
 
 An fd-level redirect is the only thing that catches these. Scope it as
 tightly as possible (around the single import / construction / probe that
-emits the noise, on the main thread before worker threads start) so it
-never swallows real stderr from elsewhere.
+emits the noise) so it never swallows real stderr from elsewhere.
+
+fd 2 is process-global, so overlapping (non-nested) callers on different
+threads can't each just dup/restore it independently: one call site
+(video._ensure_pyav) is reachable lazily from playlist worker threads, and
+an ensemble runs one such worker per system. A module-level depth counter
+makes the redirect reentrant across both nesting and overlap — only the
+outermost `__enter__` touches fd 2, and only the matching outermost
+`__exit__` restores it — so two overlapping callers can never leave fd 2
+pinned to /dev/null once both have exited.
 """
 
 from __future__ import annotations
@@ -25,19 +33,52 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+import threading
 from collections.abc import Iterator
+
+_lock = threading.Lock()
+_depth = 0
+_saved_fd: int | None = None
 
 
 @contextlib.contextmanager
 def silence_native_stderr() -> Iterator[None]:
-    """Temporarily redirect the process stderr fd (2) to /dev/null."""
-    sys.stderr.flush()
-    saved = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
+    """Temporarily redirect the process stderr fd (2) to /dev/null.
+
+    Reentrant and thread-safe (see the module docstring): only the first
+    caller in and the last caller out actually touch fd 2.
+    """
+    global _depth, _saved_fd
+    with _lock:
+        _depth += 1
+        first = _depth == 1
+        if first:
+            sys.stderr.flush()
+            try:
+                saved = os.dup(2)
+                try:
+                    devnull = os.open(os.devnull, os.O_WRONLY)
+                    try:
+                        os.dup2(devnull, 2)
+                    finally:
+                        os.close(devnull)
+                except BaseException:
+                    os.close(saved)
+                    raise
+            except BaseException:
+                _depth -= 1
+                raise
+            _saved_fd = saved
     try:
-        os.dup2(devnull, 2)
-        os.close(devnull)
         yield
     finally:
-        os.dup2(saved, 2)
-        os.close(saved)
+        with _lock:
+            _depth -= 1
+            last = _depth == 0
+            saved = _saved_fd
+            if last:
+                _saved_fd = None
+        if last:
+            assert saved is not None
+            os.dup2(saved, 2)
+            os.close(saved)

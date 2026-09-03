@@ -93,6 +93,26 @@ class _FakeBackend:
         self.clear_loops += 1
 
 
+class _ResetFailsOnTeardownBackend(_FakeBackend):
+    """`reset()` succeeds on the dump's own reset (the first call) but raises
+    on the second — the teardown call in `run_dump_char_rom`'s `finally`,
+    which must report the failure rather than let it propagate."""
+
+    def reset(self) -> None:
+        self.resets += 1
+        if self.resets > 1:
+            raise RuntimeError("machine did not respond to reset")
+
+
+class _CloseFailsBackend(_FakeBackend):
+    """`close()` always raises — the teardown call must not let this
+    override whatever return code the function already computed."""
+
+    def close(self) -> None:
+        self.closes += 1
+        raise OSError("link already gone")
+
+
 class _CharRomTestCase(unittest.TestCase):
     """Points the data root at a tmpdir and clears the process-wide glyph
     cache, so no test can see (or write to) the developer's real data dir."""
@@ -118,7 +138,7 @@ class _CharRomTestCase(unittest.TestCase):
 
 
 class VerifyTest(unittest.TestCase):
-    def test_accepts_a_synthesised_charset(self):
+    def test_accepts_a_synthesized_charset(self):
         for n_sets in (1, 2):
             with self.subTest(n_sets=n_sets):
                 r = char_rom.verify(_synth_charset(n_sets))
@@ -234,9 +254,12 @@ class LoadGlyphsTest(_CharRomTestCase):
     def test_explicit_paths_are_not_served_from_the_shared_cache(self):
         # The cache is keyed by nothing (one shared charset is the point), so
         # an explicit path must bypass it or the second caller gets the first
-        # caller's glyphs.
-        a = self.write_file("a.bin", _synth_charset(1))
-        b = self.write_file("b.bin", bytes(reversed(_synth_charset(1))))
+        # caller's glyphs. Two independently-valid-but-distinct sets (not a
+        # byte-reversed charset, which fails the complement check and falls
+        # back to the builtin font instead of proving this).
+        both_sets = _synth_charset(2)
+        a = self.write_file("a.bin", both_sets[:2048])
+        b = self.write_file("b.bin", both_sets[2048:])
         first = char_rom.load_glyphs(str(a))
         second = char_rom.load_glyphs(str(b))
         self.assertNotEqual(first, second)
@@ -249,6 +272,27 @@ class LoadGlyphsTest(_CharRomTestCase):
         with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
             glyphs = char_rom.load_glyphs(str(short))
         self.assertEqual(glyphs, _builtin_charset())
+
+    def test_a_resolvable_but_garbage_file_falls_back_with_a_warning(self):
+        # Two definitions of "a usable charset" used to live in this module:
+        # install_data() ran verify(), but the load path only length-checked,
+        # so any 2 KB file at a resolved path rendered garbage glyphs with no
+        # diagnostic at all.
+        from c64cast.video.framebuffer import _builtin_charset
+
+        garbage = self.write_file("garbage.bin", bytes((i * 37 + 11) & 0xFF for i in range(2048)))
+        with self.assertLogs("c64cast.hw.char_rom", level="WARNING") as logs:
+            glyphs = char_rom.load_glyphs(str(garbage))
+        self.assertEqual(glyphs, _builtin_charset())
+        self.assertIn("does not look like a character ROM", "".join(logs.output))
+
+    def test_missing_configured_path_warns_and_names_the_fallback(self):
+        installed = char_rom.install_data(_synth_charset())
+        with self.assertLogs("c64cast.hw.char_rom", level="WARNING") as logs:
+            char_rom.load_glyphs("/nonexistent/mine.bin")
+        message = "".join(logs.output)
+        self.assertIn("/nonexistent/mine.bin", message)
+        self.assertIn(str(installed), message)
 
     def test_invalidate_cache_re_resolves(self):
         from c64cast.video.framebuffer import _builtin_charset
@@ -448,6 +492,15 @@ class EnsureInstalledTest(_CharRomTestCase):
         self.assertFalse(char_rom.ensure_installed(be, self._cfg(charset_path=str(configured))))
         self.assertEqual(be.calls, 0)
 
+    def test_a_garbage_configured_file_does_not_suppress_the_dump(self):
+        # A resolved-but-unverifiable file used to count as "already have a
+        # charset", permanently skipping the auto-dump behind glyphs that
+        # never rendered right in the first place.
+        configured = self.write_file("mine.bin", bytes((i * 37 + 11) & 0xFF for i in range(2048)))
+        be = _FakeBackend(_synth_charset())
+        self.assertTrue(char_rom.ensure_installed(be, self._cfg(charset_path=str(configured))))
+        self.assertEqual(be.calls, 1)
+
     def test_escape_hatch_disables_it(self):
         be = _FakeBackend(_synth_charset())
         self.assertFalse(char_rom.ensure_installed(be, self._cfg(enabled=False)))
@@ -581,6 +634,38 @@ class DumpCharRomCliTest(_CharRomTestCase):
             self.assertEqual(self._run(be)[0], 4)
         self.assertEqual(be.closes, 1)
         self.assertFalse(char_rom.installed_path().exists())
+
+    def _run_uncaptured(self, be) -> int:
+        # Bypasses cli.main() (and its configure_logging() call) so
+        # assertLogs can capture without a real terminal handler also firing
+        # — see test_save_settings.py's identical note. Still redirects
+        # stdout: run_dump_char_rom prints on success, same as cli.main()'s
+        # own callers redirect.
+        import io
+        from contextlib import redirect_stdout
+
+        from c64cast.app import config as cfgmod
+        from c64cast.app.cli_commands import run_dump_char_rom
+
+        with mock.patch("c64cast.app.cli_commands.make_backend", return_value=be):
+            with redirect_stdout(io.StringIO()):
+                return run_dump_char_rom(cfgmod.Config())
+
+    def test_teardown_reset_failure_is_warned_not_swallowed(self):
+        be = _ResetFailsOnTeardownBackend(_synth_charset())
+        with mock.patch("time.sleep"):
+            with self.assertLogs("c64cast", level="WARNING") as cm:
+                rc = self._run_uncaptured(be)
+        self.assertEqual(rc, 0, "the dump itself still succeeded")
+        self.assertTrue(any("could not reset" in r for r in cm.output))
+
+    def test_close_failure_does_not_override_the_dump_failure_exit_code(self):
+        be = _CloseFailsBackend(error=RuntimeError("stub never signaled"))
+        with mock.patch("time.sleep"):
+            with self.assertLogs("c64cast", level="WARNING") as cm:
+                rc = self._run_uncaptured(be)
+        self.assertEqual(rc, 4, "close() raising must not replace the dump's own exit code")
+        self.assertTrue(any("could not close" in r for r in cm.output))
 
 
 if __name__ == "__main__":

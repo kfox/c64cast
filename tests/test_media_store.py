@@ -173,6 +173,33 @@ class SymlinkEscapeTest(StoreTestCase):
         specs = [e["spec"] for e in store.index("video")["entries"] if not e["is_dir"]]
         self.assertEqual(specs, [])
 
+    def test_a_directory_whose_only_match_is_an_escaping_symlink_is_not_listed_either(self):
+        # `_candidates` used to yield the containing directory from the raw,
+        # unfiltered hit list before the per-file jail check ran below it —
+        # so a directory whose only kind-matching member was an escaping
+        # symlink was still offered as an entry, and `resolve_file_spec`
+        # treats a listed directory as a randomizer that follows exactly
+        # that symlink at scene setup. Both the file and the directory must
+        # be absent here, not just the file.
+        outside = self.tmp / "outside.mp4"
+        outside.write_bytes(b"secret")
+        (self.assets / "escape.mp4").symlink_to(outside)
+        with quiet_logging():
+            store = media_store.MediaStore(read_only=[str(self.assets)], cwd=self.tmp)
+        self.assertEqual(store.index("video")["entries"], [])
+
+    def test_a_directory_with_both_an_escaping_symlink_and_a_real_file_lists_the_real_file_only(
+        self,
+    ):
+        outside = self.tmp / "outside.mp4"
+        outside.write_bytes(b"secret")
+        (self.assets / "escape.mp4").symlink_to(outside)
+        (self.assets / "legit.mp4").write_bytes(b"ok")
+        with quiet_logging():
+            store = media_store.MediaStore(read_only=[str(self.assets)], cwd=self.tmp)
+        specs = {e["spec"]: e["is_dir"] for e in store.index("video")["entries"]}
+        self.assertEqual(specs, {str(self.assets): True, f"{self.assets}/legit.mp4": False})
+
 
 class TruncationTest(StoreTestCase):
     def test_max_files_sets_truncated(self):
@@ -183,6 +210,20 @@ class TruncationTest(StoreTestCase):
         out = store.index("video")
         self.assertTrue(out["truncated"])
         self.assertLessEqual(len(out["entries"]), media_store.MAX_FILES)
+
+    def test_a_query_matching_nothing_still_sets_truncated_past_the_scan_ceiling(self):
+        # Before `_MAX_SCAN`, a `q` matching nothing never tripped
+        # `len(entries) >= MAX_FILES` (nothing was ever added to `entries`),
+        # so the scan walked every candidate with no way for the response to
+        # say it was unbounded.
+        with mock.patch.object(media_store, "_MAX_SCAN", 5):
+            for i in range(10):
+                (self.assets / f"clip{i}.mp4").write_bytes(b"")
+            with quiet_logging():
+                store = media_store.MediaStore(read_only=[str(self.assets)], cwd=self.tmp)
+            out = store.index("video", "no-such-clip-matches-this")
+        self.assertTrue(out["truncated"])
+        self.assertEqual(out["entries"], [])
 
 
 class DestinationTest(StoreTestCase):
@@ -227,6 +268,18 @@ class DestinationTest(StoreTestCase):
         with self.assertRaises(media_store.MediaNameRejected):
             self.store.destination(("x" * 300) + ".mp4")
 
+    def test_rejects_a_name_with_a_nul_byte(self):
+        with self.assertRaises(media_store.MediaNameRejected):
+            self.store.destination("clip\x00.mp4")
+
+    def test_rejects_a_windows_drive_relative_name(self):
+        # `PureWindowsPath('D:/media') / 'C:evil.mp4'` discards the left
+        # operand entirely, so a name shaped like this has to be refused by
+        # itself — no separator survives that join for the earlier checks
+        # to catch.
+        with self.assertRaises(media_store.MediaNameRejected):
+            self.store.destination("C:evil.mp4")
+
     def test_rejects_an_extension_no_kind_claims(self):
         with self.assertRaises(media_store.MediaNameRejected):
             self.store.destination("readme.txt")
@@ -234,8 +287,18 @@ class DestinationTest(StoreTestCase):
     def test_refuses_a_kind_with_no_default_destination(self):
         # "audio" has no default directory at all (generative's own
         # `audio_source = "file"` requires an explicit `file =`).
-        with self.assertRaises(media_store.MediaNotUploadable):
+        with self.assertRaises(media_store.MediaNotUploadable) as ctx:
             self.store.destination("song.mp3")
+        self.assertIn("not configured", str(ctx.exception))
+
+    def test_a_default_kind_whose_directory_is_absent_says_so_distinctly(self):
+        # "sid" defaults to `assets/sids`, which this fixture never creates —
+        # the host *is* configured, only the directory is missing, and the
+        # message should say that rather than "not configured" (which would
+        # send an operator looking for a setting that's already correct).
+        with self.assertRaises(media_store.MediaNotUploadable) as ctx:
+            self.store.destination("tune.sid")
+        self.assertIn("does not exist", str(ctx.exception))
 
     def test_refuses_a_kind_set_to_the_empty_string(self):
         with quiet_logging():
@@ -286,17 +349,19 @@ class ReceiveTest(StoreTestCase):
         self.assertTrue(second.result["renamed"])
 
     def test_an_exception_mid_stream_leaves_no_part_file_and_no_target(self):
-        with self.assertRaises(RuntimeError):
-            with self.store.receive("clip.mp4") as upload:
-                upload.write(b"partial")
-                raise RuntimeError("boom")
+        with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+            with self.assertRaises(RuntimeError):
+                with self.store.receive("clip.mp4") as upload:
+                    upload.write(b"partial")
+                    raise RuntimeError("boom")
         self.assertEqual(list(self.videos.iterdir()), [])
 
     def test_past_the_cap_raises_and_leaves_nothing(self):
         with mock.patch.object(media_store, "MAX_UPLOAD_BYTES", 4):
-            with self.assertRaises(media_store.MediaTooLarge):
-                with self.store.receive("clip.mp4") as upload:
-                    upload.write(b"way too big")
+            with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+                with self.assertRaises(media_store.MediaTooLarge):
+                    with self.store.receive("clip.mp4") as upload:
+                        upload.write(b"way too big")
         self.assertEqual(list(self.videos.iterdir()), [])
 
     def test_too_many_collisions_is_refused_rather_than_renamed_forever(self):
@@ -305,10 +370,35 @@ class ReceiveTest(StoreTestCase):
                 upload.write(b"a")
             with self.store.receive("clip.mp4") as upload:
                 upload.write(b"b")
-            with self.assertRaises(media_store.MediaNameRejected):
-                with self.store.receive("clip.mp4"):
-                    pass
+            with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+                with self.assertRaises(media_store.MediaNameRejected):
+                    with self.store.receive("clip.mp4"):
+                        pass
         self.assertEqual(sorted(p.name for p in self.videos.iterdir()), ["clip-2.mp4", "clip.mp4"])
+
+    def test_a_lengthened_name_past_the_byte_cap_is_rejected_not_left_to_os_replace(self):
+        # `_unique_name` can lengthen an already-at-the-cap incoming name past
+        # `_MAX_NAME_BYTES` with its `-2` suffix; that has to be caught before
+        # `os.replace`, not left to fail with a raw, unmapped `OSError` for
+        # whatever `ENAMETOOLONG` reads like on the host filesystem.
+        long_name = ("a" * 251) + ".mp4"  # exactly _MAX_NAME_BYTES bytes
+        (self.videos / long_name).write_bytes(b"already here")
+        with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+            with self.assertRaises(media_store.MediaNameRejected):
+                with self.store.receive(long_name) as upload:
+                    upload.write(b"new")
+        self.assertEqual([p.name for p in self.videos.iterdir()], [long_name])
+
+    def test_a_commit_time_oserror_is_wrapped_as_a_typed_refusal_and_cleans_up(self):
+        # `os.replace` (disk full, a name the filesystem itself refuses) used
+        # to escape `receive` as a raw `OSError` that no caller's
+        # `MediaStoreError` mapping could classify.
+        with mock.patch.object(media_store.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+                with self.assertRaises(media_store.MediaStoreError):
+                    with self.store.receive("clip.mp4") as upload:
+                        upload.write(b"hello")
+        self.assertEqual(list(self.videos.iterdir()), [])
 
 
 if __name__ == "__main__":

@@ -852,8 +852,9 @@ class MediaUploadTest(WebApiTestCase):
 
     def test_an_oversized_upload_is_a_413(self):
         with mock.patch.object(media_store, "MAX_UPLOAD_BYTES", 4):
-            with self.client() as c:
-                r = c.put("/api/media/big.mp4", headers=AUTH, content=b"way too big")
+            with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+                with self.client() as c:
+                    r = c.put("/api/media/big.mp4", headers=AUTH, content=b"way too big")
         self.assertEqual(r.status_code, 413)
         self.assertFalse((self.root / "big.mp4").exists())
 
@@ -866,9 +867,10 @@ class MediaUploadTest(WebApiTestCase):
             yield b"partial"
             raise RuntimeError("client vanished mid-upload")
 
-        with self.client() as c:
-            with self.assertRaises(RuntimeError):
-                c.put("/api/media/cut.mp4", headers=AUTH, content=cut_short())
+        with self.assertLogs("c64cast.app.media_store", level="WARNING"):
+            with self.client() as c:
+                with self.assertRaises(RuntimeError):
+                    c.put("/api/media/cut.mp4", headers=AUTH, content=cut_short())
         self.assertFalse((self.root / "cut.mp4").exists())
         self.assertEqual(list(self.root.glob("*.part")), [])
 

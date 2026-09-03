@@ -184,7 +184,7 @@ class VIC_BANK_0:
     BASE: Final = 0x0000
     SCREEN: Final = 0x0400  # $D018 matrix nibble = 1
     SCREEN_ALT: Final = 0x0C00  # flicker-blend second page — see D018_HIRES_PAGE_*
-    BITMAP: Final = 0x2000  # $D018 bitmap nibble = 4
+    BITMAP: Final = 0x2000  # $D018 bitmap nibble = 8
     CHAR_ROM: Final = 0x1000  # $D018 char nibble = 4 (kernal-mapped)
 
 
@@ -290,7 +290,9 @@ class CPU:
     # For code/data under KERNAL ROM ($E000-$FFFF). Used by the SID player's
     # per-call banking (mirrors the U64 firmware's getBank).
     PORT_KERNAL_OUT: Final = 0x35
-    # $34 = all ROM + I/O banked out (CHAREN=0): full RAM, no $Dxxx I/O.
+    # $34 = LORAM=HIRAM=0 (bank mode 4): full RAM, no $Dxxx I/O. CHAREN (bit
+    # 2) is still 1 here — LORAM=HIRAM=0 is what maps RAM under the whole
+    # $A000-$FFFF window instead of ROM/I/O, not a cleared CHAREN.
     # For code/data living under the I/O window ($D000-$DFFF) that must be
     # read/written as RAM.
     PORT_IO_OUT: Final = 0x34
@@ -365,8 +367,12 @@ class KEYBUF:
 # Raster IRQ helpers
 # ---------------------------------------------------------------------------
 
-# Raster line where vblank starts on both PAL and NTSC — safe to commit
-# VIC register changes here without tearing visible scan lines.
+# First raster line past the last badline (51 + 24*8 = 243 at the default
+# YSCROLL=3), on both PAL and NTSC — the final row's video matrix has already
+# been fetched by here, so a VIC register commit at this line is safe from
+# tearing. NOT the start of vblank (vblank is ~line 300+ on PAL, ~13-40 on
+# NTSC) — a narrower property than that, and one that stops holding if
+# YSCROLL or the row count changes.
 RASTER_VBLANK_LINE: Final = 0xF8
 
 # Last raster line on which a bank/page commit is still invisible. The VIC
@@ -400,9 +406,34 @@ CLOCK_NTSC: Final = 1022727
 CLOCK_PAL: Final = 985248
 
 
+def _canonical_system(system: str) -> Literal["NTSC", "PAL"]:
+    """Normalize `system` to "NTSC" or "PAL" (case-insensitive, surrounding
+    whitespace tolerated — nothing at config load enforces
+    `config.SYSTEM_CHOICES`' canonical spelling).
+
+    Raises ValueError for anything else, "auto" included: every derived
+    timing constant (CPU clock, frame rate, CIA latch, NMI budget) is wrong
+    for the actual machine if this silently picked one, so a caller holding
+    an unresolved "auto" or a typo must settle it before reaching here —
+    `hw_provision.resolve_system` does this against live hardware; the two
+    offline-only validators (`scene_factory.validate_nmi_sample_rate`,
+    `doctor._validate_audio_nmi_rate`) assume NTSC, matching
+    `Ultimate64Cfg.system`'s own documented fallback.
+    """
+    normalized = system.strip().upper()
+    if normalized == "NTSC":
+        return "NTSC"
+    if normalized == "PAL":
+        return "PAL"
+    raise ValueError(f"unrecognized system {system!r}: expected 'NTSC' or 'PAL'")
+
+
 def cpu_clock(system: str) -> int:
-    """Return the CPU clock in Hz for the given system ('NTSC' or 'PAL')."""
-    return CLOCK_NTSC if system.upper() == "NTSC" else CLOCK_PAL
+    """Return the CPU clock in Hz for the given system ('NTSC' or 'PAL').
+
+    Raises ValueError for anything else — see :func:`_canonical_system`.
+    """
+    return CLOCK_NTSC if _canonical_system(system) == "NTSC" else CLOCK_PAL
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +451,11 @@ FRAME_HZ_NTSC: Final = CLOCK_NTSC / CYCLES_PER_FRAME_NTSC  # 59.8261
 
 
 def frame_rate(system: str) -> float:
-    """Return the VIC-II frame rate in Hz for the given system."""
-    return FRAME_HZ_NTSC if system.upper() == "NTSC" else FRAME_HZ_PAL
+    """Return the VIC-II frame rate in Hz for the given system.
+
+    Raises ValueError for anything but 'NTSC'/'PAL' — see :func:`_canonical_system`.
+    """
+    return FRAME_HZ_NTSC if _canonical_system(system) == "NTSC" else FRAME_HZ_PAL
 
 
 # The value the KERNAL's reset path leaves in CIA #1 Timer A, per standard.
@@ -438,9 +472,10 @@ def kernal_cia1_latch(system: str) -> int:
     """The CIA #1 Timer A latch the KERNAL installs at reset, for `system`.
 
     Anything that reprograms Timer A writes this back on teardown so the jiffy
-    clock, SCNKEY and the cursor blink resume at the stock rate.
+    clock, SCNKEY and the cursor blink resume at the stock rate. Raises
+    ValueError for anything but 'NTSC'/'PAL' — see :func:`_canonical_system`.
     """
-    return KERNAL_CIA1_LATCH_NTSC if system.upper() == "NTSC" else KERNAL_CIA1_LATCH_PAL
+    return KERNAL_CIA1_LATCH_NTSC if _canonical_system(system) == "NTSC" else KERNAL_CIA1_LATCH_PAL
 
 
 def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
@@ -454,7 +489,14 @@ def cia1_latch_for_rate(rate_hz: float, system: str) -> int:
 
 def actual_rate_for_latch(latch: int, system: str) -> float:
     """The exact rate the CIA clocks a given latch: ``cpu_clock / (latch + 1)``.
-    A consumer's read head is computed from this so it matches the hardware."""
+    A consumer's read head is computed from this so it matches the hardware.
+
+    Raises ValueError for a negative latch — not reachable from
+    :func:`cia1_latch_for_rate`'s own ``max(1, ...)`` floor, but a 16-bit
+    timer value has no negative reading, and ``latch == -1`` would otherwise
+    divide by zero rather than fail with a message that names the problem."""
+    if latch < 0:
+        raise ValueError(f"latch must be >= 0, got {latch}")
     return cpu_clock(system) / (latch + 1)
 
 

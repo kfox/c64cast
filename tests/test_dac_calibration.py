@@ -1425,5 +1425,36 @@ class StatusScreenTest(unittest.TestCase):
         self.assertTrue(max(paints) < min(measures), api.ops)
 
 
+class RunCalibrateDacBackendLeakTest(unittest.TestCase):
+    """cli_commands.run_calibrate_dac: hw_provision.resolve_system() talks to
+    the machine to settle `system = "auto"`, so an unreachable/unresponsive
+    C64 can raise there — it must not abandon the backend's persistent DMA
+    socket on the way out (the U64 DMA service is single-connection and
+    blocks new sockets for seconds after an unclean close, so a leaked one
+    would break the operator's very next attempt too)."""
+
+    def test_backend_closed_when_resolve_system_raises(self):
+        import argparse
+
+        from c64cast.app import cli_commands
+
+        be = SimpleNamespace(close=lambda: closed.append(True))
+        closed: list[bool] = []
+        args = argparse.Namespace(audio_device=None)
+
+        with (
+            patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+            patch.object(cli_commands, "make_backend", return_value=be),
+            patch.object(
+                cli_commands.hw_provision,
+                "resolve_system",
+                side_effect=RuntimeError("machine unreachable"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                cli_commands.run_calibrate_dac(_u64_cfg(), args)
+        self.assertEqual(closed, [True], "be.close() must run even though resolve_system raised")
+
+
 if __name__ == "__main__":
     unittest.main()

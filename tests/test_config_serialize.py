@@ -20,7 +20,7 @@ from _fakes import MachineSettingsIsolation
 from c64cast import __version__
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
-from c64cast.app import paths
+from c64cast.app import introspect, paths
 
 # The round-trip contract load(dumps(cfg)) == cfg must hold independent of any
 # real machine-settings file on the dev's machine (config.load applies that
@@ -150,6 +150,29 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         # The global section is untouched by the scene's override.
         self.assertEqual(reloaded.color.dither, "blue_noise")
 
+    def test_scene_color_override_with_empty_hue_corrections(self):
+        # `color` is the scene's sparse dict, so `{"hue_corrections": []}`
+        # is an authored key distinct from "no override" and has to survive
+        # as such, not collapse to `{}` the way a bare `[scenes.color]`
+        # header with nothing under it would reload.
+        cfg = cfgmod.Config()
+        cfg.scenes = [cfgmod.SceneCfg(type="video", file="clip.mp4", color={"hue_corrections": []})]
+        reloaded = _reload(cfg)
+        self.assertEqual(reloaded, cfg)
+        self.assertEqual(reloaded.scenes[0].color, {"hue_corrections": []})
+
+    def test_scene_field_not_applicable_to_current_type_still_round_trips(self):
+        # `applies_to` is enforced only by introspect's rendering (schema,
+        # describe, and dumps' own per-type field list) — never by the
+        # loader — so a value set while the scene was a different type (or
+        # by a structured edit) has to survive a re-serialize even though
+        # the current `type` doesn't claim the field.
+        cfg = cfgmod.Config()
+        cfg.scenes = [cfgmod.SceneCfg(type="video", file="clip.mp4", image_duration_s=3.0)]
+        reloaded = _reload(cfg)
+        self.assertEqual(reloaded, cfg)
+        self.assertEqual(reloaded.scenes[0].image_duration_s, 3.0)
+
     def test_scene_color_override_back_to_the_dataclass_default(self):
         # The case the sparse-dict design exists for: a scene override equal
         # to ColorCfg()'s default, while the global section differs from it —
@@ -200,6 +223,18 @@ class BehaviorTest(unittest.TestCase):
         text = ser.dumps(cfg)
         self.assertNotIn("hunter2", text)
         self.assertNotIn("dma_password", text)
+
+    def test_web_and_control_tokens_never_emitted(self):
+        # Each grants remote control of the host the same way the DMA
+        # password does — see SECRET_FIELDS's docstring.
+        cfg = cfgmod.Config()
+        cfg.web.token = "watchme"
+        cfg.web.viewer_token = "peekaboo"
+        cfg.control.token = "controlme"
+        cfg.control.viewer_token = "peekaboo2"
+        text = ser.dumps(cfg)
+        for secret in ("watchme", "peekaboo", "controlme", "peekaboo2"):
+            self.assertNotIn(secret, text)
 
     def test_schema_directive_first_line(self):
         cfg = cfgmod.Config()
@@ -427,6 +462,25 @@ class PinnedUrlVersionTest(unittest.TestCase):
             )
         )
         self.assertIsNone(ser.pinned_url_version(ser._published_schema_url("1.0.0") + "?raw=1"))
+
+
+class TableArrayRoutingTest(unittest.TestCase):
+    """`_SECTION_TABLE_ARRAYS` is the one place `_emit_section` decides which
+    fields render as `[[section.field]]` blocks. A `list[dict[...]]` section
+    field missing from it would fall through to `_fmt_value`, which renders
+    it as a legal-but-wrong inline array of inline tables — round-trippable,
+    so nothing else catches the mistake."""
+
+    def test_every_list_of_table_section_field_is_routed(self):
+        for sd in introspect.config_sections():
+            for fd in sd.fields:
+                if fd.type.startswith("list[dict"):
+                    self.assertIn(
+                        sd.name,
+                        ser._SECTION_TABLE_ARRAYS,
+                        f"{sd.name}.{fd.name} is list-of-tables with no routing entry",
+                    )
+                    self.assertEqual(ser._SECTION_TABLE_ARRAYS[sd.name][0], fd.name)
 
 
 if __name__ == "__main__":

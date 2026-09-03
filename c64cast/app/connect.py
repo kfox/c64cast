@@ -32,6 +32,14 @@ Rare per-link knobs ride along as ``?query`` params so they need no flags::
     tr://host?tcp_port=2113
     tr:///dev/cu.usbmodem?baud=2000000
     tr://?storage=usb
+
+A target must not carry a username/password: none of these schemes has any
+use for one (the Ultimate's REST API has no HTTP auth, and ``requests``
+would otherwise send it as a Basic-auth header on every request), and a
+secret belongs in ``C64CAST_DMA_PASSWORD`` or ``[ultimate64].dma_password``
+instead — never in a string that ``--save-settings`` can write to disk or
+echo to stdout. An unrecognized or blank ``?query`` key is also rejected
+rather than silently ignored, matching the strictness a TOML config gets.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from __future__ import annotations
 import re
 import urllib.parse
 from dataclasses import dataclass
+from typing import Protocol
 
 # Windows serial ports look like a host in a URL (``tr://COM3`` -> netloc
 # "COM3"), so they're matched here and routed to the serial transport instead
@@ -86,6 +95,45 @@ def _int_query(query: dict[str, str], key: str, *, target: str) -> int | None:
         raise ConnectionURIError(f"{target!r}: query param {key}={raw!r} is not an integer") from e
 
 
+def _check_known_query(query: dict[str, str], known: set[str], *, target: str) -> None:
+    """Reject any ``?query`` key this scheme doesn't consume — a typo'd knob
+    (``dmaport`` for ``dma_port``) would otherwise be parsed as absent and do
+    nothing, with no diagnostic."""
+    unknown = sorted(set(query) - known)
+    if unknown:
+        raise ConnectionURIError(
+            f"{target!r}: unrecognized query param(s) {', '.join(unknown)} — "
+            f"this scheme accepts: {', '.join(sorted(known)) or '(none)'}"
+        )
+
+
+def _netloc_port(parts: urllib.parse.SplitResult, target: str) -> int | None:
+    """``parts.port``, or a :class:`ConnectionURIError` naming the bad netloc.
+
+    ``urlsplit`` is lazy — ``.port`` only raises when read — so every branch
+    that wants the netloc's port needs this same guard, not just ``tr://``."""
+    try:
+        return parts.port
+    except ValueError as e:
+        raise ConnectionURIError(f"{target!r}: bad port in {parts.netloc!r}") from e
+
+
+def _reject_userinfo(parts: urllib.parse.SplitResult, target: str) -> None:
+    """Refuse a ``user:pass@host`` netloc on every scheme.
+
+    None of them has a use for it — the Ultimate's REST API has no HTTP auth
+    of its own, and ``requests`` would send it as a Basic-auth header on every
+    call regardless — so accepting it would only smuggle a secret into
+    ``[ultimate64].url``, from which ``--save-settings`` both writes it to
+    ``settings.toml`` and echoes it to stdout in plaintext."""
+    if "@" in parts.netloc:
+        raise ConnectionURIError(
+            f"{target!r}: a connection target can't carry a username/password — "
+            "put a secret in the C64CAST_DMA_PASSWORD env var or "
+            "[ultimate64].dma_password instead"
+        )
+
+
 def _parse_tr(
     parts: urllib.parse.SplitResult, query: dict[str, str], target: str
 ) -> ConnectionSpec:
@@ -96,6 +144,7 @@ def _parse_tr(
     if not parts.netloc:
         # Serial. tr:// -> auto-detect (serial_port left None); tr:///dev/... ->
         # that explicit device node.
+        _check_known_query(query, {"baud", "storage"}, target=target)
         return ConnectionSpec(
             backend="teensyrom",
             transport="serial",
@@ -107,6 +156,7 @@ def _parse_tr(
     if _COM_RE.match(parts.netloc):
         # Windows COM port. Use the netloc verbatim (urlsplit's .hostname would
         # lowercase it) and treat it as a serial device.
+        _check_known_query(query, {"baud", "storage"}, target=target)
         return ConnectionSpec(
             backend="teensyrom",
             transport="serial",
@@ -116,15 +166,14 @@ def _parse_tr(
         )
 
     # Non-empty, non-COM netloc -> raw TCP host[:port].
-    try:
-        port = parts.port
-    except ValueError as e:
-        raise ConnectionURIError(f"{target!r}: bad port in {parts.netloc!r}") from e
+    port = _netloc_port(parts, target)
+    tcp_port_query = _int_query(query, "tcp_port", target=target)
+    _check_known_query(query, {"baud", "storage", "tcp_port"}, target=target)
     return ConnectionSpec(
         backend="teensyrom",
         transport="tcp",
         host=parts.hostname,
-        tcp_port=port or _int_query(query, "tcp_port", target=target),
+        tcp_port=port if port is not None else tcp_port_query,
         baud=baud,
         storage=storage,
     )
@@ -134,24 +183,37 @@ def parse_connection_uri(target: str) -> ConnectionSpec:
     """Parse a scheme-aware connection target into a :class:`ConnectionSpec`.
 
     Raises :class:`ConnectionURIError` (a ``ValueError``) on an empty string, a
-    missing/unknown scheme, or a malformed component."""
+    missing/unknown scheme, a malformed component, embedded userinfo, or an
+    unrecognized/blank ``?query`` key."""
     target = target.strip()
     if not target:
         raise ConnectionURIError("empty connection target")
     parts = urllib.parse.urlsplit(target)
     scheme = parts.scheme.lower()
-    query = dict(urllib.parse.parse_qsl(parts.query))
+    _reject_userinfo(parts, target)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    blank = sorted(k for k, v in query.items() if v == "")
+    if blank:
+        raise ConnectionURIError(f"{target!r}: empty value for query param(s) {', '.join(blank)}")
 
     if scheme in ("http", "https"):
-        # The Ultimate is the only HTTP-speaking backend; pass the URL through
-        # verbatim (the REST client wants the full scheme://host).
+        _netloc_port(parts, target)
+        _check_known_query(query, {"dma_port"}, target=target)
+        # The Ultimate is the only HTTP-speaking backend. Rebuild without the
+        # query/fragment — ``target`` passed through whole would leave
+        # ``?dma_port=64`` inside the base URL that Ultimate64API concatenates
+        # every REST path onto.
         return ConnectionSpec(
-            backend="ultimate", url=target, dma_port=_int_query(query, "dma_port", target=target)
+            backend="ultimate",
+            url=urllib.parse.urlunsplit((scheme, parts.netloc, parts.path, "", "")),
+            dma_port=_int_query(query, "dma_port", target=target),
         )
 
     if scheme == "u64":
         if not parts.netloc:
             raise ConnectionURIError(f"{target!r}: u64:// needs a host (e.g. u64://192.168.2.64)")
+        _netloc_port(parts, target)
+        _check_known_query(query, {"dma_port"}, target=target)
         return ConnectionSpec(
             backend="ultimate",
             url=f"http://{parts.netloc}",
@@ -173,18 +235,60 @@ def parse_connection_uri(target: str) -> ConnectionSpec:
     )
 
 
-def apply_to_config(cfg: object, spec: ConnectionSpec) -> None:
+class _Hardware(Protocol):
+    backend: str
+
+
+class _Ultimate64(Protocol):
+    url: str
+    dma_port: int
+
+
+class _Teensyrom(Protocol):
+    transport: str
+    serial_port: str | None
+    host: str | None
+    tcp_port: int
+    baud: int
+    storage: str
+
+
+class _Cfg(Protocol):
+    """The shape ``apply_to_config`` needs — a structural stand-in for
+    ``config.Config`` so this module stays import-free of the ``config``
+    module (see the module docstring) without giving up type-checking: a
+    config-side rename of any of these fields now fails pyright/mypy at the
+    call site instead of succeeding as a silent ``setattr`` of a dead
+    attribute on a plain dataclass.
+
+    These three are ``@property`` (read-only) rather than plain attributes:
+    ``apply_to_config`` only ever mutates *fields of* ``hardware`` /
+    ``ultimate64`` / ``teensyrom``, never replaces the sub-object itself, and
+    a plain (read-write) Protocol attribute is invariant — mypy then refuses
+    `Config` here because a *different* concrete class could satisfy
+    ``_Hardware`` without literally being one. Read-only members are
+    covariant, which is all this actually needs."""
+
+    @property
+    def hardware(self) -> _Hardware: ...
+    @property
+    def ultimate64(self) -> _Ultimate64: ...
+    @property
+    def teensyrom(self) -> _Teensyrom: ...
+
+
+def apply_to_config(cfg: _Cfg, spec: ConnectionSpec) -> None:
     """Overlay a parsed :class:`ConnectionSpec` onto a Config in place.
 
-    ``cfg`` is duck-typed (this module stays free of a config import): it must
-    expose ``.hardware``, ``.ultimate64`` and ``.teensyrom`` sub-objects with
-    the matching attributes. Only the spec's non-None fields are written, so a
-    bare ``tr://`` leaves ``serial_port`` at its default (None) for
-    make_backend's auto-detect, and rare knobs absent from the URI keep the
-    config/TOML values."""
-    cfg.hardware.backend = spec.backend  # type: ignore[attr-defined]
-    u64 = cfg.ultimate64  # type: ignore[attr-defined]
-    tr = cfg.teensyrom  # type: ignore[attr-defined]
+    ``cfg`` is duck-typed against :class:`_Cfg` (this module stays free of a
+    config import): it must expose ``.hardware``, ``.ultimate64`` and
+    ``.teensyrom`` sub-objects with the matching attributes. Only the spec's
+    non-None fields are written, so a bare ``tr://`` leaves ``serial_port`` at
+    its default (None) for make_backend's auto-detect, and rare knobs absent
+    from the URI keep the config/TOML values."""
+    cfg.hardware.backend = spec.backend
+    u64 = cfg.ultimate64
+    tr = cfg.teensyrom
     if spec.url is not None:
         u64.url = spec.url
     if spec.dma_port is not None:

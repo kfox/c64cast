@@ -135,9 +135,12 @@ class NoteFreqTests(_MidiTestCase):
         # And never go negative.
         self.assertGreaterEqual(_note_to_sid_freq(0, "NTSC"), 0)
 
-    def test_unknown_system_falls_back_to_pal_clock(self):
-        # cpu_clock() treats anything that isn't "NTSC" as PAL.
-        self.assertEqual(_note_to_sid_freq(69, "bogus"), _note_to_sid_freq(69, "PAL"))
+    def test_unrecognized_system_raises_rather_than_silently_picking_one(self):
+        # cpu_clock() used to treat anything that isn't "NTSC" as PAL, so a
+        # typo'd system silently played every note ~3.7% flat with no
+        # diagnostic. It now rejects anything but NTSC/PAL outright.
+        with self.assertRaises(ValueError):
+            _note_to_sid_freq(69, "bogus")
 
 
 class VoiceAllocationTests(_MidiTestCase):

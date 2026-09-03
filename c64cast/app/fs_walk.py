@@ -5,10 +5,17 @@ Both modules walk a resolved root with `os.walk(followlinks=False)`, capping
 depth and pruning the same hidden/build directories — a second copy of that
 check is a second thing to get wrong, so it lives here once. What each caller
 still does on its own: filtering *filenames* (by suffix in `config_store`, by
-extension-per-kind in `media_store`) and the per-entry
-`resolve().is_relative_to(root)` symlink-escape re-check, since a directory
-that passes the walk isn't itself a candidate for that check the same way a
-file is.
+extension-per-kind in `media_store`), the per-entry
+`resolve().is_relative_to(root)` symlink-escape re-check (a directory that
+passes the walk isn't itself a candidate for that check the same way a file
+is), and — despite `MAX_FILES` being defined here — counting its own emitted
+entries against that cap. `walk_dirs` only ever hands back raw, per-directory
+`filenames`; it has no notion of "entry" (a caller's own dir-vs-file,
+kind-filtered, needle-matched result), so there is no single point *in this
+module* where a file count could be enforced instead. `MAX_FILES` lives here
+only because both callers' caps must be the same number, not because this
+module enforces it — a third caller of `walk_dirs` has to add its own
+`if len(entries) >= MAX_FILES: break`, the same as the two that already do.
 
 `disambiguate` lives here for the same reason: both modules number a
 collided name `base-2`, `base-3`, … the same way, so it's one function
@@ -24,7 +31,9 @@ from pathlib import Path
 
 #: Caps on the listing walk. Both are about keeping a hostile or merely
 #: enormous directory from turning one request into minutes of I/O; neither
-#: is a security boundary.
+#: is a security boundary. `MAX_DEPTH` is enforced by `walk_dirs` below;
+#: `MAX_FILES` is enforced by each caller against its own emitted entries —
+#: see this module's docstring for why that one can't live here too.
 MAX_FILES = 500
 MAX_DEPTH = 8
 

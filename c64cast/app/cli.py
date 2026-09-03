@@ -36,6 +36,7 @@ from . import (
     upgrade,
 )
 from .cli_commands import (
+    SAVABLE_SETTINGS_FIELDS,
     configure_logging,
     list_devices,
     run_calibrate_dac,
@@ -374,10 +375,11 @@ def build_parser() -> argparse.ArgumentParser:
     intro.add_argument(
         "--save-settings",
         action="store_true",
-        help="Persist this invocation's machine-relevant flags (-u/--url, "
-        "-d/--device, --sid-model, --system) into the machine-settings file "
-        "($C64CAST_SETTINGS, else ~/.config/c64cast/settings.toml), then exit. "
-        "Merges with any existing file; secrets are never written.",
+        help="Persist this invocation's machine-relevant flags "
+        f"(-u/--url, {', '.join(flag for _, _, _, flag in SAVABLE_SETTINGS_FIELDS)}) "
+        "into the machine-settings file ($C64CAST_SETTINGS, else "
+        "~/.config/c64cast/settings.toml), then exit. Merges with any existing "
+        "file; secrets are never written.",
     )
     intro.add_argument(
         "--dump-char-rom",
@@ -532,6 +534,32 @@ _PER_SYSTEM_CLI_FLAGS: tuple[tuple[str, str], ...] = (
     ("device", "--device"),
 )
 
+# The config-free, hardware-free terminal commands: each answers/acts on one
+# flag and exits, without ever reaching load_master or make_backend. One
+# table rather than a copy-pasted `if args.x: return run_x(...)` per command
+# means a new one can't forget to reach main()'s exception mapping below (a
+# bad -u target given to --save-settings used to escape as a traceback
+# instead of the exit-2 usage error connect.py's docstring promises) and
+# can't be dispatched with logging still unconfigured (main() now configures
+# it once, immediately after parse_args, before this loop runs). Each
+# predicate mirrors the flag's original `if` condition exactly — most are
+# plain `store_true` booleans, but `--install-char-rom` takes a path (falsy
+# on an empty string, unlike `is not None`), which is why this is a
+# predicate per entry rather than one `getattr(args, dest)` truth test.
+_TERMINAL_COMMANDS: tuple[
+    tuple[Callable[[argparse.Namespace], bool], Callable[[argparse.Namespace], int]], ...
+] = (
+    (lambda a: bool(a.save_settings), run_save_settings),
+    (lambda a: a.install_char_rom is not None, lambda a: run_install_char_rom(a.install_char_rom)),
+    (
+        lambda a: bool(a.check_for_updates),
+        lambda a: run_check_for_updates(write_state=bool(a.write_state)),
+    ),
+    (lambda a: bool(a.upgrade), run_upgrade),
+    (lambda a: bool(a.motd_line), lambda a: run_motd_line()),
+    (lambda a: bool(a.reset_setup), lambda a: run_reset_setup()),
+)
+
 
 def _connection_is_builtin_default(cfg: cfgmod.Config) -> bool:
     """True when `cfg`'s connection fields still match a fresh dataclass Config
@@ -625,6 +653,11 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
         if target:
             from .connect import apply_to_config, parse_connection_uri
 
+            log.info(
+                "connection target: %s (from %s)",
+                target,
+                "-u/--url" if args.url else "$C64CAST_URL",
+            )
             apply_to_config(cfgs[0], parse_connection_uri(target))
     return loaded, cfgs
 
@@ -697,10 +730,14 @@ def _run_session(
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    # Configured immediately, before any dispatch: every command below this
+    # point logs (some via a wizard that runs for minutes), and a stray-TOML-
+    # key warning from _resolve_configs fires before load_master returns —
+    # all of it needs a handler installed (and --log-file wired up) from the
+    # very first line, not just once a config happens to be loaded.
+    configure_logging(args.verbose or 0, args.log_file)
 
     if args.list_devices:
-        # Logging at default level; list-devices skips config load entirely.
-        configure_logging(args.verbose or 0, args.log_file)
         return list_devices()
 
     # Introspection commands describe the config surface itself — no config
@@ -709,54 +746,31 @@ def main(argv=None) -> int:
     if intro_rc is not None:
         return intro_rc
 
-    # --save-settings is a config-free command like the introspection ones:
-    # it persists this invocation's machine-relevant flags and exits, never
-    # touching hardware or loading a playlist.
-    if args.save_settings:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_save_settings(args)
-
-    # --install-char-rom is likewise config-free: it takes a file the user
-    # already has and caches it, no hardware and no playlist involved.
-    if args.install_char_rom is not None:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_install_char_rom(args.install_char_rom)
-
-    # --check-for-updates and --upgrade are config-free in the same way: they
-    # answer/act on "which install is this, and is it current", never
-    # touching a config file or the hardware.
-    if args.check_for_updates:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_check_for_updates(write_state=bool(args.write_state))
-
-    if args.upgrade:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_upgrade(args)
-
-    # --motd-line is config-free too, and deliberately never touches the
-    # network itself — see run_motd_line.
-    if args.motd_line:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_motd_line()
-
-    # --reset-setup is config-free too: it only ever touches the marker file
-    # under the data dir, regardless of whether this invocation's config even
-    # sets [web].setup_wizard.
-    if args.reset_setup:
-        configure_logging(args.verbose or 0, args.log_file)
-        return run_reset_setup()
+    try:
+        for wants_this, run_this in _TERMINAL_COMMANDS:
+            if wants_this(args):
+                return run_this(args)
+    except (ValueError, RuntimeError) as e:
+        # Mirrors _resolve_configs' mapping below: e.g. --save-settings'
+        # parse_connection_uri can raise ConnectionURIError (a ValueError) on
+        # a bad -u target, and its docstring promises that lands here as the
+        # usual usage-error exit rather than as a traceback.
+        log.error("%s", e)
+        return 2
 
     try:
         loaded, cfgs = _resolve_configs(args)
     except cfgmod.ConfigError as e:
-        # Logging may not be set up yet (verbose/log_file live in [debug]).
-        # Set up a minimal default handler so the error reaches the user
-        # whether or not they passed -v.
-        configure_logging(args.verbose or 0, args.log_file)
         log.error("%s", e)
         return 5
     except (_CliUsageError, ValueError, RuntimeError) as e:
-        configure_logging(args.verbose or 0, args.log_file)
+        # -v/-vv already set the root level to DEBUG above, so this reaches
+        # the terminal/--log-file when asked for — configure_logging() itself
+        # can't do it since ValueError/RuntimeError also cover genuine
+        # internal defects raised from deep in load_master/merge_cli/
+        # quickcast.build_config, not just user typos, and those deserve a
+        # traceback to bisect by.
+        log.debug("config resolution failed", exc_info=True)
         log.error("%s", e)
         return 2
     # Logging is process-wide; use the first stack's debug settings (they

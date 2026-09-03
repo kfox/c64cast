@@ -71,7 +71,6 @@ def _json_type(type_str: str) -> dict[str, Any]:
 
 
 def _field_schema(
-    name: str,
     type_str: str,
     *,
     help: str = "",
@@ -83,11 +82,24 @@ def _field_schema(
     if help:
         sch["description"] = help
     if choices:
-        # For a list field (e.g. `effects: list[str]`), the choices constrain the
-        # array's *items*, not the array value itself — otherwise the schema would
-        # (wrongly) require the whole list to equal one of the choice strings.
-        if sch.get("type") == "array":
+        json_type = sch.get("type")
+        if json_type == "array":
+            # For a list field (e.g. `effects: list[str]`), the choices constrain
+            # the array's *items*, not the array value itself — otherwise the
+            # schema would (wrongly) require the whole list to equal one of the
+            # choice strings.
             sch["items"] = {"type": "string", "enum": list(choices)}
+        elif isinstance(json_type, list):
+            # A union (e.g. `sid_play_rate: str | float`): `choices` only names
+            # the string branch's legal values. A top-level `enum` would apply
+            # to the whole union and reject every value from the other
+            # branch(es) — exactly the documented numeric form this field's
+            # own help text describes.
+            del sch["type"]
+            sch["anyOf"] = [
+                {"type": "string", "enum": list(choices)},
+                *({"type": t} for t in json_type if t != "string"),
+            ]
         else:
             sch["enum"] = list(choices)
     if include_default and default is not None:
@@ -97,9 +109,7 @@ def _field_schema(
 
 def _section_schema(sd: introspect.SectionDoc) -> dict[str, Any]:
     props = {
-        fd.name: _field_schema(
-            fd.name, fd.type, help=fd.help, choices=fd.choices, default=fd.default
-        )
+        fd.name: _field_schema(fd.type, help=fd.help, choices=fd.choices, default=fd.default)
         for fd in sd.fields
     }
     return {
@@ -121,7 +131,7 @@ def _overlay_schema() -> dict[str, Any]:
         required = ["type"]
         for p in od.params:
             props[p.name] = _field_schema(
-                p.name, p.type, help=p.help, default=p.default, include_default=not p.required
+                p.type, help=p.help, default=p.default, include_default=not p.required
             )
             if p.required:
                 required.append(p.name)
@@ -175,7 +185,7 @@ def _scenes_schema() -> dict[str, Any]:
             props["color"] = {**_section_schema(color_section), "description": fd.help}
         else:
             props[fd.name] = _field_schema(
-                fd.name, fd.type, help=fd.help, choices=fd.choices, default=fd.default
+                fd.type, help=fd.help, choices=fd.choices, default=fd.default
             )
 
     all_of: list[dict[str, Any]] = []

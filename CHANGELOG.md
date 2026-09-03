@@ -21,6 +21,86 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- `-u`/`--url`/`$C64CAST_URL` accepted a `user:pass@` netloc (`u64://admin:s3cret@host`)
+  and carried it verbatim into `[ultimate64].url` — from which `requests`
+  sent it as an HTTP Basic-auth header on every REST call to a device that
+  has no HTTP auth of its own, and `--save-settings` both wrote it into
+  `settings.toml` and echoed it to stdout in plaintext, directly undercutting
+  this project's "the DMA password is env/config-only, never a CLI flag"
+  posture for anyone who assumed the URL was where a credential went.
+  `connect.parse_connection_uri` now refuses any target carrying userinfo, on
+  every scheme, naming `C64CAST_DMA_PASSWORD`/`[ultimate64].dma_password` as
+  the place a secret actually belongs. Related connect.py hardening in the
+  same pass: the `http(s)://` branch passed the whole target (including its
+  `?query` string) through as the base URL while *also* consuming
+  `dma_port` out of that same query, so `-u 'http://host?dma_port=64'` left
+  `?dma_port=64` inside the string `Ultimate64API` concatenates every REST
+  path onto — it now rebuilds the URL from its parts like the `u64://`
+  branch already did. A netloc port is now validated the same way on every
+  scheme (`u64://host:badport` and `http://host:badport` used to parse
+  cleanly into a URL `requests` would only reject deep in the startup probe,
+  misdiagnosing as "could not reach the hardware"); `tr://host:2113?tcp_port=x`
+  used to skip validating the query param entirely because `port or
+  _int_query(...)` only reached the query when the netloc had no port of its
+  own (the same typo raised on `tr://host?tcp_port=x` but was silently
+  ignored on `tr://host:2113?tcp_port=x`); and an unrecognized or blank
+  `?query` key (`?dmaport=64`, `?dma_port=`) is now rejected instead of
+  silently parsed as absent, matching the strictness a TOML config already
+  gets.
+- `--save-settings` could raise `ConnectionURIError` (a `ValueError`) straight
+  out of `cli.main()` as an uncaught traceback on a bad `-u` target, instead
+  of the exit-2 usage error `connect.py`'s own docstring promises — it is
+  dispatched before `_resolve_configs`' try/except, and had no guard of its
+  own. All of `main()`'s config-free terminal commands (`--save-settings`,
+  `--install-char-rom`, `--check-for-updates`, `--upgrade`, `--motd-line`,
+  `--reset-setup`) are now dispatched through one table wrapped in the same
+  `ValueError`/`RuntimeError` → exit 2 mapping `_resolve_configs` already
+  had, so a new command can't forget it. Separately, if an existing
+  `settings.toml` already carries a hand-written `[ultimate64].dma_password`,
+  `--save-settings` can never re-write it (secrets are suppressed on save) —
+  which used to mean the very next `--save-settings` silently dropped it on
+  the merge; it now warns at save time instead. `--save-settings --help`
+  also stopped listing `-D/--audio-device`, which it has always persisted;
+  the whitelist that drives the help text, the "nothing to save" error, and
+  the apply block is now one table (`cli_commands.SAVABLE_SETTINGS_FIELDS`)
+  instead of three hand-copied lists that could (and did) drift.
+- `--calibrate-dac` opened the backend before the try/finally that closes
+  it, so `hw_provision.resolve_system` — which talks to the machine to
+  settle `system = "auto"` — raising on an unreachable/unresponsive C64
+  abandoned the backend's persistent DMA socket; the U64 DMA service is
+  single-connection and blocks new sockets for seconds after an unclean
+  close, so the operator's very next attempt failed too, looking like an
+  unrelated problem. The resolve call now runs inside the same try/finally
+  that already closes the backend.
+- `--dump-char-rom`'s teardown swallowed a reset failure entirely
+  (`contextlib.suppress(Exception)`) even though the reset exists so the
+  machine "isn't left parked wherever the dump stub ran" — the one outcome
+  worth knowing was exactly what got hidden, at every verbosity, while the
+  success message still printed. It now logs a warning naming the failure
+  instead. `be.close()` in the same `finally` was unprotected, so a close
+  failure on the unresponsive-machine path (the case most likely to hit one)
+  replaced the deliberate `return 3`/`return 4` with a traceback; it is now
+  guarded the same way.
+- `--doctor` rebuilt its merged `LoadResult` field-by-field, which silently
+  dropped `master_web` (added after this code was written) instead of
+  carrying it forward — latent today (nothing in `doctor.py` reads it yet)
+  but one new web-related check away from validating the wrong object on
+  every ensemble config. Now built with `dataclasses.replace(loaded,
+  cfgs=cfgs)`, so a future `LoadResult` field can't be forgotten the same way.
+- A config-resolution failure (`_resolve_configs`, covering `load_master`,
+  `merge_cli`, `quickcast.build_config` and `connect.parse_connection_uri`)
+  logged only `str(e)` with no traceback, even under `-v`/`-vv` — a genuine
+  internal defect anywhere in that tree was indistinguishable from a user
+  typo and left oncall to bisect by hand. A `log.debug(..., exc_info=True)`
+  now runs right before the existing `log.error`, so `-v` recovers the
+  traceback; the exception types caught there are unchanged (still broad
+  `ValueError`/`RuntimeError`, since legitimate config validation throughout
+  `config.py` also raises plain `ValueError` and narrowing the catch would
+  misclassify those as unhandled). The connection target resolved on the
+  config-driven run path is now also logged at INFO with its source
+  (`-u/--url` or `$C64CAST_URL`), so an env-var override can no longer
+  silently repoint a run whose operator is reading a TOML that names a
+  different host.
 - The WLED sink (`wled_sink.py`, bridge Mode 2) rejected the wrong DDP flag as
   a "query" (`0x08` is STORAGE; QUERY is `0x02`), so a real discovery probe
   from LedFx/xLights/Jinx! slipped through as if it were pixel data and a
@@ -198,6 +278,289 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   failure, not only "file doesn't exist", because the firmware's FailToken
   carries only free text with no known, stable "not found" pattern to
   narrow the catch against.
+- The web console's config store (`config_store.py`) treated `[web].token`/
+  `token_file`/`viewer_token` and `[control].token`/`viewer_token` as
+  ordinary fields: `config_serialize.SECRET_FIELDS` only ever named the DMA
+  password, so `describe()`'s form data and `_editable_fields()` handed a
+  viewer-role `GET /api/configs/{ref}` the console's own admin token —
+  turning a shared "watch the show" link into full control of the host.
+  `SECRET_FIELDS` now also names the five token fields, which (matching the
+  DMA password) makes `describe()`/`patch()` withhold them and makes a form
+  save refuse a file that carries one rather than silently drop it on
+  re-serialize. `read()`'s raw `text` still carries any secret verbatim —
+  gating that behind the full-token role, or masking a secret assignment in
+  it, needs a role in hand and belongs to `web_api`/`auth`, not this store;
+  documented on `read()` rather than guessed at here. Alongside it: the
+  ref/write jail (`resolve()`) enforced `.toml`-suffix and root-containment
+  but let a ref name a file `NON_CONFIG_NAMES`/`NON_CONFIG_DIRS`/the dotfile
+  rule already hides from the listing — a read/write primitive for
+  `.cargo/config.toml`, `pyproject.toml` and the like on the cwd-fallback
+  root; those rules now gate `resolve()` itself, not just `_walk`.
+  `_require_writable` decided read-only by the ref's *label* rather than by
+  path containment, so a source checkout's cwd root (which physically
+  contains the packaged examples underneath it) could reach and overwrite
+  them through its own writable label; it now checks containment against
+  every root. `_validate_text_and_load` and `read()` handed submitted text
+  (or a file already on disk) straight to `config.load_master`, which opens
+  an `[ensemble].systems[].config` path verbatim when absolute — a read
+  primitive for any file on the host, since a parse failure on the named
+  target embeds its path, a source line and a caret; both now refuse before
+  the text ever reaches the loader, with a fixed, non-echoing message.
+- The web console's validate/edit paths (`config_store.py`) had a cluster of
+  bugs stemming from the same design: `_capture_errors` attached its
+  collector to the shared `c64cast` logger with no thread filter, so a
+  `--serve` process's live-session workers (render/audio/DMA, on other
+  threads) had their unrelated ERRORs folded into another request's report
+  — and, via `_machine_layer_notes`'s unanchored `key not in blame`
+  substring test, could misattribute a validation failure to a machine
+  setting a short common key (`url`, `path`, `port`, `device`) merely
+  happened to share with the failure text. The collector is now filtered to
+  its own thread and capped at 200 records; blame now requires a
+  word-boundary match on both the key and its section, checked only against
+  `report["error"]` (not the captured log); and `_machine_layer_notes` now
+  skips `SECRET_FIELDS` keys outright and never echoes a machine setting's
+  `value` (only `path`/`section`/`key` — the attribution its own docstring
+  argues for). `_validate_text_and_load`'s scratch-file `mkstemp` and the
+  write that followed sat above the `try` whose `finally` unlinks it, so a
+  write failure (ENOSPC, a remount to read-only) left `.c64cast-check-*.toml`
+  behind — invisible to the listing — and escaped as a bare `OSError`
+  instead of the `PathRejected` report the `mkstemp` half was already
+  careful to produce; both now share one `try`/`except`. `validate_text`
+  (and so `write`/`create`) had no size cap of its own — `write` enforced
+  `MAX_BYTES` but the scratch file could still take an unbounded POST body
+  onto disk first — now shared via one `_require_within_limit` every text
+  entry point calls. Lastly, `_apply_edit` setattr'd an edit's raw JSON onto
+  a container field (`overlays`, `[scenes.color]`, `hue_corrections`,
+  `clips`) with no shape check, so a wrong-shaped value (a string for a
+  list, a list of non-tables) reached `config_serialize`'s `[[...]]`
+  emitters and raised a bare `TypeError`/`AttributeError`/`ValueError` —
+  an unhandled 500 on an authenticated route — instead of `EditRejected`;
+  `_apply_edit` now checks the value's shape against the field's own
+  dataclass annotation before `setattr`, and `_rewrite`'s re-serialize call
+  widens its `except` as a backstop. `describe()` also no longer shadows
+  the module's `dataclasses.fields` import with a same-named local (latent
+  today, but one field-list lookup away from `TypeError: 'list' object is
+  not callable` from inside a request handler).
+- `config_serialize.py`: `_emit_table_array`'s `annotate` parameter was
+  never read in its body, so `[[color.hue_corrections]]`/`[[scenes.overlays]]`/
+  `[[scenes.color.hue_corrections]]` blocks got no per-param help comments
+  even when the caller asked for them — the parameter is dropped rather
+  than wired up, since nothing needed it. The four hardcoded
+  `if sd.name == "color"`/`"performance"` branches inside `_emit_section`
+  deciding which field renders as a `[[...]]` block are now one
+  `_SECTION_TABLE_ARRAYS` lookup — which caught a real, independent gap in
+  the same class while adding the drift test the fix calls for:
+  `[midi_control] cc_map` (`list[dict[...]]`, and documented as
+  `[[midi_control.cc_map]]` in its own help text) was falling through to
+  `_fmt_value` and rendering as an inline array of inline tables; it now
+  routes through the same block emitter. `_emit_scene` iterated only the
+  fields `introspect` lists for a scene's current `type`, so a field the
+  type doesn't claim but that carries a non-default value anyway (set
+  while the scene was a different type, or by a structured edit) was
+  silently dropped on every re-serialize — `load` never enforces
+  `applies_to`, so this broke `load(dumps(cfg)) == cfg`, the module's own
+  contract; such a field is now emitted alongside the type's own. A scene
+  color override of exactly `{"hue_corrections": []}` serialized to a bare
+  `[scenes.color]` header with nothing under it, reloading as `{}` — an
+  empty override is still an authored key on the scene's sparse dict, so it
+  now round-trips as an explicit `hue_corrections = []`. `SECRET_FIELDS`
+  gained the `[web]`/`[control]` token pairs (see the config_store entry
+  above) — it governs `dumps()`, `describe()`'s form and
+  `_editable_fields()`, not `config_store.read()`'s raw text (documented on
+  `SECRET_FIELDS` itself).
+- `schema.py`: a `choices`-bearing union-typed field (`[ultimate64]
+  sid_play_rate`, `str | float`) emitted a top-level `enum` alongside its
+  `type: ["string", "number"]`, so the documented numeric form ("a number
+  pins every vsync tune to that rate in Hz") failed schema validation in
+  every editor pointed at the committed schema — `jsonschema.validate` on
+  `50.0` raised `50.0 is not one of ['auto', 'off']`. Choices on a union
+  now constrain only the string branch via `anyOf`, leaving the other
+  branch(es) unconstrained. `_field_schema`'s `name` parameter, passed at
+  every call site and never read in the body, is removed.
+- `PollThread` (`_pollthread.py`) could resurrect a worker it had just
+  abandoned: `stop()` joined with a bounded `join_timeout` (0.5 s default)
+  and then unconditionally cleared `self._thread` even when the join timed
+  out and the target was still running (e.g. `RssOverlay`/`WeatherOverlay`'s
+  `requests.get(timeout=5.0)` outliving it on a slow feed). A later `start()`
+  then saw `is_running() == False`, called `self._stop.clear()` — which the
+  still-running worker reads through the same shared `Event` — and spawned a
+  second thread on top of the first, un-stopped. `stop()` now keeps the
+  thread reference on a timed-out join (logging a warning) instead of
+  discarding it, so `is_running()` stays truthful and `start()`'s existing
+  "already running" no-op refuses the duplicate until the abandoned worker
+  actually exits. Separately, an unhandled exception from a target used to
+  end the thread via `threading.excepthook`, which prints straight to raw
+  stderr and bypasses `--log-file`/`SessionLogBuffer` entirely — `_run` now
+  catches it and calls `log.exception`, stopping the loop the same way as
+  before but leaving a record in both durable sinks. `__init__`'s single
+  `Callable` annotation also hid that periodic and manual mode want
+  incompatible target signatures (`() -> None` vs. `(Event) -> None`); it
+  now `@overload`s two constructor shapes so a wrong-arity target is a type
+  error at the call site, with no change to any of the 21 consumer call
+  sites. New `tests/test_pollthread.py` cases pin the abandon-then-refuse
+  sequence and the exception-to-logging path.
+- `silence_native_stderr` (`_native_io.py`) had two independent descriptor
+  leaks on its own failure paths (`saved = os.dup(2)` sat outside its `try`,
+  so a failing `os.open(os.devnull, ...)` leaked it; `os.close(devnull)` sat
+  after `os.dup2(devnull, 2)` inside the `try`, so a failing `dup2` leaked
+  `devnull`), and no mutex or nesting depth around its dup/dup2/close
+  sequence on the process-global fd 2 — two overlapping (non-nested) callers
+  (reachable in practice: `video._ensure_pyav` is a lazily-triggered entrant
+  from playlist worker threads, one per system in an ensemble) left the
+  second caller's `os.dup(2)` capturing the first caller's `/dev/null`
+  redirect as its own "saved" fd, so whichever exited last pinned the
+  process's real stderr to `/dev/null` permanently. A module-level depth
+  counter behind a lock now makes the redirect reentrant across both nesting
+  and overlap (only the outermost enter/exit touches fd 2), and both
+  descriptors are released on every failure path. New `tests/test_native_io.py`
+  — previously nothing imported this module at all — pins silencing,
+  restoration, the overlapping-threads case, and a 200-cycle no-fd-growth
+  check; it skips on Windows, where `os.set_blocking` (the fixture's way of
+  draining fd 2's pipe without blocking) doesn't exist.
+- `_midi.open_input_port`'s only guard against a missing `midi` extra was a
+  bare `assert mido is not None`, stripped entirely under `python -O` and
+  otherwise surfacing as `AttributeError: 'NoneType' object has no attribute
+  'get_input_names'` — a message naming nothing about the extra a caller
+  forgot to check. It now raises `RuntimeError` naming the install command,
+  matching the contract every other precondition on this shared resolver
+  already documents. New `tests/test_midi.py`.
+- `_redact.py`'s pattern matched only a literal `token=` immediately followed
+  by the value — the shape of today's console login-URL log line, but not
+  `token = "…"` (spaces, as a TOML/config rendering would produce), `"token":
+  "…"` (JSON), or an `Authorization: Bearer …` header, any of which could put
+  the console's admin token into `--log-file` or a viewer's `SessionLogBuffer`
+  tail in a future rendering with no test catching it. The pattern now covers
+  `token`/`password`/`secret`/`api[_-]key` with `=` or `:`, quoted or not,
+  plus a `Bearer <value>` alternative.
+- `hw/c64.py`'s `cpu_clock`/`frame_rate`/`kernal_cia1_latch` silently treated
+  any system string other than exactly `"NTSC"` as PAL — including the
+  unresolved `"auto"` config default (which `config.SYSTEM_CHOICES`
+  explicitly allows) and any typo or trailing whitespace — giving every
+  clock-derived constant (CIA latch, NMI safety band, SID PLAY rate) the
+  wrong standard's numbers with zero diagnostic; `hw/api.py` already
+  hand-guarded one call site against exactly this. They now accept only
+  `"NTSC"`/`"PAL"` (case-insensitive, whitespace-tolerant, matching every
+  other consumer's own `.upper()` convention) and raise `ValueError`
+  otherwise. `scene_factory.validate_nmi_sample_rate` and
+  `doctor._validate_audio_nmi_rate` both run before hardware opens (so
+  `[ultimate64].system` can still be the unresolved `"auto"` there) and now
+  resolve it to NTSC first, matching that field's own documented fallback
+  and `hw_provision.resolve_system`'s convention, instead of reaching the
+  PAL branch by accident. `actual_rate_for_latch` now raises on a negative
+  latch instead of a bare `ZeroDivisionError` on `latch == -1`. Two register
+  annotations were also corrected (`VIC_BANK_0.BITMAP`'s `$D018` bitmap
+  nibble is `8`, not `4`; `CPU.PORT_IO_OUT` = `$34` has CHAREN, bit 2, still
+  set — LORAM=HIRAM=0 is what maps RAM instead of ROM/I/O), and
+  `RASTER_VBLANK_LINE`'s comment no longer calls line 248 the start of
+  vblank (it is the first line past the last badline — a narrower property
+  that breaks if YSCROLL or the row count changes; vblank itself is lines
+  ~300+ on PAL, ~13-40 on NTSC). New `tests/test_c64.py` pins the
+  system-string handling and the two negative/zero-rate guards.
+- `char_rom.py`'s load path (`_read_glyphs`, behind every `load_glyphs`
+  call) only length-checked a resolved charset, while `install_data` ran the
+  full structural `verify()` — so a stale hand-copied file, a wrong file at
+  a configured `charset_path`, or any other 2 KB file at a resolved path
+  rendered garbage glyphs with no diagnostic, and (since `ensure_installed`
+  treated any non-`None` `resolve()` as "already have one") permanently
+  suppressed the auto-dump that would have fixed it. The load path now runs
+  the same `verify()`, falling back to the builtin font with a warning
+  naming the reason; `ensure_installed`'s gate now requires that resolved
+  file to actually verify before it counts as "nothing to do". A configured
+  `charset_path` that doesn't exist at all was also silently absorbed by
+  `resolve()`'s fall-through with no record anywhere despite the module's
+  own docstring promising "a warning from the caller" — `_read_glyphs` now
+  logs one, naming the configured path and what it fell back to.
+  `video.framebuffer.Framebuffer`'s own duplicate pre-check for exactly this
+  case is removed now that every caller gets the same diagnostic centrally.
+  Also fixed: an inverted verification-rationale docstring (an all-`$00`/
+  all-`$FF` buffer *fails* the reverse-video complement check outright; the
+  `$20`-blank/`$01`-not-blank pair is what catches a buffer whose halves
+  complement *by construction*, which the complement check cannot see
+  anything wrong with) and a British "synthesises" in the module docstring.
+  New/updated cases in `tests/test_char_rom.py` and `tests/test_framebuffer.py`.
+- The web console's media browser (`media_store.py`) listed a directory as a
+  browsable entry straight off its unfiltered file list, before the per-file
+  symlink-escape check below it ever ran — so a directory whose only
+  kind-matching member was a symlink pointing outside its root
+  (`ln -s /home/other/private.mp4 assets/videos/leak.mp4`) was still offered
+  as a listed entry, and `resolve_file_spec` treats a listed directory as a
+  randomizer that picks a member at each scene `setup()`, following that
+  symlink onto HDMI — reachable by anyone with local or group write access to
+  a media root, not the HTTP surface (uploads only ever create regular
+  files). `_candidates` now filters a directory's hits against the jail check
+  before deciding whether to yield the containing directory at all, so the
+  directory and file listings agree about what's actually inside the root.
+- `MediaStore.receive`'s upload commit (`media_store.py`) had three related
+  gaps. A failed `flush()`/`fsync()` (disk full) left the abort handler's own
+  `file.close()` re-raising the same `OSError` a second time before
+  `os.unlink` ever ran, orphaning the up-to-512-MB `.part` file the module's
+  own docstring promises never survives a failure. Separately, `_unique_name`'s
+  `-2`/`-3` collision suffix could lengthen an already-at-the-cap name past
+  the filesystem's own limit, and an embedded NUL byte passed every
+  structural check (`Path.exists()` silently swallows the `ValueError` a NUL
+  raises) — both then died inside `os.replace` as an untyped
+  `OSError`/`ValueError` that no caller's `MediaStoreError` mapping could
+  classify, turning a name the store meant to refuse into an unhandled 500
+  after the whole body had already been streamed. And `destination()`'s
+  docstring promised a jail re-check against the joined path that no caller
+  actually ran; on Windows — a first-class target per `paths.py`'s
+  `os.name == "nt"` branches — that's exploitable outright, since
+  `PureWindowsPath('D:/media') / 'C:evil.prg'` discards the left operand
+  entirely, landing a drive-relative name wherever the process happened to
+  be on that drive. `receive` now suppresses `OSError` from its own cleanup
+  so it can never replace the failure that triggered it, and re-checks
+  `directory / final_name` against the root before `os.replace`;
+  `_unique_name` now rejects a `-2`/`-3` candidate that would cross
+  `_MAX_NAME_BYTES` itself (`MediaNameRejected`, before `os.replace` ever
+  sees it) rather than leaving that to a raw, host-dependent `ENAMETOOLONG`,
+  and `_reject_unless_bare_filename` refuses a drive-relative name
+  (`ntpath.splitdrive`) and an embedded NUL outright. A commit-time
+  `OSError`/`ValueError` that isn't one of those refusals (a full disk mid-
+  `os.replace`, say) is still wrapped as `MediaStoreError`. Every aborted or
+  committed upload is now logged — `%r`, not `%s`, since the name comes
+  straight from an untrusted upload — where before this module's one
+  long-running, network-reachable write left no trace of a failure anywhere
+  in `--log-file`.
+- `MediaStore.index`'s `q`-filtered search (`media_store.py`) applied its
+  needle match *before* the `MAX_FILES` display cap so a search could reach
+  media a plain listing had already truncated away — but that also meant a
+  query matching nothing never tripped `truncated`, so it walked every
+  configured root to `MAX_DEPTH` in full (resolving every kind-matching file
+  along the way) with no way for the response to say the scan was unbounded;
+  a search against a host rooted at `~` or an HVSC mirror could stall the
+  console on one trivial `GET /api/media?q=` while it's also encoding video
+  for a running show. `index` now also counts every candidate it visits
+  against a new `_MAX_SCAN` ceiling (independent of `MAX_FILES`, an order of
+  magnitude above it) and sets `truncated` once that trips.
+- `MediaStore.destination` (`media_store.py`) reported a kind whose
+  configured directory doesn't exist yet with the same "not configured on
+  this host" message as a kind nobody ever named for upload — sending an
+  operator looking for a TOML setting that was already correct, since the
+  host *is* configured and only the directory is missing. The two cases are
+  now distinguished in the refusal message. Separately, `MediaRoot.writable`
+  silently disagreeing with `_write_roots` — reachable only if a future
+  refactor resolved read-only roots before write roots — is now an assertion
+  in `resolve_root` rather than an invariant that depended on `__init__`'s
+  two loops staying in this order with nothing to say so if they didn't.
+- `ConsoleLibrary._load` (`console_library.py`) iterated
+  `raw.get("favorites", [])`/`raw.get("recents", [])` unguarded —
+  `dict.get`'s default only applies when the key is *absent*, so a foreign
+  or half-written `console.json` containing `{"favorites": null}` (or a bare
+  string or number) raised `TypeError` straight out of `as_dict`,
+  contradicting the documented "a missing, corrupt, or wrong-shaped file
+  reads as an empty library" contract and taking `GET /api/library` down
+  with a 500 instead of self-healing. Both containers are now type-checked
+  as lists before iterating.
+- `record_recent` capped its list at `MAX_RECENTS`, but `set_favorite`
+  (`console_library.py`) had no equivalent — a client holding the write
+  token could loop distinct refs and grow `console.json` (read-modify-
+  written whole, on every call, and served back to every browser and phone
+  pointed at the host) without bound. Favorites are now capped at a new
+  `MAX_FAVORITES`, and both `set_favorite` and `record_recent` reject a ref
+  over 512 bytes. Separately, an empty ref used to be accepted, appended,
+  and returned, only to be silently dropped by `_load`'s own filter on the
+  very next read — both methods now treat a falsy ref as a no-op, so the
+  return value never disagrees with what's actually persisted.
 
 ## [0.4.0] - 2026-08-30
 

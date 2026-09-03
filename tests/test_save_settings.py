@@ -20,7 +20,8 @@ from unittest import mock
 from _fakes import quiet_logging
 
 from c64cast.app import config as cfgmod
-from c64cast.app.cli import main
+from c64cast.app.cli import build_parser, main
+from c64cast.app.cli_commands import run_save_settings
 
 
 class SaveSettingsTest(unittest.TestCase):
@@ -108,6 +109,53 @@ class SaveSettingsTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._settings}):
             cfg = cfgmod.load(None)
         self.assertEqual(cfg.ultimate64.system, "PAL")
+
+    def test_bad_url_exits_2_not_a_traceback(self):
+        # ConnectionURIError (a ValueError) used to escape main() here as an
+        # uncaught traceback instead of the exit-2 usage error connect.py's
+        # docstring promises — --save-settings is dispatched before
+        # _resolve_configs' try/except, and had no guard of its own.
+        rc, _ = self._main(["-u", "not-a-connection-target", "--save-settings"])
+        self.assertEqual(rc, 2)
+        self.assertFalse(os.path.exists(self._settings))
+
+    def test_url_with_userinfo_rejected_not_persisted(self):
+        # parse_connection_uri now refuses embedded credentials outright, so
+        # none of this ever reaches settings.toml or stdout.
+        rc, out = self._main(["-u", "u64://admin:s3cret@192.168.2.64", "--save-settings"])
+        self.assertEqual(rc, 2)
+        self.assertFalse(os.path.exists(self._settings))
+        self.assertNotIn("s3cret", out)
+
+
+class SaveSettingsDmaPasswordWarningTest(unittest.TestCase):
+    """Drives run_save_settings directly (not cli.main()) so assertLogs can
+    capture its warning without cli.main()'s configure_logging() installing a
+    real terminal handler alongside it (the two must not nest — see
+    CLAUDE.md's test conventions)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._settings = os.path.join(self._tmp.name, "settings.toml")
+        with open(self._settings, "w", encoding="utf-8") as f:
+            f.write('[ultimate64]\ndma_password = "topsecret"\n')
+
+    def test_existing_dma_password_triggers_warning_not_silent_drop(self):
+        # A hand-written dma_password in settings.toml can't survive a save
+        # (config_serialize suppresses it on write) — the loss must be
+        # visible, not silent.
+        args = build_parser().parse_args(["-d", "2", "--save-settings"])
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"C64CAST_SETTINGS": self._settings}):
+            with self.assertLogs("c64cast", level="WARNING") as cm:
+                with redirect_stdout(buf):
+                    rc = run_save_settings(args)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("dma_password" in r for r in cm.output))
+        with open(self._settings) as f:
+            text = f.read()
+        self.assertNotIn("topsecret", text)
 
 
 if __name__ == "__main__":

@@ -144,10 +144,17 @@ class FramebufferTest(unittest.TestCase):
         self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[5]).all())
 
     def test_charset_path_loaded(self):
-        # A supplied 2KB char-ROM dump is used verbatim instead of the builtin.
+        # A supplied 2KB char-ROM dump is used verbatim instead of the
+        # builtin — but only once char_rom.verify() accepts it as a real
+        # charset (not just 2 KB of arbitrary bytes), so this one is built to
+        # pass: reverse-video half complements the normal half, $20 blank,
+        # $01 not.
         from c64cast.video.framebuffer import Framebuffer
 
-        custom = bytes(range(256)) * 8  # 2048 bytes, distinctive
+        normal = bytearray()
+        for code in range(0x80):
+            normal += b"\x00" * 8 if code == 0x20 else bytes((code | 0x01,) * 8)
+        custom = bytes(normal) + bytes((~b) & 0xFF for b in normal)
         with tempfile.NamedTemporaryFile("wb", suffix=".bin", delete=False) as f:
             f.write(custom)
             path = f.name
@@ -179,12 +186,14 @@ class FramebufferTest(unittest.TestCase):
     def test_missing_charset_path_warns_and_falls_back(self):
         # A configured-but-missing path used to raise FileNotFoundError out of
         # __init__ and kill the run; the preview is a mirror, it degrades.
+        # The warning now comes from char_rom itself (the single resolver
+        # every glyph consumer goes through), not a framebuffer-local check.
         from c64cast.hw import char_rom
         from c64cast.video.framebuffer import Framebuffer
 
         char_rom.invalidate_cache()
         self.addCleanup(char_rom.invalidate_cache)
-        with self.assertLogs("c64cast.video.framebuffer", level="WARNING"):
+        with self.assertLogs("c64cast.hw.char_rom", level="WARNING"):
             fb = Framebuffer(charset_path="/nonexistent/charset.bin")
         self.assertEqual(len(fb.charset), 2048)
 

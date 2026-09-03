@@ -60,6 +60,26 @@ class RedactSecretsTest(unittest.TestCase):
     def test_a_quoted_token_stops_at_the_quote(self):
         self.assertEqual(redact_secrets('{"token=abc"}'), '{"token=REDACTED"}')
 
+    def test_a_json_rendering_with_a_colon_and_spaces_is_covered(self):
+        out = redact_secrets('{"token": "s3cr3t", "next": "/"}')
+        self.assertNotIn("s3cr3t", out)
+        self.assertIn('"token": "REDACTED"', out)
+        self.assertIn('"next": "/"', out)
+
+    def test_a_toml_rendering_with_spaces_around_equals_is_covered(self):
+        out = redact_secrets('token = "s3cr3t"')
+        self.assertNotIn("s3cr3t", out)
+
+    def test_a_password_or_api_key_value_is_covered(self):
+        self.assertNotIn("hunter2", redact_secrets("password=hunter2"))
+        self.assertNotIn("abc123", redact_secrets("api_key=abc123"))
+        self.assertNotIn("abc123", redact_secrets("api-key=abc123"))
+
+    def test_a_bearer_header_value_is_covered(self):
+        out = redact_secrets("Authorization: Bearer s3cr3t")
+        self.assertNotIn("s3cr3t", out)
+        self.assertIn("Bearer REDACTED", out)
+
 
 class RedactingFormatterTest(unittest.TestCase):
     def test_it_redacts_what_it_formats(self):

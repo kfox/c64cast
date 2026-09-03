@@ -78,12 +78,29 @@ def _published_schema_url(version: str) -> str:
 # the installed copy when it can, and that one is rewritten by every upgrade.
 DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 
-# Never written to disk — it's a secret, supplied via the C64CAST_DMA_PASSWORD
-# env var or hand-added to a non-committed file (see docs/reference/). Omitting
-# it keeps the serializer safe to point at a checked-in path. Public because
-# `config_store` withholds the same fields from the web console's form data —
-# one list, so a secret can't be safe in the file and visible in the browser.
-SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
+# Never written to disk — it's a secret, supplied via an env var or hand-added
+# to a non-committed file (see docs/reference/). Omitting it keeps the
+# serializer safe to point at a checked-in path. Public because `config_store`
+# withholds the same fields from the web console's form data — one list, so a
+# secret can't be safe in the file and visible in the browser.
+#
+# The [web]/[control] tokens are here for the same reason as the DMA password:
+# each grants remote control of the host (the web token equivalent to local
+# shell reach, the control token to the /perf console), so an operator who
+# left one in a config must not have it echoed back as an ordinary field
+# value. This governs `describe()`'s form, `_editable_fields()` and `dumps()` —
+# it does NOT reach `config_store.read()`'s raw `text`, which still carries
+# any of these verbatim (see that method's docstring).
+SECRET_FIELDS = frozenset(
+    {
+        ("ultimate64", "dma_password"),
+        ("web", "token"),
+        ("web", "token_file"),
+        ("web", "viewer_token"),
+        ("control", "token"),
+        ("control", "viewer_token"),
+    }
+)
 
 # List-of-table fields that must render as [[parent.child]] blocks AFTER the
 # parent's scalar keys (TOML forbids scalar keys after a sub-table header is
@@ -91,6 +108,19 @@ SECRET_FIELDS = frozenset({("ultimate64", "dma_password")})
 _COLOR_TABLE_ARRAY = "hue_corrections"  # under [color]
 _SCENE_TABLE_ARRAY = "overlays"  # under [[scenes]]
 _PERF_TABLE_ARRAY = "clips"  # under [performance]
+
+# Which section carries which list-of-tables field, and the [[header]] it
+# renders under — one lookup `_emit_section` consults twice (to skip the
+# field in the scalar loop, then to route its rows) instead of two independent
+# `if sd.name == ...` chains that a third table-array field would have to find
+# and update in step.
+_MIDI_TABLE_ARRAY = "cc_map"  # under [midi_control]
+
+_SECTION_TABLE_ARRAYS: dict[str, tuple[str, str]] = {
+    "color": (_COLOR_TABLE_ARRAY, "color.hue_corrections"),
+    "performance": (_PERF_TABLE_ARRAY, "performance.clips"),
+    "midi_control": (_MIDI_TABLE_ARRAY, "midi_control.cc_map"),
+}
 
 _BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -200,7 +230,7 @@ def _table_rows(
     return rows
 
 
-def _emit_table_array(header: str, rows: list[dict[str, object]], annotate: bool) -> list[str]:
+def _emit_table_array(header: str, rows: list[dict[str, object]]) -> list[str]:
     """Render a list of plain dicts as repeated [[header]] blocks (used for
     [[color.hue_corrections]] and [[scenes.overlays]]). `type` floats to the
     top of an overlay block for readability; otherwise insertion order."""
@@ -226,14 +256,13 @@ def _emit_section(
 ) -> list[str]:
     section = getattr(cfg, sd.name)
     base = getattr(baseline, sd.name) if baseline is not None else None
+    table_array = _SECTION_TABLE_ARRAYS.get(sd.name)
     body: list[str] = []
     for fd in sd.fields:
         if (sd.name, fd.name) in SECRET_FIELDS:
             continue
-        if sd.name == "color" and fd.name == _COLOR_TABLE_ARRAY:
-            continue  # emitted as [[color.hue_corrections]] below
-        if sd.name == "performance" and fd.name == _PERF_TABLE_ARRAY:
-            continue  # emitted as [[performance.clips]] below
+        if table_array is not None and fd.name == table_array[0]:
+            continue  # emitted as a [[...]] block below
         value = getattr(section, fd.name)
         default = fd.default if base is None else getattr(base, fd.name)
         if not _should_emit(value, default, minimal=minimal):
@@ -246,12 +275,9 @@ def _emit_section(
     # forbids scalar keys once a sub-table header opens).
     table_rows: list[dict[str, object]] = []
     table_header = ""
-    if sd.name == "color":
-        table_rows = _table_rows(section, base, _COLOR_TABLE_ARRAY, minimal=minimal)
-        table_header = "color.hue_corrections"
-    elif sd.name == "performance":
-        table_rows = _table_rows(section, base, _PERF_TABLE_ARRAY, minimal=minimal)
-        table_header = "performance.clips"
+    if table_array is not None:
+        table_rows = _table_rows(section, base, table_array[0], minimal=minimal)
+        table_header = table_array[1]
 
     if not body and not table_rows:
         return []  # nothing set in this section — skip the header entirely
@@ -263,7 +289,7 @@ def _emit_section(
     lines += body
     lines.append("")
     if table_rows:
-        lines += _emit_table_array(table_header, table_rows, annotate)
+        lines += _emit_table_array(table_header, table_rows)
     return lines
 
 
@@ -278,11 +304,16 @@ def _emit_scene(
     # Only the fields that apply to this scene's type (introspect already did
     # the applies_to filtering); fall back to every field for an unknown type.
     fields = field_docs.get(s.type, all_fields)
+    # A field the type doesn't claim but that carries a non-default value
+    # anyway (set while the scene was a different type, or by a structured
+    # edit) still has to round-trip — `load` never enforces `applies_to`, so
+    # dropping it here would silently rewrite the file out from under it.
+    leftover = tuple(fd for fd in all_fields if fd.name not in {f.name for f in fields})
     lines = ["[[scenes]]"]
     # `type` is the discriminator — always written, even when it's the default,
     # so the block is unambiguous and copy-pasteable.
     lines.append(f"type = {_fmt_value(s.type)}")
-    for fd in fields:
+    for fd in (*fields, *leftover):
         if fd.name in ("type", _SCENE_TABLE_ARRAY, "color"):
             continue
         value = getattr(s, fd.name)
@@ -295,7 +326,7 @@ def _emit_scene(
     if s.color:
         lines += _emit_scene_color(s.color, annotate=annotate)
     if s.overlays:
-        lines += _emit_table_array("scenes.overlays", list(s.overlays), annotate)
+        lines += _emit_table_array("scenes.overlays", list(s.overlays))
     return lines
 
 
@@ -312,6 +343,11 @@ def _emit_scene_color(color: dict[str, object], *, annotate: bool) -> list[str]:
     lines = ["[scenes.color]"]
     for k, v in color.items():
         if k == _COLOR_TABLE_ARRAY:
+            # An empty override is still an authored key — `color` is the
+            # scene's sparse dict, so `{"hue_corrections": []}` differs from
+            # not mentioning the key at all, and has to round-trip as such.
+            if isinstance(v, list) and not v:
+                lines.append(f"{_fmt_key(k)} = []")
             continue
         if annotate:
             fd = color_docs.get(k)
@@ -321,7 +357,7 @@ def _emit_scene_color(color: dict[str, object], *, annotate: bool) -> list[str]:
     lines.append("")
     if isinstance(hue_corrections, list) and hue_corrections:
         rows: list[dict[str, object]] = [dict(hc) for hc in hue_corrections]
-        lines += _emit_table_array("scenes.color.hue_corrections", rows, annotate)
+        lines += _emit_table_array("scenes.color.hue_corrections", rows)
     return lines
 
 

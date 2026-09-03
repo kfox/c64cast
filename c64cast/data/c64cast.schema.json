@@ -127,14 +127,18 @@
           "default": "auto"
         },
         "sid_play_rate": {
-          "type": [
-            "string",
-            "number"
-          ],
           "description": "PLAY-call rate for vsync-timed SID tunes. 'auto' = the tune's native frame rate from its PSID clock flag (PAL tunes at ~50.12 Hz); 'off' = leave the kernal jiffy rate alone (~60 Hz on both standards, so PAL tunes run ~20% fast \u2014 the pre-1.9 behavior); a number pins every vsync tune to that rate in Hz. CIA-timed (multispeed) tunes always self-time and are never overridden.",
-          "enum": [
-            "auto",
-            "off"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "off"
+              ]
+            },
+            {
+              "type": "number"
+            }
           ],
           "default": "auto"
         },
@@ -1458,19 +1462,23 @@
             "default": "webcam"
           },
           "display": {
-            "type": [
-              "string",
-              "null"
-            ],
             "description": "VIC-II display mode. Unset resolves per scene type: 'mhires' for video (richest bitmap mode, suits arbitrary film/photo content) and 'hires_edges' for webcam/blank/slideshow/generative (tuned for live Canny-edge stylization). waveform and midi are bitmap-only (both ignore this); slideshow also accepts 'random'. generative renders a frame so any quantizing mode works (not 'blank'/'random').",
-            "enum": [
-              "hires_edges",
-              "hires",
-              "petscii",
-              "mcm",
-              "mhires",
-              "blank",
-              "random"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "hires_edges",
+                  "hires",
+                  "petscii",
+                  "mcm",
+                  "mhires",
+                  "blank",
+                  "random"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "name": {
@@ -1502,20 +1510,24 @@
             "description": "Per-scene audio override. Unset follows [audio].enabled; false mutes this scene only."
           },
           "effect": {
-            "type": [
-              "string",
-              "null"
-            ],
             "description": "Pixel effect applied to the frame before quantization (unset = none). Works on any frame-bearing scene. 'trails' echoes moving content; 'pulse' beat-punches the zoom; 'rgb_shift' slews the color channels apart on a transient. pulse/rgb_shift only visibly react on a music-reactive scene (generative + audio_source = 'sid'); elsewhere they're inert (no feature stream to react to).",
-            "enum": [
-              "trails",
-              "pulse",
-              "rgb_shift",
-              "blur",
-              "strobe",
-              "invert",
-              "mirror",
-              "posterize"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "trails",
+                  "pulse",
+                  "rgb_shift",
+                  "blur",
+                  "strobe",
+                  "invert",
+                  "mirror",
+                  "posterize"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "effects": {

@@ -5,7 +5,7 @@ Every C64-native glyph c64cast draws — the bitmap-mode text overlays
 (`scrolling_text` → `TextSurface` → `bitmap_text.load_glyphs`), `big_text`'s
 8×-scaled scroller, the on-C64 menu, the oscilloscope's text rows, and the
 preview/recording renderers — reads its 8×8 cells straight out of the C64
-character ROM. Without one, `framebuffer._builtin_charset()` synthesises an
+character ROM. Without one, `framebuffer._builtin_charset()` synthesizes an
 ASCII font with `cv2.putText`: it renders *something*, but it is not the C64
 font and PETSCII graphics codes come out blank. A user report of "the
 scrolling text looks bad" was exactly this, and nothing else.
@@ -137,10 +137,12 @@ def verify(data: bytes) -> VerifyResult:
 
       * at least one full 2 KB set (accept 2 KB or 4 KB);
       * within each set, screen codes $80-$FF complement $00-$7F (see
-        :data:`REVERSE_HALF_TOLERANCE`) — the check I/O and RAM cannot pass;
-      * screen code $20 (space) is entirely blank and $01 (`A`) is not — a
-        buffer of all $00 or all $FF satisfies the complement test trivially,
-        this is what rules it out.
+        :data:`REVERSE_HALF_TOLERANCE`) — an all-$00 or all-$FF buffer
+        already fails this outright (every byte XORs to $00, not $FF);
+      * screen code $20 (space) is entirely blank and $01 (`A`) is not — this
+        is what rules out a buffer whose halves complement *by construction*
+        (e.g. 1024 bytes of $00 followed by 1024 of $FF), which the
+        complement check above cannot see anything wrong with.
 
     The SHA-256 comparison against the stock ROM is reported in `note` and
     never affects `ok`.
@@ -213,19 +215,42 @@ def invalidate_cache() -> None:
     _GLYPHS_CACHE = None
 
 
+def _read_verified(path: Path) -> tuple[bytes, VerifyResult] | None:
+    """`path`'s bytes plus their :func:`verify` verdict, or None if the file
+    can't be read at all."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return data, verify(data)
+
+
 def _read_glyphs(configured: str | None) -> bytes:
     path = resolve(configured)
+    if configured and path != Path(paths.expand_user(configured)):
+        # resolve() fell through past the configured path (missing, or not a
+        # file) to the data dir / legacy checkout path / nothing — the
+        # substitution is otherwise invisible, which is exactly the "the
+        # scrolling text looks bad" support case this module exists to
+        # eliminate.
+        log.warning(
+            "char_rom: configured charset_path %s does not exist; falling back to %s",
+            configured,
+            path or "the builtin charset",
+        )
     if path is not None:
-        try:
-            data = path.read_bytes()[:CHARSET_BYTES]
-        except OSError as e:
-            log.warning("char_rom: could not read %s (%s); using the builtin charset", path, e)
+        read = _read_verified(path)
+        if read is None:
+            log.warning("char_rom: could not read %s; using the builtin charset", path)
         else:
-            if len(data) == CHARSET_BYTES:
-                return data
-            # Zero-padding a truncated file to 2 KB would render ~1900 blank
-            # cells, which looks like a render bug rather than a bad file.
-            log.warning("char_rom: %s is shorter than 2 KB; using the builtin charset", path)
+            data, result = read
+            if result.ok:
+                return data[:CHARSET_BYTES]
+            log.warning(
+                "char_rom: %s does not look like a character ROM (%s); using the builtin charset",
+                path,
+                result.error,
+            )
     # Deferred: framebuffer imports this module for its own glyphs, so a
     # top-level import here is a cycle.
     from c64cast.video.framebuffer import _builtin_charset
@@ -305,8 +330,15 @@ def ensure_installed(be: C64Backend, cfg: Config) -> bool:
     (which soft-resets) can re-establish the clear loop behind us."""
     if not cfg.hardware.dump_char_rom:
         return False
-    if resolve(cfg.preview.charset_path) is not None:
-        return False
+    existing = resolve(cfg.preview.charset_path)
+    if existing is not None:
+        read = _read_verified(existing)
+        # A resolved-but-unverifiable file (stale, wrong format, a typo'd
+        # charset_path that happens to name a real file) must count as
+        # "nothing installed" — treating it as done here would suppress the
+        # auto-dump forever behind glyphs that already don't render right.
+        if read is not None and read[1].ok:
+            return False
     if not (be.profile.supports_read and be.profile.supports_run_prg):
         log.debug("char_rom: backend cannot dump (read/run_prg unsupported); keeping the fallback")
         return False

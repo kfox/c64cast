@@ -18,8 +18,10 @@ consoles (last writer wins, by design — the backup sibling is the recovery).""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -141,6 +143,37 @@ class RootJailTest(StoreTestCase):
         self.assertRejected("shows/notes.txt")
         self.assertRejected("shows/id_rsa")
 
+    def test_a_non_config_manifest_is_not_addressable(self):
+        # NON_CONFIG_NAMES used to be a listing-only filter — a ref could
+        # still name (and `resolve` would still hand back) a file the
+        # listing hides, which is a read/write primitive for `pyproject.toml`
+        # and its like on the cwd-fallback root.
+        (self.shows / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        self.assertRejected("shows/pyproject.toml")
+
+    def test_a_dotfile_is_not_addressable(self):
+        (self.shows / ".hidden.toml").write_text(GOOD, encoding="utf-8")
+        self.assertRejected("shows/.hidden.toml")
+
+    def test_a_file_under_a_dot_directory_is_not_addressable(self):
+        (self.shows / ".hidden").mkdir()
+        (self.shows / ".hidden" / "x.toml").write_text(GOOD, encoding="utf-8")
+        self.assertRejected("shows/.hidden/x.toml")
+
+    def test_a_file_under_a_non_config_directory_is_not_addressable(self):
+        (self.shows / "docs").mkdir()
+        (self.shows / "docs" / "fig.toml").write_text(GOOD, encoding="utf-8")
+        self.assertRejected("shows/docs/fig.toml")
+
+    def test_a_root_named_docs_is_still_addressable(self):
+        # The rule refuses a *subdirectory* named `docs`/`scripts`, never a
+        # root the operator pointed at.
+        docs_root = self.tmp / "docs"
+        docs_root.mkdir()
+        (docs_root / "gig.toml").write_text(GOOD, encoding="utf-8")
+        store = config_store.ConfigStore([str(docs_root)], include_examples=False)
+        self.assertEqual(store.resolve("docs/gig.toml"), docs_root / "gig.toml")
+
     @unittest.skipIf(os.name == "nt", "symlink creation needs privileges on Windows")
     def test_a_symlink_out_of_a_root_is_rejected(self):
         outside = self.tmp / "secret.toml"
@@ -235,6 +268,23 @@ class ReadTest(StoreTestCase):
         # The raw text is the file, though — this is an editor, not a redactor.
         self.assertIn("hunter2", out["text"])
 
+    def test_the_web_and_control_tokens_never_reach_the_form(self):
+        (self.shows / "secret.toml").write_text(
+            '[web]\ntoken = "watchme"\nviewer_token = "peekaboo"\n'
+            '[control]\ntoken = "controlme"\n'
+            '[[scenes]]\ntype = "blank"\n',
+            encoding="utf-8",
+        )
+        out = self.store.read("shows/secret.toml")
+        web = next(s for s in out["form"]["sections"] if s["name"] == "web")
+        control = next(s for s in out["form"]["sections"] if s["name"] == "control")
+        self.assertNotIn("token", [f["name"] for f in web["fields"]])
+        self.assertNotIn("viewer_token", [f["name"] for f in web["fields"]])
+        self.assertNotIn("token", [f["name"] for f in control["fields"]])
+        # The raw text is the file, though — see the module docstring on
+        # `read` for why gating that is out of this store's scope.
+        self.assertIn("watchme", out["text"])
+
     def test_a_broken_config_returns_its_text_and_the_parse_error(self):
         (self.shows / "bad.toml").write_text(BROKEN, encoding="utf-8")
         out = self.store.read("shows/bad.toml")
@@ -267,6 +317,19 @@ class ReadTest(StoreTestCase):
             with self.assertRaises(config_store.ConfigTooLarge):
                 self.store.read("shows/big.toml")
 
+    def test_an_ensemble_pointing_outside_the_roots_is_refused(self):
+        # load_master follows an absolute systems[].config verbatim — a read
+        # primitive for anything on the host if this store didn't refuse it
+        # before ever handing the text to the loader.
+        outside = self.tmp / "outside.toml"
+        outside.write_text("SUPER-SECRET-CONTENTS\n", encoding="utf-8")
+        text = f'[ensemble]\nsystems = [{{ name = "x", config = "{outside.as_posix()}" }}]\n'
+        (self.shows / "escape.toml").write_text(text, encoding="utf-8")
+        out = self.store.read("shows/escape.toml")
+        self.assertIsNotNone(out["error"])
+        self.assertNotIn(str(outside), out["error"])
+        self.assertEqual(out["systems"], [])
+
 
 class ValidateTest(StoreTestCase):
     def test_a_good_config_validates(self):
@@ -291,6 +354,35 @@ class ValidateTest(StoreTestCase):
         self.store.validate_text(GOOD, "shows/gig.toml")
         leftovers = [p.name for p in self.shows.iterdir() if "c64cast-check" in p.name]
         self.assertEqual(leftovers, [])
+
+    def test_a_scratch_write_failure_is_refused_and_leaves_no_leftover(self):
+        # The mkstemp + write pair used to straddle the try/finally that
+        # unlinks: a write failure (ENOSPC, a remount to read-only) escaped
+        # as a bare OSError with the half-written scratch file left behind.
+        def _raise(fd: int, *a: object, **kw: object) -> None:
+            os.close(fd)
+            raise OSError("disk full")
+
+        with mock.patch("os.fdopen", side_effect=_raise):
+            with self.assertRaises(config_store.PathRejected):
+                self.store.validate_text(GOOD, "shows/gig.toml")
+        leftovers = [p.name for p in self.shows.iterdir() if "c64cast-check" in p.name]
+        self.assertEqual(leftovers, [])
+
+    def test_an_oversized_text_is_refused_before_it_is_written_to_disk(self):
+        with mock.patch.object(config_store, "MAX_BYTES", 32):
+            with self.assertRaises(config_store.ConfigTooLarge):
+                self.store.validate_text(GOOD, "shows/gig.toml")
+        leftovers = [p.name for p in self.shows.iterdir() if "c64cast-check" in p.name]
+        self.assertEqual(leftovers, [])
+
+    def test_an_ensemble_pointing_outside_the_roots_is_refused(self):
+        outside = self.tmp / "outside.toml"
+        outside.write_text("SUPER-SECRET-CONTENTS\n", encoding="utf-8")
+        text = f'[ensemble]\nsystems = [{{ name = "x", config = "{outside.as_posix()}" }}]\n'
+        report = self.store.validate_text(text, "shows/gig.toml")
+        self.assertFalse(report["ok"])
+        self.assertNotIn(str(outside), report["error"] or "")
 
     def test_a_master_validates_against_its_own_directory(self):
         # The per-system paths are relative to the master, so validating one
@@ -494,6 +586,15 @@ class PatchTest(StoreTestCase):
             )
         self.assertIn("hunter2", path.read_text(encoding="utf-8"))
 
+    def test_a_web_token_is_never_edited_or_dropped(self):
+        path = self.shows / "secret.toml"
+        path.write_text(GOOD + '\n[web]\ntoken = "watchme"\n', encoding="utf-8")
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/secret.toml", [{"section": "color", "field": "dither", "value": "ordered"}]
+            )
+        self.assertIn("watchme", path.read_text(encoding="utf-8"))
+
     def test_an_ensemble_master_is_not_form_editable(self):
         (self.shows / "left.toml").write_text(GOOD, encoding="utf-8")
         (self.shows / "right.toml").write_text(GOOD, encoding="utf-8")
@@ -599,6 +700,39 @@ class SceneColorPatchTest(StoreTestCase):
             self.store.patch(
                 "shows/blank.toml",
                 [{"scene": 0, "subsection": "color", "field": "dither", "value": "none"}],
+            )
+
+
+class EditShapeValidationTest(StoreTestCase):
+    """A container-field edit's JSON shape is checked before it reaches
+    `config_serialize`'s ``[[...]]`` emitters. Each of these payloads used to
+    escape as an unhandled 500 (`TypeError`/`AttributeError`/`ValueError`
+    from inside `dumps()`) instead of the `EditRejected` this is for."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.shows / "gig.toml").write_text(GOOD_VIDEO_SCENE, encoding="utf-8")
+
+    def test_a_scene_color_replaced_with_a_non_table_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"scene": 0, "field": "color", "value": "oops"}])
+
+    def test_scene_overlays_replaced_with_a_non_list_of_tables_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch("shows/gig.toml", [{"scene": 0, "field": "overlays", "value": [1, 2]}])
+
+    def test_section_hue_corrections_replaced_with_a_non_list_of_tables_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"section": "color", "field": "hue_corrections", "value": "oops"}],
+            )
+
+    def test_a_nested_hue_corrections_edit_with_a_non_table_row_is_rejected(self):
+        with self.assertRaises(config_store.EditRejected):
+            self.store.patch(
+                "shows/gig.toml",
+                [{"scene": 0, "subsection": "color", "field": "hue_corrections", "value": ["x"]}],
             )
 
 
@@ -906,6 +1040,36 @@ class MachineBaselineTest(StoreTestCase):
         self.assertNotIn("dma_password", self._read())
 
 
+class CaptureErrorsTest(unittest.TestCase):
+    """`_capture_errors` is attached to the shared `c64cast` logger, so it
+    has to filter to the thread that entered it — a `--serve` process runs a
+    live session's workers on other threads under the same logger tree."""
+
+    def test_an_error_on_this_thread_is_captured(self):
+        with config_store._capture_errors() as messages:
+            logging.getLogger("c64cast.here").error("boom")
+        self.assertEqual(messages, ["boom"])
+
+    def test_an_error_on_another_thread_is_not_captured(self):
+        ready = threading.Event()
+        release = threading.Event()
+
+        def noisy() -> None:
+            ready.wait(2)
+            logging.getLogger("c64cast.other").error("unrelated failure")
+            release.set()
+
+        other = threading.Thread(target=noisy)
+        other.start()
+        try:
+            with config_store._capture_errors() as messages:
+                ready.set()
+                self.assertTrue(release.wait(2))
+        finally:
+            other.join()
+        self.assertEqual(messages, [])
+
+
 class MachineLayerBlameTest(StoreTestCase):
     """A refusal has to say which file it is about.
 
@@ -926,10 +1090,21 @@ class MachineLayerBlameTest(StoreTestCase):
         self.assertFalse(report["ok"])
         self.assertEqual(len(report["layers"]), 1)
         note = report["layers"][0]
-        self.assertEqual(
-            (note["section"], note["key"], note["value"]), ("color", "dither", "nonsense")
-        )
+        # No `value` key: path/section/key is the attribution, and the value
+        # is never echoed — see `_machine_layer_notes`.
+        self.assertEqual((note["section"], note["key"]), ("color", "dither"))
+        self.assertNotIn("value", note)
         self.assertEqual(note["path"], str(self.settings))
+
+    def test_a_secret_machine_setting_is_never_blamed(self):
+        # `_machine_layer_notes` is the one place in the module that used to
+        # have no `SECRET_FIELDS` filter at all. Exercised directly (rather
+        # than through `validate_text`) with a blame string that mentions the
+        # key and section by name — the shape a real failure would have to
+        # take for the old, unfiltered loop to have echoed it.
+        self.settings.write_text('[ultimate64]\ndma_password = "hunter2"\n', encoding="utf-8")
+        notes = config_store._machine_layer_notes(GOOD, "[ultimate64] dma_password looks wrong")
+        self.assertEqual(notes, [])
 
     def test_a_machine_setting_the_file_overrides_is_not_blamed(self):
         # The file says the last word on `dither`, so whatever is wrong is the
@@ -1028,6 +1203,29 @@ class ExamplesRootTest(unittest.TestCase):
         self.assertEqual(relisted, [], f"packaged examples re-listed as writable: {relisted}")
         # The read-only root still carries them.
         self.assertTrue([f for f in files if f["root"] == "examples" and f["readonly"]])
+
+
+class ReadOnlyContainmentTest(unittest.TestCase):
+    """Read-only is decided by containment, not by which root label a ref
+    happens to be addressed through."""
+
+    def test_the_examples_root_cannot_be_written_via_an_overlapping_writable_root(self):
+        # A `--serve` from a source checkout has its cwd root at the repo,
+        # which physically contains `c64cast/examples/` underneath it — the
+        # same files the trailing read-only `examples` root also carries
+        # (pruned from the cwd root's own *listing*, but still on disk under
+        # it). Addressing one of them through the writable root's label used
+        # to look up that root — not the examples root — and skip the
+        # readonly refusal entirely.
+        pkg_dir = paths.examples_dir().parent
+        store = config_store.ConfigStore([str(pkg_dir)], cwd=pkg_dir)
+        writable_label = next(r.label for r in store.roots if not r.readonly)
+        example_rel = next(f["rel"] for f in store.index()["files"] if f["root"] == "examples")
+        aliased_ref = f"{writable_label}/examples/{example_rel}"
+        with self.assertRaises(config_store.PathRejected):
+            store.write(aliased_ref, GOOD)
+        with self.assertRaises(config_store.PathRejected):
+            store.delete(aliased_ref)
 
 
 class NonConfigNoiseTest(unittest.TestCase):

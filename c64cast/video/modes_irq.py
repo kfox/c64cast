@@ -1071,10 +1071,10 @@ def install_bank_swap_irq(
         BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF,
         (BANK_SWAP_IRQ_HANDLER_ADDR >> 8) & 0xFF,
     )
-    # 4) Program the raster compare register. RASTER_VBLANK_LINE = 248
-    #    sits at the top of VBLANK on both PAL and NTSC — VIC isn't
-    #    rendering visible pixels, so the bank swap + per-frame REU DMAs
-    #    happen entirely outside the rendered area. $D011 bit 7 is the
+    # 4) Program the raster compare register. RASTER_VBLANK_LINE = 248 is
+    #    the first line past the last badline, so the final row's video
+    #    matrix has already been fetched — the bank swap + per-frame REU
+    #    DMAs land after that fetch, not mid-frame. $D011 bit 7 is the
     #    raster MSB; we leave it 0 (lines 0-255 only).
     api.write_memory("D012", f"{RASTER_VBLANK_LINE:02X}")
     # 5) Ack any latent raster flag, then enable raster IRQ source.

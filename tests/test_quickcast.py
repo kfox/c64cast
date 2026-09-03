@@ -630,5 +630,50 @@ class ResolveConfigsDispatchTest(unittest.TestCase):
             _resolve_configs(_parse(["--config", "some.toml", "a.mp4"]))
 
 
+def _write_ensemble_master(tmp: str) -> str:
+    """Two-system ensemble (master + one TOML per system) for the
+    per-system-flag guard tests below."""
+    master_path = os.path.join(tmp, "master.toml")
+    with open(master_path, "w", encoding="utf-8") as f:
+        f.write(
+            "[ensemble]\n"
+            "systems = [\n"
+            '    { name = "left", config = "left.toml" },\n'
+            '    { name = "right", config = "right.toml" },\n'
+            "]\n"
+        )
+    for name, host in (("left", "left.lan"), ("right", "right.lan")):
+        with open(os.path.join(tmp, f"{name}.toml"), "w", encoding="utf-8") as f:
+            f.write(f'[ultimate64]\nurl = "http://{host}"\n')
+    return master_path
+
+
+class ResolveConfigsEnsembleGuardTest(unittest.TestCase):
+    """`_PER_SYSTEM_CLI_FLAGS`: `-u`/`-d` pick one system's hardware, so
+    ensemble mode (per-system TOML identity) must refuse them rather than
+    letting a CLI target silently overwrite system 0's connection — the
+    guard `_resolve_configs` skips `apply_to_config` in ensemble mode on the
+    strength of."""
+
+    def test_url_flag_rejected_in_ensemble_mode(self):
+        from c64cast.app.config import ConfigError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path = _write_ensemble_master(tmp)
+            with self.assertLogs("c64cast.app.config", level="INFO"):
+                with self.assertRaises(ConfigError) as cm:
+                    _resolve_configs(_parse(["--config", master_path, "-u", "u64://1.2.3.4"]))
+        self.assertIn("--url", str(cm.exception))
+
+    def test_no_flag_ensemble_keeps_each_systems_own_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            master_path = _write_ensemble_master(tmp)
+            with self.assertLogs("c64cast.app.config", level="INFO"):
+                loaded, cfgs = _resolve_configs(_parse(["--config", master_path]))
+        self.assertTrue(loaded.is_ensemble)
+        self.assertEqual(cfgs[0].ultimate64.url, "http://left.lan")
+        self.assertEqual(cfgs[1].ultimate64.url, "http://right.lan")
+
+
 if __name__ == "__main__":
     unittest.main()
