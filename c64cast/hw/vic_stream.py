@@ -222,6 +222,14 @@ class VicStreamReceiver:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         sock.settimeout(0.2)
         try:
+            # `_bind_host` defaults to "" (all interfaces), not loopback: the
+            # sender is the Ultimate 64 out on the LAN, reaching this host at
+            # whatever address `_reachable_address()` below hands it — a
+            # loopback-only bind would silently discard every frame the
+            # machine sends. Same tradeoff, same waiver as wled_sink.py's
+            # `_bind`; a caller who wants a narrower bind still can via
+            # `bind_host`.
+            # codeql[py/bind-socket-all-network-interfaces]
             sock.bind((self._bind_host, 0))
             port = sock.getsockname()[1]
             self._destination = f"{self._reachable_address()}:{port}"
