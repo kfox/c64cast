@@ -27,7 +27,6 @@ from unittest.mock import patch
 from c64cast.control import perf_console
 from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY
 from c64cast.control.perf_console import (
-    _PERF_HTML,
     MAX_COMMAND_BYTES,
     MAX_TARGET_CHARS,
     TRANSPORT_VERBS,
@@ -35,6 +34,7 @@ from c64cast.control.perf_console import (
     SocketReader,
     _beats_remaining,
     _system_state,
+    perf_page_html,
     with_role,
 )
 from c64cast.control.transport import JsonSlotStore, LiveTuneTracker, TransportEvent
@@ -837,14 +837,39 @@ class PerfBridgeRegistryTest(unittest.TestCase):
         self.assertEqual(st["systems"], [])
 
 
+class PerfPagePackagingTest(unittest.TestCase):
+    """The page lives in `c64cast/control/perf_console.html`, so it reaches an
+    installed user only via the `control/*.html` entry in
+    `[tool.setuptools.package-data]`. Drop that line and the wheel ships the
+    `.py` files alone and `GET /perf` 500s — on an install, never in a
+    checkout, which is the shape of packaging bug that gets released."""
+
+    def test_the_page_is_a_packaged_resource(self):
+        html = perf_page_html()
+        self.assertTrue(html.startswith("<!doctype html>"))
+        self.assertIn("</html>", html)
+
+    def test_package_data_still_names_it(self):
+        # Reading pyproject.toml rather than trusting the file's presence in a
+        # checkout, which proves nothing about a wheel.
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        with open(root / "pyproject.toml", "rb") as fh:
+            data = tomllib.load(fh)
+        patterns = data["tool"]["setuptools"]["package-data"]["c64cast"]
+        self.assertIn("control/*.html", patterns)
+
+
 class PerfPageControlsTest(unittest.TestCase):
     """The zero-dependency page and the bridge under it move together.
 
-    The page is hand-written DOM in a Python string, so nothing type-checks the
+    The page is hand-written DOM with no build step, so nothing type-checks the
     commands it builds. These read the commands back out of it."""
 
     def _page_actions(self) -> set[str]:
-        return set(re.findall(r"action: '(\w+)'", _PERF_HTML))
+        return set(re.findall(r"action: '(\w+)'", perf_page_html()))
 
     def test_the_page_reaches_every_action_the_bridge_dispatches(self):
         # Read off `PerfBridge.apply`'s own dispatch rather than a list here: a
@@ -854,7 +879,7 @@ class PerfPageControlsTest(unittest.TestCase):
         self.assertEqual(self._page_actions(), dispatched)
 
     def test_the_page_only_sends_transport_verbs_the_bridge_takes(self):
-        verbs = set(re.findall(r"verb: '(\w+)'", _PERF_HTML))
+        verbs = set(re.findall(r"verb: '(\w+)'", perf_page_html()))
         self.assertTrue(verbs)
         self.assertLessEqual(verbs, set(TRANSPORT_VERBS))
 
@@ -866,32 +891,32 @@ class PerfPageControlsTest(unittest.TestCase):
         # pad stopped showing, and after a scene advance the tune panel kept
         # offering the previous scene's knobs. wled_device.py's page carries
         # the same fix, and its comment is the record of the failure mode.
-        self.assertGreaterEqual(_PERF_HTML.count("blur()"), 3)
+        self.assertGreaterEqual(perf_page_html().count("blur()"), 3)
 
     def test_the_reconnect_backs_off_rather_than_retrying_forever(self):
         # Every open phone retrying a downed host at a fixed interval is the
         # load `MAX_CONSOLE_SOCKETS` exists to bound.
-        self.assertIn("function retryWS()", _PERF_HTML)
-        self.assertIn("WS_RETRY_MAX_MS", _PERF_HTML)
-        self.assertNotIn("setTimeout(startWS, 2500)", _PERF_HTML)
+        self.assertIn("function retryWS()", perf_page_html())
+        self.assertIn("WS_RETRY_MAX_MS", perf_page_html())
+        self.assertNotIn("setTimeout(startWS, 2500)", perf_page_html())
 
     def test_the_idle_branch_clears_the_tempo_readout(self):
         # `animate()` renders clock.bpm unconditionally, so leaving the anchor
         # alone showed the last show's BPM — or a confident 120 from the
         # initializer — above "No session running."
-        self.assertIn("bpm: 0", _PERF_HTML)
+        self.assertIn("bpm: 0", perf_page_html())
 
     def test_the_screen_is_re_pointed_when_the_system_tab_changes(self):
         # The src bakes `?system=` in and was only ever rebuilt by the WATCH
         # tap, so on an ensemble run a tab tap moved every control to the new
         # machine and left the old machine's picture streaming underneath.
-        self.assertIn("screenSys", _PERF_HTML)
-        self.assertIn("!== screenSys", _PERF_HTML)
+        self.assertIn("screenSys", perf_page_html())
+        self.assertIn("!== screenSys", perf_page_html())
 
     def test_the_save_back_posts_where_the_write_route_lives(self):
         # Not on /perf/command: a config write needs a status code, which a
         # performance command has nowhere to put. See web_api.api_live_tune.
-        self.assertIn("'/api/session/live-tune'", _PERF_HTML)
+        self.assertIn("'/api/session/live-tune'", perf_page_html())
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")

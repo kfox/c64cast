@@ -31,6 +31,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   properly — every state frame already carries the loop-slot list, so a slot
   filling or emptying is live feedback instead of a two-second flash. The MIDI
   and web surfaces stay identical, as they have been since Phase 2.
+- The `/perf` console page moved out of `perf_console.py` into a packaged
+  `c64cast/control/perf_console.html`. No behavior change — the same bytes are
+  served, read once at first request — but 650 lines of HTML/CSS/JS in a Python
+  string had no syntax highlighting, no formatter, no linter, and no way to
+  open in a browser while iterating on it. Deliberately not folded into the
+  Node build that produces the Svelte console: being one self-contained
+  document with no build step is what makes this the surface that works when
+  the bundle was never built.
 - **A silent generative scene on a bitmap display now caps at half the system
   rate (30 NTSC / 25 PAL), like every other frame-pushing scene.**
   `audio_source = "none"` and `"listen"` were the only always-fresh bitmap
