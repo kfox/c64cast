@@ -10,6 +10,7 @@ resolver take an injected tempdir.
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 import types
 import unittest
@@ -342,35 +343,65 @@ class _OsdScene:
 
 
 class PlaylistCycleOsdTests(unittest.TestCase):
-    """The real Playlist.cycle_osd logic, driven on a minimal stand-in self
-    (it only touches self.current)."""
+    """The real Playlist.cycle_osd logic, driven on a minimal stand-in self.
+    It reaches self.current, self.performance_mode and self.log, since the
+    double-tap hide now goes through set_performance_mode."""
 
-    def _call(self, scene, *, double_tap):
-        ns = types.SimpleNamespace(current=scene)
+    def _call(self, ns, *, double_tap):
         Playlist.cycle_osd(ns, double_tap=double_tap)  # type: ignore[arg-type]
+
+    def _stand_in(self, scene):
+        ns = types.SimpleNamespace(
+            current=scene,
+            performance_mode=False,
+            log=logging.getLogger("c64cast.app.playlist"),
+        )
+        ns.set_performance_mode = lambda on, _ns=ns: Playlist.set_performance_mode(_ns, on)  # type: ignore[arg-type]
+        return ns
 
     def test_tap_toggles_corner(self):
         s = _OsdScene()
+        ns = self._stand_in(s)
         self.assertEqual(s.osd.position, "bottom")
-        self._call(s, double_tap=False)
+        self._call(ns, double_tap=False)
         self.assertEqual(s.osd.position, "top")
-        self._call(s, double_tap=False)
+        self._call(ns, double_tap=False)
         self.assertEqual(s.osd.position, "bottom")
 
-    def test_double_tap_disables(self):
+    def test_double_tap_hides_at_the_run_level_not_just_this_scene(self):
+        # It used to write osd.enabled, which safe_setup does not re-stamp, so
+        # the hide came undone on the next auto-advance.
         s = _OsdScene()
-        self._call(s, double_tap=True)
-        self.assertFalse(s.osd.enabled)
+        ns = self._stand_in(s)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            self._call(ns, double_tap=True)
+        self.assertTrue(ns.performance_mode)
+        self.assertTrue(s.osd.suppressed)
+        self.assertFalse(s.osd.visible)
+        self.assertTrue(s.osd.enabled, "the static config gate must be left alone")
 
-    def test_tap_while_disabled_reenables(self):
+    def test_tap_while_config_disabled_reenables(self):
+        # The capability re-pointing the hide at `suppressed` alone would have
+        # cost: one tap brings up an OSD that [midi_control].osd = "off" had
+        # disabled.
         s = _OsdScene()
         s.osd.enabled = False
-        self._call(s, double_tap=False)
-        self.assertTrue(s.osd.enabled)
+        ns = self._stand_in(s)
+        self._call(ns, double_tap=False)
+        self.assertTrue(s.osd.visible)
+
+    def test_tap_while_hidden_by_performance_mode_brings_it_back(self):
+        s = _OsdScene()
+        ns = self._stand_in(s)
+        with self.assertLogs("c64cast.app.playlist", level="INFO"):
+            self._call(ns, double_tap=True)
+            self._call(ns, double_tap=False)
+        self.assertFalse(ns.performance_mode)
+        self.assertTrue(s.osd.visible)
 
     def test_none_scene_is_noop(self):
-        ns = types.SimpleNamespace(current=None)
-        Playlist.cycle_osd(ns, double_tap=False)  # type: ignore[arg-type]  # must not raise
+        ns = self._stand_in(None)
+        self._call(ns, double_tap=False)  # must not raise
 
 
 class _OsdPlaylist:

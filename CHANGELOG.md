@@ -27,8 +27,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   live-tuning at the desk, so it cannot be a static setting; PERF turns it off
   for the whole run and back on again. It silences every poster — live-tune,
   effect bypass, and the transport engine's `PAUSED` / `SEEK` / `LOOP A` /
-  `REC ●` — and unlike the `osd.position` pad's double-tap hide, it survives a
-  scene change. Turning it off restores whatever `[midi_control].osd` asked
+  `REC ●` — and it survives a scene change. A double-tap of an `osd.position`
+  pad now turns the same mode on, so the two are one control reachable from
+  either surface. Turning it off restores whatever `[midi_control].osd` asked
   for rather than assuming "on", and posts nothing itself — a `PERF OFF` flash
   would be the confirmation-of-a-keypress this release took off that screen
   everywhere else. It ships on the `/perf` page; the Svelte console and the
@@ -122,6 +123,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   asked and sent the operator after a network fault that did not exist. The
   banner now says what the login MOTD has always said — no check has
   *succeeded* in over N days — since that is the one thing true in both cases.
+- **An `osd.position` pad's double-tap hide now lasts past the current scene.**
+  It wrote the per-scene static gate, which nothing re-stamps, so a pad hit to
+  clear the audience screen quietly un-hid itself on the next auto-advance —
+  and since the web console's PERF button hides the same OSD and *does*
+  persist, the two controls hid one thing to two different depths. The pad now
+  turns performance mode on and off, so it reaches as far as PERF does and a
+  tap still brings the OSD back whichever gate is holding it down, including
+  the config's own `[midi_control].osd = "off"`.
 
 ### Security
 

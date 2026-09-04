@@ -333,9 +333,9 @@ class Playlist:
         Applied to the current scene *and* stored on the playlist, mirroring
         how the WLED bridge sets `user_dim`: the write gives an instant
         effect, the field makes it outlast this scene (`safe_setup`
-        re-stamps). That persistence is the whole difference from
-        :meth:`cycle_osd`'s double-tap hide, which reaches only the live scene
-        and is lost on the next advance.
+        re-stamps). This is the one place the mode is set — the `osd.position`
+        pad's hide comes through here too (see :meth:`cycle_osd`) rather than
+        keeping a second, scene-local hide of its own.
 
         Safe from any control thread — a bool write the render loop reads next
         frame, same rationale as post_osd."""
@@ -348,32 +348,44 @@ class Playlist:
 
     def cycle_osd(self, *, double_tap: bool) -> None:
         """The osd.position MIDI action (Phase 5). A normal tap toggles the
-        current scene's OSD corner top/bottom (or re-enables it if it was
-        hidden); a double_tap hides it. No-op when no scene is live. Called from
-        the MIDI reader thread — OsdState attrs are simple thread-safe writes,
-        same rationale as post_osd.
+        current scene's OSD corner top/bottom, or brings the OSD back if it is
+        hidden however it got that way; a double_tap hides it. No-op when no
+        scene is live. Called from the MIDI reader thread — OsdState attrs are
+        simple thread-safe writes, same rationale as post_osd.
 
-        This writes `enabled`, so its hide reaches **only the live scene** and
-        is lost on the next auto-advance. That is deliberately left alone:
-        re-pointing it at `suppressed` would make a tap unable to bring up an
-        OSD that `[midi_control].osd = "off"` had disabled, which is a
-        capability this pad has always had. The control that *does* survive a
-        scene change is performance mode — see :meth:`set_performance_mode`,
-        which is what the console's PERF button drives. Overlapping, and worth
-        collapsing into one control once it is clear which of the two
-        persistences a performer actually reaches for."""
+        **The hide is performance mode**, not a second mechanism. It used to
+        write `enabled`, which reached only the live scene and was lost on the
+        next auto-advance — so a pad the performer hit to clear the audience
+        screen quietly un-hid itself one scene later. Two controls hiding the
+        same thing to two different depths is also the kind of split that
+        drifts: a fix to one would keep missing the other.
+
+        Re-pointing it at `suppressed` alone would have cost the pad something
+        it has always been able to do — bring up an OSD that
+        `[midi_control].osd = "off"` had disabled. The re-show branch asks
+        `osd.visible` rather than either gate, and opens whichever one is
+        shut, so nothing is lost: a config-disabled OSD still comes up, and a
+        run-level hide is lifted at the same time (which is also how the
+        console's PERF button gets turned off from a pad).
+
+        The post here is the *pad's* feedback — it names the corner, which is
+        only meaningful to whoever just pressed it — and is why
+        :meth:`set_performance_mode` posting nothing is not contradicted."""
         scene = self.current
         if scene is None:
             return
         osd = scene.osd
         if double_tap:
-            osd.enabled = False
-        elif not osd.enabled:
+            self.set_performance_mode(True)
+            return
+        if not osd.visible:
+            if self.performance_mode:
+                self.set_performance_mode(False)
             osd.enabled = True
             osd.post(f"OSD {osd.position}")
-        else:
-            osd.position = "top" if osd.position == "bottom" else "bottom"
-            osd.post(f"OSD {osd.position}")
+            return
+        osd.position = "top" if osd.position == "bottom" else "bottom"
+        osd.post(f"OSD {osd.position}")
 
     def toggle_effect_layer(self, slot: int) -> bool | None:
         """Flip the bypass (`enabled`) of effect-chain layer `slot` on the current
