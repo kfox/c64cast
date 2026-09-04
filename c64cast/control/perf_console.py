@@ -663,6 +663,11 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         "current_scene": scene.name if scene is not None else None,
         "scene_index": index,
         "paused": pl.pause_event.is_set(),
+        # Performance mode: the audience screen carries no OSD line. Read off
+        # the playlist rather than the live scene's OsdState, so the button
+        # still shows the right state in the gap where `current` is None
+        # (mid-advance) and on an idle host.
+        "performance_mode": bool(getattr(pl, "performance_mode", False)),
         "scenes": scene_rows(pl, index),
         "tempo": _tempo_dict(pl),
         "active_slot": active,
@@ -961,6 +966,27 @@ class PerfBridge:
         pl.request_jump(index, skip_interstitial=True)
         return True
 
+    def perf(self, system: str | None, on: bool) -> bool:
+        """Turn performance mode on or off on the target system.
+
+        The C64 output is audience-facing, and a scrub, a knob sweep or a loop
+        mark each draw a line over it. Which is *wanted* while live-tuning at
+        the desk — that readout is the whole point of the OSD — and unwanted
+        the moment the projector is on, so it cannot be a static decision:
+        `[midi_control].osd` sets the baseline and this flips it live.
+
+        Sets `Playlist.performance_mode`, which suppresses every poster
+        through one `OsdState.suppressed` gate and is re-stamped onto each
+        fresh scene — so it survives an auto-advance, unlike the per-scene
+        hide the `osd.position` double-tap used to do (that pad now routes
+        here, so the two surfaces are one control). Returns False for an
+        unknown system."""
+        pl = self._resolve(system)
+        if pl is None:
+            return False
+        pl.set_performance_mode(on)
+        return True
+
     def look(self, system: str | None, slot: int, save: bool) -> bool:
         """Save or recall a "look" (active clip + effect-chain state) on the
         target system — enqueues a :class:`~c64cast.control.performance.LookEvent`, drained
@@ -1051,6 +1077,12 @@ class PerfBridge:
             if slot is None:
                 return self._malformed(cmd, "slot")
             return self.look(system, slot, bool(cmd.get("save", False)))
+        if action == "perf":
+            # An explicit target state rather than a bare toggle, for the
+            # reason `freeze`/`unfreeze` are two verbs: two consoles open on
+            # one show, or a retried request, would otherwise race their stale
+            # reads into a double-toggle that cancels out.
+            return self.perf(system, bool(cmd.get("on", True)))
         return False
 
     def _malformed(self, cmd: Mapping[str, Any], field: str) -> bool:

@@ -19,6 +19,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+### Added
+
+- **A PERF button on the web console — performance mode.** While the C64 is in
+  front of an audience, nothing should draw text over it, but a scrub, a knob
+  sweep or a loop mark each post an OSD line. That readout is wanted while
+  live-tuning at the desk, so it cannot be a static setting; PERF turns it off
+  for the whole run and back on again. It silences every poster — live-tune,
+  effect bypass, and the transport engine's `PAUSED` / `SEEK` / `LOOP A` /
+  `REC ●` — and unlike the `osd.position` pad's double-tap hide, it survives a
+  scene change. Turning it off restores whatever `[midi_control].osd` asked
+  for rather than assuming "on".
+
 ### Changed
 
 - **Saving or clearing a loop slot no longer draws over the audience screen.**

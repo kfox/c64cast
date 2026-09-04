@@ -2663,7 +2663,9 @@ class MidiControlCfg:
             "value' message appears when you sweep a knob or change a mode via "
             "MIDI/WLED, then fades. 'top' or 'bottom' picks the corner; 'off' "
             "disables it. Rendered pre-quantization so it shows on every display "
-            "mode (like --frame-numbers).",
+            "mode (like --frame-numbers). This is the run's baseline; the web "
+            "console's PERF button silences the OSD live for a performance and "
+            "restores this setting when switched back off.",
             "choices": ("bottom", "top", "off"),
         },
     )

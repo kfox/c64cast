@@ -1403,6 +1403,84 @@ class PauseResumeTest(unittest.TestCase):
         self.assertLess(dt, 0.6, f"resume wait should be cut short by stop_event, took {dt:.2f}s")
 
 
+class PerformanceModeTest(unittest.TestCase):
+    """Performance mode: the C64 output is in front of an audience, so no OSD
+    line may draw over it. Owned by the Playlist rather than the scene for the
+    same reason `user_dim` is — an OsdState is per-scene, so a hide applied to
+    one scene alone comes back on the next auto-advance."""
+
+    def _scene(self, name):
+        from c64cast.scenes.scenes import OsdState
+
+        scene = FakeScene(name)
+        scene.osd = OsdState()
+        return scene
+
+    def _playlist(self, scenes):
+        return Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            fade_duration_s=0.0,
+        )
+
+    def test_off_by_default(self):
+        self.assertFalse(self._playlist([self._scene("A")]).performance_mode)
+
+    def test_it_survives_a_scene_advance(self):
+        # The whole point. `cycle_osd`'s double-tap hide reaches only the live
+        # scene, so a show went quiet for one scene and then lit back up.
+        a, b = self._scene("A"), self._scene("B")
+        pl = self._playlist([a, b])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.safe_setup(b)
+        self.assertTrue(b.osd.suppressed)
+        b.osd.post("SEEK 1:04")
+        self.assertIsNone(b.osd.current())
+
+    def test_it_silences_every_poster_not_just_transport(self):
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.post_osd("dither 0.40")  # the live-tune path
+        self.assertIsNone(a.osd.current())
+
+    def test_off_restores_the_config_baseline_rather_than_assuming_on(self):
+        # `[midi_control].osd = "off"` is a setting, and performance mode must
+        # not overwrite it — which is why `suppressed` is a second flag and not
+        # a write to `enabled`.
+        a = self._scene("A")
+        a.osd.enabled = False
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.set_performance_mode(False)
+        self.assertFalse(a.osd.enabled)
+        a.osd.post("dither 0.40")
+        self.assertIsNone(a.osd.current())
+
+    def test_off_lets_the_osd_back_through_on_a_normal_run(self):
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.set_performance_mode(False)
+        a.osd.post("dither 0.40")
+        self.assertEqual(a.osd.current(), "dither 0.40")
+
+    def test_a_normal_run_leaves_the_scene_untouched(self):
+        # Only written when set, mirroring the `user_dim < 1.0` guard, so an
+        # OSD disabled for any other reason is not clobbered.
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        self.assertFalse(a.osd.suppressed)
+
+
 class ConfigSaveBackupTest(unittest.TestCase):
     """`PlaylistMenu.save_config`'s `.bak` preserves the hand-written original
     once. It used to copy on every save, and `session.save_live_tune_changes`

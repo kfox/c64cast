@@ -191,6 +191,8 @@ class _FakePlaylist:
         self.live_tracker = LiveTuneTracker()
         self.config_path = config_path
         self.osd: list[str] = []
+        self.performance_mode = False
+        self.performance_calls: list[bool] = []
         self.jumps: list[tuple[int, bool]] = []
         # A real TransportSession would getattr-probe the scene and touch a
         # frame; the bridge only ever enqueues onto it, so a plain recorder is
@@ -199,6 +201,11 @@ class _FakePlaylist:
 
     def post_osd(self, text: str) -> None:
         self.osd.append(text)
+
+    def set_performance_mode(self, on: bool) -> bool:
+        self.performance_calls.append(on)
+        self.performance_mode = on
+        return on
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         self.jumps.append((index, skip_interstitial))
@@ -391,6 +398,36 @@ class PerfBridgeTest(unittest.TestCase):
         bridge, pl = _bridge(source=src)
         bridge.live(None, "source.scale", norm=0.75)
         self.assertEqual(pl.osd, [])
+
+    def test_perf_sets_performance_mode_on_the_playlist(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.perf(None, True))
+        self.assertEqual(pl.performance_calls, [True])
+        self.assertTrue(bridge.perf(None, False))
+        self.assertEqual(pl.performance_calls, [True, False])
+
+    def test_perf_carries_an_explicit_state_not_a_toggle(self):
+        # Two consoles open on one show, or a retried request, would otherwise
+        # race their stale reads into a double-toggle that cancels out — the
+        # same reason `freeze`/`unfreeze` are two verbs rather than one.
+        bridge, pl = _bridge()
+        bridge.apply({"action": "perf", "on": True})
+        bridge.apply({"action": "perf", "on": True})
+        self.assertEqual(pl.performance_calls, [True, True])
+
+    def test_perf_defaults_to_on_when_the_frame_omits_the_flag(self):
+        bridge, pl = _bridge()
+        self.assertTrue(bridge.apply({"action": "perf"}))
+        self.assertEqual(pl.performance_calls, [True])
+
+    def test_perf_with_no_session_is_refused(self):
+        self.assertFalse(PerfBridge(lambda: []).perf(None, True))
+
+    def test_the_state_frame_reports_performance_mode(self):
+        bridge, pl = _bridge()
+        self.assertFalse(bridge.state()["systems"][0]["performance_mode"])
+        pl.performance_mode = True
+        self.assertTrue(bridge.state()["systems"][0]["performance_mode"])
 
     def test_live_on_a_target_the_scene_lacks_is_a_noop_not_a_refusal(self):
         bridge, pl = _bridge()

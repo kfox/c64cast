@@ -92,6 +92,9 @@
           touch-action: manipulation; opacity: 0.5; }
   .look.saved { opacity: 1; border-color: var(--fxon); }
   #looksave.arm { background: var(--armed); color: #111; border-color: var(--armed); }
+  /* Lit while the audience screen is being kept clean. Same treatment as an
+     armed look-save: both mean "this is engaged right now". */
+  #perf.on { background: var(--armed); color: #111; border-color: var(--armed); }
 </style>
 </head>
 <body>
@@ -107,6 +110,7 @@
   <div class="tabs">
     <button id="pause">PAUSE</button>
     <button id="skip">SKIP</button>
+    <button id="perf" title="Performance mode: no OSD text over the C64 output">PERF</button>
   </div>
   <div class="tabs" id="tabs"></div>
 </header>
@@ -209,6 +213,7 @@ function render() {
   document.getElementById('scene').textContent =
     sys.current_scene ? ('▶ ' + sys.current_scene) : '';
   document.getElementById('pause').textContent = sys.paused ? 'RESUME' : 'PAUSE';
+  document.getElementById('perf').classList.toggle('on', !!sys.performance_mode);
   renderCountin(sys);
   renderClips(sys);
   renderFx(sys);
@@ -591,6 +596,14 @@ document.getElementById('pause').onclick = () => {
   post({action: 'transport', verb: sys && sys.paused ? 'resume' : 'pause'});
 };
 document.getElementById('skip').onclick = () => post({action: 'transport', verb: 'skip'});
+// Performance mode: no OSD line over the audience screen. Sends the target
+// state rather than a toggle, so two consoles (or a retry) cannot race their
+// stale reads into a double-toggle -- the reason `freeze`/`unfreeze` are two
+// verbs too. The lit state comes back in the next state frame.
+document.getElementById('perf').onclick = () => {
+  const sys = curSys();
+  post({action: 'perf', on: !(sys && sys.performance_mode)});
+};
 document.getElementById('looksave').onclick = (ev) => {
   saveMode = !saveMode;
   ev.currentTarget.classList.toggle('arm', saveMode);
