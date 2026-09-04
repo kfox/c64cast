@@ -608,7 +608,11 @@ class SidFileAudioSource:
         attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
         from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
 
-        candidates = resolve_file_spec(self.file_spec, SID_EXTS, label="sid audio")
+        # Same recursion into the default SID dir the factory's validate
+        # pass used, so a setup() re-pick sees the same HVSC pool.
+        candidates = resolve_file_spec(
+            self.file_spec, SID_EXTS, label="sid audio", recurse_default_sid_dir=True
+        )
         pool = list(candidates)
         random.shuffle(pool)
         last_error: Exception | None = None

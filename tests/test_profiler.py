@@ -27,11 +27,21 @@ class StatsTest(unittest.TestCase):
             s.add(float(v))
         avg, p50, p95, mx = s.summary()
         self.assertAlmostEqual(avg, 5.5)
-        # nearest-rank: int(0.5 * 10) = 5 → sorted[5] = 6.
-        self.assertEqual(p50, 6.0)
-        # int(0.95 * 10) = 9 → sorted[9] = 10.
+        # nearest rank is the ceil(p * n)-th smallest, 0-based ceil(p*n) - 1:
+        # ceil(0.5 * 10) - 1 = 4 → sorted[4] = 5. Truncating instead gave
+        # sorted[5] = 6, one rank high whenever p * n is a whole number.
+        self.assertEqual(p50, 5.0)
+        # ceil(0.95 * 10) - 1 = 9 → sorted[9] = 10.
         self.assertEqual(p95, 10.0)
         self.assertEqual(mx, 10.0)
+
+    def test_p50_of_two_samples_is_the_smaller_one(self):
+        # The truncating index made the "median" of a 2-sample ring its
+        # maximum, which is the most visible form of the same off-by-one.
+        s = _Stats(capacity=2)
+        s.add(1.0)
+        s.add(9.0)
+        self.assertEqual(s.summary()[1], 1.0)
 
     def test_capacity_evicts(self):
         s = _Stats(capacity=3)
@@ -104,7 +114,7 @@ class FrameProfilerTest(unittest.TestCase):
             # Force at least one log record so assertLogs doesn't raise on
             # the no-emit path (it requires >=1 record).
             log.info("sentinel")
-        emitted = [r for r in cap.output if "profile[s]" in r]
+        emitted = [r for r in cap.output if "profile['s']" in r]
         self.assertEqual(len(emitted), 1)
         self.assertIn("frame avg=", emitted[0])
         self.assertIn("writes/frame avg=1", emitted[0])
@@ -128,7 +138,7 @@ class FrameProfilerTest(unittest.TestCase):
             p.emit_if_due(now=time.time(), log=log)
         line = cap.output[0]
         for token in (
-            "profile[scene-x]",
+            "profile['scene-x']",
             "frame ",
             "cpu_render ",
             "compose ",
@@ -138,6 +148,93 @@ class FrameProfilerTest(unittest.TestCase):
             "bytes/frame",
         ):
             self.assertIn(token, line)
+
+    def test_an_idle_scene_is_skipped_and_then_dropped(self):
+        # A scene's ring keeps its last 64 frames forever, so re-printing a
+        # finished scene reports minutes-old numbers under a fresh timestamp
+        # — and _stats would grow one permanent bucket per scene name, which
+        # is per-file on a directory-spec playlist.
+        p = FrameProfiler(interval=10.0)
+        log = logging.getLogger("test_profile_idle")
+        with p.frame("gone"):
+            pass
+        self.assertFalse(p.emit_if_due(now=100.0, log=log))  # baseline only
+        with self.assertLogs(log, level="INFO") as cap:
+            self.assertTrue(p.emit_if_due(now=111.0, log=log))
+        self.assertEqual(len(cap.output), 1)
+        # No frames since: skipped for _IDLE_TICKS_BEFORE_DROP ticks, then
+        # the bucket goes away entirely.
+        with self.assertLogs(log, level="INFO") as cap:
+            self.assertTrue(p.emit_if_due(now=122.0, log=log))
+            log.info("sentinel")
+        self.assertEqual(cap.output, ["INFO:test_profile_idle:sentinel"])
+        self.assertIn("gone", p._stats)
+        with self.assertLogs(log, level="INFO") as cap:
+            self.assertTrue(p.emit_if_due(now=133.0, log=log))
+            log.info("sentinel")
+        self.assertNotIn("gone", p._stats)
+
+    def test_a_scene_that_is_still_rendering_keeps_emitting(self):
+        p = FrameProfiler(interval=10.0)
+        log = logging.getLogger("test_profile_live")
+        with p.frame("live"):
+            pass
+        self.assertFalse(p.emit_if_due(now=100.0, log=log))
+        with self.assertLogs(log, level="INFO"):
+            p.emit_if_due(now=111.0, log=log)
+        with p.frame("live"):
+            pass
+        with self.assertLogs(log, level="INFO") as cap:
+            p.emit_if_due(now=122.0, log=log)
+        self.assertTrue(any("profile['live']" in r for r in cap.output))
+
+    def test_an_unknown_stage_is_printed_rather_than_dropped(self):
+        # stage() accepts any name and _bucket stores it, so a name missing
+        # from the column order must still reach the line — a measured
+        # sample silently absent from the one instrument used to answer "why
+        # is the frame slow" is the worst possible failure for it.
+        p = FrameProfiler(interval=10.0)
+        log = logging.getLogger("test_profile_stage")
+        with p.frame("s"):
+            with p.stage("dither"):
+                pass
+        self.assertFalse(p.emit_if_due(now=100.0, log=log))
+        with self.assertLogs(log, level="INFO") as cap:
+            p.emit_if_due(now=111.0, log=log)
+        self.assertIn("dither ", cap.output[0])
+
+    def test_a_newline_in_a_scene_name_cannot_forge_a_second_record(self):
+        # Scene names come from media content — a video scene prefers the
+        # container's own title tag, which keeps interior newlines.
+        p = FrameProfiler(interval=10.0)
+        log = logging.getLogger("test_profile_forge")
+        with p.frame("clip\nERROR final reset failed"):
+            pass
+        self.assertFalse(p.emit_if_due(now=100.0, log=log))
+        with self.assertLogs(log, level="INFO") as cap:
+            p.emit_if_due(now=111.0, log=log)
+        self.assertEqual(len(cap.output), 1)
+        self.assertNotIn("\n", cap.output[0])
+        self.assertIn("\\n", cap.output[0])
+
+    def test_a_scene_name_is_capped(self):
+        p = FrameProfiler(interval=10.0)
+        log = logging.getLogger("test_profile_cap")
+        with p.frame("x" * 500):
+            pass
+        self.assertFalse(p.emit_if_due(now=100.0, log=log))
+        with self.assertLogs(log, level="INFO") as cap:
+            p.emit_if_due(now=111.0, log=log)
+        self.assertIn("x" * 64, cap.output[0])
+        self.assertNotIn("x" * 65, cap.output[0])
+
+    def test_a_non_positive_interval_says_so_instead_of_going_quiet(self):
+        # --profile --profile-interval 0 instruments every frame and prints
+        # nothing; the silence is indistinguishable from a broken profiler.
+        with self.assertLogs("c64cast", level="WARNING") as cap:
+            p = FrameProfiler(interval=0.0)
+        self.assertIn("no summary will ever be printed", cap.output[0])
+        self.assertFalse(p.emit_if_due(now=1e9, log=logging.getLogger("quiet")))
 
 
 class NullProfilerTest(unittest.TestCase):

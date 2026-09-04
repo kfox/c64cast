@@ -65,7 +65,6 @@ from .session import (  # noqa: F401 — re-exports; see the module docstring
     _pump_previews_until_done,
     _resolve_reu_available,
     _resolve_sampler_available,
-    _run_playlists,
     build_stack,
     teardown_stack,
 )

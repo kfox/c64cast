@@ -3433,6 +3433,16 @@ def _validate_clips(clips: list[dict[str, Any]]) -> None:
             )
 
 
+def clip_scene_type(clip: dict[str, Any]) -> str:
+    """The scene type a ``[[performance.clips]]`` table will build, without
+    building it — the table's own ``type`` or the clip default.
+
+    ``session.build_stack`` needs this before it opens the camera, and it
+    cannot ask :func:`clip_scene_cfg`: that runs the full ``_apply_section``
+    pass, which raises on any unrelated bad key in the table."""
+    return str(clip.get("type", _CLIP_DEFAULTS["type"]))
+
+
 def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
     """Build a :class:`SceneCfg` from a [[performance.clips]] table by stripping
     the launch/pad keys and applying the remaining scene-spec fields — the same

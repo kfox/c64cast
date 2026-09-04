@@ -13,6 +13,7 @@ from _fakes import FakeAPI, new_streamer, run_irq_handler
 
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
+    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_INTEG_CLAMP,
     HOST_DMA_SERVO_PERIOD_MAX_FRAC,
     HOST_DMA_SERVO_PERIOD_MIN_FRAC,
@@ -24,12 +25,15 @@ from c64cast.audio.audio_handlers import (
     NMI_ROUTINE_PATCH_OFFSET_WRAP_HI,
     READ_PTR_HI_ADDR,
     REU_AUDIO_BASE,
+    REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_GAP_THRESHOLD_HI,
     REU_IRQ_HANDLER,
+    REU_IRQ_HANDLER_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_GOVERNOR,
+    REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
     REU_PUMP_CHUNK_SIZE,
-    REU_PUMP_CIA1_LATCH,
+    REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
     REU_PUMP_INITIAL_MARGIN,
     REU_UPLOAD_SLICE,
@@ -40,13 +44,27 @@ from c64cast.audio.audio_handlers import (
     servo_period,
 )
 
+# The matched pump latch at the fixture's rate, spelled out rather than
+# derived: at 12 kHz NTSC (the shipped [audio].sample_rate default) the NMI
+# latch is round(1022727/12000) - 1 = 84, so the NMI period is 85 cycles and a
+# 128-byte chunk needs 128 x 85 - 1 = 10879. Independent arithmetic, so a
+# change to the production derivation has to face a number rather than itself.
+MATCHED_LATCH_12KHZ = 10879
 
-def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
+
+def _packed_latch(latch: int) -> str:
+    """The CIA #1 Timer A latch as write_memory records it (LO then HI)."""
+    return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+
+
+def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
     """This file's defaults over the shared builder: dither OFF, and
     reu_pump_governor OFF so the bring-up tests below assert the plain
     open-loop handler bytes (GovernorSelectionTest flips it on explicitly;
     the production default is True — see config.AudioCfg.reu_pump_governor)."""
-    return new_streamer(dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False)
+    return new_streamer(
+        dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False, **overrides
+    )
 
 
 class RingBufferRelocationTest(unittest.TestCase):
@@ -233,17 +251,15 @@ class StartForReuStagedTest(unittest.TestCase):
         self.assertEqual(prefill[1024:], bytes([NEUTRAL_SAMPLE] * (RING_BUFFER_SIZE - 1024)))
 
     def test_cia1_latch_is_reprogrammed(self):
-        """The CIA #1 Timer A latch must be set to REU_PUMP_CIA1_LATCH so
-        the pump rate exactly matches NMI consume rate."""
+        """The CIA #1 Timer A latch must be the matched pump period — chunk x
+        the NMI period — so the pump produces exactly what NMI consumes."""
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
         # $DC04 LO + HI written as a 4-hex-char packed value.
         self.assertIn("DC04", fake.memories)
-        latch_str = fake.memories["DC04"]
-        self.assertEqual(
-            latch_str, f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}"
-        )
+        self.assertEqual(fake.memories["DC04"], _packed_latch(MATCHED_LATCH_12KHZ))
+        self.assertEqual(s._reu_cia1_latch_nominal, MATCHED_LATCH_12KHZ)
 
     def test_irq_vector_patched_last(self):
         """The IRQ vector must be the LAST significant write — patching it
@@ -279,16 +295,15 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
-        # Handler bytes at $C100 must have chunk_size baked in at offsets 2/7.
+        # Handler bytes at $C100 must have chunk_size baked in at the named
+        # offsets the module publishes beside the assembly.
         key = f"{REU_PUMP_HANDLER_ADDR:04X}"
         handler = next(b for k, b in fake.writes if k == key)
-        self.assertEqual(handler[2], REU_PUMP_CHUNK_SIZE & 0xFF)
-        self.assertEqual(handler[7], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
-        # CIA #1 latch = chunk*128 - 1; default chunk=128 → latch=$3FFF.
-        self.assertEqual(
-            fake.memories["DC04"],
-            f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}",
-        )
+        lo, hi = REU_IRQ_HANDLER_CHUNK_OFFSETS
+        self.assertEqual(handler[lo], REU_PUMP_CHUNK_SIZE & 0xFF)
+        self.assertEqual(handler[hi], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
+        # CIA #1 latch = chunk x NMI period, at the default chunk of 128.
+        self.assertEqual(fake.memories["DC04"], _packed_latch(MATCHED_LATCH_12KHZ))
 
     def test_custom_chunk_patches_handler_and_latch(self):
         s = _new_streamer()
@@ -298,8 +313,8 @@ class ReuPumpChunkSizeOverrideTest(unittest.TestCase):
         handler = next(b for k, b in fake.writes if k == key)
         self.assertEqual(handler[2], 80)
         self.assertEqual(handler[7], 0)
-        # Latch = 80*128 - 1 = 10239 = $27FF
-        self.assertEqual(fake.memories["DC04"], "FF27")
+        # Latch = chunk x NMI period = 80 x 85 - 1 = 6799.
+        self.assertEqual(fake.memories["DC04"], _packed_latch(80 * 85 - 1))
         # And $DF07 = chunk LO/HI for initial REC length.
         self.assertEqual(fake.memories["DF07"], "5000")
 
@@ -604,16 +619,27 @@ class ReuPositionSecondsTest(unittest.TestCase):
     def test_clamped_to_total_after_arm(self):
         """When wall-clock elapsed exceeds the audio length, position is
         clamped to the total length so video doesn't desync."""
-        s = _new_streamer()
-        s._reu_pump_armed = True
-        s._reu_pump_total_samples = 8000  # 1 second worth
-        s._reu_pump_start_time = 0.0  # arbitrary; clamped at 1.0
-        # Patch monotonic clock by manipulating start_time to be 100 s ago.
         import time as time_mod
 
+        s = _new_streamer()
+        s._reu_pump_armed = True
+        s._reu_pump_total_samples = round(s.effective_rate)  # one second of it
         s._reu_pump_start_time = time_mod.monotonic() - 100.0
         # Expected: min(100s, 1s) = 1.0
         self.assertAlmostEqual(s.position_seconds(), 1.0, places=2)
+
+    def test_live_source_with_no_total_is_not_clamped(self):
+        """A REU-*mic* session has no finite length and never sets a total, so
+        the clamp must not apply: clamping to a zero total pinned the clock at
+        0.0 for the whole session, and a total left over from a previous scene
+        pinned it to the wrong track's length."""
+        import time as time_mod
+
+        s = _new_streamer()
+        s._reu_pump_armed = True
+        s._reu_pump_total_samples = 0
+        s._reu_pump_start_time = time_mod.monotonic() - 5.0
+        self.assertAlmostEqual(s.position_seconds(), 5.0, places=2)
 
 
 class GovernorHandlerTest(unittest.TestCase):
@@ -682,9 +708,11 @@ class GovernorSelectionTest(unittest.TestCase):
         self.assertEqual(len(handler), len(REU_IRQ_HANDLER_GOVERNOR))
         self.assertEqual(handler[0], 0x48)
         self.assertEqual(handler[1:4], bytes([0xAD, 0x03, 0xDF]))  # governor prefix
-        # chunk patched at the prefix-shifted offsets 19 / 24.
-        self.assertEqual(handler[19], REU_PUMP_CHUNK_SIZE & 0xFF)
-        self.assertEqual(handler[24], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
+        # chunk patched at the prefix-shifted offsets the module derives.
+        lo, hi = REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS
+        self.assertEqual((lo, hi), (19, 24))
+        self.assertEqual(handler[lo], REU_PUMP_CHUNK_SIZE & 0xFF)
+        self.assertEqual(handler[hi], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
 
     def test_plain_handler_uploaded_when_disabled(self):
         s = _new_streamer()
@@ -811,3 +839,72 @@ class HostDmaServoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReuPumpLatchDerivationTest(unittest.TestCase):
+    """The pump latch is derived, never a constant: pump period = chunk x the
+    NMI period, and the NMI period tracks [audio].sample_rate. One derivation
+    serves both the video and mic bring-ups (_program_reu_pump_rate)."""
+
+    def test_8khz_reproduces_the_historical_constant(self):
+        s = _new_streamer(sample_rate=8000)
+        self.assertEqual(s._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE), REU_PUMP_CIA1_LATCH_8KHZ)
+
+    def test_12khz_default_is_not_the_8khz_constant(self):
+        s = _new_streamer()
+        latch = s._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(latch, MATCHED_LATCH_12KHZ)
+        self.assertLess(latch, REU_PUMP_CIA1_LATCH_8KHZ)
+
+    def test_latch_is_recorded_and_written(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        latch = s._program_reu_pump_rate(80)
+        self.assertEqual(latch, 80 * 85 - 1)
+        self.assertEqual(s._reu_cia1_latch_nominal, latch)
+        self.assertEqual(fake.memories["DC04"], _packed_latch(latch))
+
+    def test_period_past_16_bits_is_clamped_with_a_warning(self):
+        """A CIA latch is two 8-bit registers, so the write would silently
+        reduce the period modulo 65536 — landing anywhere, including a latch
+        that fires the pump hundreds of times faster than matched. Reachable
+        from config: c64.nmi_rate_safety bounds only the fast end of
+        sample_rate, so a low rate passes validation."""
+        s = _new_streamer(sample_rate=1000)
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            latch = s._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(latch, CIA_TIMER_LATCH_MAX)
+        self.assertTrue(any("16-bit maximum" in m for m in cm.output), cm.output)
+
+
+class ReuAudioRegionBoundTest(unittest.TestCase):
+    """One byte is one sample, so the staged upload's footprint grows with the
+    track's duration and nothing about it is self-bounding."""
+
+    def test_region_ends_at_or_below_the_video_staging_base(self):
+        """The layout binding audio_handlers deliberately does not import (the
+        audio layer keeps no dependency on the video layer). Asserted here so
+        the two cannot drift apart silently."""
+        from c64cast.video.modes_irq import REU_VIDEO_SCREEN_BASE
+
+        self.assertLessEqual(REU_AUDIO_BASE + REU_AUDIO_MAX_BYTES, REU_VIDEO_SCREEN_BASE)
+
+    def test_ordinary_track_is_uploaded_whole(self):
+        s = _new_streamer()
+        payload = b"\x07" * 4096
+        self.assertIs(s._fit_reu_audio_region(payload, 1000), payload)
+
+    def test_oversized_track_is_truncated_with_a_warning(self):
+        """Past the ceiling the upload runs into the video staging region the
+        REU bank-swap bitmap path rewrites every frame: the pump would DMA
+        bitmap bytes into the ring as full-scale garbage while the video writes
+        shred the audio, with no host-side error, on nothing more exotic than a
+        long clip."""
+        s = _new_streamer()
+        pad = 1000
+        payload = b"\x07" * (REU_AUDIO_MAX_BYTES + 1)
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            fitted = s._fit_reu_audio_region(payload, pad)
+        self.assertEqual(len(fitted), REU_AUDIO_MAX_BYTES - pad)
+        self.assertLessEqual(len(fitted) + pad, REU_AUDIO_MAX_BYTES)
+        self.assertTrue(any("truncating" in m for m in cm.output), cm.output)

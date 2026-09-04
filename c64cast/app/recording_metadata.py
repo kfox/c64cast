@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast import __version__
 
+from . import scene_factory
 from .config import SceneCfg, scene_color
 
 if TYPE_CHECKING:
@@ -165,11 +166,14 @@ def _video_source(scene: Scene) -> dict[str, Any]:
     scene_cfg = getattr(scene, "_cfg", None)
     raw_spec = getattr(scene_cfg, "file", None) if scene_cfg is not None else None
     filepath = getattr(scene, "filepath", None)
-    is_url = isinstance(raw_spec, str) and raw_spec.strip().lower().startswith(
-        ("http://", "https://")
-    )
+    spec = raw_spec if isinstance(raw_spec, str) else None
+    is_url = spec is not None and scene_factory.is_media_url(spec)
     out: dict[str, Any] = {
-        "url": raw_spec if is_url else None,
+        # Redacted: this field is what scripts/scene_config_to_description.py
+        # renders as "Source video: <url>" in a *published* video description,
+        # and a private asset is legitimately reached with a `user:token@`
+        # URL. See scene_factory.redact_media_spec.
+        "url": scene_factory.redact_media_spec(spec) if spec is not None and is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
     }

@@ -26,8 +26,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from c64cast.audio import dac_curve_resolve
 from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
@@ -81,6 +82,18 @@ class SessionConfigError(Exception):
         self.detail = detail
 
 
+class _Stoppable(Protocol):
+    """The only thing teardown_session needs from the three optional
+    process-wide surfaces (control plane, MIDI listener, WLED device).
+
+    They are typed as this rather than ``Any`` because session.py is one of
+    the modules ``mypy --strict`` covers: under ``Any`` a rename of ``stop()``
+    on any of the three type-checks clean and fails at shutdown, which is the
+    one moment where a failure costs the run its final reset."""
+
+    def stop(self) -> None: ...
+
+
 @dataclass
 class Session:
     """One playlist session: every system's stack plus the process-wide
@@ -95,9 +108,9 @@ class Session:
     stop_event: threading.Event
     profiler: FrameProfiler | NullProfiler
     threads: list[threading.Thread] = field(default_factory=list)
-    control_server: Any = None
-    midi_control_listener: Any = None
-    wled_device_server: Any = None
+    control_server: _Stoppable | None = None
+    midi_control_listener: _Stoppable | None = None
+    wled_device_server: _Stoppable | None = None
     # True for the one-shot CLI, False for a long-lived host that owns
     # sessions. Gates the surfaces that assume a terminal and a process to
     # themselves: the live-tune input() prompt and the in-session control
@@ -300,16 +313,16 @@ def _coerce_reu_for_transport(cfg: cfgmod.Config, midi_cfg: cfgmod.MidiControlCf
         cfg.audio.use_reu_pump = False
 
 
-def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) -> C64Backend:
+def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     """Connect the hardware backend and (unless --skip-probe) verify it is
-    reachable. On failure, releases the already-open camera and raises
-    StackBuildError with the exit code build_stack's caller expects."""
+    reachable. Raises StackBuildError with the exit code build_stack's caller
+    expects. It releases only what it opened itself (the backend, when the
+    probe fails); everything build_stack had already acquired comes down
+    through build_stack's own unwind ladder."""
     try:
         api = make_backend(cfg)
     except SocketDMAError as e:
         _log_dma_setup_error(cfg, e, role="render")
-        if source is not None:
-            source.release()
         raise StackBuildError(4) from e
     except TRError as e:
         log.error(
@@ -319,8 +332,6 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
             name,
             e,
         )
-        if source is not None:
-            source.release()
         raise StackBuildError(4) from e
 
     if not cfg.debug.skip_probe:
@@ -333,8 +344,6 @@ def _open_backend(cfg: cfgmod.Config, name: str, source: WebcamSource | None) ->
                 cfg.hardware.backend,
             )
             api.close()
-            if source is not None:
-                source.release()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
         if identity := api.describe_device():
@@ -425,11 +434,23 @@ def _build_input_controls(
     return key_poller, vision_controller
 
 
+def _detach_framebuffer(api: C64Backend, framebuffer: Framebuffer | None) -> None:
+    """Stop shadowing DMA writes into ``framebuffer``. A no-op when there is
+    none, and idempotent, so both the build-failure path and teardown_stack
+    can call it."""
+    if framebuffer is not None:
+        api.remove_write_listener(framebuffer.on_write)
+
+
 def _build_preview_and_recording(
     cfg: cfgmod.Config, api: C64Backend, name: str, *, is_ensemble: bool
 ) -> tuple[Framebuffer | None, PreviewWindow | None, StreamRecorder | None]:
     """Optional local preview window + stream recorder. Both share a
-    Framebuffer that shadows U64 memory writes via api listeners."""
+    Framebuffer that shadows U64 memory writes via api listeners.
+
+    A framebuffer with no surviving consumer is detached again before
+    returning: the write listener costs a shadow-memory update on every DMA
+    write for the rest of the run, and nothing else in the tree reads it."""
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None
@@ -471,13 +492,25 @@ def _build_preview_and_recording(
             recorder.start()
         except RuntimeError as e:
             log.error("recording disabled: %s", e)
+    if preview_window is None and recorder is None:
+        _detach_framebuffer(api, framebuffer)
+        framebuffer = None
     return framebuffer, preview_window, recorder
+
+
+def _release_step(name: str, label: str, fn: Callable[[], object]) -> None:
+    """Run one release step, logging and swallowing a failure so it can't
+    strand the steps under it. Shared by teardown_stack and by build_stack's
+    failure unwind, which releases the same resources in the same way."""
+    try:
+        fn()
+    except Exception:
+        log.exception("[%s] %s failed", name, label)
 
 
 def build_stack(
     cfg: cfgmod.Config,
     name: str,
-    args: argparse.Namespace,
     *,
     stop_event: threading.Event,
     profiler: FrameProfiler | NullProfiler,
@@ -490,16 +523,62 @@ def build_stack(
     before the raise. The caller is responsible for tearing down whatever
     stacks succeeded if a later one fails.
 
+    Every resource is registered on one unwind ladder as it is acquired, so
+    a failure anywhere in the build releases exactly what came up — in
+    reverse of acquisition, one guarded step each, the way teardown_stack
+    releases them on the success path. On success the ladder is popped and
+    the returned SystemStack owns them instead."""
+    with ExitStack() as unwind:
+        stack = _acquire_stack(
+            unwind,
+            cfg,
+            name,
+            stop_event=stop_event,
+            profiler=profiler,
+            is_ensemble=is_ensemble,
+            config_path=config_path,
+        )
+        unwind.pop_all()
+    return stack
+
+
+def _acquire_stack(
+    unwind: ExitStack,
+    cfg: cfgmod.Config,
+    name: str,
+    *,
+    stop_event: threading.Event,
+    profiler: FrameProfiler | NullProfiler,
+    is_ensemble: bool,
+    config_path: str | None,
+) -> SystemStack:
+    """build_stack's body, with every acquisition registered on ``unwind``.
+
+    Split out so the ladder can be a `with` block one level up: this half
+    only has to remember to register what it opens, and nothing has to
+    remember the release order.
+
     `is_ensemble=True` propagates into `scenes_from_config` so live
     scenes (webcam, blank) are built with audio suppressed — the
     ensemble audio lock arbitrates which system drives the SID."""
+
+    def release_on_failure(label: str, fn: Callable[[], object]) -> None:
+        unwind.callback(_release_step, name, label, fn)
+
     # Only open the camera when a scene actually needs it. Skipping the open
     # otherwise means a "blank" or "waveform"-only playlist won't fail on a
     # box without a webcam (or one whose OS-level camera permission is denied,
     # which is the typical macOS first-run snag in IDE-launched runs).
     # The shared camera broker feeds both webcam scenes and the (always-on)
     # vision controller, so open it if either wants it.
-    needs_webcam = any(s.type == "webcam" for s in cfg.scenes)
+    # A [[performance.clips]] table counts too: `type` defaults to "webcam"
+    # there, so a clip grid can hold webcam clips with no webcam [[scenes]]
+    # entry at all — and the clip build factory below closes over `source`,
+    # so a None there means that pad raises at launch and dies silently in
+    # PerformanceSession's background build.
+    needs_webcam = any(s.type == "webcam" for s in cfg.scenes) or any(
+        cfgmod.clip_scene_type(c) == "webcam" for c in cfg.performance.clips
+    )
     needs_camera = needs_webcam or cfg.vision.enabled
     source: WebcamSource | None = None
     if needs_camera:
@@ -508,10 +587,12 @@ def build_stack(
         except RuntimeError as e:
             log.error("%s", e)
             raise StackBuildError(1) from e
+        release_on_failure("camera release", source.release)
     else:
         log.debug("no webcam or vision scenes — skipping video device init")
 
-    api = _open_backend(cfg, name, source)
+    api = _open_backend(cfg, name)
+    release_on_failure("API close", api.close)
 
     # Drop REU-staged opt-ins on a backend with no REU, before the AudioStreamer
     # + scenes are built (so the host-DMA paths are used instead).
@@ -524,10 +605,14 @@ def build_stack(
     # the REU (see hw_provision.provision_reu). Runs BEFORE _resolve_reu_available
     # so that probe sees the now-enabled REU; restored at teardown (teardown_stack).
     reu_restore = hw_provision.provision_reu(api, cfg)
+    release_on_failure("REU restore", lambda: hw_provision.restore_reu(api, reu_restore))
     # Auto-enable the Ultimate Audio sampler (map $DF20 + unmute Sampler mixer,
     # live + volatile) when a video scene will use it. Runs BEFORE
     # _resolve_sampler_available so the probe sees it on; restored at teardown.
     sampler_restore = hw_provision.provision_sampler(api, cfg)
+    release_on_failure(
+        "sampler restore", lambda: hw_provision.restore_sampler(api, sampler_restore)
+    )
     # Video output: the opt-in System Mode retime ([ultimate64].sid_video_mode,
     # which fixes SID PITCH) plus the HDMI upscaler that keeps capture working
     # across it ([ultimate64].hdmi_scan_resolution). Resolved once per run —
@@ -536,10 +621,16 @@ def build_stack(
     # autodetect against the new timing; it also has to happen before any scene
     # has painted, which is why this sits here.
     video_output_restore = hw_provision.provision_video_output(api, cfg)
+    release_on_failure(
+        "video output restore",
+        lambda: hw_provision.restore_video_output(api, video_output_restore),
+    )
     if video_output_restore is not None and api.profile.supports_reset:
         api.reset()
 
     audio = _build_audio(cfg, api)
+    if audio is not None:
+        release_on_failure("audio shutdown", audio.close)
 
     reu_available = _resolve_reu_available(cfg, api)
     sampler_available = _resolve_sampler_available(cfg, api)
@@ -555,14 +646,6 @@ def build_stack(
         )
     except (ValueError, RuntimeError) as e:
         log.error("%s", e)
-        if audio is not None:
-            audio.close()
-        hw_provision.restore_video_output(api, video_output_restore)
-        hw_provision.restore_sampler(api, sampler_restore)
-        hw_provision.restore_reu(api, reu_restore)
-        api.close()
-        if source is not None:
-            source.release()
         raise StackBuildError(3) from e
 
     # The system video rate (60 NTSC / 50 PAL) is resolved into the
@@ -587,10 +670,17 @@ def build_stack(
     api.disable_case_switch()
 
     key_poller, vision_controller = _build_input_controls(cfg, api, source, name)
+    if vision_controller is not None:
+        release_on_failure("vision controller stop", vision_controller.stop)
 
     framebuffer, preview_window, recorder = _build_preview_and_recording(
         cfg, api, name, is_ensemble=is_ensemble
     )
+    release_on_failure("framebuffer detach", lambda: _detach_framebuffer(api, framebuffer))
+    if recorder is not None:
+        release_on_failure("recording stop", recorder.stop)
+    if preview_window is not None:
+        release_on_failure("preview shutdown", preview_window.close)
 
     playlist = Playlist(
         playlist_scenes,
@@ -629,19 +719,14 @@ def build_stack(
     # the ensemble `build_follower_scene` wiring. The PerformanceSession calls
     # this on a background thread during the count-in; setup() runs later on the
     # playlist thread at the swap.
-    playlist.build_performance_scene = (
-        lambda clip, _cfg=cfg, _api=api, _audio=audio, _source=source, _reu=reu_available, _samp=sampler_available, _ens=is_ensemble: (
-            scene_factory.build_scene(
-                cfgmod.clip_scene_cfg(clip),
-                _cfg,
-                _api,
-                _audio,
-                _source,
-                is_ensemble=_ens,
-                reu_available=_reu,
-                sampler_available=_samp,
-            )
-        )
+    playlist.build_performance_scene = _performance_scene_factory(
+        cfg,
+        api,
+        audio,
+        source,
+        reu_available=reu_available,
+        sampler_available=sampler_available,
+        is_ensemble=is_ensemble,
     )
 
     # Vision performance mode (Live DJ/VJ Phase 6): route hand gestures to the
@@ -683,6 +768,13 @@ def teardown_stack(stack: SystemStack) -> None:
             lambda: stack.preview_window.close() if stack.preview_window else None,
         ),
         ("recording stop", lambda: stack.recorder.stop() if stack.recorder else None),
+        # Both consumers are down, so stop shadowing DMA writes into the
+        # framebuffer — every write for the rest of the process would
+        # otherwise still pay for a buffer nothing reads.
+        (
+            "framebuffer detach",
+            lambda: _detach_framebuffer(stack.api, stack.framebuffer),
+        ),
         ("audio shutdown", lambda: stack.audio.close() if stack.audio else None),
         (
             "vision controller stop",
@@ -704,15 +796,17 @@ def teardown_stack(stack: SystemStack) -> None:
         ("camera release", lambda: stack.source.release() if stack.source else None),
     )
     for label, fn in steps:
-        try:
-            fn()
-        except Exception:
-            log.exception("[%s] %s failed", stack.name, label)
+        _release_step(stack.name, label, fn)
 
 
 # How long the headless join parks per poll. Short enough that Ctrl+C feels
-# immediate, long enough not to spin (see _run_playlists on why it polls).
+# immediate, long enough not to spin (see pump_until_done on why it polls).
 _JOIN_POLL_S = 0.2
+
+# How long a playlist thread gets to drain once it has been asked to stop,
+# before it is logged and abandoned. Shared by join_playlists and by
+# teardown_session's own pre-teardown drain so the stop path has one budget.
+_STOP_JOIN_S = 5.0
 
 
 def join_bounded(t: threading.Thread, timeout: float, poll_s: float = _JOIN_POLL_S) -> bool:
@@ -747,18 +841,22 @@ def make_stop_signal_handler(
     forever. ``verb`` is the caller-specific tail of the first-signal log
     line (e.g. "stopping", "shutting down the host").
 
+    Escalation is tracked per signum, as the contract above says: one shared
+    flag meant the *first* SIGTERM after a SIGINT took the escalation branch,
+    arming SIG_DFL a signal earlier than documented and dropping that
+    SIGTERM's stop request on the floor.
+
     Building the closure here doesn't install it: ``signal.signal`` raises
     off the main thread, so the caller still does that call itself."""
-    interrupted = False
+    seen: set[int] = set()
 
     def handler(signum: int, _frame: Any) -> None:
-        nonlocal interrupted
         name = signal.Signals(signum).name
-        if interrupted:
+        if signum in seen:
             log.warning("%s again; next one exits immediately (teardown may not finish)", name)
             signal.signal(signum, signal.SIG_DFL)
             return
-        interrupted = True
+        seen.add(signum)
         log.info("%s received; %s", name, verb)
         on_first_signal()
 
@@ -777,8 +875,16 @@ def _pump_previews_until_done(
     `pump()` blocks ~1 ms in `waitKey` servicing events, which paces this loop
     without a busy-spin.
 
-    Closing the last window doesn't stop the show — we fall through to a plain
-    blocking join and playback carries on headless.
+    Closing the last window doesn't stop the show — we fall through to the
+    same polling join the headless branch uses and playback carries on
+    without a window. That fall-through is reached on three ordinary paths:
+    the operator closes the window, a draw failure disables it, and — on the
+    very first iteration — a headless opencv build, where `open()` logs
+    "preview disabled" and never sets `is_open`. It has to be `join_bounded`
+    for the reason pump_until_done spells out: a bare `join()` parks the main
+    thread where no signal handler can run, and on the CLI path SIGINT and
+    SIGTERM only *set* stop_event, so a handler that never runs is a run that
+    nothing but SIGKILL can end.
     """
     for p in previews:
         p.open()
@@ -788,21 +894,28 @@ def _pump_previews_until_done(
         if not any(p.is_open for p in previews):
             break
     for t in threads:
-        t.join()
+        join_bounded(t, math.inf)
 
 
-def start_playlists(stacks: list[SystemStack]) -> list[threading.Thread]:
+def start_playlists(
+    stacks: list[SystemStack], into: list[threading.Thread] | None = None
+) -> list[threading.Thread]:
     """Start one non-daemon worker thread per stack and return them.
 
     Non-daemon on purpose: a daemon thread is killed at interpreter exit,
     which can cut an in-flight DMA and wedge the machine into needing a
-    power cycle. The stop path below would rather log a stuck thread."""
-    threads = [
-        threading.Thread(target=s.playlist.run, name=f"playlist-{s.name}", daemon=False)
-        for s in stacks
-    ]
-    for t in threads:
+    power cycle. The stop path below would rather log a stuck thread.
+
+    ``into`` is the caller's own list (``sess.threads``), appended to as each
+    thread starts. It matters on the failure path: if the k-th ``start()``
+    raises, the k-1 threads already DMAing are still reachable, where a
+    returned list would have been lost with the exception and teardown would
+    have run underneath live workers."""
+    threads = [] if into is None else into
+    for s in stacks:
+        t = threading.Thread(target=s.playlist.run, name=f"playlist-{s.name}", daemon=False)
         t.start()
+        threads.append(t)
     return threads
 
 
@@ -835,17 +948,7 @@ def join_playlists(
     log.info("interrupted; stopping %d system(s)", len(stacks))
     stop_event.set()
     for t in threads:
-        join_bounded(t, 5.0)
-
-
-def _run_playlists(stacks: list[SystemStack], stop_event: threading.Event) -> None:
-    """Run every stack's playlist on its own worker thread and block until they
-    finish. Ctrl+C in the main thread routes through join_playlists."""
-    threads = start_playlists(stacks)
-    try:
-        pump_until_done(threads, stacks)
-    except KeyboardInterrupt:
-        join_playlists(threads, stacks, stop_event)
+        join_bounded(t, _STOP_JOIN_S)
 
 
 def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
@@ -862,8 +965,8 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
     and on Ctrl+C."""
     for st in stacks:
         pl = st.playlist
-        tracker = getattr(pl, "live_tracker", None)
-        if tracker is None or not tracker.has_changes():
+        tracker = pl.live_tracker
+        if not tracker.has_changes():
             continue
         tag = f"[{st.name}] " if len(stacks) > 1 else ""
         if pl.config is not None and pl.config_path:
@@ -942,18 +1045,13 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
             )
             log.error(detail)
             raise SessionConfigError(3, detail)
-        # Reject a sample rate that would overrun the NMI DAC handler on the
-        # target system (broken/pitch-dropped audio) before the playlist runs.
+        # Every whole-Config validator scene_factory owns, in one pass — a
+        # rejected NMI sample rate that would overrun the DAC handler, a bad
+        # [wled] endpoint, and the rest. The tuple lives next to the
+        # validators so this list can't fall behind the one doctor walks.
         try:
-            scene_factory.validate_nmi_sample_rate(cfg)
-            scene_factory.validate_sampler_cfg(cfg)
-            scene_factory.validate_dac_curve_cfg(cfg)
-            scene_factory.validate_dac_bitmap_tempo_cfg(cfg)
-            scene_factory.validate_sid_model_cfg(cfg)
-            scene_factory.validate_dither_cfg(cfg)
-            scene_factory.validate_color_match_cfg(cfg)
-            scene_factory.validate_cell_strategy_cfg(cfg)
-            scene_factory.validate_motion_smoothing_cfg(cfg)
+            for validate in scene_factory.PER_SYSTEM_VALIDATORS:
+                validate(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             raise SessionConfigError(5, str(e)) from e
@@ -969,6 +1067,38 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
                 detail = f"scene {s.name or f'{s.type}#{idx}'}: {e}"
                 log.error(detail)
                 raise SessionConfigError(3, detail) from e
+
+
+def _performance_scene_factory(
+    cfg: cfgmod.Config,
+    api: C64Backend,
+    audio: AudioStreamer | None,
+    source: WebcamSource | None,
+    *,
+    reu_available: bool,
+    sampler_available: bool,
+    is_ensemble: bool,
+) -> Callable[[dict[str, Any]], Scene]:
+    """Build one stack's clip-launch scene factory, closing over its
+    api/audio/source/cfg — the references a Playlist doesn't hold itself.
+
+    A named helper for the same reason _follower_scene_factory is one: the
+    closure-capture-by-default-argument lambda this replaces was a
+    ~180-character line whose signature no type checker could express."""
+
+    def build(clip: dict[str, Any]) -> Scene:
+        return scene_factory.build_scene(
+            cfgmod.clip_scene_cfg(clip),
+            cfg,
+            api,
+            audio,
+            source,
+            is_ensemble=is_ensemble,
+            reu_available=reu_available,
+            sampler_available=sampler_available,
+        )
+
+    return build
 
 
 def _follower_scene_factory(st: SystemStack, cfg: cfgmod.Config) -> FollowerSceneFactory:
@@ -1034,7 +1164,6 @@ def build_session(
                 build_stack(
                     cfg,
                     name,
-                    args,
                     stop_event=stop_event,
                     profiler=profiler,
                     is_ensemble=loaded.is_ensemble,
@@ -1171,9 +1300,14 @@ def start_services(sess: Session) -> None:
     # (mDNS + WLED JSON API) so the WLED app / python-wled / HA can control
     # it. One server spans every system (one WLED segment per system); the
     # first system's [wled].listen governs it (like [control]).
-    listen_on, wled_host, wled_port = scene_factory.resolve_wled_listen(cfgs[0])
-    if listen_on:
-        try:
+    # resolve_wled_listen parses [wled].listen and raises ConfigError on a bad
+    # host:port, so it sits *inside* the try with ConfigError caught — the
+    # shape the MIDI block above uses. Outside it, a typo'd port took the whole
+    # session down with an unmapped traceback after every system's hardware was
+    # already open, which is exactly what this function promises not to do.
+    try:
+        listen_on, wled_host, wled_port = scene_factory.resolve_wled_listen(cfgs[0])
+        if listen_on:
             from c64cast.wled.wled_device import start_wled_device
 
             sess.wled_device_server = start_wled_device(
@@ -1182,14 +1316,23 @@ def start_services(sess: Session) -> None:
                 cfgs[0].wled.name,
                 systems=[(st.name, st.playlist) for st in stacks],
             )
-        except RuntimeError as e:
-            log.error("WLED device disabled: %s", e)
+    except (cfgmod.ConfigError, RuntimeError) as e:
+        log.error("WLED device disabled: %s", e)
 
 
 def run_foreground(sess: Session) -> None:
     """Run every playlist to completion on this thread, pumping preview
-    windows on the way. Ctrl+C stops the session cooperatively."""
-    sess.threads = start_playlists(sess.stacks)
+    windows on the way.
+
+    Ctrl+C stops the session cooperatively, but not through the
+    KeyboardInterrupt below: `cli._run_session` installs
+    `make_stop_signal_handler` on SIGINT and SIGTERM before calling this, so
+    a signal *sets stop_event* and the playlists drain at their next frame
+    boundary; a third signal escalates to the default disposition. The
+    except is the fallback for a caller that installed no handler (and for
+    an interrupt that arrives between the two), and it is the one path that
+    bounds the drain and logs a stuck thread."""
+    start_playlists(sess.stacks, sess.threads)
     try:
         pump_until_done(sess.threads, sess.stacks)
     except KeyboardInterrupt:
@@ -1205,6 +1348,11 @@ def reload_all(sess: Session) -> None:
     list + master defaults are set at startup), so add/remove of systems
     still needs a restart. A failed reload keeps the current playlist."""
     log.info("reloading config for %d system(s)", len(sess.stacks))
+    # The songlengths lookups are process-global memos, including the "no HVSC
+    # here" answer. Without this, unpacking HVSC or fixing
+    # `[playlist].songlengths_file` could not take effect in a long-lived host
+    # without a restart.
+    scene_factory.reset_songlengths_cache()
     for st, sub_path in zip(sess.stacks, sess.loaded.paths, strict=True):
         if sub_path is None:
             continue  # no file to reload (defaults-only single-system)
@@ -1231,7 +1379,20 @@ def reload_all(sess: Session) -> None:
 def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
     """Bring the whole session down. Safe to call from a `finally:` — every
     step is independently guarded so one failure can't strand the rest, and in
-    particular can't cost the run its final reset."""
+    particular can't cost the run its final reset.
+
+    The playlists are stopped and drained first, and that is what makes the
+    `finally:` promise true rather than a precondition on the caller: the
+    stacks are where audio.close(), the final reset and api.close() live, and
+    running those underneath a worker still issuing DMA writes is the mid-DMA
+    cut that wedges the machine into needing a power cycle. Both are no-ops
+    on the ordinary path (run_foreground and serve's `_run_stop` have already
+    drained), so this costs nothing when the caller did it right and covers
+    every escape where it couldn't — a raise out of `start_playlists`, or any
+    non-KeyboardInterrupt escape from `pump_until_done`."""
+    sess.stop_event.set()
+    for t in sess.threads:
+        join_bounded(t, _STOP_JOIN_S)
     # Stop input surfaces before tearing down what they act on — same
     # ordering the keyboard/vision controllers already follow.
     if sess.midi_control_listener is not None:
@@ -1257,6 +1418,6 @@ def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
     # own the terminal — the prompt is a blocking input().
     if save_live_tune and sess.interactive:
         try:
-            _maybe_save_live_tune(sess.stacks, bool(getattr(sess.args, "overwrite", False)))
+            _maybe_save_live_tune(sess.stacks, bool(sess.args.overwrite))
         except Exception:
             log.exception("live-tune save flow failed")

@@ -112,6 +112,23 @@ class FramePushDefaultFpsTest(unittest.TestCase):
         # Char modes stay on the system default regardless of audio backend.
         self.assertIsNone(_frame_push_default_fps(_mode(False), False, "NTSC", off_bus_audio=True))
 
+    def test_on_bus_digitized_audio_wins_over_off_bus(self):
+        # The two flags are contractually mutually exclusive (a scene's audio
+        # is on the $D418 DAC or off-bus in the sampler, never both) and every
+        # caller constructs the pair that way — but the docstring used to claim
+        # off_bus_audio "beats has_digitized when both could apply", which the
+        # first statement contradicts. Pin the answer the code gives: the 20 fps
+        # cap protects the on-bus stream, which is the one that can tear.
+        self.assertEqual(
+            _frame_push_default_fps(_mode(True), True, "NTSC", off_bus_audio=True), 20.0
+        )
+        self.assertEqual(
+            _frame_push_default_fps(
+                _mode(False), True, "PAL", off_bus_audio=True, always_fresh=True
+            ),
+            20.0,
+        )
+
 
 class _BuildSceneFpsBase(unittest.TestCase):
     def setUp(self):
@@ -291,8 +308,10 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
 
 
 class InterleavedVideoFpsTest(_BuildSceneFpsBase):
-    """Auto-interleaved videos are built directly (not via build_scene) with a
-    bitmap hires_edges mode — they get the same cap."""
+    """Auto-interleaved videos go through `build_scene` on a synthetic
+    hires_edges video SceneCfg, so they take the same cap as a configured
+    video scene (they used to be constructed directly, with only this one of
+    `_build_video`'s six behaviors hand-copied over)."""
 
     def setUp(self):
         super().setUp()

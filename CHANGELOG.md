@@ -21,6 +21,107 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Security
 
+- **The performance console took cross-origin commands.** A WebSocket handshake
+  is exempt from CORS entirely, and Starlette's `Request.json()` never looks at
+  `Content-Type` — so with `[control] enabled = true` and the unprompted default
+  `token = ""`, any page the performer happened to visit could open
+  `ws://127.0.0.1:8765/perf/ws`, read every pushed state frame, and send command
+  frames that drove the running show; `POST /perf/command` was reachable the
+  same way as a `text/plain` form submit, which is a CORS-simple request with no
+  preflight to refuse. The open loopback mode is justified as "exposed to
+  whoever already has a shell here", and a browser tab is not that person. Both
+  `/perf/ws` and `/perf/command` — and `/api/ws`, which shares the loop — now
+  refuse a request whose `Origin` is present and names a different host:port
+  than its own `Host` (the handshake is closed before `accept`), and the POST
+  requires an `application/json` content type. A request with **no** `Origin` is
+  still served: that is `curl`, `wscat` or a script, which is exactly the caller
+  the open mode describes.
+- **`POST /perf/command` buffered an unbounded request body.** `await
+  request.json()` accumulates every chunk before parsing, and this was the one
+  POST in the package that did not route through the shared cap that exists for
+  precisely this — a remote memory exhaustion on a 1-2 GB appliance, taking down
+  a process that owns live hardware, from a caller who needs no credential in
+  the open mode. Capped at 64 KiB (a console command is a few hundred bytes),
+  with a 413 for an oversized body and a 400 for one that is not a JSON object.
+- **Nothing capped the console state sockets.** A handshake is a bare `GET`, so
+  the role gate admits even a read-only `viewer` token — the credential meant to
+  be handed to a guest — and every accepted socket ran its own push loop over a
+  frame that resolves the whole live-tune catalog and reads two slot stores off
+  disk. A couple of hundred connections bought a few hundred frame builds a
+  second on the host that owns the hardware, stalling the operator's own console
+  and every other route on the same app. `/perf/ws` and `/api/ws` now share a
+  cap of 8 open sockets and close a handshake past it before accepting, the same
+  refuse-rather-than-queue decision the screen stream already made.
+- **A read-only link disclosed the operator's filesystem layout.** The state
+  frame carried `tuned.config_path`, the absolute path of the running show file,
+  and both `GET /perf/state` and the socket pushes are read methods — so a
+  viewer token learned the operator's username and directory layout, which is
+  reconnaissance for the config-store routes the same host exposes. A viewer now
+  gets an empty `config_path`; `config_name` (already on the wire) is all the
+  page used it for.
+- **A `loop_slot` command could grow a preset file without limit.** The console's
+  transport verb passed its `slot` straight through with no range check, and
+  `LoopPresetStore.save` had deliberately overridden away the shared
+  `1..250` guard — so an incrementing slot persisted one unbounded new key per
+  event, each save re-reading and rewriting the whole grown file on the playlist
+  thread that drives the hardware, with the state feed re-parsing it on every
+  push. The slot is bounded at both ends now, and the digits no longer reach the
+  OSD line the transport engine draws over the audience output.
+- The `/perf` page is served with `Content-Security-Policy`
+  (`frame-ancestors 'none'`), `X-Frame-Options: DENY` and
+  `X-Content-Type-Options: nosniff`. Hardening rather than a fix: it is a fixed,
+  server-authored body with no caller content in it, and the clickjacking the
+  headers refuse is strictly harder than what the `Origin` check above closes.
+
+- **A credential inside a scene `file =` URL was echoed verbatim.** A private
+  asset is legitimately reached with
+  `file = "https://user:token@cdn.example/clip.mp4"`, and nothing redacted it:
+  a resolve failure quoted the spec into `--log-file` and into the report the
+  web console renders in a browser, and `recording_metadata` copied it into the
+  per-scene snapshot — which `scripts/scene_config_to_description.py` renders as
+  `Source video: <url>` in a **published** video description. The connection
+  target has refused a `user:pass@` netloc for exactly this reason since it was
+  introduced; a secret inside a scene `file` *value* was covered by none of that
+  machinery, because it is not a field of its own. Every message that quotes a
+  media spec now strips URL userinfo and masks `token=`/`key=`/`password=`-style
+  query parameters, and so does the snapshot.
+- **A media URL was fetched at build time with no timeout.** The yt-dlp
+  resolution runs inside `build_scene`, i.e. after the link is open and the
+  machine has been reset, and it passed no `socket_timeout` (nothing in the tree
+  calls `socket.setdefaulttimeout` either). A host that completed the TCP
+  handshake and then never answered held the C64 in reset with the DMA socket
+  open until the process was killed — and under `--serve` the supervisor stayed
+  `STARTING`, so `POST /api/session/stop` returned 202 and changed nothing. The
+  attacker is whoever controls the host behind a pasted link, which is a normal
+  VJ workflow. It is bounded now, one `log.info` line names the URL before the
+  fetch (yt-dlp's own logger goes to `log.debug`, so there was nothing at
+  default level saying what it was waiting on), a resolved stream URL whose
+  scheme is not http/https is refused rather than handed to ffmpeg — which
+  honors `file://` and `udp://` — and the resolved title is stripped of control
+  characters and length-capped before it becomes the scene name, since it comes
+  from the page and lands in log lines interpolated with no arguments.
+- **`validate_scene_cfg` is reachable from the network, and did unbounded
+  filesystem work there.** The load-time SID header check read its whole
+  candidate file with no guard, so a config naming a FIFO `x.sid` blocked the
+  validate request thread forever and a multi-gigabyte one exhausted memory; it
+  now requires a regular file and caps the read. A `**` glob whose first path
+  segment is itself a pattern under `/` — a walk of every mounted volume inside
+  one HTTP request — is refused outright. A general depth or time bound on glob
+  expansion is still open; the ceiling trades against legitimately deep HVSC and
+  media trees.
+- **A `wled` scene's `sink_allow` accepted an IPv6 entry the sink can never
+  match.** The pixel sink binds `AF_INET` only, so the peer address it compares
+  against is always a dotted quad — an IPv6 allowlist entry produced a config
+  that validated cleanly and then silently dropped every sender, with no log
+  line. It is refused at validate time now, naming the IPv4 requirement.
+- **`[wled].listen` says what it exposes.** Turning on the virtual WLED device
+  binds its JSON/WebSocket API on every interface with no token and advertises
+  it over mDNS, and a reachable client can pause the run, jump scenes, sweep
+  live params, force the palette and write presets — the same capability
+  `validate_control_cfg` refuses to leave unauthenticated off loopback. LAN
+  discovery is the point of the feature, so this warns rather than refuses, but
+  it no longer happens silently.
+
 - **A `viewer_token` was a full-control credential.** `GET
   /api/configs/{ref}` had no role check at all, and the auth gate's only
   viewer restriction is the HTTP method — so every `GET` passed for a
@@ -209,6 +310,334 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fresh: "can't tell how old this is" is not "recent".
 
 ### Fixed
+
+- **One malformed command frame closed the performance console's only feed.**
+  `PerfBridge.apply` indexed `cmd["slot"]` / `["layer"]` / `["target"]` /
+  `["index"]` directly and coerced with bare `int()` / `float()`, so a frame
+  that decoded fine and then named an action without its fields — the shape a
+  cached phone page from an older build sends — raised `KeyError` inside the
+  WebSocket push loop, wrote a full traceback at default verbosity, and tore
+  down the socket that carries state and log lines. That is exactly the outcome
+  the frame decoder was written to prevent for an *undecodable* frame: the
+  validation was enforced at the decode and defeated one layer down at the
+  dispatch. Every field is now validated rather than coerced (including the
+  bare `Infinity` / `NaN` literals `json.loads` accepts, whose `int()` raises
+  `OverflowError`), a bad frame answers `{"ok": false}` instead of a 500 on
+  `POST /perf/command`, and the socket loop guards the dispatch as well, so no
+  raise from any engine a tap reaches can end the feed.
+- **The console's state feed did blocking disk and DMA work on the event loop.**
+  Both `async def` socket routes called the frame builder and the command
+  dispatcher directly: one frame reads the look store and the loop-preset store
+  off disk (~3 times a second per connected console), and a border or background
+  pick is a DMA write over TCP port 64 that is unboundedly long on a stalled
+  link. That loop also serves `/status`, every `/api` route and the MJPEG screen
+  stream, so a slow data directory or a stalled machine stalled all of them —
+  while the sibling sync route got the threadpool for free and was never
+  affected. Both now run off the loop.
+- **One state frame could describe two different scenes.** The console snapshot
+  re-read `playlist.current` four separate times, and a scene advance writes the
+  index and the current scene as two separate statements with a teardown between
+  them — so an interleaved advance emitted a frame naming scene A over scene B's
+  effect rack and tune panel, with the layer indices the console then offered
+  addressing a chain that had moved. The scene and index are sampled once.
+- **A dragged slider froze the effect rack and the tune panel for the rest of
+  the session.** Both panels skip a rebuild while something inside them has
+  focus (so a rebuild can't drag the handle out from under a finger), and a
+  range keeps focus after a drag and a `<select>` after a change — so the first
+  gesture stopped that panel updating until the performer happened to focus
+  something else: a bypass flipped from a MIDI pad no longer showed, and after a
+  scene advance the panel kept offering the previous scene's knobs. Both blur
+  when the gesture ends, as the WLED page already did.
+- **The console's picture kept streaming the previous machine on an ensemble
+  run.** The screen `<img>` bakes the selected system into its URL and was only
+  ever re-pointed by the WATCH button, so tapping another system tab moved every
+  control to the new machine and left the old machine's video playing
+  underneath, with nothing on the page saying so.
+- **The console showed a BPM between shows.** With no session running, the page
+  stopped the beat pulse but left the tempo number alone, so the sticky header
+  read the last show's BPM — or a confident `120` from the page's own
+  initializer, before any frame had arrived — above "No session running." It
+  reads `--`.
+- The console page's WebSocket reconnect backs off exponentially (0.5 s to 15 s)
+  instead of retrying at a fixed interval forever, and now retries at all after
+  a construction failure, where it used to fall back to polling and never try
+  the socket again for the life of the page. The WLED device page's copy of the
+  same loop gets the same fix — the two had already drifted to different delays
+  with no backoff on either.
+- Adding a verb to the console's transport verb list without adding a dispatch
+  branch would have silently saved or cleared one of the performer's persisted
+  loop presets: the branch chain ended in an unconditional `loop_slot` enqueue
+  with no `if`. The last branch is explicit and an unhandled verb is refused,
+  with a test that walks the list and asserts each verb has its own effect.
+- The console's addressed-but-no-op writes (a bypass on a layer the scene does
+  not have, a knob the current scene cannot resolve, a jump past the end) log one
+  debug line each. The page discards every response body, so a pad that did
+  nothing mid-set left no evidence on either side of the wire — "the tap reached
+  the host and did nothing" and "the tap never arrived" were indistinguishable.
+- The `tuned` block of a state frame took two independent snapshots of the
+  live-tune record, so a knob turned between them made the change list and the
+  pasteable TOML snippet in one frame describe different sets of changes.
+- Two test-isolation defects found while fixing the above, both reaching the
+  developer's real `~/.local/share/c64cast/`: one supervisor test wrote and then
+  **deleted** the real run marker (the file that tells a `--serve` host its last
+  session did not shut down cleanly), and the live-tune tests read the real
+  character ROM and cached it process-wide for every other test in the worker.
+
+- **The REU mic pump ran ~33% slow at the default sample rate.** The C64-side
+  pump is paced by CIA #1, whose latch has to be the chunk size times the NMI
+  period — a ratio of periods, so it is the same on NTSC and PAL, but it tracks
+  `[audio].sample_rate`. The video bring-up derived it from the live NMI latch;
+  the mic bring-up wrote a constant whose own definition records it as the
+  value for 8 kHz. At the shipped 12 kHz default that asked the pump for 85/128
+  of the bytes the NMI drains, so the audio ring under-filled and the NMI
+  re-read a lap-old span — the audible stale-data echo the derivation exists to
+  prevent. Both paths now share one derivation, one register write and one
+  record of what was written, and a latch too large for the two 8-bit registers
+  (roughly `sample_rate` below 2 kHz — `nmi_rate_safety` bounds only the fast
+  end) is clamped with a warning instead of being silently truncated modulo
+  65536 into an arbitrary pump rate.
+- **A REU-staged audio track longer than ~20 minutes overwrote the video
+  staging region.** One byte is one sample, so the upload's footprint grows
+  with the track's duration, and nothing at any layer bounded it: past
+  `$E00000` at the 12032 Hz NTSC default it runs into the region the REU
+  bank-swap bitmap path rewrites every frame, so the audio pump DMA'd bitmap
+  bytes into the ring as full-scale garbage while the per-frame video writes
+  shredded the audio — with no host-side error, on nothing more exotic than a
+  long clip. The payload (and with it the EOF pad, which starts where the
+  payload ends) is now bounded by the region and truncated with a warning.
+- **A short chunk during the audio prebuffer could push a ring write past the
+  end of the ring.** The worker's NEUTRAL tail pad was gated on the consuming
+  phase, so a collect window that closed short while prebuffering was written
+  at its raw length and took the ring write pointer off the chunk grid the ring
+  size is an exact multiple of. Both wrap guards check the address only after
+  the increment, so the next chunk to cross the boundary went out first and its
+  tail landed outside the ring — never played, and over memory another scene
+  uses. Reachable on the ordinary mic path, where the worker starts before the
+  input stream opens. Every short chunk is padded now; the partial-underrun
+  counter stays consumption-phase-only.
+- **A seek or loop wrap could leave an ~85 ms stale-audio echo in the ring.**
+  The audio worker holds one chunk in flight, and a transport splice that
+  landed while it did dropped that chunk without writing anything into the ring
+  span it had already been assigned — so the NMI replayed that span from one
+  ring lap earlier, in the one place the splice design promises a
+  constant-latency crosscut. The span is NEUTRAL-filled now, which also keeps
+  the pacing servo's idea of the write head truthful across the splice. The
+  pause path happened to cover this; a plain seek or loop wrap did not.
+- **A dead audio worker was invisible, and could come back as a second one.**
+  `stop()` joins the worker with a one-second bound, because a ring write on a
+  stalled link can outlast it — but it neither said so nor stopped the next
+  scene from starting a second worker into the same ring. A survivor is now
+  reported, and each worker is fenced to the start that created it, so it exits
+  on its own instead of being resurrected by the next scene's start. Worker
+  liveness also joins `AudioStreamer.stats()`, which is what the crash
+  handler's flag was always for.
+- **A capture block that arrived as a flat array crashed the mic callback.**
+  All three capture paths spelled their mono fallback in a way that could only
+  raise `IndexError` on the one input it existed for — inside a PortAudio
+  callback, where the traceback goes to stderr rather than the log and audio
+  simply stops. One shared downmix now, correct on both shapes. In the same
+  callback, a link failure during a REU mic write is caught, counted and logged
+  once per run instead of killing mic audio for the rest of the scene with
+  nothing in the log to point at.
+- **The audio push path's backpressure used the wall clock.** A clock step
+  during a run either expired the producer's 200 ms wait instantly, dropping a
+  blob that had capacity coming, or parked the decoder thread for the length of
+  a backward step; every other deadline in the module is monotonic. A blob
+  larger than the whole queue cap could also never satisfy the gate however
+  empty the queue got, so it was dropped forever with no diagnostic — an empty
+  queue admits it once now.
+- **Auto-interleaved videos got almost none of a video scene's wiring.**
+  `[playlist].interleave_videos` constructed its `VideoScene` directly and
+  hand-copied one of the six things the video builder does — the frame-push
+  cap. Everything else was silently absent, kept from crashing by the scene
+  defaults: no `tempo_scale`, so the bitmap+`$D418`-DAC tempo compensation was
+  switched off for exactly the hires_edges-over-DAC case it exists to correct
+  and every interleaved clip played the documented ~11-12% slow while
+  configured video scenes did not; no sampler resolution, so a sampler-capable
+  Ultimate 64 played interleaved clips on the lo-fi 4-bit DAC (and took its
+  20 fps cap) while every configured video scene in the same run got the
+  off-bus sampler at full rate; and no `[color]` section, no
+  `[midi_control].loop_audio`, no effect chain, no overlays, and none of the
+  epilogue stamps — so `[midi_control].osd = "off"`, `[dsp].pre_emphasis` and
+  `[debug].frame_numbers` were ignored on these scenes alone. They are built
+  through `build_scene` on a synthetic video scene now, so there is nothing
+  left to keep in sync by hand.
+- **A `display = "random"` slideshow lost its dither and cell strategy on the
+  first slide.** The runtime re-pick rebuilt its display mode from a second,
+  hand-written copy of the factory's wiring, and that copy had drifted: it
+  passed neither `dither_method` nor `cell_strategy`, so the documented
+  static-scene resolution (`[color].dither = "auto"` → floyd-steinberg,
+  `cell_strategy = "auto"` → error-min) was replaced by "no dithering" and
+  frequency allocation from the very first image onward. The same copy handed
+  two facts to the flicker resolver and withheld them from the double-buffer
+  resolver in the same breath, so a slideshow running the REU mic pump could
+  end up installing the `$0314` raster IRQ the pump already owns. There is one
+  wiring object and one entry point now, shared by the factory and the scene.
+- **A `display = "random"` slideshow's overlays were validated against one
+  random pick.** `mcm` is in the pool and rejects a text overlay, so the same
+  unchanged config loaded on roughly four runs in five and `--doctor` returned
+  a different verdict from one invocation to the next — and when it did load,
+  the runtime re-pick could still land on the rejected mode with no check at
+  all. Every mode the pool can produce is checked now.
+- **A URL carrying a comma was cut into pieces.** The `file =` spec was split
+  on every comma before anything looked at the scheme, so the standard Akamai
+  HLS shape (`.../clip_,500,800,.mp4.csmil/master.m3u8`) became a truncated URL
+  plus fragments reported as paths with the wrong extension — naming things the
+  user never typed. yt-dlp's own resolved stream URLs, which a URL video scene
+  writes back into its file spec, routinely carry commas in query parameters.
+  After a URL entry a comma now separates only when the next fragment announces
+  a new entry (it begins with whitespace, or is itself a URL), so
+  `http://h/a.mp4, b.mp4` is still two entries and `http://h/a.mp4,b.mp4` is
+  one URL.
+- **A page URL mixed into a multi-entry `file =` spec was never resolved.**
+  Only a whole-spec URL goes through yt-dlp, so such an entry stayed in the
+  candidate pool as a raw page URL for PyAV to open as a media file — the exact
+  cryptic `Invalid data found` failure the offline pre-check exists to prevent,
+  and it happened even with the `yt` extra installed. It is refused at validate
+  time with a message saying to give the URL a scene of its own.
+- **A populated directory whose name contains `[`, `*` or `?` was reported as a
+  glob that matched nothing.** An existing *file* already won over glob
+  interpretation — `Clip [videoid].mp4` is yt-dlp's own naming convention — but
+  a directory did not, and the same convention produces such directories for
+  playlist downloads. `os.path.isdir` is now tested before the glob branch, like
+  `os.path.isfile` already was.
+- **A `generative` scene with `audio_source = "sid"` and no `file =` failed on
+  a normal HVSC tree.** The recursive walk of the default SID directory was
+  keyed to the *error-message label* `"waveform"`, and this arm passes a
+  different label while sharing the same default directory — so it got a shallow
+  listing, and every documented HVSC layout has zero `.sid` files at the top
+  level. It was refused with "the default directory 'assets/sids' is missing or
+  empty" on the exact tree a waveform scene plays out of the box. The recursion
+  is an explicit keyword now, which also means rewording an error message can no
+  longer switch HVSC discovery off.
+- **A live scene beside a `follower_only` sibling tore down every 30 seconds.**
+  The single-scene duration default counted `[[scenes]]` entries, but
+  follower-only scenes never reach the playlist and the playlist's own
+  single-scene mode counts what it was handed. So the canonical ensemble shape —
+  one webcam or blank scene plus a follower-only sibling — really was a
+  single-scene playlist, yet the scene kept the finite 30 s default and
+  re-opened the capture device every 30 seconds forever (and under `--no-loop`
+  the show simply ended). It counts the rotation now.
+- **`--doctor` reported a display mode a slideshow never uses, and skipped it
+  from three color reports.** `resolve_scene_display` answered `hires_edges` for
+  a default-display slideshow while the build resolved `mhires`, and doctor
+  branches on that answer — dropping the `color_match` report for `hires_edges`
+  and the `cell_strategy`/`motion_smoothing` reports for anything but `mhires`.
+  The one scene type whose `auto` resolutions actually differ was therefore the
+  one type missing from all three. It delegates to the slideshow resolver now.
+- **A bad `[color].flicker_tolerance` was the one color typo that escaped the
+  config check.** It had no whole-config validator, so it raised a plain
+  `ValueError` from deep inside the display build — a different exit code from
+  every sibling `[color]` field, naming only `[color]` and never the scene an
+  override came from — and that raise is only reachable from a scene that paints
+  a frame, so a bad value in a SID-only or blank-only playlist was never caught
+  at all, `--doctor --skip-probe` included.
+- **A `webcam` scene accepted `display = "blank"` and painted nothing.** Every
+  other frame-bearing scene type refuses it with guidance, because blank mode
+  ignores the frame it is handed; webcam was the one type with no validator, so
+  the run opened the camera, grabbed frames and showed an empty screen with no
+  error anywhere. `display = "random"` on a webcam now gets the same "only
+  slideshow does" message its siblings give instead of a raw "unknown display
+  mode".
+- **A SID/display conflict could advise a change that did not clear it.** The
+  overlap check reports the first conflicting region and looks at screen RAM
+  before the bitmap, so a payload spanning both was reported as the screen
+  conflict — and "load above $07E8" then lands straight in the hires bitmap.
+  The remedy is worded off the highest region the display actually reserves.
+- **A `[playlist].videos_dir` entry that was a directory named `clips.mp4`
+  became an interleaved video.** The interleave lister filtered on the extension
+  alone with no regular-file check, unlike the identical listing a scene's
+  `file =` gets, so the entry only failed once PyAV tried to open it. Both go
+  through one lister now.
+- **HVSC unpacked after the first miss stayed invisible.** The songlengths
+  lookups are process-global memos with no invalidation, including the "not
+  found" answer — so in a long-lived `--serve` host, unpacking HVSC or fixing
+  `[playlist].songlengths_file` could not take effect without restarting the
+  process. The config-reload path clears them now. The "auto-detected HVSC
+  database at …" line also moved behind the cache check, so it is logged once
+  per process rather than once per waveform scene built.
+- A scene that falls back to its default media directory now logs the absolute
+  directory it resolved to. The defaults are relative, so they resolve against
+  the process's working directory — which for a daemon, a systemd unit or a
+  container entrypoint is not necessarily where the operator thinks the media
+  is.
+
+- **A preview run whose window had closed could not be stopped.** When
+  `[preview]` is on, the main thread drives the window and joins the playlist
+  threads itself when it stops — and that join had no timeout. Three ordinary
+  paths reach it: the operator closes the window (documented as *not* a stop
+  signal), a draw failure disables it, and, on the very first iteration, a
+  headless opencv build or a machine with no display, where the window logs
+  "preview disabled" and the show carries on. An untimed `join()` parks the
+  main thread where no signal handler can run, and on the CLI the SIGINT and
+  SIGTERM handlers are the *only* thing that sets the stop flag — so from that
+  moment neither Ctrl+C nor a service manager's SIGTERM could end the run,
+  teardown never happened, and the machine was left mid-session. It now uses
+  the same polling join as the headless path, which is what the three other
+  join sites were already changed to for exactly this reason. `[preview]` over
+  SSH, and `[preview].enabled = true` on a headless install, are the runs that
+  were affected.
+- **Webcam clips could never launch from the `[[performance.clips]]` grid.**
+  `type` defaults to `"webcam"` in a clip table, but the decision to open the
+  camera only looked at `[[scenes]]` and `[vision]`. With no webcam scene
+  declared and vision off, the camera stayed shut, and the pad's scene build
+  failed on a background thread — logged, then swallowed into the pad's error
+  state, so the pad simply never fired for the whole show. Clips now count
+  toward opening the camera.
+- **A bad `[wled].listen` took the whole run down after the hardware was
+  already up.** The endpoint was parsed at service-start time, outside the
+  guard that is supposed to keep one optional surface from killing a session,
+  so `listen = ":70000"` produced a traceback and an unmapped exit code with
+  every machine already open, reset and provisioned. It is now rejected by
+  `--doctor`-grade config validation *before* any hardware is touched (exit
+  `5`, like every other config error), and a failure at bind time disables the
+  WLED device and leaves the show running. The same change closes a validator
+  gap: `[wled]` was checked by `--doctor` and by nothing else.
+- **A partly-torn-down system could be left holding hardware.** A failure part
+  way through building one system's stack unwound by hand, in four different
+  places, with no per-step guard — so a failing sampler restore stranded the
+  API socket and the camera, and a failure anywhere after the REU provisioning
+  step (an audio-streamer or preview construction failure) unwound nothing at
+  all. Every resource is now registered on one ladder as it is acquired and
+  released in reverse, each step guarded, whatever the failure.
+- **Teardown could run underneath live playlist threads.** `teardown_session`
+  documented itself as safe to call from a `finally:` but never stopped the
+  playlists, so any escape that skipped the drain — a thread that failed to
+  start, an unexpected exception out of the run loop — closed audio, reset and
+  closed the API while a worker was still writing to the machine, which is the
+  mid-DMA cut that can wedge it into needing a power cycle. It now sets the
+  stop flag and drains the threads first (a no-op on the normal path), and the
+  thread list is populated as each thread starts so a partial failure is still
+  visible to teardown.
+- **The framebuffer kept shadowing every DMA write for a disabled feature.**
+  With `[preview]` off and `[recording]` on, a recorder that refused to start
+  (a codec/fourcc the platform will not open) left the shadow-memory write
+  listener registered for the rest of the run with nothing reading it. It is
+  now detached when no consumer survives, and at teardown.
+- **`--profile` re-printed every scene the run had ever played.** The periodic
+  summary iterated every scene it had ever seen, so a 10-scene looping
+  playlist printed 10 lines every interval, 9 of them the last 64 frames of
+  scenes that had ended minutes earlier, with nothing in the line marking them
+  stale — and the table grew without bound on a playlist whose scene names
+  come from the media (a directory scene renames itself per file; a video
+  scene prefers the file's own title tag). Only scenes that have rendered
+  since their last line are printed now, and an idle scene's samples are
+  dropped. Two smaller fixes in the same summary: the scene name is escaped
+  and length-capped, so a newline inside a played file's title tag can no
+  longer forge an extra record in `--log-file`; and a stage the summary
+  doesn't recognize is printed after the known columns rather than measured
+  and silently discarded.
+- **`--profile`'s p50 was one sample too high.** The percentile index
+  truncated where nearest rank rounds up, so at the steady-state 64-sample
+  window the reported median was the 33rd smallest frame time rather than the
+  32nd (and the "median" of two samples was the larger one). p95 was affected
+  at some window sizes too.
+- `--profile --profile-interval 0` instruments every frame and prints nothing;
+  it now says so once at startup instead of looking like a broken profiler.
+- A second SIGINT/SIGTERM escalates to the default disposition per signal, as
+  documented. One shared flag meant the first SIGTERM after a Ctrl+C took the
+  escalation branch — arming the hard kill a signal earlier than promised, and
+  dropping that SIGTERM's own stop request.
 
 - **`--serve` reported success for a run that never served.** uvicorn binds
   on its background thread, not in `ControlServer.start()`, and when the port
@@ -457,6 +886,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fault that did not exist.
 
 ### Changed
+
+- `AudioStreamer.stats()` renames `late_worst_s` to `late_worst_window_s` and
+  adds `running`. Every other counter in that snapshot is cumulative for the
+  run, while this one is cleared on each health log line, so the key now says
+  which it is. (Public only to the Python API, which carries no stability
+  promise at `0.x`; nothing in the CLI or config surface changes.)
+
+- `MachineSettingsIsolation` (test helper) now redirects `$C64CAST_DATA_DIR`
+  alongside `$C64CAST_SETTINGS`, so a test module that opts into it cannot read
+  or write the real `~/.local/share/c64cast/` either. Its name always read
+  broader than it was.
 
 - `--doctor` now states when several ensemble systems authenticate with one
   shared `[ultimate64].dma_password`, naming the systems it reached. Unlike

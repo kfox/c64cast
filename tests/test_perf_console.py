@@ -22,16 +22,22 @@ import threading
 import unittest
 import warnings
 from typing import Any
+from unittest.mock import patch
 
+from c64cast.control import perf_console
+from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY
 from c64cast.control.perf_console import (
     _PERF_HTML,
+    MAX_COMMAND_BYTES,
+    MAX_TARGET_CHARS,
     TRANSPORT_VERBS,
     PerfBridge,
     SocketReader,
     _beats_remaining,
     _system_state,
+    with_role,
 )
-from c64cast.control.transport import LiveTuneTracker, TransportEvent
+from c64cast.control.transport import JsonSlotStore, LiveTuneTracker, TransportEvent
 from c64cast.scenes.effects import TrailsEffect
 
 try:
@@ -196,6 +202,34 @@ class _FakePlaylist:
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
         self.jumps.append((index, skip_interstitial))
+
+
+class _AdvancingPlaylist(_FakePlaylist):
+    """A playlist whose ``current`` hands back a different scene on every read.
+
+    `Playlist._advance` writes `index` and `current` as two separate statements
+    (with a teardown between them, during which `current` is None), so a frame
+    builder that re-read `current` could describe two scenes in one snapshot.
+    This holds that window permanently open: scene A has an effect chain and no
+    source, scene B has a source and no chain, so a frame built from two reads
+    disagrees with itself visibly."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+        self._scene_a = _FakeScene("A", [TrailsEffect(decay=0.0)])
+        self._scene_b = _FakeScene("B", [], _FakeSource())
+        super().__init__(scene=self._scene_a)
+        self.scenes = [self._scene_a, self._scene_b]
+        self.reads = 0  # the base __init__ read `current` on the way past
+
+    @property
+    def current(self) -> Any:
+        self.reads += 1
+        return self._scene_a if self.reads == 1 else self._scene_b
+
+    @current.setter
+    def current(self, scene: Any) -> None:
+        """Swallowed: the pair above is what this fake is for."""
 
 
 def _bridge(**kw: Any) -> tuple[PerfBridge, _FakePlaylist]:
@@ -531,6 +565,177 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertEqual([s["name"] for s in st["systems"]], ["a", "b"])
 
 
+class MalformedCommandTest(unittest.TestCase):
+    """A decodable frame never raises out of `PerfBridge.apply`.
+
+    `SocketReader` closed the *undecodable* half of this: a text frame that
+    isn't JSON, or a binary one, is ignored rather than allowed to tear the
+    console's only feed down. The dispatch one layer below it defeated that for
+    a frame that decodes fine and then names an action without its fields —
+    `{"action": "launch"}` was a `KeyError` from inside the push loop, a
+    traceback at default verbosity, and a closed socket. The page that builds
+    these frames is hand-written JS that nothing type-checks, so a cached phone
+    page from an older build is the expected caller."""
+
+    def test_an_action_missing_its_field_is_refused_rather_than_raised(self):
+        bridge, pl = _bridge(clips=[{"slot": 1, "name": "A"}], effects=[TrailsEffect()])
+        for cmd in (
+            {"action": "launch"},
+            {"action": "fx"},
+            {"action": "live"},
+            {"action": "jump"},
+            {"action": "look"},
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(bridge.apply(cmd))
+        self.assertEqual(pl.performance.events, [])
+        self.assertEqual(pl.jumps, [])
+
+    def test_a_non_numeric_field_is_refused_rather_than_raised(self):
+        bridge, pl = _bridge(clips=[{"slot": 1, "name": "A"}], effects=[TrailsEffect()])
+        for cmd in (
+            {"action": "launch", "slot": "x"},
+            {"action": "jump", "index": "x"},
+            {"action": "fx", "layer": None},
+            {"action": "fx", "layer": 0, "param": "decay", "value": "loud"},
+            {"action": "look", "slot": [1]},
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(bridge.apply(cmd))
+
+    def test_a_non_finite_number_is_refused(self):
+        # `json.loads` accepts the bare literals `1e400`, `Infinity` and `NaN`,
+        # and `int(float("inf"))` raises OverflowError — an ArithmeticError, so
+        # not in the (KeyError, TypeError, ValueError) tuple a fix would reach
+        # for first.
+        bridge, _pl = _bridge(clips=[{"slot": 1, "name": "A"}])
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertFalse(bridge.apply({"action": "launch", "slot": value}))
+                self.assertFalse(
+                    bridge.apply({"action": "transport", "verb": "seek", "target": value})
+                )
+
+    def test_a_boolean_is_not_a_slot(self):
+        # `bool` is an `int` in Python, so `{"slot": true}` would read as slot 1.
+        bridge, pl = _bridge(clips=[{"slot": 1, "name": "A"}])
+        self.assertFalse(bridge.apply({"action": "launch", "slot": True}))
+        self.assertEqual(pl.performance.events, [])
+
+    def test_an_absurdly_long_target_is_refused(self):
+        # `live_tune.resolve_holder` parses the `fx<n>` prefix with `int()`, and
+        # CPython refuses an integer literal past 4300 digits — so a crafted
+        # target raised ValueError from a place no reader would guard.
+        bridge, _pl = _bridge(effects=[TrailsEffect()])
+        target = "fx" + "9" * (MAX_TARGET_CHARS * 2) + ".amount"
+        self.assertFalse(bridge.apply({"action": "live", "target": target, "norm": 0.5}))
+        self.assertFalse(bridge.live(None, ""))
+
+    def test_a_well_formed_frame_still_works(self):
+        # The guard rails must not have narrowed what a real console sends.
+        bridge, pl = _bridge(clips=[{"slot": 1, "name": "A"}], effects=[TrailsEffect(decay=0.0)])
+        self.assertTrue(bridge.apply({"action": "launch", "slot": "2"}))
+        self.assertTrue(bridge.apply({"action": "fx", "layer": 0, "enabled": False}))
+        self.assertEqual(pl.performance.events, [(2, True)])
+
+
+class TransportDispatchTest(unittest.TestCase):
+    """`TRANSPORT_VERBS` is the gate and the branch chain below it is the
+    dispatch, and nothing held the two lists to each other: the method's last
+    statement used to be an unconditional `loop_slot` enqueue, so a verb added
+    to the tuple without a branch silently saved or cleared one of the
+    performer's persisted loop presets."""
+
+    def test_every_verb_in_the_tuple_has_its_own_effect(self):
+        for verb in TRANSPORT_VERBS:
+            with self.subTest(verb=verb):
+                bridge, pl = _bridge(scene=_FakeTransportScene())
+                extra: dict[str, Any] = {}
+                if verb == "seek":
+                    extra["target"] = 3.0
+                if verb == "loop_slot":
+                    extra["slot"] = 2
+                self.assertTrue(bridge.transport(None, verb, **extra))
+                if verb in ("pause", "resume", "skip"):
+                    event = {
+                        "pause": pl.pause_event,
+                        "resume": pl.resume_event,
+                        "skip": pl.skip_event,
+                    }[verb]
+                    self.assertTrue(event.is_set())
+                    self.assertEqual(pl.transport.events, [])
+                else:
+                    self.assertEqual([e.action for e in pl.transport.events], [verb])
+
+    def test_a_verb_with_no_branch_is_refused_rather_than_writing_a_loop_slot(self):
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        with patch.object(perf_console, "TRANSPORT_VERBS", (*TRANSPORT_VERBS, "wobble")):
+            self.assertFalse(bridge.transport(None, "wobble"))
+        self.assertEqual(pl.transport.events, [])
+
+    def test_a_loop_slot_outside_the_pad_range_is_refused(self):
+        # The one verb here that writes and deletes persisted state on disk.
+        # Unbounded, a caller could loop an incrementing slot and grow
+        # `loop-*.json` without limit, each save rewriting the whole file on
+        # the playlist thread that drives the hardware.
+        bridge, pl = _bridge(scene=_FakeTransportScene())
+        for slot in (0, -1, JsonSlotStore.SLOT_MAX + 1, 10**6):
+            with self.subTest(slot=slot):
+                self.assertFalse(bridge.transport(None, "loop_slot", slot=slot, save=True))
+        self.assertEqual(pl.transport.events, [])
+        self.assertTrue(bridge.transport(None, "loop_slot", slot=JsonSlotStore.SLOT_MAX, save=True))
+
+
+class StateFrameCoherenceTest(unittest.TestCase):
+    def test_one_state_frame_describes_one_scene(self):
+        pl = _AdvancingPlaylist()
+        state = _system_state("c64cast", pl)
+        # Scene A has an effect chain and no source; scene B has a source and
+        # no chain. A frame built from more than one read of `pl.current`
+        # renders A's name over B's rack.
+        self.assertEqual(state["current_scene"], "A")
+        self.assertEqual(len(state["effects"]), 1)
+        self.assertEqual(state["live"], [])
+        self.assertEqual(pl.reads, 1)
+
+    def test_the_catalog_cache_has_a_reset_hook(self):
+        # A process-global with no reset let one test inherit whatever the
+        # previous test in the same worker had cached.
+        before = [doc.target for doc in perf_console._live_target_docs()]
+        self.assertTrue(before)
+        perf_console.reset_live_target_docs()
+        self.assertIsNone(perf_console._LIVE_TARGETS)
+        self.assertEqual([doc.target for doc in perf_console._live_target_docs()], before)
+
+
+class ViewerFrameTest(unittest.TestCase):
+    """What a read-only credential — the link this system is designed to hand
+    to a guest — is told about the host."""
+
+    def _frame(self, role: str | None) -> dict[str, Any]:
+        state = {
+            "systems": [
+                {"tuned": {"config_path": "/Users/someone/shows/gig.toml", "config_name": "gig"}}
+            ]
+        }
+        scope = {} if role is None else {SCOPE_ROLE_KEY: role}
+        return with_role(state, scope)
+
+    def test_a_viewer_is_not_told_the_running_config_path(self):
+        tuned = self._frame(ROLE_VIEWER)["systems"][0]["tuned"]
+        self.assertEqual(tuned["config_path"], "")
+        # The name is what the page actually renders, and it stays.
+        self.assertEqual(tuned["config_name"], "gig")
+
+    def test_the_full_token_still_gets_the_path_it_saves_to(self):
+        frame = self._frame(ROLE_FULL)
+        self.assertEqual(frame["role"], ROLE_FULL)
+        self.assertTrue(frame["systems"][0]["tuned"]["config_path"])
+
+    def test_an_ungated_run_reports_no_role(self):
+        self.assertIsNone(self._frame(None)["role"])
+
+
 class TunedBlockTest(unittest.TestCase):
     """`_tuned_dict` — what the console is shown about knobs already turned.
 
@@ -653,6 +858,36 @@ class PerfPageControlsTest(unittest.TestCase):
         self.assertTrue(verbs)
         self.assertLessEqual(verbs, set(TRANSPORT_VERBS))
 
+    def test_the_gesture_controls_blur_so_the_panels_keep_re_rendering(self):
+        # renderFx and renderTune skip a rebuild while something inside them
+        # has focus, and a range keeps focus after a drag and a <select> after
+        # a change (per the browser) — so without a blur the first drag froze
+        # that panel for the rest of the session: a bypass flipped from a MIDI
+        # pad stopped showing, and after a scene advance the tune panel kept
+        # offering the previous scene's knobs. wled_device.py's page carries
+        # the same fix, and its comment is the record of the failure mode.
+        self.assertGreaterEqual(_PERF_HTML.count("blur()"), 3)
+
+    def test_the_reconnect_backs_off_rather_than_retrying_forever(self):
+        # Every open phone retrying a downed host at a fixed interval is the
+        # load `MAX_CONSOLE_SOCKETS` exists to bound.
+        self.assertIn("function retryWS()", _PERF_HTML)
+        self.assertIn("WS_RETRY_MAX_MS", _PERF_HTML)
+        self.assertNotIn("setTimeout(startWS, 2500)", _PERF_HTML)
+
+    def test_the_idle_branch_clears_the_tempo_readout(self):
+        # `animate()` renders clock.bpm unconditionally, so leaving the anchor
+        # alone showed the last show's BPM — or a confident 120 from the
+        # initializer — above "No session running."
+        self.assertIn("bpm: 0", _PERF_HTML)
+
+    def test_the_screen_is_re_pointed_when_the_system_tab_changes(self):
+        # The src bakes `?system=` in and was only ever rebuilt by the WATCH
+        # tap, so on an ensemble run a tab tap moved every control to the new
+        # machine and left the old machine's picture streaming underneath.
+        self.assertIn("screenSys", _PERF_HTML)
+        self.assertIn("!== screenSys", _PERF_HTML)
+
     def test_the_save_back_posts_where_the_write_route_lives(self):
         # Not on /perf/command: a config write needs a status code, which a
         # performance command has nowhere to put. See web_api.api_live_tune.
@@ -748,6 +983,159 @@ class PerfEndpointsTest(unittest.TestCase):
             msg = ws.receive_json()
             self.assertIn("systems", msg)
             self.assertEqual(msg["systems"][0]["name"], "c64cast")
+
+    def test_a_malformed_command_frame_leaves_the_feed_alive(self):
+        # The whole point of the dispatch guard: this used to raise KeyError
+        # inside the push loop, land on `except Exception`, and close the
+        # console's only channel — with a full traceback per frame.
+        client, pl = self._client()
+        with client.websocket_connect("/perf/ws") as ws:
+            ws.receive_json()
+            ws.send_json({"action": "launch"})
+            self.assertIn("systems", ws.receive_json())
+            ws.send_json({"action": "jump", "index": "nope"})
+            self.assertIn("systems", ws.receive_json())
+            # Still driving commands afterward, so the loop is intact.
+            ws.send_json({"action": "launch", "slot": 1})
+            self.assertIn("systems", ws.receive_json())
+        self.assertEqual(pl.performance.events, [(1, True)])
+
+    def test_a_malformed_command_post_is_not_ok_rather_than_a_500(self):
+        client, _pl = self._client()
+        r = client.post("/perf/command", json={"action": "launch"})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+
+    def test_the_page_refuses_to_be_framed(self):
+        client, _pl = self._client()
+        headers = client.get("/perf").headers
+        self.assertEqual(headers["x-frame-options"], "DENY")
+        self.assertIn("frame-ancestors 'none'", headers["content-security-policy"])
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+
+    def test_a_command_body_bigger_than_the_cap_is_refused(self):
+        # `await request.json()` buffered every chunk with nothing bounding it
+        # — the hazard `auth.read_body` was written for, on the one POST in the
+        # package that skipped it.
+        client, _pl = self._client()
+        r = client.post(
+            "/perf/command",
+            content=b"x" * (MAX_COMMAND_BYTES + 1),
+            headers={"content-type": "application/json"},
+        )
+        self.assertEqual(r.status_code, 413)
+
+    def test_a_body_that_is_not_json_is_a_400(self):
+        client, _pl = self._client()
+        r = client.post(
+            "/perf/command", content=b"not json", headers={"content-type": "application/json"}
+        )
+        self.assertEqual(r.status_code, 400)
+        r = client.post(
+            "/perf/command", content=b"[1, 2]", headers={"content-type": "application/json"}
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_a_text_plain_post_cannot_reach_the_dispatcher(self):
+        # `Request.json()` never looks at Content-Type, so a cross-site
+        # `<form enctype="text/plain">` whose field name and value sandwich the
+        # JSON is a CORS-simple POST with no preflight to refuse.
+        client, pl = self._client()
+        r = client.post(
+            "/perf/command",
+            content=b'{"action": "launch", "slot": 1}',
+            headers={"content-type": "text/plain"},
+        )
+        self.assertEqual(r.status_code, 415)
+        self.assertEqual(pl.performance.events, [])
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
+class PerfOriginTest(unittest.TestCase):
+    """A WebSocket handshake is exempt from CORS entirely, so any page the
+    performer visits could open `/perf/ws`, read every state frame and send
+    command frames that drive the running show — the open, no-token mode being
+    the default once `[control] enabled = true`."""
+
+    def _client(self) -> tuple[Any, _FakePlaylist]:
+        from c64cast.control.control_plane import build_app
+
+        pl = _FakePlaylist(clips=[{"slot": 1, "name": "A"}])
+        app = build_app(playlists={"c64cast": pl}, config_loaders={}, interstitial_factories={})
+        return TestClient(app), pl
+
+    def test_a_cross_origin_handshake_is_closed_before_accept(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        client, _pl = self._client()
+        with self.assertRaises(WebSocketDisconnect):
+            with client.websocket_connect("/perf/ws", headers={"origin": "http://evil.example"}):
+                pass
+
+    def test_a_same_origin_handshake_is_served(self):
+        client, _pl = self._client()
+        with client.websocket_connect("/perf/ws", headers={"origin": "http://testserver"}) as ws:
+            self.assertIn("systems", ws.receive_json())
+
+    def test_a_handshake_with_no_origin_is_served(self):
+        # No Origin is a non-browser caller (`curl`, `wscat`, a script), which
+        # is exactly the "whoever already has a shell here" the open mode is
+        # justified by — so it stays served.
+        client, _pl = self._client()
+        with client.websocket_connect("/perf/ws") as ws:
+            self.assertIn("systems", ws.receive_json())
+
+    def test_a_cross_origin_command_is_refused(self):
+        client, pl = self._client()
+        r = client.post(
+            "/perf/command",
+            json={"action": "launch", "slot": 1},
+            headers={"origin": "http://evil.example"},
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(pl.performance.events, [])
+
+    def test_a_same_origin_command_is_dispatched(self):
+        client, pl = self._client()
+        r = client.post(
+            "/perf/command",
+            json={"action": "launch", "slot": 1},
+            headers={"origin": "http://testserver"},
+        )
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(pl.performance.events, [(1, True)])
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")
+class PerfSocketCapTest(unittest.TestCase):
+    """Nothing capped the console sockets, and each one runs its own push loop
+    over a frame that reads two stores off disk. The same decision
+    `MAX_SCREEN_WATCHERS`/`StreamSlots` already made for the screen stream:
+    refuse past the cap rather than queue, because a queued console connects
+    and then shows nothing."""
+
+    def test_a_socket_past_the_cap_is_refused_before_accept(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        from c64cast.control.control_plane import build_app
+
+        # Patched before the app is built: the feed reads the cap once, at
+        # construction, so a test does not have to open the real number.
+        with patch.object(perf_console, "MAX_CONSOLE_SOCKETS", 1):
+            app = build_app(
+                playlists={"c64cast": _FakePlaylist()},
+                config_loaders={},
+                interstitial_factories={},
+            )
+        client = TestClient(app)
+        with client.websocket_connect("/perf/ws") as ws:
+            ws.receive_json()
+            with self.assertRaises(WebSocketDisconnect):
+                with client.websocket_connect("/perf/ws"):
+                    pass
+        # The slot comes back when the first socket goes away.
+        with client.websocket_connect("/perf/ws") as ws:
+            self.assertIn("systems", ws.receive_json())
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi + httpx required")

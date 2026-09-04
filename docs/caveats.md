@@ -625,7 +625,9 @@ Two mechanical constraints, both from cv2's HighGUI:
 * **A headless opencv build has no GUI.** `namedWindow` then throws; the
   window logs an error, disables itself, and the session runs on.
 
-Closing the window is not a stop signal — playback continues headless.
+Closing the window is not a stop signal — playback continues headless, and
+the run stays stoppable: the join it falls through to polls, so Ctrl+C and
+SIGTERM still reach their handler (see `session.join_bounded`).
 
 ## Char ROM substitution
 

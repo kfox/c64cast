@@ -108,7 +108,6 @@ from .auth import (
     SCOPE_ROLE_KEY,
     BodyTooLarge,
     ViewerCredential,
-    is_viewer,
     read_body,
     require_full,
 )
@@ -117,11 +116,6 @@ from .transport import COLOR_FIELD_NAMES, write_live_tune_row
 from .web_static import landing_path
 
 log = logging.getLogger(__name__)
-
-#: How often the state feed pushes. Matches the `/perf` console's cadence —
-#: the same beat grid is in the payload and the same local extrapolation runs
-#: against it.
-_PUSH_INTERVAL_S = 0.35
 
 #: Lines of session log a fresh connection is handed before it starts
 #: following along by sequence number.
@@ -326,11 +320,11 @@ def register_web_routes(
     ``screen_fps`` caps how often a watched screen is encoded, not how fast the
     machine sends — it is already sending every frame, and the ones not encoded
     are the ones no longer in the receiver's `latest()`."""
-    from fastapi import HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+    from fastapi import HTTPException, Request, Response, WebSocket
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
 
-    from .perf_console import PerfBridge, SocketReader
+    from .perf_console import ConsoleFeed, PerfBridge, with_role
 
     bridge = PerfBridge(lambda: list(playlists().items()))
     # One playlist per system, each holding the backend that system's writes go
@@ -911,53 +905,37 @@ def register_web_routes(
             return False
         return True
 
+    # The console's own state feed rides the same `ConsoleFeed` loop `/perf/ws`
+    # does — the cadence, the exception ladder, the off-the-loop frame build,
+    # the dispatch guard and the socket cap all live there, once. What is local
+    # to this route is the payload (this console also renders the supervisor's
+    # session state and the log tail) and the dispatcher (`_apply_command`
+    # falls through to the performance bridge for anything that isn't a session
+    # verb).
+    sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
+
+    def _console_frame(scope: Mapping[str, Any]) -> dict[str, Any]:
+        nonlocal sent_seq
+        frame = with_role(bridge.state(), scope)
+        frame["session"] = _status_payload(manager.status(), log_buffer, store)
+        if log_buffer is not None:
+            lines = log_buffer.since(sent_seq)
+            if lines:
+                sent_seq = lines[-1]["seq"]
+            frame["log"] = lines
+        return frame
+
+    # Cheap, and the only regular tick this process has: it is what stops a
+    # video stream whose watchers have gone or whose show has ended. A timer of
+    # its own would be a thread paid for at idle to notice that nothing is
+    # happening.
+    console_feed = ConsoleFeed(
+        "web console",
+        build_frame=_console_frame,
+        dispatch=_apply_command,
+        on_tick=screen.sweep,
+    )
+
     @app.websocket("/api/ws")
     async def api_ws(websocket: WebSocket) -> None:
-        await websocket.accept()
-        # The one gap the auth middleware can't cover: a socket is a single
-        # `GET` handshake, so inbound command frames are dropped here (see
-        # perf_console.perf_ws, which has the same hole for the same reason).
-        read_only = is_viewer(websocket.scope)
-        reader = SocketReader(websocket, label="web console")
-        sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
-        try:
-            while True:
-                # Same split as `perf_ws`: a frame that raises is our bug, and
-                # swallowing it below would leave the console waiting forever
-                # for a push that is never coming.
-                # Cheap, and the only regular tick this process has: it is what
-                # stops a video stream whose watchers have gone or whose show
-                # has ended. A timer of its own would be a thread paid for at
-                # idle to notice that nothing is happening.
-                screen.sweep()
-                try:
-                    frame = bridge.state()
-                    frame["role"] = websocket.scope.get(SCOPE_ROLE_KEY)
-                    frame["session"] = _status_payload(manager.status(), log_buffer, store)
-                except Exception:
-                    log.exception("web console: could not build a state frame")
-                    break
-                if log_buffer is not None:
-                    lines = log_buffer.since(sent_seq)
-                    if lines:
-                        sent_seq = lines[-1]["seq"]
-                    frame["log"] = lines
-                await websocket.send_json(frame)
-                arrived, msg = await reader.poll(_PUSH_INTERVAL_S)
-                if arrived and isinstance(msg, Mapping) and not read_only:
-                    _apply_command(msg)
-        except WebSocketDisconnect:
-            pass
-        except (ConnectionError, RuntimeError):
-            # An abrupt client close surfaces as a transport error rather than
-            # a `WebSocketDisconnect`, so these stay at debug. Anything else is
-            # a socket nobody asked to close — a `send_json` that could not
-            # serialize a new payload field, a raise out of `bridge.apply` —
-            # and at debug the symptom was a console that flickered or showed
-            # stale state with a clean log, which on an appliance means an SSH
-            # session and a restart to see anything at all.
-            log.debug("web console: websocket closed", exc_info=True)
-        except Exception:
-            log.exception("web console: websocket closed unexpectedly")
-        finally:
-            await reader.close()
+        await console_feed.run(websocket)

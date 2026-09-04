@@ -28,7 +28,10 @@ from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     PREBUFFER_CHUNKS,
+    RING_BUFFER_ADDR,
+    RING_BUFFER_END,
     SAMPLE_TAP_SIZE,
+    WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
     nmi_rate_step,
 )
@@ -96,7 +99,9 @@ class _VirtualClock:
 def _run_worker(s: AudioStreamer, until, timeout: float = 2.0) -> threading.Thread:
     """Start the worker thread and spin until `until()` is true or timeout."""
     s.running = True
-    t = threading.Thread(target=s._worker, daemon=True, name="test-worker")
+    t = threading.Thread(
+        target=s._worker, args=(s._worker_generation,), daemon=True, name="test-worker"
+    )
     t.start()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not until():
@@ -315,7 +320,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
 
         self.assertGreater(s._total_slots, 0)
         self.assertGreater(s._late_slots, 0, "slow writes did not register as late slots")
-        self.assertGreater(s._late_worst_s, 0.0)
+        self.assertGreater(s._late_worst_window_s, 0.0)
 
     def test_prompt_writes_keep_the_schedule(self):
         # The negative control for the counter above: with writes that return
@@ -390,6 +395,87 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
                 s._maybe_log_health(102.0)
         info.assert_not_called()
 
+    def test_prebuffer_partial_chunk_is_padded_to_the_grid(self):
+        """A short collect during the PREBUFFER fill must be NEUTRAL-padded
+        too, not written verbatim.
+
+        Writing it raw advanced write_addr by the raw byte count, and from
+        there every ring write sat off the chunk grid that RING_BUFFER_SIZE is
+        an exact multiple of — so a later chunk straddled RING_BUFFER_END and
+        its tail landed outside the ring, unplayed. Both wrap guards check the
+        address only *after* the increment, which is why the straddling write
+        goes out first. The partial counter stays consumption-phase-only: with
+        no NMI reading yet, a slow prebuffer collect is not an underrun.
+        """
+        s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
+        half = s.chunk_size // 2
+        s.q.put(bytes([2] * half))
+        s._queued_samples += half
+        expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
+        _run_worker(s, until=lambda: len(_written_stream(s)) >= s.chunk_size)
+        stream = _written_stream(s)
+        self.assertEqual(stream[: s.chunk_size], expected)
+        self.assertEqual(len(stream) % s.chunk_size, 0, "ring writes left the chunk grid")
+        self.assertEqual(s._partial_underruns, 0, "prebuffer pads are not underruns")
+
+    def test_flushed_pending_chunk_leaves_no_ring_hole(self):
+        """A transport splice that lands while the worker holds a pending chunk
+        drops it — and must NEUTRAL-fill the span it was going to occupy.
+
+        write_addr is advanced when the chunk is handed off and the next
+        chunk's address is already past that span, so a bare discard left a
+        hole nothing would ever write: the NMI replays a lap-old byte range as
+        a stale echo, exactly where the splice design promises silence.
+        Deterministic here because _maybe_log_health is called inside the
+        handoff→next-iteration window the flush has to land in.
+        """
+        s = _make_worker_streamer(chunk_size=32, sample_rate=64000)
+        for _ in range(PREBUFFER_CHUNKS):
+            s.q.put(bytes([3] * 32))
+            s._queued_samples += 32
+        flushed: list[float] = []
+        real_health = s._maybe_log_health
+
+        def flush_once(now: float) -> None:
+            if not flushed:
+                flushed.append(now)
+                s.flush()
+            real_health(now)
+
+        s._maybe_log_health = flush_once  # type: ignore[method-assign]
+        hole_addr = RING_BUFFER_ADDR + PREBUFFER_CHUNKS * 32
+        filled = (f"{hole_addr:04X}", bytes([NEUTRAL_SAMPLE] * 32))
+        _run_worker(s, until=lambda: filled in cast(Any, s.api).writes, timeout=3.0)
+        writes = cast(Any, s.api).writes
+        self.assertIn(filled, writes, "the discarded chunk's ring span was never filled")
+        # And every write, the fill included, tiles the ring contiguously.
+        addr = RING_BUFFER_ADDR
+        for key, data in writes:
+            self.assertEqual(int(key, 16), addr)
+            addr += len(data)
+            if addr >= RING_BUFFER_END:
+                addr = RING_BUFFER_ADDR
+
+    def test_worker_exits_when_its_generation_is_superseded(self):
+        """stop()'s join is bounded, so a worker parked in a ring write can
+        outlive it — and the next scene's start_* sets `running` back to True,
+        which the orphan's own loop guard read as "keep going". Two workers
+        then dripped into one ring with independent cursors. The generation
+        captured at start is what makes the orphan leave instead.
+        """
+        s = _make_worker_streamer()
+        s.running = True
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
+        t.start()
+        try:
+            s._worker_generation += 1  # a later start_* claimed the ring
+            t.join(timeout=2.0)
+            self.assertFalse(t.is_alive(), "superseded worker kept running")
+            self.assertTrue(s.running, "the shared flag is not what stopped it")
+        finally:
+            s.running = False
+            t.join(timeout=1.0)
+
     def test_worker_crash_sets_not_running(self):
         # An exception in the DMA write must be caught, logged, and flip
         # running False so the main loop can detect the dead worker.
@@ -403,7 +489,7 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         cast(Any, s).api.write_memory_file = boom
         with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
             s.running = True
-            t = threading.Thread(target=s._worker, daemon=True)
+            t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
             t.start()
             t.join(timeout=1.0)
         self.assertFalse(s.running)
@@ -998,6 +1084,17 @@ class EncodeBackpressureTest(unittest.TestCase):
         s = _make()
         self.assertEqual(s._encode_and_enqueue(np.array([], dtype=np.float32)), 0)
 
+    def test_blob_bigger_than_the_whole_cap_is_still_admitted(self):
+        """The gate tests queued + n against the cap, so a blob larger than the
+        cap on its own could never clear it however empty the queue got: the
+        caller burned the timeout and returned 0 for that call and every one
+        after it — permanent silence, from a method whose docstring promises
+        graceful throttling. An empty queue admits it once."""
+        s = _make()
+        s.running = True
+        n = s._max_queued_samples + 1
+        self.assertEqual(s._encode_and_enqueue(np.zeros(n, dtype=np.float32), True), n)
+
 
 class EncodeDacTest(unittest.TestCase):
     def test_explicit_rng_dither_is_reproducible(self):
@@ -1472,3 +1569,42 @@ class LifecycleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _StuckThread:
+    """A worker thread that survives a bounded join (the stalled-link case)."""
+
+    name = "audio-worker"
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+    def is_alive(self) -> bool:
+        return True
+
+
+class StopWorkerJoinTest(unittest.TestCase):
+    """stop() joins the worker with a bounded timeout, so it has to say
+    something when the worker is still alive afterwards: the counters cleared
+    right below the join are still being mutated, and nothing else in the
+    process reports it."""
+
+    def test_warns_when_the_worker_outlives_the_join(self):
+        s = _make()
+        s.running = True
+        s._worker_thread = cast(Any, _StuckThread())
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.stop()
+        self.assertTrue(any("did not exit within" in m for m in cm.output), cm.output)
+        self.assertGreater(WORKER_JOIN_TIMEOUT_S, 0.0)
+        self.assertIsNone(s._worker_thread)
+
+    def test_silent_when_the_worker_exited(self):
+        s = _make()
+        s.running = True
+        s._worker_thread = cast(
+            Any, SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False)
+        )
+        with mock.patch.object(audio_mod.log, "warning") as warn:
+            s.stop()
+        warn.assert_not_called()

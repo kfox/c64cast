@@ -138,12 +138,12 @@ class AsidSceneTest(unittest.TestCase):
 
     # ---- config validation + lifecycle --------------------------------------
     def test_validate_asid_returns_bitmap_mode(self):
-        from c64cast.app.config import SceneCfg
+        from c64cast.app.config import Config, SceneCfg
         from c64cast.app.scene_factory import _validate_asid
 
         # AsidScene is bitmap-only: the validator synthesises a hires mode so
         # overlay-compat rejects PETSCII overlays (as on a waveform scene).
-        mode = _validate_asid(SceneCfg(type="asid"))
+        mode = _validate_asid(SceneCfg(type="asid"), Config())
         self.assertIsInstance(mode, DisplayMode)
 
     def test_validate_scene_cfg_accepts_asid(self):

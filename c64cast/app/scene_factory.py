@@ -30,7 +30,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
+from c64cast._redact import REDACTED, redact_secrets
 from c64cast.audio.audio_source import (
     AudioFileSource,
     AudioSource,
@@ -40,7 +42,7 @@ from c64cast.audio.audio_source import (
 )
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
-from c64cast.hw.c64 import nmi_rate_safety
+from c64cast.hw.c64 import SCREEN, VIC_BANK_0, nmi_rate_safety
 from c64cast.scenes import scenes as _scenes
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import GenerativeSource, build_generator
@@ -92,6 +94,7 @@ from .config import (
     _MIDI_WAVEFORM_CHOICES,
     _MOD_SOURCE_CHOICES,
     LOOPBACK_HOSTS,
+    SCENE_TYPES,
     ColorCfg,
     Config,
     ConfigError,
@@ -118,6 +121,28 @@ log = logging.getLogger(__name__)
 # delta-cached small writes where staging is a net regression — so the "auto"
 # setting leaves them on the host-DMA path. (mcm doesn't support staging.)
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
+
+# Read ceiling for the load-time SID header check. A PSID/RSID is a header
+# plus a C64 memory image, so 256 KB is already four times the address
+# space; anything larger is not a tune. The check runs inside the
+# network-reachable validate path, so the read has to be bounded — see
+# _check_first_sid_clears_display.
+MAX_SID_BYTES = 256 * 1024
+
+# Control characters (and DEL) that must never reach a scene name: it is
+# interpolated into log lines with no args, drawn on the OSD, and shipped
+# in the SCENE_CONFIG_JSON snapshot. See _clean_scene_name.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+#: Cap on a scene name taken from a media file's own metadata.
+MAX_SCENE_NAME_CHARS = 120
+
+# Every display mode that can quantize an arbitrary BGR frame — i.e. the
+# whole `_DISPLAY_CHOICES` set minus "blank" (nothing to paint into) and
+# "random" (not a mode). It is both what `display = "random"` picks from
+# and the list every "pick a real mode" refusal quotes, so a new display
+# mode reaches the picker and all four messages from one place.
+QUANTIZING_DISPLAYS = ("mhires", "hires", "hires_edges", "mcm", "petscii")
 
 
 def resolve_use_reu_staged(
@@ -429,23 +454,51 @@ def _autodetect_songlengths_path(root: str = _AUTODETECT_SONGLENGTHS_ROOT) -> st
     return found
 
 
+def reset_songlengths_cache() -> None:
+    """Forget every memoized songlengths lookup, including the autodetect
+    result and its "not found" answer.
+
+    The memos are process-global and were never invalidated, which is wrong
+    for the long-lived host this module serves: `serve.py`'s SessionManager
+    starts and stops sessions over the life of one process and
+    `session.reload_all` re-runs `scenes_from_config`, so unpacking HVSC or
+    fixing `[playlist].songlengths_file` could not take effect without a
+    restart — the first miss was cached as `None` forever. Called from the
+    config-reload path; a test that reaches `_load_songlengths` should call it
+    from `addCleanup` rather than poking the two globals by hand.
+
+    The autodetect memo deliberately ignores its `root` argument (only the
+    default-root production caller exists, and re-probing an HVSC tree of tens
+    of thousands of files per call is what the memo exists to avoid — see
+    `tests/test_config.py::test_result_is_memoized`). This is the invalidation
+    hook it was missing, not a change to the key."""
+    global _songlengths_autodetected
+    _songlengths_cache.clear()
+    _songlengths_autodetected = _UNSET
+
+
 def _load_songlengths(path: str | None) -> LengthsDB | None:
     """Memoized load of the HVSC SongLengths database. If ``path`` is unset
     (None — the field's default), auto-detects an unpacked HVSC under
     ``assets/sids``; an explicit empty string opts out of auto-detection.
     Returns None if no path is configured/detected or the file is
     missing/unreadable."""
+    autodetected = False
     if path is None:
         path = _autodetect_songlengths_path()
         if path is None:
             return None
-        log.info("playlist.songlengths_file not set; auto-detected HVSC database at %s", path)
+        autodetected = True
     elif not path:
         return None
     else:
         path = paths.expand_user(path)
     if path in _songlengths_cache:
         return _songlengths_cache[path]
+    if autodetected:
+        # Behind the cache check: it is one fact about the host, and every
+        # waveform scene built in the run asks for the same database.
+        log.info("playlist.songlengths_file not set; auto-detected HVSC database at %s", path)
     try:
         db = LengthsDB.load(path)
     except FileNotFoundError:
@@ -497,7 +550,13 @@ class MediaNotChosen(ValueError):
 
 
 def _resolve_file_spec_or_explain(
-    s: SceneCfg, default_dir: str, exts: tuple[str, ...], *, label: str, drop_hint: str
+    s: SceneCfg,
+    default_dir: str,
+    exts: tuple[str, ...],
+    *,
+    label: str,
+    drop_hint: str,
+    recurse_sid_dir: bool = False,
 ) -> None:
     """Resolve the scene's `file` spec at validate time, defaulting to
     `default_dir` when unset — and mutating `s.file` to the resolved default
@@ -513,8 +572,17 @@ def _resolve_file_spec_or_explain(
     the file-kind hint."""
     if not s.file:
         s.file = default_dir
+        # The default dirs are relative, so they resolve against the process's
+        # working directory — which for a `serve.py` daemon, a systemd unit or
+        # a container entrypoint is not necessarily where the operator thinks
+        # the media is. Say which directory was actually used.
+        log.info(
+            "%s scene: no `file =` set; using the default directory %s",
+            label,
+            os.path.abspath(paths.expand_user(default_dir)),
+        )
     try:
-        resolve_file_spec(s.file, exts, label=label)
+        resolve_file_spec(s.file, exts, label=label, recurse_default_sid_dir=recurse_sid_dir)
     except ValueError as e:
         if s.file == default_dir:
             raise MediaNotChosen(
@@ -534,31 +602,109 @@ def resolve_scene_display(display: str | None, scene_type: str) -> str:
     — matches quick playback's default, see quickcast._DEFAULT_VIDEO_DISPLAY)
     and `"hires_edges"` everywhere else (tuned for live webcam Canny-edge
     stylization, the historical global default). Any explicit value passes
-    through unchanged. Slideshow has its own `_resolve_slideshow_display`
-    (also handles `"random"`); this helper is for webcam/video/generative/wled
-    and doctor's uniform per-scene reporting."""
+    through unchanged.
+
+    Slideshow **delegates** to `_resolve_slideshow_display`, which resolves
+    both an unset display and the explicit `"hires_edges"` to `"mhires"`
+    (stills want per-cell color, not Canny edges). This helper serves
+    doctor's uniform per-scene reporting as well as the builders, and doctor
+    branches on the answer: it skips the color_match report for
+    `"hires_edges"` and the cell_strategy/motion_smoothing reports for
+    anything that isn't `"mhires"`. Answering `"hires_edges"` for a
+    default-display slideshow therefore dropped the one scene type whose
+    "auto" resolutions actually differ (floyd-steinberg + error-min, both
+    mhires-per-cell-sensitive) from all three reports, and named a mode the
+    build never produces. `"random"` stays as authored — it has no single
+    answer, and `_resolve_slideshow_display` would roll a die."""
+    if scene_type == "slideshow" and display != "random":
+        return _resolve_slideshow_display(display)
     if display is not None:
         return display
     return "mhires" if scene_type in ("video", "wled") else "hires_edges"
 
 
-def _display_mode_for_scene(
-    display: str | None,
+@dataclass(frozen=True)
+class DisplayWiring:
+    """Everything except the display-mode *name* that decides how a scene's
+    :class:`DisplayMode` is wired.
+
+    One object so the wiring travels as a unit. `_display_mode_for_scene`
+    builds it from a (SceneCfg, Config) pair; `SlideshowScene` stashes it and
+    hands it back for the `display = "random"` rebuild. Before this existed
+    the slideshow re-derived the whole cluster by hand and had silently
+    drifted — it omitted `dither_method` and `cell_strategy` entirely (so a
+    random-display slideshow lost the documented static-scene
+    floyd-steinberg + error-min on its very first slide) and withheld
+    `has_buffer_overlays`/`audio_reu_pump_active` from `resolve_double_buffer`
+    while passing both to `resolve_flicker_tolerance` in the same breath.
+    `_build_display_mode` has 13 defaulted parameters, so every omission was
+    silent. There is one copy of the wiring now, and adding a field to it
+    reaches both callers by construction."""
+
+    color: ColorCfg | None = None
+    #: The SceneCfg `type`, which is what `[color].dither = "auto"` and
+    #: `[color].cell_strategy = "auto"` resolve against (static `slideshow`
+    #: resolves differently from a motion scene).
+    scene_type: str = "slideshow"
+    palette_mode: str = "percell"
+    border: int | str = 0
+    background: int | str = 0
+    style: str = "default"
+    text_double_height: bool = False
+    #: The raw [video] tri-states, not resolved bools — a random-display
+    #: rebuild has to re-decide them against each concrete mode.
+    use_reu_staged: bool | str = "auto"
+    double_buffer: bool | str = "auto"
+    reu_available: bool = False
+    backend_supports_reu: bool = False
+    audio_reu_pump_active: bool = False
+    has_buffer_overlays: bool = False
+    force_host_dma: bool = False
+
+
+def display_wiring_for_scene(
     s: SceneCfg,
     cfg: Config,
     *,
     reu_available: bool = False,
     backend_supports_reu: bool = False,
     force_host_dma: bool = False,
-) -> DisplayMode:
-    """Build the standard video display mode for a scene, centralizing the
-    palette/border/background/style/REU/color kwarg cluster shared by the
-    webcam, video, and slideshow paths (both the validate and build
-    passes). `display` is passed explicitly because slideshow resolves
-    "random" to a concrete mode first; an unset (`None`) `display` is
-    resolved here via `resolve_scene_display`.
+) -> DisplayWiring:
+    """The :class:`DisplayWiring` for one scene — the (SceneCfg, Config) half
+    of `_display_mode_for_scene`, split out so a scene that rebuilds its own
+    display mode later can carry the wiring without carrying the config."""
+    return DisplayWiring(
+        color=scene_color(cfg, s),
+        scene_type=s.type,
+        palette_mode=s.palette_mode,
+        border=s.border,
+        background=s.background,
+        style=s.style,
+        text_double_height=s.text_double_height,
+        use_reu_staged=cfg.video.use_reu_staged,
+        double_buffer=cfg.video.double_buffer,
+        reu_available=reu_available,
+        backend_supports_reu=backend_supports_reu,
+        audio_reu_pump_active=cfg.audio.use_reu_pump,
+        has_buffer_overlays=any(
+            paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
+        ),
+        force_host_dma=force_host_dma,
+    )
 
-    `reu_available` resolves the [video].use_reu_staged tri-state (see
+
+def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode:
+    """Build the display mode named `display` with `wiring` resolved against
+    it — the ONE place the REU-staging / double-buffer / flicker / dither /
+    cell-strategy cluster is decided.
+
+    `display` is already concrete: `resolve_scene_display` has run, and a
+    slideshow's `"random"` has settled on a pick. Both callers reach here —
+    `_display_mode_for_scene` for the build and validate passes, and
+    `SlideshowScene._maybe_rebuild_display_mode` for a `display = "random"`
+    re-pick at each setup() — so the two cannot drift.
+
+    `wiring.reu_available` resolves the [video].use_reu_staged tri-state (see
     resolve_use_reu_staged). The validate passes leave it False — auto then
     resolves to host-DMA, which is fine because the validation mode is a
     throwaway used only for overlay-compat checks (they don't depend on the
@@ -574,24 +720,20 @@ def _display_mode_for_scene(
     jiffy) are serviced through one $0314 hook. MCM doesn't yet support
     use_reu_staged (separate future-work).
 
-    `force_host_dma` hard-disables REU staging regardless of
+    `wiring.force_host_dma` hard-disables REU staging regardless of
     [video].use_reu_staged (including an explicit `= true`, which otherwise
     bypasses the auto path). Used for SID-audio scenes: the SID player owns the
     $0314 IRQ for PLAY, so the display must not install the bank-swap raster IRQ
     at the same vector."""
-    display = resolve_scene_display(display, s.type)
-    color = scene_color(cfg, s)
-    has_buffer_overlays = any(
-        paints_into_buffers(ov.get("type", "")) for ov in s.overlays if isinstance(ov, dict)
-    )
+    color = wiring.color if wiring.color is not None else ColorCfg()
     use_reu_staged = (
         False
-        if force_host_dma
+        if wiring.force_host_dma
         else resolve_use_reu_staged(
-            cfg.video.use_reu_staged,
+            wiring.use_reu_staged,
             display,
-            reu_available=reu_available,
-            has_buffer_overlays=has_buffer_overlays,
+            reu_available=wiring.reu_available,
+            has_buffer_overlays=wiring.has_buffer_overlays,
         )
     )
     # Host-DMA double-buffer (no-REU backends). Also disabled by force_host_dma:
@@ -599,14 +741,14 @@ def _display_mode_for_scene(
     # the SID player's PLAY IRQ on a SID-audio scene.
     double_buffer = (
         False
-        if force_host_dma
+        if wiring.force_host_dma
         else resolve_double_buffer(
-            cfg.video.double_buffer,
+            wiring.double_buffer,
             display,
             use_reu_staged=use_reu_staged,
-            backend_supports_reu=backend_supports_reu,
-            has_buffer_overlays=has_buffer_overlays,
-            audio_reu_pump_active=cfg.audio.use_reu_pump,
+            backend_supports_reu=wiring.backend_supports_reu,
+            has_buffer_overlays=wiring.has_buffer_overlays,
+            audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )
     # Flicker blend needs the $D018 phase toggle, which neither of the other two
@@ -616,12 +758,12 @@ def _display_mode_for_scene(
     # others: a SID-audio scene's player owns $0314.
     flicker_tolerance = (
         "off"
-        if force_host_dma
+        if wiring.force_host_dma
         else resolve_flicker_tolerance(
             color.flicker_tolerance,
             display,
-            has_buffer_overlays=has_buffer_overlays,
-            audio_reu_pump_active=cfg.audio.use_reu_pump,
+            has_buffer_overlays=wiring.has_buffer_overlays,
+            audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )
     if flicker_tolerance != "off":
@@ -629,19 +771,83 @@ def _display_mode_for_scene(
         double_buffer = False
     return _build_display_mode(
         display,
-        palette_mode=s.palette_mode,
-        border=s.border,
-        background=s.background,
-        style=s.style,
+        palette_mode=wiring.palette_mode,
+        border=wiring.border,
+        background=wiring.background,
+        style=wiring.style,
         use_reu_staged=use_reu_staged,
         double_buffer=double_buffer,
-        audio_reu_pump_active=cfg.audio.use_reu_pump,
+        audio_reu_pump_active=wiring.audio_reu_pump_active,
         color=color,
-        text_double_height=s.text_double_height,
-        dither_method=resolve_dither_method(color.dither, s.type),
-        cell_strategy=resolve_cell_strategy(color.cell_strategy, s.type),
+        text_double_height=wiring.text_double_height,
+        dither_method=resolve_dither_method(color.dither, wiring.scene_type),
+        cell_strategy=resolve_cell_strategy(color.cell_strategy, wiring.scene_type),
         flicker_tolerance=flicker_tolerance,
     )
+
+
+def _display_mode_for_scene(
+    display: str | None,
+    s: SceneCfg,
+    cfg: Config,
+    *,
+    reu_available: bool = False,
+    backend_supports_reu: bool = False,
+    force_host_dma: bool = False,
+) -> DisplayMode:
+    """The standard video display mode for a scene: resolve the per-type
+    `display` default, gather the scene's :class:`DisplayWiring`, and hand
+    both to `build_wired_display_mode` (which documents the cluster).
+
+    `display` is passed explicitly because slideshow resolves "random" to a
+    concrete mode first; an unset (`None`) `display` is resolved here via
+    `resolve_scene_display`."""
+    return build_wired_display_mode(
+        resolve_scene_display(display, s.type),
+        display_wiring_for_scene(
+            s,
+            cfg,
+            reu_available=reu_available,
+            backend_supports_reu=backend_supports_reu,
+            force_host_dma=force_host_dma,
+        ),
+    )
+
+
+def _reject_non_quantizing_display(s: SceneCfg, label: str, *, frame: str) -> None:
+    """Refuse `display = "blank"` and `display = "random"` on a scene type
+    that hands a real frame to the display mode.
+
+    Blank paints nothing (its `compose()` ignores the frame argument
+    outright), and "random" is slideshow-only — a scene that re-picks its mode
+    every setup() must be able to re-validate its overlays against the pick,
+    which only SlideshowScene does. Written once here rather than per type:
+    it was hand-copied into the generative and wled arms with two different
+    wordings and two different mode lists, and the webcam arm — which had no
+    validator at all — was simply missing it, so `display = "blank"` on a
+    webcam opened the camera, grabbed frames and painted an empty screen with
+    no error anywhere."""
+    if s.display == "blank":
+        raise ValueError(
+            f"{label} scene cannot use display = 'blank' (there'd be nothing "
+            f"to quantize the {frame} into). Pick "
+            f"{'/'.join(QUANTIZING_DISPLAYS)}."
+        )
+    if s.display == "random":
+        raise ValueError(
+            f"{label} scene does not support display = 'random' (only "
+            f"slideshow does). Pick a concrete mode: "
+            f"{'/'.join(QUANTIZING_DISPLAYS)}."
+        )
+
+
+def _validate_webcam(s: SceneCfg, cfg: Config) -> DisplayMode:
+    """Live-camera scene. The camera itself is opened in `_build_webcam` (and
+    its `source is None` check lives there so doctor mode isn't tripped by
+    it), so all there is to check here is that the display mode can actually
+    show a camera frame."""
+    _reject_non_quantizing_display(s, "webcam", frame="camera frame")
+    return _display_mode_for_scene(s.display, s, cfg)
 
 
 def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
@@ -661,35 +867,143 @@ def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
     )
 
 
+def is_media_url(entry: str) -> bool:
+    """True if a `file =` entry names a network media source rather than a
+    local path.
+
+    The one predicate. It was written three times with two different
+    definitions — `missing_media` and `resolve_file_spec` inlined the bare
+    scheme test while `_is_single_url_spec` also required no comma — and
+    that extra clause had teeth: a legitimate direct media URL containing a
+    comma (the Akamai/Limelight `.../clip_,500,800,.mp4.csmil/master.m3u8`
+    shape) was not seen as a URL, so it skipped the offline yt-dlp pre-check
+    AND got split on its own commas into fragments that then failed extension
+    checks naming paths the user never wrote. Adding or restricting a scheme
+    is now one edit."""
+    return entry.strip().lower().startswith(("http://", "https://"))
+
+
+def split_file_spec(spec: str) -> list[str]:
+    """The entries of a comma-separated `file =` spec, stripped, with empty
+    entries (a trailing comma) dropped.
+
+    The one grammar. It exists as a named function rather than
+    `spec.split(",")` because a URL may legitimately contain a literal comma:
+    the Akamai/Limelight HLS shape
+    `.../mp4:clip_,500,800,.mp4.csmil/master.m3u8` is common, and the stream
+    URLs yt-dlp resolves — which this module deliberately writes back into a
+    scene's file spec — routinely carry commas in query parameters. Splitting
+    on every comma cut such a URL into pieces: the first kept the scheme and
+    was admitted truncated (so unplayable), and every later piece was
+    reported as a path with the wrong extension, naming something the user
+    never typed.
+
+    So after a URL entry a comma only separates when the next fragment
+    *announces* a new entry: it begins with whitespace, or is itself a URL. A
+    bare `http://h/a.mp4,b.mp4` is therefore one URL — write
+    `http://h/a.mp4, b.mp4`, or put the local path first, for two entries.
+    Nothing else changes: a spec whose entries are paths, dirs and globs
+    splits on every comma exactly as before."""
+    entries: list[str] = []
+    for raw in spec.split(","):
+        if (
+            entries
+            and is_media_url(entries[-1])
+            and raw
+            and not raw[0].isspace()
+            and not is_media_url(raw)
+        ):
+            entries[-1] = f"{entries[-1]},{raw}"
+        else:
+            entries.append(raw.strip())
+    return [e for e in entries if e]
+
+
 def _is_single_url_spec(spec: str | None) -> bool:
-    """True if a `file =` spec is exactly one http(s) URL (not a comma-joined
-    multi-spec). Single URLs are the form quick playback and configs resolve
-    via yt-dlp; dir/glob/multi specs stay on the local-file path."""
+    """True if a `file =` spec is exactly one http(s) URL. Single URLs are the
+    form quick playback and configs resolve via yt-dlp; dir/glob/multi specs
+    stay on the local-file path.
+
+    "One URL" is decided by `split_file_spec`, the same grammar
+    `resolve_file_spec` uses, so the two cannot disagree — a URL carrying its
+    own comma used to be ineligible here *and* fragmented there."""
     if not spec:
         return False
-    s = spec.strip()
-    return s.lower().startswith(("http://", "https://")) and "," not in s
+    entries = split_file_spec(spec)
+    return len(entries) == 1 and is_media_url(entries[0])
+
+
+def redact_media_spec(entry: str) -> str:
+    """`entry` with any credential removed, for the destinations a media spec
+    is quoted into that the operator does not solely read.
+
+    A private asset is legitimately reached with
+    `file = "https://user:token@cdn.example/clip.mp4"`, and this module quotes
+    the spec into three such places: a resolve failure's `ValueError` (which
+    `--log-file` keeps and `config_store._capture_errors` folds into the
+    report the web console renders in a browser) and
+    `recording_metadata`'s snapshot, which
+    `scripts/scene_config_to_description.py` renders as `Source video: <url>`
+    in a *published* video description. The repo already refuses a
+    `user:pass@` netloc on the connection target for exactly this reason; a
+    secret inside a scene `file` value was covered by none of it, because it
+    sits in a value rather than in its own field.
+
+    Strips the URL userinfo, then hands the rest to the shared
+    :func:`~c64cast._redact.redact_secrets`, which covers `token=`/`key=`/
+    `password=`/`sig=`-style query parameters. A local path is returned
+    unchanged apart from that second pass."""
+    text = entry
+    if is_media_url(entry):
+        parts = urlsplit(entry.strip())
+        if parts.username or parts.password:
+            host = parts.hostname or ""
+            if parts.port:
+                host = f"{host}:{parts.port}"
+            text = urlunsplit(parts._replace(netloc=f"{REDACTED}@{host}"))
+    return redact_secrets(text)
 
 
 def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
         s, DEFAULT_VIDEO_DIR, VIDEO_EXTS, label="video", drop_hint="a video"
     )
-    # Offline URL sanity (runs in --doctor too): a single URL that yt-dlp must
-    # resolve (a YouTube/etc. page, not a direct media link) needs the `yt`
-    # extra. Flag it now instead of failing at playback with a cryptic ffmpeg
-    # "Invalid data found" when PyAV tries to open the page as a media file.
-    if s.file is not None and _is_single_url_spec(s.file):
-        # Deferred: quickcast imports this module's *_EXTS at top level,
-        # so a top-level import here would be a cycle.
+    # Offline URL sanity (runs in --doctor too). Deferred import: quickcast
+    # imports this module's *_EXTS at top level, so a top-level import here
+    # would be a cycle.
+    if s.file is not None:
         from .quickcast import _ytdlp_available, url_needs_ytdlp
 
-        if url_needs_ytdlp(s.file.strip()) and not _ytdlp_available():
-            raise ValueError(
-                f"video: {s.file!r} is a URL that needs yt-dlp to resolve, but the "
-                "`yt` extra isn't installed. Install it (`uv tool install --force 'c64cast[all]'`), "
-                "or use a direct media URL / local file."
-            )
+        spec = s.file.strip()
+        if _is_single_url_spec(spec):
+            # A single URL that yt-dlp must resolve (a YouTube/etc. page, not a
+            # direct media link) needs the `yt` extra. Flag it now instead of
+            # failing at playback with a cryptic ffmpeg "Invalid data found"
+            # when PyAV tries to open the page as a media file.
+            if url_needs_ytdlp(spec) and not _ytdlp_available():
+                raise ValueError(
+                    f"video: {redact_media_spec(spec)!r} is a URL that needs yt-dlp "
+                    "to resolve, but the `yt` extra isn't installed. Install it "
+                    "(`uv tool install --force 'c64cast[all]'`), or use a direct "
+                    "media URL / local file."
+                )
+        else:
+            # A page URL mixed into a multi-entry spec is never resolved at all:
+            # `_resolve_video_source` resolves a WHOLE-spec URL only, so the
+            # candidate pool keeps the raw page URL, `_pick_filepath` may pick
+            # it, and PyAV is handed the HTML — the exact cryptic failure the
+            # check above exists to prevent, and it happens even with the `yt`
+            # extra installed. Refuse it here, where the message can say what
+            # to do about it.
+            for entry in split_file_spec(spec):
+                if is_media_url(entry) and url_needs_ytdlp(entry):
+                    raise ValueError(
+                        f"video: {redact_media_spec(entry)!r} is a page URL that "
+                        "needs yt-dlp, but it is one entry of a multi-entry "
+                        "`file =` spec, and only a spec that is just one URL gets "
+                        "resolved. Give the URL a scene of its own, or use a "
+                        "direct media URL here."
+                    )
     if s.duration_s is not None:
         raise ValueError(
             "video scene does not accept `duration_s` — the scene "
@@ -735,7 +1049,12 @@ def _validate_scope_knobs(s: SceneCfg, label: str) -> None:
 
 def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
-        s, DEFAULT_WAVEFORM_DIR, SID_EXTS, label="waveform", drop_hint="a .sid"
+        s,
+        DEFAULT_WAVEFORM_DIR,
+        SID_EXTS,
+        label="waveform",
+        drop_hint="a .sid",
+        recurse_sid_dir=True,
     )
     _validate_scope_knobs(s, "waveform")
     # WaveformScene is bitmap-only — the SceneCfg `display` field is
@@ -745,7 +1064,12 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
     return _build_display_mode("hires")
 
 
-def _validate_midi(s: SceneCfg) -> DisplayMode:
+def _validate_midi(s: SceneCfg, cfg: Config) -> DisplayMode:
+    """Live MIDI-to-SID synth scene: the synth knobs plus the shared
+    oscilloscope ones.
+
+    `cfg` is unused — it takes it so every `_validate_<type>` shares one
+    signature and `_VALIDATORS` can be a table keyed like `_BUILDERS`."""
     if len(s.midi_adsr) != 4:
         raise ValueError(f"midi scene midi_adsr must have 4 entries, got {s.midi_adsr!r}")
     if s.midi_voice_mode not in _MIDI_VOICE_MODE_CHOICES:
@@ -784,7 +1108,8 @@ def _validate_midi(s: SceneCfg) -> DisplayMode:
     return _build_display_mode("hires")
 
 
-def _validate_asid(s: SceneCfg) -> DisplayMode:
+def _validate_asid(s: SceneCfg, cfg: Config) -> DisplayMode:
+    """ASID-over-MIDI client scene. `cfg` is unused — see `_validate_midi`."""
     # AsidScene carries the SID state in the stream, so it has no synth knobs
     # to validate — only the shared oscilloscope knobs. Like MidiScene it's
     # bitmap-only (hires), so synthesize a hires display_mode for overlay
@@ -828,17 +1153,7 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             f"generative scene `source` must be one of {_GENERATIVE_SOURCE_CHOICES}, "
             f"got {s.source!r}"
         )
-    if s.display == "blank":
-        raise ValueError(
-            "generative scene cannot use display = 'blank' (there'd be nothing "
-            "to quantize the generated frame). Pick mhires/hires/hires_edges/"
-            "mcm/petscii."
-        )
-    if s.display == "random":
-        raise ValueError(
-            "generative scene does not support display = 'random' (only slideshow "
-            "does). Pick a concrete mode."
-        )
+    _reject_non_quantizing_display(s, "generative", frame="generated frame")
     if s.audio_source not in _AUDIO_SOURCE_CHOICES:
         raise ValueError(
             f"generative scene `audio_source` must be one of {_AUDIO_SOURCE_CHOICES}, "
@@ -859,8 +1174,17 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
         # display — a SID source can't relocate, so a bitmap display + a tune
         # that loads over $2000 is a hard conflict. setup() does the
         # authoritative per-pick check; this is the load-time fast-fail.
+        # Recursion into the default SID dir, like waveform: this arm shares
+        # that directory, and every real HVSC unpack (assets/sids/C64Music/...,
+        # assets/sids/MUSICIANS/...) has zero .sid files at the top level, so
+        # a shallow listing refused the exact tree the recursion exists for.
         _resolve_file_spec_or_explain(
-            s, DEFAULT_WAVEFORM_DIR, SID_EXTS, label="generative sid audio", drop_hint="a .sid"
+            s,
+            DEFAULT_WAVEFORM_DIR,
+            SID_EXTS,
+            label="generative sid audio",
+            drop_hint="a .sid",
+            recurse_sid_dir=True,
         )
         display = resolve_scene_display(s.display, s.type)
         mode = _display_mode_for_scene(display, s, cfg, force_host_dma=True)
@@ -928,13 +1252,25 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str
     per-pick check with bounded retry). Missing/unparseable files are left for
     setup() to surface."""
     assert s.file is not None  # set by _resolve_file_spec_or_explain above
-    candidates = resolve_file_spec(s.file, SID_EXTS, label="generative sid audio")
+    candidates = resolve_file_spec(
+        s.file, SID_EXTS, label="generative sid audio", recurse_default_sid_dir=True
+    )
     if not candidates:
         return
     path = candidates[0]
     try:
+        # `os.path.isfile` before the read, and a size ceiling on it. This runs
+        # inside the network-reachable validate path (`config_store` →
+        # `session.validate_configs` → `validate_scene_cfg`), where the
+        # candidate is a config-named path whose extension is the only thing
+        # checked: an unbounded read of a FIFO named `x.sid` blocked the
+        # request thread forever and a multi-gigabyte one exhausted memory.
+        # A real PSID/RSID is a 64 KB C64 image plus a small header, so
+        # anything past the ceiling is not a tune and setup() can say so.
+        if not os.path.isfile(path) or os.path.getsize(path) > MAX_SID_BYTES:
+            return
         with open(path, "rb") as f:
-            sid_bytes = f.read()
+            sid_bytes = f.read(MAX_SID_BYTES)
         parse_sid_header(sid_bytes)  # magic / length
     except (OSError, ValueError):
         return  # let setup() report a real load error
@@ -942,11 +1278,19 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str
     if conflict is not None:
         lo, hi = conflict
         region = "hires bitmap" if lo == 0x2000 else "screen RAM"
+        # `payload_overlaps_bank0_display` returns the FIRST conflicting
+        # region and checks screen RAM before the bitmap, so a payload that
+        # spans both is reported as the screen conflict — and "load above
+        # $07E8" would then land straight in the bitmap. Word the remedy off
+        # the highest region the display actually reserves, so following it
+        # clears the conflict.
+        clear_above = VIC_BANK_0.BITMAP + SCREEN.BITMAP_BYTES if mode.is_bitmapped else hi
         raise ValueError(
             f"generative sid audio: {os.path.basename(path)}'s payload overlaps the "
             f"{display} display's {region} (${lo:04X}-${hi:04X}); a SID source "
             f"can't relocate the bank-0 display. Use a char display (petscii/mcm — "
-            f"they reserve only $0400) or a SID that loads above ${hi:04X}."
+            f"they reserve only $0400) or a SID that loads above "
+            f"${clear_above:04X} (clear of every region {display} reserves)."
         )
 
 
@@ -957,16 +1301,7 @@ def _validate_wled(s: SceneCfg, cfg: Config) -> DisplayMode:
     blank/random exactly like generative. Bounds the matrix dimensions — a sink
     presents `sink_width`×`sink_height` pixels the sender must match; absurd
     sizes are a config error, not a runtime surprise."""
-    if s.display == "blank":
-        raise ValueError(
-            "wled scene cannot use display = 'blank' (there'd be nothing to "
-            "quantize the streamed frame). Pick mhires/hires/hires_edges/mcm/petscii."
-        )
-    if s.display == "random":
-        raise ValueError(
-            "wled scene does not support display = 'random' (only slideshow does). "
-            "Pick a concrete mode."
-        )
+    _reject_non_quantizing_display(s, "wled", frame="streamed frame")
     for label, value in (("sink_width", s.sink_width), ("sink_height", s.sink_height)):
         if not 1 <= value <= 1024:
             raise ValueError(f"wled scene {label} must be 1..1024, got {value!r}")
@@ -979,20 +1314,34 @@ def _validate_wled(s: SceneCfg, cfg: Config) -> DisplayMode:
         )
     for addr in s.sink_allow:
         try:
-            ipaddress.ip_address(addr)
+            parsed = ipaddress.ip_address(addr)
         except ValueError:
             raise ValueError(
                 f"wled scene sink_allow entry {addr!r} is not a valid IP address"
             ) from None
+        if parsed.version != 4:
+            # The sink binds AF_INET only (wled_sink._bind is the module's one
+            # socket constructor), so the peer address it compares against is
+            # always a dotted quad and an IPv6 entry can never match. Accepting
+            # one produced a config that validated cleanly and then silently
+            # dropped every sender, with no log line — `wled_sink._handle` just
+            # returns.
+            raise ValueError(
+                f"wled scene sink_allow entry {addr!r} is IPv6, but the sink "
+                "listens on IPv4 only — an IPv6 entry can never match, so the "
+                "allowlist would drop every sender. Use the sender's IPv4 "
+                "address."
+            )
     return _display_mode_for_scene(s.display, s, cfg)
 
 
-def _validate_launcher(s: SceneCfg) -> None:
+def _validate_launcher(s: SceneCfg, cfg: Config) -> None:
     """Self-contained launcher validation. The launched program owns the
     whole machine (VIC/SID/CIAs), so a launcher carries no display mode and
     no overlays — this validates and resolves any orchestrator itself, and
-    `validate_scene_cfg` returns immediately after calling it (the shared
-    overlay-compat loop assumes a real `mode`, which this scene never has)."""
+    returning `None` is what tells `validate_scene_cfg` to stop there (the
+    shared overlay-compat loop assumes a real `mode`, which this scene never
+    has). `cfg` is unused — see `_validate_midi`."""
     _resolve_file_spec_or_explain(
         s, DEFAULT_PROGRAM_DIR, PROGRAM_EXTS, label="launcher", drop_hint="a .prg/.crt"
     )
@@ -1300,6 +1649,39 @@ def validate_cell_strategy_cfg(cfg: Config) -> None:
             raise ConfigError(err)
 
 
+def flicker_tolerance_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Check one resolved [color] section's flicker_tolerance choice; returns
+    the ConfigError message, or None if `color` is fine. See
+    `dither_cfg_error` for why this is split from `validate_flicker_cfg`."""
+    if color.flicker_tolerance not in FLICKER_TOLERANCES:
+        return (
+            f"{label}.flicker_tolerance must be one of {tuple(FLICKER_TOLERANCES)}, "
+            f"got {color.flicker_tolerance!r}"
+        )
+    return None
+
+
+def validate_flicker_cfg(cfg: Config) -> None:
+    """Guard flicker_tolerance on [color] and every scene override: reject an
+    unknown value.
+
+    It was the one [color] field outside this family. A typo raised a plain
+    `ValueError` out of `resolve_flicker_tolerance`, deep inside the display
+    build — a different exit code (3 rather than 5) from the same class of
+    config typo, with a message naming only `[color]` and never the scene the
+    override came from. Worse, that raise is only reachable from a
+    frame-bearing scene: the waveform/midi/asid/blank validators build their
+    display mode with `color=None`, so a bad global flicker_tolerance in a
+    SID-only or blank-only playlist was never checked at all — including by
+    `--doctor --skip-probe`, which is documented as the offline collect-all
+    config check. `resolve_flicker_tolerance`'s own raise stays as the
+    belt-and-braces backstop."""
+    for label, color in effective_colors(cfg):
+        err = flicker_tolerance_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
 def validate_control_cfg(control_cfg: ControlPlaneCfg) -> None:
     """Guard [control]: refuse an unauthenticated plane on a network address.
 
@@ -1499,7 +1881,25 @@ def validate_wled_cfg(cfg: Config) -> None:
     is enabled with no SID-driven scene to source features from (nothing would
     go out). Mode 1 (listen) needs no SID scene. No-op when both are off."""
     broadcast_on, _, _ = resolve_wled_broadcast(cfg)
-    resolve_wled_listen(cfg)  # parse for validation side effect (raises on bad)
+    listen_on, listen_host, listen_port = resolve_wled_listen(cfg)
+    if listen_on and listen_host not in LOOPBACK_HOSTS:
+        # `validate_control_cfg` refuses an unauthenticated control plane on a
+        # non-loopback host because "anything that can reach the port could
+        # drive the run". Mode 1 overlaps that capability — `on=false` pauses,
+        # `seg[].fx` jumps scenes, `sx`/`ix` sweep live params, `pal`/`col`
+        # force the palette, preset saves write the data dir — and it carries
+        # no token at all, with `wled_device` advertising it over mDNS. LAN
+        # discovery is the whole point of the feature, so this warns where the
+        # control plane refuses; the operator should know what they turned on.
+        log.warning(
+            "[wled].listen exposes the virtual WLED device's JSON/WebSocket API "
+            "on %s:%d with NO authentication (and wled_device advertises it over "
+            "mDNS) — any host that can reach it can pause the run, jump scenes, "
+            "sweep live params, force the palette and write presets. Keep that "
+            "segment trusted, or bind it to a loopback host.",
+            listen_host,
+            listen_port,
+        )
     if not 1.0 <= cfg.wled.rate_hz <= 120.0:
         raise ConfigError(f"[wled].rate_hz must be 1..120, got {cfg.wled.rate_hz}")
     if not isinstance(cfg.wled.broadcast_tempo_fallback, bool):
@@ -1517,6 +1917,76 @@ def validate_wled_cfg(cfg: Config) -> None:
             "generative with audio_source = 'sid') in the playlist — nothing "
             "will be broadcast."
         )
+
+
+# Every whole-Config validator in this module, in the order a run applies
+# them. `session.validate_configs` iterates this rather than naming them one
+# by one: the hand-written list had already fallen a validator behind
+# (`validate_wled_cfg` reached `--doctor` and no actual run), and the symptom
+# of the next omission is a mid-show failure instead of a pre-hardware
+# rejection. tests/test_scene_factory_validators.py holds the tuple to a
+# partition of the module's `validate_*(cfg: Config)` callables.
+#
+# The two validators that take a *section* rather than a whole Config
+# (`validate_control_cfg`, `validate_midi_control_cfg`) are deliberately not
+# here: [control] and [midi_control] are process-wide, so they are checked
+# once against the master, not once per system.
+PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
+    validate_nmi_sample_rate,
+    validate_sampler_cfg,
+    validate_dac_curve_cfg,
+    validate_dac_bitmap_tempo_cfg,
+    validate_sid_model_cfg,
+    validate_dither_cfg,
+    validate_color_match_cfg,
+    validate_cell_strategy_cfg,
+    validate_motion_smoothing_cfg,
+    validate_flicker_cfg,
+    validate_wled_cfg,
+)
+
+
+# The per-type validators, keyed the same way `_BUILDERS` is. Two copies of
+# the scene-type list already existed (`config.SCENE_TYPES` and `_BUILDERS`,
+# held to each other by a drift test); the validator dispatch was a third,
+# hand-maintained as an if/elif ladder whose `else` branch spelled all ten
+# names out a fourth time. A type added to SCENE_TYPES and _BUILDERS but not
+# here passed the drift test, passed config load, and was then refused as
+# "unknown scene type" from inside build_scene at run start.
+# tests/test_scene_factory_validators.py holds this to SCENE_TYPES and to
+# _BUILDERS. `None` means "no display mode" — launcher owns the VIC.
+_VALIDATORS: dict[str, Callable[[SceneCfg, Config], DisplayMode | None]] = {
+    "webcam": _validate_webcam,
+    "blank": _validate_blank,
+    "video": _validate_video,
+    "waveform": _validate_waveform,
+    "midi": _validate_midi,
+    "asid": _validate_asid,
+    "slideshow": _validate_slideshow,
+    "launcher": _validate_launcher,
+    "generative": _validate_generative,
+    "wled": _validate_wled,
+}
+
+
+def _overlay_check_modes(s: SceneCfg, cfg: Config, mode: DisplayMode) -> list[DisplayMode]:
+    """Every display mode this scene's overlays have to be compatible with.
+
+    One mode for every scene type except a `display = "random"` slideshow,
+    which re-picks from `QUANTIZING_DISPLAYS` at every setup() and never
+    re-validates. Checking the single pick the validator happened to roll made
+    the answer a die roll: `validate_for_scene` rejects a text/big_text
+    overlay on `mcm` (MCMDisplayMode is neither PETSCII- nor
+    bitmap-text-compatible), so the same unchanged config loaded on about four
+    runs in five and `--doctor` returned a different verdict from one
+    invocation to the next — and when it did load, the runtime re-pick could
+    still land on the rejected mode with no check at all. Requiring every pick
+    to accept the overlay makes the answer deterministic and true for the
+    whole run."""
+    if s.type != "slideshow" or s.display != "random":
+        return [mode]
+    wiring = display_wiring_for_scene(s, cfg)
+    return [build_wired_display_mode(name, wiring) for name in QUANTIZING_DISPLAYS]
 
 
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
@@ -1580,39 +2050,27 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     if s.duration_s is not None and s.duration_s < 0:
         raise ValueError(f"duration_s must be >= 0 (0 = run forever), got {s.duration_s!r}")
 
-    if s.type == "webcam":
-        mode = _display_mode_for_scene(s.display, s, cfg)
-    elif s.type == "blank":
-        mode = _validate_blank(s, cfg)
-    elif s.type == "video":
-        mode = _validate_video(s, cfg)
-    elif s.type == "waveform":
-        mode = _validate_waveform(s, cfg)
-    elif s.type == "midi":
-        mode = _validate_midi(s)
-    elif s.type == "asid":
-        mode = _validate_asid(s)
-    elif s.type == "slideshow":
-        mode = _validate_slideshow(s, cfg)
-    elif s.type == "generative":
-        mode = _validate_generative(s, cfg)
-    elif s.type == "wled":
-        mode = _validate_wled(s, cfg)
-    elif s.type == "launcher":
-        _validate_launcher(s)
-        return
-    else:
+    validate = _VALIDATORS.get(s.type)
+    if validate is None:
         raise ValueError(
-            f"unknown scene type {s.type!r} "
-            "(known: webcam, blank, video, waveform, midi, asid, "
-            "slideshow, launcher, generative, wled). Note: scrolling_text is now "
-            "an overlay — attach it via [[scenes.overlays]]."
+            f"unknown scene type {s.type!r} (known: {', '.join(SCENE_TYPES)}). "
+            "Note: scrolling_text is now an overlay — attach it via "
+            "[[scenes.overlays]]."
         )
+    mode = validate(s, cfg)
+    if mode is None:
+        # Launcher: the launched program owns the VIC, so the scene carries no
+        # display mode and no overlays (`_validate_launcher` self-validates,
+        # including its orchestrator). The shared overlay-compat loop below
+        # assumes a real mode, so there is nothing left to do.
+        return
 
     audio_proxy = _AUDIO_SENTINEL if audio_enabled else None
+    check_modes = _overlay_check_modes(s, cfg, mode)
     for ov_cfg in s.overlays:
         ov = build_overlay(ov_cfg, audio_proxy)
-        validate_for_scene(ov, mode)
+        for check_mode in check_modes:
+            validate_for_scene(ov, check_mode)
 
     if s.orchestrate:
         resolve_orchestrator(s)
@@ -1672,8 +2130,13 @@ def _frame_push_default_fps(
     dropped, no wasted re-pushes), a 30 fps clip 30/s, a 60 fps clip 60/s.
     I.e. sampler bitmap video plays at the source rate, capped at the VIC
     refresh — no artificial cap. HW-verified on .64 (audio stayed clean at a
-    real 60/s push; see ``reference_ultimate_audio_sampler`` fps A/B). Beats
-    ``has_digitized`` when both could apply.
+    real 60/s push; see ``reference_ultimate_audio_sampler`` fps A/B).
+
+    ``has_digitized_audio`` and ``off_bus_audio`` are contractually mutually
+    exclusive — a scene's audio is on the ``$D418`` DAC or off-bus in the
+    sampler, never both, and every caller constructs the pair that way. Should
+    a future caller pass both anyway, ``has_digitized_audio`` wins: the 20 fps
+    cap protects the on-bus stream, which is the one that can tear.
 
     Worth revisiting the DAC/muted caps once the firmware no longer halts the
     CPU on DMA writes (see ``u64ii_firmware_build`` / ``u64_zero_halt_dma_path``).
@@ -1795,6 +2258,19 @@ def _video_tempo_scale(cfg: Config, mode: DisplayMode, *, dac_audio: bool) -> fl
     return cfg.audio.dac_bitmap_tempo_hires
 
 
+def _clean_scene_name(title: str) -> str:
+    """A resolved media title, made safe to use as a scene name.
+
+    The title comes from the page or container the operator pointed at — i.e.
+    from whoever controls it — and lands in `scene.name`, which reaches
+    `control_plane`'s `current_scene`, the SCENE_CONFIG_JSON snapshot, the
+    interstitial card and `log.info` calls that interpolate it with no args.
+    An interior newline there is enough to forge a second `--log-file` record
+    (the shape `profiler` was hardened against), so collapse every control
+    character and whitespace run to single spaces and cap the length."""
+    return " ".join(_CONTROL_CHARS.sub(" ", title).split())[:MAX_SCENE_NAME_CHARS]
+
+
 def _resolve_video_source(
     s: SceneCfg,
 ) -> tuple[str, float | None, str | None, ResolvedMedia | None]:
@@ -1817,12 +2293,30 @@ def _resolve_video_source(
         # Deferred: cycle with quickcast (see _validate_video).
         from .quickcast import resolve_video_url
 
+        # One line before the call, because it is a network fetch made from
+        # inside `build_scene` — i.e. after `build_stack` has opened the link
+        # and reset the machine — and yt-dlp's own logger is routed to
+        # `log.debug`. Without this a slow extraction looked like a hang with
+        # nothing at default level naming what it was waiting on.
+        log.info("video: resolving %s", redact_media_spec(s.file))
         resolved = resolve_video_url(s.file.strip())
+        stream_scheme = urlsplit(resolved.stream_url).scheme.lower()
+        if stream_scheme not in ("http", "https"):
+            # For the generic extractor the stream URL is derived from the
+            # fetched page's own markup, i.e. from whoever controls the page
+            # the operator pasted. `resolve_file_spec`'s literal-path branch
+            # gates on the suffix alone, so a `file://` or `udp://` value
+            # would reach PyAV/ffmpeg, which honors both.
+            raise ValueError(
+                f"video: {redact_media_spec(s.file)!r} resolved to a "
+                f"{stream_scheme or 'scheme-less'} stream URL; only http/https "
+                "media streams are played."
+            )
         file_spec = resolved.stream_url
         if start_s is None:
             start_s = resolved.start_s
-        if name is None:
-            name = resolved.title
+        if name is None and resolved.title:
+            name = _clean_scene_name(resolved.title)
     return file_spec, start_s, name, resolved
 
 
@@ -1838,18 +2332,19 @@ def _build_webcam(ctx: _SceneBuildContext) -> Scene:
     name = s.name or f"Webcam {display}"
     scene_audio = _resolve_live_audio(ctx, name, "live webcam scene")
     scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=ctx.color)
-    if s.target_fps is None:
-        # always_fresh: every camera grab differs, so there is no dedup —
-        # a char mode still repaints the whole screen each tick and, with
-        # mic audio on the DAC, contends with the ring writes.
-        fps = _frame_push_default_fps(
-            mode,
-            scene_audio is not None,
-            cfg.ultimate64.system,
-            always_fresh=True,
-        )
-        if fps is not None:
-            scene.target_fps = fps
+    # always_fresh: every camera grab differs, so there is no dedup — a char
+    # mode still repaints the whole screen each tick and, with mic audio on the
+    # DAC, contends with the ring writes. An explicit `target_fps` overrides
+    # this in build_scene's epilogue, which runs after every builder — so no
+    # builder re-checks `s.target_fps` itself.
+    fps = _frame_push_default_fps(
+        mode,
+        scene_audio is not None,
+        cfg.ultimate64.system,
+        always_fresh=True,
+    )
+    if fps is not None:
+        scene.target_fps = fps
     return scene
 
 
@@ -1904,20 +2399,20 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
     # Stashed for recording_metadata._video_source — never read by playback
     # itself, only by the SCENE_CONFIG_JSON snapshot at scene start.
     scene.source_info = resolved
-    if s.target_fps is None:
-        # The sampler plays entirely off the C64 bus, so it neither imposes
-        # the 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs
-        # compete with frame uploads for the bus) nor the muted half-rate
-        # cap (its REU-staged frame uploads are bus-clean, not host DMA).
-        # So sampler bitmap video uncaps to the system rate (60/50) — and
-        # because VideoScene dedups, the effective push rate then equals the
-        # source video's fps (24fps clip → 24/s, etc.). DAC video stays 20;
-        # muted bitmap stays 30/25. See _frame_push_default_fps.
-        fps = _frame_push_default_fps(
-            mode, has_dac_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
-        )
-        if fps is not None:
-            scene.target_fps = fps
+    # The sampler plays entirely off the C64 bus, so it neither imposes the
+    # 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs compete with
+    # frame uploads for the bus) nor the muted half-rate cap (its REU-staged
+    # frame uploads are bus-clean, not host DMA). So sampler bitmap video
+    # uncaps to the system rate (60/50) — and because VideoScene dedups, the
+    # effective push rate then equals the source video's fps (24fps clip →
+    # 24/s, etc.). DAC video stays 20; muted bitmap stays 30/25. See
+    # _frame_push_default_fps. An explicit `target_fps` overrides all of this
+    # in build_scene's epilogue, which runs after every builder.
+    fps = _frame_push_default_fps(
+        mode, has_dac_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
+    )
+    if fps is not None:
+        scene.target_fps = fps
     return scene
 
 
@@ -1976,34 +2471,28 @@ def _build_waveform(ctx: _SceneBuildContext) -> Scene:
 
 
 def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
-    s, cfg = ctx.s, ctx.cfg
+    s = ctx.s
     display = _resolve_slideshow_display(s.display)
-    mode = ctx.display_mode(display)
+    wiring = display_wiring_for_scene(
+        s,
+        ctx.cfg,
+        reu_available=ctx.reu_available,
+        backend_supports_reu=ctx.backend_supports_reu,
+    )
     assert s.file is not None  # narrowed by validate_scene_cfg
     # Pass the *original* display spec (may be "random") so the scene can
-    # re-resolve at each setup() for fresh variety in single-scene loops. The
-    # build kwargs travel along so the scene can rebuild without re-plumbing
-    # through `scene._cfg`. The REU staging setting is handed over as the raw
-    # tri-state + the probe verdict (not the resolved bool), so a
-    # `display = "random"` rebuild re-decides staging per concrete mode each
-    # setup().
+    # re-resolve at each setup() for fresh variety in single-scene loops, and
+    # the same DisplayWiring the mode above was built from so the re-pick
+    # goes back through `build_wired_display_mode` instead of re-deriving the
+    # cluster (see DisplayWiring).
     return SlideshowScene(
         ctx.api,
-        mode,
+        build_wired_display_mode(display, wiring),
         s.file,
         image_duration_s=s.image_duration_s,
         display_spec=s.display,
-        palette_mode=s.palette_mode,
-        border=s.border,
-        background=s.background,
-        style=s.style,
-        use_reu_staged=cfg.video.use_reu_staged,
-        double_buffer=cfg.video.double_buffer,
-        reu_available=ctx.reu_available,
-        backend_supports_reu=ctx.backend_supports_reu,
-        audio_reu_pump_active=cfg.audio.use_reu_pump,
-        color=ctx.color,
-        text_double_height=s.text_double_height,
+        wiring=wiring,
+        color=wiring.color,
         aspect_mode=s.aspect_mode,
     )
 
@@ -2051,8 +2540,9 @@ def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: 
     # the bus. Default such scenes to half-rate (like WaveformScene) for
     # safety; a char display stays full-rate, and an explicit target_fps
     # (applied in build_scene's epilogue) still wins.
-    if s.target_fps is None and mode.is_bitmapped:
-        scene.target_fps = _half_system_rate(cfg.ultimate64.system)
+    fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system)
+    if fps is not None:
+        scene.target_fps = fps
     return scene
 
 
@@ -2159,7 +2649,7 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
     # generative scene repaints screen + color RAM every tick over the socket
     # the audio ring shares. Sampler-routed audio is off-bus and keeps the
     # high default.
-    if s.target_fps is None and s.audio_source in ("mic", "file"):
+    if s.audio_source in ("mic", "file"):
         fps = _frame_push_default_fps(
             mode,
             scene_audio is not None and not file_uses_sampler,
@@ -2188,9 +2678,13 @@ def _build_wled(ctx: _SceneBuildContext) -> Scene:
     scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=ctx.color)
     # Bitmap displays push a full ~9-10 KB frame per update; default to half
     # rate like the other frame scenes (an explicit target_fps, applied in
-    # build_scene's epilogue, still wins).
-    if s.target_fps is None and mode.is_bitmapped:
-        scene.target_fps = _half_system_rate(cfg.ultimate64.system)
+    # build_scene's epilogue, still wins). Through _frame_push_default_fps
+    # rather than a hand-coded _half_system_rate, so the cap policy — and the
+    # "worth revisiting once the firmware no longer halts the CPU" note its
+    # docstring carries — has one home.
+    fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system)
+    if fps is not None:
+        scene.target_fps = fps
     return scene
 
 
@@ -2355,8 +2849,15 @@ def build_scene(
     if s.type != "video":
         # A single configured scene stays single-scene: interleave_videos is
         # skipped for a 1-scene playlist (see scenes_from_config), so the
-        # scene count is the whole story here.
-        single_scene_playlist = len(cfg.scenes) <= 1
+        # scene count is the whole story here — but it has to be the count of
+        # scenes that actually reach the playlist. `scenes_from_config` skips
+        # every `follower_only` scene and `Playlist.single_scene` counts what
+        # it was handed, so one live scene plus a follower-only sibling (the
+        # canonical ensemble shape) really IS a single-scene playlist. Counting
+        # `cfg.scenes` there left the camera on the finite 30 s default, so it
+        # tore down and re-set-up — reopening the capture device — every 30
+        # seconds forever, and under `--no-loop` the show just ended.
+        single_scene_playlist = sum(1 for x in cfg.scenes if not x.follower_only) <= 1
         if s.duration_s is not None:
             scene.duration_s = math.inf if s.duration_s == 0 else s.duration_s
         elif s.type in ("webcam", "blank") and single_scene_playlist:
@@ -2399,6 +2900,30 @@ def build_scene(
     # declarative cfg) can find it without re-iterating cfg.scenes.
     scene._cfg = s
     return scene
+
+
+#: The display mode an auto-interleaved video plays in. Not configurable — an
+#: interleaved clip is a filler between the configured scenes, so it takes the
+#: historical hires-edges look rather than a `[[scenes]]` entry's choice.
+_INTERLEAVED_VIDEO_DISPLAY = "hires_edges"
+
+
+def _interleaved_video_cfg(path: str) -> SceneCfg:
+    """The synthetic SceneCfg an auto-interleaved video is built from, so it
+    goes through `build_scene` like every other scene.
+
+    It used to construct `VideoScene` directly and re-derive one of the six
+    things `_build_video` does — the frame-push cap — by hand. Everything else
+    was silently absent: `tempo_scale` stayed at 1.0, which switched off the
+    documented bitmap+DAC tempo compensation for exactly the combination
+    (hires_edges over the $D418 DAC) it exists to correct;
+    `_resolve_sampler_audio` never ran, so a sampler-capable U64 played
+    interleaved clips on the lo-fi 4-bit DAC while every configured video
+    scene got the off-bus sampler; and `color`, `loop_audio` and the whole
+    build_scene epilogue (`osd`, `pre_emphasis`, `show_frame_numbers`, the
+    effect chain, overlays) never applied. Scene defaults kept it from
+    crashing, which is why it went unnoticed for so long."""
+    return SceneCfg(type="video", file=path, display=_INTERLEAVED_VIDEO_DISPLAY)
 
 
 def scenes_from_config(
@@ -2503,24 +3028,18 @@ def scenes_from_config(
     for built in base:
         interleaved.append(built)
         if not isinstance(built, VideoScene):
-            vid_mode = HiresDisplayMode(style="edges")
-            vid_scene = VideoScene(
-                api,
-                audio,
-                vid_mode,
-                video_files[video_idx],
-                prepend_alignment_marker=(
-                    cfg.audio.source_alignment_marker and cfg.audio.use_reu_pump
-                ),
-                setup_progress=cfg.video.setup_progress_bar,
+            interleaved.append(
+                build_scene(
+                    _interleaved_video_cfg(video_files[video_idx]),
+                    cfg,
+                    api,
+                    audio,
+                    source,
+                    is_ensemble=is_ensemble,
+                    reu_available=reu_available,
+                    sampler_available=sampler_available,
+                )
             )
-            # These are built directly (not via build_scene), so apply the
-            # same bitmap frame-push cap: 20 fps with audio (this hires_edges
-            # video streams the digitized DAC), half rate when muted.
-            fps = _frame_push_default_fps(vid_mode, audio is not None, cfg.ultimate64.system)
-            if fps is not None:
-                vid_scene.target_fps = fps
-            interleaved.append(vid_scene)
             video_idx = (video_idx + 1) % len(video_files)
     return interleaved
 
@@ -2569,15 +3088,32 @@ def _resolve_slideshow_display(spec: str | None) -> str:
 
 
 def _gather_videos(directory: str) -> list[str]:
-    directory = paths.expand_user(directory)
-    if not os.path.isdir(directory):
+    """The interleave pool for `[playlist].videos_dir`.
+
+    A thin wrapper over `resolve_file_spec` so one lister decides what counts
+    as a media file in a directory. This used to be a second near-identical
+    lister that filtered on the extension alone with no `isfile` guard, so a
+    *directory* named `clips.mp4` became an interleaved video path that only
+    failed once PyAV tried to open it — while the same entry under a scene's
+    `file =` was filtered out.
+
+    An absent or empty directory is the ordinary "nothing to interleave" case
+    for every caller, so the resolve failure comes back as `[]` rather than
+    propagating as a config error."""
+    try:
+        return resolve_file_spec(directory, VIDEO_EXTS, label="video")
+    except ValueError:
         return []
-    return sorted(
-        os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(VIDEO_EXTS)
-    )
 
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
+
+# An absolute glob whose FIRST path segment is itself a pattern. Combined with
+# a `**` anywhere in the entry that is a walk of every mounted volume, which
+# `glob.glob(recursive=True)` will happily attempt inside one network-reachable
+# validate request (`config_store` → `session.validate_configs` →
+# `validate_scene_cfg` → here). No media spec means it.
+_ROOTED_GLOB = re.compile(r"^/+[*?\[]")
 
 
 def missing_media(spec: str) -> list[str]:
@@ -2594,9 +3130,8 @@ def missing_media(spec: str) -> list[str]:
     URLs are skipped (not local), and so are globs and empty entries, which
     ``resolve_file_spec`` already fails loudly on."""
     out: list[str] = []
-    for raw in spec.split(","):
-        entry = raw.strip()
-        if not entry or entry.lower().startswith(("http://", "https://")):
+    for entry in split_file_spec(spec):
+        if is_media_url(entry):
             continue
         expanded = paths.expand_user(entry)
         if _GLOB_CHARS.search(expanded):
@@ -2606,32 +3141,104 @@ def missing_media(spec: str) -> list[str]:
     return out
 
 
-def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> list[str]:
+def _expand_glob_entry(entry: str, extensions: tuple[str, ...], *, label: str) -> list[str]:
+    """The glob branch of :func:`resolve_file_spec`."""
+    if "**" in entry and _ROOTED_GLOB.match(entry):
+        raise ValueError(
+            f"{label}: refusing to expand {redact_media_spec(entry)!r} — a `**` "
+            "pattern rooted at the filesystem root walks every mounted volume. "
+            "Root the pattern at the directory the media is in."
+        )
+    # recursive=True only changes behavior for `**` segments; ordinary
+    # `*`/`?`/`[...]` patterns are unaffected (backward-compatible).
+    hits = [
+        p
+        for p in glob.glob(entry, recursive=True)
+        if os.path.isfile(p) and p.lower().endswith(extensions)
+    ]
+    if not hits:
+        # A glob with zero hits is almost always a typo — louder than
+        # silently shrinking the candidate pool.
+        raise ValueError(
+            f"{label}: glob {redact_media_spec(entry)!r} matched no files with "
+            f"extension {extensions}"
+        )
+    return hits
+
+
+def _list_dir_entry(
+    entry: str, extensions: tuple[str, ...], *, label: str, recurse: bool
+) -> list[str]:
+    """The directory branch of :func:`resolve_file_spec`."""
+    if recurse:
+        hits = [
+            os.path.join(dirpath, f)
+            for dirpath, _dirnames, filenames in os.walk(entry)
+            for f in filenames
+            if f.lower().endswith(extensions)
+        ]
+    else:
+        hits = [
+            os.path.join(entry, f)
+            for f in os.listdir(entry)
+            if os.path.isfile(os.path.join(entry, f)) and f.lower().endswith(extensions)
+        ]
+    if not hits:
+        raise ValueError(
+            f"{label}: directory {redact_media_spec(entry)!r} contains no files "
+            f"with extension {extensions}"
+        )
+    return hits
+
+
+def resolve_file_spec(
+    spec: str,
+    extensions: tuple[str, ...],
+    *,
+    label: str,
+    recurse_default_sid_dir: bool = False,
+) -> list[str]:
     """Resolve a comma-separated `file =` spec to a sorted, unique list of
     concrete file paths.
 
-    Each comma-separated entry is one of:
+    :func:`split_file_spec` decides where one entry ends and the next begins,
+    which is not a plain comma split — a URL may carry its own commas.
+
+    Each entry is one of:
       * a literal file path — included as-is (extension-checked).
       * a directory path — every file inside whose extension is in
         `extensions` is included (non-recursive; mirrors `_gather_videos`).
-        Exception: for the waveform scene (`label="waveform"`), the default
-        SID directory (`DEFAULT_WAVEFORM_DIR`, `assets/sids`) is walked
+        Exception: with `recurse_default_sid_dir=True` the default SID
+        directory (`DEFAULT_WAVEFORM_DIR`, `assets/sids`) is walked
         recursively instead — an unpacked HVSC archive is a deep tree, and
-        this is the directory the waveform scene falls back to when `file`
-        is unset, so it should work out of the box. Any other directory
-        (or a non-default entry mixed into the same spec) stays shallow;
-        write `**/*.sid` explicitly for recursion elsewhere.
+        this is the directory the SID scenes fall back to when `file` is
+        unset, so it should work out of the box. Any other directory (or a
+        non-default entry mixed into the same spec) stays shallow; write
+        `**/*.sid` explicitly for recursion elsewhere. It is an explicit
+        keyword rather than a sniff at `label`, which is message text:
+        keying the recursion to `label == "waveform"` meant a
+        `generative`/`audio_source = "sid"` scene sharing the same default
+        directory silently stayed shallow (and every real HVSC unpack has
+        zero .sid files at the top level), and rewording an error message
+        could switch HVSC discovery off.
       * a glob pattern (containing `*`, `?`, or `[`) — expanded via
         `glob.glob`; matches whose extension is in `extensions` are kept.
         A `**` segment recurses into subdirectories (e.g.
         `assets/sids/**/*.sid` finds a whole HVSC tree), matching zero or
         more directory levels.
 
+    An existing path wins over glob interpretation for a **directory** as
+    well as a file: `os.path.isdir` is tested before the glob branch, so a
+    real directory named `Clips [2024]` (the yt-dlp `%(title)s [%(id)s]`
+    convention, which produces such directories for playlist downloads) is
+    listed instead of being read as a character class that matches nothing.
+
     Whitespace around commas is stripped. Empty entries (e.g. a trailing
     comma) are ignored. Raises ValueError when the spec resolves to zero
     files or when a literal-path entry has the wrong extension — the
     `label` (e.g. "video" / "waveform") is woven into the message so
-    `validate_scene_cfg` surfaces an actionable error.
+    `validate_scene_cfg` surfaces an actionable error, with any credential in
+    the entry redacted (see :func:`redact_media_spec`).
 
     Returns paths sorted lexically for stable test/log output. The
     *random* pick across the returned list is the caller's responsibility
@@ -2640,68 +3247,43 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
         raise ValueError(f"{label}: file spec is empty")
 
     matches: set[str] = set()
-    for raw in spec.split(","):
-        entry = raw.strip()
-        if not entry:
-            continue
-        is_url = entry.lower().startswith(("http://", "https://"))
-        if not is_url:
-            # A TOML file has no shell to expand a leading `~/…` the way one
-            # does for a CLI argument, and glob/os.path treat `~` as a literal
-            # directory name — so this has to happen here or the entry matches
-            # nothing. URLs are kept off the path helpers entirely.
-            entry = paths.expand_user(entry)
-        if is_url:
+    for entry in split_file_spec(spec):
+        if is_media_url(entry):
             # A URL (e.g. a direct media link, or a yt-dlp-resolved stream URL
             # from quickcast). Pass through untouched — URLs have no meaningful
             # local extension and must not be globbed or existence-checked;
             # AVFileSource opens http(s) directly via PyAV.
             matches.add(entry)
-        elif os.path.isfile(entry):
+            continue
+        # A TOML file has no shell to expand a leading `~/…` the way one
+        # does for a CLI argument, and glob/os.path treat `~` as a literal
+        # directory name — so this has to happen here or the entry matches
+        # nothing. URLs are kept off the path helpers entirely.
+        entry = paths.expand_user(entry)
+        if os.path.isfile(entry):
             # An existing file wins over glob interpretation — filenames with
             # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would
             # otherwise be mistaken for glob patterns and match nothing.
             if not entry.lower().endswith(extensions):
                 raise ValueError(
-                    f"{label}: {entry!r} doesn't match expected extension {extensions}"
+                    f"{label}: {redact_media_spec(entry)!r} doesn't match expected "
+                    f"extension {extensions}"
                 )
             matches.add(entry)
-        elif _GLOB_CHARS.search(entry):
-            # recursive=True only changes behavior for `**` segments; ordinary
-            # `*`/`?`/`[...]` patterns are unaffected (backward-compatible).
-            hits = [
-                p
-                for p in glob.glob(entry, recursive=True)
-                if os.path.isfile(p) and p.lower().endswith(extensions)
-            ]
-            if not hits:
-                # A glob with zero hits is almost always a typo — louder
-                # than silently shrinking the candidate pool.
-                raise ValueError(
-                    f"{label}: glob {entry!r} matched no files with extension {extensions}"
-                )
-            matches.update(hits)
         elif os.path.isdir(entry):
-            if label == "waveform" and os.path.normpath(entry) == os.path.normpath(
-                DEFAULT_WAVEFORM_DIR
-            ):
-                hits = [
-                    os.path.join(dirpath, f)
-                    for dirpath, _dirnames, filenames in os.walk(entry)
-                    for f in filenames
-                    if f.lower().endswith(extensions)
-                ]
-            else:
-                hits = [
-                    os.path.join(entry, f)
-                    for f in os.listdir(entry)
-                    if os.path.isfile(os.path.join(entry, f)) and f.lower().endswith(extensions)
-                ]
-            if not hits:
-                raise ValueError(
-                    f"{label}: directory {entry!r} contains no files with extension {extensions}"
+            matches.update(
+                _list_dir_entry(
+                    entry,
+                    extensions,
+                    label=label,
+                    recurse=(
+                        recurse_default_sid_dir
+                        and os.path.normpath(entry) == os.path.normpath(DEFAULT_WAVEFORM_DIR)
+                    ),
                 )
-            matches.update(hits)
+            )
+        elif _GLOB_CHARS.search(entry):
+            matches.update(_expand_glob_entry(entry, extensions, label=label))
         else:
             # Literal path. Don't require it to exist yet — the scene's
             # setup() reports a clear "file not found" if it disappears
@@ -2709,10 +3291,11 @@ def resolve_file_spec(spec: str, extensions: tuple[str, ...], *, label: str) -> 
             # mismatches now (those are typos, not transient issues).
             if not entry.lower().endswith(extensions):
                 raise ValueError(
-                    f"{label}: {entry!r} doesn't match expected extension {extensions}"
+                    f"{label}: {redact_media_spec(entry)!r} doesn't match expected "
+                    f"extension {extensions}"
                 )
             matches.add(entry)
 
     if not matches:
-        raise ValueError(f"{label}: file spec {spec!r} resolved to no files")
+        raise ValueError(f"{label}: file spec {redact_media_spec(spec)!r} resolved to no files")
     return sorted(matches)

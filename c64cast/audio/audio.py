@@ -1,11 +1,18 @@
-"""NMI-driven 4-bit SID DAC audio via the master volume register ($D418).
+"""NMI-driven SID DAC audio via the master volume register ($D418).
 
 A small 6502 routine at $C020 pulls one sample per NMI from an 8 KB ring
-buffer at $4000-$5FFF, writing the low nibble to $D418. Python feeds the
+buffer at $4000-$5FFF and writes it to $D418. Python feeds the
 ring buffer via Socket DMA. CIA #2 Timer A fires NMIs at the configured
 sample rate (default 12 kHz — lifts the Nyquist to ~6.0 kHz so fricatives
 survive; HW-verified to stay under the handler's badline cycle budget on both
 NTSC and PAL. c64.nmi_rate_safety guards against rates that would overrun it).
+
+Ring bytes are 4-bit volume codes only on the `[audio].dac_curve = "linear"`
+path. The default is "auto", which on the primary target resolves to a
+Mahoney companding table (dac_curves.py): the ring then carries the full
+0..255 $D418 byte, the handler masks nothing, and silence is the table's
+mid-scale byte rather than NEUTRAL_SAMPLE. Every prefill, underrun pad and
+EOF pad in this module therefore writes `self._neutral_byte`, not a literal.
 
 The handler byte arrays, the ring/pump memory-map constants, the control-loop
 tuning constants, and the pure pacing helpers live in audio_handlers.py
@@ -63,8 +70,10 @@ from .audio_handlers import (
     AUDIO_QUEUE_MAX_BLOBS,
     AUDIO_WRITE_RATE_SHARE,
     BACKPRESSURE_SPIN_S,
+    CHUNK_SIZE,
     CIA2_CRA_STOP,
     CIA2_ICR_DISABLE_ALL,
+    CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_TARGET_GAP,
     INT16_FULL_SCALE,
     MAX_QUEUED_SAMPLES,
@@ -79,10 +88,14 @@ from .audio_handlers import (
     QUEUE_PUT_TIMEOUT_S,
     READ_PTR_LO_ADDR,
     REU_AUDIO_BASE,
+    REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_IRQ_HANDLER,
+    REU_IRQ_HANDLER_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_GOVERNOR,
+    REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
     REU_IRQ_HANDLER_TRACKED,
+    REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
     REU_MIC_IRQ_HANDLER,
@@ -90,9 +103,9 @@ from .audio_handlers import (
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
     REU_PUMP_CHUNK_SIZE,
-    REU_PUMP_CIA1_LATCH,
     REU_PUMP_HANDLER_ADDR,
     REU_PUMP_INITIAL_MARGIN,
+    REU_PUMP_SETTLE_S,
     REU_PUMP_TICK_COUNTER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
@@ -108,7 +121,9 @@ from .audio_handlers import (
     SID_MAHONEY_CONTROL,
     SID_MAHONEY_RES_FILT,
     SID_MAHONEY_SR,
+    WORKER_JOIN_TIMEOUT_S,
     encode_floats_to_dac,
+    patch_chunk_size,
     stomp_spans,
 )
 from .audio_rate import NmiTimer, RateServo
@@ -183,9 +198,13 @@ def resolve_audio_input_device(device: int | str) -> int:
         )
         return -1
     if len(matches) > 1:
-        others = ", ".join(f"[{i}] {n}" for i, n in matches)
+        # Device names come from USB/driver descriptors, i.e. from outside the
+        # process — repr-quote them the way the user's own token already is, so
+        # a name carrying CR/LF or an escape sequence can't forge lines in a
+        # --log-file a maintainer later reads.
+        others = ", ".join(f"[{i}] {n!r}" for i, n in matches)
         log.warning(
-            "audio device %r matched %d input devices (%s) — using [%d] %s; "
+            "audio device %r matched %d input devices (%s) — using [%d] %r; "
             "narrow it with a more specific name or an index",
             token,
             len(matches),
@@ -194,8 +213,20 @@ def resolve_audio_input_device(device: int | str) -> int:
             matches[0][1],
         )
     idx, name = matches[0]
-    log.info("resolved audio device %r -> index %d (%s)", token, idx, name)
+    log.info("resolved audio device %r -> index %d (%r)", token, idx, name)
     return idx
+
+
+def downmix_to_mono(indata: np.ndarray) -> np.ndarray:
+    """Collapse a PortAudio capture block to a mono float array.
+
+    sounddevice's numpy InputStream always hands back a (frames, channels)
+    2-D block, but a raw-buffer or hand-fed 1-D array is already mono — and
+    all three capture callbacks used to spell that fallback ``indata[:, 0]``,
+    which can only raise IndexError on the 1-D input it exists for. One
+    helper, so the three copies cannot drift apart again.
+    """
+    return indata.mean(axis=1) if indata.ndim > 1 else indata
 
 
 class AudioStreamer:
@@ -308,11 +339,18 @@ class AudioStreamer:
         self._reu_pump_armed = False
         self._reu_pump_start_time = 0.0
         self._reu_pump_total_samples = 0
-        self._reu_cia1_latch_nominal = REU_PUMP_CIA1_LATCH
+        # The matched CIA #1 pump latch this run derived (0 before any pump
+        # arms). Deliberately NOT seeded with the historical 8 kHz constant: a
+        # path that forgot to derive it would then inherit a plausible-looking
+        # wrong value instead of an obviously unset one.
+        self._reu_cia1_latch_nominal = 0
         # REU mic mode: tracks the host's REU write position (wraps at
         # REU_MIC_SIZE). 0 until _start_mic_for_reu_pump() seeds it with
-        # REU_MIC_BOOTSTRAP_BYTES.
+        # REU_MIC_BOOTSTRAP_BYTES. The error count is the mic pump's only
+        # telemetry — its REUWRITEs go out from the PortAudio callback, which
+        # has no worker and therefore none of the counters below.
         self._mic_reu_write_pos = 0
+        self._mic_reu_write_errors = 0
         # Underrun telemetry. Incremented by the worker whenever the
         # producer (PyAV demuxer / mic / WAV) fails to supply samples
         # by the pace deadline. Distinguishes the two failure modes:
@@ -337,7 +375,7 @@ class AudioStreamer:
         # scored on whether the spread actually held.
         self._late_slots = 0
         self._total_slots = 0
-        self._late_worst_s = 0.0
+        self._late_worst_window_s = 0.0
         # Health-line window state: the wall-clock of the last emitted line,
         # the counter snapshot taken with it (for per-window deltas), and the
         # servo gap's excursion within the window.
@@ -369,7 +407,9 @@ class AudioStreamer:
         # doesn't accumulate a wall of stale audio.
         self._max_queued_samples = MAX_QUEUED_SAMPLES
         self.running = False
-        self.chunk_size = 1024
+        # Bumped by every _start_worker; a worker exits when it stops matching.
+        self._worker_generation = 0
+        self.chunk_size = CHUNK_SIZE
         self.sensitivity = 1.0
         self.noise_gate = 0.05
         self.mic_stream: Any = None
@@ -602,7 +642,7 @@ class AudioStreamer:
                 time.sleep(sleep_s)
             else:
                 self._late_slots += 1
-                self._late_worst_s = max(self._late_worst_s, -sleep_s)
+                self._late_worst_window_s = max(self._late_worst_window_s, -sleep_s)
             piece = payload[i * quantum : (i + 1) * quantum]
             if not piece:
                 break
@@ -618,7 +658,16 @@ class AudioStreamer:
         _count_lock so position bookkeeping stays coherent; the worker-owned
         counters are plain reads (single-writer, torn reads impossible on
         ints). The counters themselves stay private so their single-owner
-        write discipline is visible at the attribute level."""
+        write discipline is visible at the attribute level.
+
+        ``running`` is the liveness flag the worker's crash handler clears, so
+        a caller can tell "audio was set up and the worker died" from "audio is
+        streaming" without reaching into the thread.
+
+        Every other counter is cumulative for the run (cleared in stop()) —
+        except ``late_worst_window_s``, which _maybe_log_health zeroes on every
+        health line. The key says ``window`` so it can't be read as a run
+        total beside its neighbors."""
         with self._count_lock:
             pushed = self._pushed_count
             queued = self._queued_samples
@@ -629,7 +678,8 @@ class AudioStreamer:
             "partial_underruns": self._partial_underruns,
             "late_slots": self._late_slots,
             "total_slots": self._total_slots,
-            "late_worst_s": self._late_worst_s,
+            "late_worst_window_s": self._late_worst_window_s,
+            "running": self.running,
         }
 
     def _maybe_log_health(self, now: float) -> None:
@@ -669,7 +719,7 @@ class AudioStreamer:
             gap,
             d_late,
             d_slots,
-            self._late_worst_s * 1000.0,
+            self._late_worst_window_s * 1000.0,
             d_full,
             d_part,
             d_slots / dt,
@@ -679,11 +729,8 @@ class AudioStreamer:
         )
         self._health_last_log = now
         self._health_mark = mark
-        servo.health_gap_min = -1
-        servo.health_gap_max = -1
-        servo.r_rate_min = -1.0
-        servo.r_rate_max = -1.0
-        self._late_worst_s = 0.0
+        servo.reset_health_window()
+        self._late_worst_window_s = 0.0
 
     def _halt_quantum(self) -> int:
         """Bytes per ring write, sized so each write's CPU halt fits inside one
@@ -706,7 +753,13 @@ class AudioStreamer:
         """
         period_cycles = (self.nmi.latch or self.nmi.compensated_latch()) + 1
         quantum = halt_quantum_bytes(period_cycles)
-        max_hz = getattr(getattr(self.api, "profile", None), "max_write_rate_hz", None)
+        # Read straight through, no getattr: both names are declared
+        # (C64Backend.profile, HardwareProfile.max_write_rate_hz), so a rename
+        # or a typo has to be a type error here rather than a silent max_hz =
+        # None that drops the floor. Losing this floor is the documented
+        # 65-byte-quantum failure in this method's docstring, which is not a
+        # thing to discover from a defensive default.
+        max_hz = self.api.profile.max_write_rate_hz
         if max_hz:
             chunk_period = self.chunk_size / self.effective_rate
             max_slots = max(1, int(chunk_period * max_hz * AUDIO_WRITE_RATE_SHARE))
@@ -800,9 +853,69 @@ class AudioStreamer:
         self.nmi.write_latch(adjusted_latch)
 
     # ---- worker --------------------------------------------------------------
-    def _worker(self) -> None:
+    def _start_worker(self) -> threading.Thread:
+        """Start a fresh ring-feeding worker and return its thread.
+
+        The generation bump is what fences a previous worker that outlived
+        stop()'s bounded join: it captures the value at start and exits as soon
+        as it no longer matches, so it cannot be resurrected by this method
+        setting ``running`` back to True (see :meth:`_worker`)."""
+        self._worker_generation += 1
+        thread = threading.Thread(
+            target=self._worker,
+            args=(self._worker_generation,),
+            daemon=True,
+            name="audio-worker",
+        )
+        thread.start()
+        return thread
+
+    def _consume_queued(self, n: int) -> None:
+        """Account for ``n`` queued bytes that have now LANDED in the ring.
+
+        Only the queued count drops, so ``position = pushed - queued`` advances
+        by exactly ``n`` — the audio clock moves because the audio played."""
+        if not n:
+            return
+        with self._count_lock:
+            self._queued_samples = max(0, self._queued_samples - n)
+
+    def _discard_unpushed(self, n: int) -> None:
+        """Account for ``n`` bytes dropped before they reached the ring.
+
+        Both counts drop — the paired subtract — so the bytes read as never
+        pushed and ``position = pushed - queued`` is exactly unchanged across
+        the drop. That invariant is what lets flush() splice the transport
+        without moving the audio clock, and the only difference from
+        :meth:`_consume_queued` is whether the bytes were played: getting the
+        two the wrong way round shifts A/V sync at every splice. Both live
+        here, once, rather than hand-written at each site."""
+        if not n:
+            return
+        with self._count_lock:
+            self._queued_samples = max(0, self._queued_samples - n)
+            self._pushed_count = max(0, self._pushed_count - n)
+
+    def _neutral_fill_ring(self, addr: int, n: int) -> None:
+        """NEUTRAL-fill ``n`` bytes of ring from ``addr``.
+
+        The span never straddles ``RING_BUFFER_END``: every ring write is
+        chunk-aligned (the worker pads every short chunk) and chunk_size
+        divides RING_BUFFER_SIZE exactly."""
+        self.api.write_memory_file(f"{addr:04X}", bytes([self._neutral_byte]) * n)
+
+    def _worker(self, generation: int) -> None:
         """Drain the bytes-blob queue into the C64 ring buffer, paced to
         NMI consumption.
+
+        ``generation`` is the value of ``_worker_generation`` this worker was
+        started with, and the loop exits as soon as it no longer matches. The
+        shared ``running`` flag alone was not enough: stop()'s join is bounded,
+        so a worker parked in a ring write on a stalled link can outlive it,
+        and the next scene's start_* sets ``running`` back to True — which the
+        orphan's own loop guard would read as "keep going", leaving two workers
+        dripping into one ring with independent write cursors and both feeding
+        the servo. A per-start generation can't be resurrected that way.
 
         Pacing is required because the producer is not always the rate
         authority — PyAV's demuxer decodes far faster than real time,
@@ -862,7 +975,7 @@ class AudioStreamer:
             pending_from_queue = 0
             pending_epoch = 0
 
-            while self.running:
+            while self.running and generation == self._worker_generation:
                 # Transport-flush epoch (Phase 4): captured before we collect a
                 # chunk; if flush() bumps it while this iteration holds data, the
                 # data is stale (pre-splice) and is discarded before the ring
@@ -878,12 +991,20 @@ class AudioStreamer:
                         # The splice landed after this chunk left the queue: drop
                         # it unplayed, with the same paired subtract the
                         # freshly-collected case uses below.
-                        if pending_from_queue:
-                            with self._count_lock:
-                                self._queued_samples = max(
-                                    0, self._queued_samples - pending_from_queue
-                                )
-                                self._pushed_count = max(0, self._pushed_count - pending_from_queue)
+                        self._discard_unpushed(pending_from_queue)
+                        # write_addr was advanced past this chunk when it was
+                        # handed off and the next pending_addr is already past
+                        # it, so nothing would ever write [pending_addr, +len):
+                        # the NMI replays that span from one ring lap ago as a
+                        # stale echo, exactly where the transport-splice design
+                        # promises silence. Filling it also makes w_head ("just
+                        # past the last byte actually written") true again, so
+                        # the servo isn't handed a W a whole chunk behind the
+                        # real head right at the splice.
+                        self._neutral_fill_ring(pending_addr, len(pending))
+                        w_head = pending_addr + len(pending)
+                        if w_head >= RING_BUFFER_END:
+                            w_head -= RING_BUFFER_SIZE
                         pending = None
                         pending_from_queue = 0
                     else:
@@ -899,11 +1020,7 @@ class AudioStreamer:
                         n, from_queue, leftover = self._drip_chunk(
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
-                        if pending_from_queue:
-                            with self._count_lock:
-                                self._queued_samples = max(
-                                    0, self._queued_samples - pending_from_queue
-                                )
+                        self._consume_queued(pending_from_queue)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -933,24 +1050,35 @@ class AudioStreamer:
                     chunk_buf[:] = bytes([self._neutral_byte] * self.chunk_size)
                     n = self.chunk_size
                     self._full_underruns += 1
-                elif n < self.chunk_size and prebuffered:
-                    # Partial chunk: pad to keep pace math simple. Pad
-                    # bytes are NOT counted in from_queue.
+                elif n < self.chunk_size:
+                    # Partial chunk: pad to keep pace math simple, and to keep
+                    # write_addr on the chunk grid. The pad is deliberately NOT
+                    # gated on `prebuffered`: a short collect during the
+                    # prebuffer fill (an empty queue at the collect deadline,
+                    # ordinary against a real-time mic callback) used to be
+                    # written verbatim and advance write_addr by the raw n,
+                    # taking every later write off the 1024-byte grid that
+                    # RING_BUFFER_SIZE is an exact multiple of. Both wrap guards
+                    # test the address *after* the increment, so the write that
+                    # straddles RING_BUFFER_END goes out first and its tail
+                    # lands in $6000+ — outside the ring, never played, and not
+                    # dead RAM either (waveform.py uses $6000 as a bitmap).
+                    # Pad bytes are NOT counted in from_queue.
                     pad = self.chunk_size - n
                     chunk_buf[n : n + pad] = bytes([self._neutral_byte]) * pad
                     n = self.chunk_size
-                    self._partial_underruns += 1
+                    if prebuffered:
+                        # Telemetry stays consumption-phase-only: with no NMI
+                        # reading yet, a short prebuffer collect is not an
+                        # underrun, it is just a slow start.
+                        self._partial_underruns += 1
 
                 # Phase 4 flush: a splice landed while this chunk was in hand.
                 # The from_queue + leftover bytes are pre-splice — count them as
                 # never pushed (paired subtract keeps position invariant) and
                 # skip the ring write + pace increment for this iteration.
                 if self._flush_epoch != epoch:
-                    discard = from_queue + len(leftover)
-                    if discard:
-                        with self._count_lock:
-                            self._queued_samples = max(0, self._queued_samples - discard)
-                            self._pushed_count = max(0, self._pushed_count - discard)
+                    self._discard_unpushed(from_queue + len(leftover))
                     leftover = b""
                     continue
 
@@ -984,9 +1112,7 @@ class AudioStreamer:
                 # halt to hide from — one unsplit write is both correct and the
                 # quickest way to get the ring primed.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                if from_queue:
-                    with self._count_lock:
-                        self._queued_samples = max(0, self._queued_samples - from_queue)
+                self._consume_queued(from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -1009,7 +1135,10 @@ class AudioStreamer:
                     next_write_time = time.monotonic() + chunk_period
         except Exception:
             # Without this, a thread crash means audio goes silent forever and
-            # main loop has no clue why. Mark not-running so callers can detect.
+            # the rest of the scene is silent with no explanation. Clearing
+            # `running` is what stats()["running"] reports, so a caller holding
+            # the streamer can tell a dead worker from a live one instead of
+            # inferring it from silence.
             log.exception("audio worker crashed")
             self.running = False
 
@@ -1033,9 +1162,7 @@ class AudioStreamer:
         the audio path down with it: the first exception is logged and the sink
         is dropped for the rest of the run (visuals stop reacting, sound keeps
         playing)."""
-        # getattr-guarded like _dsp_active: streamers built via __new__ in tests
-        # (no __init__) must read as "no sink" rather than raising in a callback.
-        sink: Callable[[np.ndarray], None] | None = getattr(self, "analysis_sink", None)
+        sink = self.analysis_sink
         if sink is None:
             return
         try:
@@ -1091,10 +1218,8 @@ class AudioStreamer:
     def _dsp_active(self) -> bool:
         """True when the host DSP chain has at least one enabled stage. Used to
         decide whether the mic path's legacy hard gate is bypassed (the DSP's
-        expander replaces it). getattr-guarded so streamers built via __new__
-        in tests (without __init__) read as DSP-inactive rather than erroring."""
-        dsp: AudioDSP | None = getattr(self, "_dsp", None)
-        return dsp is not None and dsp.active
+        expander replaces it)."""
+        return self._dsp.active
 
     def set_pre_emphasis(self, amount: float | None) -> None:
         """Override the DSP chain's pre-emphasis for the upcoming scene.
@@ -1103,21 +1228,14 @@ class AudioStreamer:
         per-scene value (or None = source-aware/global default) at setup(). We
         update _dsp_params and rebuild the line chain now; mic scenes rebuild
         with is_mic=True in start_mic() from the updated params, and the REU
-        video path reads _dsp_params via process_offline_dsp(). No-op for
-        __new__-built test streamers without _dsp_params."""
-        params = getattr(self, "_dsp_params", None)
-        if params is None:
-            return
-        self._dsp_params = dataclasses.replace(params, pre_emphasis=amount)
+        video path reads _dsp_params via process_offline_dsp()."""
+        self._dsp_params = dataclasses.replace(self._dsp_params, pre_emphasis=amount)
         self._dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
 
     def _apply_dsp(self, floats: np.ndarray) -> np.ndarray:
         """Run the host DSP chain over float samples in [-1, 1] before the DAC
         encode. No-op (returns the input) when DSP is inactive."""
-        dsp: AudioDSP | None = getattr(self, "_dsp", None)
-        if dsp is not None and dsp.active:
-            return dsp.process(floats)
-        return floats
+        return self._dsp.process(floats) if self._dsp.active else floats
 
     def process_offline_dsp(self, floats: np.ndarray) -> np.ndarray:
         """Run the configured DSP over a COMPLETE offline buffer using a fresh
@@ -1160,9 +1278,23 @@ class AudioStreamer:
         if self._queued_samples + n > self._max_queued_samples:
             if not block_on_full:
                 return 0
-            deadline = time.time() + QUEUE_PUT_TIMEOUT_S
-            while self._queued_samples + n > self._max_queued_samples and self.running:
-                if time.time() >= deadline:
+            # monotonic, like every other deadline in this module: a wall-clock
+            # step during a run would either expire this wait instantly (losing
+            # a blob that had capacity coming) or park the PyAV demuxer thread
+            # for the length of a backward step.
+            deadline = time.monotonic() + QUEUE_PUT_TIMEOUT_S
+            # `self._queued_samples and` is the escape for a blob bigger than
+            # the whole cap: without it the condition can never clear however
+            # empty the queue gets, so the caller burns the timeout and returns
+            # 0 for that call and every identical one after it — permanent
+            # silence, against a docstring promising graceful throttling. An
+            # oversized blob is instead admitted once the queue drains.
+            while (
+                self._queued_samples
+                and self._queued_samples + n > self._max_queued_samples
+                and self.running
+            ):
+                if time.monotonic() >= deadline:
                     return 0
                 time.sleep(BACKPRESSURE_SPIN_S)
         # Drop the blob if a transport splice flushed while we were encoding /
@@ -1187,7 +1319,7 @@ class AudioStreamer:
     def _mic_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         if status or not self.running:
             return
-        mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
+        mono = downmix_to_mono(indata)
         mono = mono * self.sensitivity
         # Analysis tap first: pre-gate, pre-DSP (see _push_to_analysis).
         self._push_to_analysis(mono.astype(np.float32, copy=False))
@@ -1208,7 +1340,7 @@ class AudioStreamer:
         without a worker hop."""
         if status or not self.running:
             return
-        mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
+        mono = downmix_to_mono(indata)
         mono = mono * self.sensitivity
         self._push_to_analysis(mono.astype(np.float32, copy=False))
         if not self._dsp_active():
@@ -1223,23 +1355,42 @@ class AudioStreamer:
         wrapping at REU_MIC_SIZE. Splits the write across the ring boundary
         when needed so the C64 pump always reads a contiguous stream
         (otherwise the wrap-end half of the chunk would be stale silence
-        for one ring period)."""
+        for one ring period).
+
+        Called on the PortAudio callback thread, so a link failure is caught
+        and counted here: an exception leaving a sounddevice callback kills mic
+        audio for the rest of the scene, and its traceback goes to stderr via
+        PortAudio rather than to the logger — leaving nothing in a log file to
+        point at."""
         n = len(encoded)
         if n == 0:
             return
         pos = self._mic_reu_write_pos
         end = pos + n
-        if end <= REU_MIC_SIZE:
-            self.api.reu_write(REU_MIC_BASE + pos, encoded)
-            self._mic_reu_write_pos = end % REU_MIC_SIZE
-        else:
-            split = REU_MIC_SIZE - pos
-            self.api.reu_write(REU_MIC_BASE + pos, encoded[:split])
-            self.api.reu_write(REU_MIC_BASE, encoded[split:])
-            self._mic_reu_write_pos = n - split
-        # Tracking for position_seconds() in REU-mic mode. Each sample
-        # produced advances the wall-clock-derived clock the same way the
-        # host-DMA path does via _pushed_count → consumed.
+        try:
+            if end <= REU_MIC_SIZE:
+                self.api.reu_write(REU_MIC_BASE + pos, encoded)
+            else:
+                split = REU_MIC_SIZE - pos
+                self.api.reu_write(REU_MIC_BASE + pos, encoded[:split])
+                self.api.reu_write(REU_MIC_BASE, encoded[split:])
+        except Exception:
+            self._mic_reu_write_errors += 1
+            if self._mic_reu_write_errors == 1:
+                log.exception(
+                    "audio[reu mic]: REU write failed — mic audio will stutter or "
+                    "stop (further failures counted, reported at stop)"
+                )
+            return
+        # One expression for both branches: (pos + n) mod ring. The wrapping
+        # branch used to store a bare `n - split`, which is only in range while
+        # a single block stays under a ring's worth past the head — outside it
+        # the write head is left outside the ring and every later call slices
+        # with a negative split.
+        self._mic_reu_write_pos = end % REU_MIC_SIZE
+        # Push accounting for stats()["pushed_samples"]. It does NOT feed
+        # position_seconds() on this path — the armed branch there is
+        # wall-clock — so don't read this as the audio clock.
         self._pushed_count += n
 
     def start_mic(
@@ -1267,12 +1418,9 @@ class AudioStreamer:
         # Rebuild the DSP chain for a mic source so the AGC stage activates
         # (line sources keep the is_mic=False chain built in __init__). Covers
         # both the host-DMA and REU mic paths since both route through here.
-        # getattr-guarded for streamers built via __new__ in tests.
-        dsp_params = getattr(self, "_dsp_params", None)
-        if dsp_params is not None:
-            self._dsp = AudioDSP(dsp_params, sample_rate=self.sample_rate, is_mic=True)
-            if self._dsp.active:
-                log.info("audio: host DSP active (mic chain)")
+        self._dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=True)
+        if self._dsp.active:
+            log.info("audio: host DSP active (mic chain)")
         self._listen_mode = False
         if self.use_reu_pump:
             self._start_mic_for_reu_pump(device, skip_irq_vector_hook=skip_irq_vector_hook)
@@ -1280,10 +1428,7 @@ class AudioStreamer:
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
         self.running = True
-        self._worker_thread = threading.Thread(
-            target=self._worker, daemon=True, name="audio-worker"
-        )
-        self._worker_thread.start()
+        self._worker_thread = self._start_worker()
         assert sd is not None
         self.mic_stream = self._open_input_stream(device)
         self.mic_stream.start()
@@ -1305,7 +1450,7 @@ class AudioStreamer:
         onset detector wants (mirrors the tap point in `_mic_callback`)."""
         if status or not self.running:
             return
-        mono = indata.mean(axis=1) if indata.ndim > 1 else indata[:, 0]
+        mono = downmix_to_mono(indata)
         mono = mono * self.sensitivity
         self._push_to_analysis(mono.astype(np.float32, copy=False))
 
@@ -1340,6 +1485,55 @@ class AudioStreamer:
             "audio: listen-only capture device=%d %dHz sensitivity=%.2f", device, rate, sensitivity
         )
 
+    # ---- REU pump rate ------------------------------------------------------
+    def _program_reu_pump_rate(self, chunk: int) -> int:
+        """Derive the matched CIA #1 Timer A latch for ``chunk`` bytes per pump
+        IRQ, record it as this run's nominal, write it to $DC04/$DC05, and
+        return it for the caller's log line.
+
+        The pump period has to be chunk × the NMI period, so the C64-side pump
+        delivers exactly what the NMI consumer drains — the kernal-default
+        CIA #1 rate (60/50 Hz) underfills the ring at our chunk size and
+        produces an audible stale-data echo. The NMI period is
+        (nominal_latch + 1) cycles, which tracks ``[audio].sample_rate``, so
+        the latch is derived from the live consumer rather than hardcoded: it
+        is a ratio of periods (system-independent) but NOT rate-independent.
+        Both pump bring-ups call this. The mic path used to write the 8 kHz
+        constant instead, which at the shipped 12 kHz default asks the pump for
+        85/128 of the bytes the NMI eats — the ring under-fills and the NMI
+        re-reads a lap-old span, i.e. exactly the artifact the derivation
+        exists to prevent, on the one path that skipped it.
+
+        Only the low 16 bits reach the register pair, so a period that does not
+        fit is clamped with a warning instead of being silently reduced modulo
+        65536 — a truncated latch can land anywhere, including one that fires
+        the pump hundreds of times faster than matched. At the default chunk the
+        product passes 16 bits below ≈2 kHz, and ``c64.nmi_rate_safety`` bounds
+        only the fast end of ``sample_rate``.
+
+        CIA #1 stays in continuous mode (the kernal already set CRA); only the
+        latch changes. BASIC's TI$ jiffy clock drifts as a side effect —
+        nothing we depend on.
+        """
+        ideal = chunk * (self.nmi.nominal_latch() + 1) - 1
+        latch = min(ideal, CIA_TIMER_LATCH_MAX)
+        if latch != ideal:
+            log.warning(
+                "audio: a matched REU pump at sample_rate=%d with chunk=%d needs a "
+                "CIA #1 latch of %d, past the 16-bit maximum %d — clamping, so the "
+                "pump over-produces and the ring laps (audible echo). Raise "
+                "[audio].sample_rate.",
+                self.sample_rate,
+                chunk,
+                ideal,
+                CIA_TIMER_LATCH_MAX,
+            )
+        self._reu_cia1_latch_nominal = latch
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+        )
+        return latch
+
     # ---- REU-staged mic (live capture, opt-in via use_reu_pump) -------------
     def _start_mic_for_reu_pump(
         self, device: int | str, *, skip_irq_vector_hook: bool = False
@@ -1360,6 +1554,11 @@ class AudioStreamer:
 
         Order matches start_for_reu_staged: REU prefill → NMI bring-up →
         REU pump install → CIA #1 reprogram → NMI arm → IRQ vector patch.
+        The two sequences are still written out separately, which is how the
+        CIA #1 latch came to be derived on one and hardcoded on the other;
+        everything the two must agree on now lives in something they share
+        (_program_reu_pump_rate, REU_PUMP_SETTLE_S, the handler constants).
+        A new field either goes in a shared helper or is a divergence again.
         """
         # Idempotent on an int (start_mic already resolved before delegating);
         # keeps the device=%d log below correct if ever called with a name.
@@ -1407,25 +1606,22 @@ class AudioStreamer:
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
         # 4. Reprogram CIA #1 Timer A latch — matched pump rate vs NMI
-        # consume rate. Same value (REU_PUMP_CIA1_LATCH = $3FFF) as the
-        # video REU path because the ratio (chunk × NMI_period)
-        # is independent of CPU clock.
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}",
-            f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}",
-        )
+        # consume rate, derived from the live NMI latch by the same helper the
+        # video path uses (see _program_reu_pump_rate for why it cannot be a
+        # constant).
+        cia1_latch = self._program_reu_pump_rate(REU_PUMP_CHUNK_SIZE)
         self.api.flush()
         log.info(
             "audio[reu mic]: pump installed at $%04X, CIA #1 latch=$%04X",
             REU_PUMP_HANDLER_ADDR,
-            REU_PUMP_CIA1_LATCH,
+            cia1_latch,
         )
 
         # 5. Arm NMI (CIA #2 Timer A). NMI now consumes the prebuilt
         # NEUTRAL ring at the consume rate.
         self._reu_pump_start_time = time.monotonic()
         self.nmi.start(adaptive=self.nmi_rate_adaptive)
-        time.sleep(0.05)  # let NMI catch a few samples before IRQ arms
+        time.sleep(REU_PUMP_SETTLE_S)  # let NMI catch a few samples first
 
         # 6. Patch IRQ vector → REU mic pump handler. Pump starts on next
         # kernal IRQ (~16 ms). Initially reads NEUTRAL (because the ring
@@ -1596,10 +1792,7 @@ class AudioStreamer:
         self._upload_nmi_and_buffers()
         self._pushed_count = 0
         self.running = True
-        self._worker_thread = threading.Thread(
-            target=self._worker, daemon=True, name="audio-worker"
-        )
-        self._worker_thread.start()
+        self._worker_thread = self._start_worker()
         # Report the achieved rate alongside the request: they differ by the
         # CIA latch quantization (NTSC@12k → 12032 Hz), and the achieved one is
         # what everything downstream is actually timed against.
@@ -1611,6 +1804,39 @@ class AudioStreamer:
         )
 
     # ---- REU-staged playback (VideoScene) ------------------------------
+    def _fit_reu_audio_region(self, audio_4bit: bytes, eof_pad_bytes: int) -> bytes:
+        """Truncate ``audio_4bit`` so the payload plus its EOF pad stays inside
+        the REU audio region, warning when it has to.
+
+        One byte is one sample, so the region a track occupies grows with its
+        duration and nothing about the upload bounds itself: at the 12032 Hz
+        NTSC default the payload reaches ``REU_AUDIO_MAX_BYTES`` after ~20
+        minutes of source, and what lies past it is the video staging region
+        the REU bank-swap bitmap path rewrites every frame. Overrunning it
+        makes the audio pump DMA bitmap bytes into the ring as full-scale
+        garbage while the per-frame video writes shred the audio — with no
+        host-side error, on nothing more exotic than a long clip.
+
+        Truncating is the graceful end of that trade: the caller has already
+        encoded the whole track for this path, so refusing outright would just
+        be silence. Bounding the payload here also bounds the EOF pad loop,
+        which starts where the payload ends.
+        """
+        ceiling = REU_AUDIO_MAX_BYTES - eof_pad_bytes
+        if len(audio_4bit) <= ceiling:
+            return audio_4bit
+        log.warning(
+            "audio: REU-staged track is %d bytes (%.1f min of source), past the "
+            "%d-byte REU audio region less its %d-byte EOF pad — truncating to "
+            "%.1f min so the upload cannot reach the video staging region",
+            len(audio_4bit),
+            len(audio_4bit) / self.effective_rate / 60.0,
+            REU_AUDIO_MAX_BYTES,
+            eof_pad_bytes,
+            ceiling / self.effective_rate / 60.0,
+        )
+        return audio_4bit[:ceiling]
+
     def start_for_reu_staged(
         self,
         audio_4bit: bytes,
@@ -1669,13 +1895,6 @@ class AudioStreamer:
             return
         self._listen_mode = False
         chunk = REU_PUMP_CHUNK_SIZE if chunk_size is None else chunk_size
-        # CIA #1 latch: pump period = chunk × NMI period. The NMI period is
-        # (NMI latch + 1) cycles — derive it from the actual consumer latch
-        # rather than hardcoding 128, so a non-default sample_rate still gets a
-        # matched pump rate. (At 8 kHz this is the historical chunk × 128 - 1.)
-        nmi_period = self.nmi.nominal_latch() + 1
-        cia1_latch = chunk * nmi_period - 1
-        self._reu_cia1_latch_nominal = cia1_latch
         # Pump start pointers: seed the write pointer half a ring behind the
         # reader (REU_PUMP_INITIAL_MARGIN) for symmetric jitter headroom.
         # src offset ≡ dst position (mod ring), so the constant sample→position
@@ -1694,6 +1913,7 @@ class AudioStreamer:
         # Both are real-time durations of what the pump will drain, so they
         # scale by effective_rate (the payload was encoded at it too).
         eof_pad_bytes = round(self.effective_rate * 5)
+        audio_4bit = self._fit_reu_audio_region(audio_4bit, eof_pad_bytes)
         log.info(
             "audio: REU upload %d bytes (%.1fs of source) + %d bytes EOF pad",
             len(audio_4bit),
@@ -1747,17 +1967,19 @@ class AudioStreamer:
         # read from the video REU staging area + write into color RAM
         # after each raster IRQ. The TRACKED variant reloads all 5 regs
         # from a main-RAM tracker ($C200-$C204: src LO/MI/HI, dst LO/HI)
-        # every IRQ, immune to inter-IRQ REC contamination. Patch offsets:
-        #   plain (37 B):    chunk at offsets 2, 7
-        #   tracked (109 B): chunk at offsets 2, 7, 51, 59, 76, 84
+        # every IRQ, immune to inter-IRQ REC contamination.
+        #
+        # Where each variant's chunk operands sit is stated in audio_handlers,
+        # beside the assembly that defines them (*_CHUNK_OFFSETS), because a
+        # wrong offset writes a length into some other instruction's operand
+        # and DMAs from or to a garbage address — see the tracker-seed comment
+        # below for what that sounds and looks like. Literals here could not
+        # follow a re-assembly there, and the in-caller note about the byte
+        # layout had already gone 16 bytes stale.
         if skip_irq_vector_hook:
-            handler = bytearray(REU_IRQ_HANDLER_TRACKED)
-            handler[2] = chunk & 0xFF  # length LO
-            handler[7] = (chunk >> 8) & 0xFF  # length HI
-            handler[51] = chunk & 0xFF  # src advance ADC LO
-            handler[59] = (chunk >> 8) & 0xFF  # src advance ADC HI
-            handler[76] = chunk & 0xFF  # dst advance ADC LO
-            handler[84] = (chunk >> 8) & 0xFF  # dst advance ADC HI
+            handler = patch_chunk_size(
+                REU_IRQ_HANDLER_TRACKED, REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS, chunk
+            )
             # Seed src + dst trackers BEFORE uploading the tracked
             # handler bytes — between handler upload and tracker seed,
             # any CIA #1 IRQ via the bank-swap dispatcher would run the
@@ -1792,20 +2014,16 @@ class AudioStreamer:
             self.api.write_memory_file(
                 f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", REU_PUMP_BODY_SUBROUTINE
             )
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         elif self.reu_pump_governor:
-            # Governor handler: 18-byte skip-when-ahead prefix + pump body.
-            # The chunk patch sites are shifted by the prefix: the body's
-            # LDA #<chunk (plain offset 2) lands at 19, LDA #>chunk (7) at 24.
-            handler = bytearray(REU_IRQ_HANDLER_GOVERNOR)
-            handler[19] = chunk & 0xFF  # LDA #<chunk → STA $DF07
-            handler[24] = (chunk >> 8) & 0xFF  # LDA #>chunk → STA $DF08
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+            # Governor handler: skip-when-ahead prefix + the pump body.
+            handler = patch_chunk_size(
+                REU_IRQ_HANDLER_GOVERNOR, REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS, chunk
+            )
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         else:
-            handler = bytearray(REU_IRQ_HANDLER)
-            handler[2] = chunk & 0xFF  # LDA #<chunk → STA $DF07
-            handler[7] = (chunk >> 8) & 0xFF  # LDA #>chunk → STA $DF08
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", bytes(handler))
+            handler = patch_chunk_size(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, chunk)
+            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
         self.api.write_memory(
             f"{REU.C64_ADDR_LO:04X}", f"{initial_dst & 0xFF:02X}{(initial_dst >> 8) & 0xFF:02X}"
         )
@@ -1819,14 +2037,9 @@ class AudioStreamer:
         )
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
-        # 4. Reprogram CIA #1 Timer A latch for pump rate. The kernal-default
-        # rate (60/50 Hz) underfills the ring at our chunk size and produces
-        # an audible stale-data echo. CIA #1 stays in continuous mode (kernal
-        # already set CRA bits); only the latch changes. BASIC's TI$ jiffy
-        # clock drifts as a side effect — nothing we depend on.
-        self.api.write_memory(
-            f"{CIA1.TIMER_A_LO:04X}", f"{cia1_latch & 0xFF:02X}{(cia1_latch >> 8) & 0xFF:02X}"
-        )
+        # 4. Reprogram CIA #1 Timer A latch for the matched pump rate (see
+        # _program_reu_pump_rate, which the mic bring-up shares).
+        cia1_latch = self._program_reu_pump_rate(chunk)
 
         self.api.flush()
         log.info(
@@ -1844,10 +2057,9 @@ class AudioStreamer:
         self._reu_pump_start_time = time.monotonic()
         self.nmi.start(adaptive=self.nmi_rate_adaptive)
 
-        # Brief settle so NMI is already firing before the REU pump arms;
-        # otherwise the first pump DMA could overwrite ring positions NMI
-        # hasn't yet read, causing a glitch.
-        time.sleep(0.05)
+        # Brief settle so NMI is already firing before the REU pump arms
+        # (see REU_PUMP_SETTLE_S).
+        time.sleep(REU_PUMP_SETTLE_S)
 
         # 6. Patch IRQ vector → REU pump handler. Pump starts on next kernal
         # IRQ (~16 ms after this write). Skipped when the display mode's
@@ -1911,11 +2123,14 @@ class AudioStreamer:
         """Approximate playback position from the consumer's perspective.
 
         Host-DMA mode: (samples pushed - samples still queued) / effective_rate.
-        REU pump mode: wall-clock seconds since the IRQ pump armed (clamped
-        to the total source length so over-runs don't desync video). The C64
-        ring buffer adds another ~0.5s of latency past either path, but
-        that bias is constant in steady state and therefore harmless for
-        relative sync.
+        REU pump mode: wall-clock seconds since the IRQ pump armed, clamped to
+        the total source length so over-runs don't desync video — but only when
+        there IS a total. A live REU-mic session has no finite length and never
+        sets one, and clamping a wall clock to a zero total pinned it at 0.0 for
+        the whole session (or, on a streamer reused after a staged video scene,
+        to the previous track's length). The C64 ring buffer adds another ~0.5s
+        of latency past either path, but that bias is constant in steady state
+        and therefore harmless for relative sync.
 
         The divisor is `effective_rate` because this is a real-time clock —
         video is slaved to it, and the `clock/wall` gauge that calibrates
@@ -1926,9 +2141,10 @@ class AudioStreamer:
         if not rate:
             return 0.0
         if self._reu_pump_armed:
-            elapsed = time.monotonic() - self._reu_pump_start_time
-            total_s = self._reu_pump_total_samples / rate
-            return max(0.0, min(elapsed, total_s))
+            elapsed = max(0.0, time.monotonic() - self._reu_pump_start_time)
+            if not self._reu_pump_total_samples:
+                return elapsed
+            return min(elapsed, self._reu_pump_total_samples / rate)
         # q.qsize() now counts bytes-blobs, not samples — read the explicit
         # sample-count counter instead.
         consumed = self._pushed_count - self._queued_samples
@@ -1961,16 +2177,14 @@ class AudioStreamer:
         The bump-then-drain order pairs with the epoch checks in the push and
         worker paths: pushers blocked mid-commit and the worker holding an
         in-hand chunk both discard against the new epoch, closing the windows a
-        bare queue drain would leave open. Counters are subtracted in pairs under
-        _count_lock so ``position = pushed - queued`` is unchanged by the drop.
+        bare queue drain would leave open. Every drop goes through
+        :meth:`_discard_unpushed`, whose paired subtract leaves
+        ``position = pushed - queued`` unchanged.
         No-op in REU-pump mode (no host queue to flush)."""
         if self._reu_pump_armed:
             return
         self._flush_epoch += 1
-        drained = self._drain_queue_samples()
-        with self._count_lock:
-            self._queued_samples = max(0, self._queued_samples - drained)
-            self._pushed_count = max(0, self._pushed_count - drained)
+        self._discard_unpushed(self._drain_queue_samples())
         if silence_output:
             self._stomp_requested = True
 
@@ -1990,9 +2204,8 @@ class AudioStreamer:
     def stop(self) -> None:
         # Listen-only sessions never touched the NMI/DAC/SID, so skip all of
         # that teardown (writing $D418/NMI vectors would be spurious U64 traffic)
-        # — just close the input stream and reset the flag. getattr-guarded for
-        # streamers built via __new__ in tests.
-        if getattr(self, "_listen_mode", False):
+        # — just close the input stream and reset the flag.
+        if self._listen_mode:
             self.running = False
             self._listen_mode = False
             if self.mic_stream:
@@ -2040,13 +2253,38 @@ class AudioStreamer:
                 log.debug("mic close: %s", e)
             self.mic_stream = None
         if self._worker_thread:
-            self._worker_thread.join(timeout=1.0)
+            # A plain bounded join, not session.join_bounded: this is a daemon
+            # thread joined off the main thread (so nothing is waiting to run a
+            # signal handler), and the audio layer must not import the app one.
+            self._worker_thread.join(timeout=WORKER_JOIN_TIMEOUT_S)
+            if self._worker_thread.is_alive():
+                # The join is bounded and a ring write on a stalled link can
+                # outlast it, so say so — the counters cleared just below are
+                # still being mutated, and oncall had nothing at all to read.
+                # Dropping the reference is safe regardless: the surviving
+                # worker is generation-fenced (see _worker), so the next
+                # start_* cannot resurrect it into a second live writer.
+                log.warning(
+                    "audio: worker did not exit within %.1fs; ring writes may still "
+                    "be in flight (it will exit when its write returns)",
+                    WORKER_JOIN_TIMEOUT_S,
+                )
             self._worker_thread = None
         # Drain the queue so subsequent runs start clean.
         self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0
         self._stomp_requested = False
+        # The streamer is reused across scenes, so a total that outlives its
+        # own scene would clamp the next scene's clock (position_seconds).
+        self._reu_pump_total_samples = 0
+        if self._mic_reu_write_errors:
+            log.warning(
+                "audio[reu mic]: %d REU write failures this run (mic audio dropped "
+                "out); see the first traceback above",
+                self._mic_reu_write_errors,
+            )
+        self._mic_reu_write_errors = 0
         # Clear the timer's pitch-comp/arm state and the servo's watchdog +
         # adaptive-rate state, so the next scene's bring-up re-arms and
         # re-acquires from nominal (the per-mode learned-latch cache survives
@@ -2093,7 +2331,7 @@ class AudioStreamer:
             )
         self._late_slots = 0
         self._total_slots = 0
-        self._late_worst_s = 0.0
+        self._late_worst_window_s = 0.0
         # Host-DMA servo gap telemetry: confirms the closed loop locked the
         # ring gap near half a ring (4096) and never approached a lap (0) or an
         # underrun (RING_BUFFER_SIZE). The external drift probe can't see this
@@ -2107,9 +2345,7 @@ class AudioStreamer:
                 HOST_DMA_SERVO_TARGET_GAP,
                 RING_BUFFER_SIZE,
             )
-        self.servo.gap_min = -1
-        self.servo.gap_max = -1
-        self.servo.gap_last = -1
+        self.servo.reset_run_telemetry()
 
     def close(self) -> None:
         # AudioStreamer doesn't own its API — it shares the render path's

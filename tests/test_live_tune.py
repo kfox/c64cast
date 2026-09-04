@@ -4,6 +4,11 @@ seam, and the LiveTuneTracker → config save-back.
 
 No hardware: display modes construct pure numpy state, and the MIDI holder logic
 is exercised through a fake playlist/scene/mode.
+
+The data dir is isolated at module scope because the OSD tests draw text, and
+`_annotate_osd` -> `char_rom.load_glyphs()` reads the character ROM from
+`paths.roms_dir()` — i.e. the developer's real `~/.local/share/c64cast/roms`,
+whose result it then caches process-wide for every other test in the worker.
 """
 
 import os
@@ -19,11 +24,12 @@ from c64cast.app.config import _PALETTE_MODE_CHOICES, ColorCfg, Config, SceneCfg
 from c64cast.scenes import scenes
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, MachineSettingsIsolation  # noqa: E402
 
 from c64cast.control import live_tune as lt
 from c64cast.control.midi_control import MidiControlListener
 from c64cast.control.transport import LiveTuneTracker, atomic_write_text
+from c64cast.hw import char_rom
 from c64cast.video.dither import DITHER_METHODS
 from c64cast.video.modes import (
     HiresDisplayMode,
@@ -37,6 +43,23 @@ from c64cast.video.palette import (
     ColorFit,
     ColorFitAccumulator,
 )
+
+# `_annotate_osd` draws with the C64 character ROM, which `char_rom` resolves
+# out of the data dir — i.e. the developer's real `~/.local/share/c64cast`.
+_iso = MachineSettingsIsolation()
+
+
+def setUpModule() -> None:
+    _iso.start()
+    # The glyph cache is process-wide and may already hold whatever the real
+    # data dir answered in another module, so drop it on the way in as well as
+    # on the way out.
+    char_rom.invalidate_cache()
+
+
+def tearDownModule() -> None:
+    _iso.stop()
+    char_rom.invalidate_cache()
 
 
 def _color_choices(field_name: str) -> tuple[str, ...]:
@@ -660,6 +683,17 @@ class LiveTuneTrackerTests(unittest.TestCase):
 
     def test_empty_snippet(self):
         self.assertEqual(LiveTuneTracker().toml_snippet(), "")
+
+    def test_snippet_from_renders_rows_a_caller_already_took(self):
+        # For the surface that shows the row list *and* the snippet in one
+        # payload (`perf_console._tuned_dict`): it used to call toml_snippet(),
+        # which takes its own second snapshot, so a knob turned between the two
+        # reads made the two halves of one frame disagree.
+        t = LiveTuneTracker()
+        t.record("mode.dither_strength", 0.5, 0.9)
+        rows = [r for r in t.pending() if r["field"] is not None]
+        self.assertEqual(t.snippet_from(rows), t.toml_snippet())
+        self.assertEqual(t.snippet_from([]), "")
 
     def test_pending_names_the_config_field_behind_each_change(self):
         # `describe` is the terminal's line; `pending` is the same record for a

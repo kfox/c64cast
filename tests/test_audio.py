@@ -11,7 +11,7 @@ from typing import Any, cast
 import numpy as np
 from _fakes import new_streamer
 
-from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer, downmix_to_mono
 from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     RING_BUFFER_ADDR,
@@ -35,6 +35,26 @@ def _drain_queue_to_samples(q: queue.Queue[bytes]) -> list[int]:
         blob = q.get()
         out.extend(blob)
     return out
+
+
+class DownmixToMonoTest(unittest.TestCase):
+    """The three capture callbacks share one downmix. Its 1-D branch used to
+    be spelled `indata[:, 0]`, a two-axis index applied only when the array
+    has one axis — so the fallback could only raise IndexError, inside a
+    PortAudio callback where the traceback never reaches the logger."""
+
+    def test_two_dimensional_block_is_averaged_across_channels(self):
+        block = np.array([[0.0, 1.0], [0.5, -0.5]], dtype=np.float32)
+        np.testing.assert_allclose(downmix_to_mono(block), [0.5, 0.0])
+
+    def test_one_dimensional_block_passes_through(self):
+        flat = np.array([0.25, -0.75], dtype=np.float32)
+        np.testing.assert_allclose(downmix_to_mono(flat), flat)
+
+    def test_single_channel_block_is_flattened(self):
+        np.testing.assert_allclose(
+            downmix_to_mono(np.array([[0.25], [-0.75]], dtype=np.float32)), [0.25, -0.75]
+        )
 
 
 class SampleTapTest(unittest.TestCase):
@@ -164,7 +184,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s.q.put(bytes([7] * 64))
         s._queued_samples = 64
         # Run the worker briefly.
-        t = threading.Thread(target=s._worker, daemon=True)
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
         # Wait for the chunk to be flushed.
         import time
@@ -192,7 +212,7 @@ class WorkerBatchingTest(unittest.TestCase):
         # 50 samples = 3 full chunks + 2 leftover.
         s.q.put(bytes(range(50)))
         s._queued_samples = 50
-        t = threading.Thread(target=s._worker, daemon=True)
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
         import time
 
@@ -235,7 +255,7 @@ class WorkerBatchingTest(unittest.TestCase):
             s.q.put(bytes(range(64)))
             s._queued_samples += 64
 
-        t = threading.Thread(target=s._worker, daemon=True)
+        t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
         t0 = time.monotonic()
         time.sleep(0.080)  # nominally 80 ms of wall clock
@@ -463,7 +483,8 @@ class StatsSeamTest(unittest.TestCase):
                 "partial_underruns": 0,
                 "late_slots": 0,
                 "total_slots": 0,
-                "late_worst_s": 0.0,
+                "late_worst_window_s": 0.0,
+                "running": False,
             },
         )
 
@@ -473,6 +494,15 @@ class StatsSeamTest(unittest.TestCase):
         stats = s.stats()
         self.assertEqual(stats["pushed_samples"], 64)
         self.assertEqual(stats["queued_samples"], 64)
+
+    def test_stats_report_worker_liveness(self):
+        """The worker crash handler's only seam: a dead worker is visible
+        through stats() rather than only as silence."""
+        s = new_streamer()
+        s.running = True
+        self.assertIs(s.stats()["running"], True)
+        s.running = False
+        self.assertIs(s.stats()["running"], False)
 
 
 if __name__ == "__main__":

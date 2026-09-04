@@ -5,7 +5,7 @@ in-memory Config builder (playlist semantics + per-flag overrides + the
 scheme-aware connection target), URL routing (direct media vs yt-dlp, with a
 fake yt_dlp module so no network is touched), and cli._resolve_configs dispatch
 (positional args vs --config). The hardware run path (build_stack/
-_run_playlists) is intentionally out of scope here — it's exercised by the
+run_foreground) is intentionally out of scope here — it's exercised by the
 CLI/playlist suites.
 """
 
