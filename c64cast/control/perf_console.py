@@ -31,13 +31,22 @@ a web launch and a pad launch are indistinguishable downstream:
   playlist events the C64's own keys do, so the run loop applies them at its
   next clean boundary rather than this thread mutating a scene. The Phase-7
   verbs (freeze / scrub / rw / ff / loop) reach the same ``TransportSession``
-  the MIDI surface drives, and **that engine posts its own OSD line** — so the
-  no-``post_osd`` rule above is this module's own discipline, not something the
-  transport engine inherits: a ``loop_slot`` save does draw ``SAVED 3`` over the
-  audience output. What is closed here is the caller's hand in that string: the
-  slot a console may name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX``
-  (see :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated
-  into it and nothing unbounded is persisted.
+  the MIDI surface drives, and **that engine posts its own OSD line** — which
+  is not a leak in the no-``post_osd`` rule above but the line the rule is
+  drawn at: the audience screen carries transport **state** (``PAUSED``,
+  ``PLAY``, ``LOOP 1:04-1:31``, ``REC ●`` beside its red border), because the
+  picture is visibly doing that and an unexplained frozen frame is worse than a
+  label. It does **not** carry confirmation that a control was pressed. That is
+  why a ``loop_slot`` save no longer draws ``SAVED 3`` there: it changes a file
+  on disk and nothing on screen, so it goes to the log — and to this console
+  for free, since every pushed state frame carries ``loop_slots``
+  (:func:`_transport_dict`), which is live feedback rather than a two-second
+  flash. The rule is one boundary, applied in the engine, so the MIDI and web
+  surfaces stay the mirror images they have been since Phase 2. What is *also*
+  closed here is the caller's hand in those strings: the slot a console may
+  name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX`` (see
+  :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated into
+  an OSD line and nothing unbounded is persisted.
 * **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.control.performance.LookEvent`
   (``save`` / recall), drained on the playlist thread exactly like a clip launch —
   a look captures the active clip + effect-chain state and re-fires it on recall.

@@ -1035,6 +1035,63 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         self.assertFalse(scene.transport.paused)
 
 
+class TransportOsdBoundaryTest(unittest.TestCase):
+    """The engine's OSD line goes over the *audience* output, so it carries
+    transport **state** — what the picture is now doing — and not confirmation
+    that a control was pressed. A save or a clear changes a file on disk and
+    nothing on screen; the console sees it via `loop_slots` in every state
+    frame, and the log records it."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _scene(self) -> tuple[VideoScene, LoopPresetStore]:
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        store = LoopPresetStore(Path(self._tmp.name) / "loop.json", video_ref="clip.mp4", size=123)
+        scene.transport.loop_store = store
+        return scene, store
+
+    def test_a_save_posts_no_osd(self):
+        scene, _store = self._scene()
+        scene.transport.loop_a = 10.0
+        scene.transport.loop_b = 20.0
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_save_with_no_loop_posts_no_osd(self):
+        scene, _store = self._scene()
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_clear_posts_no_osd(self):
+        scene, store = self._scene()
+        store.save(2, 1.0, 2.0)
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(2, save=False, clear=True)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_recall_does_post_osd(self):
+        # Recall changes what is playing, so the state that follows it belongs
+        # on the audience screen — this is the boundary, not an exception.
+        scene, store = self._scene()
+        store.save(3, 12.0, 34.0)
+        scene.transport_loop_slot(3, save=False, clear=False)
+        self.assertEqual(scene.osd.current(), "LOOP 3")
+
+    def test_arming_and_looping_still_post_state(self):
+        scene, _store = self._scene()
+        scene.transport_loop_toggle()
+        self.assertIsNotNone(scene.osd.current())
+        self.assertTrue((scene.osd.current() or "").startswith("LOOP A"))
+        scene.transport_loop_toggle()
+        self.assertTrue((scene.osd.current() or "").startswith("LOOP "))
+        scene.transport_loop_toggle()
+        self.assertEqual(scene.osd.current(), "LOOP OFF")
+
+
 class VideoSceneRecordBorderTeardownTest(unittest.TestCase):
     def test_teardown_restores_border_when_left_armed(self):
         scene = _make_video_scene_stub(_StubSource(duration=100.0))
