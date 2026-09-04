@@ -70,6 +70,30 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A scene hidden with the `osd.position` pad no longer stays dark for the
+  rest of the run.** Performance mode is a per-scene flag re-stamped each lap,
+  but the pad's hide was only ever stamped *on* — and the mode is turned back
+  off from whichever scene is live then, which is never the scene it was
+  hidden from. That scene kept a set flag nothing cleared, so on a looping
+  playlist its OSD was dead for good and further taps on the pad did nothing.
+  The re-stamp now writes the mode's actual value every lap, and a tap clears
+  the run-level gate on the scene in front of it rather than inferring it, so
+  the pad really does open whichever gate is shut.
+- **The WLED device page now sends the same hardening headers as the `/perf`
+  console.** It went out with no `frame-ancestors` and no `X-Frame-Options` at
+  all, which left framing the page as the one cross-site path the `Origin`
+  check does not close: a hostile page could frame the device root, overlay a
+  decoy, and collect a tap that lands inside the frame as a same-origin
+  request. Both pages are assembled by the same helper, so the headers now live
+  beside it and cannot diverge again.
+- **The WLED pixel sink's teardown bell is verified before it is trusted, and
+  says so when it cannot be opened.** Windows has no native `socketpair`, so
+  CPython binds a loopback listener and accepts without checking who connected
+  — a local process that won that race owned the bell, and ringing it ended the
+  receive thread while the source went on serving its last frame. A pair that
+  fails or comes back wrong is now discarded with a warning, instead of
+  silently reverting to the slower teardown whose timeout warning this exists
+  to prevent.
 - **The WLED Mode 1 websocket now refuses a cross-origin handshake.**
   `POST /json` has always rejected one, but `/ws` — which applies the same
   commands — accepted before checking anything. A WebSocket handshake is

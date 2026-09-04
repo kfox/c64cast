@@ -26,6 +26,7 @@ import unittest
 
 from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
+from c64cast.scenes.scenes import OsdState
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -59,6 +60,9 @@ class FakeScene:
         # built right after reflects the pick.
         self.prepare_renames_to = prepare_renames_to
         self.prepare_next_count = 0
+        # A real Scene always has one (scenes.py), and `safe_setup` re-stamps
+        # the run's performance-mode gate onto it every lap.
+        self.osd = OsdState()
 
     def prepare_next(self):
         self.prepare_next_count += 1
@@ -1412,11 +1416,7 @@ class PerformanceModeTest(unittest.TestCase):
     one scene alone comes back on the next auto-advance."""
 
     def _scene(self, name):
-        from c64cast.scenes.scenes import OsdState
-
-        scene = FakeScene(name)
-        scene.osd = OsdState()
-        return scene
+        return FakeScene(name)
 
     def _playlist(self, scenes):
         return Playlist(
@@ -1432,8 +1432,9 @@ class PerformanceModeTest(unittest.TestCase):
         self.assertFalse(self._playlist([self._scene("A")]).performance_mode)
 
     def test_it_survives_a_scene_advance(self):
-        # The whole point. `cycle_osd`'s double-tap hide reaches only the live
-        # scene, so a show went quiet for one scene and then lit back up.
+        # The whole point: an OsdState is per-scene, so a hide written to the
+        # live scene alone came back on the next auto-advance. The `osd.position`
+        # pad's double-tap routes through here for exactly that reason.
         a, b = self._scene("A"), self._scene("B")
         pl = self._playlist([a, b])
         pl.safe_setup(a)
@@ -1442,6 +1443,45 @@ class PerformanceModeTest(unittest.TestCase):
         self.assertTrue(b.osd.suppressed)
         b.osd.post("SEEK 1:04")
         self.assertIsNone(b.osd.current())
+
+    def test_a_pad_hide_does_not_strand_the_scene_it_was_pressed_on(self):
+        # `suppressed` is per-scene but the mode is per-run, and the mode is
+        # turned back off from whichever scene is live *then* — never the one it
+        # was turned on from. So the pressed-on scene kept a set flag nothing
+        # cleared, and on a looping playlist its OSD was dead for good.
+        a, b = self._scene("A"), self._scene("B")
+        pl = self._playlist([a, b])
+
+        pl.current = a
+        pl.safe_setup(a)
+        pl.cycle_osd(double_tap=True)
+        self.assertTrue(a.osd.suppressed)
+
+        pl.current = b
+        pl.safe_setup(b)
+        self.assertTrue(b.osd.suppressed)
+        pl.cycle_osd(double_tap=False)
+        self.assertFalse(pl.performance_mode)
+        self.assertTrue(b.osd.visible)
+
+        pl.current = a
+        pl.safe_setup(a)
+        self.assertTrue(a.osd.visible)
+        a.osd.post("SEEK 1:04")
+        self.assertIsNotNone(a.osd.current())
+
+    def test_the_pad_reopens_a_scene_the_run_gate_left_shut(self):
+        # The re-show branch clears `suppressed` on the scene rather than
+        # inferring it from `performance_mode`, which is already off here — the
+        # docstring's "opens whichever one is shut".
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.current = a
+        a.osd.suppressed = True
+        self.assertFalse(pl.performance_mode)
+
+        pl.cycle_osd(double_tap=False)
+        self.assertTrue(a.osd.visible)
 
     def test_it_silences_every_poster_not_just_transport(self):
         a = self._scene("A")

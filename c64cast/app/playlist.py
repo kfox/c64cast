@@ -381,6 +381,7 @@ class Playlist:
         if not osd.visible:
             if self.performance_mode:
                 self.set_performance_mode(False)
+            osd.suppressed = False
             osd.enabled = True
             osd.post(f"OSD {osd.position}")
             return
@@ -649,10 +650,13 @@ class Playlist:
                 dm.user_dim = self.user_dim
         # Same re-stamp, same reason: an OsdState is per-scene, so performance
         # mode has to be re-applied to each fresh one or the audience screen
-        # picks the OSD back up on the next auto-advance. Only written when set,
-        # so a normal run leaves the config's own `enabled` untouched.
-        if self.performance_mode:
-            scene.osd.suppressed = True
+        # picks the OSD back up on the next auto-advance. Written every lap, not
+        # only when the mode is on: `suppressed` is the run's gate (the config
+        # owns `enabled`, which is why that one is left alone), so a scene that
+        # was live while the mode was on has to have it *cleared* when it comes
+        # round again. A one-way stamp stranded it — the mode goes off from
+        # whichever scene is current, reaching only that one.
+        scene.osd.suppressed = self.performance_mode
         # Arm the fade-in: the display mode starts black and ramps up over the
         # opening live frames (driven by _advance_fade_in in run_one_frame).
         self.fades.begin_fade_in(scene)
