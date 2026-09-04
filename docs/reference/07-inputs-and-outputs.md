@@ -108,9 +108,10 @@ It is still listed, so you know it will not survive the show.
 > [!WARNING]
 > Saving rewrites the whole configuration file from the settings in memory,
 > not just the lines that changed. The values survive; comments, key order and
-> spacing are replaced by the serializer's own. The file it replaces is kept
-> as `<name>.bak` — one deep, so a second save's backup is the first save's
-> output rather than what you originally wrote.
+> spacing are replaced by the serializer's own. What you originally wrote is
+> kept as `<name>.bak`, written once and never overwritten — so it stays the
+> file you authored no matter how many times the show saves over itself. There
+> is no undo for the *previous* save, only for the original.
 
 ## Cameras and Microphones
 

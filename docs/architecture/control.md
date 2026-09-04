@@ -663,7 +663,7 @@ Phase 1 of the MIDI live-tune feature shipped the pieces that don't need a trans
 
 | Context | Behavior |
 | --- | --- |
-| `--overwrite` | Silently `apply`s and `Playlist._save_config`s, keeping a `.bak` |
+| `--overwrite` | Silently `apply`s and `Playlist._save_config`s; the `.bak` preserves the original once, not the previous save ([why](config.md#playlist_supportpy--playlist-collaborators)) |
 | Interactive terminal | Prints the changes and prompts — a plain `input()`, no wizard extra |
 | Headless / non-tty | Prints the changes without saving |
 | Quick playback (no config file) | Prints a pasteable TOML snippet |

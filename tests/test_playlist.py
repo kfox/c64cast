@@ -16,10 +16,13 @@ Run:    python -m unittest discover tests
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import os
+import tempfile
 import threading
 import time
 import unittest
 
+from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 
 # ---------------------------------------------------------------------------
@@ -1398,6 +1401,44 @@ class PauseResumeTest(unittest.TestCase):
         pl._handle_pause()
         dt = time.time() - t0
         self.assertLess(dt, 0.6, f"resume wait should be cut short by stop_event, took {dt:.2f}s")
+
+
+class ConfigSaveBackupTest(unittest.TestCase):
+    """`PlaylistMenu.save_config`'s `.bak` preserves the hand-written original
+    once. It used to copy on every save, and `session.save_live_tune_changes`
+    calls save_config on every exit under `--overwrite` — so two runs of a
+    tuned show left no pristine copy, while the log said "(backup .bak)"."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg_path = os.path.join(self.tmp.name, "show.toml")
+        self.backup = self.cfg_path + ".bak"
+
+    def test_the_first_save_preserves_the_original(self):
+        with open(self.cfg_path, "w") as fh:
+            fh.write("hand-written\n")
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        with open(self.backup) as fh:
+            self.assertEqual(fh.read(), "hand-written\n")
+        self.assertIn("original preserved", note)
+
+    def test_a_later_save_leaves_the_original_intact(self):
+        with open(self.cfg_path, "w") as fh:
+            fh.write("hand-written\n")
+        playlist_support._preserve_original(self.cfg_path, self.backup)
+        # What the serializer would have left behind, then another save.
+        with open(self.cfg_path, "w") as fh:
+            fh.write("machine-generated\n")
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        with open(self.backup) as fh:
+            self.assertEqual(fh.read(), "hand-written\n")
+        self.assertIn("already preserved", note)
+
+    def test_no_original_means_no_backup(self):
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        self.assertFalse(os.path.exists(self.backup))
+        self.assertIn("no original", note)
 
 
 if __name__ == "__main__":

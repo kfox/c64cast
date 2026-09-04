@@ -523,7 +523,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="On exit, silently save any live-tune parameter changes (made via "
         "MIDI/WLED during the run) back into the config's [color] section "
-        "(keeping a .bak), instead of prompting. No effect if nothing changed "
+        "(preserving the original as a one-time .bak), instead of prompting. No "
+        "effect if nothing changed "
         "or the run has no config file.",
     )
     return p
