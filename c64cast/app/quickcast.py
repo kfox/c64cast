@@ -6,8 +6,8 @@ argument, in the order given, no video interleaving, no loop (override with
 ``--loop``). This is the library behind ``c64cast``'s positional ``MEDIA``
 mode: when :func:`c64cast.app.cli.main` sees positional arguments (and no
 ``--config``) it calls :func:`build_config` here, then runs the result through
-the normal path (:func:`c64cast.app.session.build_stack` → ``_run_playlists`` →
-``teardown_stack``); it adds no new playback machinery.
+the normal path (:func:`c64cast.app.session.build_stack` → ``run_foreground``
+→ ``teardown_stack``); it adds no new playback machinery.
 
 Argument → scene type mapping:
 

@@ -1519,6 +1519,32 @@ def validate_wled_cfg(cfg: Config) -> None:
         )
 
 
+# Every whole-Config validator in this module, in the order a run applies
+# them. `session.validate_configs` iterates this rather than naming them one
+# by one: the hand-written list had already fallen a validator behind
+# (`validate_wled_cfg` reached `--doctor` and no actual run), and the symptom
+# of the next omission is a mid-show failure instead of a pre-hardware
+# rejection. tests/test_scene_factory_validators.py holds the tuple to a
+# partition of the module's `validate_*(cfg: Config)` callables.
+#
+# The two validators that take a *section* rather than a whole Config
+# (`validate_control_cfg`, `validate_midi_control_cfg`) are deliberately not
+# here: [control] and [midi_control] are process-wide, so they are checked
+# once against the master, not once per system.
+PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
+    validate_nmi_sample_rate,
+    validate_sampler_cfg,
+    validate_dac_curve_cfg,
+    validate_dac_bitmap_tempo_cfg,
+    validate_sid_model_cfg,
+    validate_dither_cfg,
+    validate_color_match_cfg,
+    validate_cell_strategy_cfg,
+    validate_motion_smoothing_cfg,
+    validate_wled_cfg,
+)
+
+
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
     """Pre-construction validation for a SceneCfg.
 

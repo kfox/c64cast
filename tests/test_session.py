@@ -21,6 +21,7 @@ from unittest import mock
 from _fakes import fake_system_stack
 
 from c64cast.app import config as cfgmod
+from c64cast.app import profiler as profiler_mod
 from c64cast.app import session
 
 
@@ -74,7 +75,6 @@ class ReExportTest(unittest.TestCase):
             "StackBuildError",
             "build_stack",
             "teardown_stack",
-            "_run_playlists",
             "_pump_previews_until_done",
             "_coerce_reu_for_backend",
             "_maybe_save_live_tune",
@@ -115,11 +115,11 @@ class ValidateConfigsTest(unittest.TestCase):
 
     def test_a_config_error_from_any_validator_is_exit_5(self):
         loaded = _loaded(["a"])
-        with mock.patch.object(
-            session.scene_factory,
-            "validate_dither_cfg",
-            side_effect=cfgmod.ConfigError("bad dither"),
-        ):
+
+        def bad_dither(cfg: cfgmod.Config) -> None:
+            raise cfgmod.ConfigError("bad dither")
+
+        with mock.patch.object(session.scene_factory, "PER_SYSTEM_VALIDATORS", (bad_dither,)):
             with self.assertLogs("c64cast", level="ERROR") as logged:
                 with self.assertRaises(session.SessionConfigError) as cm:
                     session.validate_configs(loaded, loaded.cfgs)
@@ -201,7 +201,43 @@ class ValidateConfigsTest(unittest.TestCase):
         self.assertFalse(loaded.cfgs[0].audio.use_reu_pump)
 
 
+class PerSystemValidatorsTest(unittest.TestCase):
+    """`validate_configs` used to name its nine validators one by one, and had
+    already fallen a validator behind: `validate_wled_cfg` reached `--doctor`
+    and no actual run, so a bad [wled] section failed mid-show instead of
+    before the hardware was opened."""
+
+    def test_the_tuple_covers_every_whole_config_validator_in_scene_factory(self):
+        import inspect
+
+        from c64cast.app import scene_factory
+
+        defined = set()
+        for name, fn in vars(scene_factory).items():
+            if not name.startswith("validate_") or not inspect.isfunction(fn):
+                continue
+            params = list(inspect.signature(fn).parameters.values())
+            if len(params) == 1 and params[0].annotation == "Config":
+                defined.add(fn)
+        self.assertEqual(defined, set(scene_factory.PER_SYSTEM_VALIDATORS))
+
+    def test_a_bad_wled_endpoint_is_rejected_before_any_hardware_is_opened(self):
+        loaded = _loaded(["a"])
+        loaded.cfgs[0].wled.listen = ":70000"
+        with self.assertLogs("c64cast", level="ERROR"):
+            with self.assertRaises(session.SessionConfigError) as cm:
+                session.validate_configs(loaded, loaded.cfgs)
+        self.assertEqual(cm.exception.exit_code, 5)
+
+
 class BuildSessionTest(unittest.TestCase):
+    def setUp(self):
+        # build_session installs the profiler process-wide via set_profiler
+        # and never puts back what was there. Harmless while [debug].profile
+        # is off (one NullProfiler swaps for another), but the global
+        # outlives the test either way.
+        self.addCleanup(profiler_mod.set_profiler, profiler_mod.get_profiler())
+
     def test_builds_one_stack_per_system(self):
         loaded = _loaded(["a", "b"])
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
@@ -258,6 +294,69 @@ class BuildSessionTest(unittest.TestCase):
         self.assertEqual([c.args[2] for c in bs.call_args_list], [stacks[0].api, stacks[1].api])
 
 
+class BuildStackCameraTest(unittest.TestCase):
+    """build_stack opens the camera only when something needs it — and a
+    [[performance.clips]] table counts: `type` defaults to "webcam" there, so
+    a clip grid can hold webcam clips with no webcam [[scenes]] entry at all.
+    With `source` left None the clip build factory raises at launch and
+    PerformanceSession's background build swallows it into `armed.error`, so
+    the pad dies silently for the whole show."""
+
+    def _camera_opens_for(self, cfg: cfgmod.Config) -> mock.MagicMock:
+        # _open_backend is the first thing after the camera decision, so
+        # failing it there keeps this hardware-free.
+        with (
+            mock.patch.object(session, "WebcamSource") as source_cls,
+            mock.patch.object(session, "_open_backend", side_effect=session.StackBuildError(4)),
+        ):
+            with self.assertRaises(session.StackBuildError):
+                session.build_stack(
+                    cfg,
+                    "a",
+                    stop_event=threading.Event(),
+                    profiler=mock.MagicMock(name="profiler"),
+                )
+        return source_cls
+
+    def test_a_clip_that_names_no_type_is_a_webcam_clip(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        cfg.performance.clips = [{"pad": 1}]
+        self._camera_opens_for(cfg).assert_called_once()
+
+    def test_a_clip_of_another_type_leaves_the_camera_shut(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        cfg.performance.clips = [{"pad": 1, "type": "blank"}]
+        self._camera_opens_for(cfg).assert_not_called()
+
+
+class BuildPreviewAndRecordingTest(unittest.TestCase):
+    def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
+        # The write listener costs a shadow-memory update on every DMA write
+        # for the rest of the run, and nothing else in the tree reads the
+        # framebuffer — so preview off plus a bad fourcc (the routine case)
+        # must leave nothing registered.
+        cfg = cfgmod.Config()
+        cfg.preview.enabled = False
+        cfg.recording.enabled = True
+        api = mock.MagicMock(name="api")
+        with (
+            mock.patch("c64cast.video.framebuffer.Framebuffer") as fb_cls,
+            mock.patch("c64cast.video.preview.StreamRecorder", side_effect=RuntimeError("fourcc")),
+        ):
+            with self.assertLogs("c64cast", level="ERROR"):
+                framebuffer, preview_window, recorder = session._build_preview_and_recording(
+                    cfg, api, "a", is_ensemble=False
+                )
+        self.assertIsNone(framebuffer)
+        self.assertIsNone(preview_window)
+        self.assertIsNone(recorder)
+        on_write = fb_cls.return_value.on_write
+        api.add_write_listener.assert_called_once_with(on_write)
+        api.remove_write_listener.assert_called_once_with(on_write)
+
+
 class StartServicesTest(unittest.TestCase):
     def test_a_control_plane_that_refuses_to_start_does_not_kill_the_session(self):
         sess = _session("a")
@@ -296,6 +395,29 @@ class TeardownSessionTest(unittest.TestCase):
         ):
             session.teardown_session(sess, save_live_tune=False)
         self.assertEqual(order, ["midi", "wled", "control", "stack-b", "stack-a"])
+
+    def test_the_playlists_are_stopped_and_drained_before_the_stacks(self):
+        # teardown_stack closes audio, resets and closes the API. Running
+        # that underneath a worker still issuing DMA writes is the mid-DMA
+        # cut this module's own rationale says wedges the machine into
+        # needing a power cycle — and "safe to call from a finally:" has to
+        # cover the escapes where the caller never got to drain them.
+        sess = _session("a")
+        order: list[str] = []
+
+        def worker() -> None:
+            sess.stop_event.wait()
+            order.append("thread")
+
+        t = threading.Thread(target=worker, name="playlist-a")
+        t.start()
+        sess.threads = [t]
+        with mock.patch.object(
+            session, "teardown_stack", side_effect=lambda st: order.append("stack")
+        ):
+            session.teardown_session(sess, save_live_tune=False)
+        self.assertEqual(order, ["thread", "stack"])
+        self.assertFalse(t.is_alive())
 
     def test_a_failing_server_shutdown_still_reaches_the_stacks(self):
         # The stacks are where the final reset lives. Nothing upstream of it

@@ -189,7 +189,7 @@ def build_and_start(
     start_services(sess)
     # Threads last: the reap poller treats a session with live threads as
     # running, so nothing may observe this session before it can actually run.
-    sess.threads = start_playlists(sess.stacks)
+    start_playlists(sess.stacks, sess.threads)
     return sess
 
 

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from c64cast.app import session
 from c64cast.video import preview as preview_mod
 from c64cast.video.preview import PreviewWindow
 
@@ -238,9 +239,23 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
 
     @staticmethod
     def _thread(alive: list[bool]) -> MagicMock:
+        """A stand-in playlist thread. `alive` scripts is_alive(): the pump
+        loop consumes one per iteration and the fall-through join polls it
+        too, so anything past the script reads as finished."""
         t = MagicMock()
-        t.is_alive.side_effect = alive
+        remaining = iter(alive)
+        t.is_alive.side_effect = lambda: next(remaining, False)
         return t
+
+    def _assert_no_untimed_join(self, t: MagicMock) -> None:
+        """The fall-through must go through session.join_bounded. A bare
+        join() parks the main thread in _PyParkingLot_Park, where no signal
+        handler runs — and on the CLI path SIGINT/SIGTERM only *set*
+        stop_event, so a handler that never runs is a run nothing but
+        SIGKILL can end."""
+        for call in t.join.call_args_list:
+            self.assertEqual(call.args, ())
+            self.assertIsNotNone(call.kwargs.get("timeout"))
 
     def test_opens_pumps_and_joins(self):
         from c64cast.app.cli import _pump_previews_until_done
@@ -252,11 +267,11 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
         _pump_previews_until_done([t], [win])
         win.open.assert_called_once()
         self.assertEqual(win.pump.call_count, 2)
-        t.join.assert_called_once_with()
+        self._assert_no_untimed_join(t)
 
     def test_stops_pumping_once_every_window_is_closed(self):
         # Closing the window is not a stop signal: we bail out of the pump loop
-        # and fall through to a plain blocking join so playback carries on.
+        # and fall through to the polling join so playback carries on.
         from c64cast.app.cli import _pump_previews_until_done
 
         win = MagicMock()
@@ -264,7 +279,21 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
         t = self._thread([True])
         _pump_previews_until_done([t], [win])
         self.assertEqual(win.pump.call_count, 1)
-        t.join.assert_called_once_with()
+        self._assert_no_untimed_join(t)
+
+    def test_the_fall_through_join_polls_so_signals_stay_deliverable(self):
+        # A headless opencv build leaves `is_open` False, so the pump loop
+        # breaks on its very first iteration and the whole run lands on this
+        # join — the same place the user closing the window lands. It has to
+        # poll, or `[preview].enabled = true` over SSH is a run that neither
+        # SIGINT nor SIGTERM can stop and that never reaches its final reset.
+        from c64cast.app.cli import _pump_previews_until_done
+
+        win = MagicMock()
+        win.is_open = False
+        t = self._thread([True, True, False])
+        _pump_previews_until_done([t], [win])
+        t.join.assert_called_once_with(timeout=session._JOIN_POLL_S)
 
     def test_pumps_every_window_in_an_ensemble(self):
         from c64cast.app.cli import _pump_previews_until_done

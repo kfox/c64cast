@@ -14,7 +14,7 @@ SDL, and every other desktop toolkit) may only create and service a
 window on the main thread, which on macOS is a hard Cocoa requirement —
 an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV
 code" straight out of the first call. Every playlist already runs on its
-own worker thread (`session._run_playlists`), leaving the main thread blocked
+own worker thread (`session.run_foreground`), leaving the main thread blocked
 in `join()`, so the main thread is both the only legal place to pump a
 window and the one with nothing else to do. Hence the open/pump/close
 shape: `session._pump_previews_until_done` owns the lifecycle.

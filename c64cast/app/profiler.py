@@ -25,10 +25,45 @@ of one attribute lookup and a Python ``with`` statement (~0.5µs)."""
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
+
+log = logging.getLogger("c64cast")
+
+# Longest scene name rendered into a summary line. Scene names come from
+# media content — a directory-spec scene renames itself per pick, and a
+# video scene prefers the container's own `title` tag — so the profiler
+# treats one as untrusted text: capped here, and repr'd in _format_line so
+# an embedded newline can't forge a second log record.
+_MAX_SCENE_NAME = 64
+
+# How many consecutive idle summary ticks a scene's buckets survive before
+# they are dropped. Two ticks (~20s at the default interval) keeps a briefly
+# paused scene's window intact while bounding _stats on a long run, whose
+# scene names are per-file and therefore unbounded in number.
+_IDLE_TICKS_BEFORE_DROP = 2
+
+# Printed first, in this order, so the columns stay stable across lines.
+# Any other stage a caller opens is printed after them rather than dropped.
+_KNOWN_STAGES = ("cpu_render", "compose", "overlay_compose", "push", "render", "wait")
+
+# Recorded per scene but rendered by _format_line's own count formatting.
+_COUNT_STAGES = ("frame_total", "writes", "bytes")
+
+
+def _nearest_rank(sorted_samples: list[float], p: float) -> float:
+    """The nearest-rank percentile of an already-sorted, non-empty list.
+
+    Nearest rank is the ``ceil(p * n)``-th smallest sample, so the 0-based
+    index is ``ceil(p * n) - 1``. Truncating instead (``int(p * n)``) lands
+    one rank high whenever ``p * n`` is a whole number — at the steady-state
+    n=64 that reported the 33rd smallest frame time as the median, and at
+    n=2 it reported the maximum."""
+    n = len(sorted_samples)
+    return sorted_samples[min(n - 1, max(0, math.ceil(p * n) - 1))]
 
 
 class _Stats:
@@ -38,11 +73,10 @@ class _Stats:
     horizon for a 10s summary cadence — long enough to smooth single-frame
     outliers, short enough that the numbers track scene transitions."""
 
-    __slots__ = ("_samples", "_capacity")
+    __slots__ = ("_samples",)
 
     def __init__(self, capacity: int = 64):
         self._samples: deque[float] = deque(maxlen=capacity)
-        self._capacity = capacity
 
     def add(self, v: float) -> None:
         self._samples.append(v)
@@ -57,10 +91,7 @@ class _Stats:
             return 0.0, 0.0, 0.0, 0.0
         sorted_s = sorted(self._samples)
         avg = sum(sorted_s) / n
-        # nearest-rank percentiles — clamp index to [0, n-1].
-        p50 = sorted_s[min(n - 1, int(0.50 * n))]
-        p95 = sorted_s[min(n - 1, int(0.95 * n))]
-        return avg, p50, p95, sorted_s[-1]
+        return avg, _nearest_rank(sorted_s, 0.50), _nearest_rank(sorted_s, 0.95), sorted_s[-1]
 
 
 class NullProfiler:
@@ -104,11 +135,25 @@ class FrameProfiler:
 
     def __init__(self, interval: float = 10.0):
         self.interval = interval
+        if interval <= 0:
+            log.warning(
+                "[debug].profile_interval is %.3f — every frame is still "
+                "instrumented, but no summary will ever be printed",
+                interval,
+            )
         # Two-level dict: scene_name -> stage_name -> _Stats. Scene-level
         # keys always include "frame_total"; counts go under "writes" /
         # "bytes".
         self._stats: dict[str, dict[str, _Stats]] = {}
         self._last_emit: float = 0.0
+        # Liveness bookkeeping for emit_if_due: frames recorded per scene,
+        # what that count was at the scene's last summary line, and how many
+        # summary ticks it has been idle for. Without these, every scene the
+        # process has ever rendered re-prints its final 64 samples on every
+        # tick, forever, and _stats grows one bucket per distinct scene name.
+        self._frames: dict[str, int] = {}
+        self._emitted_frames: dict[str, int] = {}
+        self._idle_ticks: dict[str, int] = {}
         # Per-frame scratch: the active scene name and a {stage -> elapsed}
         # accumulator populated by stage() and drained by frame() on exit.
         self._cur_scene: str | None = None
@@ -131,6 +176,7 @@ class FrameProfiler:
             yield
         finally:
             elapsed = time.perf_counter() - t0
+            self._frames[scene_name] = self._frames.get(scene_name, 0) + 1
             self._bucket(scene_name, "frame_total").add(elapsed)
             for stage_name, dt in self._cur_stages.items():
                 self._bucket(scene_name, stage_name).add(dt)
@@ -160,10 +206,24 @@ class FrameProfiler:
         self._bucket(self._cur_scene, "writes").add(float(writes))
         self._bucket(self._cur_scene, "bytes").add(float(bytes_))
 
+    def _forget(self, scene_name: str) -> None:
+        """Drop an idle scene's buckets. Its ring holds frames from minutes
+        ago, and scene names are per-file on a directory-spec playlist, so
+        keeping them is both misleading and unbounded."""
+        self._stats.pop(scene_name, None)
+        self._frames.pop(scene_name, None)
+        self._emitted_frames.pop(scene_name, None)
+        self._idle_ticks.pop(scene_name, None)
+
     def emit_if_due(self, now: float, log: logging.Logger) -> bool:
-        """Emit one summary line per scene if the interval has elapsed.
+        """Emit one summary line per *live* scene if the interval has elapsed.
         Returns True when the cadence fired (callers can chain extra
-        same-cadence lines), False otherwise."""
+        same-cadence lines), False otherwise.
+
+        A scene that has rendered no frame since its last line is skipped —
+        its ring still holds the last 64 frames it did render, so printing it
+        again would report minutes-old numbers under a fresh timestamp — and
+        dropped once it has been idle for _IDLE_TICKS_BEFORE_DROP ticks."""
         if self.interval <= 0:
             return False
         if self._last_emit == 0.0:
@@ -171,7 +231,17 @@ class FrameProfiler:
             return False
         if now - self._last_emit < self.interval:
             return False
-        for scene_name, stages in self._stats.items():
+        for scene_name, stages in list(self._stats.items()):
+            frames = self._frames.get(scene_name, 0)
+            if frames == self._emitted_frames.get(scene_name):
+                idle = self._idle_ticks.get(scene_name, 0) + 1
+                if idle >= _IDLE_TICKS_BEFORE_DROP:
+                    self._forget(scene_name)
+                else:
+                    self._idle_ticks[scene_name] = idle
+                continue
+            self._idle_ticks.pop(scene_name, None)
+            self._emitted_frames[scene_name] = frames
             line = self._format_line(scene_name, stages)
             if line is not None:
                 log.info(line)
@@ -188,11 +258,15 @@ class FrameProfiler:
         if frame_stats is None or frame_stats.count() == 0:
             return None
         n = frame_stats.count()
+        # !r, not raw: a scene name can carry a media file's own title tag,
+        # and an interior newline in one would otherwise write a second,
+        # fully forged record into the operator's --log-file.
         parts: list[str] = [
-            f"profile[{scene_name}] n={n}",
+            f"profile[{scene_name[:_MAX_SCENE_NAME]!r}] n={n}",
             f"frame {self._fmt_ms(frame_stats.summary())}",
         ]
-        for stage_name in ("cpu_render", "compose", "overlay_compose", "push", "render", "wait"):
+        extra = sorted(set(stages) - set(_KNOWN_STAGES) - set(_COUNT_STAGES))
+        for stage_name in (*_KNOWN_STAGES, *extra):
             s = stages.get(stage_name)
             if s is None or s.count() == 0:
                 continue

@@ -1,6 +1,6 @@
-"""Tests for cli._run_playlists threading + teardown_stack ordering.
+"""Tests for session.run_foreground threading + teardown_stack ordering.
 
-The cli module's per-stack lifecycle is exercised here with mocked stacks
+The session module's per-stack lifecycle is exercised here with mocked stacks
 so we don't have to bring up real APIs or playlists. End-to-end coverage
 of real hardware lives outside the unittest suite (manual verification
 against the U64 — see plan §4.2).
@@ -12,6 +12,7 @@ complaints file-wide rather than spraying ignores on every assertion."""
 # pyright: reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
 from __future__ import annotations
 
+import argparse
 import threading
 import unittest
 import unittest.mock
@@ -20,11 +21,29 @@ from unittest.mock import MagicMock
 from _fakes import fake_system_stack
 
 from c64cast.app import session
-from c64cast.app.cli import _run_playlists, teardown_stack
+from c64cast.app.cli import teardown_stack
 from c64cast.app.ensemble import SystemStack
 
 
-class RunPlaylistsTest(unittest.TestCase):
+def _session(stacks: list[SystemStack], stop_event: threading.Event) -> session.Session:
+    """A Session carrying only what run_foreground touches: the stacks, the
+    shared stop_event, and the `threads` list it fills in. Built here rather
+    than mocked because the assignment of that list *is* part of what these
+    tests cover — teardown has no other handle on the workers."""
+    return session.Session(
+        args=argparse.Namespace(overwrite=False),
+        loaded=MagicMock(name="loaded"),
+        cfgs=[],
+        stacks=stacks,
+        ensemble=None,
+        stop_event=stop_event,
+        profiler=MagicMock(name="profiler"),
+    )
+
+
+class RunForegroundTest(unittest.TestCase):
+    """The live shutdown path — the one `cli._run_session` actually calls."""
+
     def test_starts_one_thread_per_stack_and_joins(self):
         stop_event = threading.Event()
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
@@ -32,7 +51,9 @@ class RunPlaylistsTest(unittest.TestCase):
         # each thread exits and join() completes.
         for st in stacks:
             st.playlist.run.return_value = None
-        _run_playlists(stacks, stop_event)
+        sess = _session(stacks, stop_event)
+        session.run_foreground(sess)
+        self.assertEqual(len(sess.threads), 2)
         for st in stacks:
             st.playlist.run.assert_called_once()
         # Sanity: no thread is left dangling.
@@ -51,7 +72,7 @@ class RunPlaylistsTest(unittest.TestCase):
         timer = threading.Timer(0.05, stop_event.set)
         timer.start()
         try:
-            _run_playlists(stacks, stop_event)
+            session.run_foreground(_session(stacks, stop_event))
         finally:
             timer.cancel()
         self.assertTrue(stop_event.is_set())
@@ -80,11 +101,35 @@ class RunPlaylistsTest(unittest.TestCase):
         timer.start()
         try:
             with unittest.mock.patch.object(threading.Thread, "join", recording_join):
-                _run_playlists(stacks, stop_event)
+                session.run_foreground(_session(stacks, stop_event))
         finally:
             timer.cancel()
         self.assertTrue(timeouts, "join was never called")
         self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
+
+    def test_a_failed_start_still_leaves_the_started_threads_reachable(self):
+        # If the k-th start() raises (RuntimeError("can't start new thread"),
+        # MemoryError), the k-1 workers already DMAing must still be in
+        # sess.threads: that list is teardown's only handle on them, and
+        # tearing the hardware down underneath a live worker is the mid-DMA
+        # cut that wedges the machine into needing a power cycle.
+        stop_event = threading.Event()
+        stacks = [fake_system_stack("a"), fake_system_stack("b")]
+        for st in stacks:
+            st.playlist.run.return_value = None
+        sess = _session(stacks, stop_event)
+        real_start = threading.Thread.start
+
+        def failing_start(self):  # noqa: ANN001
+            if self.name == "playlist-b":
+                raise RuntimeError("can't start new thread")
+            real_start(self)
+
+        with unittest.mock.patch.object(threading.Thread, "start", failing_start):
+            with self.assertRaises(RuntimeError):
+                session.run_foreground(sess)
+        self.assertEqual([t.name for t in sess.threads], ["playlist-a"])
+        sess.threads[0].join()
 
 
 class JoinBoundedTest(unittest.TestCase):

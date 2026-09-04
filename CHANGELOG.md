@@ -210,6 +210,83 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A preview run whose window had closed could not be stopped.** When
+  `[preview]` is on, the main thread drives the window and joins the playlist
+  threads itself when it stops — and that join had no timeout. Three ordinary
+  paths reach it: the operator closes the window (documented as *not* a stop
+  signal), a draw failure disables it, and, on the very first iteration, a
+  headless opencv build or a machine with no display, where the window logs
+  "preview disabled" and the show carries on. An untimed `join()` parks the
+  main thread where no signal handler can run, and on the CLI the SIGINT and
+  SIGTERM handlers are the *only* thing that sets the stop flag — so from that
+  moment neither Ctrl+C nor a service manager's SIGTERM could end the run,
+  teardown never happened, and the machine was left mid-session. It now uses
+  the same polling join as the headless path, which is what the three other
+  join sites were already changed to for exactly this reason. `[preview]` over
+  SSH, and `[preview].enabled = true` on a headless install, are the runs that
+  were affected.
+- **Webcam clips could never launch from the `[[performance.clips]]` grid.**
+  `type` defaults to `"webcam"` in a clip table, but the decision to open the
+  camera only looked at `[[scenes]]` and `[vision]`. With no webcam scene
+  declared and vision off, the camera stayed shut, and the pad's scene build
+  failed on a background thread — logged, then swallowed into the pad's error
+  state, so the pad simply never fired for the whole show. Clips now count
+  toward opening the camera.
+- **A bad `[wled].listen` took the whole run down after the hardware was
+  already up.** The endpoint was parsed at service-start time, outside the
+  guard that is supposed to keep one optional surface from killing a session,
+  so `listen = ":70000"` produced a traceback and an unmapped exit code with
+  every machine already open, reset and provisioned. It is now rejected by
+  `--doctor`-grade config validation *before* any hardware is touched (exit
+  `5`, like every other config error), and a failure at bind time disables the
+  WLED device and leaves the show running. The same change closes a validator
+  gap: `[wled]` was checked by `--doctor` and by nothing else.
+- **A partly-torn-down system could be left holding hardware.** A failure part
+  way through building one system's stack unwound by hand, in four different
+  places, with no per-step guard — so a failing sampler restore stranded the
+  API socket and the camera, and a failure anywhere after the REU provisioning
+  step (an audio-streamer or preview construction failure) unwound nothing at
+  all. Every resource is now registered on one ladder as it is acquired and
+  released in reverse, each step guarded, whatever the failure.
+- **Teardown could run underneath live playlist threads.** `teardown_session`
+  documented itself as safe to call from a `finally:` but never stopped the
+  playlists, so any escape that skipped the drain — a thread that failed to
+  start, an unexpected exception out of the run loop — closed audio, reset and
+  closed the API while a worker was still writing to the machine, which is the
+  mid-DMA cut that can wedge it into needing a power cycle. It now sets the
+  stop flag and drains the threads first (a no-op on the normal path), and the
+  thread list is populated as each thread starts so a partial failure is still
+  visible to teardown.
+- **The framebuffer kept shadowing every DMA write for a disabled feature.**
+  With `[preview]` off and `[recording]` on, a recorder that refused to start
+  (a codec/fourcc the platform will not open) left the shadow-memory write
+  listener registered for the rest of the run with nothing reading it. It is
+  now detached when no consumer survives, and at teardown.
+- **`--profile` re-printed every scene the run had ever played.** The periodic
+  summary iterated every scene it had ever seen, so a 10-scene looping
+  playlist printed 10 lines every interval, 9 of them the last 64 frames of
+  scenes that had ended minutes earlier, with nothing in the line marking them
+  stale — and the table grew without bound on a playlist whose scene names
+  come from the media (a directory scene renames itself per file; a video
+  scene prefers the file's own title tag). Only scenes that have rendered
+  since their last line are printed now, and an idle scene's samples are
+  dropped. Two smaller fixes in the same summary: the scene name is escaped
+  and length-capped, so a newline inside a played file's title tag can no
+  longer forge an extra record in `--log-file`; and a stage the summary
+  doesn't recognize is printed after the known columns rather than measured
+  and silently discarded.
+- **`--profile`'s p50 was one sample too high.** The percentile index
+  truncated where nearest rank rounds up, so at the steady-state 64-sample
+  window the reported median was the 33rd smallest frame time rather than the
+  32nd (and the "median" of two samples was the larger one). p95 was affected
+  at some window sizes too.
+- `--profile --profile-interval 0` instruments every frame and prints nothing;
+  it now says so once at startup instead of looking like a broken profiler.
+- A second SIGINT/SIGTERM escalates to the default disposition per signal, as
+  documented. One shared flag meant the first SIGTERM after a Ctrl+C took the
+  escalation branch — arming the hard kill a signal earlier than promised, and
+  dropping that SIGTERM's own stop request.
+
 - **`--serve` reported success for a run that never served.** uvicorn binds
   on its background thread, not in `ControlServer.start()`, and when the port
   is already in use — a second `--serve` on the same host, the likeliest

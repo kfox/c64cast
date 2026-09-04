@@ -87,7 +87,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from c64cast.app import config as cfgmod
-    from c64cast.app.cli import build_parser, build_stack, configure_logging, teardown_stack
+    from c64cast.app.cli import build_stack, configure_logging, teardown_stack
     from c64cast.app.profiler import NullProfiler, set_profiler
 
     configure_logging(1)  # INFO: surface the poller's SPACE/menu log lines
@@ -101,13 +101,12 @@ def main() -> int:
     before = tmp.read_text()
 
     cfg = cfgmod.load(str(tmp))
-    cli_args = build_parser().parse_args(["--skip-probe"])
     profiler = NullProfiler()
     set_profiler(profiler)
     stop_event = threading.Event()
 
     stack = build_stack(
-        cfg, "menu-inject", cli_args, stop_event=stop_event, profiler=profiler, config_path=str(tmp)
+        cfg, "menu-inject", stop_event=stop_event, profiler=profiler, config_path=str(tmp)
     )
     run_thread = threading.Thread(target=stack.playlist.run, name="menu-inject-run", daemon=True)
     run_thread.start()
