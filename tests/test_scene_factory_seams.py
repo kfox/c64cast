@@ -118,6 +118,12 @@ class SlideshowDisplayResolutionTest(unittest.TestCase):
         self.assertEqual(scene_factory.resolve_scene_display("hires_edges", "video"), "hires_edges")
 
 
+def _only_display(name: str):
+    """Shrink `display = "random"`'s pool to one entry, so `random.choice` has
+    nothing to choose and a test can name the mode it means."""
+    return mock.patch.object(scene_factory, "SLIDESHOW_RANDOM_DISPLAYS", (name,))
+
+
 class SlideshowRebuildWiringTest(unittest.TestCase):
     """The `display = "random"` rebuild was a second copy of the wiring, and
     had already lost two kwargs the factory threads."""
@@ -136,16 +142,17 @@ class SlideshowRebuildWiringTest(unittest.TestCase):
         # static-scene pair for a slideshow. The rebuild passed neither, so
         # _build_display_mode's "none"/"frequency" defaults took over from the
         # very first slide onward.
+        # Narrow the pool instead of rolling until mhires turns up: 40 rolls
+        # miss it about once in 6000 runs, which is a flake nobody would ever
+        # reproduce, and the test is about the rebuild's wiring rather than
+        # about the draw.
         scene = self._scene()
-        with quiet_logging():
-            for _ in range(40):
-                scene._maybe_rebuild_display_mode()
-                mode = scene.display_mode
-                if isinstance(mode, MultiHiresDisplayMode):
-                    self.assertEqual(mode._dither_method, "floyd-steinberg")
-                    self.assertEqual(mode._cell_strategy, "error-min")
-                    return
-        self.fail("display = random never picked mhires in 40 rolls")
+        with quiet_logging(), _only_display("mhires"):
+            scene._maybe_rebuild_display_mode()
+        mode = scene.display_mode
+        assert isinstance(mode, MultiHiresDisplayMode), mode
+        self.assertEqual(mode._dither_method, "floyd-steinberg")
+        self.assertEqual(mode._cell_strategy, "error-min")
 
     def test_the_rebuild_withholds_double_buffer_under_the_reu_audio_pump(self):
         # The rebuild handed audio_reu_pump_active to resolve_flicker_tolerance
@@ -157,9 +164,12 @@ class SlideshowRebuildWiringTest(unittest.TestCase):
         cfg.video.double_buffer = True
         s = SceneCfg(type="slideshow", display="random", file=self.tmp.name)
         scene = cast(SlideshowScene, scene_factory.build_scene(s, cfg, _api(), None, None))
-        with quiet_logging():
-            for _ in range(40):
-                scene._maybe_rebuild_display_mode()
+        # Every member of the pool, once each — 40 random rolls could still
+        # leave one of the five untried.
+        for display in scene_factory.SLIDESHOW_RANDOM_DISPLAYS:
+            with self.subTest(display=display):
+                with quiet_logging(), _only_display(display):
+                    scene._maybe_rebuild_display_mode()
                 self.assertFalse(getattr(scene.display_mode, "_double_buffer", False))
 
     def test_the_wiring_is_the_factory_s_own_object(self):
