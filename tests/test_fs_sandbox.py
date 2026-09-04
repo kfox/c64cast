@@ -69,6 +69,14 @@ class RuleTest(unittest.TestCase):
     def test_a_sibling_of_an_allowed_root_does_not_borrow_its_permission(self):
         # Prefix matching without a trailing separator would let a directory
         # whose name merely starts the same way pass.
+        #
+        # Only observable where the checkout sits inside the policed region.
+        # The rule deliberately allows everything outside $HOME without
+        # enumerating it, so where the checkout is on another volume entirely
+        # — Windows CI puts it on D: while $HOME is on C: — the sibling is
+        # allowed on that ground alone and proves nothing about prefixes.
+        if not _fs_sandbox._key(_fs_sandbox.CHECKOUT).startswith(_fs_sandbox._HOME):
+            self.skipTest("checkout is outside $HOME, where nothing is policed")
         self.assertIsNotNone(_fs_sandbox.violation(str(CHECKOUT) + "-scratch/notes.txt"))
 
     def test_a_gitignored_asset_is_out_of_bounds(self):

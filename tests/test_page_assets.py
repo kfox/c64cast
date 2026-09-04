@@ -104,7 +104,10 @@ class ScriptSyntaxTest(unittest.TestCase):
     dead, not just the socket, and the page still renders looking live. Nothing
     else in CI parses these pages."""
 
-    SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
+    # `\s*` before the closing `>`: `</script >` is a legal end tag, and a
+    # pattern that misses it would silently swallow the rest of the page into
+    # one "script body" and hand node something that was never JavaScript.
+    SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>", re.S | re.I)
 
     def setUp(self):
         if shutil.which("node") is None:
