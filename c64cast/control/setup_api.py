@@ -214,10 +214,29 @@ def register_setup_routes(
             # "u64:// needs a host (e.g. u64://192.168.2.64)" is the same
             # advice `-u` prints, and it is all an admin staring at a refused
             # form has to go on. CodeQL flags `str()` of any caught exception
-            # and cannot tell the two apart, hence the waiver; the marker sits
-            # on the line it reports, the argument's own.
+            # and cannot tell the two apart, hence the waiver.
+            #
+            # The marker goes on its **own line, immediately above** the line
+            # it waives, which is what `codeql[...]` means: it suppresses the
+            # *following* line. Trailing placement is the legacy `lgtm[...]`
+            # form and is inert for this one. Trailing is what this waiver used
+            # to be, and it never suppressed anything — `AlertSuppression.ql`
+            # emitted nothing, the `dismiss-alerts` step in `codeql.yml` had
+            # nothing to act on, and alert #28 stayed open until a human closed
+            # it. `hw/vic_stream.py` and `wled/wled_sink.py` already write it
+            # this way.
+            #
+            # `control/screen.py` and `app/media_store.py` still trail theirs,
+            # with a note claiming the line above "is not one" because moving it
+            # minted a fresh alert number. That is what moving it *would* do
+            # either way: shifting the flagged line one row down re-fingerprints
+            # the alert, and the replacement is only dismissed on the next `main`
+            # run, since `dismiss-alerts` is `main`-only. Left alone here rather
+            # than changed on a hunch — they are dismissed today, and this
+            # branch is not where that gets retested.
             return JSONResponse(
-                {"ok": False, "error": str(e)},  # codeql[py/stack-trace-exposure]
+                # codeql[py/stack-trace-exposure]
+                {"ok": False, "error": str(e)},
                 status_code=400,
             )
 
