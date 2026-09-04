@@ -13,6 +13,7 @@ import struct
 import time
 import unittest
 from typing import cast
+from unittest import mock
 
 from c64cast.app.config import Config, SceneCfg
 from c64cast.app.scene_factory import build_scene, resolve_scene_display, validate_scene_cfg
@@ -145,6 +146,76 @@ class AssemblerTest(unittest.TestCase):
         f = a.snapshot_bgr()
         self.assertEqual(list(f[0, 0]), [30, 20, 10])
         self.assertEqual(list(f[0, 1]), [60, 50, 40])
+
+
+# --- the teardown bell ------------------------------------------------------
+
+
+class WakeupPipeTest(unittest.TestCase):
+    """`_open_wakeup` degrades rather than fails, so both degraded paths have
+    to say so — a silent fallback makes the "did not stop within 0.5s" warning
+    it exists to remove into a lie."""
+
+    def _receiver(self) -> WledPixelReceiver:
+        return WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=0, wled_port=0)
+
+    def test_a_failed_pair_is_logged_and_left_unset(self):
+        rx = self._receiver()
+        with mock.patch("socket.socketpair", side_effect=OSError("no fds")):
+            with self.assertLogs("c64cast.wled.wled_sink", "WARNING") as caught:
+                rx._open_wakeup()
+        self.assertIsNone(rx._wake_r)
+        self.assertIsNone(rx._wake_w)
+        self.assertIn("no wakeup pipe", "\n".join(caught.output))
+
+    def _inet_pair(self) -> tuple[socket.socket, socket.socket]:
+        """A connected AF_INET pair — the shape CPython's Windows `socketpair`
+        emulation produces. An AF_UNIX pair is *unnamed*, so both `getsockname`
+        and `getpeername` are `""` on it and the verification is vacuously true
+        there; only this shape can express a lost accept race at all.
+        """
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(listener.getsockname())
+        server, _ = listener.accept()
+        listener.close()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        return server, client
+
+    def test_a_hijacked_pair_is_discarded_and_logged(self):
+        # What the Windows emulation permits: it accepts on a loopback listener
+        # without checking who connected, so a local process that wins the race
+        # owns the bell — and a rung bell ends the receive thread while
+        # WLEDSource.read goes on serving the last frame it got.
+        rx = self._receiver()
+        ours, _ours_peer = self._inet_pair()
+        _other, stranger = self._inet_pair()
+
+        with mock.patch("socket.socketpair", return_value=(ours, stranger)):
+            with self.assertLogs("c64cast.wled.wled_sink", "WARNING") as caught:
+                rx._open_wakeup()
+        self.assertIsNone(rx._wake_r)
+        self.assertIsNone(rx._wake_w)
+        self.assertIn("foreign peer", "\n".join(caught.output))
+
+    def test_a_genuine_inet_pair_is_not_mistaken_for_a_hijack(self):
+        # The guard must not reject the emulation working correctly.
+        rx = self._receiver()
+        ours, ours_peer = self._inet_pair()
+        with mock.patch("socket.socketpair", return_value=(ours, ours_peer)):
+            rx._open_wakeup()
+        self.addCleanup(rx._close_wakeup)
+        self.assertIsNotNone(rx._wake_r)
+
+    def test_a_real_pair_is_kept(self):
+        rx = self._receiver()
+        rx._open_wakeup()
+        self.addCleanup(rx._close_wakeup)
+        self.assertIsNotNone(rx._wake_r)
+        self.assertIsNotNone(rx._wake_w)
 
 
 # --- receiver over loopback -------------------------------------------------

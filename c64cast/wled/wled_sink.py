@@ -184,6 +184,19 @@ class PixelFrameAssembler:
         return rgb[..., ::-1].copy()  # RGB → BGR
 
 
+def _is_own_pair(a: socket.socket, b: socket.socket) -> bool:
+    """Whether `a` and `b` are really connected to each other.
+
+    Only ever false on the Windows `socketpair` emulation, which accepts on a
+    loopback listener without checking who connected. An AF_UNIX pair cannot be
+    raced, so this is a cheap tautology everywhere else.
+    """
+    try:
+        return a.getpeername() == b.getsockname() and b.getpeername() == a.getsockname()
+    except OSError:
+        return False
+
+
 class WledPixelReceiver:
     """Daemon thread listening for DDP + WLED-realtime pixel streams.
 
@@ -301,9 +314,33 @@ class WledPixelReceiver:
 
         Closing the UDP sockets first would wake `select` too, but the worker
         may already be inside `recvfrom` on a descriptor the kernel is free to
-        hand to the next socket() call — so the bell is its own pair."""
-        with contextlib.suppress(OSError):
-            self._wake_r, self._wake_w = socket.socketpair()
+        hand to the next socket() call — so the bell is its own pair.
+
+        The pair is verified before it is kept. Windows has no native
+        `socketpair`, so CPython falls back to binding a listener on
+        127.0.0.1:0, connecting to it, and accepting — without checking that
+        the peer it accepted is the client it just dialed. Any local process
+        that wins that race owns the bell, and `_worker` treats a readable bell
+        as "stop now" and returns, ending the receive thread while
+        `WLEDSource.read` goes on serving the last frame it got: a frozen show
+        with nothing in the log to attribute it to.
+
+        A failure here is not fatal — the worker still wakes on its own
+        `_SELECT_TIMEOUT` — but it is logged, because that fallback is the
+        2x-margin teardown whose "did not stop within 0.5s" warning this bell
+        exists to remove, and a silent fallback makes that warning a lie."""
+        try:
+            wake_r, wake_w = socket.socketpair()
+        except OSError as e:
+            log.warning("WLED sink: no wakeup pipe (%s); teardown falls back to polling", e)
+            return
+        if not _is_own_pair(wake_r, wake_w):
+            log.warning("WLED sink: wakeup pipe accepted a foreign peer; discarding it")
+            for s in (wake_r, wake_w):
+                with contextlib.suppress(OSError):
+                    s.close()
+            return
+        self._wake_r, self._wake_w = wake_r, wake_w
 
     def _ring_wakeup(self) -> None:
         if self._wake_w is not None:
