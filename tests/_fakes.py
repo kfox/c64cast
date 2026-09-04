@@ -54,18 +54,26 @@ def quiet_logging() -> Iterator[None]:
 
 
 class MachineSettingsIsolation:
-    """Point ``$C64CAST_SETTINGS`` at a guaranteed-missing path for the
-    lifetime of a test module, so tests that assert config **defaults** /
-    the ``load(dumps(cfg)) == cfg`` round-trip are hermetic against a real
-    ``~/.config/c64cast/settings.toml`` on the developer's machine (the
-    machine-settings layer is applied inside ``config.load``). Use from a
-    module's ``setUpModule``/``tearDownModule``:
+    """Point **both** of ``paths.py``'s environment overrides into a private
+    temporary directory for the lifetime of a test module, so tests that
+    assert config **defaults** / the ``load(dumps(cfg)) == cfg`` round-trip
+    are hermetic against a real ``~/.config/c64cast/settings.toml`` on the
+    developer's machine (the machine-settings layer is applied inside
+    ``config.load``) — and so nothing a test reaches can read or write the
+    real ``~/.local/share/c64cast/`` (DAC calibrations, WLED + loop presets).
+    Use from a module's ``setUpModule``/``tearDownModule``:
 
         _iso = MachineSettingsIsolation()
         def setUpModule():
             _iso.start()
         def tearDownModule():
             _iso.stop()
+
+    ``$C64CAST_SETTINGS`` points at a path that does not exist (the settings
+    file is *read*, and "absent" is the state a defaults test wants).
+    ``$C64CAST_DATA_DIR`` points at a real, empty directory (the data dir is
+    *written*, and its writers create it). It covered only the first when it
+    was added, which the name did not say.
     """
 
     def __init__(self) -> None:
@@ -75,7 +83,11 @@ class MachineSettingsIsolation:
     def start(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         missing = os.path.join(self._tmp.name, "no-such-settings.toml")
-        self._patch = mock.patch.dict(os.environ, {"C64CAST_SETTINGS": missing})
+        data_dir = os.path.join(self._tmp.name, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        self._patch = mock.patch.dict(
+            os.environ, {"C64CAST_SETTINGS": missing, "C64CAST_DATA_DIR": data_dir}
+        )
         self._patch.start()  # type: ignore[attr-defined]
 
     def stop(self) -> None:

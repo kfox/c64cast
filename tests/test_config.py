@@ -1884,7 +1884,10 @@ class ResolveFileSpecTest(unittest.TestCase):
             os.chdir(tmp)
             try:
                 got = scene_factory.resolve_file_spec(
-                    scene_factory.DEFAULT_WAVEFORM_DIR, self.EXTS, label="waveform"
+                    scene_factory.DEFAULT_WAVEFORM_DIR,
+                    self.EXTS,
+                    label="waveform",
+                    recurse_default_sid_dir=True,
                 )
                 self.assertEqual(
                     sorted(os.path.basename(p) for p in got),
@@ -1902,13 +1905,16 @@ class ResolveFileSpecTest(unittest.TestCase):
             os.makedirs(sub)
             self._make_files(tmp, ["top.sid"])
             self._make_files(sub, ["deep.sid"])
-            got = scene_factory.resolve_file_spec(tmp, self.EXTS, label="waveform")
+            got = scene_factory.resolve_file_spec(
+                tmp, self.EXTS, label="waveform", recurse_default_sid_dir=True
+            )
             self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
 
-    def test_default_waveform_dir_not_recursive_for_other_labels(self):
-        # The recursion exception is keyed to label="waveform" specifically
-        # (the scene this default directory belongs to) — a directory
-        # spelled "assets/sids" under any other label stays shallow.
+    def test_default_waveform_dir_stays_shallow_unless_the_caller_asks(self):
+        # The recursion is an explicit keyword, not a sniff at `label` (which
+        # is message text) — so a caller that does not ask for it keeps the
+        # ordinary shallow listing even on the default SID directory. The SID
+        # scenes all ask; anything else spelling "assets/sids" does not.
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             sids_dir = os.path.join(tmp, scene_factory.DEFAULT_WAVEFORM_DIR)
@@ -1918,7 +1924,7 @@ class ResolveFileSpecTest(unittest.TestCase):
             os.chdir(tmp)
             try:
                 got = scene_factory.resolve_file_spec(
-                    scene_factory.DEFAULT_WAVEFORM_DIR, self.EXTS, label="generative sid audio"
+                    scene_factory.DEFAULT_WAVEFORM_DIR, self.EXTS, label="waveform"
                 )
                 self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
             finally:

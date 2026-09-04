@@ -29,6 +29,7 @@ import os
 import random
 import threading
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import cv2
@@ -66,6 +67,7 @@ from .video_transport import VideoTransportControls
 if TYPE_CHECKING:
     from c64cast.app.config import AudioCfg, ColorCfg
     from c64cast.app.quickcast import ResolvedMedia
+    from c64cast.app.scene_factory import DisplayWiring
     from c64cast.audio.audio_source import AudioSource
 
     from .effects import FrameEffect
@@ -1032,20 +1034,12 @@ class SlideshowScene(MediaFileMixin, Scene):
         *,
         image_duration_s: float = 5.0,
         display_spec: str | None = "mhires",
-        palette_mode: str = "percell",
-        border: int | str = 0,
-        background: int | str = 0,
-        style: str = "default",
-        use_reu_staged: bool | str = "auto",
-        double_buffer: bool | str = "auto",
-        reu_available: bool = False,
-        backend_supports_reu: bool = False,
-        audio_reu_pump_active: bool = False,
+        wiring: DisplayWiring | None = None,
         color: ColorCfg | None = None,
-        text_double_height: bool = False,
         aspect_mode: str = "crop",
     ):
         from c64cast.app.config import ColorCfg
+        from c64cast.app.scene_factory import DisplayWiring
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
@@ -1065,27 +1059,14 @@ class SlideshowScene(MediaFileMixin, Scene):
         # Original spec (may be "random") — re-resolved at every setup()
         # so single-scene loops get a fresh display mode per iteration.
         self.display_spec = display_spec
-        # Stash the build kwargs so setup() can rebuild a fresh display
-        # mode when display_spec == "random" without re-plumbing through
-        # SceneCfg/Config. Stored as individual attrs so mypy can keep
-        # the original types (a dict[str, object] would erase them).
-        self._palette_mode = palette_mode
-        self._border = border
-        self._background = background
-        self._style = style
-        self._text_double_height = text_double_height
-        # Stored as the raw tri-state setting + the probe verdict (not a
-        # resolved bool) so a `display = "random"` rebuild can re-decide REU
-        # staging per concrete mode each setup() — auto stages bitmap picks
-        # but leaves char-mode picks on host-DMA. See config.resolve_use_reu_staged.
-        self._reu_staged_setting = use_reu_staged
-        self._reu_available = reu_available
-        # Host-DMA double-buffer (no-REU backends): stored as the raw tri-state +
-        # the backend's REU capability so a `display = "random"` rebuild can
-        # re-decide it per concrete mode each setup(). See config.resolve_double_buffer.
-        self._double_buffer_setting = double_buffer
-        self._backend_supports_reu = backend_supports_reu
-        self._audio_reu_pump_active = audio_reu_pump_active
+        # The factory's own display wiring, stashed whole so a
+        # `display = "random"` rebuild goes back through
+        # scene_factory.build_wired_display_mode rather than re-deriving the
+        # cluster here. It carries the raw [video] tri-states plus the probe
+        # verdicts (not resolved bools), which is what lets each re-pick
+        # re-decide REU staging / double-buffer / flicker against its own
+        # concrete mode. See DisplayWiring for why it is one object.
+        self._display_wiring = wiring if wiring is not None else DisplayWiring(color=self._color)
         candidates = self._resolve_candidates()
         super().__init__(api, None, display_mode, self._initial_scene_name(candidates))
         self._shuffle_bag: list[str] = []
@@ -1101,15 +1082,19 @@ class SlideshowScene(MediaFileMixin, Scene):
     def _maybe_rebuild_display_mode(self) -> None:
         """When display_spec is "random", pick a fresh concrete mode and
         rebuild the DisplayMode. Tears down the previous one cleanly. No-op
-        otherwise."""
+        otherwise.
+
+        The wiring goes back through the factory's own
+        `build_wired_display_mode`, so this cannot drift from the mode the
+        factory built at load time — it used to re-derive the whole cluster
+        here and had already lost `dither_method`/`cell_strategy` and two of
+        `resolve_double_buffer`'s inputs. Only `has_buffer_overlays` is
+        recomputed, because overlays are attached after construction."""
         if self.display_spec != "random":
             return
         from c64cast.app.scene_factory import (
-            _build_display_mode,
             _resolve_slideshow_display,
-            resolve_double_buffer,
-            resolve_flicker_tolerance,
-            resolve_use_reu_staged,
+            build_wired_display_mode,
         )
 
         new_name = _resolve_slideshow_display(self.display_spec)
@@ -1119,50 +1104,17 @@ class SlideshowScene(MediaFileMixin, Scene):
                 old.teardown(self.api)
             except Exception:
                 log.exception("slideshow: prior display_mode teardown failed; continuing")
-        reu_staged = resolve_use_reu_staged(
-            self._reu_staged_setting,
+        self.display_mode = build_wired_display_mode(
             new_name,
-            reu_available=self._reu_available,
-            # Text overlays fold into the bitmap; under auto they prefer the
-            # crisp host-DMA path over the REU bank-swap (which shimmers fine
-            # glyphs). See config.resolve_use_reu_staged.
-            has_buffer_overlays=any(
-                getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+            replace(
+                self._display_wiring,
+                # Text overlays fold into the bitmap; under auto they prefer
+                # the crisp host-DMA path over the REU bank-swap (which
+                # shimmers fine glyphs). See resolve_use_reu_staged.
+                has_buffer_overlays=any(
+                    getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
+                ),
             ),
-        )
-        # Re-resolved per concrete mode for the same reason the other two are:
-        # "random" only settles on hires for some of its picks, and blending is
-        # hires-only. Where it engages it takes the double-buffer slot (see
-        # resolve_flicker_tolerance).
-        flicker = resolve_flicker_tolerance(
-            self._color.flicker_tolerance,
-            new_name,
-            has_buffer_overlays=any(
-                getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
-            ),
-            audio_reu_pump_active=self._audio_reu_pump_active,
-        )
-        if flicker != "off":
-            reu_staged = False
-        self.display_mode = _build_display_mode(
-            new_name,
-            palette_mode=self._palette_mode,
-            border=self._border,
-            background=self._background,
-            style=self._style,
-            use_reu_staged=reu_staged,
-            double_buffer=False
-            if flicker != "off"
-            else resolve_double_buffer(
-                self._double_buffer_setting,
-                new_name,
-                use_reu_staged=reu_staged,
-                backend_supports_reu=self._backend_supports_reu,
-            ),
-            audio_reu_pump_active=self._audio_reu_pump_active,
-            color=self._color,
-            text_double_height=self._text_double_height,
-            flicker_tolerance=flicker,
         )
         log.info("slideshow: display = random → %s", new_name)
 

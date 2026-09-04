@@ -77,6 +77,11 @@ class ResolvedMedia:
     start_s: float | None = None
 
 
+#: Per-socket-operation timeout for a URL resolution, in seconds. Bounds
+#: `resolve_media_url`'s network fetch (see the ydl opts below).
+URL_RESOLVE_TIMEOUT_S = 20.0
+
+
 class _YtDlpLog:
     """Absorb yt-dlp's own console output at debug level.
 
@@ -322,6 +327,15 @@ def resolve_media_url(url: str) -> ResolvedMedia:
         "no_warnings": True,
         "format": "best[vcodec!=none][acodec!=none]/best",
         "logger": _YtDlpLog(),
+        # Bounded, because this call is reached from inside `build_scene` —
+        # i.e. after `session.build_stack` has opened the link and reset the
+        # machine. With no timeout (and nothing in the tree calling
+        # `socket.setdefaulttimeout`), a host that completes the handshake and
+        # then never answers held the C64 reset with the DMA socket open until
+        # the process was killed, and under `serve.py` the supervisor stayed
+        # STARTING so `POST /api/session/stop` could not end it either.
+        "socket_timeout": URL_RESOLVE_TIMEOUT_S,
+        "retries": 2,
         # Without this, YoutubeDL._format_err wraps "ERROR: " (and other
         # colored text) in raw ANSI escapes whenever it thinks its stderr is
         # a tty — which lands in the DownloadError message below regardless

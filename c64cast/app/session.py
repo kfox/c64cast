@@ -1348,6 +1348,11 @@ def reload_all(sess: Session) -> None:
     list + master defaults are set at startup), so add/remove of systems
     still needs a restart. A failed reload keeps the current playlist."""
     log.info("reloading config for %d system(s)", len(sess.stacks))
+    # The songlengths lookups are process-global memos, including the "no HVSC
+    # here" answer. Without this, unpacking HVSC or fixing
+    # `[playlist].songlengths_file` could not take effect in a long-lived host
+    # without a restart.
+    scene_factory.reset_songlengths_cache()
     for st, sub_path in zip(sess.stacks, sess.loaded.paths, strict=True):
         if sub_path is None:
             continue  # no file to reload (defaults-only single-system)

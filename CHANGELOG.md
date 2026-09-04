@@ -21,6 +21,55 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Security
 
+- **A credential inside a scene `file =` URL was echoed verbatim.** A private
+  asset is legitimately reached with
+  `file = "https://user:token@cdn.example/clip.mp4"`, and nothing redacted it:
+  a resolve failure quoted the spec into `--log-file` and into the report the
+  web console renders in a browser, and `recording_metadata` copied it into the
+  per-scene snapshot — which `scripts/scene_config_to_description.py` renders as
+  `Source video: <url>` in a **published** video description. The connection
+  target has refused a `user:pass@` netloc for exactly this reason since it was
+  introduced; a secret inside a scene `file` *value* was covered by none of that
+  machinery, because it is not a field of its own. Every message that quotes a
+  media spec now strips URL userinfo and masks `token=`/`key=`/`password=`-style
+  query parameters, and so does the snapshot.
+- **A media URL was fetched at build time with no timeout.** The yt-dlp
+  resolution runs inside `build_scene`, i.e. after the link is open and the
+  machine has been reset, and it passed no `socket_timeout` (nothing in the tree
+  calls `socket.setdefaulttimeout` either). A host that completed the TCP
+  handshake and then never answered held the C64 in reset with the DMA socket
+  open until the process was killed — and under `--serve` the supervisor stayed
+  `STARTING`, so `POST /api/session/stop` returned 202 and changed nothing. The
+  attacker is whoever controls the host behind a pasted link, which is a normal
+  VJ workflow. It is bounded now, one `log.info` line names the URL before the
+  fetch (yt-dlp's own logger goes to `log.debug`, so there was nothing at
+  default level saying what it was waiting on), a resolved stream URL whose
+  scheme is not http/https is refused rather than handed to ffmpeg — which
+  honors `file://` and `udp://` — and the resolved title is stripped of control
+  characters and length-capped before it becomes the scene name, since it comes
+  from the page and lands in log lines interpolated with no arguments.
+- **`validate_scene_cfg` is reachable from the network, and did unbounded
+  filesystem work there.** The load-time SID header check read its whole
+  candidate file with no guard, so a config naming a FIFO `x.sid` blocked the
+  validate request thread forever and a multi-gigabyte one exhausted memory; it
+  now requires a regular file and caps the read. A `**` glob whose first path
+  segment is itself a pattern under `/` — a walk of every mounted volume inside
+  one HTTP request — is refused outright. A general depth or time bound on glob
+  expansion is still open; the ceiling trades against legitimately deep HVSC and
+  media trees.
+- **A `wled` scene's `sink_allow` accepted an IPv6 entry the sink can never
+  match.** The pixel sink binds `AF_INET` only, so the peer address it compares
+  against is always a dotted quad — an IPv6 allowlist entry produced a config
+  that validated cleanly and then silently dropped every sender, with no log
+  line. It is refused at validate time now, naming the IPv4 requirement.
+- **`[wled].listen` says what it exposes.** Turning on the virtual WLED device
+  binds its JSON/WebSocket API on every interface with no token and advertises
+  it over mDNS, and a reachable client can pause the run, jump scenes, sweep
+  live params, force the palette and write presets — the same capability
+  `validate_control_cfg` refuses to leave unauthenticated off loopback. LAN
+  discovery is the point of the feature, so this warns rather than refuses, but
+  it no longer happens silently.
+
 - **A `viewer_token` was a full-control credential.** `GET
   /api/configs/{ref}` had no role check at all, and the auth gate's only
   viewer restriction is the HTTP method — so every `GET` passed for a
@@ -209,6 +258,122 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fresh: "can't tell how old this is" is not "recent".
 
 ### Fixed
+
+- **Auto-interleaved videos got almost none of a video scene's wiring.**
+  `[playlist].interleave_videos` constructed its `VideoScene` directly and
+  hand-copied one of the six things the video builder does — the frame-push
+  cap. Everything else was silently absent, kept from crashing by the scene
+  defaults: no `tempo_scale`, so the bitmap+`$D418`-DAC tempo compensation was
+  switched off for exactly the hires_edges-over-DAC case it exists to correct
+  and every interleaved clip played the documented ~11-12% slow while
+  configured video scenes did not; no sampler resolution, so a sampler-capable
+  Ultimate 64 played interleaved clips on the lo-fi 4-bit DAC (and took its
+  20 fps cap) while every configured video scene in the same run got the
+  off-bus sampler at full rate; and no `[color]` section, no
+  `[midi_control].loop_audio`, no effect chain, no overlays, and none of the
+  epilogue stamps — so `[midi_control].osd = "off"`, `[dsp].pre_emphasis` and
+  `[debug].frame_numbers` were ignored on these scenes alone. They are built
+  through `build_scene` on a synthetic video scene now, so there is nothing
+  left to keep in sync by hand.
+- **A `display = "random"` slideshow lost its dither and cell strategy on the
+  first slide.** The runtime re-pick rebuilt its display mode from a second,
+  hand-written copy of the factory's wiring, and that copy had drifted: it
+  passed neither `dither_method` nor `cell_strategy`, so the documented
+  static-scene resolution (`[color].dither = "auto"` → floyd-steinberg,
+  `cell_strategy = "auto"` → error-min) was replaced by "no dithering" and
+  frequency allocation from the very first image onward. The same copy handed
+  two facts to the flicker resolver and withheld them from the double-buffer
+  resolver in the same breath, so a slideshow running the REU mic pump could
+  end up installing the `$0314` raster IRQ the pump already owns. There is one
+  wiring object and one entry point now, shared by the factory and the scene.
+- **A `display = "random"` slideshow's overlays were validated against one
+  random pick.** `mcm` is in the pool and rejects a text overlay, so the same
+  unchanged config loaded on roughly four runs in five and `--doctor` returned
+  a different verdict from one invocation to the next — and when it did load,
+  the runtime re-pick could still land on the rejected mode with no check at
+  all. Every mode the pool can produce is checked now.
+- **A URL carrying a comma was cut into pieces.** The `file =` spec was split
+  on every comma before anything looked at the scheme, so the standard Akamai
+  HLS shape (`.../clip_,500,800,.mp4.csmil/master.m3u8`) became a truncated URL
+  plus fragments reported as paths with the wrong extension — naming things the
+  user never typed. yt-dlp's own resolved stream URLs, which a URL video scene
+  writes back into its file spec, routinely carry commas in query parameters.
+  After a URL entry a comma now separates only when the next fragment announces
+  a new entry (it begins with whitespace, or is itself a URL), so
+  `http://h/a.mp4, b.mp4` is still two entries and `http://h/a.mp4,b.mp4` is
+  one URL.
+- **A page URL mixed into a multi-entry `file =` spec was never resolved.**
+  Only a whole-spec URL goes through yt-dlp, so such an entry stayed in the
+  candidate pool as a raw page URL for PyAV to open as a media file — the exact
+  cryptic `Invalid data found` failure the offline pre-check exists to prevent,
+  and it happened even with the `yt` extra installed. It is refused at validate
+  time with a message saying to give the URL a scene of its own.
+- **A populated directory whose name contains `[`, `*` or `?` was reported as a
+  glob that matched nothing.** An existing *file* already won over glob
+  interpretation — `Clip [videoid].mp4` is yt-dlp's own naming convention — but
+  a directory did not, and the same convention produces such directories for
+  playlist downloads. `os.path.isdir` is now tested before the glob branch, like
+  `os.path.isfile` already was.
+- **A `generative` scene with `audio_source = "sid"` and no `file =` failed on
+  a normal HVSC tree.** The recursive walk of the default SID directory was
+  keyed to the *error-message label* `"waveform"`, and this arm passes a
+  different label while sharing the same default directory — so it got a shallow
+  listing, and every documented HVSC layout has zero `.sid` files at the top
+  level. It was refused with "the default directory 'assets/sids' is missing or
+  empty" on the exact tree a waveform scene plays out of the box. The recursion
+  is an explicit keyword now, which also means rewording an error message can no
+  longer switch HVSC discovery off.
+- **A live scene beside a `follower_only` sibling tore down every 30 seconds.**
+  The single-scene duration default counted `[[scenes]]` entries, but
+  follower-only scenes never reach the playlist and the playlist's own
+  single-scene mode counts what it was handed. So the canonical ensemble shape —
+  one webcam or blank scene plus a follower-only sibling — really was a
+  single-scene playlist, yet the scene kept the finite 30 s default and
+  re-opened the capture device every 30 seconds forever (and under `--no-loop`
+  the show simply ended). It counts the rotation now.
+- **`--doctor` reported a display mode a slideshow never uses, and skipped it
+  from three color reports.** `resolve_scene_display` answered `hires_edges` for
+  a default-display slideshow while the build resolved `mhires`, and doctor
+  branches on that answer — dropping the `color_match` report for `hires_edges`
+  and the `cell_strategy`/`motion_smoothing` reports for anything but `mhires`.
+  The one scene type whose `auto` resolutions actually differ was therefore the
+  one type missing from all three. It delegates to the slideshow resolver now.
+- **A bad `[color].flicker_tolerance` was the one color typo that escaped the
+  config check.** It had no whole-config validator, so it raised a plain
+  `ValueError` from deep inside the display build — a different exit code from
+  every sibling `[color]` field, naming only `[color]` and never the scene an
+  override came from — and that raise is only reachable from a scene that paints
+  a frame, so a bad value in a SID-only or blank-only playlist was never caught
+  at all, `--doctor --skip-probe` included.
+- **A `webcam` scene accepted `display = "blank"` and painted nothing.** Every
+  other frame-bearing scene type refuses it with guidance, because blank mode
+  ignores the frame it is handed; webcam was the one type with no validator, so
+  the run opened the camera, grabbed frames and showed an empty screen with no
+  error anywhere. `display = "random"` on a webcam now gets the same "only
+  slideshow does" message its siblings give instead of a raw "unknown display
+  mode".
+- **A SID/display conflict could advise a change that did not clear it.** The
+  overlap check reports the first conflicting region and looks at screen RAM
+  before the bitmap, so a payload spanning both was reported as the screen
+  conflict — and "load above $07E8" then lands straight in the hires bitmap.
+  The remedy is worded off the highest region the display actually reserves.
+- **A `[playlist].videos_dir` entry that was a directory named `clips.mp4`
+  became an interleaved video.** The interleave lister filtered on the extension
+  alone with no regular-file check, unlike the identical listing a scene's
+  `file =` gets, so the entry only failed once PyAV tried to open it. Both go
+  through one lister now.
+- **HVSC unpacked after the first miss stayed invisible.** The songlengths
+  lookups are process-global memos with no invalidation, including the "not
+  found" answer — so in a long-lived `--serve` host, unpacking HVSC or fixing
+  `[playlist].songlengths_file` could not take effect without restarting the
+  process. The config-reload path clears them now. The "auto-detected HVSC
+  database at …" line also moved behind the cache check, so it is logged once
+  per process rather than once per waveform scene built.
+- A scene that falls back to its default media directory now logs the absolute
+  directory it resolved to. The defaults are relative, so they resolve against
+  the process's working directory — which for a daemon, a systemd unit or a
+  container entrypoint is not necessarily where the operator thinks the media
+  is.
 
 - **A preview run whose window had closed could not be stopped.** When
   `[preview]` is on, the main thread drives the window and joins the playlist
@@ -534,6 +699,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fault that did not exist.
 
 ### Changed
+
+- `MachineSettingsIsolation` (test helper) now redirects `$C64CAST_DATA_DIR`
+  alongside `$C64CAST_SETTINGS`, so a test module that opts into it cannot read
+  or write the real `~/.local/share/c64cast/` either. Its name always read
+  broader than it was.
 
 - `--doctor` now states when several ensemble systems authenticate with one
   shared `[ultimate64].dma_password`, naming the systems it reached. Unlike
