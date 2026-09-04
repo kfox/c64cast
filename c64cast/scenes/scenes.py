@@ -254,33 +254,52 @@ class OsdState:
     Thread-safe: control threads (the MIDI reader, the WLED server) call
     :meth:`post`; the render thread calls :meth:`current` once per frame. A post
     supersedes any earlier one and shows for `duration_s`, then clears itself.
-    `enabled` gates it entirely (``[midi_control].osd = "off"``); `position` is
-    "top" or "bottom". Rendered pre-quantization via :func:`_annotate_osd`, so it
-    works on every display mode (the text becomes part of the quantized bitmap),
-    exactly like the ``--frame-numbers`` debug label."""
+    Two independent gates, because they answer different questions and one
+    must not clobber the other. `enabled` is the **static** setting
+    (``[midi_control].osd = "off"``), stamped on by
+    ``scene_factory.build_scene``, and it is also what the ``osd.position``
+    MIDI action toggles. `suppressed` is **performance mode**
+    (``Playlist.performance_mode``, toggled live from the web console): the
+    C64 output is in front of an audience, so nothing may draw over it. Were
+    performance mode to write `enabled` instead, turning it back off would
+    have to guess a value and would silently override a config that said
+    "off". `position` is "top" or "bottom". Rendered pre-quantization via
+    :func:`_annotate_osd`, so it works on every display mode (the text becomes
+    part of the quantized bitmap), exactly like the ``--frame-numbers`` debug
+    label."""
 
-    __slots__ = ("_lock", "_text", "_expires_at", "position", "enabled")
+    __slots__ = ("_lock", "_text", "_expires_at", "position", "enabled", "suppressed")
 
-    def __init__(self, position: str = "bottom", enabled: bool = True) -> None:
+    def __init__(
+        self, position: str = "bottom", enabled: bool = True, *, suppressed: bool = False
+    ) -> None:
         self._lock = threading.Lock()
         self._text = ""
         self._expires_at = 0.0
         self.position = position
         self.enabled = enabled
+        self.suppressed = suppressed
+
+    @property
+    def visible(self) -> bool:
+        """Whether a post would be shown at all — both gates open."""
+        return self.enabled and not self.suppressed
 
     def post(self, text: str, duration_s: float = 2.5) -> None:
         """Show `text` for `duration_s` seconds (supersedes any current message).
-        A no-op when the OSD is disabled, so callers needn't check first."""
-        if not self.enabled:
+        A no-op when the OSD is disabled or suppressed, so callers needn't
+        check first — which is what lets performance mode silence every poster
+        (live-tune, effect bypass, the transport engine) from one flag."""
+        if not self.visible:
             return
         with self._lock:
             self._text = text
             self._expires_at = time.monotonic() + duration_s
 
     def current(self) -> str | None:
-        """The message to draw this frame, or None when disabled / expired /
-        never posted. Cheap enough to call every frame."""
-        if not self.enabled:
+        """The message to draw this frame, or None when disabled / suppressed /
+        expired / never posted. Cheap enough to call every frame."""
+        if not self.visible:
             return None
         with self._lock:
             if self._text and time.monotonic() < self._expires_at:

@@ -973,8 +973,14 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
             if overwrite:
                 applied = tracker.apply(pl.config)
                 if pl.menu.save_config():
+                    # No "(backup .bak)" here: save_config's .bak is one-shot
+                    # (it preserves the hand-written original, not the previous
+                    # save), and this path fires on every exit under
+                    # --overwrite — so repeating the reassurance every run is
+                    # exactly the claim that was misleading. save_config logs
+                    # what actually happened to the backup.
                     log.info(
-                        "%slive-tune: saved %d change(s) → %s (backup .bak)",
+                        "%slive-tune: saved %d change(s) → %s",
                         tag,
                         len(applied),
                         pl.config_path,
@@ -995,7 +1001,7 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
                 applied = tracker.apply(pl.config)
                 ok = pl.menu.save_config()
                 print(
-                    f"{tag}Saved {len(applied)} change(s) (backup .bak)."
+                    f"{tag}Saved {len(applied)} change(s)."
                     if ok
                     else f"{tag}Save failed (see log)."
                 )

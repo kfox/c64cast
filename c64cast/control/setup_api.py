@@ -214,10 +214,32 @@ def register_setup_routes(
             # "u64:// needs a host (e.g. u64://192.168.2.64)" is the same
             # advice `-u` prints, and it is all an admin staring at a refused
             # form has to go on. CodeQL flags `str()` of any caught exception
-            # and cannot tell the two apart, hence the waiver; the marker sits
-            # on the line it reports, the argument's own.
+            # and cannot tell the two apart, hence the waiver.
+            #
+            # The marker goes on its **own line, immediately above** the line
+            # it waives. That is not style — it is the only form that works.
+            # `CodeQlSuppressionComment` in CodeQL's
+            # `shared/util/codeql/util/suppression/AlertSuppression.qll` only
+            # constructs when *no AST node precedes the comment on its line*, so
+            # a trailing `# codeql[...]` never becomes a suppression at all; and
+            # its `covers` is `startline - 1`, so the one it does form applies
+            # to the **next** line. (Same-line placement belongs to `lgtm[...]`,
+            # and to Python's `noqa`.)
+            #
+            # This waiver used to trail the argument, so it suppressed nothing:
+            # `AlertSuppression.ql` emitted no entry, the `dismiss-alerts` step
+            # in `codeql.yml` logged "Indexed 15 alerts" and dismissed zero, and
+            # every waiver in this repo was in fact being closed by hand — which
+            # is the exact fragility that step exists to remove.
+            #
+            # Moving a marker shifts the flagged line and therefore mints a new
+            # alert number. That is expected and is not evidence the placement
+            # is wrong; the replacement is dismissed on the next `main` run,
+            # since `dismiss-alerts` is `main`-only and code scanning itself
+            # records SARIF suppressions without acting on them.
             return JSONResponse(
-                {"ok": False, "error": str(e)},  # codeql[py/stack-trace-exposure]
+                # codeql[py/stack-trace-exposure]
+                {"ok": False, "error": str(e)},
                 status_code=400,
             )
 

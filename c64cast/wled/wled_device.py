@@ -71,7 +71,6 @@ import time
 import uuid
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit
 
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
@@ -1117,17 +1116,28 @@ class WledBridge:
         self._active_preset = pid
 
 
+#: Close code for a handshake this device refuses (RFC 6455 "policy
+#: violation"), matching `perf_console.ConsoleFeed._refusal`.
+_WS_POLICY_VIOLATION = 1008
+
+
 def _is_cross_origin(request: Any) -> bool:
     """True if the request carries an `Origin` header that names a different
     host than its own `Host` header — a cross-origin browser request (CSRF /
     DNS-rebinding), as opposed to a same-origin fetch from the served `/`
     page or a non-browser client (python-wled, Home Assistant, curl), none of
-    which send `Origin` on a same-origin/non-browser POST."""
-    origin = request.headers.get("origin")
-    if not origin:
-        return False
-    host = (request.headers.get("host") or "").lower()
-    return urlsplit(origin).netloc.lower() != host
+    which send `Origin` on a same-origin/non-browser POST.
+
+    Delegates to :func:`auth.same_origin` rather than re-deriving the
+    comparison. This module used to carry its own copy, and the two had
+    drifted: this one compared `netloc != host` with no guard on an empty
+    `Host`, so a request with `Origin: null` (a sandboxed iframe, a `data:`
+    document, a redirected cross-origin fetch) and no `Host` read as
+    same-origin here and was refused there. One predicate, one behavior —
+    and the surface this guards is the larger of the two."""
+    from c64cast.control.auth import same_origin  # noqa: PLC0415  (lazy; import cost)
+
+    return not same_origin(request.headers)
 
 
 def build_wled_app(bridge: WledBridge, port: int = 80):
@@ -1246,6 +1256,21 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
+        # Before `accept`, and for the same reason `POST /json` checks: this
+        # socket *applies commands* (`bridge.apply` below), so it is a write
+        # surface, and a WebSocket handshake is exempt from CORS entirely —
+        # no preflight exists for a browser to fail. Only the POST path was
+        # guarded, which left the larger hole open: any page the operator
+        # happens to visit could open `ws://<host>:8080/ws` and pause the run,
+        # jump scenes, sweep live params or write presets. Binding to loopback
+        # does not help — that is the origin such a page reaches most easily.
+        # Closing *before* accept makes uvicorn answer the handshake with an
+        # HTTP 403, the one status a client can tell apart from "the server
+        # went away" (see `auth`'s module docstring).
+        if _is_cross_origin(websocket):
+            log.warning("wled: refused a cross-origin websocket handshake")
+            await websocket.close(code=_WS_POLICY_VIOLATION)
+            return
         await websocket.accept()
         ws_clients.add(websocket)
         # WLED sends the full state+info on connect.

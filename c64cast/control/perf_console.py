@@ -31,13 +31,22 @@ a web launch and a pad launch are indistinguishable downstream:
   playlist events the C64's own keys do, so the run loop applies them at its
   next clean boundary rather than this thread mutating a scene. The Phase-7
   verbs (freeze / scrub / rw / ff / loop) reach the same ``TransportSession``
-  the MIDI surface drives, and **that engine posts its own OSD line** — so the
-  no-``post_osd`` rule above is this module's own discipline, not something the
-  transport engine inherits: a ``loop_slot`` save does draw ``SAVED 3`` over the
-  audience output. What is closed here is the caller's hand in that string: the
-  slot a console may name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX``
-  (see :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated
-  into it and nothing unbounded is persisted.
+  the MIDI surface drives, and **that engine posts its own OSD line** — which
+  is not a leak in the no-``post_osd`` rule above but the line the rule is
+  drawn at: the audience screen carries transport **state** (``PAUSED``,
+  ``PLAY``, ``LOOP 1:04-1:31``, ``REC ●`` beside its red border), because the
+  picture is visibly doing that and an unexplained frozen frame is worse than a
+  label. It does **not** carry confirmation that a control was pressed. That is
+  why a ``loop_slot`` save no longer draws ``SAVED 3`` there: it changes a file
+  on disk and nothing on screen, so it goes to the log — and to this console
+  for free, since every pushed state frame carries ``loop_slots``
+  (:func:`_transport_dict`), which is live feedback rather than a two-second
+  flash. The rule is one boundary, applied in the engine, so the MIDI and web
+  surfaces stay the mirror images they have been since Phase 2. What is *also*
+  closed here is the caller's hand in those strings: the slot a console may
+  name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX`` (see
+  :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated into
+  an OSD line and nothing unbounded is persisted.
 * **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.control.performance.LookEvent`
   (``save`` / recall), drained on the playlist thread exactly like a clip launch —
   a look captures the active clip + effect-chain state and re-fires it on recall.
@@ -56,6 +65,7 @@ make FastAPI mis-read it as a query param and skip the WebSocket injection.
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -653,6 +663,11 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         "current_scene": scene.name if scene is not None else None,
         "scene_index": index,
         "paused": pl.pause_event.is_set(),
+        # Performance mode: the audience screen carries no OSD line. Read off
+        # the playlist rather than the live scene's OsdState, so the button
+        # still shows the right state in the gap where `current` is None
+        # (mid-advance) and on an idle host.
+        "performance_mode": bool(getattr(pl, "performance_mode", False)),
         "scenes": scene_rows(pl, index),
         "tempo": _tempo_dict(pl),
         "active_slot": active,
@@ -951,6 +966,30 @@ class PerfBridge:
         pl.request_jump(index, skip_interstitial=True)
         return True
 
+    def perf(self, system: str | None, on: bool) -> bool:
+        """Turn performance mode on or off on the target system.
+
+        The C64 output is audience-facing, and a scrub, a knob sweep or a loop
+        mark each draw a line over it. Which is *wanted* while live-tuning at
+        the desk — that readout is the whole point of the OSD — and unwanted
+        the moment the projector is on, so it cannot be a static decision:
+        `[midi_control].osd` sets the baseline and this flips it live.
+
+        Sets `Playlist.performance_mode`, which suppresses every poster
+        through one `OsdState.suppressed` gate and is re-stamped onto each
+        fresh scene — so it survives an auto-advance, unlike the per-scene
+        hide the `osd.position` MIDI pad's double-tap does. That pad is
+        deliberately *not* rerouted here: it writes `enabled`, which is what
+        lets a tap bring an OSD back up that `[midi_control].osd = "off"` had
+        disabled — a capability performance mode's `suppressed` gate cannot
+        offer without guessing a value to restore. See
+        `Playlist.cycle_osd`. Returns False for an unknown system."""
+        pl = self._resolve(system)
+        if pl is None:
+            return False
+        pl.set_performance_mode(on)
+        return True
+
     def look(self, system: str | None, slot: int, save: bool) -> bool:
         """Save or recall a "look" (active clip + effect-chain state) on the
         target system — enqueues a :class:`~c64cast.control.performance.LookEvent`, drained
@@ -1041,6 +1080,17 @@ class PerfBridge:
             if slot is None:
                 return self._malformed(cmd, "slot")
             return self.look(system, slot, bool(cmd.get("save", False)))
+        if action == "perf":
+            # An explicit target state rather than a bare toggle, for the
+            # reason `freeze`/`unfreeze` are two verbs: two consoles open on
+            # one show, or a retried request, would otherwise race their stale
+            # reads into a double-toggle that cancels out.
+            # Absent `on` is malformed, not "turn it on": defaulting a
+            # missing field to the state-changing value is the toggle-shaped
+            # behavior the explicit-target design above exists to avoid.
+            if "on" not in cmd:
+                return self._malformed(cmd, "on")
+            return self.perf(system, bool(cmd["on"]))
         return False
 
     def _malformed(self, cmd: Mapping[str, Any], field: str) -> bool:
@@ -1076,658 +1126,31 @@ class PerfBridge:
 # screen. Both are handled as absent rather than assumed — this page is served
 # by the control plane, which a plain CLI run has without any of /api. Kept
 # dependency-free so it renders in any phone browser.
-_PERF_HTML = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>c64cast — performance</title>
-<style>
-  :root { --bg:#0d0d10; --panel:#17171d; --line:#2a2a33; --fg:#eee; --dim:#888;
-          --loaded:#334; --armed:#d9a021; --active:#28c46a; --fxon:#3b82f6; }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { background: var(--bg); color: var(--fg);
-         font: 15px -apple-system, system-ui, sans-serif;
-         margin: 0; padding: 0 0 2em; }
-  header { position: sticky; top: 0; z-index: 5; background: var(--panel);
-           border-bottom: 1px solid var(--line); padding: 0.6em 0.9em; }
-  .tempo { display: flex; align-items: center; gap: 0.7em; }
-  .bpm { font-size: 1.9em; font-weight: 700; font-variant-numeric: tabular-nums;
-         min-width: 2.6em; }
-  .bpm small { font-size: 0.45em; font-weight: 400; color: var(--dim); }
-  .chip { font-size: 0.75em; color: var(--dim); border: 1px solid var(--line);
-          border-radius: 999px; padding: 0.15em 0.6em; }
-  .chip.run { color: var(--active); border-color: var(--active); }
-  .beats { display: flex; gap: 0.35em; margin-left: auto; }
-  .beat { width: 12px; height: 12px; border-radius: 50%; background: var(--line);
-          transition: background 60ms, transform 60ms; }
-  .beat.on { background: var(--fg); }
-  .beat.down.on { background: var(--active); }
-  button { font: inherit; color: var(--fg); background: #2a2a33;
-           border: 1px solid var(--line); border-radius: 8px; padding: 0.5em 0.9em;
-           cursor: pointer; }
-  button:active { filter: brightness(1.3); }
-  #tap { margin-left: 0.6em; font-weight: 600; }
-  main { padding: 0.8em 0.9em; max-width: 760px; margin: 0 auto; }
-  h2 { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.08em;
-       color: var(--dim); margin: 1.4em 0 0.5em; }
-  .tabs { display: flex; gap: 0.4em; margin-top: 0.6em; flex-wrap: wrap; }
-  .tabs button.sel { border-color: var(--fg); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
-          gap: 0.55em; }
-  .pad { aspect-ratio: 1 / 1; border-radius: 10px; border: 1px solid var(--line);
-         background: var(--loaded); display: flex; flex-direction: column;
-         align-items: center; justify-content: center; text-align: center;
-         padding: 0.3em; font-size: 0.82em; line-height: 1.15; user-select: none;
-         touch-action: none; overflow: hidden; }
-  .pad .meta { font-size: 0.7em; color: var(--dim); margin-top: 0.25em; }
-  .pad.armed { background: var(--armed); color: #111; animation: blink 0.5s steps(1) infinite; }
-  .pad.active { background: var(--active); color: #062; border-color: var(--active); }
-  @keyframes blink { 50% { opacity: 0.35; } }
-  .countin { color: var(--armed); font-weight: 600; }
-  .fx { border: 1px solid var(--line); border-radius: 10px; padding: 0.6em 0.7em;
-        margin-bottom: 0.55em; background: var(--panel); }
-  .fx .head { display: flex; align-items: center; gap: 0.6em; }
-  .fx .name { font-weight: 600; }
-  .fx .src { font-size: 0.72em; color: var(--dim); border: 1px solid var(--line);
-             border-radius: 999px; padding: 0.05em 0.5em; }
-  .fx .byp { margin-left: auto; min-width: 5.4em; }
-  .fx.on .byp { background: var(--fxon); border-color: var(--fxon); }
-  .fx.off { opacity: 0.55; }
-  .prow { display: flex; align-items: center; gap: 0.6em; margin-top: 0.5em; }
-  .prow label { width: 5.5em; font-size: 0.82em; color: var(--dim); flex-shrink: 0; }
-  .prow input[type=range] { flex: 1; }
-  .prow .val { width: 3.4em; text-align: right; font-variant-numeric: tabular-nums;
-               font-size: 0.82em; }
-  .prow select { flex: 1; font: inherit; color: var(--fg); background: #2a2a33;
-                 border: 1px solid var(--line); border-radius: 8px; padding: 0.3em; }
-  .empty { color: var(--dim); font-size: 0.9em; }
-  /* 4:3 because that is the shape a television gives a C64 — the stream's own
-     384x272 has no square pixels. `pixelated` so a phone scaling it up shows
-     the cells rather than a smear of them. */
-  #screen { width: 100%; aspect-ratio: 4 / 3; object-fit: fill; background: #000;
-            border-radius: 6px; image-rendering: pixelated; }
-  .scene { color: var(--dim); font-size: 0.8em; margin-top: 0.2em; }
-  .row { display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }
-  .jump { font-size: 0.85em; padding: 0.35em 0.7em; }
-  .jump.sel { border-color: var(--active); color: var(--active); }
-  .group { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em;
-           color: var(--dim); margin: 0.8em 0 0.1em; }
-  .tuned { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-           padding: 0.6em 0.7em; }
-  .trow { display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap;
-          font-size: 0.85em; padding: 0.15em 0; }
-  .trow .was { color: var(--dim); font-variant-numeric: tabular-nums; }
-  .tag { font-size: 0.65em; color: var(--dim); border: 1px solid var(--line);
-         border-radius: 999px; padding: 0.05em 0.45em; }
-  .tmsg { font-size: 0.8em; color: var(--dim); }
-  .snippet { background: #000; border: 1px solid var(--line); border-radius: 8px;
-             padding: 0.6em; overflow-x: auto; font-size: 0.78em; margin: 0.6em 0 0; }
-  .looks { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
-  .look { aspect-ratio: 1 / 1; border-radius: 10px; border: 1px solid var(--line);
-          background: var(--loaded); display: flex; align-items: center;
-          justify-content: center; font-weight: 600; user-select: none;
-          touch-action: manipulation; opacity: 0.5; }
-  .look.saved { opacity: 1; border-color: var(--fxon); }
-  #looksave.arm { background: var(--armed); color: #111; border-color: var(--armed); }
-</style>
-</head>
-<body>
-<header>
-  <div class="tempo">
-    <div class="bpm" id="bpm">--<small> bpm</small></div>
-    <span class="chip" id="src">internal</span>
-    <span class="chip" id="run">idle</span>
-    <span class="chip" id="role" hidden>read-only</span>
-    <div class="beats" id="beats"></div>
-    <button id="tap">TAP</button>
-  </div>
-  <div class="tabs">
-    <button id="pause">PAUSE</button>
-    <button id="skip">SKIP</button>
-  </div>
-  <div class="tabs" id="tabs"></div>
-</header>
-<main>
-  <div class="scene" id="scene"></div>
-  <h2>Screen <button id="screenwatch">WATCH</button></h2>
-  <img id="screen" alt="The Commodore's screen, live" hidden>
-  <p class="empty" id="screenmsg"></p>
-  <h2>Clips <span class="countin" id="countin"></span></h2>
-  <div class="grid" id="clips"></div>
-  <h2>Effects</h2>
-  <div id="fx"></div>
-  <h2>Tune</h2>
-  <div id="tune"></div>
-  <h2>Tuned</h2>
-  <div class="tuned" id="tuned"></div>
-  <h2>Looks <button id="looksave">SAVE</button></h2>
-  <div class="grid looks" id="looks"></div>
-  <h2>Scenes</h2>
-  <div class="row" id="scenes"></div>
-</main>
-<script>
-let state = null;      // last full state from the server
-let sel = 0;           // selected system index
-let ws = null;
-let pollTimer = null;
-let wsRetryMs = 0;     // exponential backoff for the reconnect, see retryWS()
-// Local beat-clock anchor for smooth pulse animation between server pushes.
-let clock = {bpm: 120, phase: 0, running: false, bpb: 4, at: 0};
-const WS_RETRY_MIN_MS = 500;
-const WS_RETRY_MAX_MS = 15000;
+@functools.cache
+def perf_page_html() -> str:
+    """The console page, read once from the packaged ``perf_console.html``.
 
-function post(cmd) {
-  const sys = curSys();
-  if (sys) cmd.system = sys.name;
-  return fetch('/perf/command', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(cmd),
-  }).catch(() => {});
-}
+    A ~650-line HTML/CSS/JS document, so it lives in a real ``.html`` file
+    rather than a Python string: as a string it got no syntax highlighting, no
+    formatter, no linter, and could not be opened in a browser on its own while
+    someone iterated on it. Nothing else changes — it is still one fixed,
+    server-authored body with no caller content in it and no third-party
+    resource to load, which is what lets :data:`_PAGE_HEADERS` be as strict as
+    it is.
 
-function curSys() {
-  if (!state || !state.systems.length) return null;
-  return state.systems[Math.min(sel, state.systems.length - 1)];
-}
+    Read through :mod:`importlib.resources` rather than ``__file__`` so any
+    loader that imported the package answers, and cached because
+    :func:`register_perf_routes` serves the same bytes on every request.
+    ``read_text`` needs no real filesystem path (unlike
+    :func:`c64cast.app.paths._package_dir`, whose callers hand paths to
+    ``open()``), so this works from a zipped distribution too.
 
-function apply(s) {
-  state = s;
-  // A viewer token's writes are rejected by the server with a 403; say so
-  // instead of letting every pad tap look like a dead grid.
-  document.getElementById('role').hidden = s.role !== 'viewer';
-  const sys = curSys();
-  if (sys) {
-    const t = sys.tempo;
-    clock = {bpm: t.bpm, phase: t.beat_phase, running: t.running,
-             bpb: t.beats_per_bar, at: performance.now()};
-  } else {
-    // Reset the whole anchor, not just `running`: animate() renders clock.bpm
-    // unconditionally, so a host between shows kept showing the last show's
-    // BPM — or a confident 120 straight from the initializer, before a frame
-    // had ever arrived — in the sticky header above "No session running."
-    // Zeroed, animate's own `clock.bpm ? … : '--'` renders `--` on its own.
-    clock = {bpm: 0, phase: 0, running: false, bpb: clock.bpb, at: performance.now()};
-  }
-  render();
-}
+    Packaged by the ``control/*.html`` entry in ``[tool.setuptools.package-data]``
+    — without it the wheel ships only ``.py`` files and the console 500s on a
+    fresh install, which ``test_perf_console`` guards against by reading it."""
+    from importlib.resources import files  # noqa: PLC0415  (lazy; import-time cost)
 
-function render() {
-  const sys = curSys();
-  if (!sys) {
-    // No session (a host between shows). Clear the grids: leaving the last
-    // show's pads up invites a tap that goes nowhere.
-    ['tabs', 'clips', 'fx', 'tune', 'tuned', 'looks', 'scenes'].forEach((id) => {
-      document.getElementById(id).innerHTML = '';
-    });
-    document.getElementById('run').className = 'chip';
-    document.getElementById('run').textContent = 'idle';
-    document.getElementById('scene').textContent = 'No session running.';
-    document.getElementById('countin').textContent = '';
-    return;
-  }
-  // Tabs (only when more than one system).
-  const tabs = document.getElementById('tabs');
-  if (state.multi) {
-    tabs.innerHTML = '';
-    state.systems.forEach((s, i) => {
-      const b = document.createElement('button');
-      b.textContent = s.name;
-      if (i === sel) b.className = 'sel';
-      b.onclick = () => { sel = i; render(); };
-      tabs.appendChild(b);
-    });
-  } else {
-    tabs.innerHTML = '';
-  }
-  document.getElementById('src').textContent = sys.tempo.source;
-  const run = document.getElementById('run');
-  run.textContent = sys.tempo.running ? 'running' : 'idle';
-  run.className = 'chip' + (sys.tempo.running ? ' run' : '');
-  document.getElementById('scene').textContent =
-    sys.current_scene ? ('▶ ' + sys.current_scene) : '';
-  document.getElementById('pause').textContent = sys.paused ? 'RESUME' : 'PAUSE';
-  renderCountin(sys);
-  renderClips(sys);
-  renderFx(sys);
-  renderTune(sys);
-  renderTuned(sys);
-  renderLooks(sys);
-  renderScenes(sys);
-  // Re-point the picture when the selected system changes. setScreen bakes
-  // `?system=` into the src and is otherwise only reached from the WATCH tap,
-  // so on an ensemble run tapping a tab moved every control to the new machine
-  // and left the previous machine's VIC streaming underneath it, with nothing
-  // on the page saying so.
-  if (screenOn && sys.name !== screenSys) setScreen(true);
-}
-
-function renderScenes(sys) {
-  const box = document.getElementById('scenes');
-  box.innerHTML = '';
-  sys.scenes.forEach((s) => {
-    const b = document.createElement('button');
-    b.className = 'jump' + (s.is_current ? ' sel' : '');
-    b.textContent = (s.index + 1) + '. ' + s.name;
-    b.onclick = () => post({action: 'jump', index: s.index});
-    box.appendChild(b);
-  });
-}
-
-// Number of look slots the console exposes (1-based pads).
-const LOOK_SLOTS = 8;
-let saveMode = false;   // when armed, a look-pad tap saves instead of recalls
-
-function renderLooks(sys) {
-  const grid = document.getElementById('looks');
-  const saved = new Set(sys.looks || []);
-  grid.innerHTML = '';
-  for (let slot = 1; slot <= LOOK_SLOTS; slot++) {
-    const pad = document.createElement('div');
-    pad.className = 'look' + (saved.has(slot) ? ' saved' : '');
-    pad.textContent = slot;
-    pad.onclick = () => post({action: 'look', slot: slot, save: saveMode});
-    grid.appendChild(pad);
-  }
-}
-
-function renderCountin(sys) {
-  const el = document.getElementById('countin');
-  if (sys.armed && sys.armed.beats_remaining != null) {
-    const n = Math.max(0, Math.ceil(sys.armed.beats_remaining));
-    el.textContent = '· arming slot ' + sys.armed.slot + ' in ' + n;
-  } else if (sys.armed) {
-    el.textContent = '· arming slot ' + sys.armed.slot;
-  } else {
-    el.textContent = '';
-  }
-}
-
-function renderClips(sys) {
-  const grid = document.getElementById('clips');
-  grid.innerHTML = '';
-  if (!sys.clips.length) {
-    const e = document.createElement('div');
-    e.className = 'empty';
-    e.textContent = 'No clip grid configured ([[performance.clips]]).';
-    grid.appendChild(e);
-    return;
-  }
-  sys.clips.forEach((c) => {
-    const pad = document.createElement('div');
-    pad.className = 'pad ' + c.state;
-    const nm = document.createElement('div');
-    nm.textContent = c.name;
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = c.launch + (c.loop ? ' ⟳' : '') + ' · ' + c.quantize;
-    pad.appendChild(nm);
-    pad.appendChild(meta);
-    // pointerdown = press (arm/launch), pointerup/leave = release (gate/toggle).
-    // trigger ignores the release, so press+release is safe for every type.
-    const down = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: true}); };
-    const up = (ev) => { ev.preventDefault(); post({action: 'launch', slot: c.slot, pressed: false}); };
-    pad.addEventListener('pointerdown', down);
-    pad.addEventListener('pointerup', up);
-    pad.addEventListener('pointercancel', up);
-    grid.appendChild(pad);
-  });
-}
-
-function renderFx(sys) {
-  const box = document.getElementById('fx');
-  // Don't rebuild while a slider is being dragged (would drop the gesture).
-  const active = document.activeElement;
-  if (active && active.tagName === 'INPUT' && box.contains(active)) return;
-  box.innerHTML = '';
-  if (!sys.effects.length) {
-    const e = document.createElement('div');
-    e.className = 'empty';
-    e.textContent = 'Current scene has no effect chain.';
-    box.appendChild(e);
-    return;
-  }
-  sys.effects.forEach((fx) => {
-    const card = document.createElement('div');
-    card.className = 'fx ' + (fx.enabled ? 'on' : 'off');
-    const head = document.createElement('div');
-    head.className = 'head';
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = (fx.index + 1) + '. ' + fx.name;
-    const src = document.createElement('span');
-    src.className = 'src';
-    src.textContent = fx.mod_source;
-    const byp = document.createElement('button');
-    byp.className = 'byp';
-    byp.textContent = fx.enabled ? 'ON' : 'BYPASS';
-    byp.onclick = () => post({action: 'fx', layer: fx.index, enabled: !fx.enabled});
-    head.appendChild(name);
-    head.appendChild(src);
-    head.appendChild(byp);
-    card.appendChild(head);
-    fx.params.forEach((p) => {
-      const row = document.createElement('div');
-      row.className = 'prow';
-      const l = document.createElement('label');
-      l.textContent = p.name;
-      const sl = document.createElement('input');
-      sl.type = 'range'; sl.min = 0; sl.max = 1000; sl.step = 1;
-      sl.value = Math.round(p.norm * 1000);
-      const val = document.createElement('span');
-      val.className = 'val';
-      val.textContent = p.value.toFixed(2);
-      sl.oninput = () => {
-        const norm = parseInt(sl.value, 10) / 1000;
-        val.textContent = (p.min + norm * (p.max - p.min)).toFixed(2);
-        post({action: 'fx', layer: fx.index, param: p.name, value: norm});
-      };
-      // A range keeps focus after a drag, per the browser, and the guard at
-      // the top of renderFx keys off activeElement — so without this the rack
-      // stopped re-rendering for the rest of the session after the first
-      // drag: a bypass flipped from a MIDI pad no longer showed, and after a
-      // scene advance the panel kept offering the previous scene's layers.
-      // Same fix wled_device.py's page carries for the same reason.
-      sl.onpointerup = () => sl.blur();
-      row.appendChild(l); row.appendChild(sl); row.appendChild(val);
-      card.appendChild(row);
-    });
-    box.appendChild(card);
-  });
-}
-
-// The knobs of the *current* scene, grouped as introspect groups them. Built
-// the same way the effect rack is, and held still under a finger for the same
-// reason — the state feed echoes the value back at the push cadence, and
-// rebuilding mid-gesture drags the handle out from under it.
-function renderTune(sys) {
-  const box = document.getElementById('tune');
-  const active = document.activeElement;
-  if (active && box.contains(active)) return;
-  box.innerHTML = '';
-  if (!sys.live.length) {
-    const e = document.createElement('div');
-    e.className = 'empty';
-    e.textContent = 'Current scene has no tunable parameters.';
-    box.appendChild(e);
-    return;
-  }
-  let group = null;
-  sys.live.forEach((k) => {
-    if (k.group !== group) {
-      group = k.group;
-      const h = document.createElement('div');
-      h.className = 'group';
-      h.textContent = group;
-      box.appendChild(h);
-    }
-    box.appendChild(k.kind === 'choice' ? tuneChoice(k) : tuneScalar(k));
-  });
-}
-
-function tuneRow(knob) {
-  const row = document.createElement('div');
-  row.className = 'prow';
-  const l = document.createElement('label');
-  l.textContent = knob.name;
-  row.appendChild(l);
-  return row;
-}
-
-function tuneScalar(knob) {
-  const row = tuneRow(knob);
-  const sl = document.createElement('input');
-  sl.type = 'range'; sl.min = 0; sl.max = 1000; sl.step = 1;
-  sl.value = Math.round(knob.norm * 1000);
-  const val = document.createElement('span');
-  val.className = 'val';
-  val.textContent = Number(knob.value).toFixed(2);
-  sl.oninput = () => {
-    const norm = parseInt(sl.value, 10) / 1000;
-    val.textContent = (knob.min + norm * (knob.max - knob.min)).toFixed(2);
-    post({action: 'live', target: knob.target, norm: norm});
-  };
-  sl.onpointerup = () => sl.blur();   // see the rack slider's note
-  row.appendChild(sl); row.appendChild(val);
-  return row;
-}
-
-function tuneChoice(knob) {
-  const row = tuneRow(knob);
-  const sel = document.createElement('select');
-  knob.choices.forEach((c) => {
-    const o = document.createElement('option');
-    o.value = c; o.textContent = c;
-    if (c === knob.value) o.selected = true;
-    sel.appendChild(o);
-  });
-  // A choice list has no position to drag, so this sends `value`, not `norm`.
-  // A <select> keeps focus after a change, and renderTune's guard is any
-  // focused element inside #tune — so it blurs too, or the whole panel freezes
-  // after the first pick.
-  sel.onchange = () => { post({action: 'live', target: knob.target, value: sel.value}); sel.blur(); };
-  row.appendChild(sel);
-  return row;
-}
-
-// What has been turned since the show started, and the offer to keep it. The
-// CLI asks this at exit; a daemon has no exit, so it is a button here. The
-// write is /api/session/live-tune, which only a --serve host registers — on a
-// one-shot run the page still lists the changes (a change about to be lost is
-// what a performer needs told) and the run's own exit prompt makes the offer.
-let tuneMsg = '';
-
-function renderTuned(sys) {
-  const box = document.getElementById('tuned');
-  const tuned = sys.tuned;
-  box.innerHTML = '';
-  if (!tuned.changes.length) {
-    const e = document.createElement('div');
-    e.className = 'empty';
-    e.textContent = 'Nothing tuned yet this show.';
-    box.appendChild(e);
-    return;
-  }
-  tuned.changes.forEach((c) => {
-    const row = document.createElement('div');
-    row.className = 'trow';
-    const name = document.createElement('span');
-    name.textContent = c.target;
-    const was = document.createElement('span');
-    was.className = 'was';
-    was.textContent = fmt(c.old) + ' → ' + fmt(c.new);
-    row.appendChild(name); row.appendChild(was);
-    if (c.scene !== null) row.appendChild(tag('scene ' + (c.scene + 1)));
-    if (c.field === null) row.appendChild(tag('runtime only'));
-    box.appendChild(row);
-  });
-  box.appendChild(tunedActions(sys, tuned));
-  if (tuned.snippet) {
-    const pre = document.createElement('pre');
-    pre.className = 'snippet';
-    pre.textContent = tuned.snippet;
-    box.appendChild(pre);
-  }
-}
-
-function tag(text) {
-  const el = document.createElement('span');
-  el.className = 'tag';
-  el.textContent = text;
-  return el;
-}
-
-function fmt(v) {
-  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
-}
-
-function tunedActions(sys, tuned) {
-  const acts = document.createElement('div');
-  acts.className = 'tacts row';
-  if (tuned.config_path && tuned.savable) {
-    const save = document.createElement('button');
-    save.textContent = 'KEEP ' + tuned.savable;
-    save.title = 'Write these into ' + tuned.config_name;
-    save.onclick = () => liveTune(sys, 'save');
-    acts.appendChild(save);
-  }
-  const drop = document.createElement('button');
-  drop.textContent = 'DISCARD';
-  drop.onclick = () => liveTune(sys, 'discard');
-  acts.appendChild(drop);
-  const msg = document.createElement('span');
-  msg.className = 'tmsg';
-  msg.textContent = tuneMsg;
-  acts.appendChild(msg);
-  return acts;
-}
-
-async function liveTune(sys, action) {
-  tuneMsg = action === 'save' ? 'saving…' : 'discarding…';
-  render();
-  try {
-    const r = await fetch('/api/session/live-tune', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: action, system: sys.name}),
-    });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok) {
-      tuneMsg = action === 'save' ? ('saved to ' + body.path) : ('discarded ' + body.discarded);
-    } else if (r.status === 404) {
-      // A control-plane-only run: no host to write the file. Nothing is lost —
-      // the run offers the same changes back on its own way out.
-      tuneMsg = 'this run saves at exit, not from here';
-    } else {
-      tuneMsg = body.detail || ('refused (' + r.status + ')');
-    }
-  } catch (e) {
-    tuneMsg = 'could not reach the host';
-  }
-  render();
-}
-
-// Local beat-pulse animation: extrapolate the beat clock between server pushes
-// so the dots move smoothly at the shown BPM without a round-trip per beat.
-function animate() {
-  const beats = document.getElementById('beats');
-  const bpb = clock.bpb || 4;
-  if (beats.childElementCount !== bpb) {
-    beats.innerHTML = '';
-    for (let i = 0; i < bpb; i++) {
-      const d = document.createElement('div');
-      d.className = 'beat' + (i === 0 ? ' down' : '');
-      beats.appendChild(d);
-    }
-  }
-  let phase = clock.phase;
-  if (clock.running) phase += ((performance.now() - clock.at) / 1000) * (clock.bpm / 60);
-  const beatInBar = ((Math.floor(phase) % bpb) + bpb) % bpb;
-  const frac = phase - Math.floor(phase);
-  document.getElementById('bpm').innerHTML =
-    (clock.bpm ? clock.bpm.toFixed(0) : '--') + '<small> bpm</small>';
-  [...beats.children].forEach((d, i) => {
-    // Light the current beat on the front half of the beat (a pulse), always
-    // when the clock is stopped just show the anchor beat dimly.
-    const on = clock.running && i === beatInBar && frac < 0.5;
-    d.classList.toggle('on', on);
-  });
-  requestAnimationFrame(animate);
-}
-
-function startWS() {
-  try {
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    ws = new WebSocket(scheme + location.host + '/perf/ws');
-  } catch (e) { scheduleFallback(); retryWS(); return; }
-  ws.onopen = () => { wsRetryMs = 0; stopFallback(); };
-  ws.onmessage = (ev) => { try { apply(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { scheduleFallback(); retryWS(); };
-  ws.onerror = () => { try { ws.close(); } catch (e) {} };
-}
-
-// Back off rather than retry at a fixed interval forever. The host can now
-// refuse a handshake outright (MAX_CONSOLE_SOCKETS), and every open phone
-// hammering a downed host at a fixed rate is exactly the load that cap exists
-// to bound. The construction failure above retries too — it used to fall back
-// to polling and never try the socket again for the life of the page.
-async function poll() {
-  try { const r = await fetch('/perf/state'); apply(await r.json()); } catch (e) {}
-}
-function retryWS() {
-  wsRetryMs = wsRetryMs ? Math.min(wsRetryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
-  setTimeout(startWS, wsRetryMs);
-}
-function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(poll, 1000); }
-function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
-
-document.getElementById('tap').onclick = () => post({action: 'tap'});
-// One button for both, off the `paused` flag: resume on a running show is a
-// no-op the run loop never consumes, so the worst a stale label costs is a
-// tap. The C64's own keys set these same events.
-document.getElementById('pause').onclick = () => {
-  const sys = curSys();
-  post({action: 'transport', verb: sys && sys.paused ? 'resume' : 'pause'});
-};
-document.getElementById('skip').onclick = () => post({action: 'transport', verb: 'skip'});
-document.getElementById('looksave').onclick = (ev) => {
-  saveMode = !saveMode;
-  ev.currentTarget.classList.toggle('arm', saveMode);
-};
-
-// The screen. One <img> against `multipart/x-mixed-replace` is the whole
-// client — no decoder, no second socket — which is what makes it sayable on a
-// page with no build step. Off until asked: the host only holds the machine's
-// video stream up while somebody is watching, so opening this is what starts
-// it, and closing it is what stops it.
-let screenOn = false;
-let screenEpoch = 0;
-let screenSys = null;   // the system name the current src was built for
-
-function setScreen(on) {
-  const img = document.getElementById('screen');
-  const msg = document.getElementById('screenmsg');
-  const button = document.getElementById('screenwatch');
-  screenOn = on;
-  button.textContent = on ? 'STOP' : 'WATCH';
-  img.hidden = !on;
-  if (!on) {
-    // Clearing the src is what closes the connection; leaving it set keeps
-    // the machine streaming to a hidden image.
-    img.removeAttribute('src');
-    msg.textContent = '';
-    screenSys = null;
-    return;
-  }
-  const sys = curSys();
-  screenSys = sys ? sys.name : '';
-  // A cache-buster per start: to a browser's cache this is an ordinary
-  // response, and reusing the URL can re-serve the last frame of the old
-  // stream instead of opening a new one.
-  screenEpoch += 1;
-  msg.textContent = '';
-  img.src = '/api/screen/stream?system=' + encodeURIComponent(sys ? sys.name : '')
-          + '&t=' + screenEpoch;
-}
-
-document.getElementById('screen').onerror = () => {
-  if (!screenOn) return;
-  setScreen(false);
-  // Two ways to get here and the page cannot tell them apart from an <img>
-  // error, so it names both: this run has no /api at all (the screen route
-  // lives on a --serve host, and this page is served by the control plane),
-  // or it does and this machine has no VIC of its own to stream.
-  document.getElementById('screenmsg').textContent =
-    'No picture — either this run serves no screen, or this machine has no video '
-    + 'stream of its own (an Ultimate 64 taps its VIC; nothing else here can).';
-};
-document.getElementById('screenwatch').onclick = () => setScreen(!screenOn);
-poll();          // initial paint before WS connects
-startWS();
-requestAnimationFrame(animate);
-</script>
-</body>
-</html>
-"""
+    return files("c64cast.control").joinpath("perf_console.html").read_text(encoding="utf-8")
 
 
 #: Response headers for the console page.
@@ -1802,7 +1225,7 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
 
     @app.get("/perf")
     def perf_page() -> Response:
-        return Response(content=_PERF_HTML, media_type="text/html", headers=_PAGE_HEADERS)
+        return Response(content=perf_page_html(), media_type="text/html", headers=_PAGE_HEADERS)
 
     @app.get("/perf/state")
     def perf_state(request: Request) -> dict[str, Any]:

@@ -130,4 +130,4 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--profile`, `--no-profile`** | Emit per-scene frame timing summaries (cpu_render / compose / push / wait, plus DMA writes/bytes per frame) (default: False) |
 | **`--profile-interval`**<br>`SECONDS` | Seconds between profiler summary lines (default: 10.0) |
 | **`--frame-numbers`** | Overlay playback timecode + source frame number on video frames (debug aid for locating flashing frames) (default: False) |
-| **`--overwrite`** | On exit, silently save any live-tune parameter changes (made via MIDI/WLED during the run) back into the config's [color] section (keeping a .bak), instead of prompting. No effect if nothing changed or the run has no config file. |
+| **`--overwrite`** | On exit, silently save any live-tune parameter changes (made via MIDI/WLED during the run) back into the config's [color] section (preserving the original as a one-time .bak), instead of prompting. No effect if nothing changed or the run has no config file. |

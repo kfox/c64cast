@@ -22,7 +22,7 @@ from unittest import mock
 
 from c64cast.app import config as cfgmod
 from c64cast.app import scene_factory
-from c64cast.app.config import ColorCfg, Config, SceneCfg
+from c64cast.app.config import ColorCfg, Config, ConfigError, SceneCfg
 from c64cast.hw.api import Ultimate64API
 from c64cast.scenes.scenes import SlideshowScene, VideoScene
 from c64cast.video.modes import MultiHiresDisplayMode
@@ -568,22 +568,31 @@ class WledSinkAllowTest(unittest.TestCase):
 
 
 class WledListenExposureTest(unittest.TestCase):
-    """`validate_control_cfg` refuses an unauthenticated control plane off
-    loopback; Mode 1 overlaps that capability, carries no token, and is
-    advertised over mDNS — with nothing telling the operator."""
+    """Mode 1 covers everything `[control]`'s four verbs do and more, carries
+    no token, and is advertised over mDNS — so it fails closed off loopback
+    exactly like `validate_control_cfg`, with `allow_unauthenticated` as the
+    opt-in `[control]` already models."""
 
-    def test_a_non_loopback_listen_warns(self):
+    def test_a_non_loopback_listen_is_refused(self):
+        # `listen = "enabled"` alone reaches this: Mode 1's default endpoint is
+        # 0.0.0.0:8080, so the exposed bind is the one you get by default.
         cfg = Config()
         cfg.wled.listen = "enabled"
-        with self.assertLogs("c64cast.app.scene_factory", level="WARNING") as logs:
+        with self.assertRaises(ConfigError) as cm:
             scene_factory.validate_wled_cfg(cfg)
-        self.assertIn("NO authentication", "\n".join(logs.output))
+        self.assertIn("allow_unauthenticated", str(cm.exception))
 
-    def test_a_loopback_listen_is_silent(self):
+    def test_a_loopback_listen_needs_no_opt_in(self):
         cfg = Config()
         cfg.wled.listen = "127.0.0.1:8080"
         with self.assertNoLogs("c64cast.app.scene_factory", level="WARNING"):
             scene_factory.validate_wled_cfg(cfg)
+
+    def test_the_opt_in_permits_a_network_bind(self):
+        cfg = Config()
+        cfg.wled.listen = "enabled"
+        cfg.wled.allow_unauthenticated = True
+        scene_factory.validate_wled_cfg(cfg)
 
 
 class SonglengthsCacheResetTest(unittest.TestCase):

@@ -2663,7 +2663,9 @@ class MidiControlCfg:
             "value' message appears when you sweep a knob or change a mode via "
             "MIDI/WLED, then fades. 'top' or 'bottom' picks the corner; 'off' "
             "disables it. Rendered pre-quantization so it shows on every display "
-            "mode (like --frame-numbers).",
+            "mode (like --frame-numbers). This is the run's baseline; the web "
+            "console's PERF button silences the OSD live for a performance and "
+            "restores this setting when switched back off.",
             "choices": ("bottom", "top", "off"),
         },
     )
@@ -2954,6 +2956,21 @@ class WledCfg:
             "| '[host][:port]'. 'enabled' binds the WLED JSON API on "
             "0.0.0.0:8080; override the bind with '[host][:port]'. Needs the "
             "'wled' extra."
+        },
+    )
+    # Mode 1's default endpoint is 0.0.0.0:8080 — off-loopback out of the box,
+    # unlike [control], which defaults to 127.0.0.1. So this gate is reached by
+    # a plain `listen = "enabled"`, not just by someone who typed an address.
+    # Kept as an opt-out rather than dropping the open mode, and for the same
+    # reason [control].allow_unauthenticated is: LAN discovery from the WLED app
+    # is the entire feature, and the protocol has no credential to offer.
+    allow_unauthenticated: bool = field(
+        default=False,
+        metadata={
+            "help": "Permit binding `listen` to a non-loopback address. Off by "
+            "default — the WLED JSON API carries no token, is advertised over "
+            "mDNS, and can pause the run, jump scenes, sweep live params, force "
+            "the palette and write presets. Loopback needs no opt-in."
         },
     )
     name: str = field(

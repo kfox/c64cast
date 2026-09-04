@@ -271,10 +271,38 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         scene = scene_factory.build_scene(s, self._cfg(), self.api, None, None)
         self.assertEqual(scene.target_fps, 30.0)
 
-    def test_none_source_bitmap_keeps_system_default(self):
-        # audio_source = none never drives the digitized DAC → not in scope.
+    def test_none_source_bitmap_takes_the_tear_cap(self):
+        # audio_source = none drives no DAC, but the half-rate bitmap cap was
+        # never about the DAC — it is host-DMA tear on a ~9-10 KB frame push,
+        # and a generator renders a fresh one every tick with no dedup. This
+        # used to pin None on the reasoning "no DAC → not in scope", which no
+        # other builder applies: _build_wled has no audio at all and caps.
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="none", display="mhires"
+        )
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
+        self.assertEqual(scene.target_fps, 30.0)
+
+    def test_none_source_char_mode_keeps_system_default(self):
+        # A char display is a ~1 KB delta-cached screen and there is no DAC
+        # stream for always_fresh to escalate against, so nothing to cap.
+        s = cfgmod.SceneCfg(type="generative", source="plasma", audio_source="none", display="mcm")
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
+        self.assertIsNone(scene.target_fps)
+
+    def test_listen_source_bitmap_takes_the_tear_cap(self):
+        # Same reasoning as `none`, in the separate listen-only builder — which
+        # set no target_fps at all, reasoning there was "no DAC stream to
+        # frame-cap against".
+        s = cfgmod.SceneCfg(
+            type="generative", source="plasma", audio_source="listen", display="mhires"
+        )
+        scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
+        self.assertEqual(scene.target_fps, 30.0)
+
+    def test_listen_source_char_mode_keeps_system_default(self):
+        s = cfgmod.SceneCfg(
+            type="generative", source="plasma", audio_source="listen", display="mcm"
         )
         scene = scene_factory.build_scene(s, self._cfg(), self.api, self.audio, None)
         self.assertIsNone(scene.target_fps)

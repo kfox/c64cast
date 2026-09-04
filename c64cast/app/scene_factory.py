@@ -1876,29 +1876,30 @@ def resolve_wled_listen(cfg: Config) -> tuple[bool, str, int]:
 
 
 def validate_wled_cfg(cfg: Config) -> None:
-    """Guard [wled] (both directions). Parse each endpoint (raising on a bad
-    host:port), bound the broadcast rate, and warn — don't fail — when broadcast
-    is enabled with no SID-driven scene to source features from (nothing would
-    go out). Mode 1 (listen) needs no SID scene. No-op when both are off."""
+    """Guard [wled] (both directions). Refuse an unauthenticated Mode 1 bind on
+    a network address, parse each endpoint (raising on a bad host:port), bound
+    the broadcast rate, and warn — don't fail — when broadcast is enabled with
+    no SID-driven scene to source features from (nothing would go out). Mode 1
+    (listen) needs no SID scene. No-op when both are off."""
     broadcast_on, _, _ = resolve_wled_broadcast(cfg)
     listen_on, listen_host, listen_port = resolve_wled_listen(cfg)
-    if listen_on and listen_host not in LOOPBACK_HOSTS:
-        # `validate_control_cfg` refuses an unauthenticated control plane on a
-        # non-loopback host because "anything that can reach the port could
-        # drive the run". Mode 1 overlaps that capability — `on=false` pauses,
-        # `seg[].fx` jumps scenes, `sx`/`ix` sweep live params, `pal`/`col`
-        # force the palette, preset saves write the data dir — and it carries
-        # no token at all, with `wled_device` advertising it over mDNS. LAN
-        # discovery is the whole point of the feature, so this warns where the
-        # control plane refuses; the operator should know what they turned on.
-        log.warning(
-            "[wled].listen exposes the virtual WLED device's JSON/WebSocket API "
-            "on %s:%d with NO authentication (and wled_device advertises it over "
-            "mDNS) — any host that can reach it can pause the run, jump scenes, "
-            "sweep live params, force the palette and write presets. Keep that "
-            "segment trusted, or bind it to a loopback host.",
-            listen_host,
-            listen_port,
+    if listen_on and listen_host not in LOOPBACK_HOSTS and not cfg.wled.allow_unauthenticated:
+        # Same refusal as `validate_control_cfg`, for a strictly larger
+        # capability: Mode 1 covers everything the control plane's four verbs
+        # do and more — `on=false` pauses, `seg[].fx` jumps scenes, `sx`/`ix`
+        # sweep live params, `pal`/`col` force the palette, preset saves write
+        # the data dir — while carrying no token at all and being advertised
+        # over mDNS. This used to warn rather than refuse, which is the wrong
+        # way round: the plane that can only pause/skip is the one that fails
+        # closed. LAN discovery is the whole feature and WLED has no credential
+        # to offer, so the opt-in is a config flag rather than a token.
+        raise ConfigError(
+            f"[wled].listen binds the virtual WLED device's JSON/WebSocket API to "
+            f"{listen_host}:{listen_port} with no authentication, and wled_device "
+            "advertises it over mDNS — any host that can reach it could pause the "
+            "run, jump scenes, sweep live params, force the palette and write "
+            'presets. Bind it to a loopback host (listen = "127.0.0.1:8080"), or '
+            "on a network you trust set [wled].allow_unauthenticated = true."
         )
     if not 1.0 <= cfg.wled.rate_hz <= 120.0:
         raise ConfigError(f"[wled].rate_hz must be 1..120, got {cfg.wled.rate_hz}")
@@ -2554,8 +2555,7 @@ def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, nam
     # ensemble-suppressed and ignores the per-scene `audio` DAC toggle — it
     # just needs the shared streamer to own the input + analysis sink. The
     # SourceScene gets no DAC audio (None): the analyzer taps pre-DSP, so
-    # per-scene pre-emphasis is irrelevant, and there is no DAC stream to
-    # frame-cap against.
+    # per-scene pre-emphasis is irrelevant.
     audio_src: AudioSource
     if ctx.audio is not None and s.reactive:
         audio_src = MicAudioSource(
@@ -2569,7 +2569,18 @@ def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, nam
     else:
         # No streamer ([audio] off) or reactive = false → silence.
         audio_src = NullAudioSource()
-    return SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
+    scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
+    # No DAC stream to protect, but a bitmap display still pushes a full
+    # ~9-10 KB frame per tick over host DMA, and a generator renders a fresh
+    # frame every tick with no dedup to fall back on — so the half-rate tear
+    # cap applies here exactly as it does to `_build_wled` (no audio at all),
+    # `_build_generative_sid`, and a muted video. This branch used to set no
+    # target_fps at all, on the reasoning that there was "no DAC stream to
+    # frame-cap against"; the half-rate bitmap cap was never about the DAC.
+    fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system, always_fresh=True)
+    if fps is not None:
+        scene.target_fps = fps
+    return scene
 
 
 def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
@@ -2641,23 +2652,34 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
     # bank-swap traffic — which starves the sampler's own REU writes (audible
     # static) and overloads the bus (C64-side visual crash, HW 2026-07-24).
     # So a sampler-routed file scene keeps the muted 30/25 bitmap cap:
-    # off-bus audio, no on-bus digi, no uncap. The "none" source drives no
-    # audio, so it keeps the playlist default.
+    # off-bus audio, no on-bus digi, no uncap.
     #
     # That same no-dedup property (always_fresh) is why the DAC's 20 fps cap
     # now applies in CHAR modes too, not just bitmap ones — a 60 fps mcm
     # generative scene repaints screen + color RAM every tick over the socket
     # the audio ring shares. Sampler-routed audio is off-bus and keeps the
     # high default.
-    if s.audio_source in ("mic", "file"):
-        fps = _frame_push_default_fps(
-            mode,
-            scene_audio is not None and not file_uses_sampler,
-            cfg.ultimate64.system,
-            always_fresh=True,
-        )
-        if fps is not None:
-            scene.target_fps = fps
+    #
+    # Unconditional, not gated on `audio_source`. This used to run only for
+    # "mic"/"file", which left `audio_source = "none"` pushing a full ~9-10 KB
+    # bitmap frame at the system rate with no cap at all (as did "listen", in
+    # its own builder). The gate read as "no DAC, not in scope", but "no DAC"
+    # is not the criterion anywhere else: `_build_wled` has no audio at all and
+    # still takes the half-rate cap, `_build_generative_sid` takes it, and so
+    # does a `mic` scene built with the global streamer off. The half-rate
+    # bitmap cap is about host-DMA tear, which a silent generator causes
+    # exactly as much of as a loud one. `_frame_push_default_fps` returns None
+    # for char modes with no on-bus digi, so "none" keeps the playlist default
+    # there — only its bitmap displays change.
+    #
+    # `audio_src`, not `scene_audio`, decides whether digitized audio is on the
+    # bus: `_resolve_live_audio` hands back the shared streamer whenever
+    # [audio] is on, including for `audio_source = "none"`, which pushes
+    # nothing to it. Asking the source object is the question we actually mean.
+    on_bus_digi = not isinstance(audio_src, NullAudioSource) and not file_uses_sampler
+    fps = _frame_push_default_fps(mode, on_bus_digi, cfg.ultimate64.system, always_fresh=True)
+    if fps is not None:
+        scene.target_fps = fps
     return scene
 
 

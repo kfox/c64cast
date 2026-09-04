@@ -25,6 +25,7 @@ from c64cast.video.video import (
     _is_remote_url,
     _plan_decode_size,
     _SampleProgressTap,
+    av_open,
     ensure_pyav,
     probe_container_title,
     scan_video_samples,
@@ -69,6 +70,74 @@ class RemoteUrlTest(unittest.TestCase):
         self.assertFalse(_is_remote_url("/home/user/assets/videos/clip.mp4"))
         self.assertFalse(_is_remote_url("assets/videos/clip.webm"))
         self.assertFalse(_is_remote_url("file:///tmp/clip.mp4"))
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemoteRefusalMessageTest(unittest.TestCase):
+    """A signed stream URL is resolved once, when the playlist is built, and a
+    looping show replays it until the signature expires — after which the raw
+    `HTTPForbiddenError` says nothing about why an afternoon-long show suddenly
+    stopped, or that a reload re-resolves it."""
+
+    #: Every construction here passes the **third** argument. PyAV only appends
+    #: a filename to an ``FFmpegError``'s string form when it was given one, so
+    #: a two-argument fake makes `test_the_url_is_not_quoted_back` pass no
+    #: matter what the code does — which is exactly how the leak this guards
+    #: against shipped in the first place.
+    def _refused(self, url, exc=None):
+        import av
+        import av.error
+
+        err = exc or av.error.HTTPForbiddenError(403, "Server returned 403 Forbidden", url)
+        with mock.patch.object(av, "open", side_effect=err):
+            with self.assertRaises(RuntimeError) as cm:
+                av_open(url)
+        return str(cm.exception)
+
+    def test_the_fake_error_really_does_carry_the_url(self):
+        # Guards the guard: if PyAV ever stops appending the filename, the
+        # redaction tests below would start passing vacuously again.
+        import av.error
+
+        url = "https://cdn.example/clip.mp4?sig=abc"
+        self.assertIn(url, str(av.error.HTTPForbiddenError(403, "403", url)))
+
+    def test_a_remote_4xx_names_expiry_and_the_remedy(self):
+        msg = self._refused("https://rr4.googlevideo.com/videoplayback?sig=stale")
+        self.assertIn("expired signature", msg)
+        self.assertIn("SIGHUP", msg)
+
+    def test_the_url_is_not_quoted_back(self):
+        # It can carry a signature or a credential, and every caller's own log
+        # line already names the path it was opening.
+        msg = self._refused("https://user:tok@cdn.example/clip.mp4?sig=abc")
+        self.assertNotIn("tok", msg)
+        self.assertNotIn("sig=abc", msg)
+        self.assertNotIn("cdn.example", msg)
+        self.assertIn("403 Forbidden", msg)
+
+    def test_a_404_does_not_blame_an_expired_signature(self):
+        # A pulled video, not a stale signature — reloading the playlist
+        # re-resolves the same missing URL and points the operator nowhere.
+        import av.error
+
+        url = "https://cdn.example/gone.mp4?sig=abc"
+        msg = self._refused(
+            url, av.error.HTTPNotFoundError(404, "Server returned 404 Not Found", url)
+        )
+        self.assertIn("404 Not Found", msg)
+        self.assertNotIn("expired signature", msg)
+        self.assertNotIn("SIGHUP", msg)
+        self.assertNotIn("sig=abc", msg)
+
+    def test_a_local_path_is_left_alone(self):
+        # No signature to expire, and the wrapper must not add the HTTP
+        # reconnect options to a local open.
+        import av
+
+        with mock.patch.object(av, "open", return_value="container") as opened:
+            self.assertEqual(av_open("/tmp/clip.mp4"), "container")
+        opened.assert_called_once_with("/tmp/clip.mp4")
 
 
 class ProbeContainerTitleTest(unittest.TestCase):
@@ -1033,6 +1102,63 @@ class VideoSceneLoopSlotTest(unittest.TestCase):
         scene.transport.touched = True
         scene.transport_loop_slot(1, save=False, clear=False)
         self.assertFalse(scene.transport.paused)
+
+
+class TransportOsdBoundaryTest(unittest.TestCase):
+    """The engine's OSD line goes over the *audience* output, so it carries
+    transport **state** — what the picture is now doing — and not confirmation
+    that a control was pressed. A save or a clear changes a file on disk and
+    nothing on screen; the console sees it via `loop_slots` in every state
+    frame, and the log records it."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _scene(self) -> tuple[VideoScene, LoopPresetStore]:
+        scene = _make_video_scene_stub(_StubSource(duration=100.0))
+        store = LoopPresetStore(Path(self._tmp.name) / "loop.json", video_ref="clip.mp4", size=123)
+        scene.transport.loop_store = store
+        return scene, store
+
+    def test_a_save_posts_no_osd(self):
+        scene, _store = self._scene()
+        scene.transport.loop_a = 10.0
+        scene.transport.loop_b = 20.0
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_save_with_no_loop_posts_no_osd(self):
+        scene, _store = self._scene()
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(1, save=True, clear=False)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_clear_posts_no_osd(self):
+        scene, store = self._scene()
+        store.save(2, 1.0, 2.0)
+        with self.assertLogs("c64cast.scenes.video_transport", level="INFO"):
+            scene.transport_loop_slot(2, save=False, clear=True)
+        self.assertIsNone(scene.osd.current())
+
+    def test_a_recall_does_post_osd(self):
+        # Recall changes what is playing, so the state that follows it belongs
+        # on the audience screen — this is the boundary, not an exception.
+        scene, store = self._scene()
+        store.save(3, 12.0, 34.0)
+        scene.transport_loop_slot(3, save=False, clear=False)
+        self.assertEqual(scene.osd.current(), "LOOP 3")
+
+    def test_arming_and_looping_still_post_state(self):
+        scene, _store = self._scene()
+        scene.transport_loop_toggle()
+        self.assertIsNotNone(scene.osd.current())
+        self.assertTrue((scene.osd.current() or "").startswith("LOOP A"))
+        scene.transport_loop_toggle()
+        self.assertTrue((scene.osd.current() or "").startswith("LOOP "))
+        scene.transport_loop_toggle()
+        self.assertEqual(scene.osd.current(), "LOOP OFF")
 
 
 class VideoSceneRecordBorderTeardownTest(unittest.TestCase):

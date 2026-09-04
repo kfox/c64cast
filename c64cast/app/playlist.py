@@ -182,6 +182,20 @@ class Playlist:
         # bridge sets both this and the current mode's `user_dim` for an
         # instant effect that also outlasts the current scene.
         self.user_dim: float = 1.0
+        # Performance mode: the C64 output is in front of an audience, so
+        # nothing may draw an OSD line over it. Owned here for the same reason
+        # `user_dim` is — an `OsdState` is per-scene, so a hide applied to one
+        # scene would be lost the moment the playlist advanced, which is
+        # exactly what the pre-existing `cycle_osd` double-tap hide suffered
+        # from. `safe_setup` re-stamps it onto each fresh scene.
+        #
+        # This is the *runtime* control. `[midi_control].osd = "off"` is the
+        # static one, applied per scene by `scene_factory.build_scene`; the two
+        # compose the only way that makes sense — config sets the baseline,
+        # performance mode forces silence regardless of it, and turning
+        # performance mode back off restores whatever the config asked for
+        # rather than assuming "on".
+        self.performance_mode: bool = False
         # Live-tune change log for the exit save-back flow (--overwrite / prompt).
         # The MIDI/WLED live-tune controls record each applied param change here;
         # cli.main reads it after teardown. Always present (cheap), so callers
@@ -300,12 +314,54 @@ class Playlist:
         if scene is not None:
             scene.osd.post(text, duration_s)
 
+    def set_performance_mode(self, on: bool) -> bool:
+        """Turn performance mode on or off, returning the new state.
+
+        Performance mode means the C64 output is in front of an audience, so
+        no OSD line may draw over it — every poster (live-tune, effect bypass,
+        the transport engine's own `PAUSED`/`SEEK`/`LOOP`) goes silent through
+        the one `OsdState.suppressed` gate. Off again restores whatever
+        `[midi_control].osd` asked for, because `enabled` was never touched.
+
+        **Turning it off posts nothing.** A `PERF OFF` flash would be the one
+        thing this change set took off the audience screen everywhere else:
+        confirmation that a control was pressed, rather than state the picture
+        is in. The console already shows the mode — `performance_mode` rides
+        every pushed state frame — and the next real poster is itself the
+        proof the OSD is back.
+
+        Applied to the current scene *and* stored on the playlist, mirroring
+        how the WLED bridge sets `user_dim`: the write gives an instant
+        effect, the field makes it outlast this scene (`safe_setup`
+        re-stamps). That persistence is the whole difference from
+        :meth:`cycle_osd`'s double-tap hide, which reaches only the live scene
+        and is lost on the next advance.
+
+        Safe from any control thread — a bool write the render loop reads next
+        frame, same rationale as post_osd."""
+        self.performance_mode = on
+        scene = self.current
+        if scene is not None:
+            scene.osd.suppressed = on
+        self.log.info("performance mode: %s", "on (audience screen clean)" if on else "off")
+        return on
+
     def cycle_osd(self, *, double_tap: bool) -> None:
         """The osd.position MIDI action (Phase 5). A normal tap toggles the
         current scene's OSD corner top/bottom (or re-enables it if it was
         hidden); a double_tap hides it. No-op when no scene is live. Called from
         the MIDI reader thread — OsdState attrs are simple thread-safe writes,
-        same rationale as post_osd."""
+        same rationale as post_osd.
+
+        This writes `enabled`, so its hide reaches **only the live scene** and
+        is lost on the next auto-advance. That is deliberately left alone:
+        re-pointing it at `suppressed` would make a tap unable to bring up an
+        OSD that `[midi_control].osd = "off"` had disabled, which is a
+        capability this pad has always had. The control that *does* survive a
+        scene change is performance mode — see :meth:`set_performance_mode`,
+        which is what the console's PERF button drives. Overlapping, and worth
+        collapsing into one control once it is clear which of the two
+        persistences a performer actually reaches for."""
         scene = self.current
         if scene is None:
             return
@@ -579,6 +635,12 @@ class Playlist:
             dm = getattr(scene, "display_mode", None)
             if dm is not None:
                 dm.user_dim = self.user_dim
+        # Same re-stamp, same reason: an OsdState is per-scene, so performance
+        # mode has to be re-applied to each fresh one or the audience screen
+        # picks the OSD back up on the next auto-advance. Only written when set,
+        # so a normal run leaves the config's own `enabled` untouched.
+        if self.performance_mode:
+            scene.osd.suppressed = True
         # Arm the fade-in: the display mode starts black and ramps up over the
         # opening live frames (driven by _advance_fade_in in run_one_frame).
         self.fades.begin_fade_in(scene)

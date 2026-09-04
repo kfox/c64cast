@@ -474,7 +474,8 @@ class MediaStore:
                 # filename that `_reject_unless_bare_filename` never rejects
                 # for an embedded newline — `repr` cannot emit one, so the
                 # waiver is for CodeQL modeling neither as a sanitizer.
-                name,  # codeql[py/log-injection]
+                # codeql[py/log-injection]
+                name,
                 upload.bytes_written,
                 type(exc).__name__,
             )
@@ -515,8 +516,10 @@ class MediaStore:
             # line above: `name` is the untrusted upload filename itself, and
             # `final_name` inherits whatever `name` put in its stem —
             # `disambiguate` only ever appends a numeric `-N` suffix to it.
-            name,  # codeql[py/log-injection]
-            final_name,  # codeql[py/log-injection]
+            # codeql[py/log-injection]
+            name,
+            # codeql[py/log-injection]
+            final_name,
             kind,
             upload.bytes_written,
             ", renamed" if renamed else "",

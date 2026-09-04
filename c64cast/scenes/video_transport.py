@@ -308,20 +308,33 @@ class VideoTransportControls:
     def loop_slot(self, slot: int, *, save: bool, clear: bool) -> None:
         """Pad press. `save`/`clear` are the Stop-held/Record-held chord
         flags TransportSession resolves before calling this — mutually
-        exclusive, both False on a plain press (recall)."""
+        exclusive, both False on a plain press (recall).
+
+        **Save and clear post no OSD; recall does.** The line this engine
+        draws goes over the *audience* output, so what belongs on it is
+        transport **state** — what the picture is now doing — not confirmation
+        that a control was pressed. A recall changes what is playing (`LOOP 3`
+        is the state that follows), and arming keeps `LOOP A`/`REC ●` beside
+        its red border. A save or a delete changes a file on disk and nothing
+        on screen, so `SAVED 3` and `3 CLEARED` were the performer's
+        bookkeeping shown to the room. They go to the log, and to the console
+        for free: every pushed state frame already carries `loop_slots`
+        (`perf_console._transport_dict`), so a slot filling or emptying is
+        live feedback in the surface that asked for it, and not a two-second
+        flash the audience has to read."""
         sc = self._scene
         if clear:
             if self.loop_store is not None:
                 self.loop_store.delete(slot)
-            sc.osd.post(f"{slot} CLEARED")
+            log.info("transport: loop slot %d cleared", slot)
             return
         if save:
             if self.loop_a is None:
-                sc.osd.post("NO LOOP")
+                log.info("transport: loop slot %d save ignored — no loop marked", slot)
                 return
             if self.loop_store is not None:
                 self.loop_store.save(slot, self.loop_a, self.loop_b)
-            sc.osd.post(f"SAVED {slot}")
+            log.info("transport: loop %s saved to slot %d", timecode(self.loop_a), slot)
             return
         entry = self.loop_store.load().get(str(slot)) if self.loop_store is not None else None
         if entry is not None:

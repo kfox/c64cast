@@ -26,6 +26,32 @@ if TYPE_CHECKING:
     from .playlist import Playlist
 
 
+def _preserve_original(config_path: str, backup: str) -> str:
+    """Copy `config_path` to `backup` unless `backup` already exists, and
+    describe what happened for the log line.
+
+    The one-shot semantics are the point — see `PlaylistMenu.save_config`.
+
+    The "already there" wording is deliberately about the *file*, not its
+    provenance: this cannot know whether an existing `.bak` is the pristine
+    original, an earlier version's save output, or something the operator put
+    there. Claiming "the original is preserved" would be the same unearned
+    reassurance the old unconditional-copy log line gave. Saying what it did —
+    left the existing file alone — is checkable and true either way.
+
+    Imports locally to keep this module's import cost where the callers put
+    it."""
+    import os  # noqa: PLC0415  (lazy; matches save_config's own imports)
+    import shutil  # noqa: PLC0415
+
+    if not os.path.exists(config_path):
+        return "no original to preserve (new file)"
+    if os.path.exists(backup):
+        return f"kept the existing {backup} — not overwritten"
+    shutil.copy2(config_path, backup)
+    return f"original preserved at {backup}"
+
+
 class SceneFades:
     """Scene fade transitions. duration_s <= 0 disables (hard cuts).
 
@@ -232,25 +258,32 @@ class PlaylistMenu:
         pl.log.info("menu: closed")
 
     def save_config(self) -> bool:
-        """Write the (menu-mutated) Config back to its source path, keeping a
-        .bak of the original. Returns True on success."""
-        import os
-        import shutil
+        """Write the (menu-mutated) Config back to its source path, preserving
+        the hand-written original as a one-time .bak. Returns True on success.
 
+        The .bak is written **only when it does not already exist**, because
+        "the original" is what it is for and a second save would otherwise
+        overwrite it with the first save's output. That is not a hypothetical:
+        `session.save_live_tune_changes` calls this on every normal exit and
+        Ctrl+C when live-tune changes exist — automatically under
+        `--overwrite` — so two runs of a tuned show used to leave no pristine
+        copy at all, while the log line said "(backup .bak)" and read as
+        reassurance. Losing the ability to undo just the *last* save is the
+        cheaper loss: the file worth keeping is the one nothing generated."""
         from . import config as cfgmod
         from . import config_serialize
 
         pl = self._pl
         if pl.config is None or not pl.config_path:
             return False
+        backup = pl.config_path + ".bak"
         try:
-            if os.path.exists(pl.config_path):
-                shutil.copy2(pl.config_path, pl.config_path + ".bak")
+            note = _preserve_original(pl.config_path, backup)
             # The running Config was built on the machine-settings layer, so
             # that is what "unset" means for it — dumping against the dataclass
             # defaults would write this machine's settings into the show file.
             config_serialize.dump(pl.config, pl.config_path, baseline=cfgmod.machine_baseline())
-            pl.log.info("menu: saved config → %s (backup .bak)", pl.config_path)
+            pl.log.info("menu: saved config → %s (%s)", pl.config_path, note)
             return True
         except Exception:
             pl.log.exception("menu: failed to save config")

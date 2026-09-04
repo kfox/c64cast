@@ -1204,6 +1204,13 @@ broadcast_tempo_fallback = false    # Live DJ/VJ Phase 6: when the on-screen sce
 # extra (zeroconf + fastapi + uvicorn).
 listen = "disabled"                 # "enabled" -> WLED JSON API on 0.0.0.0:8080;
                                     # or override the bind with "[host][:port]"
+allow_unauthenticated = false       # required to bind `listen` off loopback: the
+                                    # JSON API has no token, is mDNS-advertised,
+                                    # and can pause the run, jump scenes, sweep
+                                    # live params and write presets. Since the
+                                    # default bind IS 0.0.0.0, a plain
+                                    # `listen = "enabled"` needs this or a
+                                    # loopback bind ("127.0.0.1:8080")
 name = "c64cast"                    # friendly/mDNS name shown in the WLED app
 
 [debug]

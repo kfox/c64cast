@@ -54,6 +54,23 @@ LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
 InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
 
 
+#: The state-changing routes, which only a same-origin caller may reach —
+#: enforced by :class:`auth.SameOriginMiddleware`, which this module installs
+#: over exactly this set.
+#:
+#: Spelled out rather than derived from the HTTP method, because a `--serve`
+#: host mounts two more families of writes onto this same app and neither
+#: wants this middleware. `/perf/command` runs its own `same_origin` check, at
+#: a layer that can also refuse the `/perf/ws` handshake before `accept`. The
+#: web console's `/api/*` writes carry no origin check of their own; what
+#: covers them is that `/api` exists only on a `--serve` host, where the token
+#: is never empty and the browser credential is an `HttpOnly; SameSite=Strict`
+#: cookie a cross-site request does not send. That is a different defense, not
+#: this one — `tests/test_control_plane.py` pins the membership so a new
+#: transport verb cannot be added to this app and quietly miss the gate.
+TRANSPORT_PATHS = frozenset({"/pause", "/resume", "/skip", "/reload"})
+
+
 #: How long :meth:`ControlServer.start` waits for uvicorn to report a bound
 #: socket, and how often it looks. A successful bind is milliseconds away, so
 #: the ceiling only matters on a loaded box; a bind *failure* is reported the
@@ -296,8 +313,12 @@ def build_app_for_registry(
 
     # Last, so the middleware wraps every route above — including /perf/ws,
     # which a per-route dependency could only reject after accept().
-    from .auth import PUBLIC_PATHS, install_auth
+    from .auth import PUBLIC_PATHS, SameOriginMiddleware, install_auth
 
+    # Added before install_auth so authentication runs outside it: a caller
+    # with no credential should get 401, not a 403 about its Origin. Always
+    # added, token or not — the open mode is the one this matters in.
+    app.add_middleware(SameOriginMiddleware, paths=TRANSPORT_PATHS)
     install_auth(
         app,
         token=token,

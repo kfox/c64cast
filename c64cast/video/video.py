@@ -73,13 +73,54 @@ def _is_remote_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
+def _remote_refusal_message(e: Any) -> str:
+    """The operator-facing text for a remote 4xx, carrying no URL.
+
+    ``str(e)`` cannot be used here, which is the whole reason this is a
+    function: PyAV appends the filename it was opening to an ``FFmpegError``'s
+    string form, so interpolating the exception quotes the signed URL —
+    signature, token and all — into a message that gets logged and shown.
+    ``strerror`` is the same explanatory text with the filename left off.
+
+    The expiry advice is limited to the two statuses a stale signature
+    actually answers with. A 404 is a pulled video and a 429 is rate limiting;
+    sending the operator to reload the playlist for either points them at the
+    wrong thing."""
+    detail = e.strerror or type(e).__name__
+    if not isinstance(e, (av.error.HTTPUnauthorizedError, av.error.HTTPForbiddenError)):
+        return f"the media server refused this stream ({detail})."
+    return (
+        f"the media server refused this stream ({detail}). For a URL resolved from a "
+        "page (YouTube and friends), an expired signature is the likeliest cause: the "
+        "stream URL is resolved once when the playlist is built, and a long show "
+        "replays it. Reload the playlist to re-resolve it — SIGHUP, or POST /reload "
+        "on the control plane."
+    )
+
+
 def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
-    demuxer. Local paths open unchanged."""
-    if _is_remote_url(path):
+    demuxer. Local paths open unchanged.
+
+    A remote 4xx is re-raised naming the likeliest cause, because the raw
+    ``HTTPForbiddenError`` is unreadable on the one shape it usually means.
+    `scene_factory._resolve_video_source` resolves a page URL through yt-dlp
+    at **build** time and `scenes_from_config` runs once at startup, so a
+    playlist holds whatever signed stream URL it got then and replays it on
+    every loop pass — and those signatures expire (YouTube's in a few hours).
+    A looping show that ran fine all afternoon starts 403ing, with nothing
+    saying why. `SIGHUP` reloads the playlist, which rebuilds the scenes and
+    re-resolves the URL, so there is a remedy worth naming.
+
+    The wording is built by :func:`_remote_refusal_message`, which is where
+    the URL is kept out of it."""
+    if not _is_remote_url(path):
+        return av.open(path)
+    try:
         return av.open(path, options=_HTTP_RECONNECT_OPTIONS)
-    return av.open(path)
+    except av.error.HTTPClientError as e:
+        raise RuntimeError(_remote_refusal_message(e)) from e
 
 
 def probe_container_title(path: str) -> str | None:

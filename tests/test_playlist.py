@@ -16,10 +16,15 @@ Run:    python -m unittest discover tests
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import logging
+import os
+import pathlib
+import tempfile
 import threading
 import time
 import unittest
 
+from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 
 # ---------------------------------------------------------------------------
@@ -1398,6 +1403,171 @@ class PauseResumeTest(unittest.TestCase):
         pl._handle_pause()
         dt = time.time() - t0
         self.assertLess(dt, 0.6, f"resume wait should be cut short by stop_event, took {dt:.2f}s")
+
+
+class PerformanceModeTest(unittest.TestCase):
+    """Performance mode: the C64 output is in front of an audience, so no OSD
+    line may draw over it. Owned by the Playlist rather than the scene for the
+    same reason `user_dim` is — an OsdState is per-scene, so a hide applied to
+    one scene alone comes back on the next auto-advance."""
+
+    def _scene(self, name):
+        from c64cast.scenes.scenes import OsdState
+
+        scene = FakeScene(name)
+        scene.osd = OsdState()
+        return scene
+
+    def _playlist(self, scenes):
+        return Playlist(
+            scenes,
+            FakeApi(),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=_transition_factory()[0],
+            fade_duration_s=0.0,
+        )
+
+    def test_off_by_default(self):
+        self.assertFalse(self._playlist([self._scene("A")]).performance_mode)
+
+    def test_it_survives_a_scene_advance(self):
+        # The whole point. `cycle_osd`'s double-tap hide reaches only the live
+        # scene, so a show went quiet for one scene and then lit back up.
+        a, b = self._scene("A"), self._scene("B")
+        pl = self._playlist([a, b])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.safe_setup(b)
+        self.assertTrue(b.osd.suppressed)
+        b.osd.post("SEEK 1:04")
+        self.assertIsNone(b.osd.current())
+
+    def test_it_silences_every_poster_not_just_transport(self):
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.post_osd("dither 0.40")  # the live-tune path
+        self.assertIsNone(a.osd.current())
+
+    def test_off_restores_the_config_baseline_rather_than_assuming_on(self):
+        # `[midi_control].osd = "off"` is a setting, and performance mode must
+        # not overwrite it — which is why `suppressed` is a second flag and not
+        # a write to `enabled`.
+        a = self._scene("A")
+        a.osd.enabled = False
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.set_performance_mode(False)
+        self.assertFalse(a.osd.enabled)
+        a.osd.post("dither 0.40")
+        self.assertIsNone(a.osd.current())
+
+    def test_off_lets_the_osd_back_through_on_a_normal_run(self):
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        pl.set_performance_mode(True)
+        pl.set_performance_mode(False)
+        a.osd.post("dither 0.40")
+        self.assertEqual(a.osd.current(), "dither 0.40")
+
+    def test_a_normal_run_leaves_the_scene_untouched(self):
+        # Only written when set, mirroring the `user_dim < 1.0` guard, so an
+        # OSD disabled for any other reason is not clobbered.
+        a = self._scene("A")
+        pl = self._playlist([a])
+        pl.safe_setup(a)
+        self.assertFalse(a.osd.suppressed)
+
+
+class ConfigSaveBackupTest(unittest.TestCase):
+    """`PlaylistMenu.save_config`'s `.bak` preserves the hand-written original
+    once. It used to copy on every save, and `session.save_live_tune_changes`
+    calls save_config on every exit under `--overwrite` — so two runs of a
+    tuned show left no pristine copy, while the log said "(backup .bak)"."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg_path = os.path.join(self.tmp.name, "show.toml")
+        self.backup = self.cfg_path + ".bak"
+
+    def test_the_first_save_preserves_the_original(self):
+        with open(self.cfg_path, "w") as fh:
+            fh.write("hand-written\n")
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        with open(self.backup) as fh:
+            self.assertEqual(fh.read(), "hand-written\n")
+        self.assertIn("original preserved", note)
+
+    def test_a_later_save_leaves_the_original_intact(self):
+        with open(self.cfg_path, "w") as fh:
+            fh.write("hand-written\n")
+        playlist_support._preserve_original(self.cfg_path, self.backup)
+        # What the serializer would have left behind, then another save.
+        with open(self.cfg_path, "w") as fh:
+            fh.write("machine-generated\n")
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        with open(self.backup) as fh:
+            self.assertEqual(fh.read(), "hand-written\n")
+        self.assertIn("not overwritten", note)
+
+    def test_no_original_means_no_backup(self):
+        note = playlist_support._preserve_original(self.cfg_path, self.backup)
+        self.assertFalse(os.path.exists(self.backup))
+        self.assertIn("no original", note)
+
+    def _menu_over(self, cfg):
+        """A `PlaylistMenu` bound to a Playlist holding `cfg` at `cfg_path`.
+
+        Driven through the public `save_config` rather than the private
+        helper, because the helper being right is not the fix — the fix is
+        that the repeat-save path *reaches* it. `machine_baseline` is stubbed
+        so the serializer never reads this machine's real settings file."""
+        from unittest import mock
+
+        from c64cast.app import config as cfgmod
+
+        pl = Playlist.__new__(Playlist)
+        pl.config = cfg
+        pl.config_path = self.cfg_path
+        pl.log = logging.getLogger("c64cast.app.playlist")
+        menu = playlist_support.PlaylistMenu(pl)
+        self.enterContext(mock.patch.object(cfgmod, "machine_baseline", lambda: cfgmod.Config()))
+        return menu
+
+    def test_two_save_config_calls_leave_the_hand_written_original(self):
+        # The regression itself: --overwrite calls save_config on every exit,
+        # so the second run's .bak used to be the first run's generated output.
+        from c64cast.app import config as cfgmod
+
+        with open(self.cfg_path, "w") as fh:
+            fh.write("# hand-written, irreplaceable\n")
+        menu = self._menu_over(cfgmod.Config())
+
+        with self.assertLogs("c64cast.app.playlist", "INFO"):
+            self.assertTrue(menu.save_config())
+            first_save = pathlib.Path(self.cfg_path).read_text()
+            self.assertTrue(menu.save_config())
+
+        self.assertEqual(pathlib.Path(self.backup).read_text(), "# hand-written, irreplaceable\n")
+        self.assertNotEqual(pathlib.Path(self.backup).read_text(), first_save)
+
+    def test_save_config_logs_what_became_of_the_backup(self):
+        from c64cast.app import config as cfgmod
+
+        with open(self.cfg_path, "w") as fh:
+            fh.write("# hand-written\n")
+        menu = self._menu_over(cfgmod.Config())
+
+        with self.assertLogs("c64cast.app.playlist", "INFO") as logs:
+            menu.save_config()
+            menu.save_config()
+        self.assertIn("original preserved at", logs.output[0])
+        self.assertIn("not overwritten", logs.output[1])
 
 
 if __name__ == "__main__":

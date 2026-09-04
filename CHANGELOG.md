@@ -19,8 +19,115 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ## [Unreleased]
 
+### Added
+
+- **A PERF button on the `/perf` console — performance mode.** While the C64 is in
+  front of an audience, nothing should draw text over it, but a scrub, a knob
+  sweep or a loop mark each post an OSD line. That readout is wanted while
+  live-tuning at the desk, so it cannot be a static setting; PERF turns it off
+  for the whole run and back on again. It silences every poster — live-tune,
+  effect bypass, and the transport engine's `PAUSED` / `SEEK` / `LOOP A` /
+  `REC ●` — and unlike the `osd.position` pad's double-tap hide, it survives a
+  scene change. Turning it off restores whatever `[midi_control].osd` asked
+  for rather than assuming "on", and posts nothing itself — a `PERF OFF` flash
+  would be the confirmation-of-a-keypress this release took off that screen
+  everywhere else. It ships on the `/perf` page; the Svelte console and the
+  MIDI surface do not have the control yet, though `performance_mode` already
+  rides every state frame for them to read.
+
+### Changed
+
+- **Saving or clearing a loop slot no longer draws over the audience screen.**
+  The transport engine's OSD line goes onto the C64's own output, so what
+  belongs on it is transport *state* — `PAUSED`, `PLAY`, `SEEK 1:04`,
+  `LOOP 1:04-1:31`, `REC ●`, and `LOOP 3` on a recall — all of which explain
+  what the picture is visibly doing. `SAVED 3`, `3 CLEARED` and `NO LOOP`
+  explained nothing on screen: they confirmed a control press and changed only
+  a file on disk. They now go to the log, and the web console shows them
+  properly — every state frame already carries the loop-slot list, so a slot
+  filling or emptying is live feedback instead of a two-second flash. The MIDI
+  and web surfaces stay identical, as they have been since Phase 2.
+- The `/perf` console page moved out of `perf_console.py` into a packaged
+  `c64cast/control/perf_console.html`. No behavior change — the same bytes are
+  served, read once at first request — but 650 lines of HTML/CSS/JS in a Python
+  string had no syntax highlighting, no formatter, no linter, and no way to
+  open in a browser while iterating on it. Deliberately not folded into the
+  Node build that produces the Svelte console: being one self-contained
+  document with no build step is what makes this the surface that works when
+  the bundle was never built.
+- **A silent generative scene on a bitmap display now caps at half the system
+  rate (30 NTSC / 25 PAL), like every other frame-pushing scene.**
+  `audio_source = "none"` and `"listen"` were the only always-fresh bitmap
+  scenes with no frame cap at all, pushing a full ~9-10 KB frame every tick at
+  60/50. Both skipped the cap on the reasoning that they drive no DAC — but the
+  muted bitmap cap was never about audio; it is host-DMA tear, which a silent
+  generator causes exactly as much of as a loud one, and which is why the WLED
+  pixel sink (no audio whatsoever) and SID-sourced generative scenes have
+  always capped. Char displays are unaffected, and an explicit `target_fps`
+  still wins. Animation on those scenes is half as smooth and should tear
+  visibly less.
+
+### Fixed
+
+- **The WLED Mode 1 websocket now refuses a cross-origin handshake.**
+  `POST /json` has always rejected one, but `/ws` — which applies the same
+  commands — accepted before checking anything. A WebSocket handshake is
+  exempt from CORS entirely, so no preflight stood in the way: any page the
+  operator happened to visit could open `ws://<host>:8080/ws` and pause the
+  run, jump scenes, sweep live params or write presets. Binding to loopback
+  was no defense, since that is the origin such a page reaches most easily.
+  The socket is now closed before `accept`, so the handshake fails as an HTTP
+  403 rather than as an indistinguishable disconnect, and the check is the
+  same `auth.same_origin` the control plane and the `/perf` console use — the
+  bridge's own divergent copy of the comparison is gone.
+- **An expired stream URL now says so.** A page URL (YouTube and friends) is
+  resolved to a signed stream URL once, when the playlist is built, and the
+  playlist replays that same URL on every loop — so a show running longer than
+  the signature's lifetime starts failing with a bare `HTTPForbiddenError` that
+  explains nothing. A remote 4xx now names the likely cause and the remedy:
+  reload the playlist (SIGHUP, or `POST /reload`) to re-resolve it — advice
+  limited to the 401/403 a stale signature actually answers with, since a 404
+  is a pulled video and points somewhere else entirely. The URL itself is not
+  quoted back, since it can carry a signature or credential: PyAV appends the
+  filename to the exception's own string form, so the message is built from
+  `strerror` rather than from the exception.
+- **A second config save destroyed the only copy of your hand-written show
+  file.** Saving back live-tune changes copied the config to one fixed
+  `<name>.bak` on *every* save, so the second save's backup was the first
+  save's output — and `--overwrite` saves on every normal exit and Ctrl+C when
+  anything was tuned, so two runs of a tuned show was all it took. The log line
+  said "(backup .bak)" throughout, which read as reassurance. The `.bak` is now
+  written once, only when it does not already exist, so it stays the file you
+  authored however many times the show saves over itself; the log says which of
+  the two happened. There is no undo for the previous save any more — the file
+  worth keeping is the one nothing generated.
+
 ### Security
 
+- **`[wled].listen` bound a tokenless control surface to the network by
+  default, and only warned about it.** Mode 1 covers everything the control
+  plane's four verbs do and more — `on=false` pauses, `seg[].fx` jumps scenes,
+  `sx`/`ix` sweep live params, `pal`/`col` force the palette, a preset save
+  writes the data dir — while carrying no token at all and being advertised over
+  mDNS, so any host on the segment could drive the show. Yet `[control]`, whose
+  whole surface is pause/resume/skip/reload, *refuses* to bind off loopback
+  without a credential, and this only logged a warning. It now refuses the same
+  way, with `[wled].allow_unauthenticated = true` as the opt-in for a network
+  you trust — a config flag rather than a token because the WLED protocol has
+  none to offer and LAN discovery is the entire feature. **This is a breaking
+  change for an existing `listen` config:** Mode 1's default endpoint is
+  `0.0.0.0:8080`, so a plain `listen = "enabled"` now needs either the opt-in or
+  a loopback bind (`listen = "127.0.0.1:8080"`).
+- **The control plane's transport verbs took cross-origin commands too.**
+  `POST /pause`, `/resume`, `/skip` and `/reload` take only a query param and no
+  body, so a cross-site form POST at one is a CORS-simple request with no
+  preflight to refuse — and with `[control] enabled = true` and the unprompted
+  default `token = ""`, any page the performer happened to visit could pause,
+  resume, skip or reload the running show. The console's own POST was fixed
+  above; these four predate that check and now share it. A request with **no**
+  `Origin` is still served, so `curl`, scripts and Home Assistant are
+  unaffected — only a cross-origin browser is refused, and no browser client
+  for these routes exists.
 - **The performance console took cross-origin commands.** A WebSocket handshake
   is exempt from CORS entirely, and Starlette's `Request.json()` never looks at
   `Content-Type` — so with `[control] enabled = true` and the unprompted default

@@ -280,9 +280,15 @@ include = ["c64cast*"]
 # the demos' `#:schema ../data/…` directive points at, and the compiled web
 # console. `web/dist/` is committed build output (sources live in `web/` at the
 # repo root, `make web` compiles them) precisely so `uv sync` never needs Node.
+#
+# `control/*.html` is the performance console page (`perf_console.html`), a
+# hand-written single-file document with no build step — unlike `web/dist/`,
+# which Node compiles. Without this line the wheel ships only the `.py` files
+# and `GET /perf` 500s on a fresh install.
 [tool.setuptools.package-data]
 c64cast = [
     "py.typed",
+    "control/*.html",
     "data/*.json",
     "examples/*.toml",
     "examples/*/*.toml",
