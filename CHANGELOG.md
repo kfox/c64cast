@@ -21,7 +21,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
-- **A PERF button on the web console — performance mode.** While the C64 is in
+- **A PERF button on the `/perf` console — performance mode.** While the C64 is in
   front of an audience, nothing should draw text over it, but a scrub, a knob
   sweep or a loop mark each post an OSD line. That readout is wanted while
   live-tuning at the desk, so it cannot be a static setting; PERF turns it off
@@ -29,7 +29,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   effect bypass, and the transport engine's `PAUSED` / `SEEK` / `LOOP A` /
   `REC ●` — and unlike the `osd.position` pad's double-tap hide, it survives a
   scene change. Turning it off restores whatever `[midi_control].osd` asked
-  for rather than assuming "on".
+  for rather than assuming "on", and posts nothing itself — a `PERF OFF` flash
+  would be the confirmation-of-a-keypress this release took off that screen
+  everywhere else. It ships on the `/perf` page; the Svelte console and the
+  MIDI surface do not have the control yet, though `performance_mode` already
+  rides every state frame for them to read.
 
 ### Changed
 
@@ -65,13 +69,28 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The WLED Mode 1 websocket now refuses a cross-origin handshake.**
+  `POST /json` has always rejected one, but `/ws` — which applies the same
+  commands — accepted before checking anything. A WebSocket handshake is
+  exempt from CORS entirely, so no preflight stood in the way: any page the
+  operator happened to visit could open `ws://<host>:8080/ws` and pause the
+  run, jump scenes, sweep live params or write presets. Binding to loopback
+  was no defense, since that is the origin such a page reaches most easily.
+  The socket is now closed before `accept`, so the handshake fails as an HTTP
+  403 rather than as an indistinguishable disconnect, and the check is the
+  same `auth.same_origin` the control plane and the `/perf` console use — the
+  bridge's own divergent copy of the comparison is gone.
 - **An expired stream URL now says so.** A page URL (YouTube and friends) is
   resolved to a signed stream URL once, when the playlist is built, and the
   playlist replays that same URL on every loop — so a show running longer than
   the signature's lifetime starts failing with a bare `HTTPForbiddenError` that
   explains nothing. A remote 4xx now names the likely cause and the remedy:
-  reload the playlist (SIGHUP, or `POST /reload`) to re-resolve it. The URL
-  itself is not quoted back, since it can carry a signature or credential.
+  reload the playlist (SIGHUP, or `POST /reload`) to re-resolve it — advice
+  limited to the 401/403 a stale signature actually answers with, since a 404
+  is a pulled video and points somewhere else entirely. The URL itself is not
+  quoted back, since it can carry a signature or credential: PyAV appends the
+  filename to the exception's own string form, so the message is built from
+  `strerror` rather than from the exception.
 - **A second config save destroyed the only copy of your hand-written show
   file.** Saving back live-tune changes copied the config to one fixed
   `<name>.bak` on *every* save, so the second save's backup was the first
