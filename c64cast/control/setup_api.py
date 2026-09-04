@@ -217,23 +217,26 @@ def register_setup_routes(
             # and cannot tell the two apart, hence the waiver.
             #
             # The marker goes on its **own line, immediately above** the line
-            # it waives, which is what `codeql[...]` means: it suppresses the
-            # *following* line. Trailing placement is the legacy `lgtm[...]`
-            # form and is inert for this one. Trailing is what this waiver used
-            # to be, and it never suppressed anything — `AlertSuppression.ql`
-            # emitted nothing, the `dismiss-alerts` step in `codeql.yml` had
-            # nothing to act on, and alert #28 stayed open until a human closed
-            # it. `hw/vic_stream.py` and `wled/wled_sink.py` already write it
-            # this way.
+            # it waives. That is not style — it is the only form that works.
+            # `CodeQlSuppressionComment` in CodeQL's
+            # `shared/util/codeql/util/suppression/AlertSuppression.qll` only
+            # constructs when *no AST node precedes the comment on its line*, so
+            # a trailing `# codeql[...]` never becomes a suppression at all; and
+            # its `covers` is `startline - 1`, so the one it does form applies
+            # to the **next** line. (Same-line placement belongs to `lgtm[...]`,
+            # and to Python's `noqa`.)
             #
-            # `control/screen.py` and `app/media_store.py` still trail theirs,
-            # with a note claiming the line above "is not one" because moving it
-            # minted a fresh alert number. That is what moving it *would* do
-            # either way: shifting the flagged line one row down re-fingerprints
-            # the alert, and the replacement is only dismissed on the next `main`
-            # run, since `dismiss-alerts` is `main`-only. Left alone here rather
-            # than changed on a hunch — they are dismissed today, and this
-            # branch is not where that gets retested.
+            # This waiver used to trail the argument, so it suppressed nothing:
+            # `AlertSuppression.ql` emitted no entry, the `dismiss-alerts` step
+            # in `codeql.yml` logged "Indexed 15 alerts" and dismissed zero, and
+            # every waiver in this repo was in fact being closed by hand — which
+            # is the exact fragility that step exists to remove.
+            #
+            # Moving a marker shifts the flagged line and therefore mints a new
+            # alert number. That is expected and is not evidence the placement
+            # is wrong; the replacement is dismissed on the next `main` run,
+            # since `dismiss-alerts` is `main`-only and code scanning itself
+            # records SARIF suppressions without acting on them.
             return JSONResponse(
                 # codeql[py/stack-trace-exposure]
                 {"ok": False, "error": str(e)},
