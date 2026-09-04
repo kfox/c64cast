@@ -827,6 +827,15 @@ class WledApiTests(unittest.TestCase):
         )
         self.assertEqual(set(self.client.get("/json/si").json()), {"state", "info"})
 
+    def test_get_index_sends_the_shared_page_headers(self):
+        # The device page is framable without these, which is the one CSRF
+        # path the Origin check cannot close: frame the root, overlay a decoy,
+        # and the performer's tap lands inside the frame same-origin.
+        r = self.client.get("/")
+        self.assertEqual(r.headers["X-Frame-Options"], "DENY")
+        self.assertIn("frame-ancestors 'none'", r.headers["Content-Security-Policy"])
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
+
     def test_get_index_serves_control_page(self):
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)

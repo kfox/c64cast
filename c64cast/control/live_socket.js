@@ -68,6 +68,11 @@ function liveSocket({ path, onMessage, onOpen, poll, pollMs }) {
       stopFallback();
       if (onOpen) onOpen();
     };
+    // Only the parse is guarded. The console's own handler used to sit inside
+    // this try as well, so a throw while applying a frame was swallowed; here
+    // it reaches the browser console instead. Deliberate: the socket survives
+    // an uncaught handler error either way, so the old shape bought a skipped
+    // repaint at the price of hiding the reason for it.
     ws.onmessage = (ev) => {
       let frame;
       try {

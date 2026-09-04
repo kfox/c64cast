@@ -3,8 +3,8 @@
 The `/perf` console (`control/perf_console.html`) and the WLED bridge's device
 page (`wled/wled_index.html`) are each one self-contained HTML document: no
 second request, no third-party resource, nothing from a CDN. That is what lets
-`perf_console._PAGE_HEADERS` be as strict as it is, and what makes both pages
-work on a phone that can reach the show host and nothing else.
+:data:`PAGE_HEADERS` be as strict as it is, and what makes both pages work on a
+phone that can reach the show host and nothing else.
 
 Sharing code between them therefore cannot mean serving a `.js` file. It means
 splicing one at render time, which is what :func:`with_live_socket` does —
@@ -20,6 +20,36 @@ request.
 from __future__ import annotations
 
 import functools
+
+#: Response headers for both control pages.
+#:
+#: Hardening rather than a defense of its own, and ranked deliberately behind
+#: the ``Origin`` check :func:`auth.same_origin` applies: in the open mode a
+#: hostile page could drive every control directly with no user interaction at
+#: all, which is strictly easier than framing a page and tricking the performer
+#: into tapping a pad; and in a token-gated deployment the ``SameSite=Strict``
+#: cookie is not sent into a third-party frame, so the frame renders the login
+#: page instead. It costs either page nothing — a fixed, server-authored body
+#: with no caller content in it and no third-party resource to load — and
+#: ``unsafe-inline`` is what their own ``<style>`` and ``<script>`` need.
+#: ``img-src`` has to allow ``self`` for the console's screen stream.
+#:
+#: Lives here, beside the splice, because it is the same property of the same
+#: two documents. It used to sit in `perf_console` and reach only that page:
+#: the WLED page went out with no ``frame-ancestors`` and no
+#: ``X-Frame-Options`` at all, which left UI redress as the one CSRF path
+#: `_is_cross_origin` does not close — a hostile page frames the device root,
+#: overlays a decoy, and the performer's tap lands inside the frame where the
+#: fetch is same-origin. Two pages assembled through one helper with divergent
+#: headers is exactly the drift this module exists to end.
+PAGE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; frame-ancestors 'none'; "
+        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
 
 #: Marker a page puts inside its own ``<script>`` block, on its own line, where
 #: the shared client should land.

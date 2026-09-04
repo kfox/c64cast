@@ -9,6 +9,11 @@ actually receive it, and that neither has quietly grown its own again.
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 from c64cast.control import page_assets
@@ -19,6 +24,13 @@ from c64cast.wled.wled_device import index_page_html
 PAGES = (
     ("perf console", perf_page_html, "c64cast.control", "perf_console.html"),
     ("wled device", index_page_html, "c64cast.wled", "wled_index.html"),
+)
+
+# Every hand-written source that could open a socket of its own.
+SOCKET_SOURCES = (
+    ("c64cast.control", "live_socket.js"),
+    ("c64cast.control", "perf_console.html"),
+    ("c64cast.wled", "wled_index.html"),
 )
 
 
@@ -59,13 +71,16 @@ class SpliceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             page_assets.with_live_socket("<!doctype html><html></html>")
 
-    def test_neither_page_keeps_a_client_of_its_own(self):
-        # The duplication this replaced. Both copies defined these.
-        for name, render, _, _ in PAGES:
-            with self.subTest(page=name):
-                page = render()
-                self.assertNotIn("function startWS()", page)
-                self.assertNotIn("function retryWS()", page)
+    def test_only_the_shared_client_opens_a_socket(self):
+        # The property, not the two identifier names the deleted copies
+        # happened to use: those exist nowhere now, so asserting their absence
+        # could only ever catch a reintroduction spelled exactly the old way.
+        # A third page, or a copy named `connectWS`, fails this one.
+        for package, filename in SOCKET_SOURCES:
+            with self.subTest(source=filename):
+                body = page_assets.package_text(package, filename)
+                expected = 1 if filename == "live_socket.js" else 0
+                self.assertEqual(body.count("new WebSocket("), expected)
 
 
 class WiringTest(unittest.TestCase):
@@ -80,6 +95,38 @@ class WiringTest(unittest.TestCase):
         for name, render, _, _ in PAGES:
             with self.subTest(page=name):
                 self.assertIn("WS_RETRY_MAX_MS", render())
+
+
+class ScriptSyntaxTest(unittest.TestCase):
+    """The splice is a textual replace into each page's *existing* `<script>`
+    scope, so a top-level name the shared client defines colliding with one the
+    page defines is a whole-script SyntaxError — every control on the page goes
+    dead, not just the socket, and the page still renders looking live. Nothing
+    else in CI parses these pages."""
+
+    SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
+
+    def setUp(self):
+        if shutil.which("node") is None:
+            self.skipTest("node not on PATH")
+
+    def test_every_rendered_page_parses(self):
+        for name, render, _, _ in PAGES:
+            with self.subTest(page=name):
+                bodies = self.SCRIPT.findall(render())
+                self.assertTrue(bodies, "page serves no inline script")
+                with tempfile.TemporaryDirectory() as tmp:
+                    for i, body in enumerate(bodies):
+                        path = os.path.join(tmp, f"{i}.js")
+                        with open(path, "w", encoding="utf-8") as fh:
+                            fh.write(body)
+                        proc = subprocess.run(
+                            ["node", "--check", path],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

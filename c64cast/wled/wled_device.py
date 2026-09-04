@@ -824,7 +824,11 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     @app.get("/")
     def index() -> Response:
-        return Response(content=index_page_html(), media_type="text/html")
+        return Response(
+            content=index_page_html(),
+            media_type="text/html",
+            headers=page_assets.PAGE_HEADERS,
+        )
 
     @app.get("/description.xml")
     def description_xml() -> Response:
