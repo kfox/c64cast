@@ -53,6 +53,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **An expired stream URL now says so.** A page URL (YouTube and friends) is
+  resolved to a signed stream URL once, when the playlist is built, and the
+  playlist replays that same URL on every loop — so a show running longer than
+  the signature's lifetime starts failing with a bare `HTTPForbiddenError` that
+  explains nothing. A remote 4xx now names the likely cause and the remedy:
+  reload the playlist (SIGHUP, or `POST /reload`) to re-resolve it. The URL
+  itself is not quoted back, since it can carry a signature or credential.
 - **A second config save destroyed the only copy of your hand-written show
   file.** Saving back live-tune changes copied the config to one fixed
   `<name>.bak` on *every* save, so the second save's backup was the first

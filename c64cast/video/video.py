@@ -76,10 +76,32 @@ def _is_remote_url(path: str) -> bool:
 def av_open(path: str):
     """`av.open` wrapper that injects the HTTP reconnect options for remote
     URLs so a transient CDN drop mid-stream resumes instead of crashing the
-    demuxer. Local paths open unchanged."""
-    if _is_remote_url(path):
+    demuxer. Local paths open unchanged.
+
+    A remote 4xx is re-raised naming the likeliest cause, because the raw
+    ``HTTPForbiddenError`` is unreadable on the one shape it usually means.
+    `scene_factory._resolve_video_source` resolves a page URL through yt-dlp
+    at **build** time and `scenes_from_config` runs once at startup, so a
+    playlist holds whatever signed stream URL it got then and replays it on
+    every loop pass — and those signatures expire (YouTube's in a few hours).
+    A looping show that ran fine all afternoon starts 403ing, with nothing
+    saying why. `SIGHUP` reloads the playlist, which rebuilds the scenes and
+    re-resolves the URL, so there is a remedy worth naming."""
+    if not _is_remote_url(path):
+        return av.open(path)
+    try:
         return av.open(path, options=_HTTP_RECONNECT_OPTIONS)
-    return av.open(path)
+    except av.error.HTTPClientError as e:
+        # The URL is deliberately not repeated here: it can carry a signature
+        # or credential, and every caller's own log line already names the path
+        # it was opening.
+        raise RuntimeError(
+            f"the media server refused this stream ({e}). For a URL resolved from a page "
+            "(YouTube and friends), an expired signature is the likeliest cause: the "
+            "stream URL is resolved once when the playlist is built, and a long show "
+            "replays it. Reload the playlist to re-resolve it — SIGHUP, or POST /reload "
+            "on the control plane."
+        ) from e
 
 
 def probe_container_title(path: str) -> str | None:

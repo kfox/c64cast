@@ -25,6 +25,7 @@ from c64cast.video.video import (
     _is_remote_url,
     _plan_decode_size,
     _SampleProgressTap,
+    av_open,
     ensure_pyav,
     probe_container_title,
     scan_video_samples,
@@ -69,6 +70,48 @@ class RemoteUrlTest(unittest.TestCase):
         self.assertFalse(_is_remote_url("/home/user/assets/videos/clip.mp4"))
         self.assertFalse(_is_remote_url("assets/videos/clip.webm"))
         self.assertFalse(_is_remote_url("file:///tmp/clip.mp4"))
+
+
+@unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+class RemoteRefusalMessageTest(unittest.TestCase):
+    """A signed stream URL is resolved once, when the playlist is built, and a
+    looping show replays it until the signature expires — after which the raw
+    `HTTPForbiddenError` says nothing about why an afternoon-long show suddenly
+    stopped, or that a reload re-resolves it."""
+
+    def test_a_remote_4xx_names_expiry_and_the_remedy(self):
+        import av
+        import av.error
+
+        with mock.patch.object(av, "open", side_effect=av.error.HTTPForbiddenError(403, "403")):
+            with self.assertRaises(RuntimeError) as cm:
+                av_open("https://rr4.googlevideo.com/videoplayback?sig=stale")
+        msg = str(cm.exception)
+        self.assertIn("expired signature", msg)
+        self.assertIn("SIGHUP", msg)
+
+    def test_the_url_is_not_quoted_back(self):
+        # It can carry a signature or a credential, and every caller's own log
+        # line already names the path it was opening.
+        import av
+        import av.error
+
+        url = "https://user:tok@cdn.example/clip.mp4?sig=abc"
+        with mock.patch.object(av, "open", side_effect=av.error.HTTPForbiddenError(403, "403")):
+            with self.assertRaises(RuntimeError) as cm:
+                av_open(url)
+        msg = str(cm.exception)
+        self.assertNotIn("tok", msg)
+        self.assertNotIn("sig=abc", msg)
+
+    def test_a_local_path_is_left_alone(self):
+        # No signature to expire, and the wrapper must not add the HTTP
+        # reconnect options to a local open.
+        import av
+
+        with mock.patch.object(av, "open", return_value="container") as opened:
+            self.assertEqual(av_open("/tmp/clip.mp4"), "container")
+        opened.assert_called_once_with("/tmp/clip.mp4")
 
 
 class ProbeContainerTitleTest(unittest.TestCase):
