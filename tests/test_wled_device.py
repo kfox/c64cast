@@ -936,6 +936,36 @@ class WledApiTests(unittest.TestCase):
             self.assertIn("state", update)
         self.assertEqual(self.pl.jumps, [2])
 
+    def test_ws_rejects_cross_origin_before_accept(self):
+        # The socket applies commands, so it is a write surface — and a
+        # WebSocket handshake is exempt from CORS, so there is no preflight for
+        # the browser to fail. Only POST /json used to be guarded, which left
+        # the bigger hole open: a page the operator visits could drive the show
+        # over ws://, loopback bind included.
+        from starlette.websockets import WebSocketDisconnect
+
+        # assertLogs outside assertRaises, or the refusal record goes
+        # unverified and the warning leaks into the test run's output.
+        with self.assertLogs("c64cast.wled.wled_device", "WARNING") as logs:
+            with self.assertRaises(WebSocketDisconnect) as cm:
+                with self.client.websocket_connect(
+                    "/ws", headers={"origin": "http://evil.example"}
+                ) as ws:
+                    ws.receive_json()
+        self.assertIn("cross-origin", logs.output[0])
+        self.assertEqual(cm.exception.code, 1008)
+        self.assertEqual(self.pl.jumps, [])
+
+    def test_ws_allows_same_origin(self):
+        with self.client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+            self.assertIn("state", ws.receive_json())
+
+    def test_ws_allows_no_origin_header(self):
+        # python-wled / Home Assistant / wscat send none, and are the callers
+        # the open mode is written for.
+        with self.client.websocket_connect("/ws") as ws:
+            self.assertIn("state", ws.receive_json())
+
 
 if __name__ == "__main__":
     unittest.main()
