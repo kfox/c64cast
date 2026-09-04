@@ -10,7 +10,6 @@
     isPending,
     isStale,
     isStaleDismissed,
-    lastAnsweredAt,
     readDismissed,
     STALE_DISMISSED_KEY,
     writeDismissed,
@@ -36,7 +35,8 @@
   });
 
   // A pending upgrade is the more useful of the two and wins: naming the
-  // release to move to says everything "we haven't heard from PyPI" would.
+  // release to move to says everything the stale notice would, and acting on
+  // it clears both.
   const showUpgrade = $derived(
     isPending(updateState) && !isDismissed(updateState, dismissedVersion),
   );
@@ -45,11 +45,6 @@
       isStale(updateState, openedAt) &&
       !isStaleDismissed(updateState, staleDismissed),
   );
-
-  const silentSince = $derived.by(() => {
-    const at = updateState === null ? null : lastAnsweredAt(updateState);
-    return at === null ? "" : new Date(at).toLocaleDateString();
-  });
 
   function dismiss(): void {
     if (showUpgrade && updateState?.latest_version) {
@@ -79,11 +74,18 @@
         <code class="font-mono">c64cast --upgrade</code>.
       </p>
     {:else}
+      <!-- Word for word what update_state.motd_line says, and for its
+           reason: is_stale falls back to `checked_at` when nothing has ever
+           gone unanswered, and in that branch the last attempt *did* answer
+           — the laptop with no timer whose owner simply hasn't asked in a
+           while. Naming PyPI, or a date it supposedly went quiet, sent that
+           operator hunting a network fault that does not exist. What is true
+           in both branches is only that no check has succeeded. -->
       <p>
-        No answer from PyPI since {silentSince} — more than {updateState?.stale_after_days} days, so
-        this machine cannot say whether
+        No update check has succeeded in over {updateState?.stale_after_days} days: this machine
+        cannot say whether c64cast
         <span class="font-mono">{updateState?.running_version}</span>
-        is still current. Check its internet connection, or run
+        is still current. Check with
         <code class="font-mono">c64cast --check-for-updates</code>.
       </p>
     {/if}
