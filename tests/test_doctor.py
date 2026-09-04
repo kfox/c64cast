@@ -21,6 +21,7 @@ from c64cast.app import config_serialize as ser
 from c64cast.app import doctor, paths
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
+from c64cast.hw.c64 import max_safe_sample_rate
 
 # The doctor loads configs, and loading reads the machine-settings file — so
 # point $C64CAST_SETTINGS at a missing path for the module. Tests that want a
@@ -1575,6 +1576,33 @@ class PrintReportCategoryTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("BRAND_NEW_CATEGORY", buf.getvalue())
         self.assertIn("boom", buf.getvalue())
+
+
+class SampleRateHintTest(unittest.TestCase):
+    """The hint used to spell out the safe rates by hand and drifted: it kept
+    recommending 10500 for two releases after 12000 became the default."""
+
+    def test_hint_quotes_the_shipped_default(self):
+        hint = doctor._sample_rate_hint()
+        self.assertIn(str(cfgmod.AudioCfg().sample_rate), hint)
+
+    def test_hint_quotes_both_standard_ceilings(self):
+        hint = doctor._sample_rate_hint()
+        for system in ("NTSC", "PAL"):
+            self.assertIn(str(max_safe_sample_rate(system)), hint)
+
+    def test_unsafe_rate_carries_the_hint(self):
+        loaded = _load(
+            """
+            [audio]
+            enabled = true
+            sample_rate = 20000
+            """
+        )
+        found = doctor._validate_audio_nmi_rate(loaded)
+        self.assertTrue(found)
+        self.assertEqual(found[0].level, "error")
+        self.assertEqual(found[0].hint, doctor._sample_rate_hint())
 
 
 if __name__ == "__main__":
