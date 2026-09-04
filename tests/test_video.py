@@ -79,29 +79,55 @@ class RemoteRefusalMessageTest(unittest.TestCase):
     `HTTPForbiddenError` says nothing about why an afternoon-long show suddenly
     stopped, or that a reload re-resolves it."""
 
-    def test_a_remote_4xx_names_expiry_and_the_remedy(self):
+    #: Every construction here passes the **third** argument. PyAV only appends
+    #: a filename to an ``FFmpegError``'s string form when it was given one, so
+    #: a two-argument fake makes `test_the_url_is_not_quoted_back` pass no
+    #: matter what the code does — which is exactly how the leak this guards
+    #: against shipped in the first place.
+    def _refused(self, url, exc=None):
         import av
         import av.error
 
-        with mock.patch.object(av, "open", side_effect=av.error.HTTPForbiddenError(403, "403")):
+        err = exc or av.error.HTTPForbiddenError(403, "Server returned 403 Forbidden", url)
+        with mock.patch.object(av, "open", side_effect=err):
             with self.assertRaises(RuntimeError) as cm:
-                av_open("https://rr4.googlevideo.com/videoplayback?sig=stale")
-        msg = str(cm.exception)
+                av_open(url)
+        return str(cm.exception)
+
+    def test_the_fake_error_really_does_carry_the_url(self):
+        # Guards the guard: if PyAV ever stops appending the filename, the
+        # redaction tests below would start passing vacuously again.
+        import av.error
+
+        url = "https://cdn.example/clip.mp4?sig=abc"
+        self.assertIn(url, str(av.error.HTTPForbiddenError(403, "403", url)))
+
+    def test_a_remote_4xx_names_expiry_and_the_remedy(self):
+        msg = self._refused("https://rr4.googlevideo.com/videoplayback?sig=stale")
         self.assertIn("expired signature", msg)
         self.assertIn("SIGHUP", msg)
 
     def test_the_url_is_not_quoted_back(self):
         # It can carry a signature or a credential, and every caller's own log
         # line already names the path it was opening.
-        import av
+        msg = self._refused("https://user:tok@cdn.example/clip.mp4?sig=abc")
+        self.assertNotIn("tok", msg)
+        self.assertNotIn("sig=abc", msg)
+        self.assertNotIn("cdn.example", msg)
+        self.assertIn("403 Forbidden", msg)
+
+    def test_a_404_does_not_blame_an_expired_signature(self):
+        # A pulled video, not a stale signature — reloading the playlist
+        # re-resolves the same missing URL and points the operator nowhere.
         import av.error
 
-        url = "https://user:tok@cdn.example/clip.mp4?sig=abc"
-        with mock.patch.object(av, "open", side_effect=av.error.HTTPForbiddenError(403, "403")):
-            with self.assertRaises(RuntimeError) as cm:
-                av_open(url)
-        msg = str(cm.exception)
-        self.assertNotIn("tok", msg)
+        url = "https://cdn.example/gone.mp4?sig=abc"
+        msg = self._refused(
+            url, av.error.HTTPNotFoundError(404, "Server returned 404 Not Found", url)
+        )
+        self.assertIn("404 Not Found", msg)
+        self.assertNotIn("expired signature", msg)
+        self.assertNotIn("SIGHUP", msg)
         self.assertNotIn("sig=abc", msg)
 
     def test_a_local_path_is_left_alone(self):
