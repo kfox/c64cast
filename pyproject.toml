@@ -301,6 +301,14 @@ c64cast = [
 line-length = 100
 target-version = "py311"
 
+# Ruff formats fenced Python inside Markdown, which re-wraps the hand-narrowed
+# samples in the three books (their PDF columns are much narrower than the 100
+# ruff targets), so `make fmt` rewrote the docs on every run and never
+# converged. `exclude` here is format-only — unlike `extend-exclude`, it leaves
+# `ruff check`'s view of the tree alone.
+[tool.ruff.format]
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
