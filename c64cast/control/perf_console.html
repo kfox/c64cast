@@ -135,13 +135,8 @@
 <script>
 let state = null;      // last full state from the server
 let sel = 0;           // selected system index
-let ws = null;
-let pollTimer = null;
-let wsRetryMs = 0;     // exponential backoff for the reconnect, see retryWS()
 // Local beat-clock anchor for smooth pulse animation between server pushes.
 let clock = {bpm: 120, phase: 0, running: false, bpb: 4, at: 0};
-const WS_RETRY_MIN_MS = 500;
-const WS_RETRY_MAX_MS = 15000;
 
 function post(cmd) {
   const sys = curSys();
@@ -561,31 +556,19 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-function startWS() {
-  try {
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    ws = new WebSocket(scheme + location.host + '/perf/ws');
-  } catch (e) { scheduleFallback(); retryWS(); return; }
-  ws.onopen = () => { wsRetryMs = 0; stopFallback(); };
-  ws.onmessage = (ev) => { try { apply(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { scheduleFallback(); retryWS(); };
-  ws.onerror = () => { try { ws.close(); } catch (e) {} };
-}
+//@include live_socket.js
 
-// Back off rather than retry at a fixed interval forever. The host can now
-// refuse a handshake outright (MAX_CONSOLE_SOCKETS), and every open phone
-// hammering a downed host at a fixed rate is exactly the load that cap exists
-// to bound. The construction failure above retries too — it used to fall back
-// to polling and never try the socket again for the life of the page.
+// While the socket is down, poll /perf/state so the page still works without
+// websockets.
 async function poll() {
   try { const r = await fetch('/perf/state'); apply(await r.json()); } catch (e) {}
 }
-function retryWS() {
-  wsRetryMs = wsRetryMs ? Math.min(wsRetryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
-  setTimeout(startWS, wsRetryMs);
-}
-function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(poll, 1000); }
-function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+const live = liveSocket({
+  path: '/perf/ws',
+  onMessage: apply,
+  poll: poll,
+  pollMs: 1000,
+});
 
 document.getElementById('tap').onclick = () => post({action: 'tap'});
 // One button for both, off the `paused` flag: resume on a running show is a
@@ -657,7 +640,7 @@ document.getElementById('screen').onerror = () => {
 };
 document.getElementById('screenwatch').onclick = () => setScreen(!screenOn);
 poll();          // initial paint before WS connects
-startWS();
+live.start();
 requestAnimationFrame(animate);
 </script>
 </body>

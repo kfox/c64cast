@@ -65,7 +65,6 @@ make FastAPI mis-read it as a query param and skip the WebSocket injection.
 
 import asyncio
 import contextlib
-import functools
 import json
 import logging
 import math
@@ -77,7 +76,7 @@ from typing import Any
 
 from c64cast.app.playlist import Playlist
 
-from . import live_tune
+from . import live_tune, page_assets
 from .auth import BODY_TOO_LARGE_ERROR, BodyTooLarge, is_viewer, read_body, role_of, same_origin
 from .performance import ClipEvent
 from .transport import JsonSlotStore, TransportEvent
@@ -1126,7 +1125,6 @@ class PerfBridge:
 # screen. Both are handled as absent rather than assumed — this page is served
 # by the control plane, which a plain CLI run has without any of /api. Kept
 # dependency-free so it renders in any phone browser.
-@functools.cache
 def perf_page_html() -> str:
     """The console page, read once from the packaged ``perf_console.html``.
 
@@ -1138,19 +1136,11 @@ def perf_page_html() -> str:
     resource to load, which is what lets :data:`_PAGE_HEADERS` be as strict as
     it is.
 
-    Read through :mod:`importlib.resources` rather than ``__file__`` so any
-    loader that imported the package answers, and cached because
-    :func:`register_perf_routes` serves the same bytes on every request.
-    ``read_text`` needs no real filesystem path (unlike
-    :func:`c64cast.app.paths._package_dir`, whose callers hand paths to
-    ``open()``), so this works from a zipped distribution too.
-
-    Packaged by the ``control/*.html`` entry in ``[tool.setuptools.package-data]``
-    — without it the wheel ships only ``.py`` files and the console 500s on a
-    fresh install, which ``test_perf_console`` guards against by reading it."""
-    from importlib.resources import files  # noqa: PLC0415  (lazy; import-time cost)
-
-    return files("c64cast.control").joinpath("perf_console.html").read_text(encoding="utf-8")
+    The reconnecting-socket-with-poll-fallback client is spliced in from
+    ``live_socket.js`` rather than duplicated here — see
+    :mod:`c64cast.control.page_assets`, which also carries the reading and
+    caching rationale."""
+    return page_assets.page_html("c64cast.control", "perf_console.html")
 
 
 #: Response headers for the console page.

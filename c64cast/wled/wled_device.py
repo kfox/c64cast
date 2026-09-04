@@ -74,7 +74,7 @@ from typing import Any
 
 from c64cast.app import paths
 from c64cast.app.playlist import Playlist
-from c64cast.control import live_tune
+from c64cast.control import live_tune, page_assets
 from c64cast.control.transport import JsonSlotStore, warn_if_legacy_presets_orphaned
 from c64cast.video.modes import PALETTE_MODES
 from c64cast.video.palette import build_fixed_color_map, nearest_palette_index
@@ -129,6 +129,14 @@ _WLED_VID_SPREAD = 100000  # content-hash offset range added on top of the base
 # params. A slider with no matching param on the current scene is a silent no-op.
 _SX_TARGETS = ("source.speed", "source.scroll_speed", "effect.decay")
 
+
+# Source-first preserves the existing generator behavior; `scene.gain` reaches
+# the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
+# renderer and so have no source/effect holder — see the `scene` prefix in
+# live_tune.resolve_holder.
+_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
+
+
 # Real WLED serves its own control UI at "/" (a full SPA). Several third-party
 # WLED companion apps (macOS/iOS "shell" apps in particular) don't reimplement
 # controls natively — they open a WebView pointed at the device's own "/" and
@@ -139,370 +147,18 @@ _SX_TARGETS = ("source.speed", "source.scroll_speed", "effect.decay")
 # /json endpoints) covering exactly what the backend currently acts on —
 # transport, effect select, speed/intensity — so it and any browser pointed at
 # the device have something usable. No inline JS libs / CDN deps.
-_INDEX_HTML = """<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>c64cast</title>
-<style>
-  body { background: #111; color: #eee; font: 15px -apple-system, sans-serif;
-         max-width: 480px; margin: 2em auto; padding: 0 1em; }
-  h1 { font-size: 1.3em; }
-  h2 { font-size: 1em; color: #aaa; margin-top: 2em; }
-  .row { display: flex; align-items: center; gap: 0.75em; margin: 0.6em 0; }
-  .row label { width: 90px; flex-shrink: 0; color: #ccc; }
-  input[type=range] { flex: 1; }
-  select { flex: 1; background: #222; color: #eee; border: 1px solid #444;
-           padding: 0.3em; }
-  input[type=text] { flex: 1; background: #222; color: #eee;
-                     border: 1px solid #444; padding: 0.3em; }
-  button { background: #333; color: #eee; border: 1px solid #555;
-           padding: 0.35em 0.8em; border-radius: 4px; cursor: pointer; }
-  button:hover { background: #444; }
-  .segment { border-top: 1px solid #333; padding-top: 0.5em; }
-  #presets { border-top: 1px solid #333; margin-top: 1.5em; padding-top: 0.5em; }
-  /* A control the current scene can't act on: dimmed + non-interactive, with a
-     tooltip explaining why (the input itself is also set .disabled). */
-  .cap-off { opacity: 0.4; }
-  .cap-off label { color: #666; }
-</style>
-</head>
-<body>
-<h1>c64cast <small style="color:#777">(WLED control surface)</small></h1>
-<div class="row">
-  <label for="on">Power</label>
-  <input type="checkbox" id="on">
-</div>
-<div class="row">
-  <label for="bri">Brightness</label>
-  <input type="range" id="bri" min="0" max="255">
-</div>
-<div id="segments"></div>
-<div id="presets">
-  <h2>Presets</h2>
-  <div class="row">
-    <select id="presetSel"></select>
-    <button id="presetApply">Apply</button>
-    <button id="presetDelete">Delete</button>
-  </div>
-  <div class="row">
-    <input type="text" id="presetName" placeholder="New preset name">
-    <button id="presetSave">Save</button>
-  </div>
-</div>
-<script>
-async function post(body) {
-  await fetch('/json/state', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-  });
-}
+def index_page_html() -> str:
+    """The device page, read once from the packaged ``wled_index.html`` with
+    the shared live-socket client spliced in.
 
-// Gray out a row + disable its input, with a tooltip, when the current scene
-// can't use that control. Scene/Power/Brightness never pass disabled=true.
-const CAP_OFF_TITLE = 'Not applicable to the current scene';
-function markOff(row, input) {
-  row.classList.add('cap-off');
-  row.title = CAP_OFF_TITLE;
-  if (input) input.disabled = true;
-}
-
-function selectRow(labelText, options, selectedIdx, onpick, disabled) {
-  const row = document.createElement('div');
-  row.className = 'row';
-  const l = document.createElement('label');
-  l.textContent = labelText;
-  const sel = document.createElement('select');
-  // Display alphabetically, but each <option>'s value stays the real index
-  // into `options` (fx = playlist scene index, pal = PALETTE_MODES index —
-  // other code depends on that index directly), so sorting here only changes
-  // display order, never what gets posted back.
-  const order = options.map((name, idx) => ({name, idx}))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  order.forEach(({name, idx}) => {
-    const opt = document.createElement('option');
-    opt.value = idx;
-    opt.textContent = name;
-    if (idx === selectedIdx) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  sel.onchange = () => {
-    onpick(parseInt(sel.value, 10));
-    // Drop focus after a pick: refresh() skips while any control is focused (so
-    // it won't yank a slider mid-drag), and a scene <select> stays focused after
-    // selection — which would freeze the capability hints until a manual reload.
-    sel.blur();
-  };
-  row.appendChild(l);
-  row.appendChild(sel);
-  if (disabled) markOff(row, sel);
-  return row;
-}
-
-function rgbToHex(c) {
-  const h = (n) => ('0' + (n & 255).toString(16)).slice(-2);
-  return '#' + h(c[0]) + h(c[1]) + h(c[2]);
-}
-
-function segmentEl(i, seg, effects, palettes) {
-  const wrap = document.createElement('div');
-  wrap.className = 'segment';
-  const title = document.createElement('h2');
-  title.textContent = seg.n || ('System ' + (i + 1));
-  wrap.appendChild(title);
-
-  // Per-control applicability hints (vendor `c64` key). Absent (older payload)
-  // => assume everything works, so we never over-disable.
-  const caps = seg.c64 || {pal: true, col: true, sx: true, ix: true};
-
-  // Scene is always live; Palette grays out when the mode can't swap it. The
-  // WS push delivers the new scene's state (incl. capability hints) once the
-  // jump lands, so no manual refresh burst is needed.
-  wrap.appendChild(selectRow('Scene', effects, seg.fx,
-    (v) => post({seg: [{id: i, fx: v}]})));
-  wrap.appendChild(selectRow('Palette', palettes, seg.pal,
-    (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
-
-  // Brightness is a single master slider up top (synced with the WLED app's own
-  // brightness), not per-segment. Here: Speed/Intensity, grayed out when the
-  // current scene declares no matching live param.
-  [['Speed', 'sx', seg.sx, caps.sx],
-   ['Intensity', 'ix', seg.ix, caps.ix]].forEach(([label, key, val, enabled]) => {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const l = document.createElement('label');
-    l.textContent = label;
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = 0;
-    slider.max = 255;
-    slider.value = val;
-    slider.oninput = () => {
-      const body = {seg: [{id: i}]};
-      body.seg[0][key] = parseInt(slider.value, 10);
-      post(body);
-    };
-    // A range input keeps focus after the drag ends (mouseup/touchend), which
-    // would freeze render()'s re-renders forever (see the scene <select>'s
-    // own blur() above, and #on/#bri/color picker below) — drop it once the
-    // drag is actually done, not on every oninput tick mid-drag.
-    slider.onpointerup = () => slider.blur();
-    row.appendChild(l);
-    row.appendChild(slider);
-    if (!enabled) markOff(row, slider);
-    wrap.appendChild(row);
-  });
-
-  const colRow = document.createElement('div');
-  colRow.className = 'row';
-  const colLabel = document.createElement('label');
-  colLabel.textContent = 'Color';
-  const picker = document.createElement('input');
-  picker.type = 'color';
-  picker.value = rgbToHex((seg.col && seg.col[0]) || [0, 0, 0]);
-  picker.oninput = () => {
-    const h = picker.value;
-    const rgb = [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16),
-                 parseInt(h.slice(5, 7), 16)];
-    post({seg: [{id: i, col: [rgb]}]});
-  };
-  // 'change' fires once the picker UI closes (unlike 'input', which fires
-  // continuously while dragging inside it) — blur then, same freeze fix as
-  // the sliders above.
-  picker.onchange = () => picker.blur();
-  colRow.appendChild(colLabel);
-  colRow.appendChild(picker);
-  if (!caps.col) markOff(colRow, picker);
-  wrap.appendChild(colRow);
-  return wrap;
-}
-
-// Live state arrives over WebSocket (/ws) — the same channel real WLED clients
-// use — so scene changes, capability hints, and brightness reflect promptly with
-// no polling. effects/palettes/presets aren't in the WS frame; they come from a
-// one-shot /json + /presets.json fetch on (re)connect and are cached for render.
-let effects = [];
-let palettes = [];
-let presets = {};        // {"1": {...}, ...} from /presets.json
-let lastState = null;
-let ws = null;
-let pollTimer = null;    // fallback poll while WS is unavailable
-// A preset recall that needs to re-fire once the target scene is live (so its
-// sliders/palette/color land on the new scene, not the outgoing one).
-let pendingRecall = null;
-
-function render() {
-  // Don't rebuild while the user is interacting with a control (would yank a
-  // slider mid-drag or clobber a mid-selection <select>).
-  const active = document.activeElement;
-  if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
-  if (!lastState) return;
-  document.getElementById('on').checked = lastState.on;
-  document.getElementById('bri').value = lastState.bri;
-  const segsEl = document.getElementById('segments');
-  segsEl.innerHTML = '';
-  lastState.seg.forEach((seg, i) => segsEl.appendChild(segmentEl(i, seg, effects, palettes)));
-  renderPresets();
-}
-
-function renderPresets() {
-  const sel = document.getElementById('presetSel');
-  const prev = sel.value;
-  sel.innerHTML = '';
-  const presetLabel = (id) => presets[id].n || ('Preset ' + id);
-  const ids = Object.keys(presets).filter((k) => k !== '0')
-    .sort((a, b) => presetLabel(a).localeCompare(presetLabel(b)));
-  if (!ids.length) {
-    const opt = document.createElement('option');
-    opt.value = ''; opt.textContent = '(no presets)';
-    sel.appendChild(opt);
-  }
-  ids.forEach((id) => {
-    const opt = document.createElement('option');
-    opt.value = id;
-    opt.textContent = presetLabel(id);
-    sel.appendChild(opt);
-  });
-  if (prev) sel.value = prev;
-}
-
-function applyState(state) {
-  lastState = state;
-  maybeReplayRecall(state);
-  render();
-}
-
-function maybeReplayRecall(state) {
-  if (!pendingRecall) return;
-  if (Date.now() > pendingRecall.expires) { pendingRecall = null; return; }
-  // Ready once every targeted segment's fx equals the preset's fx — i.e. the
-  // target scene(s) are live. Then re-fire the preset: fx now matches (no
-  // re-jump), so this simply re-applies sliders + forces palette/color onto the
-  // now-live scene, which is what makes a cross-scene recall land perfectly.
-  const ready = Object.keys(pendingRecall.targetFx).every((id) => {
-    const seg = state.seg[parseInt(id, 10)];
-    return seg && seg.fx === pendingRecall.targetFx[id];
-  });
-  if (ready) {
-    const pid = pendingRecall.pid;
-    pendingRecall = null;
-    post({ps: pid});
-  }
-}
-
-async function fetchMeta() {
-  try {
-    const r = await fetch('/json');
-    const d = await r.json();
-    effects = d.effects || [];
-    palettes = d.palettes || [];
-    if (d.state) lastState = d.state;
-  } catch (e) { /* offline; keep last */ }
-  await fetchPresets();
-  render();
-}
-
-async function fetchPresets() {
-  try { const r = await fetch('/presets.json'); presets = await r.json(); }
-  catch (e) { presets = {}; }
-}
-
-function applyPreset() {
-  const sel = document.getElementById('presetSel');
-  const pid = parseInt(sel.value, 10);
-  if (!pid || !presets[pid]) return;
-  post({ps: pid});
-  // Arm the cross-scene replay: remember which fx each targeted segment should
-  // reach, so we can re-fire once the scene is live (see maybeReplayRecall).
-  const targetFx = {};
-  (presets[pid].seg || []).forEach((s) => { targetFx[s.id != null ? s.id : 0] = s.fx; });
-  pendingRecall = {pid: pid, targetFx: targetFx, expires: Date.now() + 8000};
-}
-
-function nextFreeId() { let id = 1; while (presets[id]) id++; return id; }
-
-async function savePreset() {
-  const nameEl = document.getElementById('presetName');
-  const id = nextFreeId();
-  // Omit `n` when blank so the server names it from the current scene's stable
-  // WLED label (a random-asset scene gets a pool name, not the loaded tune).
-  const body = {psave: id};
-  if (nameEl.value) body.n = nameEl.value;
-  await post(body);
-  nameEl.value = '';
-  // Save is exactly the moment a refresh is most wanted, and a focused
-  // <input> blocks render() from running at all — blur so it actually lands.
-  nameEl.blur();
-  setTimeout(async () => { await fetchPresets(); render(); }, 300);
-}
-
-async function deletePreset() {
-  const pid = parseInt(document.getElementById('presetSel').value, 10);
-  if (!pid) return;
-  await post({pdel: pid});
-  setTimeout(async () => { await fetchPresets(); render(); }, 300);
-}
-
-let wsRetryMs = 0;
-const WS_RETRY_MIN_MS = 500;
-const WS_RETRY_MAX_MS = 15000;
-
-function startWS() {
-  try {
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    ws = new WebSocket(scheme + location.host + '/ws');
-  } catch (e) { scheduleFallback(); retryWS(); return; }
-  ws.onopen = () => { wsRetryMs = 0; stopFallback(); fetchMeta(); };
-  ws.onmessage = (ev) => {
-    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
-    if (d && d.state) applyState(d.state);
-  };
-  ws.onclose = () => { scheduleFallback(); retryWS(); };
-  ws.onerror = () => { try { ws.close(); } catch (e) {} };
-}
-
-// Back off rather than retry at a fixed interval forever, and retry after a
-// construction failure too (which used to fall back to polling and never try
-// the socket again for the life of the page). `perf_console.py`'s page runs
-// the same loop and carries the same fix — the two are still two hand-written
-// copies, which is why they had drifted to different reconnect delays with no
-// backoff on either.
-function retryWS() {
-  wsRetryMs = wsRetryMs ? Math.min(wsRetryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
-  setTimeout(startWS, wsRetryMs);
-}
-
-// While WS is down, poll /json so the page still works without websockets.
-function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(fetchMeta, 4000); }
-function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
-
-// Blur after each: all three keep focus past their interaction (a checkbox
-// after click, a range after drag, per the browser), which would otherwise
-// freeze render()'s re-renders forever — same fix as the per-segment
-// controls above.
-document.getElementById('on').onchange = (e) => { post({on: e.target.checked}); e.target.blur(); };
-// Master brightness → top-level `bri`, the same field the WLED app's own
-// brightness slider drives, so the two stay in sync. A real screen dim; 0 =
-// black, never a pause.
-document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
-document.getElementById('bri').onpointerup = (e) => e.target.blur();
-document.getElementById('presetApply').onclick = applyPreset;
-document.getElementById('presetSave').onclick = savePreset;
-document.getElementById('presetDelete').onclick = deletePreset;
-
-fetchMeta();  // initial paint even before WS connects
-startWS();
-</script>
-</body>
-</html>
-"""
-# Source-first preserves the existing generator behavior; `scene.gain` reaches
-# the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
-# renderer and so have no source/effect holder — see the `scene` prefix in
-# live_tune.resolve_holder.
-_IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
+    A ~360-line HTML/CSS/JS document, so it lives in a real ``.html`` file
+    rather than a Python string: as a string it got no syntax highlighting, no
+    formatter, no linter, and could not be opened in a browser on its own while
+    someone iterated on it — the same move `perf_console.perf_page_html` made,
+    for the same reasons. It is still one fixed, server-authored body with no
+    caller content and no third-party resource in it.
+    """
+    return page_assets.page_html("c64cast.wled", "wled_index.html")
 
 
 def _local_ip() -> str:
@@ -1168,7 +824,7 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     @app.get("/")
     def index() -> Response:
-        return Response(content=_INDEX_HTML, media_type="text/html")
+        return Response(content=index_page_html(), media_type="text/html")
 
     @app.get("/description.xml")
     def description_xml() -> Response:
