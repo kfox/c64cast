@@ -72,7 +72,9 @@ def leading_argv(cmd: str) -> list[str] | None:
     segs = [s for s in segs if s]
     if not segs:
         return None
-    # Drop a leading `cd <dir>` (project convention for anchoring cwd).
+    # Drop a leading `cd <dir>` so the search itself is what gets judged. This
+    # shape is on its way out — require-resolvable-search-target.py denies a
+    # `cd` paired with a relative search target — but it still has to parse.
     if len(segs) >= 2 and segs[0][0] == "cd":
         segs = segs[1:]
     if len(segs) != 1:

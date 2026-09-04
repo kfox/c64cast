@@ -29,6 +29,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-resolvable-search-target.py\"",
+            "statusMessage": "Checking that the search target resolves"
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-make-test.py\"",
             "statusMessage": "Checking that tests run via make"
           },
