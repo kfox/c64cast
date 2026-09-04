@@ -408,7 +408,10 @@ class SidHeaderReadIsBoundedTest(unittest.TestCase):
         # guard the read blocked the validate request thread forever.
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "pipe.sid")
-            os.mkfifo(path)
+            # Suppressed because CI runs `pyright --pythonplatform Windows`,
+            # where os.mkfifo does not exist; the skipUnless above is the
+            # runtime guard.
+            os.mkfifo(path)  # type: ignore[attr-defined]
             s = SceneCfg(type="generative", audio_source="sid", file=path)
             opened: list[str] = []
             real_open = open
@@ -589,9 +592,12 @@ class SonglengthsCacheResetTest(unittest.TestCase):
 
     def setUp(self):
         self.addCleanup(scene_factory.reset_songlengths_cache)
-        self.addCleanup(os.chdir, os.getcwd())
         self.tmp = tempfile.TemporaryDirectory()
+        # addCleanup is LIFO, so the chdir-back must be registered *after* the
+        # directory's own cleanup to run before it: Windows refuses to remove a
+        # directory that is any process's current working directory.
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.tmp.name)
         scene_factory.reset_songlengths_cache()
 
