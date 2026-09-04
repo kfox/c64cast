@@ -31,6 +31,14 @@ def _preserve_original(config_path: str, backup: str) -> str:
     describe what happened for the log line.
 
     The one-shot semantics are the point — see `PlaylistMenu.save_config`.
+
+    The "already there" wording is deliberately about the *file*, not its
+    provenance: this cannot know whether an existing `.bak` is the pristine
+    original, an earlier version's save output, or something the operator put
+    there. Claiming "the original is preserved" would be the same unearned
+    reassurance the old unconditional-copy log line gave. Saying what it did —
+    left the existing file alone — is checkable and true either way.
+
     Imports locally to keep this module's import cost where the callers put
     it."""
     import os  # noqa: PLC0415  (lazy; matches save_config's own imports)
@@ -39,7 +47,7 @@ def _preserve_original(config_path: str, backup: str) -> str:
     if not os.path.exists(config_path):
         return "no original to preserve (new file)"
     if os.path.exists(backup):
-        return f"original already preserved at {backup}"
+        return f"kept the existing {backup} — not overwritten"
     shutil.copy2(config_path, backup)
     return f"original preserved at {backup}"
 

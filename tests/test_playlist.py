@@ -16,7 +16,9 @@ Run:    python -m unittest discover tests
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import logging
 import os
+import pathlib
 import tempfile
 import threading
 import time
@@ -1511,12 +1513,61 @@ class ConfigSaveBackupTest(unittest.TestCase):
         note = playlist_support._preserve_original(self.cfg_path, self.backup)
         with open(self.backup) as fh:
             self.assertEqual(fh.read(), "hand-written\n")
-        self.assertIn("already preserved", note)
+        self.assertIn("not overwritten", note)
 
     def test_no_original_means_no_backup(self):
         note = playlist_support._preserve_original(self.cfg_path, self.backup)
         self.assertFalse(os.path.exists(self.backup))
         self.assertIn("no original", note)
+
+    def _menu_over(self, cfg):
+        """A `PlaylistMenu` bound to a Playlist holding `cfg` at `cfg_path`.
+
+        Driven through the public `save_config` rather than the private
+        helper, because the helper being right is not the fix — the fix is
+        that the repeat-save path *reaches* it. `machine_baseline` is stubbed
+        so the serializer never reads this machine's real settings file."""
+        from unittest import mock
+
+        from c64cast.app import config as cfgmod
+
+        pl = Playlist.__new__(Playlist)
+        pl.config = cfg
+        pl.config_path = self.cfg_path
+        pl.log = logging.getLogger("c64cast.app.playlist")
+        menu = playlist_support.PlaylistMenu(pl)
+        self.enterContext(mock.patch.object(cfgmod, "machine_baseline", lambda: cfgmod.Config()))
+        return menu
+
+    def test_two_save_config_calls_leave_the_hand_written_original(self):
+        # The regression itself: --overwrite calls save_config on every exit,
+        # so the second run's .bak used to be the first run's generated output.
+        from c64cast.app import config as cfgmod
+
+        with open(self.cfg_path, "w") as fh:
+            fh.write("# hand-written, irreplaceable\n")
+        menu = self._menu_over(cfgmod.Config())
+
+        with self.assertLogs("c64cast.app.playlist", "INFO"):
+            self.assertTrue(menu.save_config())
+            first_save = pathlib.Path(self.cfg_path).read_text()
+            self.assertTrue(menu.save_config())
+
+        self.assertEqual(pathlib.Path(self.backup).read_text(), "# hand-written, irreplaceable\n")
+        self.assertNotEqual(pathlib.Path(self.backup).read_text(), first_save)
+
+    def test_save_config_logs_what_became_of_the_backup(self):
+        from c64cast.app import config as cfgmod
+
+        with open(self.cfg_path, "w") as fh:
+            fh.write("# hand-written\n")
+        menu = self._menu_over(cfgmod.Config())
+
+        with self.assertLogs("c64cast.app.playlist", "INFO") as logs:
+            menu.save_config()
+            menu.save_config()
+        self.assertIn("original preserved at", logs.output[0])
+        self.assertIn("not overwritten", logs.output[1])
 
 
 if __name__ == "__main__":
