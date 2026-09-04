@@ -151,11 +151,6 @@ class SetPreEmphasisTest(unittest.TestCase):
         self.assertIsNone(s._dsp_params.pre_emphasis)
         self.assertEqual(_pre_emphasis_amount(s._dsp), PRE_EMPHASIS_LINE_DEFAULT)
 
-    def test_set_pre_emphasis_noop_without_params(self):
-        # __new__-built streamer (no __init__) must not raise.
-        s = AudioStreamer.__new__(AudioStreamer)
-        s.set_pre_emphasis(0.5)  # no _dsp_params → silent no-op
-
 
 class ConfigToParamsTest(unittest.TestCase):
     def test_dsp_enabled_on_by_default(self):

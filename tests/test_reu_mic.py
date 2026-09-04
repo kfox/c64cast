@@ -8,11 +8,13 @@ hand-assembled regression can't pass tests."""
 from __future__ import annotations
 
 import unittest
-from typing import cast
+from typing import Any, cast
+from unittest import mock
 
 import numpy as np
 from _fakes import FakeAPI, new_streamer, run_irq_handler
 
+from c64cast.audio import audio as audio_mod
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
@@ -23,7 +25,7 @@ from c64cast.audio.audio_handlers import (
     REU_MIC_IRQ_HANDLER,
     REU_MIC_SIZE,
     REU_PUMP_CHUNK_SIZE,
-    REU_PUMP_CIA1_LATCH,
+    REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
@@ -32,10 +34,17 @@ from c64cast.audio.audio_handlers import (
 )
 
 
-def _new_streamer(use_reu_pump: bool = True) -> AudioStreamer:
+def _new_streamer(use_reu_pump: bool = True, **overrides) -> AudioStreamer:
     """This file's defaults over the shared builder (dither + governor OFF,
     same rationale as test_reu_audio.py)."""
-    return new_streamer(dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False)
+    return new_streamer(
+        dither=False, use_reu_pump=use_reu_pump, reu_pump_governor=False, **overrides
+    )
+
+
+def _packed_latch(latch: int) -> str:
+    """The CIA #1 Timer A latch as write_memory records it (LO then HI)."""
+    return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
 
 
 class ReuMicIrqHandlerTest(unittest.TestCase):
@@ -178,8 +187,8 @@ class StartMicForReuPumpTest(unittest.TestCase):
     sounddevice InputStream open is unreachable without real audio
     hardware, so we monkey-patch _open_input_stream to a no-op."""
 
-    def _start(self):
-        s = _new_streamer()
+    def _start(self, **overrides):
+        s = _new_streamer(**overrides)
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
         s._start_mic_for_reu_pump(device=-1)
         return s
@@ -234,12 +243,26 @@ class StartMicForReuPumpTest(unittest.TestCase):
         expected = f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}"
         self.assertEqual(fake.memories["DF07"], expected)
 
-    def test_cia1_latch_is_reprogrammed(self):
-        # Same matched-rate latch as the video REU path.
+    def test_cia1_latch_is_derived_from_the_live_nmi_rate(self):
+        """The mic pump's latch must be the matched pump period for the
+        configured sample_rate, exactly as the video path derives it — writing
+        the historical 8 kHz constant here asked the pump for 85/128 of the
+        bytes NMI eats at the 12 kHz default, so the ring under-filled and NMI
+        re-read a lap-old span. The fixture used to pin sample_rate=8000, the
+        one rate at which the constant and the derivation agree."""
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = f"{REU_PUMP_CIA1_LATCH & 0xFF:02X}{(REU_PUMP_CIA1_LATCH >> 8) & 0xFF:02X}"
-        self.assertEqual(fake.memories["DC04"], expected)
+        # 12 kHz NTSC: NMI latch 84 → period 85 → 128 x 85 - 1 = 10879.
+        self.assertEqual(fake.memories["DC04"], _packed_latch(10879))
+        self.assertEqual(s._reu_cia1_latch_nominal, 10879)
+        self.assertNotEqual(fake.memories["DC04"], _packed_latch(REU_PUMP_CIA1_LATCH_8KHZ))
+
+    def test_cia1_latch_at_8khz_is_the_historical_value(self):
+        """The other end of the same derivation: at 8 kHz it still produces
+        chunk x 128 - 1, which is what REU_PUMP_CIA1_LATCH_8KHZ records."""
+        s = self._start(sample_rate=8000)
+        fake = cast(FakeAPI, s.api)
+        self.assertEqual(fake.memories["DC04"], _packed_latch(REU_PUMP_CIA1_LATCH_8KHZ))
 
     def test_irq_vector_patched_to_handler(self):
         s = self._start()
@@ -352,3 +375,67 @@ class MicCallbackReuTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PushMicToReuFailureTest(unittest.TestCase):
+    """The mic pump REUWRITEs straight from the PortAudio callback, which has
+    no worker and so none of the worker's telemetry. An exception leaving a
+    sounddevice callback kills mic audio for the rest of the scene and its
+    traceback goes to stderr via PortAudio rather than to the logger, so the
+    link failure is caught, counted, and logged once here."""
+
+    def _failing(self) -> AudioStreamer:
+        s = _new_streamer()
+
+        def boom(off: int, data: bytes) -> None:
+            raise RuntimeError("link down")
+
+        cast(Any, s).api.reu_write = boom
+        return s
+
+    def test_first_failure_is_logged_and_counted(self):
+        s = self._failing()
+        with self.assertLogs("c64cast.audio.audio", level="ERROR") as cm:
+            s._push_mic_to_reu(b"\x07" * 128)
+        self.assertEqual(s._mic_reu_write_errors, 1)
+        self.assertTrue(any("REU write failed" in m for m in cm.output), cm.output)
+        # The write never landed, so neither the head nor the push count moved.
+        self.assertEqual(s._mic_reu_write_pos, 0)
+        self.assertEqual(s._pushed_count, 0)
+
+    def test_later_failures_are_counted_without_re_logging(self):
+        s = self._failing()
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s._push_mic_to_reu(b"\x07" * 128)
+        with mock.patch.object(audio_mod.log, "exception") as exc:
+            for _ in range(5):
+                s._push_mic_to_reu(b"\x07" * 128)
+        exc.assert_not_called()
+        self.assertEqual(s._mic_reu_write_errors, 6)
+
+    def test_stop_reports_the_run_total(self):
+        s = self._failing()
+        s._mic_reu_write_errors = 3
+        s.running = True
+        with self.assertLogs("c64cast.audio.audio", level="WARNING") as cm:
+            s.stop()
+        self.assertTrue(any("REU write failures this run" in m for m in cm.output), cm.output)
+        self.assertEqual(s._mic_reu_write_errors, 0)
+
+
+class PushMicToReuNormalizationTest(unittest.TestCase):
+    """Both branches store (pos + n) mod ring. The wrapping branch used to
+    store a bare `n - split`, which only stays in range while one block is
+    under a ring's worth past the head; outside that the write head is left
+    OUTSIDE the ring and every later call slices with a negative split."""
+
+    def test_block_larger_than_the_ring_keeps_the_head_inside_it(self):
+        s = _new_streamer()
+        fake = cast(FakeAPI, s.api)
+        s._mic_reu_write_pos = REU_MIC_SIZE - 16
+        s._push_mic_to_reu(b"\x07" * (2 * REU_MIC_SIZE + 32))
+        self.assertLess(s._mic_reu_write_pos, REU_MIC_SIZE)
+        self.assertGreaterEqual(s._mic_reu_write_pos, 0)
+        for off, _data in fake.socket_dma.reuwrites:
+            self.assertGreaterEqual(off, REU_MIC_BASE)
+            self.assertLess(off, REU_MIC_BASE + REU_MIC_SIZE)

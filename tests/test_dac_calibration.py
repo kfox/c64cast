@@ -114,7 +114,42 @@ def _signed_levels(lmax: float = 0.5) -> list[tuple[int, float]]:
     return [(c, levels[c]) for c in range(256)]
 
 
-class ResolveKeyTest(unittest.TestCase):
+class DataDirIsolated(unittest.TestCase):
+    """Base for every test that reads or persists a calibration.
+
+    Inherited rather than copied into each class because the one class that
+    lacked it wrote a real 15 KB calibration into the developer's own
+    ``~/.local/share/c64cast`` on every run — silently, since a passing test
+    says nothing about where it wrote. Anything reaching `save_calibration`
+    belongs here — and so does anything reaching
+    ``resolve_calibration_key`` with a profile set, which probes
+    ``paths.calibration_dir()`` for an existing file: against the real data
+    dir that test does not merely read outside its temp dir, it answers
+    differently depending on which profiles the developer happens to have
+    calibrated."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        # Redirect the whole data root at the env layer (paths.calibration_dir()
+        # is resolved from $C64CAST_DATA_DIR); no module global to patch.
+        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def save(self, cfg, entries, *, be=None, meta=None, d400=None):
+        """Persist a calibration for `cfg` — the resolve_calibration_key +
+        CalibrationDocument + save_calibration dance every persisting test
+        used to repeat inline."""
+        doc = dcs.CalibrationDocument(
+            dcs.resolve_calibration_key(cfg, be), entries, meta or {}, d400
+        )
+        return dcs.save_calibration(cfg, doc)
+
+
+class ResolveKeyTest(DataDirIsolated):
     def test_ultimate_offline_key_uses_host(self):
         self.assertEqual(
             dcs.resolve_calibration_key(_u64_cfg("192.168.2.64")), "ultimate-192.168.2.64"
@@ -237,36 +272,6 @@ class ResolveKeyTest(unittest.TestCase):
         cfg.audio.dac_calibration_profile = "my.rig"
         self.assertIsNone(dcs.profile_path_override(cfg))
         self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-my.rig")
-
-
-class DataDirIsolated(unittest.TestCase):
-    """Base for every test that persists a calibration.
-
-    Inherited rather than copied into each class because the one class that
-    lacked it wrote a real 15 KB calibration into the developer's own
-    ``~/.local/share/c64cast`` on every run — silently, since a passing test
-    says nothing about where it wrote. Anything reaching `save_calibration`
-    belongs here."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        # Redirect the whole data root at the env layer (paths.calibration_dir()
-        # is resolved from $C64CAST_DATA_DIR); no module global to patch.
-        self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
-        self._env.start()
-
-    def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
-
-    def save(self, cfg, entries, *, be=None, meta=None, d400=None):
-        """Persist a calibration for `cfg` — the resolve_calibration_key +
-        CalibrationDocument + save_calibration dance every persisting test
-        used to repeat inline."""
-        doc = dcs.CalibrationDocument(
-            dcs.resolve_calibration_key(cfg, be), entries, meta or {}, d400
-        )
-        return dcs.save_calibration(cfg, doc)
 
 
 class PersistenceTest(DataDirIsolated):

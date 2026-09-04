@@ -462,11 +462,30 @@ class RateServo:
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
         self.last_r_time = 0.0
-        self.health_gap_min = -1
-        self.health_gap_max = -1
+        self.reset_health_window()
         self.loop_chunk_count = 0
         self.loop_acquiring = True
         self.warmup_until = time.monotonic() + NMI_RATE_LOOP_WARMUP_S
+
+    def reset_health_window(self) -> None:
+        """Clear the per-window excursion trackers the streamer's health line
+        reports. Called once per emitted line, and at consumer start where the
+        window restarts — the point of a per-window line rather than a session
+        total is that its numbers describe that window only."""
+        self.health_gap_min = -1
+        self.health_gap_max = -1
+        self.r_rate_min = -1.0
+        self.r_rate_max = -1.0
+
+    def reset_run_telemetry(self) -> None:
+        """Clear the per-run gap telemetry stop() summarizes. Distinct from
+        reset_health_window on purpose: these span a whole run, those span one
+        health window, and the class that owns the counters is where that
+        distinction belongs — the streamer used to spell both out field by
+        field from two methods that never mentioned each other."""
+        self.gap_min = -1
+        self.gap_max = -1
+        self.gap_last = -1
 
     def reset_after_stop(self) -> None:
         """Clear the watchdog + adaptive-rate state so the next consumer

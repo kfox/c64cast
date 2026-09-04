@@ -259,6 +259,69 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The REU mic pump ran ~33% slow at the default sample rate.** The C64-side
+  pump is paced by CIA #1, whose latch has to be the chunk size times the NMI
+  period — a ratio of periods, so it is the same on NTSC and PAL, but it tracks
+  `[audio].sample_rate`. The video bring-up derived it from the live NMI latch;
+  the mic bring-up wrote a constant whose own definition records it as the
+  value for 8 kHz. At the shipped 12 kHz default that asked the pump for 85/128
+  of the bytes the NMI drains, so the audio ring under-filled and the NMI
+  re-read a lap-old span — the audible stale-data echo the derivation exists to
+  prevent. Both paths now share one derivation, one register write and one
+  record of what was written, and a latch too large for the two 8-bit registers
+  (roughly `sample_rate` below 2 kHz — `nmi_rate_safety` bounds only the fast
+  end) is clamped with a warning instead of being silently truncated modulo
+  65536 into an arbitrary pump rate.
+- **A REU-staged audio track longer than ~20 minutes overwrote the video
+  staging region.** One byte is one sample, so the upload's footprint grows
+  with the track's duration, and nothing at any layer bounded it: past
+  `$E00000` at the 12032 Hz NTSC default it runs into the region the REU
+  bank-swap bitmap path rewrites every frame, so the audio pump DMA'd bitmap
+  bytes into the ring as full-scale garbage while the per-frame video writes
+  shredded the audio — with no host-side error, on nothing more exotic than a
+  long clip. The payload (and with it the EOF pad, which starts where the
+  payload ends) is now bounded by the region and truncated with a warning.
+- **A short chunk during the audio prebuffer could push a ring write past the
+  end of the ring.** The worker's NEUTRAL tail pad was gated on the consuming
+  phase, so a collect window that closed short while prebuffering was written
+  at its raw length and took the ring write pointer off the chunk grid the ring
+  size is an exact multiple of. Both wrap guards check the address only after
+  the increment, so the next chunk to cross the boundary went out first and its
+  tail landed outside the ring — never played, and over memory another scene
+  uses. Reachable on the ordinary mic path, where the worker starts before the
+  input stream opens. Every short chunk is padded now; the partial-underrun
+  counter stays consumption-phase-only.
+- **A seek or loop wrap could leave an ~85 ms stale-audio echo in the ring.**
+  The audio worker holds one chunk in flight, and a transport splice that
+  landed while it did dropped that chunk without writing anything into the ring
+  span it had already been assigned — so the NMI replayed that span from one
+  ring lap earlier, in the one place the splice design promises a
+  constant-latency crosscut. The span is NEUTRAL-filled now, which also keeps
+  the pacing servo's idea of the write head truthful across the splice. The
+  pause path happened to cover this; a plain seek or loop wrap did not.
+- **A dead audio worker was invisible, and could come back as a second one.**
+  `stop()` joins the worker with a one-second bound, because a ring write on a
+  stalled link can outlast it — but it neither said so nor stopped the next
+  scene from starting a second worker into the same ring. A survivor is now
+  reported, and each worker is fenced to the start that created it, so it exits
+  on its own instead of being resurrected by the next scene's start. Worker
+  liveness also joins `AudioStreamer.stats()`, which is what the crash
+  handler's flag was always for.
+- **A capture block that arrived as a flat array crashed the mic callback.**
+  All three capture paths spelled their mono fallback in a way that could only
+  raise `IndexError` on the one input it existed for — inside a PortAudio
+  callback, where the traceback goes to stderr rather than the log and audio
+  simply stops. One shared downmix now, correct on both shapes. In the same
+  callback, a link failure during a REU mic write is caught, counted and logged
+  once per run instead of killing mic audio for the rest of the scene with
+  nothing in the log to point at.
+- **The audio push path's backpressure used the wall clock.** A clock step
+  during a run either expired the producer's 200 ms wait instantly, dropping a
+  blob that had capacity coming, or parked the decoder thread for the length of
+  a backward step; every other deadline in the module is monotonic. A blob
+  larger than the whole queue cap could also never satisfy the gate however
+  empty the queue got, so it was dropped forever with no diagnostic — an empty
+  queue admits it once now.
 - **Auto-interleaved videos got almost none of a video scene's wiring.**
   `[playlist].interleave_videos` constructed its `VideoScene` directly and
   hand-copied one of the six things the video builder does — the frame-push
@@ -699,6 +762,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fault that did not exist.
 
 ### Changed
+
+- `AudioStreamer.stats()` renames `late_worst_s` to `late_worst_window_s` and
+  adds `running`. Every other counter in that snapshot is cumulative for the
+  run, while this one is cleared on each health log line, so the key now says
+  which it is. (Public only to the Python API, which carries no stability
+  promise at `0.x`; nothing in the CLI or config surface changes.)
 
 - `MachineSettingsIsolation` (test helper) now redirects `$C64CAST_DATA_DIR`
   alongside `$C64CAST_SETTINGS`, so a test module that opts into it cannot read

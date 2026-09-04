@@ -375,7 +375,7 @@ def new_streamer(**overrides):
     from c64cast.audio.audio import AudioStreamer
     from c64cast.hw.api import Ultimate64API
 
-    kwargs: dict = {"sample_rate": 8000, "system": "NTSC", "host_dma_servo": False}
+    kwargs: dict = {"sample_rate": 12000, "system": "NTSC", "host_dma_servo": False}
     kwargs.update(overrides)
     return AudioStreamer(cast(Ultimate64API, FakeAPI()), **kwargs)
 

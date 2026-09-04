@@ -252,11 +252,21 @@ def encode_floats_to_dac(
 
 
 # Queue + backpressure sizing.
+# One ring write's worth of samples, and the unit the worker's whole pace
+# schedule is quantized to (chunk_period = CHUNK_SIZE / effective_rate ≈ 85 ms
+# at the 12 kHz default). An exact divisor of RING_BUFFER_SIZE, which is what
+# keeps write_addr on a grid the ring end falls on — see the unconditional
+# NEUTRAL tail pad in AudioStreamer._worker.
+CHUNK_SIZE = 1024
 AUDIO_QUEUE_MAX_BLOBS = 256  # outer cap (per-blob, not per-sample)
 MAX_QUEUED_SAMPLES = 16384  # soft cap (~1.4 s @ 12 kHz)
 PREBUFFER_CHUNKS = 6  # chunks to buffer before starting NMI
 QUEUE_PUT_TIMEOUT_S = 0.2
 BACKPRESSURE_SPIN_S = 0.005  # sleep between full-queue retries
+# How long stop() waits for the audio worker to leave its loop. A chunk period
+# is ~85 ms at the default, so this is generous for the normal case; a ring
+# write on a stalled link can exceed it, which is exactly what it bounds.
+WORKER_JOIN_TIMEOUT_S = 1.0
 
 # Pre-quantization sample tap. Holds the most recent SAMPLE_TAP_SIZE float
 # samples in [-1, 1] for FFT-based overlays (spectrum analyzers). Sized to
@@ -282,6 +292,22 @@ REU_PUMP_HANDLER_ADDR = 0xC100  # IRQ handler lives here; $C020 NMI handler stay
 REU_AUDIO_BASE = 0x000000  # REU offset where preloaded audio starts
 REU_PUMP_CHUNK_SIZE = 128  # bytes per IRQ-triggered REU DMA (default)
 REU_UPLOAD_SLICE = 32 * 1024  # bytes per socket REUWRITE (one per slice)
+
+# First REU offset the staged-audio upload must NOT reach.
+#
+# One byte is one sample, so the region a track consumes grows with its
+# duration — nothing about the upload is length-bounded on its own. The next
+# region actually live while a REU-staged track plays is the video staging
+# area the bank-swap bitmap path owns (video/modes_irq.REU_VIDEO_SCREEN_BASE),
+# because that path and this one run in the same scene. The mic ring
+# (REU_MIC_BASE) and the sampler's PCM ring belong to paths that are mutually
+# exclusive with staged audio, so crossing those is harmless.
+#
+# Kept as a local number rather than an import so the audio layer keeps no
+# dependency on the video layer; tests/test_reu_audio.py asserts it against
+# modes_irq's own base, so the two cannot drift silently.
+REU_AUDIO_REGION_END = 0xE00000
+REU_AUDIO_MAX_BYTES = REU_AUDIO_REGION_END - REU_AUDIO_BASE
 
 # Write-behind-read margin for the pump's initial pointer placement.
 #
@@ -326,11 +352,28 @@ REU_PUMP_INITIAL_MARGIN = RING_BUFFER_SIZE // 2  # 4096 B = half the ring
 # NMI rate).
 REU_PUMP_CHUNK_SIZE_HEAVY_BUS = 80
 
-# CIA #1 Timer A latch for matched pump rate. Pump period = chunk × NMI
-# period. With chunk = 128 and NMI Timer A latch = 127 (period = 128 cyc),
-# pump period = 128 × 128 = 16384 cyc. latch = 16383 = $3FFF. This holds for
-# both NTSC and PAL because it's a ratio of periods, not an absolute time.
-REU_PUMP_CIA1_LATCH = 0x3FFF
+# The matched pump latch AT 8 kHz ONLY — a reference value, not a default to
+# write. Pump period = chunk × NMI period, so with chunk = 128 and an NMI
+# Timer A latch of 127 (period = 128 cyc) the pump period is 128 × 128 = 16384
+# cyc and the latch is 16383 = $3FFF. That ratio is system-independent (NTSC
+# and PAL alike), but it is NOT rate-independent: the NMI period is
+# (nominal_latch + 1) cycles, which tracks [audio].sample_rate. At the shipped
+# 12 kHz default the NMI latch is 84, so the matched pump latch is
+# 128 × 85 - 1 = 10879 — writing this constant instead would under-produce by
+# 85/128. Both live pump paths therefore derive the latch from the live NMI
+# latch (AudioStreamer._program_reu_pump_rate); the name says 8 kHz so the
+# rate assumption cannot be borrowed by accident.
+REU_PUMP_CIA1_LATCH_8KHZ = 0x3FFF
+
+# A CIA Timer A latch is two 8-bit registers, so a derived latch above this
+# is silently truncated modulo 65536 by the register write.
+CIA_TIMER_LATCH_MAX = 0xFFFF
+
+# Settle window between arming the NMI consumer and arming the C64-side pump,
+# so the NMI is already firing when the first pump DMA lands — otherwise that
+# DMA can overwrite ring positions the NMI has not read yet (a glitch at the
+# very start of playback). Both pump bring-ups wait it out.
+REU_PUMP_SETTLE_S = 0.05
 
 # --- C64-side REU-pump rate governor -------------------------------------
 # The pump (CIA #1 rate) produces at the fixed nominal rate; video DMA
@@ -450,6 +493,39 @@ NMI_BITMAP_SEED_MODES = frozenset({"hires", "mhires"})
 # the imported constant, not a re-typed literal).
 REU_CMD_FETCH_EXEC = REU.CMD_FETCH_EXEC  # $91
 
+
+def _assert_chunk_offsets(handler: bytes, offsets: tuple[int, ...], name: str) -> None:
+    """Check that every ``*_CHUNK_OFFSETS`` entry really addresses a
+    chunk-length operand in ``handler``, LO first then HI, alternating.
+
+    The offsets are what ``AudioStreamer.start_for_reu_staged`` patches a
+    per-scene chunk size into, and a wrong one writes a length into some
+    other instruction's operand — which DMAs from or to a garbage address
+    (bursts of static into the ring, writes into color RAM). The length
+    asserts beside each handler catch a size change; this catches a
+    same-length re-arrangement, which they cannot see.
+    """
+    lo = REU_PUMP_CHUNK_SIZE & 0xFF
+    hi = (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF
+    for i, off in enumerate(offsets):
+        expected = lo if i % 2 == 0 else hi
+        assert handler[off] == expected, (
+            f"{name} offset {off} holds ${handler[off]:02X}, not the "
+            f"chunk-size {'LO' if i % 2 == 0 else 'HI'} byte ${expected:02X} — "
+            "the handler bytes were re-assembled without moving the offsets."
+        )
+
+
+def patch_chunk_size(handler: bytes, offsets: tuple[int, ...], chunk: int) -> bytes:
+    """Return ``handler`` with a per-scene ``chunk`` size written into the
+    length operands at ``offsets`` (LO then HI, alternating — the shape of
+    every ``*_CHUNK_OFFSETS`` tuple in this module)."""
+    patched = bytearray(handler)
+    for i, off in enumerate(offsets):
+        patched[off] = (chunk >> (0 if i % 2 == 0 else 8)) & 0xFF
+    return bytes(patched)
+
+
 # 6502 IRQ handler at $C100. PHA / re-set length (the U64's REU decrements
 # the length register during transfer; without re-setting, subsequent triggers
 # would transfer only 1 byte) / trigger DMA / wrap dest from RING_END → RING /
@@ -526,6 +602,13 @@ assert len(REU_IRQ_HANDLER) == 37, (
     "REU_IRQ_HANDLER length changed — BCC offset (currently +10) may need "
     "to be recomputed to reach the PLA byte after the wrap block."
 )
+# Where a per-scene chunk size is patched in: LDA #<chunk operand at 2,
+# LDA #>chunk at 7. Named beside the assembly they index so re-assembling
+# these bytes moves the offsets in the same file — the NMI routine's patch
+# offsets have always worked that way (NMI_ROUTINE_PATCH_OFFSET_*); the REU
+# variants' were literals at the call site.
+REU_IRQ_HANDLER_CHUNK_OFFSETS = (2, 7)
+_assert_chunk_offsets(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, "REU_IRQ_HANDLER")
 
 
 # --- Plain governor handler (skip-when-ahead, zero host writes) -----------
@@ -551,6 +634,7 @@ assert len(REU_IRQ_HANDLER) == 37, (
 #
 # The skipped PLA balances the offset-0 PHA on both paths. The body's internal
 # BCC (+10 to its PLA) is relative and unchanged by the prefix shift.
+REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN = 18
 REU_IRQ_HANDLER_GOVERNOR = (
     bytes(
         [
@@ -576,13 +660,23 @@ REU_IRQ_HANDLER_GOVERNOR = (
     )
     + REU_IRQ_HANDLER[1:]
 )  # pump body, sans leading PHA
-assert len(REU_IRQ_HANDLER_GOVERNOR) == 18 + 36, (
+assert len(REU_IRQ_HANDLER_GOVERNOR) == REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN + 36, (
     "REU_IRQ_HANDLER_GOVERNOR length changed — the governor prefix is 18 bytes "
     "(BCC +4 over the 4-byte skip block) followed by REU_IRQ_HANDLER[1:]."
 )
 # Pump body must start exactly at offset 18 (the BCC +4 target).
-assert REU_IRQ_HANDLER_GOVERNOR[18] == REU_IRQ_HANDLER[1], (
+assert REU_IRQ_HANDLER_GOVERNOR[REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN] == REU_IRQ_HANDLER[1], (
     "governor pump-body offset drifted from the BCC +4 target (18)"
+)
+# The body is REU_IRQ_HANDLER[1:] behind the prefix, so every plain offset
+# shifts by (prefix - 1): 2 → 19, 7 → 24. Derived rather than re-typed.
+REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS = tuple(
+    off + REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN - 1 for off in REU_IRQ_HANDLER_CHUNK_OFFSETS
+)
+_assert_chunk_offsets(
+    REU_IRQ_HANDLER_GOVERNOR,
+    REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS,
+    "REU_IRQ_HANDLER_GOVERNOR",
 )
 
 
@@ -817,6 +911,14 @@ assert len(REU_IRQ_HANDLER_TRACKED) == 125, (
     "chunk-size patch offsets (2, 7, 51, 59, 76, 84), and divider patch "
     "offset (112) must be recomputed."
 )
+# Six chunk operands here, not two: the length reload plus the src and dst
+# advances the tracked variant does by hand (see the layout comment above).
+REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS = (2, 7, 51, 59, 76, 84)
+_assert_chunk_offsets(
+    REU_IRQ_HANDLER_TRACKED,
+    REU_IRQ_HANDLER_TRACKED_CHUNK_OFFSETS,
+    "REU_IRQ_HANDLER_TRACKED",
+)
 
 
 # --- Pump body subroutine (for chunked bank-swap inline call) -------------
@@ -861,7 +963,8 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 # preload). Host's sounddevice callback REUWRITEs each encoded chunk into
 # the REU mic ring at `AudioStreamer._mic_reu_write_pos`, wrapping at REU_MIC_SIZE. The
 # C64-side IRQ handler reads from the same ring at the matched pump rate
-# (CIA #1 latch = REU_PUMP_CIA1_LATCH, same as video), wrapping its
+# (CIA #1 latch derived from the live NMI latch by
+# AudioStreamer._program_reu_pump_rate, same as video), wrapping its
 # REU source pointer at REU_MIC_END_HI.
 #
 # Bootstrap: the entire REU ring is pre-filled with NEUTRAL_SAMPLE so the
@@ -877,7 +980,10 @@ assert REU_PUMP_BODY_SUBROUTINE[-1] == 0x60, "subroutine must end with RTS"
 # before host catches up to pump (then samples drop). For typical short
 # sessions this is invisible; for very long sessions a periodic resync
 # would be needed (future work).
-REU_MIC_BASE = 0x100000  # 1 MB into REU — well above the audio region
+# 1 MB into REU. A scene runs at most one pump, so this never coexists with
+# the staged-audio upload at REU_AUDIO_BASE — REU_AUDIO_MAX_BYTES is bounded
+# by the video staging region instead, which does coexist with it.
+REU_MIC_BASE = 0x100000
 REU_MIC_SIZE = 0x10000  # 64 KB (several seconds of headroom)
 REU_MIC_END = REU_MIC_BASE + REU_MIC_SIZE
 REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
