@@ -29,7 +29,15 @@ a web launch and a pad launch are indistinguishable downstream:
   screen, which is the whole point of a phone console.
 * **Transport** (``pause`` / ``resume`` / ``skip``) and **jump** set the same
   playlist events the C64's own keys do, so the run loop applies them at its
-  next clean boundary rather than this thread mutating a scene.
+  next clean boundary rather than this thread mutating a scene. The Phase-7
+  verbs (freeze / scrub / rw / ff / loop) reach the same ``TransportSession``
+  the MIDI surface drives, and **that engine posts its own OSD line** — so the
+  no-``post_osd`` rule above is this module's own discipline, not something the
+  transport engine inherits: a ``loop_slot`` save does draw ``SAVED 3`` over the
+  audience output. What is closed here is the caller's hand in that string: the
+  slot a console may name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX``
+  (see :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated
+  into it and nothing unbounded is persisted.
 * **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.control.performance.LookEvent`
   (``save`` / recall), drained on the playlist thread exactly like a clip launch —
   a look captures the active clip + effect-chain state and re-fires it on recall.
@@ -48,8 +56,10 @@ make FastAPI mis-read it as a query param and skip the WebSocket injection.
 
 import asyncio
 import contextlib
+import json
 import logging
 import math
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import PurePath
@@ -58,9 +68,9 @@ from typing import Any
 from c64cast.app.playlist import Playlist
 
 from . import live_tune
-from .auth import SCOPE_ROLE_KEY, is_viewer
+from .auth import BODY_TOO_LARGE_ERROR, BodyTooLarge, is_viewer, read_body, role_of, same_origin
 from .performance import ClipEvent
-from .transport import TransportEvent
+from .transport import JsonSlotStore, TransportEvent
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +106,41 @@ TRANSPORT_VERBS = (
 # count-in readout feel live. ~3/sec is trivially cheap (one small JSON to a
 # couple of phones) and nowhere near any I/O ceiling.
 _PUSH_INTERVAL_S = 0.35
+
+#: How many console state sockets one feed may hold open at once.
+#:
+#: Every accepted socket runs its own push loop, and every cycle of that loop
+#: builds a whole state frame — the live-tune catalog resolved against the
+#: running scene, plus the look store and the loop-preset store read off disk.
+#: Nothing capped it: a handshake is a bare ``GET``, so the method gate admits
+#: even a **viewer** token (the credential meant to be handed to a stranger),
+#: and a couple of hundred `wscat` connections bought a few hundred frame
+#: builds a second on the host that owns the hardware. This is the decision
+#: ``web_api.MAX_SCREEN_WATCHERS`` / ``StreamSlots`` already made for
+#: ``/api/screen/stream``: refuse past the cap rather than queue, because a
+#: queued console connects and then shows nothing. Four browsers watching one
+#: show is already unusual; eight is generous for the two feeds together.
+MAX_CONSOLE_SOCKETS = 8
+
+#: Cap on a ``POST /perf/command`` body. A console command is a few hundred
+#: bytes, and this was the one POST in the package that skipped
+#: :func:`auth.read_body` — ``await request.json()`` buffers every chunk before
+#: parsing, unbounded, on a host that owns live hardware.
+MAX_COMMAND_BYTES = 64 << 10
+
+#: Longest live-tune target a console may name. Every real one is a short
+#: dotted name (``mode.border``, ``fx2.amount``). The cap is here because
+#: ``live_tune.resolve_holder`` parses the ``fx<n>`` prefix with ``int()`` and
+#: CPython refuses an integer literal of more than 4300 digits, so a crafted
+#: ``"fx" + "9" * 5000 + ".amount"`` raised ``ValueError`` from a place no
+#: reader would think to guard.
+MAX_TARGET_CHARS = 128
+
+#: RFC 6455 close codes for a handshake this module refuses before accepting:
+#: 1013 "try again later" for the socket cap, 1008 "policy violation" for a
+#: cross-origin handshake (the code ``auth._deny`` uses for the same reason).
+_WS_TRY_AGAIN_LATER = 1013
+_WS_POLICY_VIOLATION = 1008
 
 
 class SocketReader:
@@ -164,6 +209,165 @@ class SocketReader:
             await task
 
 
+def with_role(state: dict[str, Any], scope: Mapping[str, Any]) -> dict[str, Any]:
+    """Tag a console state frame with the caller's role, and redact what a
+    viewer should not be handed. Shared by both feeds.
+
+    The role is ``None`` when the server runs without a token. The page greys
+    itself out for a ``viewer`` rather than letting taps fail silently against
+    the 403 the auth middleware answers writes with.
+
+    The redaction is ``tuned.config_path``. The absolute path of the running
+    show file rode in every frame, and ``GET /perf/state`` and both socket
+    pushes are read methods — so a **viewer** token, the read-only link this
+    system is designed to hand to a guest, disclosed the operator's username
+    and directory layout, which is reconnaissance for the config-store routes
+    the same host exposes. No secret was in it, so this is disclosure and not
+    escalation; it is emptied rather than dropped so the frame keeps one shape,
+    and ``config_name`` (already on the wire) is all the page ever used it for
+    — a truthiness test for whether a Save is offerable, which a viewer cannot
+    do anyway."""
+    state["role"] = role_of(scope)
+    if is_viewer(scope):
+        for system in state.get("systems", ()):
+            if "config_path" in system.get("tuned", {}):
+                system["tuned"]["config_path"] = ""
+    return state
+
+
+class ConsoleFeed:
+    """The outbound half of a console state socket — the loop both ``/perf/ws``
+    and :mod:`web_api`'s ``/api/ws`` run.
+
+    :class:`SocketReader` extracted the inbound half and this one was left
+    duplicated, which cost exactly what a duplicated loop costs: the two had
+    already drifted (one kept a client registry the other didn't, one named a
+    raise out of the dispatch in its handler comment and the other didn't), and
+    every guard below would otherwise have had to be written twice and kept in
+    agreement forever. The routes differ only in what goes *into* a frame and
+    what a command frame dispatches to, which is what ``build_frame`` and
+    ``dispatch`` are; ``on_tick`` is ``/api/ws``'s screen sweep, the one thing
+    it does per cycle that isn't part of the frame.
+
+    Three things the loop guarantees, so that neither caller has to remember
+    them:
+
+    * **The frame build and the dispatch run off the event loop.** Both do real
+      blocking work — one frame reads the look store and the loop-preset store
+      from disk, and a ``mode.border`` write is a DMA over TCP port 64 — and
+      the loop they used to run on also serves ``/status``, every ``/api``
+      route and the MJPEG screen stream, so a slow data dir or a stalled link
+      stalled all of it. The sync ``perf_state`` route got the threadpool for
+      free and was never affected, which was the tell.
+    * **A command frame cannot end the feed.** :meth:`PerfBridge.apply`
+      validates rather than coerces, *and* the dispatch has its own guard here,
+      so the exception ladder below only ever sees the socket's own send and
+      receive. That also stops ``except (ConnectionError, RuntimeError)`` —
+      justified as "an abrupt client close" — from quietly swallowing a
+      ``RuntimeError`` raised by an engine a console tap reached.
+    * **The socket count is capped** (:data:`MAX_CONSOLE_SOCKETS`) and a
+      cross-origin handshake is refused (:func:`auth.same_origin`), both before
+      ``accept``. The registry that counts is the set that used to be
+      write-only bookkeeping — the copied half of a broadcast registry with the
+      broadcast left out, which invited the next contributor to assume a
+      fan-out existed here."""
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        build_frame: Callable[[Mapping[str, Any]], dict[str, Any]],
+        dispatch: Callable[[Mapping[str, Any]], Any],
+        on_tick: Callable[[], None] | None = None,
+        limit: int | None = None,
+    ) -> None:
+        self.label = label
+        #: The sockets this feed is currently serving. Read as the cap.
+        self.clients: set[Any] = set()
+        self._build_frame = build_frame
+        self._dispatch = dispatch
+        self._on_tick = on_tick
+        # Read at construction rather than bound as a default, so a test can
+        # set the cap low without opening the real number of sockets.
+        self._limit = MAX_CONSOLE_SOCKETS if limit is None else limit
+
+    async def run(self, websocket: Any) -> None:
+        """Serve one console socket — refused, or accepted and pushed to until
+        it ends."""
+        # Imported here for the reason `register_perf_routes` gives: this
+        # module has to stay importable with no FastAPI in scope.
+        from fastapi import WebSocketDisconnect
+
+        refusal = self._refusal(websocket)
+        if refusal is not None:
+            code, why = refusal
+            # Debug, not warning: a refusal is floodable by whoever caused it,
+            # and this log is an appliance's only diagnostic surface.
+            log.debug("%s: refusing a state socket (%s)", self.label, why)
+            await websocket.close(code=code)
+            return
+        await websocket.accept()
+        self.clients.add(websocket)
+        # The one gap the auth middleware can't cover: a socket is a single
+        # `GET` handshake, so inbound command frames have to be dropped here.
+        read_only = is_viewer(websocket.scope)
+        reader = SocketReader(websocket, label=self.label)
+        try:
+            # Push a fresh snapshot on a fixed cadence; the client extrapolates
+            # the beat pulse locally in between. The polled receive lets a
+            # client command frame (if any) through without blocking the push.
+            while True:
+                if self._on_tick is not None:
+                    self._on_tick()
+                # Split from the socket's own failures below: a state frame
+                # that raises is *our* bug, and swallowing it silently leaves
+                # every connected console waiting forever for a push that will
+                # never come — a hang where an error belongs.
+                try:
+                    frame = await asyncio.to_thread(self._build_frame, websocket.scope)
+                except Exception:
+                    log.exception("%s: could not build a state frame", self.label)
+                    break
+                await websocket.send_json(frame)
+                arrived, msg = await reader.poll(_PUSH_INTERVAL_S)
+                if arrived and isinstance(msg, Mapping) and not read_only:
+                    await self._apply(msg)
+        except WebSocketDisconnect:
+            pass
+        except (ConnectionError, RuntimeError):
+            # An abrupt client close surfaces as a transport error rather than
+            # a `WebSocketDisconnect`, so these stay at debug — but everything
+            # else below is a socket nobody asked to close.
+            log.debug("%s: websocket closed", self.label, exc_info=True)
+        except Exception:
+            log.exception("%s: websocket closed unexpectedly", self.label)
+        finally:
+            await reader.close()
+            self.clients.discard(websocket)
+
+    def _refusal(self, websocket: Any) -> tuple[int, str] | None:
+        """``(close code, why)`` for a handshake this feed will not accept."""
+        if not same_origin(websocket.headers):
+            return _WS_POLICY_VIOLATION, "cross-origin handshake"
+        if len(self.clients) >= self._limit:
+            return _WS_TRY_AGAIN_LATER, f"{self._limit} already open"
+        return None
+
+    async def _apply(self, msg: Mapping[str, Any]) -> None:
+        """Dispatch one command frame off the loop, and never let it end the
+        feed.
+
+        The dispatch reaches every engine a console tap can touch, and none of
+        them is audited against raising — while this socket is the console's
+        only channel for state and log lines. So a raise from below is one
+        debug line and then the next push, rather than a torn-down feed and a
+        traceback per frame in ``--log-file``."""
+        try:
+            await asyncio.to_thread(self._dispatch, msg)
+        except Exception:
+            log.debug("%s: a command frame raised; ignoring it", self.label, exc_info=True)
+
+
 def _tempo_dict(pl: Playlist) -> dict[str, Any]:
     """Snapshot the playlist's beat grid (all GIL-atomic reads). ``beat_phase`` /
     ``bar_phase`` are sampled once against a single ``now`` so the client's local
@@ -200,13 +404,16 @@ def _beats_remaining(pl: Playlist, detail: tuple[int, str, float, float]) -> flo
     return max(0.0, remaining_bars * tempo.beats_per_bar)
 
 
-def _effects_dict(pl: Playlist) -> list[dict[str, Any]]:
-    """The current scene's effect chain as rack rows — one per layer, each with
-    its bypass state, ``mod_source``, and every declared ``LIVE_PARAMS`` field
+def _effects_dict(scene: Any) -> list[dict[str, Any]]:
+    """One scene's effect chain as rack rows — one per layer, each with its
+    bypass state, ``mod_source``, and every declared ``LIVE_PARAMS`` field
     (value + range + normalized position for the slider). Generated from the
     layer's own class ``LIVE_PARAMS`` (the registry source of truth), so the rack
-    can't drift from the effects registry."""
-    scene = pl.current
+    can't drift from the effects registry.
+
+    Takes the scene rather than the playlist: :func:`_system_state` samples
+    ``pl.current`` once and hands the same scene to every builder (see its
+    docstring for what re-reading it cost)."""
     effects = getattr(scene, "effects", None) or []
     out: list[dict[str, Any]] = []
     for idx, eff in enumerate(effects):
@@ -237,24 +444,47 @@ def _effects_dict(pl: Playlist) -> list[dict[str, Any]]:
     return out
 
 
-#: Every declared live-tune target, read once. It describes the registries, not
-#: the run, so it cannot change while the process is up — and building it pulls
-#: in numpy/cv2 through the mode and generator modules, which is work the state
-#: feed does three times a second.
-_LIVE_TARGETS: list[Any] = []
+#: Every declared live-tune target, built once. It describes the registries,
+#: not the run, so it cannot change while the process is up — and building it
+#: pulls in numpy/cv2 through the mode and generator modules, which is work the
+#: state feed does three times a second.
+#:
+#: ``None`` is the cold cache rather than an empty list, and the build is under
+#: a lock. ``if not _LIVE_TARGETS`` could not tell "not yet built" from "the
+#: registries yielded nothing" on the one path this comment says is read once,
+#: and the unsynchronized rebind let two threadpool workers serving a cold
+#: ``/perf/state`` both walk the whole model — the same honesty
+#: ``web_api.api_introspect``'s cache took a lock for. (``live_targets()``
+#: walks static class attributes a drift test pins, so the empty result is not
+#: reachable today; the sentinel is what keeps this comment true if it becomes
+#: reachable.)
+_LIVE_TARGETS: list[Any] | None = None
+_LIVE_TARGETS_LOCK = threading.Lock()
 
 
 def _live_target_docs() -> list[Any]:
     global _LIVE_TARGETS
-    if not _LIVE_TARGETS:
-        from c64cast.app import introspect
+    with _LIVE_TARGETS_LOCK:
+        if _LIVE_TARGETS is None:
+            from c64cast.app import introspect
 
-        _LIVE_TARGETS = introspect.live_targets()
-    return _LIVE_TARGETS
+            _LIVE_TARGETS = introspect.live_targets()
+        return _LIVE_TARGETS
 
 
-def _live_dict(pl: Playlist) -> list[dict[str, Any]]:
-    """The live-tune knobs the *current scene* actually has, with their values.
+def reset_live_target_docs() -> None:
+    """Drop the cached catalog.
+
+    For a test that alters the registries: a process-global with no reset hook
+    let one test inherit whatever the previous test in the same worker had
+    cached."""
+    global _LIVE_TARGETS
+    with _LIVE_TARGETS_LOCK:
+        _LIVE_TARGETS = None
+
+
+def _live_dict(scene: Any) -> list[dict[str, Any]]:
+    """The live-tune knobs one scene actually has, with their values.
 
     Every declared target is tried against the running scene and only the ones
     that resolve are sent, so a console renders exactly what it can turn — a
@@ -266,7 +496,6 @@ def _live_dict(pl: Playlist) -> list[dict[str, Any]]:
     The per-layer effect knobs are *not* here — those are addressed by layer
     (``fx2.amount``) and have their own rack in :func:`_effects_dict`, where
     bypass lives too."""
-    scene = pl.current
     out: list[dict[str, Any]] = []
     for doc in _live_target_docs():
         found = live_tune.resolve(scene, doc.target)
@@ -325,23 +554,34 @@ def _tuned_dict(pl: Playlist) -> dict[str, Any]:
         "config_name": (PurePath(pl.config_path).stem if pl.config_path else ""),
     }
     if savable and not pl.config_path:
-        out["snippet"] = pl.live_tracker.toml_snippet()
+        # From the rows already in hand. `toml_snippet()` calls `pending()` a
+        # second time, and a knob turned between the two reads (a MIDI CC, a
+        # second console) made `savable` and `snippet` describe different sets
+        # — `savable > 0` paired with `snippet == ""` is exactly the condition
+        # the page's `if (tuned.snippet)` branch keys off. `pending()`'s own
+        # docstring promises this self-consistency for its rows.
+        out["snippet"] = pl.live_tracker.snippet_from(savable)
     return out
 
 
-def scene_rows(pl: Playlist) -> list[dict[str, Any]]:
+def scene_rows(pl: Playlist, index: int | None = None) -> list[dict[str, Any]]:
     """The playlist's scenes, for a console that offers a jump.
 
     Shared with the control plane's ``/scenes`` so the two answers cannot
     disagree about what is playing. ``duration_s`` is None for a scene that runs
     until its source ends — VideoScene uses ``math.inf`` for that and JSON
-    cannot carry it."""
+    cannot carry it.
+
+    ``index`` names which row is current, for a caller that has already sampled
+    ``pl.index`` and needs these rows to agree with the rest of its snapshot
+    (:func:`_system_state`); it defaults to reading it here."""
+    current = pl.index if index is None else index
     return [
         {
             "index": i,
             "name": s.name,
             "duration_s": (None if math.isinf(s.duration_s) else s.duration_s),
-            "is_current": i == pl.index,
+            "is_current": i == current,
         }
         for i, s in enumerate(pl.scenes)
     ]
@@ -355,14 +595,13 @@ def _clip_state(slot: int, active: int | None, armed: int | None) -> str:
     return "loaded"
 
 
-def _transport_dict(pl: Playlist) -> dict[str, Any] | None:
-    """The DJ transport surface of the *current* scene (Live DJ/VJ Phase 7) —
+def _transport_dict(scene: Any) -> dict[str, Any] | None:
+    """The DJ transport surface of one scene (Live DJ/VJ Phase 7) —
     ``None`` for a scene that declares none (a generator, a picture, a scope),
     which is what tells the console to render no transport bar rather than one
     that writes nowhere. Duck-typed against the same ``transport_*`` methods
     :class:`~c64cast.control.transport.TransportSession` dispatches onto, so a
     console can only ask for what the engine already exposes."""
-    scene = pl.current
     position = getattr(scene, "transport_position", None)
     duration = getattr(scene, "transport_duration", None)
     is_paused = getattr(scene, "transport_is_paused", None)
@@ -380,7 +619,21 @@ def _transport_dict(pl: Playlist) -> dict[str, Any] | None:
 
 
 def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
+    """One system's whole console snapshot.
+
+    ``pl.current`` and ``pl.index`` are sampled **once**, at the top, and
+    handed down. Each of the four builders below used to re-read them, and
+    ``Playlist._advance`` writes ``index`` and ``current`` as two separate
+    statements with a teardown between them (``current`` is ``None`` for part
+    of it) — so a scene advance interleaved with the frame build emitted one
+    snapshot whose ``current_scene`` / ``scene_index`` / ``scenes[].is_current``
+    described scene A while ``effects`` / ``live`` / ``transport`` described
+    scene B, and the layer indices the console then offered addressed a chain
+    that had already moved. ``LiveTuneTracker.pending``'s docstring writes the
+    same discipline down for its own rows; nothing applied it here."""
     perf = pl.performance
+    scene = pl.current
+    index = pl.index
     active = perf.active_slot
     armed = perf.armed_slot
     detail = perf.armed_detail
@@ -395,32 +648,68 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
     clips = perf.clips_info()
     for clip in clips:
         clip["state"] = _clip_state(int(clip["slot"]), active, armed)
-    cur = pl.current
     return {
         "name": name,
-        "current_scene": cur.name if cur is not None else None,
-        "scene_index": pl.index,
+        "current_scene": scene.name if scene is not None else None,
+        "scene_index": index,
         "paused": pl.pause_event.is_set(),
-        "scenes": scene_rows(pl),
+        "scenes": scene_rows(pl, index),
         "tempo": _tempo_dict(pl),
         "active_slot": active,
         "armed": armed_block,
         "clips": clips,
-        "effects": _effects_dict(pl),
+        "effects": _effects_dict(scene),
         # The color-pipeline / generator / scope knobs the current scene has.
         # The same list --midi-setup maps a controller onto, so a phone and a
         # MIDI box reach the same surface (Live DJ/VJ Phase 7).
-        "live": _live_dict(pl),
+        "live": _live_dict(scene),
         # …and what has already been turned, so a console can offer to keep it.
         "tuned": _tuned_dict(pl),
         # Saved look slots (Live DJ/VJ Phase 6) — the console lights a recall pad
-        # only for a slot that holds a look. Reads the store from disk; cheap at
-        # the state-poll cadence.
+        # only for a slot that holds a look. This reads the look store off
+        # disk, and `transport.loop_slots` above reads the loop-preset store,
+        # so building one frame does real blocking I/O — which is why
+        # `ConsoleFeed` builds it on a thread rather than the event loop.
         "looks": perf.saved_look_slots(),
         # The current scene's DJ transport (freeze/scrub/rw/ff/A-B loop), or
         # None when it has none — see _transport_dict.
-        "transport": _transport_dict(pl),
+        "transport": _transport_dict(scene),
     }
+
+
+def _as_int(cmd: Mapping[str, Any], key: str, *, default: int | None = None) -> int | None:
+    """``cmd[key]`` as an ``int``, or ``None`` when it is absent or not a number.
+
+    Every numeric field of a console command comes through here or
+    :func:`_as_float`, because the caller is hand-written JS on a phone that may
+    well be a cached page from an older build — see :meth:`PerfBridge.apply`.
+    The exception set is wider than it looks: ``json.loads`` accepts the bare
+    literals ``1e400`` / ``Infinity`` / ``NaN``, and ``int(float("inf"))``
+    raises ``OverflowError`` (an ``ArithmeticError``, so not in the obvious
+    ``(KeyError, TypeError, ValueError)`` tuple). A ``bool`` is refused because
+    it is an ``int`` in Python and ``{"slot": true}`` would read as slot 1 —
+    the same reason ``web_api._opt_index`` refuses one."""
+    value = cmd.get(key, default)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _as_float(cmd: Mapping[str, Any], key: str, *, default: float | None = None) -> float | None:
+    """``cmd[key]`` as a finite ``float``, or ``None``. See :func:`_as_int`;
+    ``float("nan")`` and ``float("inf")`` parse without raising, so they are
+    refused here rather than reaching a seek target or a slider position."""
+    value = cmd.get(key, default)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return out if math.isfinite(out) else None
 
 
 class PerfBridge:
@@ -433,8 +722,18 @@ class PerfBridge:
     just means nothing is running. Reads build the console state snapshot;
     writes go through the same performance engine the MIDI surface uses (clip
     launch → ``pl.performance.enqueue``, tap → ``pl.tempo.tap``, fx → a
-    GIL-atomic layer write). Every method is cheap in-memory work — no DMA, no
-    lock needed beyond the engine's own queues.
+    GIL-atomic layer write).
+
+    **Not every method is cheap in-memory work**, which this docstring used to
+    claim ("no DMA, no lock needed"). :meth:`state` reads the look store and
+    the loop-preset store off disk per call, and :meth:`live` on
+    ``mode.border`` / ``mode.background`` reaches
+    ``BlankDisplayMode.set_border``, which is an ``api.write_regs("d020", …)``
+    — a DMA write over TCP port 64, behind the render thread's per-command
+    mutex, unboundedly long on a stalled link. That sentence mattered more than
+    the latency did, because it is the one a contributor would trust when
+    deciding where to call these from; both callers now go through
+    :class:`ConsoleFeed`, which puts them on a thread.
 
     An idle console gets an empty ``systems`` list rather than the ``503`` the
     control-plane routes answer with: the page is the gig-day fallback surface
@@ -487,13 +786,23 @@ class PerfBridge:
         """Set effect-chain layer ``layer``'s bypass (``enabled``) on the current
         scene. A plain GIL-atomic bool write (the render loop reads it next
         frame); no OSD. Out-of-range layer / no chain → no-op, but a valid system
-        still returns True (the command was addressed)."""
+        still returns True (the command was addressed).
+
+        The no-op is logged at debug. Not to change the documented True/False
+        contract — the distinction between "no system" and "no such target" is
+        deliberate — but because the page's ``post()`` discards every response
+        body and never inspects ``ok``, so a pad that does nothing mid-set left
+        no evidence on either side of the wire. One debug line is the only
+        thing that answers "did the tap reach the host?" without a repro, and
+        it costs nothing at default verbosity."""
         pl = self._resolve(system)
         if pl is None:
             return False
         effects = getattr(pl.current, "effects", None) or []
-        if 0 <= layer < len(effects):
-            effects[layer].enabled = bool(enabled)
+        if not 0 <= layer < len(effects):
+            log.debug("perf console: system %r has no effect layer %d", system, layer)
+            return True
+        effects[layer].enabled = bool(enabled)
         return True
 
     def fx_param(self, system: str | None, layer: int, param: str, norm: float) -> bool:
@@ -523,16 +832,27 @@ class PerfBridge:
         reaches the config the daemon has no exit prompt to offer it at. Returns
         False only for an unknown system: a target the current scene doesn't have
         is a no-op, not an error, because the scene can change between the frame
-        that offered the control and the tap."""
+        that offered the control and the tap — logged at debug, because the page
+        discards the response and a dead knob otherwise leaves no trace (see
+        :meth:`fx_bypass`).
+
+        The one refusal that is not about the system is an absurdly long
+        ``target`` (:data:`MAX_TARGET_CHARS`), checked here because this is the
+        single funnel both the ``live`` action and :meth:`fx_param` come
+        through."""
         pl = self._resolve(system)
         if pl is None:
+            return False
+        if not target or len(target) > MAX_TARGET_CHARS:
+            log.debug("perf console: refusing a %d-character live-tune target", len(target))
             return False
         move = (
             live_tune.Move(position=float(norm), full_scale=1.0, osd=False)
             if norm is not None
             else live_tune.Move(value=value, osd=False)
         )
-        live_tune.apply(pl, target, move)
+        if not live_tune.apply(pl, target, move):
+            log.debug("perf console: system %r cannot resolve %r right now", system, target)
         return True
 
     def transport(
@@ -566,7 +886,15 @@ class PerfBridge:
         ``transport_is_paused`` itself, on the playlist thread, right before
         acting on it — so two consoles open on the same show, or a network
         retry, can't race each other's stale read of the pre-enqueue state
-        into a double-toggle that cancels out."""
+        into a double-toggle that cancels out.
+
+        ``loop_slot`` is the one verb here that **writes and deletes persisted
+        state on disk** (``LoopPresetStore.save`` / ``delete``), so its ``slot``
+        is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX`` — the range the look
+        store has always enforced. An unbounded slot meant one new key
+        persisted per event, each save rewriting the whole grown file on the
+        playlist thread that drives the hardware, and the digits ended up in an
+        OSD line over the audience output."""
         pl = self._resolve(system)
         if pl is None or verb not in TRANSPORT_VERBS:
             return False
@@ -590,19 +918,37 @@ class PerfBridge:
         if verb == "loop_toggle":
             pl.transport.enqueue(TransportEvent(action="loop_toggle"))
             return True
-        # loop_slot
-        pl.transport.enqueue(TransportEvent(action="loop_slot", slot=slot, save=save, clear=clear))
-        return True
+        if verb == "loop_slot":
+            if not JsonSlotStore.SLOT_MIN <= slot <= JsonSlotStore.SLOT_MAX:
+                log.debug("perf console: loop slot %d is outside the pad range", slot)
+                return False
+            pl.transport.enqueue(
+                TransportEvent(action="loop_slot", slot=slot, save=save, clear=clear)
+            )
+            return True
+        # Unreachable while `TRANSPORT_VERBS` and the branches above agree, and
+        # this line is what makes that a statement rather than an accident: the
+        # dispatch used to *end* in the `loop_slot` enqueue with no `if`, so
+        # adding a verb to the tuple — the obvious way to grow this surface,
+        # and where a contributor starts — silently saved or cleared one of the
+        # performer's loop presets instead. `tests/test_perf_console.py` walks
+        # the tuple and asserts each verb has its own effect.
+        return False
 
     def jump(self, system: str | None, index: int) -> bool:
         """Go to scene `index` now. A cut rather than an interstitial: a console
         jump is a correction ("that one, not this one"), and the transition
-        would put a title card in front of the thing being corrected to."""
+        would put a title card in front of the thing being corrected to.
+
+        An index past the end is an addressed no-op (True), logged at debug for
+        the reason :meth:`fx_bypass` gives."""
         pl = self._resolve(system)
         if pl is None:
             return False
-        if 0 <= index < len(pl.scenes):
-            pl.request_jump(index, skip_interstitial=True)
+        if not 0 <= index < len(pl.scenes):
+            log.debug("perf console: system %r has no scene %d", system, index)
+            return True
+        pl.request_jump(index, skip_interstitial=True)
         return True
 
     def look(self, system: str | None, slot: int, save: bool) -> bool:
@@ -619,45 +965,95 @@ class PerfBridge:
     def apply(self, cmd: Mapping[str, Any]) -> bool:
         """Dispatch one console command dict (shared by the POST endpoints and
         the WS command frame). ``{"action": "launch"|"tap"|"fx"|"live"|
-        "transport"|"jump"|"look", ...}``."""
+        "transport"|"jump"|"look", ...}``.
+
+        **A decodable frame never raises.** Every field is read through
+        :func:`_as_int` / :func:`_as_float` and a missing or unparseable one
+        answers ``False``, the same as an unknown action. This used to index
+        ``cmd["slot"]`` / ``["layer"]`` / ``["target"]`` / ``["index"]``
+        directly and coerce with bare ``int()`` / ``float()``, so
+        ``{"action": "launch"}`` raised ``KeyError`` from inside the WS push
+        loop, escaped to its outer ``except Exception``, and closed the
+        console's only feed — with a full traceback per bad frame at default
+        verbosity, on a loop a caller can reconnect immediately. That is
+        precisely the outcome :class:`SocketReader` exists to prevent for an
+        *undecodable* frame, left open one layer down for a decodable one: the
+        validation was enforced at the decode and defeated at the dispatch. The
+        same body was an uncaught 500 on ``POST /perf/command``.
+
+        It matters here rather than only at the call sites because the page
+        that builds these frames is hand-written JS that nothing type-checks,
+        and a cached phone page from a previous build is the expected skew on
+        the surface whose whole job is to work when nothing else does."""
         action = cmd.get("action")
         system = cmd.get("system")
         if action == "launch":
-            return self.launch(system, int(cmd["slot"]), bool(cmd.get("pressed", True)))
+            slot = _as_int(cmd, "slot")
+            if slot is None:
+                return self._malformed(cmd, "slot")
+            return self.launch(system, slot, bool(cmd.get("pressed", True)))
         if action == "tap":
             return self.tap(system)
         if action == "fx":
-            layer = int(cmd["layer"])
+            layer = _as_int(cmd, "layer")
+            if layer is None:
+                return self._malformed(cmd, "layer")
             if "param" in cmd:
-                return self.fx_param(system, layer, str(cmd["param"]), float(cmd.get("value", 0.0)))
+                value = _as_float(cmd, "value", default=0.0)
+                if value is None:
+                    return self._malformed(cmd, "value")
+                return self.fx_param(system, layer, str(cmd["param"]), value)
             return self.fx_bypass(system, layer, bool(cmd.get("enabled", True)))
         if action == "live":
+            target = cmd.get("target")
+            if not isinstance(target, str):
+                return self._malformed(cmd, "target")
             # A slider sends `norm`, a picker sends `value` — the two are not
             # interchangeable and the key says which one this is.
-            norm = cmd.get("norm")
-            return self.live(
-                system,
-                str(cmd["target"]),
-                norm=None if norm is None else float(norm),
-                value=cmd.get("value"),
-            )
+            if cmd.get("norm") is None:
+                return self.live(system, target, value=cmd.get("value"))
+            norm = _as_float(cmd, "norm")
+            if norm is None:
+                return self._malformed(cmd, "norm")
+            return self.live(system, target, norm=norm)
         if action == "transport":
-            target = cmd.get("target")
+            slot = _as_int(cmd, "slot", default=0)
+            if slot is None:
+                return self._malformed(cmd, "slot")
             save = cmd.get("save")
             clear = cmd.get("clear")
             return self.transport(
                 system,
                 str(cmd.get("verb", "")),
                 pressed=bool(cmd.get("pressed", True)),
-                target=None if target is None else float(target),
-                slot=int(cmd.get("slot", 0)),
+                target=_as_float(cmd, "target"),
+                slot=slot,
                 save=None if save is None else bool(save),
                 clear=None if clear is None else bool(clear),
             )
         if action == "jump":
-            return self.jump(system, int(cmd["index"]))
+            index = _as_int(cmd, "index")
+            if index is None:
+                return self._malformed(cmd, "index")
+            return self.jump(system, index)
         if action == "look":
-            return self.look(system, int(cmd["slot"]), bool(cmd.get("save", False)))
+            slot = _as_int(cmd, "slot")
+            if slot is None:
+                return self._malformed(cmd, "slot")
+            return self.look(system, slot, bool(cmd.get("save", False)))
+        return False
+
+    def _malformed(self, cmd: Mapping[str, Any], field: str) -> bool:
+        """Refuse a frame that named an action but not the field it needs.
+
+        Debug, because a malformed frame is the browser's problem and not the
+        host's — but *recorded*, because the page discards every response body,
+        so this is the only evidence either end of the wire keeps."""
+        log.debug(
+            "perf console: command %r is missing or mistyped its %r field",
+            cmd.get("action"),
+            field,
+        )
         return False
 
 
@@ -815,8 +1211,11 @@ let state = null;      // last full state from the server
 let sel = 0;           // selected system index
 let ws = null;
 let pollTimer = null;
+let wsRetryMs = 0;     // exponential backoff for the reconnect, see retryWS()
 // Local beat-clock anchor for smooth pulse animation between server pushes.
 let clock = {bpm: 120, phase: 0, running: false, bpb: 4, at: 0};
+const WS_RETRY_MIN_MS = 500;
+const WS_RETRY_MAX_MS = 15000;
 
 function post(cmd) {
   const sys = curSys();
@@ -843,7 +1242,12 @@ function apply(s) {
     clock = {bpm: t.bpm, phase: t.beat_phase, running: t.running,
              bpb: t.beats_per_bar, at: performance.now()};
   } else {
-    clock.running = false;   // stop the pulse rather than free-run a dead grid
+    // Reset the whole anchor, not just `running`: animate() renders clock.bpm
+    // unconditionally, so a host between shows kept showing the last show's
+    // BPM — or a confident 120 straight from the initializer, before a frame
+    // had ever arrived — in the sticky header above "No session running."
+    // Zeroed, animate's own `clock.bpm ? … : '--'` renders `--` on its own.
+    clock = {bpm: 0, phase: 0, running: false, bpb: clock.bpb, at: performance.now()};
   }
   render();
 }
@@ -890,6 +1294,12 @@ function render() {
   renderTuned(sys);
   renderLooks(sys);
   renderScenes(sys);
+  // Re-point the picture when the selected system changes. setScreen bakes
+  // `?system=` into the src and is otherwise only reached from the WATCH tap,
+  // so on an ensemble run tapping a tab moved every control to the new machine
+  // and left the previous machine's VIC streaming underneath it, with nothing
+  // on the page saying so.
+  if (screenOn && sys.name !== screenSys) setScreen(true);
 }
 
 function renderScenes(sys) {
@@ -1012,6 +1422,13 @@ function renderFx(sys) {
         val.textContent = (p.min + norm * (p.max - p.min)).toFixed(2);
         post({action: 'fx', layer: fx.index, param: p.name, value: norm});
       };
+      // A range keeps focus after a drag, per the browser, and the guard at
+      // the top of renderFx keys off activeElement — so without this the rack
+      // stopped re-rendering for the rest of the session after the first
+      // drag: a bypass flipped from a MIDI pad no longer showed, and after a
+      // scene advance the panel kept offering the previous scene's layers.
+      // Same fix wled_device.py's page carries for the same reason.
+      sl.onpointerup = () => sl.blur();
       row.appendChild(l); row.appendChild(sl); row.appendChild(val);
       card.appendChild(row);
     });
@@ -1070,6 +1487,7 @@ function tuneScalar(knob) {
     val.textContent = (knob.min + norm * (knob.max - knob.min)).toFixed(2);
     post({action: 'live', target: knob.target, norm: norm});
   };
+  sl.onpointerup = () => sl.blur();   // see the rack slider's note
   row.appendChild(sl); row.appendChild(val);
   return row;
 }
@@ -1084,7 +1502,10 @@ function tuneChoice(knob) {
     sel.appendChild(o);
   });
   // A choice list has no position to drag, so this sends `value`, not `norm`.
-  sel.onchange = () => post({action: 'live', target: knob.target, value: sel.value});
+  // A <select> keeps focus after a change, and renderTune's guard is any
+  // focused element inside #tune — so it blurs too, or the whole panel freezes
+  // after the first pick.
+  sel.onchange = () => { post({action: 'live', target: knob.target, value: sel.value}); sel.blur(); };
   row.appendChild(sel);
   return row;
 }
@@ -1217,14 +1638,24 @@ function startWS() {
   try {
     const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(scheme + location.host + '/perf/ws');
-  } catch (e) { scheduleFallback(); return; }
-  ws.onopen = () => stopFallback();
+  } catch (e) { scheduleFallback(); retryWS(); return; }
+  ws.onopen = () => { wsRetryMs = 0; stopFallback(); };
   ws.onmessage = (ev) => { try { apply(JSON.parse(ev.data)); } catch (e) {} };
-  ws.onclose = () => { scheduleFallback(); setTimeout(startWS, 2500); };
+  ws.onclose = () => { scheduleFallback(); retryWS(); };
   ws.onerror = () => { try { ws.close(); } catch (e) {} };
 }
+
+// Back off rather than retry at a fixed interval forever. The host can now
+// refuse a handshake outright (MAX_CONSOLE_SOCKETS), and every open phone
+// hammering a downed host at a fixed rate is exactly the load that cap exists
+// to bound. The construction failure above retries too — it used to fall back
+// to polling and never try the socket again for the life of the page.
 async function poll() {
   try { const r = await fetch('/perf/state'); apply(await r.json()); } catch (e) {}
+}
+function retryWS() {
+  wsRetryMs = wsRetryMs ? Math.min(wsRetryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
+  setTimeout(startWS, wsRetryMs);
 }
 function scheduleFallback() { if (!pollTimer) pollTimer = setInterval(poll, 1000); }
 function stopFallback() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
@@ -1250,6 +1681,7 @@ document.getElementById('looksave').onclick = (ev) => {
 // it, and closing it is what stops it.
 let screenOn = false;
 let screenEpoch = 0;
+let screenSys = null;   // the system name the current src was built for
 
 function setScreen(on) {
   const img = document.getElementById('screen');
@@ -1263,9 +1695,11 @@ function setScreen(on) {
     // the machine streaming to a hidden image.
     img.removeAttribute('src');
     msg.textContent = '';
+    screenSys = null;
     return;
   }
   const sys = curSys();
+  screenSys = sys ? sys.name : '';
   // A cache-buster per start: to a browser's cache this is an ordinary
   // response, and reusing the URL can re-serve the last frame of the old
   // stream instead of opening a new one.
@@ -1296,72 +1730,93 @@ requestAnimationFrame(animate);
 """
 
 
+#: Response headers for the console page.
+#:
+#: Hardening rather than a defense of its own, and ranked deliberately behind
+#: the ``Origin`` check :func:`auth.same_origin` now applies: in the open mode
+#: a hostile page could drive every control directly with no user interaction
+#: at all, which is strictly easier than framing this page and tricking the
+#: performer into tapping a pad; and in a token-gated deployment the
+#: ``SameSite=Strict`` cookie is not sent into a third-party frame, so the
+#: frame renders the login page instead. It costs the page nothing — a fixed,
+#: server-authored body with no caller content in it and no third-party
+#: resource to load — and ``unsafe-inline`` is what its own ``<style>`` and
+#: ``<script>`` need. ``img-src`` has to allow ``self`` for the screen stream.
+_PAGE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; frame-ancestors 'none'; "
+        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
     """Register the performance-console routes on an existing FastAPI ``app``
     (the control plane's). Called from :func:`control_plane.build_app`. Imports
     FastAPI symbols locally (the app already required them) — real, non-stringized
     annotations so the WebSocket param injects correctly (see the module note)."""
-    from fastapi import Request, Response, WebSocket, WebSocketDisconnect
+    from fastapi import HTTPException, Request, Response, WebSocket
 
-    ws_clients: set[Any] = set()
+    feed = ConsoleFeed(
+        "perf console",
+        build_frame=lambda scope: with_role(bridge.state(), scope),
+        dispatch=bridge.apply,
+    )
 
-    def _with_role(state: dict[str, Any], scope: Mapping[str, Any]) -> dict[str, Any]:
-        """Tag a snapshot with the caller's auth role (``None`` when the server
-        runs without a token). The page greys itself out for a ``viewer``
-        rather than letting taps fail silently against the 403 the auth
-        middleware answers writes with."""
-        state["role"] = scope.get(SCOPE_ROLE_KEY)
-        return state
+    async def _command_body(request: Request) -> Mapping[str, Any]:
+        """One console command's JSON body — same-origin, typed, and capped.
+
+        This was the one POST in the package that skipped
+        :func:`auth.read_body`: ``await request.json()`` accumulates every
+        chunk of the body in memory before parsing it, with nothing bounding
+        it, which is the hazard ``read_body``'s own docstring names ("a remote
+        memory exhaustion on a 1-2 GB appliance, taking down a process that
+        owns live hardware"). ``web_api._body`` has routed through it all
+        along; this route now does too, at a cap far below
+        ``auth.MAX_BODY_BYTES`` because a command is a few hundred bytes.
+
+        The ``Content-Type`` requirement is not ceremony. ``Request.json()``
+        never looks at it, so a cross-site ``<form enctype="text/plain">``
+        whose field name and value sandwich the JSON is a CORS-simple POST that
+        reached the dispatcher with no preflight to refuse."""
+        if not same_origin(request.headers):
+            raise HTTPException(403, "cross-origin request")
+        if not request.headers.get("content-type", "").startswith("application/json"):
+            raise HTTPException(415, "a console command is application/json")
+        try:
+            raw = await read_body(request, max_bytes=MAX_COMMAND_BYTES)
+        except BodyTooLarge as e:
+            # The body cap goes to the log and a fixed string to the caller —
+            # this route is reachable without a credential in the open mode.
+            log.debug("perf console: %s", e)
+            raise HTTPException(413, BODY_TOO_LARGE_ERROR) from e
+        try:
+            parsed = json.loads(raw)
+        except ValueError as e:
+            raise HTTPException(400, "request body is not JSON") from e
+        if not isinstance(parsed, Mapping):
+            raise HTTPException(400, "request body must be a JSON object")
+        return parsed
 
     @app.get("/perf")
     def perf_page() -> Response:
-        return Response(content=_PERF_HTML, media_type="text/html")
+        return Response(content=_PERF_HTML, media_type="text/html", headers=_PAGE_HEADERS)
 
     @app.get("/perf/state")
     def perf_state(request: Request) -> dict[str, Any]:
-        return _with_role(bridge.state(), request.scope)
+        # A sync `def` on purpose: FastAPI runs it in the threadpool, which is
+        # where a frame build belongs (see `ConsoleFeed`).
+        return with_role(bridge.state(), request.scope)
 
     @app.post("/perf/command")
     async def perf_command(request: Request) -> dict[str, Any]:
-        body = await request.json()
-        ok = bridge.apply(body) if isinstance(body, Mapping) else False
-        return {"ok": bool(ok)}
+        body = await _command_body(request)
+        # Off the loop for the same reason the feed's dispatch is: a
+        # `mode.border` pick is a DMA write over TCP port 64.
+        return {"ok": bool(await asyncio.to_thread(bridge.apply, body))}
 
     @app.websocket("/perf/ws")
     async def perf_ws(websocket: WebSocket) -> None:
-        await websocket.accept()
-        ws_clients.add(websocket)
-        # The one gap the auth middleware can't cover: a socket is a single
-        # `GET` handshake, so inbound command frames have to be dropped here.
-        read_only = is_viewer(websocket.scope)
-        reader = SocketReader(websocket, label="perf console")
-        try:
-            # Push a fresh snapshot on a fixed cadence; the client extrapolates the
-            # beat pulse locally in between. A receive with timeout lets a client
-            # command frame (if any) through without blocking the push loop.
-            while True:
-                # Split from the socket's own failures below: a state frame that
-                # raises is *our* bug, and swallowing it silently leaves every
-                # connected console waiting forever for a push that will never
-                # come — a hang where an error belongs.
-                try:
-                    frame = _with_role(bridge.state(), websocket.scope)
-                except Exception:
-                    log.exception("performance console: could not build a state frame")
-                    break
-                await websocket.send_json(frame)
-                arrived, msg = await reader.poll(_PUSH_INTERVAL_S)
-                if arrived and isinstance(msg, Mapping) and not read_only:
-                    bridge.apply(msg)
-        except WebSocketDisconnect:
-            pass
-        except (ConnectionError, RuntimeError):
-            # An abrupt client close surfaces as a transport error rather than
-            # a `WebSocketDisconnect`, so these stay at debug — but everything
-            # else below is a socket nobody asked to close.
-            log.debug("perf console: websocket closed", exc_info=True)
-        except Exception:
-            log.exception("perf console: websocket closed unexpectedly")
-        finally:
-            await reader.close()
-            ws_clients.discard(websocket)
+        await feed.run(websocket)

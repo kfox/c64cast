@@ -21,6 +21,58 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Security
 
+- **The performance console took cross-origin commands.** A WebSocket handshake
+  is exempt from CORS entirely, and Starlette's `Request.json()` never looks at
+  `Content-Type` — so with `[control] enabled = true` and the unprompted default
+  `token = ""`, any page the performer happened to visit could open
+  `ws://127.0.0.1:8765/perf/ws`, read every pushed state frame, and send command
+  frames that drove the running show; `POST /perf/command` was reachable the
+  same way as a `text/plain` form submit, which is a CORS-simple request with no
+  preflight to refuse. The open loopback mode is justified as "exposed to
+  whoever already has a shell here", and a browser tab is not that person. Both
+  `/perf/ws` and `/perf/command` — and `/api/ws`, which shares the loop — now
+  refuse a request whose `Origin` is present and names a different host:port
+  than its own `Host` (the handshake is closed before `accept`), and the POST
+  requires an `application/json` content type. A request with **no** `Origin` is
+  still served: that is `curl`, `wscat` or a script, which is exactly the caller
+  the open mode describes.
+- **`POST /perf/command` buffered an unbounded request body.** `await
+  request.json()` accumulates every chunk before parsing, and this was the one
+  POST in the package that did not route through the shared cap that exists for
+  precisely this — a remote memory exhaustion on a 1-2 GB appliance, taking down
+  a process that owns live hardware, from a caller who needs no credential in
+  the open mode. Capped at 64 KiB (a console command is a few hundred bytes),
+  with a 413 for an oversized body and a 400 for one that is not a JSON object.
+- **Nothing capped the console state sockets.** A handshake is a bare `GET`, so
+  the role gate admits even a read-only `viewer` token — the credential meant to
+  be handed to a guest — and every accepted socket ran its own push loop over a
+  frame that resolves the whole live-tune catalog and reads two slot stores off
+  disk. A couple of hundred connections bought a few hundred frame builds a
+  second on the host that owns the hardware, stalling the operator's own console
+  and every other route on the same app. `/perf/ws` and `/api/ws` now share a
+  cap of 8 open sockets and close a handshake past it before accepting, the same
+  refuse-rather-than-queue decision the screen stream already made.
+- **A read-only link disclosed the operator's filesystem layout.** The state
+  frame carried `tuned.config_path`, the absolute path of the running show file,
+  and both `GET /perf/state` and the socket pushes are read methods — so a
+  viewer token learned the operator's username and directory layout, which is
+  reconnaissance for the config-store routes the same host exposes. A viewer now
+  gets an empty `config_path`; `config_name` (already on the wire) is all the
+  page used it for.
+- **A `loop_slot` command could grow a preset file without limit.** The console's
+  transport verb passed its `slot` straight through with no range check, and
+  `LoopPresetStore.save` had deliberately overridden away the shared
+  `1..250` guard — so an incrementing slot persisted one unbounded new key per
+  event, each save re-reading and rewriting the whole grown file on the playlist
+  thread that drives the hardware, with the state feed re-parsing it on every
+  push. The slot is bounded at both ends now, and the digits no longer reach the
+  OSD line the transport engine draws over the audience output.
+- The `/perf` page is served with `Content-Security-Policy`
+  (`frame-ancestors 'none'`), `X-Frame-Options: DENY` and
+  `X-Content-Type-Options: nosniff`. Hardening rather than a fix: it is a fixed,
+  server-authored body with no caller content in it, and the clickjacking the
+  headers refuse is strictly harder than what the `Origin` check above closes.
+
 - **A credential inside a scene `file =` URL was echoed verbatim.** A private
   asset is legitimately reached with
   `file = "https://user:token@cdn.example/clip.mp4"`, and nothing redacted it:
@@ -258,6 +310,78 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   fresh: "can't tell how old this is" is not "recent".
 
 ### Fixed
+
+- **One malformed command frame closed the performance console's only feed.**
+  `PerfBridge.apply` indexed `cmd["slot"]` / `["layer"]` / `["target"]` /
+  `["index"]` directly and coerced with bare `int()` / `float()`, so a frame
+  that decoded fine and then named an action without its fields — the shape a
+  cached phone page from an older build sends — raised `KeyError` inside the
+  WebSocket push loop, wrote a full traceback at default verbosity, and tore
+  down the socket that carries state and log lines. That is exactly the outcome
+  the frame decoder was written to prevent for an *undecodable* frame: the
+  validation was enforced at the decode and defeated one layer down at the
+  dispatch. Every field is now validated rather than coerced (including the
+  bare `Infinity` / `NaN` literals `json.loads` accepts, whose `int()` raises
+  `OverflowError`), a bad frame answers `{"ok": false}` instead of a 500 on
+  `POST /perf/command`, and the socket loop guards the dispatch as well, so no
+  raise from any engine a tap reaches can end the feed.
+- **The console's state feed did blocking disk and DMA work on the event loop.**
+  Both `async def` socket routes called the frame builder and the command
+  dispatcher directly: one frame reads the look store and the loop-preset store
+  off disk (~3 times a second per connected console), and a border or background
+  pick is a DMA write over TCP port 64 that is unboundedly long on a stalled
+  link. That loop also serves `/status`, every `/api` route and the MJPEG screen
+  stream, so a slow data directory or a stalled machine stalled all of them —
+  while the sibling sync route got the threadpool for free and was never
+  affected. Both now run off the loop.
+- **One state frame could describe two different scenes.** The console snapshot
+  re-read `playlist.current` four separate times, and a scene advance writes the
+  index and the current scene as two separate statements with a teardown between
+  them — so an interleaved advance emitted a frame naming scene A over scene B's
+  effect rack and tune panel, with the layer indices the console then offered
+  addressing a chain that had moved. The scene and index are sampled once.
+- **A dragged slider froze the effect rack and the tune panel for the rest of
+  the session.** Both panels skip a rebuild while something inside them has
+  focus (so a rebuild can't drag the handle out from under a finger), and a
+  range keeps focus after a drag and a `<select>` after a change — so the first
+  gesture stopped that panel updating until the performer happened to focus
+  something else: a bypass flipped from a MIDI pad no longer showed, and after a
+  scene advance the panel kept offering the previous scene's knobs. Both blur
+  when the gesture ends, as the WLED page already did.
+- **The console's picture kept streaming the previous machine on an ensemble
+  run.** The screen `<img>` bakes the selected system into its URL and was only
+  ever re-pointed by the WATCH button, so tapping another system tab moved every
+  control to the new machine and left the old machine's video playing
+  underneath, with nothing on the page saying so.
+- **The console showed a BPM between shows.** With no session running, the page
+  stopped the beat pulse but left the tempo number alone, so the sticky header
+  read the last show's BPM — or a confident `120` from the page's own
+  initializer, before any frame had arrived — above "No session running." It
+  reads `--`.
+- The console page's WebSocket reconnect backs off exponentially (0.5 s to 15 s)
+  instead of retrying at a fixed interval forever, and now retries at all after
+  a construction failure, where it used to fall back to polling and never try
+  the socket again for the life of the page. The WLED device page's copy of the
+  same loop gets the same fix — the two had already drifted to different delays
+  with no backoff on either.
+- Adding a verb to the console's transport verb list without adding a dispatch
+  branch would have silently saved or cleared one of the performer's persisted
+  loop presets: the branch chain ended in an unconditional `loop_slot` enqueue
+  with no `if`. The last branch is explicit and an unhandled verb is refused,
+  with a test that walks the list and asserts each verb has its own effect.
+- The console's addressed-but-no-op writes (a bypass on a layer the scene does
+  not have, a knob the current scene cannot resolve, a jump past the end) log one
+  debug line each. The page discards every response body, so a pad that did
+  nothing mid-set left no evidence on either side of the wire — "the tap reached
+  the host and did nothing" and "the tap never arrived" were indistinguishable.
+- The `tuned` block of a state frame took two independent snapshots of the
+  live-tune record, so a knob turned between them made the change list and the
+  pasteable TOML snippet in one frame describe different sets of changes.
+- Two test-isolation defects found while fixing the above, both reaching the
+  developer's real `~/.local/share/c64cast/`: one supervisor test wrote and then
+  **deleted** the real run marker (the file that tells a `--serve` host its last
+  session did not shut down cleanly), and the live-tune tests read the real
+  character ROM and cached it process-wide for every other test in the worker.
 
 - **The REU mic pump ran ~33% slow at the default sample rate.** The C64-side
   pump is paced by CIA #1, whose latch has to be the chunk size times the NMI

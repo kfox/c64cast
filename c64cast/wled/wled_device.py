@@ -446,18 +446,33 @@ async function deletePreset() {
   setTimeout(async () => { await fetchPresets(); render(); }, 300);
 }
 
+let wsRetryMs = 0;
+const WS_RETRY_MIN_MS = 500;
+const WS_RETRY_MAX_MS = 15000;
+
 function startWS() {
   try {
     const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(scheme + location.host + '/ws');
-  } catch (e) { scheduleFallback(); return; }
-  ws.onopen = () => { stopFallback(); fetchMeta(); };
+  } catch (e) { scheduleFallback(); retryWS(); return; }
+  ws.onopen = () => { wsRetryMs = 0; stopFallback(); fetchMeta(); };
   ws.onmessage = (ev) => {
     let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (d && d.state) applyState(d.state);
   };
-  ws.onclose = () => { scheduleFallback(); setTimeout(startWS, 3000); };
+  ws.onclose = () => { scheduleFallback(); retryWS(); };
   ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+
+// Back off rather than retry at a fixed interval forever, and retry after a
+// construction failure too (which used to fall back to polling and never try
+// the socket again for the life of the page). `perf_console.py`'s page runs
+// the same loop and carries the same fix — the two are still two hand-written
+// copies, which is why they had drifted to different reconnect delays with no
+// backoff on either.
+function retryWS() {
+  wsRetryMs = wsRetryMs ? Math.min(wsRetryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
+  setTimeout(startWS, wsRetryMs);
 }
 
 // While WS is down, poll /json so the page still works without websockets.

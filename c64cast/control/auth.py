@@ -47,6 +47,12 @@ would otherwise escalate to full control. The **other hole the middleware
 cannot plug** is the bidirectional ``/perf/ws``: it reads the role off the
 scope itself (:func:`is_viewer`) and drops inbound command frames from viewers.
 
+The **third hole is not about credentials at all** — it is the request's origin,
+and the middleware cannot close it because the mode it matters in is the one
+where no middleware is installed. :func:`same_origin` is the shared check;
+``perf_console.ConsoleFeed`` applies it to both console sockets before
+``accept``, and ``POST /perf/command`` applies it too.
+
 Every role comparison goes through :data:`SCOPE_ROLE_KEY` / :data:`ROLE_FULL` /
 :data:`ROLE_VIEWER` and :func:`is_viewer` rather than a bare string, because
 every consumer spells the check ``== "viewer"`` and a misspelling on either
@@ -66,7 +72,7 @@ import logging
 import secrets
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 log = logging.getLogger(__name__)
 
@@ -229,6 +235,36 @@ def is_viewer(scope: Mapping[str, Any]) -> bool:
     is now one decision in one function rather than the same fail-open string
     comparison copied into three modules."""
     return role_of(scope) == ROLE_VIEWER
+
+
+def same_origin(headers: Any) -> bool:
+    """Whether a request's ``Origin`` agrees with the ``Host`` it reached.
+
+    The third hole the middleware cannot plug, and the one it cannot even see:
+    a **WebSocket handshake is exempt from CORS entirely**, and
+    ``Request.json()`` never looks at ``Content-Type``, so a cross-site
+    ``<form enctype="text/plain">`` POST is a CORS-simple request with no
+    preflight to refuse. The unprompted default for the console is
+    ``[control] token = ""`` on loopback, justified as "exposed to whoever
+    already has a shell here" — but a browser the performer happens to visit
+    is not that person, and in the open mode it could open
+    ``ws://127.0.0.1:8765/perf/ws``, read every pushed state frame, and send
+    command frames that drive the running show.
+
+    No ``Origin`` header is allowed: that is a non-browser caller (``curl``,
+    ``wscat``, a script), which is exactly the caller "whoever already has a
+    shell here" describes. A *present* ``Origin`` whose ``host:port`` does not
+    match the request's own ``Host`` is refused, which is what a browser on
+    another origin sends and what a same-origin page never does. Compared on
+    netloc alone, because ``Host`` carries no scheme.
+
+    Takes the request's (or websocket's) headers rather than its scope, so the
+    one function serves both an HTTP route and a handshake."""
+    origin = headers.get("origin")
+    if not origin:
+        return True
+    host = headers.get("host") or ""
+    return urlsplit(origin).netloc.lower() == host.lower() != ""
 
 
 def require_full(scope: Mapping[str, Any]) -> None:

@@ -52,7 +52,7 @@ import queue
 import re
 import tempfile
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -443,12 +443,22 @@ class LiveTuneTracker:
     def toml_snippet(self) -> str:
         """A pasteable ``[color]`` TOML block for the tracked changes — used for
         quick-playback runs that have no config file to write back to. Empty
-        string when nothing persistable changed.
+        string when nothing persistable changed."""
+        return self.snippet_from(self._persistable())
 
-        Per-scene changes ride along as comments rather than as TOML: they belong
-        *inside* a ``[[scenes]]`` block, and a pasted ``[[scenes]]`` header would
-        append a scene instead of editing one."""
-        rows = self._persistable()
+    def snippet_from(self, rows: Sequence[Mapping[str, Any]]) -> str:
+        """:meth:`toml_snippet` over rows a caller already took.
+
+        Split out for the caller that renders *both* the row list and the
+        snippet in one payload (``perf_console._tuned_dict``): it used to call
+        :meth:`toml_snippet`, which takes its own second snapshot, so a knob
+        turned between the two reads made the two halves of one frame describe
+        different sets of changes — the self-consistency :meth:`pending`'s
+        docstring promises, given away one call later.
+
+        Per-scene changes ride along as comments rather than as TOML: they
+        belong *inside* a ``[[scenes]]`` block, and a pasted ``[[scenes]]``
+        header would append a scene instead of editing one."""
         if not rows:
             return ""
         # De-dupe (last write wins) while keeping a stable order.
@@ -756,8 +766,9 @@ class LoopPresetStore(JsonSlotStore):
     video), on the shared :class:`JsonSlotStore` contract. The slot map lives
     under a ``{"schema", "video", "size", "loops": {...}}`` envelope (the
     hooks below), entries are normalized to ``{"a": float, "b": float|None}``
-    on load, and :meth:`save` takes the loop points directly — loop slots are
-    pad numbers with no fixed range, so it skips the base range check."""
+    on load, and :meth:`save` overrides the base only to take the loop points
+    directly rather than a pre-wrapped entry — the range check it used to skip
+    is back (see :meth:`save`)."""
 
     SCHEMA = 1
 
@@ -767,6 +778,20 @@ class LoopPresetStore(JsonSlotStore):
         self._size = size
 
     def save(self, slot: int, a: float, b: float | None) -> None:  # type: ignore[override]
+        """Store one loop's points, range-checked as
+        :meth:`JsonSlotStore.save` is.
+
+        The override used to drop that check, reasoning that "loop slots are
+        pad numbers with no fixed range". They are pad numbers — and
+        `midi_control` validates one as ``>= 1`` — but the web console's
+        ``loop_slot`` verb reaches here too, and an unvalidated slot meant one
+        unbounded new key persisted per event, each save re-reading and
+        rewriting the whole grown file on the playlist thread that drives the
+        hardware, with `perf_console._transport_dict` re-parsing it on every
+        state push. `LookStore`, the sibling this was copied from, was bounded
+        by this same range all along."""
+        if not self.SLOT_MIN <= slot <= self.SLOT_MAX:
+            return
         data = self.load()
         data[str(slot)] = {"a": a, "b": b}
         self._write(data)

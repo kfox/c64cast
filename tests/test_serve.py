@@ -843,9 +843,23 @@ class SessionLogBufferTest(unittest.TestCase):
         self.assertEqual(failures, [])
 
     def test_the_supervisor_tags_the_buffer_with_each_new_generation(self):
+        import tempfile
+
+        # The only `SessionManager` in this file built outside
+        # `SupervisorTestCase`, so it needs that class's temp `marker_path`
+        # spelled out here: without it the supervisor writes — and on close
+        # *deletes* — the real `~/.local/share/c64cast/run.json`, which on a
+        # host actually running `--serve` is the marker that tells the next
+        # start the previous session did not shut down cleanly.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
         buf = serve.SessionLogBuffer()
         mgr = serve.SessionManager(
-            build=_Build(), teardown=_Teardown(), settle_s=0.0, log_buffer=buf
+            build=_Build(),
+            teardown=_Teardown(),
+            settle_s=0.0,
+            log_buffer=buf,
+            marker_path=Path(tmp.name) / "run.json",
         )
         self.addCleanup(mgr.close, timeout=WAIT)
         mgr.start(_request("a"))

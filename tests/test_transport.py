@@ -458,6 +458,19 @@ class LoopPresetStoreTests(unittest.TestCase):
         self.store.delete(3)
         self.assertEqual(self.store.load(), {})
 
+    def test_a_slot_outside_the_range_is_not_stored(self):
+        # The override used to skip the base class's range check, reasoning
+        # that loop slots are pad numbers with no fixed range — but the web
+        # console's `loop_slot` verb reaches here too, so an unvalidated slot
+        # meant one unbounded new key per event, each save rewriting the whole
+        # grown file on the playlist thread.
+        for slot in (0, -1, LoopPresetStore.SLOT_MAX + 1, 10**6):
+            with self.subTest(slot=slot):
+                self.store.save(slot, 1.0, 2.0)
+                self.assertEqual(self.store.load(), {})
+        self.store.save(LoopPresetStore.SLOT_MAX, 1.0, 2.0)
+        self.assertEqual(list(self.store.load()), [str(LoopPresetStore.SLOT_MAX)])
+
     def test_delete_missing_slot_is_noop(self):
         # A miss must leave existing slots untouched (not rewrite the file
         # to empty) — "no-op" means state-unchanged, not just "no crash".
