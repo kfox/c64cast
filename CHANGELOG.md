@@ -62,6 +62,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   change for an existing `listen` config:** Mode 1's default endpoint is
   `0.0.0.0:8080`, so a plain `listen = "enabled"` now needs either the opt-in or
   a loopback bind (`listen = "127.0.0.1:8080"`).
+- **The control plane's transport verbs took cross-origin commands too.**
+  `POST /pause`, `/resume`, `/skip` and `/reload` take only a query param and no
+  body, so a cross-site form POST at one is a CORS-simple request with no
+  preflight to refuse — and with `[control] enabled = true` and the unprompted
+  default `token = ""`, any page the performer happened to visit could pause,
+  resume, skip or reload the running show. The console's own POST was fixed
+  above; these four predate that check and now share it. A request with **no**
+  `Origin` is still served, so `curl`, scripts and Home Assistant are
+  unaffected — only a cross-origin browser is refused, and no browser client
+  for these routes exists.
 - **The performance console took cross-origin commands.** A WebSocket handshake
   is exempt from CORS entirely, and Starlette's `Request.json()` never looks at
   `Content-Type` — so with `[control] enabled = true` and the unprompted default

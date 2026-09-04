@@ -54,6 +54,14 @@ LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
 InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
 
 
+#: The state-changing routes, which only a same-origin caller may reach (see
+#: `_refuse_cross_origin_transport`). Spelled out rather than derived from the
+#: method, because this app also carries `/perf/command` and the web console's
+#: `/api/*` writes — those close the same hole themselves, at a layer that can
+#: also refuse a WebSocket handshake before `accept`.
+TRANSPORT_PATHS = frozenset({"/pause", "/resume", "/skip", "/reload"})
+
+
 #: How long :meth:`ControlServer.start` waits for uvicorn to report a bound
 #: socket, and how often it looks. A successful bind is milliseconds away, so
 #: the ceiling only matters on a loaded box; a bind *failure* is reported the
@@ -296,8 +304,12 @@ def build_app_for_registry(
 
     # Last, so the middleware wraps every route above — including /perf/ws,
     # which a per-route dependency could only reject after accept().
-    from .auth import PUBLIC_PATHS, install_auth
+    from .auth import PUBLIC_PATHS, SameOriginMiddleware, install_auth
 
+    # Added before install_auth so authentication runs outside it: a caller
+    # with no credential should get 401, not a 403 about its Origin. Always
+    # added, token or not — the open mode is the one this matters in.
+    app.add_middleware(SameOriginMiddleware, paths=TRANSPORT_PATHS)
     install_auth(
         app,
         token=token,

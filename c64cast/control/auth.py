@@ -380,6 +380,55 @@ def login_page(next_path: str = "") -> str:
     return _LOGIN_PAGE.replace("{next}", html.escape(_safe_next(next_path), quote=True))
 
 
+class SameOriginMiddleware:
+    """Pure-ASGI ``Origin`` gate over an exact set of paths.
+
+    :func:`same_origin`'s docstring names the hole and why the token gate
+    cannot plug it: "the mode it matters in is the one where no middleware is
+    installed." This is that middleware — **always** installed, token or not,
+    because a `token = ""` app is exactly the one a hostile page can drive.
+
+    The routes it covers take only a query param and no body, so a cross-site
+    ``<form method="post">`` aimed at one is a CORS-simple request with no
+    preflight to refuse. `/perf/command` closes this itself, at a layer that
+    can also refuse a WebSocket handshake before ``accept``; these four routes
+    predate that work and had nothing.
+
+    Pure ASGI rather than ``@app.middleware("http")`` for a reason worth
+    keeping: Starlette's ``BaseHTTPMiddleware`` wraps ``receive``, which breaks
+    a route that streams its request body to disk — `POST /api/media/{name}`
+    does, and the "body that ends early leaves no .part file" test catches it.
+    This never touches ``receive``, so nothing downstream can tell it is here.
+    Headers come off the ASGI ``scope``, whose names the spec guarantees are
+    lowercase, so the dict it builds is already the case-correct mapping
+    :func:`same_origin` expects."""
+
+    def __init__(self, app: Any, *, paths: Iterable[str]) -> None:
+        self.app = app
+        self._paths = frozenset(paths)
+
+    async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("path", "") not in self._paths:
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope.get("headers", ())}
+        if same_origin(headers):
+            await self.app(scope, receive, send)
+            return
+        body = b"cross-origin request"
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [
+                    (b"content-type", b"text/plain; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
 class TokenAuthMiddleware:
     """Pure-ASGI shared-token gate over an entire app.
 

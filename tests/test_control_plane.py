@@ -238,6 +238,56 @@ class SingleSystemBackCompatTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
+class TransportOriginTest(unittest.TestCase):
+    """The four transport verbs take only a query param and no body, so a
+    cross-site form POST at one is a CORS-simple request with no preflight to
+    refuse — and the unprompted default is `token = ""` on loopback. A page the
+    performer visits mid-set could pause, skip or reload the running show."""
+
+    def _client(self):
+        from c64cast.control.control_plane import build_app
+
+        pl = _fake_playlist("system")
+        app = build_app(
+            playlists={"system": pl},
+            config_loaders={"system": lambda: pl.scenes},
+            interstitial_factories={"system": lambda: lambda n: None},
+        )
+        return TestClient(app), pl
+
+    def test_a_cross_origin_transport_verb_is_refused(self):
+        client, pl = self._client()
+        for path in ("/pause", "/resume", "/skip", "/reload"):
+            with self.subTest(path=path):
+                r = client.post(path, headers={"Origin": "http://evil.example"})
+                self.assertEqual(r.status_code, 403)
+        self.assertFalse(pl.pause_event.is_set())
+        self.assertFalse(pl.skip_event.is_set())
+
+    def test_a_same_origin_transport_verb_is_served(self):
+        client, pl = self._client()
+        r = client.post("/skip", headers={"Origin": "http://testserver"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(pl.skip_event.is_set())
+
+    def test_no_origin_header_is_served(self):
+        # curl, a script, Home Assistant — exactly the caller the open mode
+        # describes, and why this is safe to add to a shipped API.
+        client, pl = self._client()
+        r = client.post("/pause")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(pl.pause_event.is_set())
+
+    def test_reads_are_untouched(self):
+        # The gate covers state changes only; a cross-origin browser read is
+        # already refused by CORS itself, and `status` is what a dashboard
+        # polls with no Origin at all.
+        client, _ = self._client()
+        r = client.get("/status", headers={"Origin": "http://evil.example"})
+        self.assertEqual(r.status_code, 200)
+
+
+@unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class MultiSystemTest(unittest.TestCase):
     def _client(self):
         from c64cast.control.control_plane import build_app
