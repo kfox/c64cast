@@ -132,10 +132,15 @@ class ArmedTest(unittest.TestCase):
             with open(probe, encoding="utf-8"):
                 pass
 
-    def test_allow_outside_checkout_suspends_it(self):
+    def test_allow_outside_checkout_exempts_only_the_path_it_is_given(self):
         outside = str(Path.home() / ".c64cast-sandbox-probe-should-not-exist")
-        with _fs_sandbox.allow_outside_checkout():
+        other = str(Path.home() / ".c64cast-sandbox-other-should-not-exist")
+        with _fs_sandbox.allow_outside_checkout(outside):
             _fs_sandbox._hook("open", (outside, "r", 0))  # no raise
+            # The rest of the developer's home is still policed — the point of
+            # taking a path instead of disarming the hook process-wide.
+            with self.assertRaises(_fs_sandbox.SandboxViolation):
+                _fs_sandbox._hook("open", (other, "r", 0))
         with self.assertRaises(_fs_sandbox.SandboxViolation):
             _fs_sandbox._hook("open", (outside, "r", 0))
 
@@ -171,13 +176,25 @@ class EntryPointTest(unittest.TestCase):
     def test_every_entry_point_sets_pythonpath(self):
         for rel in ENTRY_POINTS:
             with self.subTest(entry_point=rel):
-                body = (CHECKOUT / rel).read_text(encoding="utf-8")
+                body = self._code_of(CHECKOUT / rel)
                 self.assertRegex(
                     body,
                     r"PYTHONPATH[:=] *tests",
                     f"{rel} starts the suite without PYTHONPATH=tests, so "
                     f"tests/sitecustomize.py never runs and the sandbox is off",
                 )
+
+    @staticmethod
+    def _code_of(path: Path) -> str:
+        """`path`'s body with comment lines dropped.
+
+        Two of these four files explain the setting in a comment that quotes it
+        verbatim, so a whole-file grep was satisfied by the explanation alone —
+        delete the real line and the guard for the thing nothing else notices
+        stayed green.
+        """
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
 
 
 if __name__ == "__main__":

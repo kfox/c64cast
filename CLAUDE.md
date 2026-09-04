@@ -143,8 +143,8 @@ test that reads or writes outside the checkout + temp dirs, or reaches an
 test at a `tempfile.mkdtemp()` fixture, or wrap the block in `tmp_cwd()` from
 [tests/_fakes.py](tests/_fakes.py) if what it resolves is a *relative* default
 (`assets/videos/`, `./c64cast.toml`). Never widen the sandbox to make a test
-pass — `allow_outside_checkout()` exists for a test whose subject genuinely is a
-real path, and nothing else.
+pass — `allow_outside_checkout(path)` exempts that one path, for a test whose
+subject genuinely is a real path, and nothing else.
 
 ## Quirks worth knowing
 

@@ -59,12 +59,16 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import importlib.util
 import os
 import shutil
 import sys
 import tempfile
 from collections.abc import Iterator
 
+# Private, and deliberately not one of the two public overrides below: this is
+# the "a process in this tree already set the suite up" marker.
+_TAKEOVER_ENV = "_C64CAST_SUITE_ROOT"
 _SETTINGS_ENV = "C64CAST_SETTINGS"
 _DATA_DIR_ENV = "C64CAST_DATA_DIR"
 
@@ -114,7 +118,13 @@ def _key(path: str) -> str:
     return os.path.join(path, "").casefold()
 
 
-CHECKOUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Resolved, not just absolute: `violation` compares a realpath, so an
+# unresolved CHECKOUT made `_ASSETS` never match on a checkout reached through
+# a symlink (`~/src` a symlink, or the repo itself — ordinary on macOS). The
+# gitignored-assets branch then never fired and the resolved path matched the
+# resolved checkout in `_ALLOWED` instead: a guard that failed silently open,
+# which is the one failure mode this module says nothing else would notice.
+CHECKOUT = _resolve(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _allowed_roots() -> tuple[str, ...]:
@@ -144,6 +154,7 @@ _HOME = _key(_resolve(os.path.expanduser("~")))
 _ALLOWED = _allowed_roots()
 _ASSETS = _key(os.path.join(CHECKOUT, "assets"))
 _armed = False
+_exempt: tuple[str, ...] = ()
 
 
 def asset_is_tracked(rel: str) -> bool:
@@ -171,6 +182,8 @@ def violation(path: str) -> str | None:
     except (OSError, ValueError):  # unresolvable — nothing to police
         return None
     target = _key(resolved)
+    if _exempt and target.startswith(_exempt):
+        return None
     if target.startswith(_ASSETS):
         rel = os.path.relpath(resolved, CHECKOUT).replace(os.sep, "/")
         if asset_is_tracked(rel):
@@ -219,23 +232,27 @@ def redirect_local_state() -> None:
     this process, so the machine layer reads as absent and nothing a writer
     creates lands in the real data dir.
 
-    Leaves the environment alone if the caller already set it: that is how
-    `MachineSettingsIsolation`, the tests that write a settings file of their
-    own, and a forked worker inheriting this one all take over.
+    Runs once per process tree: a forked `unittest_parallel` worker inherits
+    the marker along with the directory and leaves it alone. Keyed on a private
+    marker rather than on the public overrides themselves, because those are
+    documented user settings — a developer who exports `$C64CAST_DATA_DIR` to
+    run c64cast for real would otherwise have had the suite honor it and write
+    their actual calibrations and loop presets, reporting green the whole time.
 
     `$C64CAST_SETTINGS` names a file that does not exist, because the settings
     file is *read* and "absent" is the state a defaults test wants;
     `$C64CAST_DATA_DIR` is a real empty directory, because the data dir is
     *written* and its writers create what they need under it.
     """
-    if _SETTINGS_ENV in os.environ and _DATA_DIR_ENV in os.environ:
+    if _TAKEOVER_ENV in os.environ:
         return
     root = tempfile.mkdtemp(prefix="c64cast-suite-")
     owner = os.getpid()
     data = os.path.join(root, "data")
     os.makedirs(data, exist_ok=True)
-    os.environ.setdefault(_SETTINGS_ENV, os.path.join(root, "no-such-settings.toml"))
-    os.environ.setdefault(_DATA_DIR_ENV, data)
+    os.environ[_TAKEOVER_ENV] = root
+    os.environ[_SETTINGS_ENV] = os.path.join(root, "no-such-settings.toml")
+    os.environ[_DATA_DIR_ENV] = data
 
     def cleanup() -> None:
         # A forked worker inherits this handler along with the directory, and
@@ -252,6 +269,45 @@ def redirect_local_state() -> None:
 _NO_CHARGEN = "/nonexistent/c64cast-suite-chargen.bin"
 
 
+class _ChargenNeutralizer:
+    """Import hook that blanks `LEGACY_CHARGEN_PATH` as `char_rom` is loaded.
+
+    A finder that claims exactly one module, defers to the real machinery for
+    the spec, and wraps the loader so the constant is rewritten the instant the
+    module body has run — before anything can read it.
+    """
+
+    TARGET = "c64cast.hw.char_rom"
+
+    def __init__(self) -> None:
+        self._busy = False
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ARG002
+        if fullname != self.TARGET or self._busy:
+            return None
+        # A re-entrancy flag, not `sys.meta_path.remove(self)`: asking the
+        # normal machinery for this spec re-enters us, but uninstalling to
+        # break that also disarms the hook for good — and a spec can be looked
+        # up without ever being executed. `coverage run --source=<module>`
+        # does exactly that to turn the name into a file path, which consumed
+        # the one-shot before the real import ever happened.
+        self._busy = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        finally:
+            self._busy = False
+        if spec is None or spec.loader is None:
+            return None
+        inner = spec.loader.exec_module
+
+        def exec_module(module):
+            inner(module)
+            module.LEGACY_CHARGEN_PATH = _NO_CHARGEN
+
+        spec.loader.exec_module = exec_module  # type: ignore[method-assign]
+        return spec
+
+
 def neutralize_local_chargen() -> None:
     """Stop `char_rom.resolve` from finding a locally dumped character ROM.
 
@@ -262,22 +318,25 @@ def neutralize_local_chargen() -> None:
     testing different code, and no test said which. 233 reads on this
     machine, none on any other.
 
-    Patched here rather than redirected, because the path is a module constant
-    with no environment override — `test_char_rom` still overrides it per test
-    with `mock.patch.object`, which restores to this instead of to the real
-    one. Costs one ~30 ms import of `c64cast.hw.char_rom` per worker process at
-    startup, which is why it is its own call and not folded into
-    `redirect_local_state`.
-    """
-    from c64cast.hw import char_rom
+    Patched rather than redirected, because the path is a module constant with
+    no environment override — `test_char_rom` still overrides it per test with
+    `mock.patch.object`, which restores to this instead of to the real one.
 
-    char_rom.LEGACY_CHARGEN_PATH = _NO_CHARGEN
+    Deferred to an import hook rather than done by importing the module here:
+    `sitecustomize` runs at interpreter startup, before coverage.py's tracer
+    exists, so importing `c64cast.hw.char_rom` from it put that module and the
+    packages above it into `sys.modules` unmeasured. The file then reported a
+    fraction of the statements it demonstrably runs on every coverage run, with
+    nothing in the output pointing at why. Nothing is lost by waiting: the
+    patch lands as part of the import that first makes `resolve` reachable.
+    """
+    sys.meta_path.insert(0, _ChargenNeutralizer())
 
 
 def arm() -> None:
     """Install the hook. Idempotent, and safe to call before the suite starts:
-    an audit hook is permanent, so the `_armed` flag — not the hook's presence
-    — is what `allow_outside_checkout` toggles."""
+    an audit hook is permanent, so this flag — not the hook's presence — is
+    what decides whether it polices anything."""
     global _armed
     if not _armed:
         sys.addaudithook(_hook)
@@ -285,18 +344,23 @@ def arm() -> None:
 
 
 @contextlib.contextmanager
-def allow_outside_checkout() -> Iterator[None]:
-    """Suspend the sandbox for the block.
+def allow_outside_checkout(path: str) -> Iterator[None]:
+    """Exempt `path`, and anything under it, for the block.
 
     For the handful of tests whose subject *is* a real path — reading back what
     `--save-settings` would write, say. Prefer redirecting the path over
     widening the sandbox; this exists so a legitimate case doesn't have to
     fight the guard.
+
+    Takes the path rather than disarming: the flag is process-wide and read by
+    every thread, so suspending it also un-policed whatever the code under test
+    had running in the background (a PollThread, the recorder) for as long as
+    the block lasted, and nothing would have attributed a leak from one.
     """
-    global _armed
-    was = _armed
-    _armed = False
+    global _exempt
+    was = _exempt
+    _exempt = was + (_key(_resolve(path)),)
     try:
         yield
     finally:
-        _armed = was
+        _exempt = was
