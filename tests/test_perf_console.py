@@ -415,10 +415,14 @@ class PerfBridgeTest(unittest.TestCase):
         bridge.apply({"action": "perf", "on": True})
         self.assertEqual(pl.performance_calls, [True, True])
 
-    def test_perf_defaults_to_on_when_the_frame_omits_the_flag(self):
+    def test_perf_without_the_flag_is_malformed_not_an_implicit_on(self):
+        # Defaulting an absent field to the state-changing value is exactly the
+        # toggle-shaped behavior the explicit-target design avoids: a truncated
+        # or hand-rolled frame would silently blank the OSD mid-set.
         bridge, pl = _bridge()
-        self.assertTrue(bridge.apply({"action": "perf"}))
-        self.assertEqual(pl.performance_calls, [True])
+        with self.assertLogs("c64cast.control.perf_console", "DEBUG"):
+            self.assertFalse(bridge.apply({"action": "perf"}))
+        self.assertEqual(pl.performance_calls, [])
 
     def test_perf_with_no_session_is_refused(self):
         self.assertFalse(PerfBridge(lambda: []).perf(None, True))

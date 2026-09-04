@@ -978,9 +978,12 @@ class PerfBridge:
         Sets `Playlist.performance_mode`, which suppresses every poster
         through one `OsdState.suppressed` gate and is re-stamped onto each
         fresh scene — so it survives an auto-advance, unlike the per-scene
-        hide the `osd.position` double-tap used to do (that pad now routes
-        here, so the two surfaces are one control). Returns False for an
-        unknown system."""
+        hide the `osd.position` MIDI pad's double-tap does. That pad is
+        deliberately *not* rerouted here: it writes `enabled`, which is what
+        lets a tap bring an OSD back up that `[midi_control].osd = "off"` had
+        disabled — a capability performance mode's `suppressed` gate cannot
+        offer without guessing a value to restore. See
+        `Playlist.cycle_osd`. Returns False for an unknown system."""
         pl = self._resolve(system)
         if pl is None:
             return False
@@ -1082,7 +1085,12 @@ class PerfBridge:
             # reason `freeze`/`unfreeze` are two verbs: two consoles open on
             # one show, or a retried request, would otherwise race their stale
             # reads into a double-toggle that cancels out.
-            return self.perf(system, bool(cmd.get("on", True)))
+            # Absent `on` is malformed, not "turn it on": defaulting a
+            # missing field to the state-changing value is the toggle-shaped
+            # behavior the explicit-target design above exists to avoid.
+            if "on" not in cmd:
+                return self._malformed(cmd, "on")
+            return self.perf(system, bool(cmd["on"]))
         return False
 
     def _malformed(self, cmd: Mapping[str, Any], field: str) -> bool:

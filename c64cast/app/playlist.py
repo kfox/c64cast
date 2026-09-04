@@ -323,6 +323,13 @@ class Playlist:
         the one `OsdState.suppressed` gate. Off again restores whatever
         `[midi_control].osd` asked for, because `enabled` was never touched.
 
+        **Turning it off posts nothing.** A `PERF OFF` flash would be the one
+        thing this change set took off the audience screen everywhere else:
+        confirmation that a control was pressed, rather than state the picture
+        is in. The console already shows the mode — `performance_mode` rides
+        every pushed state frame — and the next real poster is itself the
+        proof the OSD is back.
+
         Applied to the current scene *and* stored on the playlist, mirroring
         how the WLED bridge sets `user_dim`: the write gives an instant
         effect, the field makes it outlast this scene (`safe_setup`
@@ -336,8 +343,6 @@ class Playlist:
         scene = self.current
         if scene is not None:
             scene.osd.suppressed = on
-            if not on:
-                scene.osd.post("PERF OFF")
         self.log.info("performance mode: %s", "on (audience screen clean)" if on else "off")
         return on
 
