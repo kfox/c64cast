@@ -288,6 +288,26 @@ class ReceiverTest(unittest.TestCase):
         self.addCleanup(rx.stop)
         self.assertIsNone(rx.bind_error)
 
+    def test_ringing_the_bell_ends_the_worker(self):
+        # Deterministic (no stop event, no timing threshold): the wakeup pair
+        # alone must be enough to bring the worker out of `select`.
+        rx = self._make()
+        poll = rx._poll
+        assert poll is not None
+        rx._ring_wakeup()
+        deadline = time.time() + 2.0
+        while poll.is_running() and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(poll.is_running())
+
+    def test_stop_joins_without_a_timeout_warning(self):
+        # The worker parks in select for _SELECT_TIMEOUT, only 2x under
+        # PollThread's 0.5 s join, so teardown used to warn "did not stop
+        # within 0.5s" whenever a loaded box ate that margin.
+        rx = self._make()
+        with self.assertNoLogs("c64cast._pollthread", level="WARNING"):
+            rx.stop()
+
     def test_restart_after_dead_worker_closes_old_sockets(self):
         rx = self._make()
         old_sockets = list(rx._sockets)
