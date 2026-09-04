@@ -286,6 +286,29 @@ class TransportOriginTest(unittest.TestCase):
         r = client.get("/status", headers={"Origin": "http://evil.example"})
         self.assertEqual(r.status_code, 200)
 
+    def test_every_state_changing_route_is_in_transport_paths(self):
+        # The drift guard the constant's comment promises. TRANSPORT_PATHS is
+        # hand-maintained, and a new verb added to this app without a matching
+        # entry gets no gate at all — silently, since nothing else would fail.
+        from c64cast.control.control_plane import TRANSPORT_PATHS
+
+        # The two families the comment names as guarding themselves: they run
+        # their own `same_origin` check (`/perf`) or are reachable only on a
+        # `--serve` host behind a SameSite=Strict cookie (`/api`).
+        self_guarded = ("/perf/", "/api/")
+
+        client, _ = self._client()
+        writes = {
+            route.path
+            for route in client.app.routes
+            if {"POST", "PUT", "PATCH", "DELETE"} & set(getattr(route, "methods", ()) or ())
+        }
+        self.assertTrue(writes, "found no write routes — the walk is wrong, not the app")
+        ungated = {p for p in writes if not p.startswith(self_guarded)} - set(TRANSPORT_PATHS)
+        self.assertEqual(ungated, set(), f"state-changing route with no origin gate: {ungated}")
+        # And nothing has been left in the constant that the app no longer serves.
+        self.assertEqual(set(TRANSPORT_PATHS) - writes, set())
+
 
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class MultiSystemTest(unittest.TestCase):

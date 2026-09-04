@@ -259,7 +259,18 @@ def same_origin(headers: Any) -> bool:
     netloc alone, because ``Host`` carries no scheme.
 
     Takes the request's (or websocket's) headers rather than its scope, so the
-    one function serves both an HTTP route and a handshake."""
+    one function serves both an HTTP route and a handshake.
+
+    **What this does not stop: DNS rebinding.** The comparison is `Origin`
+    against the `Host` the request carried, and a hostile name that resolves
+    to this box makes those two agree — the page's origin *is* the host it
+    reached. Closing that needs a `Host` allowlist (an explicit set of names
+    and addresses this server answers to), which is a separate mechanism with
+    its own configuration surface and its own way to lock an operator out of
+    their own console. Until then the honest statement of this gate's reach
+    is: it refuses a page at a *different* name, not a page that has taught
+    the browser to use ours. The token, where one is set, is what covers the
+    rebinding case."""
     origin = headers.get("origin")
     if not origin:
         return True

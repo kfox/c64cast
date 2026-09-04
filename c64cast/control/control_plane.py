@@ -54,11 +54,20 @@ LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
 InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
 
 
-#: The state-changing routes, which only a same-origin caller may reach (see
-#: `_refuse_cross_origin_transport`). Spelled out rather than derived from the
-#: method, because this app also carries `/perf/command` and the web console's
-#: `/api/*` writes — those close the same hole themselves, at a layer that can
-#: also refuse a WebSocket handshake before `accept`.
+#: The state-changing routes, which only a same-origin caller may reach —
+#: enforced by :class:`auth.SameOriginMiddleware`, which this module installs
+#: over exactly this set.
+#:
+#: Spelled out rather than derived from the HTTP method, because a `--serve`
+#: host mounts two more families of writes onto this same app and neither
+#: wants this middleware. `/perf/command` runs its own `same_origin` check, at
+#: a layer that can also refuse the `/perf/ws` handshake before `accept`. The
+#: web console's `/api/*` writes carry no origin check of their own; what
+#: covers them is that `/api` exists only on a `--serve` host, where the token
+#: is never empty and the browser credential is an `HttpOnly; SameSite=Strict`
+#: cookie a cross-site request does not send. That is a different defense, not
+#: this one — `tests/test_control_plane.py` pins the membership so a new
+#: transport verb cannot be added to this app and quietly miss the gate.
 TRANSPORT_PATHS = frozenset({"/pause", "/resume", "/skip", "/reload"})
 
 
