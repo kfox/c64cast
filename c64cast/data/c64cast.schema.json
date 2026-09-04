@@ -1430,6 +1430,11 @@
           ],
           "description": "Mode 1 (control surface in). 'disabled' (default) | 'enabled' | '[host][:port]'. 'enabled' binds the WLED JSON API on 0.0.0.0:8080; override the bind with '[host][:port]'. Needs the 'wled' extra."
         },
+        "allow_unauthenticated": {
+          "type": "boolean",
+          "description": "Permit binding `listen` to a non-loopback address. Off by default \u2014 the WLED JSON API carries no token, is advertised over mDNS, and can pause the run, jump scenes, sweep live params, force the palette and write presets. Loopback needs no opt-in.",
+          "default": false
+        },
         "name": {
           "type": "string",
           "description": "Friendly/mDNS device name advertised in Mode 1 (what the WLED app shows for this virtual device).",

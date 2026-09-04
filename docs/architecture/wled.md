@@ -102,6 +102,8 @@ The brightness slider earns its place because `bri` is a **real screen dim** (`_
 
 `[wled].listen` uses the same combined-string grammar as `broadcast` (`enabled` → `0.0.0.0:8080`), and `[wled].name` is the advertised friendly name. A missing extra raises a graceful `RuntimeError` naming the missing piece, mirroring the control-plane pattern; `doctor._validate_wled` reports the resolved listen bind.
 
+**Off-loopback needs an opt-in.** `validate_wled_cfg` refuses a non-loopback `listen` bind unless `[wled].allow_unauthenticated = true`, exactly as `validate_control_cfg` does for `[control]`. The asymmetry that made this necessary: Mode 1 covers everything the control plane's four verbs do *and more* — `on=false` pauses, `seg[].fx` jumps scenes, `sx`/`ix` sweep live params, `pal`/`col` force the palette, a preset save writes the data dir — while carrying no token at all and being mDNS-advertised, yet it used to only *warn* where the pause/skip plane refused outright. The gate is a config flag rather than a token because the WLED protocol has no credential to offer and LAN discovery from the WLED app is the entire feature. Note that Mode 1's default endpoint is `0.0.0.0:8080` (unlike `[control]`'s `127.0.0.1`), so a plain `listen = "enabled"` reaches the gate — that is the point, not an oversight: the exposed bind is the one you get by default.
+
 #### `bri` → a real dim, decoupled from transport
 
 `WledBridge._apply_dim` maps `bri` to the effective brightness `(master/255)*(seg/255)` and pushes it onto `Playlist.user_dim` and the live mode's `user_dim` (see the `modes/` fade note). A top-level `bri` change re-dims every system.

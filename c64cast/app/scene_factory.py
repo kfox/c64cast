@@ -1876,29 +1876,30 @@ def resolve_wled_listen(cfg: Config) -> tuple[bool, str, int]:
 
 
 def validate_wled_cfg(cfg: Config) -> None:
-    """Guard [wled] (both directions). Parse each endpoint (raising on a bad
-    host:port), bound the broadcast rate, and warn — don't fail — when broadcast
-    is enabled with no SID-driven scene to source features from (nothing would
-    go out). Mode 1 (listen) needs no SID scene. No-op when both are off."""
+    """Guard [wled] (both directions). Refuse an unauthenticated Mode 1 bind on
+    a network address, parse each endpoint (raising on a bad host:port), bound
+    the broadcast rate, and warn — don't fail — when broadcast is enabled with
+    no SID-driven scene to source features from (nothing would go out). Mode 1
+    (listen) needs no SID scene. No-op when both are off."""
     broadcast_on, _, _ = resolve_wled_broadcast(cfg)
     listen_on, listen_host, listen_port = resolve_wled_listen(cfg)
-    if listen_on and listen_host not in LOOPBACK_HOSTS:
-        # `validate_control_cfg` refuses an unauthenticated control plane on a
-        # non-loopback host because "anything that can reach the port could
-        # drive the run". Mode 1 overlaps that capability — `on=false` pauses,
-        # `seg[].fx` jumps scenes, `sx`/`ix` sweep live params, `pal`/`col`
-        # force the palette, preset saves write the data dir — and it carries
-        # no token at all, with `wled_device` advertising it over mDNS. LAN
-        # discovery is the whole point of the feature, so this warns where the
-        # control plane refuses; the operator should know what they turned on.
-        log.warning(
-            "[wled].listen exposes the virtual WLED device's JSON/WebSocket API "
-            "on %s:%d with NO authentication (and wled_device advertises it over "
-            "mDNS) — any host that can reach it can pause the run, jump scenes, "
-            "sweep live params, force the palette and write presets. Keep that "
-            "segment trusted, or bind it to a loopback host.",
-            listen_host,
-            listen_port,
+    if listen_on and listen_host not in LOOPBACK_HOSTS and not cfg.wled.allow_unauthenticated:
+        # Same refusal as `validate_control_cfg`, for a strictly larger
+        # capability: Mode 1 covers everything the control plane's four verbs
+        # do and more — `on=false` pauses, `seg[].fx` jumps scenes, `sx`/`ix`
+        # sweep live params, `pal`/`col` force the palette, preset saves write
+        # the data dir — while carrying no token at all and being advertised
+        # over mDNS. This used to warn rather than refuse, which is the wrong
+        # way round: the plane that can only pause/skip is the one that fails
+        # closed. LAN discovery is the whole feature and WLED has no credential
+        # to offer, so the opt-in is a config flag rather than a token.
+        raise ConfigError(
+            f"[wled].listen binds the virtual WLED device's JSON/WebSocket API to "
+            f"{listen_host}:{listen_port} with no authentication, and wled_device "
+            "advertises it over mDNS — any host that can reach it could pause the "
+            "run, jump scenes, sweep live params, force the palette and write "
+            'presets. Bind it to a loopback host (listen = "127.0.0.1:8080"), or '
+            "on a network you trust set [wled].allow_unauthenticated = true."
         )
     if not 1.0 <= cfg.wled.rate_hz <= 120.0:
         raise ConfigError(f"[wled].rate_hz must be 1..120, got {cfg.wled.rate_hz}")

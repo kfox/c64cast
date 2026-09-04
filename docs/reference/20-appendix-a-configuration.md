@@ -5,7 +5,7 @@ generated: true
 
 # Configuration Sections
 
-Every section of a configuration file, in alphabetical order: 20 sections and 177 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
+Every section of a configuration file, in alphabetical order: 20 sections and 178 fields, with the type each takes and the value it holds when you say nothing. A field a knob can move mid-show says so, and names the target Appendix F lists it under. Each section opens with a fragment showing how it is written; the table under it is the whole section. `c64cast --describe section:NAME` prints any one of these at the terminal.
 
 ## `[audio]`
 
@@ -487,6 +487,7 @@ Two-directional WLED bridge: broadcast SID audio-sync out (Mode 3) and/or act as
 [wled]
 rate_hz = 50
 broadcast_tempo_fallback = false
+allow_unauthenticated = false
 name = "c64cast"
 ```
 
@@ -497,4 +498,5 @@ name = "c64cast"
 | **`rate_hz`**<br>*Type:* `float`<br>*Default:* `50.0` | Broadcast rate in Hz (Mode 3). WLED expects roughly frame-rate updates; ~40-60 is typical. |
 | **`broadcast_tempo_fallback`**<br>*Type:* `bool`<br>*Default:* `False` | Mode 3 performance glue (Live DJ/VJ Phase 6): when the on-screen scene has NO SID features to broadcast (a video, webcam, or slideshow), fall back to the [performance] beat grid so WLED strips keep pulsing to the MIDI/tap tempo instead of going dark. The synthesized pulse spikes on each beat (from the TempoClock phase); only active while the grid is running. Off (default) = a non-SID scene broadcasts nothing, matching pre-Phase-6 behavior. A SID-driven scene always wins over the fallback. |
 | **`listen`**<br>*Type:* `str \| None`<br>*Default:* `None` | Mode 1 (control surface in). 'disabled' (default) \| 'enabled' \| '[host][:port]'. 'enabled' binds the WLED JSON API on 0.0.0.0:8080; override the bind with '[host][:port]'. Needs the 'wled' extra. |
+| **`allow_unauthenticated`**<br>*Type:* `bool`<br>*Default:* `False` | Permit binding `listen` to a non-loopback address. Off by default — the WLED JSON API carries no token, is advertised over mDNS, and can pause the run, jump scenes, sweep live params, force the palette and write presets. Loopback needs no opt-in. |
 | **`name`**<br>*Type:* `str`<br>*Default:* `'c64cast'` | Friendly/mDNS device name advertised in Mode 1 (what the WLED app shows for this virtual device). |

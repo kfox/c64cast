@@ -2956,6 +2956,21 @@ class WledCfg:
             "'wled' extra."
         },
     )
+    # Mode 1's default endpoint is 0.0.0.0:8080 — off-loopback out of the box,
+    # unlike [control], which defaults to 127.0.0.1. So this gate is reached by
+    # a plain `listen = "enabled"`, not just by someone who typed an address.
+    # Kept as an opt-out rather than dropping the open mode, and for the same
+    # reason [control].allow_unauthenticated is: LAN discovery from the WLED app
+    # is the entire feature, and the protocol has no credential to offer.
+    allow_unauthenticated: bool = field(
+        default=False,
+        metadata={
+            "help": "Permit binding `listen` to a non-loopback address. Off by "
+            "default — the WLED JSON API carries no token, is advertised over "
+            "mDNS, and can pause the run, jump scenes, sweep live params, force "
+            "the palette and write presets. Loopback needs no opt-in."
+        },
+    )
     name: str = field(
         default="c64cast",
         metadata={
