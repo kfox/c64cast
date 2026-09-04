@@ -18,7 +18,7 @@ import threading
 import unittest
 from unittest import mock
 
-from _fakes import fake_system_stack
+from _fakes import fake_system_stack, tmp_cwd
 
 from c64cast.app import config as cfgmod
 from c64cast.app import profiler as profiler_mod
@@ -150,7 +150,9 @@ class ValidateConfigsTest(unittest.TestCase):
         # CLI's answer to a bad scene identical.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", duration_s=5.0)]
-        with self.assertLogs("c64cast", level="ERROR"):
+        # From an empty cwd: a video scene with no `file` resolves against
+        # assets/videos/, so "unresolvable" is only true where that is empty.
+        with tmp_cwd(), self.assertLogs("c64cast", level="ERROR"):
             with self.assertRaises(session.SessionConfigError) as cm:
                 session.validate_configs(loaded, loaded.cfgs)
         self.assertEqual(cm.exception.exit_code, 3)
@@ -161,7 +163,7 @@ class ValidateConfigsTest(unittest.TestCase):
             cfgmod.SceneCfg(type="blank"),
             cfgmod.SceneCfg(type="video", name="outro", duration_s=5.0),
         ]
-        with self.assertLogs("c64cast", level="ERROR") as logged:
+        with tmp_cwd(), self.assertLogs("c64cast", level="ERROR") as logged:
             with self.assertRaises(session.SessionConfigError) as cm:
                 session.validate_configs(loaded, loaded.cfgs)
         self.assertIn("outro", logged.output[0])
@@ -172,7 +174,7 @@ class ValidateConfigsTest(unittest.TestCase):
         # surface mid-show rather than before the run.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", follower_only=True, duration_s=5.0)]
-        with self.assertLogs("c64cast", level="ERROR"):
+        with tmp_cwd(), self.assertLogs("c64cast", level="ERROR"):
             with self.assertRaises(session.SessionConfigError):
                 session.validate_configs(loaded, loaded.cfgs)
 

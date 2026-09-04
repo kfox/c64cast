@@ -132,6 +132,20 @@ so every by-product gets wrapped where it fires:
 
 Check with `make test` and read the output: anything between the dots is a leak.
 
+**The suite cannot touch files outside the checkout, and this is enforced, not
+asked for.** Every entry point sets `PYTHONPATH=tests` so
+[tests/sitecustomize.py](tests/sitecustomize.py) arms
+[tests/_fs_sandbox.py](tests/_fs_sandbox.py) at interpreter startup: the machine
+settings and data dir are redirected to a throwaway directory for the whole run,
+`char_rom`'s cwd-relative ROM fallback is blanked, and an audit hook fails any
+test that reads or writes outside the checkout + temp dirs, or reaches an
+`assets/` file git does not carry. When a test trips it, point the code under
+test at a `tempfile.mkdtemp()` fixture, or wrap the block in `tmp_cwd()` from
+[tests/_fakes.py](tests/_fakes.py) if what it resolves is a *relative* default
+(`assets/videos/`, `./c64cast.toml`). Never widen the sandbox to make a test
+pass — `allow_outside_checkout()` exists for a test whose subject genuinely is a
+real path, and nothing else.
+
 ## Quirks worth knowing
 
 Cross-cutting traps that belong to no single module. **Per-subsystem design rationale

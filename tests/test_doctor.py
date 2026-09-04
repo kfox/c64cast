@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from _fakes import FakeAPI, MachineSettingsIsolation
+from _fakes import FakeAPI, MachineSettingsIsolation, tmp_cwd
 
 import c64cast
 from c64cast.app import config as cfgmod
@@ -618,7 +618,10 @@ class SidStatusProbeTest(unittest.TestCase):
             type = "slideshow"
             display = "mhires"
         """)
-        diags = self._patch_connectivity_to_sid_status(loaded, "Enabled", "Enabled")
+        # From an empty cwd: the slideshow has no `file`, so validation would
+        # otherwise list the developer's own assets/pictures/.
+        with tmp_cwd():
+            diags = self._patch_connectivity_to_sid_status(loaded, "Enabled", "Enabled")
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(sid, [], "SID probe should not run without SID audio")
 

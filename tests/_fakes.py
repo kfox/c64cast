@@ -53,15 +53,37 @@ def quiet_logging() -> Iterator[None]:
         root.setLevel(level)
 
 
+@contextlib.contextmanager
+def tmp_cwd() -> Iterator[str]:
+    """Run the block from an empty temporary directory, restoring cwd after.
+
+    For anything that resolves a *relative* default — `assets/videos/`,
+    `assets/pictures/`, `./c64cast.toml`. The suite runs from the checkout, so
+    those probes otherwise answer from whatever media the developer happens to
+    keep there: a test asserting "this scene cannot be resolved" passes on a
+    clean checkout and on CI, and would quietly assert the opposite on a
+    machine with a video in `assets/videos/`. The filesystem sandbox
+    (`tests/_fs_sandbox.py`) now rejects that read outright, and this is the
+    fix it points at.
+    """
+    previous = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        try:
+            yield tmp
+        finally:
+            os.chdir(previous)
+
+
 class MachineSettingsIsolation:
     """Point **both** of ``paths.py``'s environment overrides into a private
-    temporary directory for the lifetime of a test module, so tests that
-    assert config **defaults** / the ``load(dumps(cfg)) == cfg`` round-trip
-    are hermetic against a real ``~/.config/c64cast/settings.toml`` on the
-    developer's machine (the machine-settings layer is applied inside
-    ``config.load``) — and so nothing a test reaches can read or write the
-    real ``~/.local/share/c64cast/`` (DAC calibrations, WLED + loop presets).
-    Use from a module's ``setUpModule``/``tearDownModule``:
+    temporary directory *fresh for this module*.
+
+    The suite-wide redirect in ``tests/_fs_sandbox.py`` already points both
+    somewhere throwaway for every module, so hermeticity no longer depends on
+    remembering this — what this adds is a directory nothing else has written
+    to, which is what a module that itself writes machine settings or
+    calibrations wants. Use from a module's ``setUpModule``/``tearDownModule``:
 
         _iso = MachineSettingsIsolation()
         def setUpModule():

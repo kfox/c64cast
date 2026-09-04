@@ -19,6 +19,10 @@ cd "$(dirname "$0")/.."
 # console script isn't on PATH (some interpreter/venv combos don't install it).
 COVERAGE="${COVERAGE:-coverage}"
 
+# Arms the filesystem sandbox (tests/sitecustomize.py) — same as `make test`
+# and scripts/pre-commit.sh, so a leak fails here too rather than only there.
+export PYTHONPATH=tests
+
 $COVERAGE erase
 # Run the suite. Don't abort on a test failure (no `set -e`): we still want
 # coverage.xml + the JUnit results generated/uploaded. Re-raise the status at

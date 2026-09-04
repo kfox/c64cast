@@ -12,7 +12,7 @@ import os
 import tempfile
 import unittest
 
-from _fakes import MachineSettingsIsolation
+from _fakes import MachineSettingsIsolation, tmp_cwd
 
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
@@ -353,7 +353,14 @@ class RunInitShellTest(unittest.TestCase):
 
         from c64cast.app import wizard as wz
 
-        with tempfile.TemporaryDirectory() as d:
+        # From an empty cwd, with the clip the wizard is told to type actually
+        # present: the file spec is relative, so against the checkout it named
+        # a video in the developer's own assets/videos/ (or nothing at all,
+        # depending on the machine) rather than a fixture this test controls.
+        with tmp_cwd() as d:
+            os.makedirs(os.path.join(d, "assets", "videos"))
+            with open(os.path.join(d, "assets", "videos", "clip.mp4"), "wb") as f:
+                f.write(b"")
             out = os.path.join(d, "multi.toml")
             routes = {
                 "Build a single": wizard._MULTI_LABEL,
