@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from _fakes import MachineSettingsIsolation
+from _fakes import MachineSettingsIsolation, tmp_cwd
 
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store, paths
@@ -429,7 +429,10 @@ class ValidateRefTest(StoreTestCase):
 
     def test_a_config_that_fails_the_fail_fast_check_still_gets_full_diagnostics(self):
         (self.shows / "two-bad.toml").write_text(TWO_UNRESOLVED_SCENES, encoding="utf-8")
-        report = self.store.validate_ref("shows/two-bad.toml")
+        # Both scenes are "unresolved" only from a cwd with no assets/videos/,
+        # which is what a video scene with no `file` falls back to.
+        with tmp_cwd():
+            report = self.store.validate_ref("shows/two-bad.toml")
         # The fail-fast half stops at the first bad scene...
         self.assertFalse(report["ok"])
         self.assertIn("video#0", report["error"])

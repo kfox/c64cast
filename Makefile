@@ -22,6 +22,11 @@
 # with `make test PY=python` if you really want to.
 PY ?= uv run python
 
+# Arms the test suite's filesystem sandbox: `site` imports
+# tests/sitecustomize.py from here at interpreter startup, in
+# unittest_parallel's worker processes as well as in the parent.
+TEST_ENV := PYTHONPATH=tests
+
 # Local runs sync the project env first (all extras) so the interpreter always
 # has the full dependency set. CI sets $CI and manages its own pinned env
 # (`uv sync --frozen …`), so the prereq is skipped there — don't override CI's
@@ -142,7 +147,7 @@ fmt:
 # T=tests.test_midi_scene.MidiSceneTest.test_x) runs just that, serially — the
 # parallel runner discovers by directory, not by dotted path.
 test: $(SYNC)
-	$(if $(T),$(PY) -m unittest $(T),$(PY) -m unittest_parallel -s tests)
+	$(if $(T),$(TEST_ENV) $(PY) -m unittest $(T),$(TEST_ENV) $(PY) -m unittest_parallel -s tests)
 
 coverage: $(SYNC)
 	uv run scripts/coverage.sh

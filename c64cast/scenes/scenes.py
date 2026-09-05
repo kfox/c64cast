@@ -257,13 +257,19 @@ class OsdState:
     Two independent gates, because they answer different questions and one
     must not clobber the other. `enabled` is the **static** setting
     (``[midi_control].osd = "off"``), stamped on by
-    ``scene_factory.build_scene``, and it is also what the ``osd.position``
-    MIDI action toggles. `suppressed` is **performance mode**
-    (``Playlist.performance_mode``, toggled live from the web console): the
-    C64 output is in front of an audience, so nothing may draw over it. Were
-    performance mode to write `enabled` instead, turning it back off would
-    have to guess a value and would silently override a config that said
-    "off". `position` is "top" or "bottom". Rendered pre-quantization via
+    ``scene_factory.build_scene``. `suppressed` is the **run-level** override —
+    performance mode (``Playlist.performance_mode``, from the web console's
+    PERF button or the ``osd.position`` pad's double-tap): the C64 output is in
+    front of an audience, so nothing may draw over it. Were performance mode to
+    write `enabled` instead, turning it back off would have to guess a value
+    and would silently override a config that said "off"; were the pad to write
+    `enabled` — as it did until the two were unified — its hide would reach
+    only the live scene and come undone on the next auto-advance.
+
+    Ask :attr:`visible`, not either gate, whenever the question is "is the OSD
+    up?": ``Playlist.cycle_osd``'s re-show branch does, which is what lets one
+    tap raise an OSD whichever gate is holding it down. `position` is "top" or
+    "bottom". Rendered pre-quantization via
     :func:`_annotate_osd`, so it works on every display mode (the text becomes
     part of the quantized bitmap), exactly like the ``--frame-numbers`` debug
     label."""

@@ -2664,8 +2664,9 @@ class MidiControlCfg:
             "MIDI/WLED, then fades. 'top' or 'bottom' picks the corner; 'off' "
             "disables it. Rendered pre-quantization so it shows on every display "
             "mode (like --frame-numbers). This is the run's baseline; the web "
-            "console's PERF button silences the OSD live for a performance and "
-            "restores this setting when switched back off.",
+            "console's PERF button and a double-tap of an osd.position pad both "
+            "silence the OSD live for a performance (they are one control at two "
+            "surfaces), and either restores this setting when switched back off.",
             "choices": ("bottom", "top", "off"),
         },
     )

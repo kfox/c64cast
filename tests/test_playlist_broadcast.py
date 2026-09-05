@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 from c64cast.app.ensemble import Ensemble, SystemStack
 from c64cast.app.playlist import Playlist
+from c64cast.scenes.scenes import OsdState
 
 
 def _fake_ensemble_stack(name: str) -> SystemStack:
@@ -50,6 +51,9 @@ class _FakeScene:
         # the attributes the playlist actually reads to real values.
         self.display_mode = MagicMock()
         self.display_mode.default_target_fps = None
+        # A real Scene always has one, and `safe_setup` re-stamps the run's
+        # performance-mode gate onto it every lap.
+        self.osd = OsdState()
         self.display_mode.cycle_style.return_value = None
         self.setup_calls = 0
         self.teardown_calls = 0

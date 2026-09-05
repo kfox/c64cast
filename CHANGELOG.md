@@ -27,8 +27,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   live-tuning at the desk, so it cannot be a static setting; PERF turns it off
   for the whole run and back on again. It silences every poster — live-tune,
   effect bypass, and the transport engine's `PAUSED` / `SEEK` / `LOOP A` /
-  `REC ●` — and unlike the `osd.position` pad's double-tap hide, it survives a
-  scene change. Turning it off restores whatever `[midi_control].osd` asked
+  `REC ●` — and it survives a scene change. A double-tap of an `osd.position`
+  pad now turns the same mode on, so the two are one control reachable from
+  either surface. Turning it off restores whatever `[midi_control].osd` asked
   for rather than assuming "on", and posts nothing itself — a `PERF OFF` flash
   would be the confirmation-of-a-keypress this release took off that screen
   everywhere else. It ships on the `/perf` page; the Svelte console and the
@@ -69,6 +70,30 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A scene hidden with the `osd.position` pad no longer stays dark for the
+  rest of the run.** Performance mode is a per-scene flag re-stamped each lap,
+  but the pad's hide was only ever stamped *on* — and the mode is turned back
+  off from whichever scene is live then, which is never the scene it was
+  hidden from. That scene kept a set flag nothing cleared, so on a looping
+  playlist its OSD was dead for good and further taps on the pad did nothing.
+  The re-stamp now writes the mode's actual value every lap, and a tap clears
+  the run-level gate on the scene in front of it rather than inferring it, so
+  the pad really does open whichever gate is shut.
+- **The WLED device page now sends the same hardening headers as the `/perf`
+  console.** It went out with no `frame-ancestors` and no `X-Frame-Options` at
+  all, which left framing the page as the one cross-site path the `Origin`
+  check does not close: a hostile page could frame the device root, overlay a
+  decoy, and collect a tap that lands inside the frame as a same-origin
+  request. Both pages are assembled by the same helper, so the headers now live
+  beside it and cannot diverge again.
+- **The WLED pixel sink's teardown bell is verified before it is trusted, and
+  says so when it cannot be opened.** Windows has no native `socketpair`, so
+  CPython binds a loopback listener and accepts without checking who connected
+  — a local process that won that race owned the bell, and ringing it ended the
+  receive thread while the source went on serving its last frame. A pair that
+  fails or comes back wrong is now discarded with a warning, instead of
+  silently reverting to the slower teardown whose timeout warning this exists
+  to prevent.
 - **The WLED Mode 1 websocket now refuses a cross-origin handshake.**
   `POST /json` has always rejected one, but `/ws` — which applies the same
   commands — accepted before checking anything. A WebSocket handshake is
@@ -101,6 +126,35 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   authored however many times the show saves over itself; the log says which of
   the two happened. There is no undo for the previous save any more — the file
   worth keeping is the one nothing generated.
+- **`--doctor` no longer recommends a sample rate the config stopped using.**
+  The remediation hint on an unsafe `[audio].sample_rate` spelled its numbers
+  out by hand and went stale: it still said "default 10500" two releases after
+  12000 became the default, so the advice named a rate nobody was running. The
+  default and both per-standard ceilings are now read from the config and the
+  cycle-budget math, so the hint cannot contradict them again.
+- **Ending a WLED pixel-sink scene no longer warns that its thread is wedged.**
+  The receive thread waits up to 0.25 s in `select` for the next datagram, and
+  teardown gave it 0.5 s to notice the stop — a 2x margin, tight enough that a
+  busy machine lost the race and logged `PollThread 'wled-sink' did not stop
+  within 0.5s; it is still running` about a thread that was merely waiting.
+  Teardown now wakes the wait directly instead of outlasting it, so the sink
+  stops in well under a millisecond and the warning means what it says.
+- **The web console's stale-update banner no longer blames PyPI for a check
+  nobody ran.** It read "No answer from PyPI since <date> — check its internet
+  connection", but the staleness clock falls back to the last *attempt* when
+  nothing has ever gone unanswered: on a laptop with no update timer, whose
+  last check answered fine months ago, that named a service that was never
+  asked and sent the operator after a network fault that did not exist. The
+  banner now says what the login MOTD has always said — no check has
+  *succeeded* in over N days — since that is the one thing true in both cases.
+- **An `osd.position` pad's double-tap hide now lasts past the current scene.**
+  It wrote the per-scene static gate, which nothing re-stamps, so a pad hit to
+  clear the audience screen quietly un-hid itself on the next auto-advance —
+  and since the web console's PERF button hides the same OSD and *does*
+  persist, the two controls hid one thing to two different depths. The pad now
+  turns performance mode on and off, so it reaches as far as PERF does and a
+  tap still brings the OSD back whichever gate is holding it down, including
+  the config's own `[midi_control].osd = "off"`.
 
 ### Security
 

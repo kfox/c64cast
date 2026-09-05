@@ -184,6 +184,19 @@ class PixelFrameAssembler:
         return rgb[..., ::-1].copy()  # RGB → BGR
 
 
+def _is_own_pair(a: socket.socket, b: socket.socket) -> bool:
+    """Whether `a` and `b` are really connected to each other.
+
+    Only ever false on the Windows `socketpair` emulation, which accepts on a
+    loopback listener without checking who connected. An AF_UNIX pair cannot be
+    raced, so this is a cheap tautology everywhere else.
+    """
+    try:
+        return a.getpeername() == b.getsockname() and b.getpeername() == a.getsockname()
+    except OSError:
+        return False
+
+
 class WledPixelReceiver:
     """Daemon thread listening for DDP + WLED-realtime pixel streams.
 
@@ -227,6 +240,8 @@ class WledPixelReceiver:
         self._logged_first_datagram = False
         self._logged_ddp_reject = False
         self._logged_wled_reject = False
+        self._wake_r: socket.socket | None = None
+        self._wake_w: socket.socket | None = None
         self.bind_error: OSError | None = None
 
     def _bind(self, port: int) -> socket.socket | None:
@@ -272,11 +287,17 @@ class WledPixelReceiver:
             self._assembler.width,
             self._assembler.height,
         )
+        self._open_wakeup()
         self._poll = PollThread(self._worker, name="wled-sink", manual=True)
         self._poll.start()
         return True
 
     def stop(self) -> None:
+        # Ring before joining: the worker parks in `select` for up to
+        # _SELECT_TIMEOUT, which leaves only a 2x margin under PollThread's
+        # 0.5 s join, so on a loaded box the join timed out and logged
+        # "did not stop within 0.5s" even though nothing was actually wedged.
+        self._ring_wakeup()
         if self._poll is not None:
             self._poll.stop()
             self._poll = None
@@ -285,6 +306,53 @@ class WledPixelReceiver:
                 s.close()
         self._sockets = []
         self._ddp_sock = None
+        self._close_wakeup()
+
+    def _open_wakeup(self) -> None:
+        """A self-pipe added to the worker's `select` set so `stop()` can end
+        the current wait immediately instead of waiting it out.
+
+        Closing the UDP sockets first would wake `select` too, but the worker
+        may already be inside `recvfrom` on a descriptor the kernel is free to
+        hand to the next socket() call — so the bell is its own pair.
+
+        The pair is verified before it is kept. Windows has no native
+        `socketpair`, so CPython falls back to binding a listener on
+        127.0.0.1:0, connecting to it, and accepting — without checking that
+        the peer it accepted is the client it just dialed. Any local process
+        that wins that race owns the bell, and `_worker` treats a readable bell
+        as "stop now" and returns, ending the receive thread while
+        `WLEDSource.read` goes on serving the last frame it got: a frozen show
+        with nothing in the log to attribute it to.
+
+        A failure here is not fatal — the worker still wakes on its own
+        `_SELECT_TIMEOUT` — but it is logged, because that fallback is the
+        2x-margin teardown whose "did not stop within 0.5s" warning this bell
+        exists to remove, and a silent fallback makes that warning a lie."""
+        try:
+            wake_r, wake_w = socket.socketpair()
+        except OSError as e:
+            log.warning("WLED sink: no wakeup pipe (%s); teardown falls back to polling", e)
+            return
+        if not _is_own_pair(wake_r, wake_w):
+            log.warning("WLED sink: wakeup pipe accepted a foreign peer; discarding it")
+            for s in (wake_r, wake_w):
+                with contextlib.suppress(OSError):
+                    s.close()
+            return
+        self._wake_r, self._wake_w = wake_r, wake_w
+
+    def _ring_wakeup(self) -> None:
+        if self._wake_w is not None:
+            with contextlib.suppress(OSError):
+                self._wake_w.send(b"\x00")
+
+    def _close_wakeup(self) -> None:
+        for s in (self._wake_r, self._wake_w):
+            if s is not None:
+                with contextlib.suppress(OSError):
+                    s.close()
+        self._wake_r = self._wake_w = None
 
     def bound_ports(self) -> tuple[int, int] | None:
         """The (ddp, wled) ports actually bound, or None if not started. Useful
@@ -354,12 +422,16 @@ class WledPixelReceiver:
         self._publish()
 
     def _worker(self, stop: threading.Event) -> None:
+        wake = self._wake_r
+        watch = [*self._sockets, wake] if wake is not None else list(self._sockets)
         while not stop.is_set():
             try:
-                ready, _, _ = select.select(self._sockets, [], [], self._SELECT_TIMEOUT)
+                ready, _, _ = select.select(watch, [], [], self._SELECT_TIMEOUT)
             except (OSError, ValueError):
                 break  # sockets closed under us during stop()
             for sock in ready:
+                if sock is wake:
+                    return  # stop() rang the bell
                 try:
                     datagram, addr = sock.recvfrom(self._RECV_BUF)
                 except OSError:

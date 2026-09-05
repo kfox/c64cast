@@ -114,6 +114,25 @@ driving `cli.main()` needs: `configure_logging` replaces the root handlers
 process-wide, so without it that handler outlives the test and every later INFO
 record in the same worker prints, from modules with no connection to the CLI.
 
+**The suite may not touch your own files, and a hook enforces that rather than
+trusting the convention.** Every entry point runs with `PYTHONPATH=tests`, which
+makes `site` import [`tests/sitecustomize.py`](tests/sitecustomize.py) at
+interpreter startup — in `unittest_parallel`'s worker processes as well as the
+parent, since only the environment reaches those. That points the machine
+settings and the data dir at a throwaway directory for the whole run, blanks
+`char_rom`'s cwd-relative ROM fallback, and installs an audit hook that fails
+any test reading or writing outside the checkout and the temp directories, plus
+anything under `assets/` that git does not carry. The rule, the reasoning and
+the two known blind spots are in
+[`tests/_fs_sandbox.py`](tests/_fs_sandbox.py)'s docstring.
+
+If a test trips it, the fix is almost always to point the code under test at a
+file the test writes under `tempfile.mkdtemp()`, or to run the block from
+`tmp_cwd()` (in [`tests/_fakes.py`](tests/_fakes.py)) when what it resolves is a
+*relative* default like `assets/videos/`. `MachineSettingsIsolation` is still
+there for a module that wants a settings/data directory of its own, fresh and
+untouched by anything else.
+
 Several tests exist purely to stop documentation from drifting — the JSON schema
 against the config metadata, the annotated example TOML against the dataclass
 fields, the `all` extra against the union of the other extras. If one of those

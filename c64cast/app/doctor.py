@@ -31,7 +31,15 @@ from c64cast.hw import hw_provision
 from c64cast.hw.c64 import max_safe_sample_rate, nmi_rate_safety
 from c64cast.sid import emusid_mixer
 
-from .config import ColorCfg, Config, ConfigError, LoadResult, resolve_recording_path, scene_color
+from .config import (
+    AudioCfg,
+    ColorCfg,
+    Config,
+    ConfigError,
+    LoadResult,
+    resolve_recording_path,
+    scene_color,
+)
 from .orchestrator import OrchestratorError
 from .paths import expand_user
 from .scene_factory import (
@@ -744,6 +752,24 @@ def _validate_scenes(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+def _sample_rate_hint() -> str:
+    """Remediation text for an unsafe `[audio].sample_rate`, derived from the
+    shipped default and the per-standard ceilings.
+
+    Both numbers used to be spelled out here, and both went stale the moment
+    the default moved (the hint still recommended 10500 long after 12000
+    shipped). Deriving them means the advice cannot contradict the config.
+    """
+    default_rate = AudioCfg().sample_rate
+    ntsc, pal = max_safe_sample_rate("NTSC"), max_safe_sample_rate("PAL")
+    clears_both = all(nmi_rate_safety(std, default_rate)[0] == "ok" for std in ("NTSC", "PAL"))
+    default_note = f" The shipped default of {default_rate} Hz clears both." if clears_both else ""
+    return (
+        f"Lower [audio].sample_rate — max safe is ~{ntsc} Hz on NTSC, "
+        f"~{pal} Hz on PAL.{default_note}"
+    )
+
+
 def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
     """Flag [audio].sample_rate values that overrun (error) or risk overrunning
     (warn) the $D418 NMI handler on each system's target standard. Offline —
@@ -767,10 +793,7 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                     category="audio",
                     subject=f"{name}/sample_rate",
                     message=message,
-                    hint=(
-                        "Lower [audio].sample_rate — default 10500 is safe on NTSC + "
-                        "PAL; NTSC tolerates ~11025, keep PAL <= ~10500."
-                    ),
+                    hint=_sample_rate_hint(),
                 )
             )
             continue

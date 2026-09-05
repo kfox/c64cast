@@ -65,7 +65,6 @@ make FastAPI mis-read it as a query param and skip the WebSocket injection.
 
 import asyncio
 import contextlib
-import functools
 import json
 import logging
 import math
@@ -77,7 +76,7 @@ from typing import Any
 
 from c64cast.app.playlist import Playlist
 
-from . import live_tune
+from . import live_tune, page_assets
 from .auth import BODY_TOO_LARGE_ERROR, BodyTooLarge, is_viewer, read_body, role_of, same_origin
 from .performance import ClipEvent
 from .transport import JsonSlotStore, TransportEvent
@@ -977,12 +976,11 @@ class PerfBridge:
 
         Sets `Playlist.performance_mode`, which suppresses every poster
         through one `OsdState.suppressed` gate and is re-stamped onto each
-        fresh scene — so it survives an auto-advance, unlike the per-scene
-        hide the `osd.position` MIDI pad's double-tap does. That pad is
-        deliberately *not* rerouted here: it writes `enabled`, which is what
-        lets a tap bring an OSD back up that `[midi_control].osd = "off"` had
-        disabled — a capability performance mode's `suppressed` gate cannot
-        offer without guessing a value to restore. See
+        fresh scene, so it survives an auto-advance. The `osd.position` MIDI
+        pad's double-tap routes through here too rather than keeping a
+        shallower, scene-local hide of its own; its re-show branch asks
+        `osd.visible` and opens whichever gate is shut, so a tap still brings
+        up an OSD that `[midi_control].osd = "off"` had disabled. See
         `Playlist.cycle_osd`. Returns False for an unknown system."""
         pl = self._resolve(system)
         if pl is None:
@@ -1126,7 +1124,6 @@ class PerfBridge:
 # screen. Both are handled as absent rather than assumed — this page is served
 # by the control plane, which a plain CLI run has without any of /api. Kept
 # dependency-free so it renders in any phone browser.
-@functools.cache
 def perf_page_html() -> str:
     """The console page, read once from the packaged ``perf_console.html``.
 
@@ -1135,44 +1132,20 @@ def perf_page_html() -> str:
     formatter, no linter, and could not be opened in a browser on its own while
     someone iterated on it. Nothing else changes — it is still one fixed,
     server-authored body with no caller content in it and no third-party
-    resource to load, which is what lets :data:`_PAGE_HEADERS` be as strict as
-    it is.
+    resource to load, which is what lets :data:`page_assets.PAGE_HEADERS` be
+    as strict as it is.
 
-    Read through :mod:`importlib.resources` rather than ``__file__`` so any
-    loader that imported the package answers, and cached because
-    :func:`register_perf_routes` serves the same bytes on every request.
-    ``read_text`` needs no real filesystem path (unlike
-    :func:`c64cast.app.paths._package_dir`, whose callers hand paths to
-    ``open()``), so this works from a zipped distribution too.
-
-    Packaged by the ``control/*.html`` entry in ``[tool.setuptools.package-data]``
-    — without it the wheel ships only ``.py`` files and the console 500s on a
-    fresh install, which ``test_perf_console`` guards against by reading it."""
-    from importlib.resources import files  # noqa: PLC0415  (lazy; import-time cost)
-
-    return files("c64cast.control").joinpath("perf_console.html").read_text(encoding="utf-8")
+    The reconnecting-socket-with-poll-fallback client is spliced in from
+    ``live_socket.js`` rather than duplicated here — see
+    :mod:`c64cast.control.page_assets`, which also carries the reading and
+    caching rationale."""
+    return page_assets.page_html("c64cast.control", "perf_console.html")
 
 
-#: Response headers for the console page.
-#:
-#: Hardening rather than a defense of its own, and ranked deliberately behind
-#: the ``Origin`` check :func:`auth.same_origin` now applies: in the open mode
-#: a hostile page could drive every control directly with no user interaction
-#: at all, which is strictly easier than framing this page and tricking the
-#: performer into tapping a pad; and in a token-gated deployment the
-#: ``SameSite=Strict`` cookie is not sent into a third-party frame, so the
-#: frame renders the login page instead. It costs the page nothing — a fixed,
-#: server-authored body with no caller content in it and no third-party
-#: resource to load — and ``unsafe-inline`` is what its own ``<style>`` and
-#: ``<script>`` need. ``img-src`` has to allow ``self`` for the screen stream.
-_PAGE_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'self'; frame-ancestors 'none'; "
-        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'"
-    ),
-    "X-Frame-Options": "DENY",
-    "X-Content-Type-Options": "nosniff",
-}
+#: Response headers for the console page — shared with the WLED device page,
+#: which is served from the same assembly helper. See
+#: :data:`page_assets.PAGE_HEADERS` for what they buy and why they are cheap.
+_PAGE_HEADERS = page_assets.PAGE_HEADERS
 
 
 def register_perf_routes(app: Any, bridge: PerfBridge) -> None:

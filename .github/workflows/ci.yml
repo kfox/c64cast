@@ -217,6 +217,12 @@ jobs:
       # INFO spam. The coverage job below stays on serial xmlrunner (it emits
       # the JUnit XML for Codecov Test Analytics, which this runner can't).
       - name: Unit tests
+        # PYTHONPATH=tests arms the filesystem sandbox (tests/sitecustomize.py),
+        # which fails any test that reads or writes outside the checkout and
+        # the temp dirs. Every entry point sets it; test_fs_sandbox.py checks
+        # that this one still does.
+        env:
+          PYTHONPATH: tests
         run: uv run python -m unittest_parallel -s tests -b
 
   coverage:

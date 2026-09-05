@@ -936,10 +936,13 @@ class PerfPageControlsTest(unittest.TestCase):
 
     def test_the_reconnect_backs_off_rather_than_retrying_forever(self):
         # Every open phone retrying a downed host at a fixed interval is the
-        # load `MAX_CONSOLE_SOCKETS` exists to bound.
-        self.assertIn("function retryWS()", perf_page_html())
-        self.assertIn("WS_RETRY_MAX_MS", perf_page_html())
-        self.assertNotIn("setTimeout(startWS, 2500)", perf_page_html())
+        # load `MAX_CONSOLE_SOCKETS` exists to bound. The loop itself is the
+        # shared client now (see test_page_assets); what this asserts is that
+        # this page gets it, wired to its own socket and poll endpoint.
+        page = perf_page_html()
+        self.assertIn("WS_RETRY_MAX_MS", page)
+        self.assertIn("function liveSocket(", page)
+        self.assertIn("path: '/perf/ws'", page)
 
     def test_the_idle_branch_clears_the_tempo_readout(self):
         # `animate()` renders clock.bpm unconditionally, so leaving the anchor
