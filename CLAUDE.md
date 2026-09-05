@@ -80,6 +80,15 @@ where relative paths 404. **Releasing** is [RELEASING.md](RELEASING.md), guarded
 [tests/test_release.py](tests/test_release.py). Visual verification on real hardware
 is the `hw-visual-verify` skill.
 
+## Workflow
+
+Non-trivial changes go through the `ship` skill: branch → implement → commit →
+adversarial review to convergence → PR → CI/GHAS green → **stop**. The review
+step is the `adverse-review` skill in its convergence loop shape, which fixes
+consensus findings and re-verifies until nothing blocking is left, recording a
+reason for every finding it declines as well as every one it fixes. **Never
+merge** — hand over a green PR; the merge is Kelly's.
+
 ## Spelling
 
 **Everything in this repository is written in American English — prose, code,
