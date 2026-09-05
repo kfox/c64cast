@@ -67,12 +67,14 @@ from .sid_autoconfig import plan_model_config_for_header, required_models_for
 # WaveformScene's own use AND re-exported for back-compat: config and tests
 # historically do `from .waveform import parse_sid_header / _play_bank_for_footprints`.
 from .sid_host_emu import (
+    PREFLIGHT_TICKS,
     SidHostEmu,
     _overlaps,
     _play_bank_for_footprints,
     _sid_payload_extent,
     detect_sid_addresses,
     parse_sid_header,
+    preflight_emu,
     ram_play_access_footprint,
     ram_write_footprint,
 )
@@ -284,17 +286,23 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # duration_s nor a songlengths DB match is available.
     FALLBACK_DURATION_S = 180.0
 
-    # Host-emu PLAY pre-flight. After loading a tune we run this many PLAY
-    # passes; if EVERY one bails at the host emulator's cycle cap (instead
-    # of returning normally in the usual ~1-2k cycles), the tune spins on a
-    # raster/IRQ this pure-Python 6502 never provides. Such a tune can't be
-    # rendered faithfully by the scope AND would hang the C64-side player —
-    # its `SEI; JSR init` sits with IRQs masked, so the kernal IRQ never
-    # fires, $028D stops updating, and the machine goes dead/silent (the
-    # Hollywood Poker Pro failure). Reject it so the picker skips to the
-    # next candidate. 50 passes ≈ 1 s of PLAY @ 50 Hz — long enough to be
-    # unambiguous, short enough that a healthy tune adds only ~5 ms.
-    _PLAY_PREFLIGHT_TICKS = 50
+    # Host-emu PLAY pre-flight pass count. The gate itself is
+    # sid_host_emu.preflight_emu — shared with SidFileAudioSource, which
+    # reaches it through sid_play_preflight's construct-and-check wrapper.
+    # WaveformScene runs it against the live `_host_emu` it is about to render
+    # from rather than a throwaway, so the two callers share the rule but not
+    # the emulator. The tick count is PREFLIGHT_TICKS itself, so the tuning
+    # constant can't drift between them either.
+    _PLAY_PREFLIGHT_TICKS = PREFLIGHT_TICKS
+
+    # Upper bound on subtunes the SHIFT-cycle candidate walk will footprint
+    # before giving up and taking the first candidate. Each rejected candidate
+    # costs a full ram_play_access_footprint on the main render thread, and
+    # `num_songs` is a raw 16-bit header field nothing else bounds — a tune
+    # declaring 65535 subtunes whose PLAY blocks every VIC bank used to freeze
+    # the show for hours from one SHIFT press. setup()'s analogous scan has
+    # been capped at _UNIFIED_LAYOUT_MAX_SONGS for the same reason.
+    _MAX_CYCLE_CANDIDATES = 16
 
     # Upper bound on PLAY ticks the poll thread will execute in a single
     # wakeup to catch the host emulator up to wall-clock (see _poll_regs).
@@ -577,31 +585,41 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # reads return 0). Construction loads + runs INIT once; each
         # tick_play() advances one PLAY pass. A multi-SID tune shadows every
         # chip's register bank. See sid_host_emu.py.
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
-        # PLAY pre-flight: reject tunes whose PLAY spins past the cycle cap
-        # on every pass (see _PLAY_PREFLIGHT_TICKS). Done here so the picker
-        # skips them and a single-file scene aborts with a clear message,
-        # rather than the C64-side player hanging the machine at setup().
-        capped_all = True
-        for _ in range(self._PLAY_PREFLIGHT_TICKS):
-            self._host_emu.tick_play()
-            if not self._host_emu.last_routine_capped:
-                capped_all = False
-                break
-        if capped_all:
+        self._host_emu = self._build_host_emu(self.song)
+        # Song-number column width is derived from num_songs — recompute
+        # so multi-pick scenes get the right padding per chosen SID.
+        self._song_num_width = len(str(max(self.header.num_songs, 1)))
+
+    def _build_host_emu(self, song: int) -> SidHostEmu:
+        """Build the parallel host emulator for `song` and pre-flight its PLAY.
+
+        Raises ValueError when PLAY bails out of its budget on every one of
+        `_PLAY_PREFLIGHT_TICKS` passes: such a tune spins on a raster/IRQ this
+        pure-Python 6502 never provides (or uses opcodes py65 can't execute),
+        so the scope can't render it faithfully AND the C64-side player would
+        hang — its `SEI; JSR init` sits with IRQs masked, so the kernal IRQ
+        never fires, $028D stops updating, and the machine goes dead/silent
+        (the Hollywood Poker Pro failure).
+
+        Every construction site goes through here — the initial load, the
+        SHIFT cue, and the $37→$36 hard relaunch — because INIT and PLAY are
+        separate 6502 entry points per subtune: song 1 passing the gate says
+        nothing about song 2, and the cue path used to re-INIT the real
+        machine on an ungated subtune.
+
+        The pre-flight leaves the emulator advanced by however many passes it
+        took to reach a verdict. That head start is cosmetically irrelevant to
+        the scope and not worth a rebuild."""
+        emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses)
+        if not preflight_emu(emu, self._PLAY_PREFLIGHT_TICKS):
             raise ValueError(
-                f"waveform: {os.path.basename(path)} PLAY never completes "
-                f"within the host emulator's cycle cap over "
+                f"waveform: {os.path.basename(self._sid_file)} song {song} PLAY "
+                f"never completes within the host emulator's budget over "
                 f"{self._PLAY_PREFLIGHT_TICKS} passes — the tune spins on a "
                 f"raster/IRQ the player environment doesn't provide; it would "
                 f"hang the C64-side player (silent + unresponsive). Refused."
             )
-        # The pre-flight advanced the emulator by up to one non-capped PLAY
-        # pass (it breaks on the first that returns). That ~20 ms head start
-        # is cosmetically irrelevant to the scope and not worth a rebuild.
-        # Song-number column width is derived from num_songs — recompute
-        # so multi-pick scenes get the right padding per chosen SID.
-        self._song_num_width = len(str(max(self.header.num_songs, 1)))
+        return emu
 
     def _host_fit_of(self, path: str) -> bool | None:
         """One candidate's host-chip verdict from its PSID header alone, or
@@ -1247,14 +1265,25 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # the candidate footprinting.)
         self._poll.stop()
 
+        # Build (and pre-flight) the new subtune's emulator BEFORE anything
+        # re-INITs the real machine: each subtune is its own INIT/PLAY pair, so
+        # a tune whose song 1 passed the load-time gate can still hand song 2 a
+        # PLAY that dead-machines the C64-side player.
+        try:
+            new_emu = self._build_host_emu(new_song)
+        except ValueError as e:
+            log.error("waveform: %s — scene aborting rather than cueing it.", e)
+            self.is_done = True
+            return None
+
         new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
         if new_needs_basic_out and not self._current_needs_basic_out:
-            return self._cycle_hard_relaunch(new_song, chosen_duration, n)
+            return self._cycle_hard_relaunch(new_song, chosen_duration, n, new_emu)
 
         if not self._cycle_cue(api, new_song, chosen_play_bank):
             return None
         self._current_needs_basic_out = new_needs_basic_out
-        self._cycle_rebuild_emulator(new_song, chosen_duration)
+        self._cycle_rebuild_emulator(new_emu, chosen_duration)
         self._cycle_reset_render_state()
         self._cycle_repoint_display(chosen_layout)
         return f"song {self.song}/{n}"
@@ -1288,10 +1317,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         short (SFX, when the DB knows) or un-renderable (no free VIC bank for
         this subtune's PLAY footprint). Returns ``(new_song, duration, layout,
         access_footprint)``; the chosen subtune's layout is captured so the
-        caller doesn't re-footprint it. Bounded at n-1 attempts: if every
-        candidate is rejected, the first is returned with layout=None so SHIFT
-        still changes the song and keeps the current display bank (the new
-        subtune may render imperfectly, but audio plays)."""
+        caller doesn't re-footprint it. Bounded at n-1 attempts and at
+        _MAX_CYCLE_CANDIDATES: if every candidate is rejected (or the bound is
+        hit), the first is returned with layout=None so SHIFT still changes the
+        song and keeps the current display bank (the new subtune may render
+        imperfectly, but audio plays)."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
         first_candidate = (self.song % n) + 1
         new_song = first_candidate
@@ -1301,7 +1331,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
         candidate = first_candidate
-        for _ in range(n - 1):
+        for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
             looked_up: float | None = None
             if self._explicit_duration_s is None and self.songlengths_db is not None:
                 looked_up = self.songlengths_db.lookup(self.sid_bytes, candidate)
@@ -1347,7 +1377,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         return new_song, chosen_duration, chosen_layout, chosen_access_fp
 
     def _cycle_hard_relaunch(
-        self, new_song: int, chosen_duration: float | None, n: int
+        self, new_song: int, chosen_duration: float | None, n: int, new_emu: SidHostEmu
     ) -> str | None:
         """The $37→$36 crossing: a hard relaunch, needed only when ENTERING the
         under-BASIC-ROM group ($36) from a song that didn't need it.
@@ -1359,8 +1389,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         RAM (what a reset's RAMTAS zeroes), then let setup() re-DMA a pristine
         payload + re-run the full player startup + rebuild display/emu/poll.
         NOT a machine reset — just a brief VIC-mode flash from run_prg.
-        Everything else uses the fast, flicker-free cue path."""
+        Everything else uses the fast, flicker-free cue path.
+
+        `new_emu` is installed here because setup() constructs no host
+        emulator: its only load path is `_load_sid_file`, which `_prepared`
+        below deliberately suppresses. Leaving the old one in place left the
+        scope rendering the previous subtune's registers under the new song's
+        audio — and `_check_end_of_tune` watching the wrong song's envelopes
+        decay, so the scene could end early."""
         self.song = new_song
+        self._host_emu = new_emu
         try:
             self.api.write_memory_file(
                 f"{_LOW_RAM_CLEAR_LO:04X}", bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO)
@@ -1406,15 +1444,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.song = new_song
         return True
 
-    def _cycle_rebuild_emulator(self, new_song: int, chosen_duration: float | None) -> None:
-        """Rebuild the host emulator on the new song and re-resolve duration.
+    def _cycle_rebuild_emulator(self, new_emu: SidHostEmu, chosen_duration: float | None) -> None:
+        """Install the new song's host emulator (built + pre-flighted by
+        cycle_style before the cue) and re-resolve duration.
         Explicit user value always wins. Otherwise use the length the skip
         loop already looked up (so we don't re-query the DB for the same
         song). On a DB miss or all-skipped fall-through, keep the prior
         duration_s — per-song lookup miss shouldn't truncate, and the
         all-skipped case is rare enough that "use whatever we had" is the
         least-surprising fallback."""
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
+        self._host_emu = new_emu
         if self._explicit_duration_s is not None:
             self.duration_s = float(self._explicit_duration_s)
         elif chosen_duration is not None:

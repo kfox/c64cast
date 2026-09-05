@@ -24,7 +24,7 @@ from _fakes import FakeAPI
 
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code
-from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE
+from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE, Voice
 from c64cast.sid.voice_scope import (
     BITMAP_H,
     BITMAP_W,
@@ -216,8 +216,11 @@ class VoiceTimeWindowTest(unittest.TestCase):
     with silent voices falling back to wallclock."""
 
     def _renderer(self, *, time_base, voice=None, auto_cycles=4):
+        # Real Voice objects, not stand-ins: the silence rule lives on Voice
+        # (Voice.is_silent), so a namespace carrying only the raw fields would
+        # stop exercising the predicate this method delegates to.
         emu = SimpleNamespace(
-            voices=[voice if voice is not None else SimpleNamespace()],
+            voices=[voice if voice is not None else Voice()],
             clock=1_000_000,
         )
         return _bare_renderer(
@@ -233,13 +236,13 @@ class VoiceTimeWindowTest(unittest.TestCase):
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W // 2), 1 / 60.0)
 
     def test_auto_spans_auto_cycles_of_the_voice_period(self):
-        voice = SimpleNamespace(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=1.0)
+        voice = Voice(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=1.0)
         r = self._renderer(time_base=TIME_BASE_AUTO, voice=voice, auto_cycles=4)
         period_s = ACCUMULATOR_RANGE / (0x2000 * 1_000_000)
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W), 4 * period_s)
 
     def test_auto_falls_back_to_wallclock_for_a_silent_voice(self):
-        voice = SimpleNamespace(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=0.0)
+        voice = Voice(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=0.0)
         r = self._renderer(time_base=TIME_BASE_AUTO, voice=voice)
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W), 1 / 30.0)
 

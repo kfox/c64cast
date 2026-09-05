@@ -14,9 +14,17 @@ the parts unique to SidHostEmu:
 
 from __future__ import annotations
 
+import time
 import unittest
+from unittest.mock import patch
 
-from c64cast.sid.sid_host_emu import SidHostEmu, detect_sid_addresses, parse_sid_header
+from c64cast.sid.sid_host_emu import (
+    SidHostEmu,
+    _append_distinct_sid_base,
+    _decode_extra_sid_addr,
+    detect_sid_addresses,
+    parse_sid_header,
+)
 
 # ---------------------------------------------------------------------------
 # Synthetic-SID helper
@@ -108,6 +116,13 @@ def _init_set_timer_a(latch: int) -> bytes:
 # the host CPU notices.
 _PLAY_INFINITE_LOOP = bytes([0x4C, 0x21, 0x08])
 
+# The attack the cycle cap alone does not stop: $02 is one of the 105 opcodes
+# py65 leaves on `inst_not_implemented`, which charges 0 cycles. A field of
+# them followed by a JMP back to the start spins forever on a budget that
+# never advances — measured at 7-21 s per tick_play() before the step bound
+# and the illegal-opcode refusal landed.
+_PLAY_ILLEGAL_OPCODE_LOOP = bytes([0x02] * 64) + bytes([0x4C, 0x21, 0x08])
+
 
 class SidHostEmuValidationTest(unittest.TestCase):
     """Validation is shared with run_sid_player via parse_psid_for_player;
@@ -172,15 +187,58 @@ class SidHostEmuRegsTest(unittest.TestCase):
 
 
 class SidHostEmuCycleCapTest(unittest.TestCase):
+    """A degenerate PLAY must give up and say so.
+
+    `last_routine_capped` is the post-condition that matters: it is what
+    `preflight_emu` reads to refuse a tune that would dead-machine the
+    C64-side player. Asserting only "the call returned" leaves a partial fix
+    green — which is how a budget that bounded cycles but not wall time
+    survived."""
+
+    # A degenerate PLAY is allowed a generous share of a test run, but not an
+    # open-ended one: without a bound the failure mode is a CI timeout rather
+    # than an assertion.
+    _TICK_BUDGET_S = 5.0
+
     def test_infinite_play_returns_via_cycle_cap(self):
-        # If the cap doesn't fire, this test will hang the suite —
-        # which is itself the failure signal.
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
         emu = SidHostEmu(sid)
-        emu.tick_play()  # must return, not hang
-        # Subsequent ticks must still terminate.
+        started = time.monotonic()
+        emu.tick_play()
+        self.assertTrue(emu.last_routine_capped, "a spinning PLAY must report itself capped")
+        # Subsequent ticks must still terminate, and still report the cap.
         for _ in range(3):
             emu.tick_play()
+            self.assertTrue(emu.last_routine_capped)
+        self.assertLess(time.monotonic() - started, self._TICK_BUDGET_S)
+
+    def test_illegal_opcode_play_is_refused_not_run(self):
+        # py65 charges 0 cycles for undocumented opcodes and advances the PC
+        # by 2 regardless of the real instruction length, so executing one
+        # buys free host time AND derails the instruction stream (a wrong
+        # $D4xx shadow and a wrong write footprint). Refuse the pass instead.
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_ILLEGAL_OPCODE_LOOP)
+        emu = SidHostEmu(sid)
+        started = time.monotonic()
+        with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING") as logs:
+            emu.tick_play()
+        self.assertTrue(emu.last_routine_capped)
+        self.assertLess(time.monotonic() - started, self._TICK_BUDGET_S)
+        self.assertIn("undocumented opcode $02", "\n".join(logs.output))
+        # The warning fires once per emulator, not once per pass — the
+        # pre-flight alone runs 50 of them.
+        for _ in range(3):
+            emu.tick_play()
+            self.assertTrue(emu.last_routine_capped)
+
+    def test_completing_play_is_not_reported_as_capped(self):
+        # The budget test is re-guarded by the sentinel, so a routine that
+        # returns on the very step that crosses a budget still counts as
+        # having completed — a capped verdict means partial $D4xx state.
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        emu = SidHostEmu(sid)
+        emu.tick_play()
+        self.assertFalse(emu.last_routine_capped)
 
 
 class RetriggerDetectionTest(unittest.TestCase):
@@ -350,6 +408,22 @@ class RamWriteFootprintTest(unittest.TestCase):
         emu = SidHostEmu(sid)
         self.assertIsNone(emu._memory.footprint)
 
+    def test_footprint_run_stops_at_its_wall_clock_budget(self):
+        # The per-pass cycle cap bounds one PLAY, not 2000 of them: a tune
+        # whose PLAY legally burns just under the cap costs ~12 s per
+        # footprint run, and setup() pays two plus one per subtune. A zero
+        # budget stands in for that tune — the run must stop early, say so,
+        # and still return a usable partial bitmap.
+        from c64cast.sid.sid_host_emu import ram_write_footprint
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        with patch("c64cast.sid.sid_host_emu.FOOTPRINT_DEADLINE_S", 0.0):
+            with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING") as logs:
+                fp = ram_write_footprint(sid, ticks=500)
+        self.assertIn("stopped after 1 of 500 PLAY passes", "\n".join(logs.output))
+        self.assertEqual(len(fp), 65536)
+        self.assertTrue(fp[0xD418], "the partial sample still records what PLAY did write")
+
 
 def _sid_with_extra_addrs(
     *,
@@ -482,6 +556,81 @@ class DetectSidAddressesTest(unittest.TestCase):
     def test_plain_single_sid(self):
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
         self.assertEqual(detect_sid_addresses("tune.sid", sid), (0xD400,))
+
+    def test_filename_hint_skips_a_slot_the_header_already_claims(self):
+        # A "_3SID" name over a header declaring $D440 used to synthesize a
+        # second $D440: TrappedRam keys its address map by absolute address,
+        # so the later bank won every colliding key and the earlier chip's
+        # shadow stayed all-zero — a scope window permanently flat while the
+        # audience hears the chip.
+        sid = _sid_with_extra_addrs(version=3, second=0x44)
+        addresses = detect_sid_addresses("tunes/Song_3SID.sid", sid)
+        self.assertEqual(len(set(addresses)), len(addresses), "no base may repeat")
+        self.assertEqual(addresses, (0xD400, 0xD440, 0xD420))
+
+
+class ExtraSidAddressValidationTest(unittest.TestCase):
+    """_decode_extra_sid_addr enforces the PSID spec's windows.
+
+    The guard used to read `0xD000 <= addr <= 0xDFF0`, which the arithmetic
+    already guarantees for every byte 1..255 — so no byte was ever rejected
+    and a header field chose a DMA write target anywhere in the I/O page."""
+
+    def test_spec_legal_bytes_decode(self):
+        self.assertEqual(_decode_extra_sid_addr(0x42), 0xD420)
+        self.assertEqual(_decode_extra_sid_addr(0x50), 0xD500)
+        self.assertEqual(_decode_extra_sid_addr(0x7E), 0xD7E0)
+        self.assertEqual(_decode_extra_sid_addr(0xE0), 0xDE00)
+        self.assertEqual(_decode_extra_sid_addr(0xFE), 0xDFE0)
+
+    def test_absent_and_malformed_bytes_degrade_to_single_sid(self):
+        rejected = {
+            0x00: "absent",
+            0x01: "odd, and $D010 is VIC sprite-coordinate space",
+            0x43: "odd",
+            0x40: "chip 0's own $D400",
+            0x02: "$D020, the VIC border color",
+            0xC0: "$DC00, CIA #1 — teardown's zero write kills the jiffy IRQ",
+            0xD0: "$DD00, CIA #2 — forces the VIC bank and pulls the serial lines",
+            0x80: "$D800, between the two legal windows",
+        }
+        for byte, why in rejected.items():
+            with self.subTest(byte=byte, why=why):
+                self.assertIsNone(_decode_extra_sid_addr(byte))
+
+    def test_no_byte_escapes_the_legal_windows(self):
+        for byte in range(1, 256):
+            addr = _decode_extra_sid_addr(byte)
+            if addr is None:
+                continue
+            with self.subTest(byte=byte):
+                self.assertTrue(
+                    0xD420 <= addr <= 0xD7E0 or 0xDE00 <= addr <= 0xDFE0,
+                    f"byte ${byte:02X} decoded to ${addr:04X}, outside the PSID windows",
+                )
+
+    def test_hostile_header_byte_no_longer_declares_a_chip_on_cia1(self):
+        # WaveformScene.teardown writes 25 zero bytes at every non-$D400 base
+        # it was handed; $DC00 is CIA #1's port/DDR/timer/ICR file, and the
+        # machine is dead until a physical reset.
+        h = parse_sid_header(_sid_with_extra_addrs(version=3, second=0xC0))
+        self.assertEqual(h.sid_addresses, (0xD400,))
+        self.assertEqual(h.sid_models, (h.sid_model,))
+
+    def test_duplicate_header_addresses_collapse_to_one_chip(self):
+        h = parse_sid_header(_sid_with_extra_addrs(version=4, second=0x42, third=0x42))
+        self.assertEqual(h.sid_addresses, (0xD400, 0xD420))
+
+    def test_overlapping_bases_are_refused_not_just_duplicates(self):
+        # $D420 and $D430 are 16 bytes apart, so their 25-byte register
+        # windows overlap and the later bank steals $D430-$D438 from the
+        # earlier one — including its $D418 master-volume shadow. Equality is
+        # not the whole rule, so the guard tests the window, not the address.
+        addresses = [0xD400, 0xD420]
+        self.assertFalse(_append_distinct_sid_base(addresses, 0xD430))
+        self.assertFalse(_append_distinct_sid_base(addresses, 0xD420))
+        self.assertTrue(_append_distinct_sid_base(addresses, 0xD440))
+        self.assertEqual(addresses, [0xD400, 0xD420, 0xD440])
 
 
 class MultiBankTrapTest(unittest.TestCase):

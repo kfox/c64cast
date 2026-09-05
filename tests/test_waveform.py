@@ -18,7 +18,9 @@ import numpy as np
 from _fakes import FakeAPI, bare_waveform_scene, make_psid
 
 from c64cast.sid.sidemu import (
+    ACCUMULATOR_RANGE,
     WAVE_NOISE,
+    WAVE_PULSE,
     WAVE_SAWTOOTH,
     WAVE_TRIANGLE,
     SIDEmulator,
@@ -406,6 +408,107 @@ class SidEmulatorTest(unittest.TestCase):
         self.assertEqual(v.envelope_state, "decay")
         # Sustain is 15/15 = 1.0; decay should clamp at sustain immediately.
         self.assertAlmostEqual(v.envelope_level, 1.0, places=2)
+
+    def test_release_decays_to_silence_at_the_release_nibble_rate(self):
+        # The note-off half of the envelope machine. Nothing exercised it:
+        # replacing the whole `release` branch with `pass` left all 5379 tests
+        # green, so a wrong nibble, a wrong table, or a missing decrement would
+        # have held every note-off at full amplitude forever.
+        def release_from_sustain(sr):
+            emu = SIDEmulator()
+            # AD = 0x00: 2 ms attack, 6 ms decay — both done in one step.
+            emu.update_registers(self._voice_regs(0, control=0x41, ad=0x00, sr=sr))
+            # One step completes attack (state → decay), the next clamps at
+            # the 15/15 sustain level.
+            emu.advance_envelopes(0.05)
+            emu.advance_envelopes(0.05)
+            v = emu.voices[0]
+            self.assertEqual(v.envelope_state, "sustain")
+            self.assertAlmostEqual(v.envelope_level, 1.0, places=6)
+            emu.update_registers(self._voice_regs(0, control=0x40, ad=0x00, sr=sr))
+            self.assertEqual(v.envelope_state, "release")
+            return emu, v
+
+        # sr low nibble 0 → DECAY_TIMES_S[0] = 6 ms: one 3 ms step takes the
+        # level halfway down, a second lands on the floor.
+        emu, v = release_from_sustain(0xF0)
+        emu.advance_envelopes(0.003)
+        self.assertLess(v.envelope_level, 1.0, "release must fall after gate-off")
+        self.assertGreater(v.envelope_level, 0.0)
+        halfway = v.envelope_level
+        emu.advance_envelopes(0.010)
+        self.assertEqual(v.envelope_level, 0.0, "release must clamp at exactly zero")
+
+        # The rate comes from the SR *low* nibble: 15 → DECAY_TIMES_S[15] =
+        # 24 s, so the same 3 ms step barely moves. This is what pins the
+        # nibble and the table together — a decay-table or high-nibble mix-up
+        # changes this number, not just the direction.
+        slow_emu, slow_v = release_from_sustain(0xFF)
+        slow_emu.advance_envelopes(0.003)
+        self.assertGreater(
+            slow_v.envelope_level, halfway, "a larger release nibble must decay slower"
+        )
+
+    def test_silence_when_frequency_is_zero(self):
+        # A player writing a zero frequency for a rest while leaving the
+        # waveform bits set froze the phase accumulator, so every sample took
+        # the same phase and the strip drew a DC-offset flat line pinned near
+        # the top instead of a centered resting line — for the whole release
+        # tail. voice_scope already counted freq 0 as silent; now one
+        # predicate answers for both.
+        emu = SIDEmulator()
+        emu.update_registers(self._voice_regs(0, freq=0, control=0x21, ad=0x00, sr=0xF0))
+        emu.advance_envelopes(0.05)
+        self.assertGreater(emu.voices[0].envelope_level, 0.0, "the envelope really is live")
+        self.assertTrue(emu.voices[0].is_silent())
+        s = emu.voice_samples(0, 64)
+        self.assertTrue(np.all(s == 0.0), "a zero-frequency voice must draw the resting line")
+
+    def test_system_string_is_normalized_case_insensitively(self):
+        # [ultimate64].system is validated case-insensitively and documented
+        # as accepting "ntsc", but a bare `system == "NTSC"` here gave those
+        # spellings the PAL clock — 3.7% low, which also feeds the play-rate
+        # probe and drifts the scope behind the audio.
+        from c64cast.hw.c64 import CLOCK_NTSC, CLOCK_PAL
+
+        self.assertEqual(SIDEmulator(system="ntsc").clock, CLOCK_NTSC)
+        self.assertEqual(SIDEmulator(system="NTSC").clock, CLOCK_NTSC)
+        self.assertEqual(SIDEmulator(system=" pal ").clock, CLOCK_PAL)
+        with self.assertRaises(ValueError):
+            SIDEmulator(system="secam")
+
+    def test_both_waveform_scalings_derive_from_one_shape(self):
+        # The four shapes used to be written twice, in two scalings, with
+        # nothing keeping them in step. They now share one unit-ramp helper;
+        # these are the two scalings spelled out from first principles, so a
+        # change to a shape has to be made deliberately.
+        emu = SIDEmulator()
+        emu.voices[0].pulse_width = 0x0800  # 50% duty
+        phases = np.array([0.0, 0.125, 0.25, 0.5, 0.75, 0.9999], dtype=np.float64)
+        expected = {
+            WAVE_SAWTOOTH: phases,
+            WAVE_TRIANGLE: np.array([0.0, 0.25, 0.5, 1.0, 0.5, 0.0002], dtype=np.float64),
+            WAVE_PULSE: np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        }
+        for bit, unit in expected.items():
+            with self.subTest(bit=bit):
+                np.testing.assert_allclose(emu._waveform_unit(bit, phases, 0), unit, atol=1e-4)
+        noise = emu._waveform_unit(WAVE_NOISE, phases, 0)
+        self.assertEqual(len(noise), len(phases))
+        self.assertTrue(np.all((noise >= 0.0) & (noise < 1.0)))
+
+        # The single-waveform trace is that ramp scaled to [-1, 1]. Read it
+        # back through voice_samples rather than the helper, so the scaling
+        # the render path applies is what's pinned.
+        emu.update_registers(self._voice_regs(0, freq=0x0100, control=0x21, ad=0x00, sr=0xF0))
+        emu.advance_envelopes(0.05)
+        v = emu.voices[0]
+        self.assertAlmostEqual(v.envelope_level, 1.0, places=6)
+        v.accumulator = 0.0
+        trace = emu.voice_samples(0, 8, time_window_s=1.0)
+        step = v.freq * emu.clock * 1.0 / 8
+        want_phases = (np.arange(8) * step % ACCUMULATOR_RANGE) / float(ACCUMULATOR_RANGE)
+        np.testing.assert_allclose(trace, (want_phases * 2.0 - 1.0), atol=1e-6)
 
     def test_pulse_waveform_two_levels(self):
         emu = SIDEmulator()
@@ -1125,6 +1228,137 @@ class WaveformSceneTest(unittest.TestCase):
         messages = self._2sid_scene_messages(FakeAPI())  # bare: nothing declared
         self.assertIn("not declared to have one at $D420", messages)
         self.assertIn("host_sid_chips", messages)
+
+    def _host_emu_per_song(self):
+        """Give each SidHostEmu construction its own mock, tagged with the song
+        it was built for. The class-level `return_value` default hands every
+        call the same object, which cannot tell "rebuilt for the new song"
+        apart from "still the old one"."""
+
+        def build(_sid_bytes, song=0, **_kwargs):
+            emu = MagicMock()
+            emu.regs.return_value = bytes(25)
+            emu.last_routine_capped = False
+            emu.play_rate_hz.return_value = 60.0
+            emu.song_built_for = song
+            return emu
+
+        self.mock_host_emu_cls.side_effect = build
+
+    def test_cycle_hard_relaunch_rebuilds_the_host_emulator_on_the_new_song(self):
+        # The $37→$36 crossing (Times of Lore song 1 → 2): the one cycle path
+        # that re-runs the full player. It re-enters setup() with _prepared
+        # set, and setup() constructs no host emulator — so the scope used to
+        # keep rendering the PREVIOUS subtune's registers under the new song's
+        # audio, with _check_end_of_tune watching the wrong song's envelopes.
+        #
+        # No test could reach this branch: every scene test stubs both
+        # footprint helpers to all-zero 64 KB buffers, so
+        # _play_bank_for_footprints always returns None and both
+        # needs-BASIC-out flags are always False. Patch that helper itself.
+        from c64cast.hw.c64 import CPU
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        self._host_emu_per_song()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            self.assertFalse(scene._current_needs_basic_out)
+            self.assertEqual(scene._host_emu.song_built_for, 1)
+            api.sid_played = None
+            api.cue_song_reinits.clear()
+            api.ops.clear()
+            # From here on every subtune reads live data under BASIC ROM.
+            with patch(
+                "c64cast.sid.waveform._play_bank_for_footprints",
+                return_value=CPU.PORT_BASIC_OUT,
+            ):
+                label = scene.cycle_style(api)
+            self.assertEqual(label, "song 2/4")
+            self.assertEqual(scene.song, 2)
+            # This is the regression: the emulator driving the scope has to be
+            # the one built for song 2.
+            self.assertEqual(scene._host_emu.song_built_for, 2)
+            # ...and it really was the hard-relaunch path, not the cue.
+            self.assertEqual(api.cue_song_reinits, [])
+            self.assertIsNotNone(api.sid_played, "hard relaunch re-runs the full SID player")
+            assert api.sid_played is not None
+            self.assertEqual(api.sid_played[1], 2)
+            cleared = [op for op in api.ops if op[0] == "write_memory_file" and op[1] == "0002"]
+            self.assertTrue(cleared, "hard relaunch clears low RAM before re-running the player")
+            self.assertTrue(scene._current_needs_basic_out)
+        finally:
+            scene.teardown()
+
+    def test_cycle_candidate_walk_is_bounded_by_the_candidate_cap(self):
+        # `num_songs` is a raw 16-bit header field nothing bounds, and every
+        # rejected candidate costs a full ram_play_access_footprint on the
+        # main render thread with audio already silenced. A tune declaring
+        # 65535 subtunes whose PLAY blocks every VIC bank turned one SHIFT
+        # press into hours of frozen show; setup()'s analogous scan had been
+        # capped for exactly this reason since it was written.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            # No pinned bank, and no candidate is renderable, so the walk
+            # takes its worst case: every iteration footprints and rejects.
+            scene._unified_layout = None
+            n = 65535
+            with (
+                patch(
+                    "c64cast.sid.waveform.ram_play_access_footprint",
+                    return_value=bytearray(65536),
+                ) as fp,
+                patch(
+                    "c64cast.sid.waveform._choose_display_layout",
+                    side_effect=ValueError("no free bank"),
+                ),
+                self.assertLogs("c64cast.sid.waveform", level="INFO"),
+            ):
+                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(n)
+            self.assertEqual(fp.call_count, WaveformScene._MAX_CYCLE_CANDIDATES)
+            # All rejected: SHIFT still changes the song, keeping the bank.
+            self.assertEqual(new_song, 2)
+            self.assertIsNone(layout)
+            self.assertIsNone(access_fp)
+        finally:
+            scene.teardown()
+
+    def test_cycle_refuses_a_subtune_whose_play_never_completes(self):
+        # The pre-flight gate used to run only at first load, but INIT and
+        # PLAY are separate entry points per subtune: song 1 vouched for song
+        # N. A subtune whose PLAY spins would then be cued onto the real
+        # machine, which is the dead-machine failure the gate exists to stop.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        self._host_emu_per_song()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            api.cue_song_reinits.clear()
+            api.sid_played = None
+
+            def spinning(_sid_bytes, song=0, **_kwargs):
+                emu = MagicMock()
+                emu.regs.return_value = bytes(25)
+                emu.last_routine_capped = True  # every PLAY pass bails
+                emu.play_rate_hz.return_value = 60.0
+                return emu
+
+            self.mock_host_emu_cls.side_effect = spinning
+            with self.assertLogs("c64cast.sid.waveform", level="ERROR") as logs:
+                self.assertIsNone(scene.cycle_style(api))
+            self.assertIn("never completes", "\n".join(logs.output))
+            self.assertEqual(api.cue_song_reinits, [], "a refused subtune must not be cued")
+            self.assertIsNone(api.sid_played)
+            self.assertTrue(scene.is_done)
+        finally:
+            scene.teardown()
 
     def test_cycle_style_advances_song(self):
         # Header sets num_songs=4, start_song=1. Cycle should go 1→2.

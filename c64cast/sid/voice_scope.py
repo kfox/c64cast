@@ -676,8 +676,7 @@ class VoiceScopeRenderer:
             full_window = self._frame_time_s
         else:
             v = emu.voices[v_idx]
-            wave = primary_waveform(v.control)
-            if v.freq == 0 or wave == 0 or v.envelope_level <= 0.0:
+            if v.is_silent():
                 full_window = self._frame_time_s
             else:
                 # SID freq (Hz) = freq_reg * clock / 2^24; period = 1/freq_hz.

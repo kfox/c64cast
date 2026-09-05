@@ -186,6 +186,16 @@ class ApplyRoutingTest(unittest.TestCase):
             apply_emusid_routing(api, (0xD400, 0xD420))
         self.assertIn("no spare enabled emulated SID", cm.output[0])
 
+    def test_inexpressible_address_warns_with_its_own_diagnosis(self):
+        # _log_uncovered's other branch: the address has no snoop-base enum
+        # label at all, so no amount of spare sides would help. This is the
+        # ASID third chip at $D440, and only the "no spare" branch had ever
+        # been asserted — the two diagnoses are materially different advice.
+        api = _u2plus_with(_STOCK)
+        with self.assertLogs("c64cast.sid.emusid_mixer", level="WARNING") as cm:
+            apply_emusid_routing(api, (0xD400, 0xD440))
+        self.assertIn("no snoop base can express $D440", cm.output[0])
+
     def test_read_emusid_category_requires_the_enable_fields(self):
         api = FakeAPI.u2plus()
         api.config_store[CAT_EMUSID] = {"Vol EmuSid1": " 0 dB"}

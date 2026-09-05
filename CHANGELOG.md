@@ -70,6 +70,51 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A `.sid` file can no longer point c64cast's SID-silencing writes at
+  arbitrary I/O chips.** A PSID v3/v4 header declares its extra SID chips as
+  one byte each, decoded as `$D000 | byte << 4`. That arithmetic always lands
+  inside `$D010-$DFF0`, so the range check meant to reject a malformed byte
+  could never fire and *every* nonzero byte named a chip — including `$C0`,
+  which put a "SID" on CIA #1, where the waveform scene's 25-byte teardown
+  write stops the jiffy IRQ and the keyboard scan until the machine is
+  physically reset. Extra-SID bytes are now validated against the windows the
+  PSID spec actually permits (even bytes resolving to `$D420-$D7E0` or
+  `$DE00-$DFE0`), and a byte outside them degrades to single-SID the way the
+  code always claimed it did. Chip bases are also de-duplicated: two chips
+  declared at the same — or overlapping — address used to let the later one
+  silently take over the earlier one's register shadow, leaving that chip's
+  scope window flat for the whole tune while the audience heard it play.
+- **A hostile or broken tune can no longer freeze playback indefinitely.** The
+  host-side 6502 the oscilloscope runs in parallel bounded each INIT/PLAY call
+  by *emulated cycles*, and py65 charges zero cycles for the 105 undocumented
+  opcodes it does not implement — so a PLAY built out of those spun for free,
+  measured at 7-21 seconds per frame against a budget meant to be 4 ms. Calls
+  are now bounded by interpreter steps as well, an unimplemented opcode ends
+  the pass with a warning instead of derailing the instruction stream, RAM
+  footprint runs stop at a wall-clock budget, and the SHIFT-cycle's subtune
+  search is capped the way scene setup's already was — a tune declaring 65535
+  subtunes used to walk all of them, one full emulation run each, on the render
+  thread.
+- **SHIFT-cycling into a subtune that needs a full relaunch no longer leaves
+  the oscilloscope on the previous song.** That path re-runs the player but
+  never rebuilt the host emulator, so the scope drew song N-1's waveforms under
+  song N's audio and could end the scene early watching the wrong song's
+  envelopes decay. Every subtune now also gets the PLAY pre-flight that only
+  the first-loaded song used to get — each subtune is its own entry point, so
+  song 1 completing said nothing about song 2, and a spinning one was cued
+  straight onto the real machine.
+- **`system = "ntsc"` selects the NTSC clock in the SID visualizer.** The
+  setting is documented and validated as case-insensitive, but the emulator
+  compared it against `"NTSC"` exactly, so any lowercase spelling silently got
+  the PAL clock — 3.7% off, which also fed the PLAY-rate probe and drifted the
+  scope about seven seconds behind the audio over a three-minute tune. The
+  spelling is normalized once, where the clock is chosen, for all four scenes
+  that build one.
+- **A voice resting at frequency 0 draws the resting line, not a flat line
+  pinned near the top of its strip.** With the waveform bits still selected and
+  the envelope still open, a zero frequency froze the phase accumulator and
+  every sample took the same value. The scope's own time-base picker already
+  counted that case as silent; both now ask one predicate on the voice.
 - **A scene hidden with the `osd.position` pad no longer stays dark for the
   rest of the run.** Performance mode is a per-scene flag re-stamped each lap,
   but the pad's hide was only ever stamped *on* — and the mode is turned back
