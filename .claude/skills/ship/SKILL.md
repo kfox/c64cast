@@ -29,8 +29,8 @@ dictated, a dependency bump. Say you're skipping it and why.
 Never work on `main`. Branch from an up-to-date `main`:
 
 ```bash
-git -C /Users/kfox/src/c64cast fetch -q origin
-git -C /Users/kfox/src/c64cast checkout -q -b <type>/<short-slug> origin/main
+git fetch -q origin
+git checkout -q -b <type>/<short-slug> origin/main
 ```
 
 `<type>` is `feat`, `fix`, `refactor`, `docs`, `test`, or `chore`. If the user
@@ -90,20 +90,31 @@ Three things to pass it that it cannot work out for itself:
   is a bad proxy for risk: a one-line change to a boundary is exactly the diff
   that must not get the cheap pass. Pass each of these to `plan.mjs` as
   `--pin <substring>` so any diff touching them gets the full panel, every
-  size-based skip overridden:
-  - `hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py` — the DMA write
-    path to the hardware.
+  size-based skip overridden. This list names credential-handling and
+  hardware-write sites specifically because they are where a one-line change
+  does the most damage; it is not a substitute for reading CLAUDE.md's own
+  security notes, which may grow a site this list has not caught up to yet:
+  - `hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py`, `hw/backend.py` —
+    the DMA write path to the hardware, including the shared `write_memory*`/
+    `write_regs`/`write_region` implementation every backend sits on top of.
   - `tests/_fs_sandbox.py` — the suite's filesystem sandbox, which is never
     widened to make a test pass.
-  - `app/connect.py` — connection-target parsing, and the rule that the DMA
-    password never rides in a URL or CLI flag.
+  - `app/connect.py`, `app/config_serialize.py`, `app/recording_metadata.py`,
+    `app/cli.py` — connection-target parsing, the rule that the DMA password
+    never rides in a URL or CLI flag, the redaction list `--save-settings`
+    and the scene-log snapshot both depend on, and the env/config precedence
+    that decides which value wins.
+  - `control/web_api.py` — the `[web]`/`[control]` token surface: the same
+    class of secret as the DMA password, gating the same kind of remote
+    control of the host.
 
 Then work the loop:
 
 - Fix the blocking findings. Commit the fixes.
-- **Record a decision for every blocking finding, including the ones you
-  decline** — the ledger is what stops the next pass from re-litigating them,
-  and a declined finding with a reason is a legitimate outcome.
+- **Record a decision for every finding, not only the blocking ones —
+  including the ones you decline.** The ledger is what stops the next pass
+  from re-litigating them, whether the finding was blocking or advisory; a
+  declined finding with a reason is a legitimate outcome either way.
 - Re-run the gate after fixing. A fix that breaks the suite is not a fix.
 - Loop until `converge.mjs` exits 0.
 
@@ -111,8 +122,9 @@ If it exits 3, the iteration cap was reached with findings still open. **That is
 a stop, not a pass.** Report what remains and ask the user how to proceed
 before opening a PR.
 
-Advisory (`design`) findings never block. Report them to the user as a backlog
-alongside the PR; do not silently act on them and do not let them hold the loop.
+Advisory (`design`) findings never block a loop iteration, but they still get a
+recorded decision like any other finding (see above). Report them to the user
+as a backlog alongside the PR either way.
 
 ## 5. Open the PR
 
@@ -135,7 +147,10 @@ gh pr checks --watch
 CI runs lint, typecheck, and tests across Python 3.11–3.14. GHAS code scanning
 runs too, and its findings are frequently regex-flavored false positives on this
 codebase — read each one before changing code to satisfy it, and say so if you
-think it is wrong rather than contorting the code around it.
+think it is wrong rather than contorting the code around it. That leeway ends
+at the pinned paths from step 4: a GHAS finding on any of them, or on anything
+touching `dma_password` or the `[web]`/`[control]` tokens, must be fixed or
+explicitly escalated to Kelly — never self-dismissed as a false positive.
 
 A CI failure that is a real defect goes back through step 4's loop; record it in
 the ledger as a regression rather than quietly patching it.
