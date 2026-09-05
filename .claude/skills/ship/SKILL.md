@@ -104,10 +104,13 @@ Three things to pass it that it cannot work out for itself:
     never rides in a URL or CLI flag, the redaction list `--save-settings`
     and the scene-log snapshot both depend on, and the env/config precedence
     that decides which value wins.
-  - `control/auth.py`, `control/web_api.py` — the `[web]`/`[control]` token
-    gate itself (`auth.py`: token comparison, minting, viewer/full-role
-    checks) and the routes that depend on it. The same class of secret as
-    the DMA password, gating the same kind of remote control of the host.
+  - `control/auth.py`, `control/web_api.py`, `app/serve.py` — the
+    `[web]`/`[control]` token gate itself (`auth.py`: token comparison,
+    viewer/full-role checks), the routes that depend on it, and where the
+    token is actually minted and its precedence resolved (`serve.py`:
+    `resolve_tokens`, `_generated_token`, `build_daemon_app`). The same class
+    of secret as the DMA password, gating the same kind of remote control of
+    the host.
 
 Then work the loop:
 
