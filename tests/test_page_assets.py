@@ -10,11 +10,11 @@ actually receive it, and that neither has quietly grown its own again.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 import unittest
+from html.parser import HTMLParser
 
 from c64cast.control import page_assets
 from c64cast.control.perf_console import perf_page_html
@@ -97,17 +97,47 @@ class WiringTest(unittest.TestCase):
                 self.assertIn("WS_RETRY_MAX_MS", render())
 
 
+class _InlineScripts(HTMLParser):
+    """Collects the bodies of inline (non-`src`) ``<script>`` elements.
+
+    A parser rather than a regexp. An HTML end tag may carry junk the parser
+    ignores — `</script >`, `</script foo>` — and every regexp written to cover
+    that is one CodeQL finds another hole in (py/bad-tag-filter, twice). The
+    stdlib already knows the grammar, and it switches to CDATA mode inside
+    `<script>` on its own, so the body arrives in one piece.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.bodies: list[str] = []
+        self._inline = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            self._inline = not any(name == "src" for name, _ in attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self._inline = False
+
+    def handle_data(self, data: str) -> None:
+        if self._inline:
+            self.bodies.append(data)
+
+
+def _inline_scripts(html: str) -> list[str]:
+    parser = _InlineScripts()
+    parser.feed(html)
+    parser.close()
+    return [body for body in parser.bodies if body.strip()]
+
+
 class ScriptSyntaxTest(unittest.TestCase):
     """The splice is a textual replace into each page's *existing* `<script>`
     scope, so a top-level name the shared client defines colliding with one the
     page defines is a whole-script SyntaxError — every control on the page goes
     dead, not just the socket, and the page still renders looking live. Nothing
     else in CI parses these pages."""
-
-    # `\s*` before the closing `>`: `</script >` is a legal end tag, and a
-    # pattern that misses it would silently swallow the rest of the page into
-    # one "script body" and hand node something that was never JavaScript.
-    SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>", re.S | re.I)
 
     def setUp(self):
         if shutil.which("node") is None:
@@ -116,7 +146,7 @@ class ScriptSyntaxTest(unittest.TestCase):
     def test_every_rendered_page_parses(self):
         for name, render, _, _ in PAGES:
             with self.subTest(page=name):
-                bodies = self.SCRIPT.findall(render())
+                bodies = _inline_scripts(render())
                 self.assertTrue(bodies, "page serves no inline script")
                 with tempfile.TemporaryDirectory() as tmp:
                     for i, body in enumerate(bodies):
