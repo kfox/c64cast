@@ -78,7 +78,7 @@ Invoke the `adverse-review` skill in its **convergence loop** shape, scoped to
 `origin/main...HEAD`. Do not hand-roll a review; the skill's deterministic
 triage, ledger, and stop condition are the point.
 
-Two things to pass it that it cannot work out for itself:
+Three things to pass it that it cannot work out for itself:
 
 - **The gate summary** from step 3, so reviewers don't spend findings on things
   `ruff`, `mypy`, `pyright`, and the suite already prove.
@@ -86,6 +86,17 @@ Two things to pass it that it cannot work out for itself:
   `CONTRIBUTING.md`, `docs/architecture/`, `c64cast/data/c64cast.schema.json`,
   `CHANGELOG.md`, and `c64cast/examples/c64cast.example.toml`. Its lane is
   code-versus-claim and it cannot check a claim it was never shown.
+- **The pinned paths.** The review plan sizes the panel from the diff, and size
+  is a bad proxy for risk: a one-line change to a boundary is exactly the diff
+  that must not get the cheap pass. Pass each of these to `plan.mjs` as
+  `--pin <substring>` so any diff touching them gets the full panel, every
+  size-based skip overridden:
+  - `hw/api.py`, `hw/socket_dma.py`, `hw/teensyrom_dma.py` — the DMA write
+    path to the hardware.
+  - `tests/_fs_sandbox.py` — the suite's filesystem sandbox, which is never
+    widened to make a test pass.
+  - `app/connect.py` — connection-target parsing, and the rule that the DMA
+    password never rides in a URL or CLI flag.
 
 Then work the loop:
 
