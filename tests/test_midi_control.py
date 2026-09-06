@@ -34,6 +34,7 @@ from c64cast.control.midi_control import (
     _parse_mmc_sysex,
 )
 from c64cast.control.transport import TransportEvent
+from c64cast.sid.wire_log import LogThrottle
 
 
 def _fake_playlist(name: str, *, scene_count: int = 16) -> Any:
@@ -585,6 +586,92 @@ class CrashGuardTests(_MidiControlTestCase):
             stop.set()
             t.join(timeout=1.0)
             self.assertFalse(t.is_alive())
+
+
+class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
+    """A dispatch failure, a clock-feed failure, and a mapped action failing are
+    each per *message*, and the message comes off the wire. `log.exception`
+    renders a full traceback — dearer than the WARNING `sid/wire_log.py` exists
+    to bound, and at ERROR it is not something a level check would have rejected
+    — while both readers drain with mido's unbounded `iter_pending()`, on the
+    thread a performer's next pad press waits behind. So all three sites report
+    once per second per site, not once per message."""
+
+    N_MESSAGES = 20
+
+    @staticmethod
+    def _frozen_throttles():
+        """Build listeners whose throttles read a frozen clock: a one-second
+        stall on a loaded machine must not be able to turn "reported once" into
+        "reported twice" and flake the count."""
+        return mock.patch.object(
+            midi_control,
+            "LogThrottle",
+            lambda logger, **kw: LogThrottle(logger, monotonic=lambda: 0.0, **kw),
+        )
+
+    def _run_reader(self, listener, reader, port_attr, batch) -> None:
+        setattr(listener, port_attr, _ScriptedPort(batch))
+        stop = threading.Event()
+        t = threading.Thread(target=reader, args=(stop,), daemon=True)
+        t.start()
+        time.sleep(0.05)
+        stop.set()
+        t.join(timeout=1.0)
+
+    def test_a_repeating_dispatch_failure_reports_once_not_once_per_message(self):
+        with self._frozen_throttles():
+            listener = MidiControlListener(
+                {"system": _fake_playlist("system")},
+                [{"type": "note", "number": 36, "action": "skip"}],
+            )
+        batch = [mido.Message("note_on", note=36, velocity=100)] * self.N_MESSAGES
+        with (
+            mock.patch.object(listener, "_dispatch", side_effect=RuntimeError("boom")),
+            self.assertLogs("c64cast.control.midi_control", level="ERROR") as cm,
+        ):
+            self._run_reader(listener, listener._reader, "_midi_port", batch)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIsNotNone(cm.records[0].exc_info)
+
+    def test_a_repeating_clock_feed_failure_reports_once_not_once_per_message(self):
+        with self._frozen_throttles():
+            listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        batch = [mido.Message("clock")] * self.N_MESSAGES
+        with (
+            mock.patch.object(listener, "_feed_tempo", side_effect=RuntimeError("boom")),
+            self.assertLogs("c64cast.control.midi_control", level="ERROR") as cm,
+        ):
+            self._run_reader(listener, listener._clock_reader, "_clock_port", batch)
+        self.assertEqual(len(cm.records), 1)
+        self.assertIsNotNone(cm.records[0].exc_info)
+
+    def test_a_repeating_action_failure_reports_once_not_once_per_message(self):
+        # The third site of the same shape, one level down: `_apply` raising is
+        # per message too, and a held pad repeats it at the controller's rate.
+        pl = _fake_playlist("system")
+        pl.skip_event = mock.MagicMock()
+        pl.skip_event.set.side_effect = RuntimeError("boom")
+        with self._frozen_throttles():
+            listener = MidiControlListener(
+                {"system": pl}, [{"type": "note", "number": 36, "action": "skip"}]
+            )
+        with self.assertLogs("c64cast.control.midi_control", level="ERROR") as cm:
+            for _ in range(self.N_MESSAGES):
+                listener._dispatch(mido.Message("note_on", note=36, velocity=100))
+        self.assertEqual(len(cm.records), 1)
+        self.assertIsNotNone(cm.records[0].exc_info)
+
+    def test_each_reader_holds_its_own_report_budget(self):
+        # A jammed dispatch must not swallow the clock port's first report:
+        # a shared throttle would spend one budget on three streams.
+        listener = MidiControlListener({"system": _fake_playlist("system")}, [])
+        throttles = (
+            listener._dispatch_errors,
+            listener._clock_feed_errors,
+            listener._action_errors,
+        )
+        self.assertEqual(len({id(t) for t in throttles}), len(throttles))
 
 
 class PortSelectionTests(_MidiControlTestCase):

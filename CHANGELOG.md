@@ -86,7 +86,21 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   drain pass now releases after a quarter of the flush period however cheap the
   count bound thinks it has been. Nothing is dropped that used to be delivered:
   the pass checks its deadline before taking a message off the port, and the
-  first message of a pass is never gated.
+  first message of a pass is never gated. That quarter-period budget is sized
+  for the ASID reader, whose per-message cost is microseconds; the MIDI
+  instrument scene, which writes to the SID over the link *inside* its drain,
+  sizes its own from what a chord of notes costs on the link in use, so a note
+  flood still retires a chord a pass rather than one message.
+
+- **A MIDI controller could buy a traceback per message on the control
+  surface.** `midi_control`'s reader, clock reader, and per-system action
+  dispatch each logged a full traceback every time a message failed — which,
+  for a held pad or a swept controller against a mapping this build mishandles,
+  is once per message at the controller's rate, on the thread the next pad
+  press waits behind. The same throttle the ASID wire got now bounds all three
+  to one report per second per site: the first at ERROR with the traceback as
+  before, repeats counted and folded into the next report. Nothing that used to
+  reach the log at ERROR is lost — the first occurrence is always emitted.
 
 - **A SID whose INIT was cut short reported a complete RAM footprint.** The
   footprint places the relocated C64-side player in RAM the tune demonstrably

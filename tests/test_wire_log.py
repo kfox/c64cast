@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import unittest
 
+from c64cast.sid import wire_log
 from c64cast.sid.wire_log import THROTTLE_INTERVAL_S, LogThrottle
 
 
@@ -106,6 +107,72 @@ class LogThrottleTest(unittest.TestCase):
                 noisy.warn("noisy")
             quiet.warn("quiet")
         self.assertEqual([r.getMessage() for r in caught.records], ["noisy", "quiet"])
+
+
+class LogThrottleExceptionTest(unittest.TestCase):
+    """`exception()` is the same gate one level up, for a site inside an
+    `except` block — `midi_control`'s readers, whose per-message record is a
+    rendered traceback that no level check would have rejected."""
+
+    def setUp(self) -> None:
+        self.log = logging.getLogger("c64cast.tests.wire_log")
+
+    def _throttle(self, step: float = 0.0) -> LogThrottle:
+        return LogThrottle(self.log, monotonic=_StepClock(step))
+
+    @staticmethod
+    def _report(throttle: LogThrottle, msg: str, *args: object) -> None:
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            throttle.exception(msg, *args)
+
+    def test_the_first_occurrence_is_an_error_carrying_the_traceback(self):
+        throttle = self._throttle()
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            self._report(throttle, "dispatch failed for %r", "note_on")
+        self.assertEqual(len(caught.records), 1)
+        self.assertEqual(caught.records[0].levelname, "ERROR")
+        self.assertEqual(caught.records[0].getMessage(), "dispatch failed for 'note_on'")
+        self.assertIsNotNone(caught.records[0].exc_info)
+
+    def test_a_flood_inside_the_window_costs_exactly_one_record(self):
+        throttle = self._throttle()
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            for _ in range(500):
+                self._report(throttle, "dispatch failed")
+        self.assertEqual(len(caught.records), 1)
+
+    def test_a_repeat_report_keeps_the_traceback_and_carries_the_count(self):
+        # The traceback rides on the repeat too: it is the whole diagnostic
+        # value here, and the *interval*, not the level, is what bounds cost.
+        throttle = self._throttle(step=THROTTLE_INTERVAL_S / 4)
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            for _ in range(5):  # clock crosses the window every 4th read
+                self._report(throttle, "dispatch failed")
+        self.assertEqual([r.levelname for r in caught.records], ["ERROR", "DEBUG"])
+        self.assertIn("and 3 more since the previous report", caught.records[1].getMessage())
+        self.assertIsNotNone(caught.records[1].exc_info)
+
+    def test_warn_and_exception_share_one_site_budget(self):
+        # One site, one budget: the two emitters are the same gate, so a site
+        # cannot double its report rate by alternating them.
+        throttle = self._throttle()
+        with self.assertLogs(self.log, "DEBUG") as caught:
+            throttle.warn("first")
+            self._report(throttle, "second")
+        self.assertEqual([r.getMessage() for r in caught.records], ["first"])
+
+
+class DocstringQuoteTest(unittest.TestCase):
+    def test_the_module_docstring_quotes_the_text_the_code_actually_emits(self):
+        # It once quoted "and 900 more in the last second", which the code has
+        # never emitted and which is wrong in kind as well as wording: the gap
+        # between two reports has no upper bound, so a count can span minutes.
+        # Prose that quotes an emitted string drifts silently; this is the only
+        # thing that notices.
+        doc = wire_log.__doc__ or ""
+        self.assertIn(wire_log._MORE_SUFFIX.strip() % 900, doc)
 
 
 class ThrottleIntervalTest(unittest.TestCase):

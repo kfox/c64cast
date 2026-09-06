@@ -86,9 +86,8 @@ MAX_MSGS_PER_DRAIN = 64
 _READER_FLUSH_PERIOD_S = 1.0 / 60.0
 
 # The share of that period one pass may spend retiring messages. A quarter
-# leaves the flush at most 25% late, and still runs the stop check ~240x a
-# second against `PollThread`'s 1 s join, while giving an ordinary pass (the
-# busiest legitimate stream is ~9 sub-millisecond messages) room it never uses.
+# leaves the flush at most 25% late and still runs the stop check ~240x a
+# second against `PollThread`'s 1 s join.
 _DRAIN_BUDGET_FRACTION = 0.25
 
 # How long one drain pass may spend retiring messages, whatever the count bound
@@ -99,6 +98,17 @@ _DRAIN_BUDGET_FRACTION = 0.25
 # the two things the count bound exists to protect. A pass always hands out at
 # least one message, so a consumer slower than the whole budget still makes
 # progress instead of spinning.
+#
+# This is the *default*, and it is sized for a consumer whose per-message cost
+# is microseconds — `AsidScene._handle_sysex` decodes, pokes a shadow, and
+# returns, so an ordinary pass never approaches it. It is emphatically NOT a
+# universal budget: `MidiScene._handle_msg` issues blocking link writes inside
+# the drain, and on an Ultimate one of those (5.222 ms) already exceeds this
+# whole budget, so an ordinary note pass there would spend it on message one.
+# A caller whose consumer is not cheap passes its own `budget_s` sized from
+# what it actually costs — see `midi_scene._drain_budget_s`. The sizing lives
+# with the caller and not here because reaching a `HardwareProfile` from this
+# module would invert the layering, and the two callers' numbers differ.
 MAX_DRAIN_WORK_S = _READER_FLUSH_PERIOD_S * _DRAIN_BUDGET_FRACTION
 
 
@@ -117,7 +127,12 @@ def poll_pending(
     :data:`MAX_MSGS_PER_DRAIN` for the count and :data:`MAX_DRAIN_WORK_S` for
     the work. The clock is read between messages, i.e. after the consumer has
     processed the previous one, and never after a ``poll()`` that already took a
-    message off the queue, so releasing the pass drops nothing."""
+    message off the queue, so releasing the pass drops nothing.
+
+    ``budget_s`` defaults to a value sized for a microsecond-per-message
+    consumer; a caller whose consumer blocks on the link must pass its own or it
+    will retire exactly one message a pass. :data:`MAX_DRAIN_WORK_S` says why
+    the sizing belongs to the caller."""
     deadline = _monotonic() + budget_s
     for retired in range(limit):
         if retired and _monotonic() >= deadline:

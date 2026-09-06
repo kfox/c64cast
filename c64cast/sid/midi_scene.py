@@ -40,8 +40,9 @@ import logging
 import threading
 import time
 
-from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
+from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
+from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
@@ -113,6 +114,42 @@ _PW_MAX_AUDIBLE = 3968  # ~97% duty
 # filter cutoff, volume) are flushed to the SID. 60 Hz is smooth to the ear
 # and keeps wheel sweeps from bursting the DMA socket. See _reader().
 _CONTROL_FLUSH_INTERVAL_S = 1.0 / 60.0
+
+# Blocking link writes one note message can cost `_program_voice`: the gate-off
+# byte that forces the envelope's 0->1 edge on a re-press, plus the seven-
+# register voice block. Both are `api.write_*` calls, i.e. both are paid on the
+# reader thread inside the drain.
+_WRITES_PER_NOTE = 2
+
+# Notes one drain pass must be able to retire whatever they cost. A chord
+# arrives as one message per voice; splitting it across passes spreads its
+# attacks by the reader's 1 ms poll sleep apiece (an audible arpeggio on a
+# chord meant to land together) and multiplies the coalescing flushes a
+# concurrent wheel sweep contends with.
+_NOTES_PER_DRAIN = SID.N_VOICES
+
+
+def _drain_budget_s(profile: HardwareProfile) -> float:
+    """Work budget for one `_reader` drain pass on `profile`'s link.
+
+    `_midi.MAX_DRAIN_WORK_S` is sized for a consumer whose per-message cost is
+    microseconds, which is true of `AsidScene._handle_sysex` and false here:
+    `_handle_msg` reaches `_program_voice`, which blocks on the link. On an
+    Ultimate one write costs 5.222 ms against a 4.167 ms default budget, so the
+    deadline is already past after message one and the pass retires exactly one
+    note — for a scene that never sees 160 notes/s, that trades throughput and
+    a 1 ms sleep per note for flush and stop checks nobody needed that often.
+
+    So the caller supplies the budget, because the caller is what knows its own
+    per-message cost. `_midi` cannot: importing a hardware profile there would
+    invert the layering, and the other caller's cost is a different number.
+    Never *tighter* than the shared default — a link whose writes are cheap
+    (TeensyROM, 0.287 ms) keeps the default's larger pass — and widened only far
+    enough that a full chord of worst-case notes still retires in one pass.
+    """
+    note_cost_s = profile.write_cost_s(SID.BYTES_PER_VOICE) * _WRITES_PER_NOTE
+    return max(MAX_DRAIN_WORK_S, note_cost_s * _NOTES_PER_DRAIN)
+
 
 # SHIFT advances each voice one step through these, in order. The four single
 # waveforms come first (so a uniform default cycles exactly as it always has),
@@ -400,13 +437,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # empty: a controller sending faster than `_handle_msg`'s DMA writes
         # retire it would otherwise never reach the coalescing flush below or
         # the `stop` check that lets teardown's bounded join finish. Same
-        # reasoning, same helper, as AsidScene's reader.
+        # reasoning, same helper, as AsidScene's reader — but not the same work
+        # budget, because those DMA writes are what a note message costs here
+        # and AsidScene's shadow poke costs microseconds. See `_drain_budget_s`.
+        budget_s = _drain_budget_s(self.api.profile)
         pending_pitch: int | None = None
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in poll_pending(port, stop):
+                for msg in poll_pending(port, stop, budget_s=budget_s):
                     if msg.type in ("note_on", "note_off"):
                         self._handle_msg(msg)
                     elif msg.type == "pitchwheel":

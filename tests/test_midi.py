@@ -184,10 +184,18 @@ class DrainWorkBoundTest(unittest.TestCase):
         self.assertEqual(seen, [f"msg{i}" for i in range(1, 21)])
 
     def test_the_work_budget_is_a_fraction_of_the_flush_period_it_protects(self):
-        # Both readers flush at 1/60 s; a pass that could spend the whole period
-        # would halve the flush rate rather than bound it.
+        # The relationship, against the two scene constants that define the
+        # period rather than a literal copy of them: `MAX_DRAIN_WORK_S` exists
+        # to keep a pass from eating the flush that follows it, and a pass free
+        # to spend the whole period would halve the flush rate rather than
+        # bound it. Either scene retuning its flush past the budget is drift
+        # this must catch — the constants live in three different modules and
+        # nothing but this assertion makes them agree.
+        from c64cast.sid import asid_scene, midi_scene
+
+        protected_s = min(asid_scene._FLUSH_INTERVAL_S, midi_scene._CONTROL_FLUSH_INTERVAL_S)
         self.assertGreater(_midi.MAX_DRAIN_WORK_S, 0.0)
-        self.assertLess(_midi.MAX_DRAIN_WORK_S, 1.0 / 60.0)
+        self.assertLess(_midi.MAX_DRAIN_WORK_S, protected_s)
 
 
 if __name__ == "__main__":

@@ -36,9 +36,12 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
 
+from c64cast import _midi  # noqa: E402
+from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
+from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import midi_scene  # noqa: E402
-from c64cast.sid.midi_scene import MidiScene, _note_to_sid_freq  # noqa: E402
+from c64cast.sid.midi_scene import MidiScene, _drain_budget_s, _note_to_sid_freq  # noqa: E402
 from c64cast.sid.sidemu import primary_waveform  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
 
@@ -853,6 +856,101 @@ class ReaderCoalescingTests(_MidiTestCase):
         voice_writes = [op for op in api.ops if op[0] == "write_regs" and op[1] == "D400"]
         # Each on/off reprograms voice 0 → ~16 writes, not collapsed to one.
         self.assertGreaterEqual(len(voice_writes), 16)
+
+
+class _CostlyAPI(FakeAPI):
+    """A FakeAPI whose link writes cost what its own profile says they cost.
+
+    The stock FakeAPI answers every write instantly, which makes the drain's
+    work budget invisible: the whole reason MidiScene sizes its own budget is
+    that one `write_regs` on an Ultimate outlasts `poll_pending`'s default. The
+    charge lands on a dict the test also hands `_midi._monotonic`, so the
+    drain's clock and the writes it is paying for share one timeline and the
+    test spends none of it in real time.
+    """
+
+    def __init__(self, clock: dict[str, float]) -> None:
+        super().__init__()
+        self._clock = clock
+
+    def _charge(self, nbytes: int) -> None:
+        self._clock["now"] += self.profile.write_cost_s(nbytes)
+
+    def write_memory(self, addr, data_hex):
+        self._charge(len(data_hex) // 2)
+        super().write_memory(addr, data_hex)
+
+    def write_regs(self, base, *vals):
+        self._charge(len(vals))
+        super().write_regs(base, *vals)
+
+
+class ReaderWorkBudgetTests(_MidiTestCase):
+    """`poll_pending`'s default work budget is sized for a consumer whose
+    per-message cost is microseconds. MidiScene is not one: `_handle_msg`
+    reaches `_program_voice`, which blocks on the link inside the drain. So the
+    scene sizes its own budget, and these pin both halves — the number, and the
+    reader actually spending it."""
+
+    def test_an_ultimate_write_already_outlasts_the_shared_default_budget(self):
+        # The premise the per-caller budget exists for, against the two
+        # constants that state it. They live in modules that know nothing of
+        # each other, so nothing but this makes them agree: if the default
+        # budget is ever raised past the Ultimate's measured per-write floor,
+        # MidiScene no longer needs a budget of its own and this should say so.
+        self.assertGreater(ULTIMATE_PROFILE.write_cost_floor_s, MAX_DRAIN_WORK_S)
+
+    def test_a_cheap_link_keeps_the_shared_default_budget(self):
+        # A TeensyROM write is 0.287 ms, so a whole chord of worst-case notes
+        # fits inside the shared default. Sizing per caller must never hand a
+        # caller a *tighter* pass than the default it opted out of.
+        self.assertEqual(_drain_budget_s(TEENSYROM_PROFILE), MAX_DRAIN_WORK_S)
+
+    def test_a_note_flood_retires_a_chord_per_pass_not_one_message(self):
+        # With writes that cost what the profile says, the default budget would
+        # release the pass after message one — every note paying its own 1 ms
+        # poll sleep and its own flush. The scene's budget buys back a chord.
+        clock = {"now": 1000.0}
+        api = _CostlyAPI(clock)
+        scene = MidiScene(api, None)
+        batch = []
+        for _ in range(_midi.MAX_MSGS_PER_DRAIN):
+            batch.append(mido.Message("note_on", note=60, velocity=100))
+            batch.append(mido.Message("note_off", note=60))
+        scene._midi_port = _ScriptedPort(batch)
+
+        per_pass: list[int] = []
+        real_poll_pending = midi_scene.poll_pending
+
+        def counting_poll_pending(port, stop, **kwargs):
+            retired = 0
+            for msg in real_poll_pending(port, stop, **kwargs):
+                retired += 1
+                yield msg
+            per_pass.append(retired)
+
+        stop = threading.Event()
+        with (
+            mock.patch.object(_midi, "_monotonic", lambda: clock["now"]),
+            mock.patch.object(midi_scene, "poll_pending", counting_poll_pending),
+        ):
+            reader = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+            reader.start()
+            deadline = time.time() + 2.0
+            while time.time() < deadline and sum(per_pass) < len(batch):
+                time.sleep(0.005)
+            stop.set()
+            reader.join(timeout=1.0)
+
+        # Every message was retired, and the fullest pass carried a chord's
+        # worth of them. One write per note message at 5.2 ms against a 31.2 ms
+        # budget retires 7 (the accumulated clock lands a hair under the
+        # product, so the sixth check has not crossed yet); the band is wide
+        # enough not to depend on that last message and still narrow enough to
+        # fail on 4 (a chord's budget halved) and on 13 (a chord's doubled).
+        self.assertEqual(sum(per_pass), len(batch))
+        self.assertGreaterEqual(max(per_pass), 5)
+        self.assertLessEqual(max(per_pass), 9)
 
 
 class LifecycleTests(_MidiTestCase):
