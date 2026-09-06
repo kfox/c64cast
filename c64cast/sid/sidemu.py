@@ -133,19 +133,31 @@ class SIDEmulator:
 
     Usage from a scene:
         emu = SIDEmulator(system="NTSC")
+        host = SidHostEmu(sid_bytes, song=1)   # sid_host_emu.py
         # each frame:
-        regs = api.read_memory(0xD400, 25)
-        emu.update_registers(regs)
+        host.tick_play()                       # advance the parallel 6502
+        emu.update_registers(host.regs(), retrigger=host.retriggers())
         emu.advance_envelopes(dt_seconds)
         for v in range(3):
             samples = emu.voice_samples(v, n=320)   # float32 in [-1, 1]
+
+    The registers have to come from a host-side source — a `SidHostEmu`
+    shadow, MIDI note state, or an ASID stream. `api.read_memory(0xD400, 25)`
+    cannot supply them: SID I/O is write-only, so the U64 answers with
+    open-bus zeros (and the call is typed `bytes | None`, so a failed read
+    hands `update_registers` a `None`). Recovering the register state without
+    reading the chip is the whole reason `SidHostEmu` exists.
     """
 
     # Fallback visualization rate used only when a caller of
-    # voice_samples() doesn't pass time_window_s. WaveformScene always
-    # passes one frame's worth of audio time, which locks the displayed
-    # waveform phase to wall-clock (pitch changes you hear line up with
-    # wave shape changes you see).
+    # voice_samples() doesn't pass time_window_s. The scope callers always
+    # pass one: VoiceScopeRenderer._voice_time_window_s supplies either one
+    # display frame of audio time (`time_base = "wallclock"`, which locks the
+    # displayed waveform phase to wall-clock so pitch changes you hear line up
+    # with wave-shape changes you see) or `auto_cycles` periods of the voice's
+    # own frequency (`time_base = "auto"`, which instead holds the displayed
+    # cycle count fixed as pitch moves), scaled by the column batch in scroll
+    # mode.
     SAMPLE_RATE = 22050
 
     def __init__(self, system: str = "NTSC"):
@@ -247,8 +259,11 @@ class SIDEmulator:
 
         Advances the voice's internal accumulator by n samples so successive
         calls produce continuous output. When time_window_s is None, falls
-        back to n / SAMPLE_RATE; WaveformScene passes 1/target_fps so one
-        rendered row covers exactly one display frame of audio time."""
+        back to n / SAMPLE_RATE. The caller owns the window: the scope's
+        `VoiceScopeRenderer._voice_time_window_s` supplies one display frame
+        of audio time under `time_base = "wallclock"` and `auto_cycles`
+        periods of the voice's own frequency under `time_base = "auto"` —
+        see SAMPLE_RATE."""
         v = self.voices[voice_idx]
         if v.is_silent():
             # Silent — return the resting zero line.

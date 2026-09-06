@@ -13,9 +13,16 @@ to $D400-$D418 into a 25-byte shadow that `regs()` returns. Audio still
 plays on the real U64 SID; the host emulator's would-be audio output
 is discarded — only the register-write log matters.
 
-The host emulator is loosely coupled to the U64 — both run at nominal
-60 Hz (NTSC) / 50 Hz (PAL); small drift (one tick or so) is invisible
-in an oscilloscope view.
+The host emulator is loosely coupled to the U64: it has to be ticked at
+the rate the tune's PLAY is *really* being called at, which is not the
+video frame rate. The C64-side player chains PLAY onto the kernal's
+CIA #1 Timer A jiffy IRQ, which the KERNAL programs to ~60 Hz on BOTH
+standards ([C64Backend.sid_vsync_play_rate_hz](../hw/backend.py)), and a
+CIA-timed multispeed tune runs PLAY at a multiple of that
+([play_rate_hz]). WaveformScene reads the first, probes for the second,
+and catches the emulator up to wall-clock each poll — assuming a nominal
+50/60 Hz instead is what left the scope drifting progressively behind
+the audio (a voice's trace staying flat for a beat).
 
 Validation (RSID/load_addr/play_addr) is delegated to
 [parse_psid_for_player](api.py) so SidHostEmu refuses the same SIDs

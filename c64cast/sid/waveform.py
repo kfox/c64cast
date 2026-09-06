@@ -8,10 +8,14 @@ faithful to real hardware: SID I/O is write-only and reads of $D400-
 $D418 return open-bus zeros, so we can't ask the U64 what the SID is
 doing right now. Instead, ``SidHostEmu`` runs the same SID file in
 parallel on a host-side py65 6502 emulator and traps writes to $D400-
-$D418 into a 25-byte shadow. The poll thread reads that shadow at
-system rate (60 NTSC / 50 PAL) to feed ``SIDEmulator``, which mirrors
-per-voice state and emits the per-frame oscilloscope traces. Audio
-remains U64-native; the host emulator's would-be audio is discarded.
+$D418 into a 25-byte shadow. The poll thread reads that shadow at the
+tune's *effective PLAY rate* — ``api.sid_vsync_play_rate_hz()`` for a
+vsync tune (the kernal jiffy IRQ, ~60 Hz on both standards, not the
+video frame rate), raised by ``_detect_play_rate_hz``'s CIA-multispeed
+probe for a tune that times itself — to feed ``SIDEmulator``, which
+mirrors per-voice state and emits the per-frame oscilloscope traces.
+Audio remains U64-native; the host emulator's would-be audio is
+discarded.
 
 Display is 320×200 hires bitmap. Three strips of 56 rows each; one
 pixel per column per voice. Bottom 24 rows carry two text lines — the
@@ -29,7 +33,10 @@ Coloring:
 
 The scene runs until ``duration_s`` elapses (the U64 SID-play endpoint
 doesn't surface a 'finished' signal; pick a duration that matches the
-tune length, or use SongLengths data if you have it).
+tune length, or use SongLengths data if you have it) — or until
+``_check_end_of_tune`` sees ``END_SILENCE_S`` of all-voice silence after
+the tune has sounded at least once, whichever comes first. That only
+ever shortens playback.
 
 SHIFT cycles to the next subtune on multi-song SIDs (see ``cycle_style``).
 Cycle skips subtunes the SongLengths DB flags as shorter than
@@ -63,9 +70,10 @@ from .sid_autoconfig import plan_model_config_for_header, required_models_for
 
 # SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
 # _play_bank_for_footprints moved to sid_host_emu.py (so SidFileAudioSource can
-# reuse them without importing the oscilloscope renderer). Imported here for
-# WaveformScene's own use AND re-exported for back-compat: config and tests
-# historically do `from .waveform import parse_sid_header / _play_bank_for_footprints`.
+# reuse them without importing the oscilloscope renderer). Every name below is
+# used by WaveformScene itself; several are also re-exported for back-compat,
+# because tests/test_waveform.py still does `from .waveform import
+# parse_sid_header / _play_bank_for_footprints`.
 from .sid_host_emu import (
     PREFLIGHT_TICKS,
     SidHostEmu,
@@ -93,8 +101,12 @@ from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_wavef
 # The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
 # helpers, VIC hires bring-up, and the per-voice render paths) lives in
 # voice_scope.py so MidiScene can share it. Several names are re-exported
-# (imported-unused here) because scene_factory._validate_waveform + tests/test_waveform
-# import them from this module historically.
+# (imported-unused here) because tests still reach them through this module:
+# tests/test_waveform.py imports BITMAP_STRIPS / BITMAP_W / _layout_lcr /
+# _PERSISTENCE_RANDOM_CHOICES from it, and tests/test_introspect.py reads
+# waveform.TIME_BASE_NAMES / waveform.PERSISTENCE_NAMES off the module.
+# scene_factory._validate_waveform used to as well; it now imports both name
+# tuples from voice_scope, which owns them.
 from .voice_scope import (
     _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
     BITMAP_STRIPS,  # noqa: F401  (re-exported)
@@ -1113,7 +1125,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _required_sid_models(self) -> tuple[str | None, ...]:
         """The chip model each of the tune's chips requires, parallel to
         `_sid_addresses` (which detect_sid_addresses may resolve to a different
-        count than the raw header declares)."""
+        count than the raw header declares) — except under
+        `sid_model = "off"`, where `required_models_for` returns an EMPTY tuple
+        regardless of chip count because model matching is disabled entirely.
+        Index it only after checking, or the parallelism will not hold."""
         return required_models_for(
             self._sid_model, self.header.sid_models, len(self._sid_addresses)
         )
