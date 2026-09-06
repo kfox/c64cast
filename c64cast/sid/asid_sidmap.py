@@ -302,6 +302,12 @@ _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
 # page. A base outside them is a string the REST PUT would simply reject, so the
 # planner must treat it as unrealizable rather than emit it; unbounded above,
 # any $20-aligned address up to $FFFF looked realizable.
+#
+# This is a transcription of what the firmware *accepts*, deliberately kept
+# separate from what c64cast is *willing to emit*: every base from $DF00 up is
+# refused by :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, so the second window's
+# top half is unreachable in practice. Widening the reserved set must not
+# require editing an enum transcription.
 _ULTISID_BASE_WINDOWS: tuple[tuple[int, int], ...] = ((0xD400, 0xD7E0), (0xDE00, 0xDFE0))
 
 
@@ -491,12 +497,17 @@ def plan_sid_map_for_addresses(
         blocked=frozenset(served_by_socket),
     )
     if core_plan is None and served_by_socket:
-        # A socket claim that boxes the cores in costs more than it buys: the
+        # A socket claim that boxes the cores in costs more than it buys. The
         # firmware aligns a split core's base *downward*, so for some target sets
-        # no split level has a window that clears the claimed socket. Give the
-        # socket up and let the cores answer everything — every chip audible on
-        # emulated cores beats handing the caller None and falling back to the
-        # canonical layout, which ignores the file's own addresses entirely.
+        # no split level has a window that clears the claimed socket — and since
+        # the same downward alignment is what can pull a base into
+        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, a claimed socket can also
+        # be what leaves every otherwise-legal level reserved. Both exhaust the
+        # levels the same way and both are worth one retry without the socket.
+        # Give the socket up and let the cores answer everything — every chip
+        # audible on emulated cores beats handing the caller None and falling
+        # back to the canonical layout, which ignores the file's own addresses
+        # entirely.
         served_by_socket = {}
         core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:
