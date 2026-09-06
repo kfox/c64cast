@@ -31,6 +31,12 @@ the emulated cores for the primary voices):
      previous run must never be allowed to survive into this one.
   5. A core left over after every chip is placed is **mirrored** onto a
      socket-served address rather than unmapped (see :func:`mirror_bases`).
+  6. No core instance may land on I/O c64cast drives itself
+     (:data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` — the REU's command registers
+     and the Ultimate Audio sampler's page, both inside the cartridge-I/O
+     window the firmware lets a core sit in). Because the firmware aligns a
+     split core's base *downward*, this has to be tested against the base the
+     planner realizes, not the one a `.sid` header declared.
 
 :func:`plan_sid_map_for_addresses` additionally takes the tune's per-chip model
 requirements, so a socket only claims an address when its chip is the model the
@@ -47,6 +53,8 @@ ASID tops out at chip 16 and real multi-SID tunes are 2-3 SID. We support up to
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from c64cast.hw.c64 import RESERVED_IO_WINDOWS
 
 # Config category / item names — must match the firmware exactly (u64_config.cc).
 CAT_ADDRESSING = "SID Addressing"
@@ -301,6 +309,21 @@ def _is_legal_ultisid_base(base: int) -> bool:
     return any(low <= base <= high for low, high in _ULTISID_BASE_WINDOWS)
 
 
+def _reaches_reserved_io(
+    instance_base: int, reserved: tuple[tuple[int, int], ...] = RESERVED_IO_WINDOWS
+) -> bool:
+    """True when the $20 a core instance at `instance_base` answers overlaps I/O
+    c64cast drives itself (:data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`).
+
+    An instance answers a whole $20-granular span, not just the 25 SID
+    registers, because the core is decoded off A5/A6 — so the span is what has
+    to clear the reserved range. Both windows happen to start on a $20 boundary
+    today, which makes the span and the base equivalent; `reserved` is a
+    parameter so that generality is testable rather than assumed."""
+    span_end = instance_base + _SPLIT_STRIDE - 1
+    return any(instance_base <= high and span_end >= low for low, high in reserved)
+
+
 def _plan_ultisid_cores(
     targets: list[int], *, blocked: frozenset[int] = frozenset()
 ) -> tuple[str, list[int]] | None:
@@ -313,7 +336,21 @@ def _plan_ultisid_cores(
     pulled back over a socket the caller just claimed; the core and the real chip
     then both answer it, which is the detuned double policy point 4 of the module
     docstring forbids. A split level whose window would do that is rejected, and
-    the search falls through to the next."""
+    the search falls through to the next.
+
+    **The same test applies to the I/O c64cast drives itself**, and it has to be
+    applied to the base this planner *realizes*, not the one a caller declared.
+    `sid_host_emu._decode_extra_sid_addr` refuses a declared base overlapping
+    :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` — but downward alignment moves
+    the base after that test has passed, so a header declaring $DF20 and $DF60
+    (two bytes of a downloaded `.sid`) used to be covered by one 1/4-split core
+    at $DF00: a live REST PUT putting a SID on the REU's own command registers,
+    which the audio pump and the ASID ring player both drive and the audio NMI
+    handler reads $DF03 back from mid-transfer. Every instance a level realizes
+    is checked, and a level that cannot be placed clear falls through to the
+    next exactly as the socket case does. Running out of levels returns None,
+    which the caller turns into a warning and the canonical-layout fallback —
+    never a placement."""
     if not targets:
         return (SPLIT_OFF, [])
     for split, cap, align in _SPLIT_LEVELS:
@@ -332,6 +369,9 @@ def _plan_ultisid_cores(
                 realizable = False
                 break
             if window & blocked:  # would double a socket-served address
+                realizable = False
+                break
+            if any(_reaches_reserved_io(instance) for instance in window):
                 realizable = False
                 break
             bases.append(base)

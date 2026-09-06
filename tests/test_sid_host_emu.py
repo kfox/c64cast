@@ -1050,7 +1050,9 @@ class ExtraSidAddressValidationTest(unittest.TestCase):
         self.assertEqual(_decode_extra_sid_addr(0x50), 0xD500)
         self.assertEqual(_decode_extra_sid_addr(0x7E), 0xD7E0)
         self.assertEqual(_decode_extra_sid_addr(0xE0), 0xDE00)
-        self.assertEqual(_decode_extra_sid_addr(0xFE), 0xDFE0)
+        # $EE -> $DEE0 is the top of the cartridge window that survives
+        # RESERVED_IO_WINDOWS; $F0 and up are c64cast's own REU and sampler.
+        self.assertEqual(_decode_extra_sid_addr(0xEE), 0xDEE0)
 
     def test_absent_and_malformed_bytes_degrade_to_single_sid(self):
         rejected = {
@@ -1062,6 +1064,9 @@ class ExtraSidAddressValidationTest(unittest.TestCase):
             0xC0: "$DC00, CIA #1 — teardown's zero write kills the jiffy IRQ",
             0xD0: "$DD00, CIA #2 — forces the VIC bank and pulls the serial lines",
             0x80: "$D800, between the two legal windows",
+            0xF0: "$DF00, the REU's own command registers",
+            0xF2: "$DF20, Ultimate Audio channel 0 — the sampler plays video audio there",
+            0xFE: "$DFE0, Ultimate Audio channel 6",
         }
         for byte, why in rejected.items():
             with self.subTest(byte=byte, why=why):
@@ -1078,32 +1083,47 @@ class ExtraSidAddressValidationTest(unittest.TestCase):
                     f"byte ${byte:02X} decoded to ${addr:04X}, outside the PSID windows",
                 )
 
-    def test_no_accepted_base_reaches_the_reu_registers(self):
+    def test_no_accepted_base_reaches_hardware_c64cast_drives(self):
         # The PSID spec's $DE00-$DFE0 window is "cartridge I/O", but c64cast
-        # drives one cartridge itself: the REU's command registers live at
-        # $DF00-$DF0A, and the audio ring's NMI handler reads $DF02/$DF03 back
-        # as its running C64 destination pointer. WaveformScene.teardown's
-        # 25-byte zero write at a declared base would point that DMA at $0000.
-        # Brute-forced rather than spot-checked, so the rule stays derived from
-        # the REU's own addresses instead of one excluded magic number.
-        from c64cast.hw.c64 import REU
+        # drives that cartridge itself: the REU's command registers at
+        # $DF00-$DF0A (the audio ring's NMI handler reads $DF02/$DF03 back as
+        # its running C64 destination pointer) and the Ultimate Audio sampler's
+        # seven channel register files filling $DF20-$DFFF. WaveformScene's
+        # teardown zero-writes 25 bytes at every declared base, so either one
+        # is a live device walked by a header field. Brute-forced rather than
+        # spot-checked, and the rule is derived from the devices' own address
+        # constants instead of a list of excluded magic numbers.
+        from c64cast.hw.c64 import RESERVED_IO_WINDOWS
         from c64cast.sid.sidemu import SID_REG_COUNT
 
         for byte in range(256):
             addr = _decode_extra_sid_addr(byte)
             if addr is None:
                 continue
-            with self.subTest(byte=byte):
-                self.assertFalse(
-                    addr <= REU.ADDR_CONTROL and addr + SID_REG_COUNT > REU.BASE,
-                    f"byte ${byte:02X} decoded to ${addr:04X}, whose register window "
-                    f"covers the REU command registers",
-                )
+            for low, high in RESERVED_IO_WINDOWS:
+                with self.subTest(byte=byte, window=(hex(low), hex(high))):
+                    self.assertFalse(
+                        addr <= high and addr + SID_REG_COUNT > low,
+                        f"byte ${byte:02X} decoded to ${addr:04X}, whose register window "
+                        f"covers ${low:04X}-${high:04X}",
+                    )
 
     def test_reu_page_byte_degrades_to_single_sid(self):
-        # $F0 -> $DF00 is the one spec-legal byte that lands on the REU.
+        # $F0 -> $DF00 is the spec-legal byte that lands on the REU.
         self.assertIsNone(_decode_extra_sid_addr(0xF0))
         h = parse_sid_header(_sid_with_extra_addrs(version=3, second=0xF0))
+        self.assertEqual(h.sid_addresses, (0xD400,))
+
+    def test_sampler_page_bytes_degrade_to_single_sid(self):
+        # The same shape one page up: $F2..$FE decode into $DF20-$DFFF, which
+        # the U64's "Map Ultimate Audio $DF20-DFFF" switch hands to the FPGA
+        # sampler c64cast streams video audio through. These are also the bytes
+        # that fed the planner the $DF20/$DF60 pair it aligned down onto $DF00
+        # (tests/test_asid_sidmap.py ReservedIoTest).
+        for byte in range(0xF2, 0x100, 2):
+            with self.subTest(byte=byte):
+                self.assertIsNone(_decode_extra_sid_addr(byte))
+        h = parse_sid_header(_sid_with_extra_addrs(version=4, second=0xF2, third=0xF6))
         self.assertEqual(h.sid_addresses, (0xD400,))
 
     def test_hostile_header_byte_no_longer_declares_a_chip_on_cia1(self):

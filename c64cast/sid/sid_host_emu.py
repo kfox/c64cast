@@ -42,7 +42,7 @@ from typing import NamedTuple
 from py65.devices.mpu6502 import MPU
 
 from c64cast.hw.api import parse_psid_for_player
-from c64cast.hw.c64 import CIA1, CPU, REU, ROM, SCREEN, SID, VIC_BANK_0
+from c64cast.hw.c64 import CIA1, CPU, RESERVED_IO_WINDOWS, ROM, SCREEN, SID, VIC_BANK_0
 
 from .sidemu import SID_REG_COUNT
 
@@ -281,15 +281,17 @@ _THIRD_SID_ADDR = 0x7B
 _EXTRA_SID_WINDOWS = ((0xD420, 0xD7E0), (0xDE00, 0xDFE0))
 
 # I/O the spec's $DE00-$DFE0 "cartridge" window permits a chip on but c64cast
-# drives itself, and so must not let a header aim register writes at. The REU's
-# command registers sit at $DF00-$DF0A: WaveformScene.teardown writes 25 zero
-# bytes at every declared base, and $DF02/$DF03 are the running C64 destination
-# pointer the audio ring's NMI handler reads back mid-transfer, so zeroing them
-# points the REU's DMA at $0000. Today only $DF00 is reachable (the even-byte
-# rule already excludes $DEF0, whose window would also reach them), but the
-# test is written as a window overlap against the REU's own address constants
-# rather than one excluded literal, so it stays right if either moves.
-_RESERVED_IO_WINDOWS = ((REU.BASE, REU.ADDR_CONTROL),)
+# drives itself, and so must not let a header aim register writes at
+# (c64cast.hw.c64.RESERVED_IO_WINDOWS, shared with the multi-SID planner that
+# realizes these same bases on the U64's UltiSID cores). WaveformScene.teardown
+# writes 25 zero bytes at every declared base: over the REU's command registers
+# ($DF00-$DF0A) that hits $DF02/$DF03, the running C64 destination pointer the
+# audio ring's NMI handler reads back mid-transfer, pointing the DMA at $0000;
+# over the Ultimate Audio sampler's page ($DF20-$DFFF) it walks a channel's
+# control/volume/start/length file while that channel is playing the session's
+# video audio. The rule is a window overlap against those devices' own address
+# constants rather than a list of excluded literals, so it stays right if
+# either moves.
 
 
 def _decode_extra_sid_addr(byte: int) -> int | None:
@@ -298,7 +300,7 @@ def _decode_extra_sid_addr(byte: int) -> int | None:
     anything resolving outside the $D420-$D7E0 / $DE00-$DFE0 windows are
     refused, which also excludes chip 0's own $D400. A base whose 25-byte
     register window would reach hardware c64cast drives itself is refused too
-    — see _RESERVED_IO_WINDOWS."""
+    — see RESERVED_IO_WINDOWS."""
     if byte == 0 or byte & 1:
         return None
     addr = 0xD000 | (byte << 4)
@@ -307,7 +309,7 @@ def _decode_extra_sid_addr(byte: int) -> int | None:
     if not any(lo <= addr <= hi for lo, hi in _EXTRA_SID_WINDOWS):
         return None
     if any(
-        _overlaps(addr, addr + SID_REG_COUNT, lo, hi - lo + 1) for lo, hi in _RESERVED_IO_WINDOWS
+        _overlaps(addr, addr + SID_REG_COUNT, lo, hi - lo + 1) for lo, hi in RESERVED_IO_WINDOWS
     ):
         return None
     return addr
