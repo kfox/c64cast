@@ -65,6 +65,7 @@ from c64cast.hw.c64 import (
     VECTORS,
     actual_rate_for_latch,
     cia1_latch_for_rate,
+    cpu_clock,
     kernal_cia1_latch,
 )
 
@@ -110,6 +111,26 @@ DELAY_CYCLES_PER_UNIT = 5
 # recipe is carried — enough for the gate-off write to land before the gate-on
 # (mirrors the coalesced path's two-phase emit). In delay units.
 DEFAULT_HARD_RESTART_WAIT_UNITS = 2
+
+# What one op costs the 6510 beyond its wait, counted off build_player's
+# `oploop`: 40 cycles to unpack the op and store the value, 3 to branch past the
+# delay, 13 to advance the slot pointer, 9 for the op counter and loop branch.
+# An op that carries a nonzero wait pays WAITED_OP_EXTRA_CYCLES more (the BEQ
+# falls through into JSR/TAY/RTS around the delay loop) plus
+# DELAY_CYCLES_PER_UNIT per unit.
+PER_OP_CYCLES = 65
+WAITED_OP_EXTRA_CYCLES = 13
+
+# The share of one consume period a slot's ops may spend. The rest is the
+# handler's own overhead — the REU pull, the tracker advance + wrap test, the
+# kernal IRQ entry/exit, and the $EA31 chain every Nth tick — and it is a coarse
+# reserve, not a model: the point is to keep the 6510 out of the ASID handler,
+# not to predict the last cycle. Without a budget the wait column is a wire-
+# supplied amplifier: 28 ops each carrying the maximum 255-cycle wait cost 8820
+# cycles per chip, over half a 60 Hz NTSC frame for ONE chip, and the read head
+# is open-loop — the host keeps writing at the requested rate while the C64
+# consumes at whatever it can manage, with no way to resynchronize.
+FRAME_BUDGET_FRACTION = 0.8
 
 # The most write-ops one chip's frame can carry: 22 non-control registers +
 # 3 voices × 2 control writes (hard restart). Sets the slot size.
@@ -187,6 +208,18 @@ def _wait_units_for_cycles(wait_cycles: int) -> int:
     return min(255, round(wait_cycles / DELAY_CYCLES_PER_UNIT))
 
 
+def _offset_for_recipe_id(recipe_id: int) -> int | None:
+    """The SID register offset a wire-supplied ``0x30`` recipe id names, or None
+    for an id the register table has no entry for.
+
+    Recipe ids arrive as ``data0 & 0x3F`` (0-63) from an untrusted stream, while
+    the table holds 28 entries — so the out-of-table half has to answer "no
+    register", not raise."""
+    if 0 <= recipe_id < len(_ASID_REG_TO_OFFSET):
+        return _ASID_REG_TO_OFFSET[recipe_id]
+    return None
+
+
 def serialize_frame(
     regs: dict[int, int],
     control_first: dict[int, int],
@@ -205,9 +238,17 @@ def serialize_frame(
     Ordering: without a ``recipe`` (the common case), non-control registers first
     (ascending offset), then per voice its control write(s) — a hard restart's
     first write carries a small default wait before the final. With a ``0x30``
-    recipe, the writes are ordered by the recipe's register-id sequence and each
-    op takes that entry's wait (recipe ids absent from the frame are skipped; any
-    frame register the recipe omits is appended in default order)."""
+    recipe, the writes are ordered by the recipe's register sequence and each op
+    takes the wait the recipe gave *its own* register id (recipe ids absent from
+    the frame are skipped; any frame register the recipe omits is appended in
+    default order).
+
+    **A recipe can reorder registers against each other, never the two writes
+    within one.** A voice's hard restart is a gate-off then a gate-on write to
+    one register, and emitting them the other way round leaves the voice silent
+    for the whole frame — so the pair is positioned as a unit and its internal
+    order is the serializer's property, not a property of a well-formed
+    recipe."""
     # Build the set of writes as (asid_reg_id, offset, value, default_wait_units).
     # A voice with a hard restart contributes two writes (ids 22-24 then 25-27).
     writes: list[tuple[int, int, int, int]] = []
@@ -230,29 +271,48 @@ def serialize_frame(
             writes.append((25 + voice, offset, final & 0xFF, 0))
 
     if recipe:
-        # Order by the recipe's register-id sequence + take its waits. Group the
-        # writes by reg_id (a voice's first/second write have distinct ids), then
-        # walk the recipe. Frame registers the recipe omits keep default order,
-        # appended after.
-        by_id: dict[int, list[tuple[int, int, int, int]]] = {}
+        # The recipe positions *registers*, and the unit it can position is the
+        # SID register offset — not the ASID register id. A voice's hard restart
+        # is two writes to one offset under two ids (22+v gate-off, then 25+v
+        # gate-on), and they mean the opposite thing in the opposite order, so
+        # both travel together to the first position naming either of them.
+        # Grouping by id instead let a recipe that named 25+v but not 22+v emit
+        # the gate-on value at that position and the gate-off value in the tail
+        # append below: the voice ended the frame gated OFF where the tune asked
+        # for a re-attack, and ids 25-27 are the ordinary control ids, so that
+        # was the default outcome for such a stream, not an exotic one.
+        #
+        # Waits are looked up per write id rather than taken from the recipe
+        # entry that positioned the group, so a recipe naming both of a pair's
+        # ids keeps both of its waits.
+        by_offset: dict[int, list[tuple[int, int, int, int]]] = {}
         for w in writes:
-            by_id.setdefault(w[0], []).append(w)
+            by_offset.setdefault(w[1], []).append(w)
+        wait_units_by_id: dict[int, int] = {}
+        for rid, wait_cycles in recipe:
+            wait_units_by_id.setdefault(rid, _wait_units_for_cycles(wait_cycles))
         ordered: list[tuple[int, int, int]] = []
         seen: set[int] = set()
-        for rid, wait_cycles in recipe:
-            # A register id repeated in the write order emits its write once, at
-            # its first position. Without this, op count tracks recipe length
-            # rather than the frame's write count, and a spec-legal 28-pair
-            # recipe naming one id can push a single chip past MAX_OPS_PER_CHIP
-            # — which pack_slot then truncates, taking later chips with it.
-            if rid in seen:
+        for rid, _wait_cycles in recipe:
+            # A register named twice in the write order — directly, or once per
+            # control id of the same voice — writes once, at its first position.
+            # Without this, op count tracks recipe length rather than the frame's
+            # write count, and a spec-legal 28-pair recipe naming one id can push
+            # a single chip past MAX_OPS_PER_CHIP — which pack_slot then
+            # truncates, taking later chips with it.
+            offset = _offset_for_recipe_id(rid)
+            if offset is None or offset in seen:
                 continue
-            seen.add(rid)
-            for _, offset, value, _dw in by_id.get(rid, ()):  # noqa: B007
-                ordered.append((base_addr + offset, value, _wait_units_for_cycles(wait_cycles)))
-        for rid, offset, value, dw in writes:
-            if rid not in seen:
-                ordered.append((base_addr + offset, value, dw))
+            seen.add(offset)
+            for w_rid, w_offset, value, default_wait in by_offset.get(offset, ()):
+                ordered.append(
+                    (base_addr + w_offset, value, wait_units_by_id.get(w_rid, default_wait))
+                )
+        ordered.extend(
+            (base_addr + offset, value, dw)
+            for (_rid, offset, value, dw) in writes
+            if offset not in seen
+        )
         return ordered
 
     return [(base_addr + offset, value, dw) for (_rid, offset, value, dw) in writes]
@@ -291,6 +351,44 @@ def pack_slot(ops: list[tuple[int, int, int]], slot_size: int) -> bytes:
         out[i + 3] = wait & 0xFF
         i += OP_BYTES
     return bytes(out)
+
+
+def frame_cycle_cost(ops: list[tuple[int, int, int]]) -> int:
+    """C64 cycles one frame's ops cost the 6510 inside the player's IRQ."""
+    total = len(ops) * PER_OP_CYCLES
+    for _addr, _value, wait in ops:
+        if wait:
+            total += WAITED_OP_EXTRA_CYCLES + wait * DELAY_CYCLES_PER_UNIT
+    return total
+
+
+def fit_frame_to_budget(
+    ops: list[tuple[int, int, int]], budget_cycles: int
+) -> list[tuple[int, int, int]]:
+    """Scale a frame's inter-write waits down until it fits ``budget_cycles``.
+
+    A frame longer than the consume period does not queue politely: the CIA
+    fires again before the handler returns, so the 6510 never leaves it — the
+    jiffy clock, ``SCNKEY`` and the whole kernal tail stop, and the open-loop
+    read head keeps advancing against slots nobody applied. The ``0x30`` recipe
+    supplies the waits from the wire, so they are the part that must give.
+
+    Waits scale proportionally, to zero if that is what it takes — a hard
+    restart's two writes still reach the SID in order, just an op apart instead
+    of a programmed gap. The op cost itself is the frame's content (already
+    bounded at ``MAX_OPS_PER_CHIP`` per chip) and is never dropped: a frame
+    whose ops alone overrun the period comes back with every wait at zero, and
+    the caller says so — deleting register writes would mangle the tune worse
+    than a slow kernal chain, which teardown undoes anyway."""
+    op_cycles = sum(PER_OP_CYCLES + (WAITED_OP_EXTRA_CYCLES if w else 0) for *_, w in ops)
+    wait_cycles = sum(w for *_, w in ops) * DELAY_CYCLES_PER_UNIT
+    if op_cycles + wait_cycles <= budget_cycles:
+        return list(ops)
+    allowance = budget_cycles - op_cycles
+    if allowance <= 0 or wait_cycles <= 0:
+        return [(addr, value, 0) for addr, value, _wait in ops]
+    scale = allowance / wait_cycles
+    return [(addr, value, int(wait * scale)) for addr, value, wait in ops]
 
 
 def hold_slot(slot_size: int) -> bytes:
@@ -609,6 +707,16 @@ class AsidRingPlayer:
         lead = int(self._rate * self._lead_seconds)
         self._lead_target = max(1, min(lead, RING_SLOTS // 2))
         self._lead_panic = max(1, self._lead_target // 4)
+
+    def frame_cycle_budget(self) -> int:
+        """C64 cycles one slot's ops may spend at the current consume rate.
+
+        The rate is the one the CIA actually runs (post-latch-quantization), and
+        the clock is the *machine's* — a ``0x31`` retunes which video standard
+        the scene believes the tune targets, but not the crystal the timer counts
+        — so this is what the 6510 really has between two ticks, less the
+        handler's own reserve (:data:`FRAME_BUDGET_FRACTION`)."""
+        return int(cpu_clock(self.system) * FRAME_BUDGET_FRACTION / max(self._rate, 1e-6))
 
     def _read_head(self) -> int:
         """Estimated slots consumed by the C64 so far (cumulative across rate

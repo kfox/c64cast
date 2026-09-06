@@ -35,6 +35,7 @@ from _fakes import FakeAPI, quiet_logging  # noqa: E402
 
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
+from c64cast.sid.asid_player import _wait_units_for_cycles, frame_cycle_cost  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
 
 
@@ -50,6 +51,18 @@ def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
             msb[byte_idx] |= 1 << bit
         data.append(values[reg_id] & 0x7F)
     return (asid.ASID_MANUFACTURER_ID, asid.CMD_REG, *mask, *msb, *data)
+
+
+class _FakeClock:
+    """Drives the scene's 0x31 retune window without sleeping on it, so nothing
+    here depends on how long the test host takes to run a loop."""
+
+    def __init__(self, scene, now: float = 1000.0):
+        self.now = now
+        scene._monotonic = lambda: self.now
+
+    def advance(self, dt: float) -> None:
+        self.now += dt
 
 
 def _stub_port(scene):
@@ -372,6 +385,27 @@ class AsidSceneTest(unittest.TestCase):
             with quiet_logging():
                 scene.teardown()
 
+    def test_reactivation_forgets_the_previous_tunes_register_image(self):
+        """A flush writes the whole 25-byte image, so lap 1's ADSR, pulse widths
+        and filter settings would otherwise ride along with the first lap-2 frame
+        that touches any register at all. Teardown silenced the chips, so zero is
+        what the hardware holds when the next lap starts."""
+        scene, api = self._make()
+        scene._handle_sysex(_reg_msg({4: 0x7F, 21: 0x0F}))  # voice-1 AD + master vol
+        scene._flush_to_sid()
+        with _stub_port(scene), quiet_logging():
+            scene.setup()
+        try:
+            scene._handle_sysex(_reg_msg({0: 0x34}))  # lap 2 writes one register
+            scene._flush_to_sid()
+            block = api.regs[f"{SID.BASE:04X}"]
+            self.assertEqual(block[0x00], 0x34)
+            self.assertEqual(block[0x05], 0x00)  # lap 1's attack/decay is gone
+            self.assertEqual(block[0x18], 0x00)  # ...and its master volume
+        finally:
+            with quiet_logging():
+                scene.teardown()
+
     def test_setup_opens_port_and_starts_threads(self):
         scene, api = self._make()
         # Avoid touching real MIDI hardware: a stub port that never yields a
@@ -556,15 +590,100 @@ class AsidBufferedPlayerTest(unittest.TestCase):
     def test_repeated_speed_message_does_not_retune_again(self):
         """Each retune is a blocking CIA write plus a flush() round trip on the
         single shared DMA socket, so an identical 0x31 must cost nothing."""
+        from c64cast.sid.asid_scene import _SPEED_RETUNE_INTERVAL_S
+
         scene, _ = self._make()
+        clock = _FakeClock(scene)
         rates = self._capture_rates(scene)
         msg = (asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (3 << 1) | 0x01)
         for _ in range(5):
             scene._handle_sysex(msg)
         self.assertEqual(len(rates), 1)
-        # A genuinely different request still gets through.
+        # A genuinely different request gets through too — but when the retune
+        # window opens, not the instant it arrives. Deduplicating the argument
+        # was the whole throttle once, and alternating two rates defeated it.
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (1 << 1) | 0x01))
+        self.assertEqual(len(rates), 1)
+        clock.advance(_SPEED_RETUNE_INTERVAL_S)
+        scene._retune_if_due()
         self.assertEqual(len(rates), 2)
+        self.assertAlmostEqual(rates[-1], 60.0 * 2, delta=1.0)
+
+    def test_a_speed_flood_cannot_outrun_the_retune_window(self):
+        """A sender alternating two in-band rates costs what one repeated rate
+        costs. 999 and 1000 Hz are both inside the clamp band, so the argument
+        dedupe saw two different requests and not even a warning fired — while
+        each surviving 0x31 blocks the MIDI reader on a CIA write plus a flush()
+        over the socket the render path shares, backing rtmidi's unbounded input
+        queue up behind the drain."""
+        from c64cast.sid.asid_scene import _SPEED_RETUNE_INTERVAL_S
+
+        scene, _ = self._make()
+        clock = _FakeClock(scene)
+        rates = self._capture_rates(scene)
+        seconds = 6.0
+        messages = 6000  # a 1000 Hz sender, six seconds of stream
+        for i in range(messages):
+            delta_us = (1000, 1001)[i % 2]
+            scene._handle_sysex(
+                (
+                    asid.ASID_MANUFACTURER_ID,
+                    asid.CMD_SPEED,
+                    0x01,
+                    delta_us & 0x7F,
+                    (delta_us >> 7) & 0x7F,
+                    0x00,
+                )
+            )
+            clock.advance(seconds / messages)
+        self.assertGreater(len(rates), 0)  # legitimate retunes still happen
+        self.assertLessEqual(len(rates), int(seconds / _SPEED_RETUNE_INTERVAL_S) + 1)
+
+    def test_a_request_inside_the_window_is_coalesced_not_dropped(self):
+        """The window latches the newest request instead of discarding it, so a
+        host that changes speed twice in quick succession ends up at the second
+        speed rather than the first."""
+        from c64cast.sid.asid_scene import _SPEED_RETUNE_INTERVAL_S
+
+        scene, _ = self._make()
+        clock = _FakeClock(scene)
+        rates = self._capture_rates(scene)
+        for multiplier in (2, 4, 8):
+            scene._handle_sysex(
+                (asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, ((multiplier - 1) << 1) | 0x01)
+            )
+        self.assertEqual(len(rates), 1)  # only the first crossed the window
+        clock.advance(_SPEED_RETUNE_INTERVAL_S)
+        scene._retune_if_due()
+        self.assertAlmostEqual(rates[-1], 60.0 * 8, delta=1.0)
+
+    def test_the_reader_loop_applies_a_latched_retune(self):
+        """A 0x31 that lands inside the window is applied when the window opens,
+        and the reader loop is what opens it — otherwise a host that changes
+        speed once and goes quiet would stay at the old cadence forever."""
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        stop = threading.Event()
+        rates: list[float] = []
+
+        def set_rate(hz):
+            rates.append(hz)
+            stop.set()
+
+        player.set_frame_rate = set_rate  # type: ignore[method-assign]
+        scene._speed_request_hz = 120.0  # what a 0x31 inside the window latched
+        polls = {"n": 0}
+
+        def poll():
+            polls["n"] += 1
+            if polls["n"] > 50:
+                stop.set()  # safety net: the loop must not spin forever
+            return None
+
+        scene._midi_port = SimpleNamespace(poll=poll, iter_pending=lambda: iter(poll, None))
+        scene._reader(stop)
+        self.assertEqual(rates, [120.0])
 
     def test_repeated_out_of_band_speed_message_warns_once(self):
         # The dedupe sits before the clamp, so a flood of identical hostile
@@ -625,6 +744,64 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         """The op target addresses in a packed ring slot ([n_ops][lo hi val wait]*)."""
         n_ops = slot[0]
         return [slot[1 + i * 4] | (slot[2 + i * 4] << 8) for i in range(n_ops)]
+
+    @staticmethod
+    def _slot_ops(slot: bytes) -> list[tuple[int, int, int]]:
+        """Every op in a packed ring slot as (addr, value, wait_units)."""
+        return [
+            (
+                slot[1 + i * 4] | (slot[2 + i * 4] << 8),
+                slot[3 + i * 4],
+                slot[4 + i * 4],
+            )
+            for i in range(slot[0])
+        ]
+
+    def _maximal_recipe_frame(self, scene) -> None:
+        """Feed a spec-legal 28-pair `0x30` at the maximum wait, then a full
+        register frame with a hard restart on all three voices, then the chip-0
+        message that closes it."""
+        recipe = tuple(b for rid in range(28) for b in ((rid & 0x3F) | 0x40, 0x7F))
+        scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, *recipe))
+        values = dict.fromkeys(range(22), 0x11)
+        values.update({22: 0x08, 23: 0x08, 24: 0x08, 25: 0x41, 26: 0x41, 27: 0x41})
+        scene._handle_sysex(_reg_msg(values))
+        scene._handle_sysex(_reg_msg({0: 0x40}))
+
+    def test_a_maximal_recipe_frame_is_held_to_what_one_tick_can_execute(self):
+        """The op *count* is bounded at the decoder, but the `0x30` wait column
+        is wire-supplied and was not: 28 maximum waits are most of a 60 Hz NTSC
+        frame for a single chip. An overrunning frame does not queue — the CIA
+        fires again before the handler returns, so the 6510 never leaves the ASID
+        IRQ and the kernal tail stops for as long as the stream keeps it up."""
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        player._rate = 120.0  # an ordinary 2x multispeed
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.asid_scene", level="WARNING") as cm:
+            self._maximal_recipe_frame(scene)
+        self.assertIn("consume tick", cm.output[0])
+        ops = self._slot_ops(pushed[0])
+        self.assertEqual(len(ops), 28)  # every register write still reaches the SID
+        self.assertLessEqual(frame_cycle_cost(ops), player.frame_cycle_budget())
+
+    def test_a_frame_inside_the_budget_keeps_its_recipe_waits(self):
+        """The same frame with one field varied — the consume rate the waits are
+        measured against. At single speed it fits, so nothing is scaled and
+        nothing is logged: the budget is a ceiling, not a cap on ordinary
+        multispeed content."""
+        scene, _ = self._make()
+        player = scene._player
+        assert player is not None
+        player._rate = 60.0
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+        with self.assertNoLogs("c64cast.sid.asid_scene", level="WARNING"):
+            self._maximal_recipe_frame(scene)
+        waits = {wait for _a, _v, wait in self._slot_ops(pushed[0])}
+        self.assertEqual(waits, {_wait_units_for_cycles(255)})
 
     def _multi_msg(self, chip_index: int, values: dict[int, int]) -> tuple[int, ...]:
         cmd = asid.CMD_MULTI_SID_LO + (chip_index - 1)

@@ -431,12 +431,19 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 **v1 limitations (documented, not over-engineered):**
 
 * **Frame-fit ceiling.** The handler's per-frame cost (per-op overhead + `0x30`
-  waits, summed across all chips) must fit the frame period. Realistic content
-  fits — it's how the tune runs natively — but a pathological 8-SID × 16× frame
-  can overrun and queue ticks, an inherent limit like the NMI DAC cycle budget.
-  What a *stream* can generate is bounded: a `0x30` recipe caps at 28 pairs with
-  each register named once, so one chip's frame can never serialize past
-  `MAX_OPS_PER_CHIP`, and a slot that still has to truncate logs it.
+  waits, summed across all chips) must fit the frame period, and an overrun does
+  not queue politely — the CIA fires again before the handler returns, so the
+  6510 stays inside the ASID IRQ and the kernal tail (jiffy clock, `SCNKEY`)
+  stops until the stream lets up or the scene tears down. The wire-supplied half
+  of that cost is **bounded**: a `0x30` recipe caps at 28 pairs with each
+  register named once (so one chip's frame can never serialize past
+  `MAX_OPS_PER_CHIP`, and a slot that still has to truncate logs it), and the
+  recipe's inter-write waits are scaled down to fit the consume period before
+  the slot is packed, with a one-time warning. What remains is the op cost
+  itself: a dense 8-SID frame at a high multispeed can outrun the period with
+  every wait already at zero. Realistic content fits — it's how the tune runs
+  natively — and the register writes are never dropped to make it fit, because
+  a mangled tune is worse than a slow kernal chain teardown undoes anyway.
 * **Consume rate is clamped to ~15-1000 Hz.** The ceiling is 16× the video rate
   (all the `0x31` speed multiplier can express); the floor is the slowest
   cadence a 16-bit CIA latch can realize. A host asking for more gets the bound

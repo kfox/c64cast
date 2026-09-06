@@ -129,6 +129,61 @@ class SerializeFrameTest(unittest.TestCase):
         ops = ap.serialize_frame(regs, control_first, 0xD400, recipe=recipe)
         self.assertLessEqual(len(ops), ap.MAX_OPS_PER_CHIP)
 
+    def test_a_recipe_naming_the_final_control_id_cannot_invert_a_hard_restart(self):
+        """A voice's hard restart is two writes to one register — gate-off, then
+        the re-attack — and ids 25-27 are the *ordinary* control ids, so a stream
+        using them is the common case, not an exotic one. Ordering the writes by
+        ASID register id let a recipe naming 25+v but not 22+v emit the re-attack
+        at the recipe position and the gate-off after it, in the tail append: the
+        voice ended the frame gated off and never sounded."""
+        ops = ap.serialize_frame(
+            {0x00: 0x10, 0x01: 0x20, 0x04: 0x41},
+            {0: 0x08},
+            0xD400,
+            recipe=[(0, 0), (1, 0), (25, 0)],
+        )
+        self.assertEqual(
+            [(a, v) for a, v, _w in ops if a == 0xD404], [(0xD404, 0x08), (0xD404, 0x41)]
+        )
+
+    def test_no_recipe_can_reorder_a_voices_two_control_writes(self):
+        """The same repro with one field varied: which of the pair's ids the
+        recipe names, in which order, for each voice. The correct order has to be
+        a property of the serializer, because the recipe is wire-supplied and
+        arbitrary — a well-formed one is not something the input can be trusted
+        to be."""
+        for voice, offset in enumerate(ap._CONTROL_OFFSETS):
+            first_id, final_id = 22 + voice, 25 + voice
+            for named in ([], [first_id], [final_id], [first_id, final_id], [final_id, first_id]):
+                recipe = [(0, 0)] + [(rid, 40) for rid in named] + [(1, 0)]
+                with self.subTest(voice=voice, named=named):
+                    ops = ap.serialize_frame(
+                        {0x00: 0x10, 0x01: 0x20, offset: 0x41},
+                        {voice: 0x08},
+                        0xD400,
+                        recipe=recipe,
+                    )
+                    written = [v for a, v, _w in ops if a == 0xD400 + offset]
+                    self.assertEqual(written, [0x08, 0x41])
+
+    def test_a_recipe_naming_both_control_ids_keeps_both_waits(self):
+        # The pair is positioned as a unit, but each write still takes the wait
+        # the recipe gave its own id — so a well-formed recipe loses nothing.
+        ops = ap.serialize_frame({0x04: 0x41}, {0: 0x08}, 0xD400, recipe=[(22, 100), (25, 50)])
+        self.assertEqual(
+            ops,
+            [
+                (0xD404, 0x08, ap._wait_units_for_cycles(100)),
+                (0xD404, 0x41, ap._wait_units_for_cycles(50)),
+            ],
+        )
+
+    def test_a_recipe_id_outside_the_register_table_is_skipped(self):
+        # Recipe ids arrive as `data0 & 0x3F`, so 28-63 are reachable from the
+        # wire and name no register.
+        ops = ap.serialize_frame({0x00: 0xAA}, {}, 0xD400, recipe=[(63, 10), (0, 20)])
+        self.assertEqual(ops, [(0xD400, 0xAA, ap._wait_units_for_cycles(20))])
+
     def test_recipe_appends_registers_it_omits(self):
         # Recipe mentions only id 0; the frame's id-1 register still gets written
         # (default order, after the recipe-ordered ones).
@@ -136,6 +191,65 @@ class SerializeFrameTest(unittest.TestCase):
         self.assertEqual(ops[0], (0xD400, 0xAA, 0))
         self.assertIn((0xD401, 0xBB, 0), ops)
         self.assertEqual(len(ops), 2)
+
+
+class FrameBudgetTest(unittest.TestCase):
+    """A `0x30` supplies a wait per write straight off the wire, so a frame's
+    *cost* — not just its op count — has to be bounded against the consume
+    period. An overrunning frame does not queue politely: the CIA fires again
+    before the handler returns, so the 6510 never leaves the ASID IRQ and the
+    kernal tail (jiffy clock, SCNKEY) stops."""
+
+    def _worst_case_frame(self, n_chips: int) -> list[tuple[int, int, int]]:
+        """The fullest legal frame under the fullest legal recipe, concatenated
+        across `n_chips` exactly as `_emit_buffered_frame` builds it."""
+        regs = dict.fromkeys(range(0x19), 0x11)
+        control_first = {0: 0x08, 1: 0x08, 2: 0x08}
+        recipe = [(rid, 255) for rid in range(28)]
+        ops: list[tuple[int, int, int]] = []
+        for chip in range(n_chips):
+            ops += ap.serialize_frame(regs, control_first, 0xD400 + chip * 0x20, recipe=recipe)
+        return ops
+
+    def test_a_maximal_recipe_frame_outruns_the_tick_it_has_to_run_in(self):
+        # The premise the budget exists for: two chips of spec-legal maximum
+        # waits ask for more than a whole 60 Hz NTSC frame of 6510 time.
+        ops = self._worst_case_frame(2)
+        self.assertEqual(len(ops), 2 * ap.MAX_OPS_PER_CHIP)
+        self.assertGreater(ap.frame_cycle_cost(ops), CLOCK_NTSC / 60.0)
+
+    def test_fitting_holds_the_frame_to_the_budget_and_keeps_every_write(self):
+        ops = self._worst_case_frame(2)
+        budget = int(CLOCK_NTSC / 60.0 * ap.FRAME_BUDGET_FRACTION)
+        fitted = ap.fit_frame_to_budget(ops, budget)
+        self.assertLessEqual(ap.frame_cycle_cost(fitted), budget)
+        # Only the waits give: every register write still reaches the SID, in
+        # the same order. Dropping ops would mangle the tune outright.
+        self.assertEqual([(a, v) for a, v, _w in fitted], [(a, v) for a, v, _w in ops])
+
+    def test_a_frame_already_inside_the_budget_is_untouched(self):
+        ops = [(0xD400, 0x11, 4), (0xD404, 0x41, 0)]
+        self.assertEqual(ap.fit_frame_to_budget(ops, 100_000), ops)
+
+    def test_ops_that_alone_overrun_come_back_with_every_wait_zeroed(self):
+        # A 16x multispeed leaves so little per tick that the op loop alone
+        # exceeds it. Zero is as far as scaling can go; the writes still land.
+        ops = [(0xD400 + i, 0x11, 51) for i in range(28)]
+        fitted = ap.fit_frame_to_budget(ops, 100)
+        self.assertEqual([w for *_, w in fitted], [0] * 28)
+        self.assertEqual([(a, v) for a, v, _w in fitted], [(a, v) for a, v, _w in ops])
+
+    def test_the_budget_follows_the_consume_rate_and_the_machine_clock(self):
+        api, _ = _fake_backend()
+        player = ap.AsidRingPlayer(api, system="NTSC", n_chips=1)
+        for rate in (60.0, 960.0):
+            player._rate = rate
+            with self.subTest(rate=rate):
+                self.assertAlmostEqual(
+                    player.frame_cycle_budget(),
+                    CLOCK_NTSC / rate * ap.FRAME_BUDGET_FRACTION,
+                    delta=1.0,
+                )
 
 
 class PackSlotTest(unittest.TestCase):

@@ -70,6 +70,38 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **An ASID `0x30` write order can no longer invert a voice's hard restart.**
+  A hard restart is two writes to one control register — gate off, then the
+  re-attack — and the buffered player ordered a frame's writes by ASID register
+  id. A recipe that named the second control id (25-27, the ordinary ones) but
+  not the first emitted the re-attack at the recipe's position and the gate-off
+  value after it, so the voice ended the frame gated off and never sounded. The
+  order within a register is now the serializer's own property: the pair is
+  positioned as a unit, whatever ids a recipe names or omits, and each write
+  still takes the wait its own id was given.
+- **A `0x30` recipe can no longer stall the C64 with inter-write waits.** The
+  number of writes per frame was capped, but their *cost* was not: 28 writes
+  each carrying the protocol's maximum wait are over half a 60 Hz NTSC frame for
+  a single SID, and two chips already outrun the period. That does not drop a
+  frame — the timer fires again before the handler returns, so the 6510 never
+  leaves it and the jiffy clock and keyboard scan stop. Each frame is now priced
+  against the consume period and its waits scaled down to fit, with a one-time
+  warning; every register write still reaches the chip.
+- **A `0x31` speed flood can no longer freeze video and starve audio.** The only
+  throttle on the ASID retune was dropping a request identical to the one in
+  force, which alternating any two rates defeated — and 999 Hz and 1000 Hz are
+  both legal, so nothing even warned. Each surviving message cost a blocking
+  write plus a round trip on the single DMA link the video path shares, from the
+  MIDI reader thread, so an ordinary 60 Hz arrival rate spent most of the link
+  budget and let the MIDI input queue grow without bound behind it. Retunes are
+  now rate-limited to one per 250 ms; a request inside that window is coalesced
+  rather than dropped, so the newest speed still takes effect.
+- **A reused ASID scene no longer sends the previous tune's registers to the
+  chip.** A flush writes the whole 25-byte register image, so the first frame of
+  a new stream that touched a few registers carried the last tune's envelopes,
+  pulse widths and filter settings along with it. Re-activation now clears the
+  shadows with the rest of the stream state.
+
 - **An ASID stream can no longer keep the C64's IRQ rate after its scene ends.**
   The buffered ring player programs CIA #1 Timer A the moment it installs but
   hooks `$0314` only once a real-frame prebuffer arrives — and teardown restored

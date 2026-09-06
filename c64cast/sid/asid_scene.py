@@ -61,6 +61,8 @@ from . import asid
 from .asid_player import (
     AsidRingPlayer,
     clamp_frame_rate,
+    fit_frame_to_budget,
+    frame_cycle_cost,
     pack_slot,
     restore_kernal_irq,
     serialize_frame,
@@ -80,6 +82,11 @@ log = logging.getLogger(__name__)
 # covers PAL/NTSC single-speed frame rates and keeps bursts / high-multispeed
 # tunes from outrunning the ~200 writes/sec DMA ceiling. See _reader().
 _FLUSH_INTERVAL_S = 1.0 / 60.0
+
+# How often a wire 0x31 may actually retune the CIA. Requests inside the window
+# are coalesced (newest wins) rather than queued, so a sender alternating rates
+# costs exactly what a sender repeating one rate costs. See `_retune_if_due`.
+_SPEED_RETUNE_INTERVAL_S = 0.25
 
 # Idle voice strips draw in this gray (matches MidiScene / WaveformScene).
 _IDLE_GRAY = "gray"
@@ -238,9 +245,15 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._frame_has_data = False
         self._recipe: list[tuple[int, int]] | None = None
         self._frame_rate_hz = self._video_hz  # ASID cadence (0x31 retunes it)
-        # The last *unclamped* rate a 0x31 asked for, so a repeated message is
-        # dropped before it costs a DMA round trip (or a clamp warning).
+        # 0x31 retune throttle: the newest *unclamped* rate the wire asked for,
+        # the one last applied to hardware, and when that happened. Injectable
+        # clock so the window can be tested without sleeping on it.
         self._speed_request_hz = self._video_hz
+        self._applied_speed_hz = self._video_hz
+        self._last_retune_at = float("-inf")
+        self._monotonic = time.monotonic
+        # One-shot: a frame whose ops outrun the consume period says so once.
+        self._warned_frame_budget = False
         # Highest chip index seen on the wire (reader thread); process_frame
         # compares against _active_chips to trigger a live remap on the main
         # thread (avoids mutating display state from the reader).
@@ -304,6 +317,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 if self._pending_flush and now - last_flush >= _FLUSH_INTERVAL_S:
                     self._flush_to_sid()
                     last_flush = now
+                # A 0x31 that landed inside the retune window is latched, not
+                # dropped, so the loop is what applies it once the window opens.
+                self._retune_if_due()
                 time.sleep(0.001)  # 1 ms poll
         except Exception:
             log.exception("AsidScene reader crashed")
@@ -419,33 +435,52 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self._dirty = True
 
     def _apply_speed(self, update: asid.AsidUpdate) -> None:
-        """Retune the buffered player's consume rate from a 0x31 message.
+        """Latch the consume rate a 0x31 message asks for, and retune if due.
 
         Frame delta (µs) wins when present; else the speed multiplier scales the
         system video rate. A no-op for the coalesced path (it flushes on its own
         timer).
 
-        The derived rate goes through :func:`~c64cast.sid.asid_player.clamp_frame_rate`
-        — the single boundary for wire-derived rates — before it is stored, so
-        the scene's own accounting agrees with the cadence the player programs
-        (``set_frame_rate`` clamps again; an in-band value logs nothing).
-        Forwarding is unconditional on *arming*, because a `0x31` almost always
-        arrives before the prebuffer fills and dropping it decimates the tune —
-        but a request identical to the one already in force is dropped before
-        the clamp, because each retune costs a blocking CIA-latch write plus a
-        `flush()` round trip on the single shared DMA socket (and, pre-arm, a
-        full handler re-upload). A host that repeats its `0x31` every frame
-        would otherwise spend the render path's whole write budget — and, for an
-        out-of-band request, its whole log — saying nothing new."""
+        Deriving the rate is all this does per message, and that is the point —
+        see :meth:`_retune_if_due` for why the hardware half is rate-limited."""
         if update.frame_delta_us:
             rate = 1_000_000.0 / update.frame_delta_us
         elif update.speed_multiplier:
             rate = self._video_hz * update.speed_multiplier
         else:
             rate = self._video_hz
-        if rate == self._speed_request_hz:
-            return
         self._speed_request_hz = rate
+        self._retune_if_due()
+
+    def _retune_if_due(self) -> None:
+        """Apply the latched 0x31 rate, at most once per `_SPEED_RETUNE_INTERVAL_S`.
+
+        Called for every 0x31 and again from the reader loop, so a request that
+        lands inside the window is *coalesced* — the newest one wins and goes out
+        when the window expires — rather than queued or dropped. That distinction
+        is the whole defense: a retune is a blocking CIA-latch write plus a
+        `flush()` round trip on the single-connection DMA socket the render path
+        and `AudioStreamer` share (and, pre-arm, a full handler re-upload), and
+        `_handle_sysex` runs on the MIDI reader thread. Applying one per message
+        let a sender at an ordinary 60 Hz frame rate spend the whole ~200/s link
+        budget on CIA latches *and* back rtmidi's unbounded input queue up behind
+        the drain, which is what starves the register flush and outlives
+        teardown's bounded join. Deduplicating the *argument* — which is all this
+        used to do — was defeated by alternating any two rates, and 999/1000 Hz
+        are both in band, so not even a clamp warning fired.
+
+        Forwarding stays unconditional on *arming*: a 0x31 almost always arrives
+        before the prebuffer fills, and dropping it decimates the tune to the
+        video rate. The clamp runs here rather than on the derive path so a flood
+        of out-of-band requests cannot spend the log either."""
+        rate = self._speed_request_hz
+        if rate == self._applied_speed_hz:
+            return
+        now = self._monotonic()
+        if now - self._last_retune_at < _SPEED_RETUNE_INTERVAL_S:
+            return
+        self._last_retune_at = now
+        self._applied_speed_hz = rate
         self._frame_rate_hz = clamp_frame_rate(rate)
         if self._use_buffered_player and self._player is not None:
             self._player.set_frame_rate(self._frame_rate_hz)
@@ -480,6 +515,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
                         mask[voice] = True
                     retrigger = tuple(mask)
                 emu_updates.append((chip, retrigger))
+            all_ops = self._fit_to_frame_budget(all_ops, player)
             player.push_frame(pack_slot(all_ops, player.slot_size))
             # Mirror into the emulators (scope) — the C64 plays the real SID.
             # Only the serialized chips, so the scope can't show a voice
@@ -498,6 +534,36 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self._frame_regs.clear()
             self._frame_ctrl_first.clear()
         self._frame_has_data = bool(self._frame_regs)
+
+    def _fit_to_frame_budget(
+        self, ops: list[tuple[int, int, int]], player: AsidRingPlayer
+    ) -> list[tuple[int, int, int]]:
+        """Hold one slot's ops to what the 6510 can execute between two consume
+        ticks, warning once per stream when it has to.
+
+        The op *count* is bounded at the decoder and by `MAX_OPS_PER_CHIP`, but
+        their *cost* is not: a `0x30` recipe supplies a wait per write straight
+        off the wire, and 28 maximum waits are already over half a 60 Hz NTSC
+        frame for a single chip. An overrunning frame is not a dropped frame —
+        the CIA fires again before the handler returns, so the 6510 stays inside
+        it and the kernal tail (jiffy clock, SCNKEY) stops for as long as the
+        stream keeps it up."""
+        budget = player.frame_cycle_budget()
+        cost = frame_cycle_cost(ops)
+        if cost <= budget:
+            return ops
+        fitted = fit_frame_to_budget(ops, budget)
+        if not self._warned_frame_budget:
+            self._warned_frame_budget = True
+            log.warning(
+                "AsidScene: a frame's %d ops cost %d C64 cycles but one consume tick "
+                "allows %d — scaling the 0x30 recipe's inter-write waits down to fit "
+                "(a frame longer than the tick period keeps the 6510 in the ASID IRQ)",
+                len(ops),
+                cost,
+                budget,
+            )
+        return fitted
 
     def _flush_to_sid(self) -> None:
         """Write the accumulated per-chip register shadows to the real SID(s)
@@ -684,6 +750,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 emu.clock = CLOCK_PAL if self._video_hz == 50.0 else CLOCK_NTSC
         self._frame_rate_hz = self._video_hz
         self._speed_request_hz = self._video_hz
+        self._applied_speed_hz = self._video_hz
+        self._last_retune_at = float("-inf")
+        self._warned_frame_budget = False
         self._recipe = None
         self._frame_regs.clear()
         self._frame_ctrl_first.clear()
@@ -694,6 +763,16 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._playing = False
         self._status_text = ""
         self._chip_type = None
+        # The shadows are the other half of the same carried-forward state, and
+        # the one the *coalesced* path puts on hardware: a flush writes the whole
+        # 25-byte image, so a lap-2 frame touching four registers would otherwise
+        # send lap 1's ADSR, pulse widths and filter settings along with them.
+        # Teardown silenced the chips, so zero is also what the hardware holds.
+        with self._reg_lock:
+            for shadow in self._sid_shadows:
+                shadow[:] = bytes(SID_REG_COUNT)
+            for emu in self._emulators:
+                emu.update_registers(bytes(SID_REG_COUNT))
         if self._player is not None:
             self._player.reset(1)
 
