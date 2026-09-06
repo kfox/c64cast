@@ -36,7 +36,7 @@ import time
 
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import SID, cpu_clock
-from c64cast.sid.sid_host_emu import SidHostEmu
+from c64cast.sid.sid_host_emu import HostEmuBudget, SidHostEmu, run_catchup_passes
 from c64cast.sid.sidemu import ACCUMULATOR_RANGE, SIDEmulator
 
 from .modulation import MusicModulation, TempoEstimator
@@ -57,8 +57,13 @@ class SidFeatureStream:
 
     # Catch-up safety: never run more than this many PLAY passes in a single
     # poll wakeup (mirrors WaveformScene._MAX_CATCHUP_TICKS — bounds a long
-    # scheduler stall to a fixed amount of host CPU rather than a stampede).
+    # scheduler stall to a fixed amount of host CPU rather than a stampede),
+    # and never spend more than this fraction of a poll period doing it. The
+    # count alone is not a time bound: the tune sets what a PLAY pass costs and
+    # the rate the batch is sized against, so an expensive tune could keep this
+    # thread permanently busy. See sid_host_emu.run_catchup_passes.
     _MAX_CATCHUP_TICKS = 120
+    _MAX_CATCHUP_PERIOD_FRACTION = 0.5
     # PLAY passes to probe a tune's multispeed rate (see _detect_play_rate_hz).
     _RATE_PROBE_TICKS = 64
 
@@ -95,6 +100,7 @@ class SidFeatureStream:
         # Wall-clock catch-up bookkeeping (see _poll).
         self._sid_start_time = 0.0
         self._ticks_done = 0
+        self._catchup_warned = False
 
         # Feature accumulators (reset in start()).
         self._tick_index = 0
@@ -145,6 +151,7 @@ class SidFeatureStream:
         self._prev_gate = [False] * SID.N_VOICES
         self._sid_start_time = time.time()
         self._ticks_done = 0
+        self._catchup_warned = False
 
     def stop(self) -> None:
         """Stop the poll thread (pure host-side cleanup; no U64 I/O)."""
@@ -162,11 +169,16 @@ class SidFeatureStream:
         Mirrors WaveformScene._detect_play_rate_hz."""
         if self._user_reg_poll_hz is not None:
             return float(self._user_reg_poll_hz)
-        probe = SidHostEmu(self._sid_bytes, song=self._song)
+        # _RATE_PROBE_TICKS bounds the pass count, not the seconds it takes;
+        # the probe's own budget bounds those, INIT included.
+        budget = HostEmuBudget()
+        probe = SidHostEmu(self._sid_bytes, song=self._song, budget=budget)
         rate = probe.play_rate_hz(self._video_hz, self._clock)
         for _ in range(self._RATE_PROBE_TICKS):
             if abs(rate - self._video_hz) > 0.5:
                 break  # multispeed Timer A latch seen — rate is known
+            if budget.expired():
+                break  # too expensive to emulate; the vsync default stands
             probe.tick_play()
             rate = probe.play_rate_hz(self._video_hz, self._clock)
         return float(rate)
@@ -184,12 +196,31 @@ class SidFeatureStream:
         if n <= 0:
             return  # ahead of / on schedule — let wall-clock catch up
         n = min(n, self._MAX_CATCHUP_TICKS)
-        for _ in range(n):
-            self._host_emu.tick_play()
-            regs = self._host_emu.regs()
-            retrig = self._host_emu.retriggers()
-            self._process_tick(regs, retrig)
-        self._ticks_done += n
+        emu = self._host_emu
+        done = run_catchup_passes(
+            emu,
+            lambda: self._process_tick(emu.regs(), emu.retriggers()),
+            ticks=n,
+            seconds=self._poll_dt * self._MAX_CATCHUP_PERIOD_FRACTION,
+        )
+        self._ticks_done += done
+        if done < n:
+            self._warn_catchup_behind(target - self._ticks_done)
+
+    def _warn_catchup_behind(self, shortfall: int) -> None:
+        """Say once that this tune's PLAY is too expensive to emulate in real
+        time. The features then track the audio loosely rather than exactly;
+        the condition lasts the whole stream, so the log must not."""
+        if self._catchup_warned:
+            return
+        self._catchup_warned = True
+        log.warning(
+            "music features: the host emulator can't keep up with this tune's PLAY "
+            "rate (%.1f Hz, %d ticks behind after a full catch-up batch) — reactive "
+            "visuals will lag the audio",
+            self._reg_poll_hz,
+            max(shortfall, 0),
+        )
 
     def _process_tick(self, regs: bytes, retrig: tuple[bool, bool, bool]) -> None:
         """Fold one PLAY tick's register snapshot into the emulator + feature

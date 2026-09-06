@@ -649,6 +649,8 @@ class SidFileAudioSource:
         SourceScene.setup converts that into an aborted scene so the playlist
         advances."""
         from c64cast.sid.sid_host_emu import (
+            ANALYSIS_BUDGET_S,
+            HostEmuBudget,
             _play_bank_for_footprints,
             ram_play_access_footprint,
             ram_write_footprint,
@@ -660,7 +662,12 @@ class SidFileAudioSource:
         # rendering into. The audio DAC ring ($4000-$5FFF, VIC bank 1) is NOT
         # used by a SID source, so it isn't reserved — the payload may freely
         # live there.
-        footprint = ram_write_footprint(self.sid_bytes, song=self.song)
+        # One budget across both footprint runs (and the INIT each one costs),
+        # so a tune whose PLAY is expensive can't spend a fresh wall-clock
+        # deadline per call. See sid_host_emu.ANALYSIS_BUDGET_S.
+        budget = HostEmuBudget()
+        write_sample = ram_write_footprint(self.sid_bytes, song=self.song, budget=budget)
+        footprint = write_sample.ram
         from c64cast.hw.c64 import SCREEN, VIC_BANK_0
 
         avoid = bytearray(footprint)
@@ -672,8 +679,17 @@ class SidFileAudioSource:
         # $36 (BASIC out) when this tune reads live song data from RAM under
         # BASIC ROM (e.g. Galway's Times of Lore at $B400); else None (let
         # run_sid_player's address heuristic decide). See _play_bank_for_footprints.
-        access_fp = ram_play_access_footprint(self.sid_bytes, song=self.song)
-        play_bank = _play_bank_for_footprints(footprint, access_fp)
+        access_sample = ram_play_access_footprint(self.sid_bytes, song=self.song, budget=budget)
+        play_bank = _play_bank_for_footprints(footprint, access_sample.ram)
+        if not (write_sample.complete and access_sample.complete):
+            log.warning(
+                "sid audio: %s song %d was only partially footprinted (%.1fs analysis "
+                "budget) — the player's RAM slot is placed from an incomplete sample "
+                "of what this tune touches",
+                os.path.basename(self._sid_file),
+                self.song,
+                ANALYSIS_BUDGET_S,
+            )
         log.info(
             "sid audio: %s #%d → run_sid_player (display %s, play_bank=%s)",
             os.path.basename(self._sid_file),

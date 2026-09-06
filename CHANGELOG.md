@@ -248,11 +248,46 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   opcodes it does not implement — so a PLAY built out of those spun for free,
   measured at 7-21 seconds per frame against a budget meant to be 4 ms. Calls
   are now bounded by interpreter steps as well, an unimplemented opcode ends
-  the pass with a warning instead of derailing the instruction stream, RAM
-  footprint runs stop at a wall-clock budget, and the SHIFT-cycle's subtune
-  search is capped the way scene setup's already was — a tune declaring 65535
-  subtunes used to walk all of them, one full emulation run each, on the render
-  thread.
+  the pass with a warning instead of derailing the instruction stream, and the
+  SHIFT-cycle's subtune search is capped the way scene setup's already was — a
+  tune declaring 65535 subtunes used to walk all of them, one full emulation
+  run each, on the render thread. A tune whose PLAY uses an undocumented
+  opcode still plays: those are a normal idiom in hand-written players and the
+  real 6510 runs them. What such a tune loses is the trust placed in the RAM
+  footprint sampled from it, not its place in the playlist.
+- **A tune's whole host-emulation analysis now shares one time budget, and a
+  cut-short measurement says so.** Scene setup emulates a SID once per
+  footprint and once per subtune — up to 18 runs — and each run drew its own
+  wall-clock deadline, so a 306-byte file declaring 16 subtunes blocked the
+  main thread for 43 seconds before the first note, and one SHIFT press
+  re-spent it with the audio already silenced. The runs now share a single
+  six-second budget, an INIT is bounded by the clock instead of only by an
+  emulated-cycle count, and a run that gives up early is reported as an
+  incomplete sample rather than returned as if it had finished. An incomplete
+  sample no longer pins one display bank for every subtune, and it is called
+  out in the log where the C64-side player's RAM slot is chosen from it.
+- **A slow tune no longer pegs a core to keep the oscilloscope in step.** The
+  poll thread catches the host emulator up to wall clock each wakeup, bounded
+  by a tick count that assumed each tick costs 0.2 ms. A PLAY that stays
+  legally inside the emulator's per-pass budget can cost 15.8 ms, making the
+  same batch 1.9 seconds long on a thread whose period is a sixtieth of a
+  second — and the tune sets the rate the batch is sized against. The batch
+  now also stops after half a poll period, leaving the rest to the renderer,
+  and says once that the scope is running behind the audio.
+- **A `.sid` header can no longer declare a SID chip on top of the REU.** The
+  PSID spec permits an extra chip anywhere in `$DE00-$DFE0`, and `$DF00` is
+  where c64cast drives its own REU: a 25-byte teardown write there lands on
+  the command registers, two of which the audio ring's interrupt handler reads
+  back mid-transfer as its destination pointer. Bases whose register window
+  reaches the REU are refused and the tune degrades to single-SID.
+- **A crafted `.sid` can no longer end the whole show with an emulator
+  crash.** The host emulator's memory refused an address past `$FFFF` instead
+  of wrapping the way a real 6510's address bus does, and six bytes of 6502
+  were enough to ask for one. The resulting error was not the kind the SID
+  pool pickers catch, so it unwound past "log it and try the next candidate"
+  and aborted the playlist. Addresses wrap, and anything else the interpreter
+  raises is now reported as a non-terminating pass — the same verdict a tune
+  that spins gets.
 - **SHIFT-cycling into a subtune that needs a full relaunch no longer leaves
   the oscilloscope on the previous song.** That path re-runs the player but
   never rebuilt the host emulator, so the scope drew song N-1's waveforms under

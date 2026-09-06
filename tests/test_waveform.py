@@ -7,6 +7,7 @@ playback)."""
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
+import itertools
 import os
 import random
 import shutil
@@ -17,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from _fakes import FakeAPI, bare_waveform_scene, make_psid, quiet_logging
 
+from c64cast.sid.sid_host_emu import FootprintSample, HostEmuBudget
 from c64cast.sid.sidemu import (
     ACCUMULATOR_RANGE,
     WAVE_NOISE,
@@ -195,10 +197,10 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
             fp = bytearray(65536)
             for a in per_song.get(song, ()):
                 fp[a] = 1
-            return fp
+            return FootprintSample(fp, True)
 
         with patch.object(wf, "ram_play_access_footprint", fake_fp):
-            return wf._choose_unified_display_layout(b"", lo, hi, len(per_song))
+            return wf._choose_unified_display_layout(b"", lo, hi, len(per_song), HostEmuBudget())
 
     def test_tol_like_union_pins_bank1(self):
         # Song 1 footprint clears bank 2; songs 2-11 read bank 2's $B400.
@@ -211,6 +213,25 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
             per_song[s] = (0xB400,)
         layout = self._run(per_song, 0x1D00, 0x5089)  # payload covers bank 0
         self.assertEqual(layout, (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1))
+
+    def test_incomplete_subtune_footprint_refuses_to_pin_a_bank(self):
+        # The pin SUPPRESSES the per-subtune re-check in _cycle_pick_candidate,
+        # so a union built from a prefix of one subtune's behavior would paint
+        # the bitmap over live song data for the whole tune. A partial sample
+        # therefore drops back to the per-subtune choice, which costs nothing
+        # but a possible bank move on a SHIFT.
+        import c64cast.sid.waveform as wf
+
+        def truncated_fp(_sid, song=0, **kw):
+            return FootprintSample(bytearray(65536), song != 2)
+
+        with (
+            patch.object(wf, "ram_play_access_footprint", truncated_fp),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            layout = wf._choose_unified_display_layout(b"", 0x1000, 0x1100, 4, HostEmuBudget())
+        self.assertIsNone(layout)
+        self.assertIn("only a partial sample", "\n".join(logs.output))
 
     def test_union_prefers_earliest_free_bank(self):
         # Nothing dirty + tiny payload → union leaves bank 0 free → bank 0
@@ -686,13 +707,19 @@ class WaveformSceneTest(unittest.TestCase):
         # setup() footprints the tune via the real ram_write_footprint, which
         # builds a real SidHostEmu and rejects these header-only synthetic
         # SIDs (play_addr=0). Stub it to an empty avoid bitmap.
-        fp = patch("c64cast.sid.waveform.ram_write_footprint", return_value=bytearray(65536))
+        fp = patch(
+            "c64cast.sid.waveform.ram_write_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.sid.waveform.ram_play_access_footprint", return_value=bytearray(65536))
+        afp = patch(
+            "c64cast.sid.waveform.ram_play_access_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(afp.stop)
         afp.start()
 
@@ -788,6 +815,24 @@ class WaveformSceneTest(unittest.TestCase):
         # Probe exhausts its budget looking for a Timer A write that never
         # comes (bounded by _RATE_PROBE_TICKS).
         self.assertEqual(emu.tick_play.call_count, WaveformScene._RATE_PROBE_TICKS)
+
+    def test_rate_probe_stops_when_its_own_budget_is_spent(self):
+        """_RATE_PROBE_TICKS bounds the pass count, not the seconds, and this
+        probe runs from __init__, setup() and every SHIFT. A tune whose PLAY is
+        too expensive to emulate falls back to the vsync default rather than
+        spending 64 passes of the worst case on the render thread."""
+        from c64cast.sid.waveform import WaveformScene
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
+        emu = self.mock_host_emu_cls.return_value
+        emu.reset_mock()
+        emu.play_rate_hz.side_effect = None
+        emu.play_rate_hz.return_value = 60.0
+        with patch("c64cast.sid.waveform.HostEmuBudget", lambda *a, **kw: HostEmuBudget(0.0)):
+            self.assertAlmostEqual(scene._detect_play_rate_hz(), 60.0)
+        emu.tick_play.assert_not_called()
 
     def test_default_target_fps_is_half_video_rate(self):
         """WaveformScene defaults to HALF the system video rate (30 NTSC /
@@ -1341,7 +1386,7 @@ class WaveformSceneTest(unittest.TestCase):
             with (
                 patch(
                     "c64cast.sid.waveform.ram_play_access_footprint",
-                    return_value=bytearray(65536),
+                    return_value=FootprintSample(bytearray(65536), True),
                 ) as fp,
                 patch(
                     "c64cast.sid.waveform._choose_display_layout",
@@ -1349,9 +1394,41 @@ class WaveformSceneTest(unittest.TestCase):
                 ),
                 self.assertLogs("c64cast.sid.waveform", level="INFO"),
             ):
-                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(n)
+                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
+                    n, HostEmuBudget()
+                )
             self.assertEqual(fp.call_count, WaveformScene._MAX_CYCLE_CANDIDATES)
             # All rejected: SHIFT still changes the song, keeping the bank.
+            self.assertEqual(new_song, 2)
+            self.assertIsNone(layout)
+            self.assertIsNone(access_fp)
+        finally:
+            scene.teardown()
+
+    def test_cycle_candidate_walk_stops_when_the_shared_budget_is_spent(self):
+        # _MAX_CYCLE_CANDIDATES bounds the candidate COUNT, and each rejected
+        # candidate used to draw its own wall-clock deadline — 16 of them, on
+        # the render thread, with the audio already silenced. One budget across
+        # the walk is what actually bounds the freeze; when it is gone the walk
+        # takes the first candidate, which SHIFT already handles.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            scene._unified_layout = None
+            spent = HostEmuBudget(0.0)
+            with (
+                patch(
+                    "c64cast.sid.waveform.ram_play_access_footprint",
+                    return_value=FootprintSample(bytearray(65536), True),
+                ) as fp,
+                self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+            ):
+                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(65535, spent)
+            fp.assert_not_called()
+            self.assertIn("candidate search gave up", "\n".join(logs.output))
             self.assertEqual(new_song, 2)
             self.assertIsNone(layout)
             self.assertIsNone(access_fp)
@@ -1766,8 +1843,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
 
     def test_catches_up_to_wallclock_target(self):
         scene = self._scene()
-        # 5 frames of elapsed time at 60 Hz → 5 PLAY ticks expected.
-        with patch("c64cast.sid.waveform.time.time") as now:
+        # 5 frames of elapsed time at 60 Hz → 5 PLAY ticks expected. Monotonic
+        # is frozen so the batch's time bound can't race the tick count.
+        with (
+            patch("c64cast.sid.waveform.time.time") as now,
+            patch("c64cast.sid.sid_host_emu.time.monotonic", return_value=0.0),
+        ):
             scene._sid_start_time = 1000.0
             now.return_value = 1000.0 + 5 / 60.0
             scene._poll_regs()
@@ -1792,13 +1873,52 @@ class WaveformPollCatchupTest(unittest.TestCase):
         scene = self._scene()
         # A long stall: thousands of frames behind. Catch-up must be bounded
         # to _MAX_CATCHUP_TICKS in a single wakeup, then resync over later
-        # wakeups.
-        with patch("c64cast.sid.waveform.time.time") as now:
+        # wakeups. The batch's other bound is wall clock, so freeze it — this
+        # test is about the count, and a real clock would make it a race
+        # between 120 stubbed ticks and half a poll period.
+        with (
+            patch("c64cast.sid.waveform.time.time") as now,
+            patch("c64cast.sid.sid_host_emu.time.monotonic", return_value=0.0),
+        ):
             scene._sid_start_time = 1000.0
             now.return_value = 1000.0 + 100.0  # 6000 frames @ 60 Hz
             scene._poll_regs()
         self.assertEqual(scene._host_emu.tick_play.call_count, scene._MAX_CATCHUP_TICKS)
         self.assertEqual(scene._ticks_done, scene._MAX_CATCHUP_TICKS)
+
+    def test_catchup_stops_at_half_a_poll_period_when_play_is_expensive(self):
+        # _MAX_CATCHUP_TICKS is a COUNT, and the tune sets what a tick costs:
+        # a PLAY that stays legally under the host emulator's per-pass cap
+        # measured 15.8 ms, making the 120-tick batch 1.9 s on a thread whose
+        # period is 1/60 s — every wakeup, for the scene's whole duration.
+        scene = self._scene()
+        clock = itertools.count(0.0, 0.005)  # 5 ms of host time per reading
+        with (
+            patch("c64cast.sid.waveform.time.time") as now,
+            patch("c64cast.sid.waveform.time.monotonic", side_effect=clock),
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            scene._sid_start_time = 1000.0
+            now.return_value = 1000.0 + 100.0  # 6000 frames behind
+            scene._poll_regs()
+        # Half of a 1/60 s period is 8.3 ms, so the second tick ends the batch
+        # — far short of the 120 the count alone would have allowed.
+        self.assertEqual(scene._host_emu.tick_play.call_count, 2)
+        self.assertEqual(scene._ticks_done, 2)
+        self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_catchup_lag_is_reported_once_not_per_wakeup(self):
+        scene = self._scene()
+        with (
+            patch("c64cast.sid.waveform.time.time") as now,
+            patch("c64cast.sid.waveform.time.monotonic", side_effect=itertools.count(0.0, 0.005)),
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            scene._sid_start_time = 1000.0
+            now.return_value = 1000.0 + 100.0
+            for _ in range(4):
+                scene._poll_regs()
+        self.assertEqual(len(logs.output), 1, "the condition lasts all scene; the log must not")
 
 
 # ---------------------------------------------------------------------------
@@ -1822,13 +1942,19 @@ class WaveformPoolPickTest(unittest.TestCase):
         # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
         self.mock_host_emu_cls.return_value.last_routine_capped = False
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 60.0
-        fp = patch("c64cast.sid.waveform.ram_write_footprint", return_value=bytearray(65536))
+        fp = patch(
+            "c64cast.sid.waveform.ram_write_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.sid.waveform.ram_play_access_footprint", return_value=bytearray(65536))
+        afp = patch(
+            "c64cast.sid.waveform.ram_play_access_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(afp.stop)
         afp.start()
         self.tmpdir = tempfile.mkdtemp()
@@ -2145,13 +2271,19 @@ class WaveformVizKnobsTest(unittest.TestCase):
         # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
         mock_host.return_value.last_routine_capped = False
         mock_host.return_value.play_rate_hz.return_value = 60.0
-        fp = patch("c64cast.sid.waveform.ram_write_footprint", return_value=bytearray(65536))
+        fp = patch(
+            "c64cast.sid.waveform.ram_write_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(fp.stop)
         fp.start()
         # setup() also footprints via ram_play_access_footprint for the
         # display-bank choice; stub it too (same reason as ram_write_footprint
         # above — these header-only synthetic SIDs have play_addr=0).
-        afp = patch("c64cast.sid.waveform.ram_play_access_footprint", return_value=bytearray(65536))
+        afp = patch(
+            "c64cast.sid.waveform.ram_play_access_footprint",
+            return_value=FootprintSample(bytearray(65536), True),
+        )
         self.addCleanup(afp.stop)
         afp.start()
 

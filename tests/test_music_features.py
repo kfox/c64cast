@@ -6,14 +6,16 @@ thread, no real chip. A small start()/stop() smoke covers the real poll path."""
 
 from __future__ import annotations
 
+import itertools
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
-from _fakes import make_psid
+from _fakes import make_psid, quiet_logging
 
 from c64cast.hw.c64 import SID
 from c64cast.scenes.modulation import MusicModulation
-from c64cast.scenes.music_features import SidFeatureStream
+from c64cast.scenes.music_features import HostEmuBudget, SidFeatureStream
 
 
 def _regs(*, gate: bool, freq: int = 0x2000, voice: int = 0, sustain: int = 0xF) -> bytes:
@@ -142,9 +144,77 @@ class FeatureMathTest(unittest.TestCase):
         self.assertAlmostEqual(s._tempo.bpm, 120.0, delta=1.0)  # estimate unchanged
 
 
+class CatchupBoundTest(unittest.TestCase):
+    """The poll thread advances the host emulator to wall clock each wakeup.
+    _MAX_CATCHUP_TICKS bounds the pass COUNT, and the tune sets what a pass
+    costs and the rate the batch is sized against — so a count alone let an
+    expensive tune keep this thread permanently busy. Mirrors the same bound
+    in WaveformScene._poll_regs; both go through
+    sid_host_emu.run_catchup_passes."""
+
+    def setUp(self):
+        self.sid = make_psid()
+
+    def test_catchup_stops_at_half_a_poll_period(self):
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        clock = itertools.count(0.0, 0.005)  # 5 ms of host time per reading
+        with (
+            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
+            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=clock),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s._poll_loop()
+        # Half of the poll period is well under 10 ms, so the second pass ends
+        # the batch — far short of the 120 the count alone would have allowed.
+        self.assertEqual(s._host_emu.tick_play.call_count, 2)
+        self.assertEqual(s._ticks_done, 2)
+        self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_lag_is_reported_once_not_per_wakeup(self):
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        with (
+            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
+            patch(
+                "c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.005)
+            ),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            for _ in range(4):
+                s._poll_loop()
+        self.assertEqual(len(logs.output), 1)
+
+    def test_rate_probe_stops_when_its_budget_is_spent(self):
+        # The probe runs up to _RATE_PROBE_TICKS passes on a throwaway
+        # emulator; the count is not a time bound, so it gets a budget too.
+        s = SidFeatureStream(self.sid, song=0, system="NTSC")
+        with (
+            patch(
+                "c64cast.scenes.music_features.HostEmuBudget", lambda *a, **kw: HostEmuBudget(0.0)
+            ),
+            patch("c64cast.scenes.music_features.SidHostEmu") as cls,
+        ):
+            cls.return_value.play_rate_hz.return_value = 60.0
+            self.assertAlmostEqual(s._detect_play_rate_hz(), 60.0)
+        cls.return_value.tick_play.assert_not_called()
+
+
 class StreamLifecycleTest(unittest.TestCase):
     def test_start_stop_smoke_produces_features(self):
         s = SidFeatureStream(make_psid(), song=0, system="NTSC")
+        # The poll thread warns if a catch-up batch runs out of time; on a
+        # loaded worker that is possible and incidental here. CatchupBoundTest
+        # is where that warning is asserted.
+        self.enterContext(quiet_logging())
         s.start()
         try:
             # Give the poll thread a moment to run a few PLAY ticks.
