@@ -52,6 +52,16 @@ def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
     return (asid.ASID_MANUFACTURER_ID, asid.CMD_REG, *mask, *msb, *data)
 
 
+def _stub_port(scene):
+    """Patch `_open_port` with a stub MIDI port that polls empty, so setup()
+    can run its real lifecycle without MIDI hardware."""
+    port = mock.MagicMock()
+    port.poll.return_value = None
+    return mock.patch.object(
+        scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
+    )
+
+
 @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
 class AsidSceneTest(unittest.TestCase):
     def _make(self, **kwargs):
@@ -166,13 +176,16 @@ class AsidSceneTest(unittest.TestCase):
         # The scope ran in hires ($18 = bitmap at bank+$2000). Teardown claims
         # to hand the next scene the char-mode default, so it must write the
         # value every char-mode engage in the tree writes, not its own.
-        from c64cast.sid.voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP
-
         scene, api = self._make()
         self._bring_up(scene)
-        self.assertEqual(api.memories["D018"], f"{D018_HIRES_BITMAP:02X}")
+        self.assertEqual(api.memories["D018"], "18")
         scene.teardown()
-        self.assertEqual(api.memories["D018"], f"{D018_CHAR_DEFAULT:02X}")
+        # The literal is the point: comparing against D018_CHAR_DEFAULT compares
+        # teardown's write to the constant it wrote it from, which stayed green
+        # with the constant set to the hires $18. $14 is the char-mode byte every
+        # char-mode engage in the tree writes (matrix at bank+$0400, char gen at
+        # +$1000, bitmap bit clear); test_voice_scope pins the constant to it.
+        self.assertEqual(api.memories["D018"], "14")
 
     # ---- multi-SID ----------------------------------------------------------
     def _make_multi(self, sockets=None, **kwargs):
@@ -271,7 +284,7 @@ class AsidSceneTest(unittest.TestCase):
             "Auto Address Mirroring": "Enabled",
         }
         api.config_store["Audio Mixer"] = {"Pan UltiSID 1": "Left 3", "Vol UltiSID 1": "-6 dB"}
-        with self._stub_port(scene), quiet_logging():
+        with _stub_port(scene), quiet_logging():
             scene.setup()
             scene._reconfigure_chips(2)
         saved = scene._sid_session.saved or {}
@@ -338,7 +351,7 @@ class AsidSceneTest(unittest.TestCase):
         the lap-1 teardown just restored, which means the multi-SID shape has
         to be back to single-chip when setup() returns."""
         scene, api = self._make_multi()
-        with self._stub_port(scene), quiet_logging():
+        with _stub_port(scene), quiet_logging():
             scene.setup()
             scene._handle_sysex(self._multi_msg(1, {0: 0x22}))
             scene.process_frame(0.0)
@@ -359,20 +372,11 @@ class AsidSceneTest(unittest.TestCase):
             with quiet_logging():
                 scene.teardown()
 
-    def _stub_port(self, scene):
-        """Patch `_open_port` with a stub MIDI port that polls empty, so setup()
-        can run its real lifecycle without MIDI hardware."""
-        port = mock.MagicMock()
-        port.poll.return_value = None
-        return mock.patch.object(
-            scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
-        )
-
     def test_setup_opens_port_and_starts_threads(self):
         scene, api = self._make()
         # Avoid touching real MIDI hardware: a stub port that never yields a
         # message keeps the reader loop alive so is_running() is observable.
-        with self._stub_port(scene):
+        with _stub_port(scene):
             scene.setup()
         try:
             self.assertGreaterEqual(api.cache_invalidations, 1)
@@ -630,6 +634,75 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         scene, _ = self._make()
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x01, 0x00, 0x00, 0x00))
         self.assertEqual(scene._recipe, [(1, 0), (0, 0)])
+
+    def test_teardown_hands_the_irq_back_without_trusting_the_player(self):
+        """The scene owns the promise that the next scene gets a quiescent C64.
+        It must not delegate that to the player's own bookkeeping: the player's
+        writer thread can outlive its bounded join, and an orphaned ASID handler
+        rewrites the whole REU control block ($DF02-$DF08 + a $91 fetch-exec) at
+        up to 960 Hz — which the next scene's audio pump reads back as its live
+        write head."""
+        from c64cast.hw.c64 import KERNAL, kernal_cia1_latch
+        from c64cast.sid import asid_player as ap
+
+        scene, api = self._make()
+        assert scene._player is not None
+        # A player that restores nothing, i.e. one whose writer outlived it.
+        scene._player.stop = lambda: None  # type: ignore[method-assign]
+        scene._apply_vic_hires_bank()
+        scene._alloc_scope_buffers()
+        scene.teardown()
+        self.assertEqual(
+            api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        )
+        latch = kernal_cia1_latch("NTSC")
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"],
+            f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}",
+        )
+
+    def test_reactivation_forgets_the_previous_streams_cadence(self):
+        """Playlists reuse scene instances, and setup() hands `_frame_rate_hz`
+        straight to the player, which programs CIA #1 from it before a single
+        byte of the new stream arrives. Lap 1's host must not get to pick lap
+        2's IRQ rate."""
+        from c64cast.sid import asid_player as ap
+
+        scene, api = self._make()
+        with _stub_port(scene), quiet_logging():
+            # The hostile 0x31 warns; its own test asserts that message.
+            scene.setup()
+            # frame_delta_us = 1 → 1 MHz, clamped to the band ceiling.
+            scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01, 0x01, 0x00, 0x00))
+            self.assertAlmostEqual(scene._frame_rate_hz, ap.MAX_FRAME_RATE_HZ, delta=1.0)
+            scene.teardown()
+            scene.setup()
+        try:
+            self.assertAlmostEqual(scene._frame_rate_hz, 60.0, delta=0.1)
+            expected = ap.cia1_latch_for_rate(60.0, "NTSC")
+            self.assertEqual(
+                api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"],
+                f"{expected & 0xFF:02X}{(expected >> 8) & 0xFF:02X}",
+            )
+        finally:
+            with quiet_logging():
+                scene.teardown()
+
+    def test_reactivation_puts_the_ring_player_back_to_one_chip(self):
+        # A stale chip count is what lets a later remap SHRINK the ring — the
+        # reinit guard only compares against the count the player already holds.
+        scene, _ = self._make()
+        assert scene._player is not None
+        # Set the layout directly, so the precondition holds whatever reset()
+        # does — seeding it through the method under test would let a reset()
+        # that does nothing at all pass this vacuously.
+        scene._player._set_layout(4)  # what a multi-SID lap 1 leaves behind
+        with _stub_port(scene):
+            scene.setup()
+        try:
+            self.assertEqual(scene._player.n_chips, 1)
+        finally:
+            scene.teardown()
 
     def test_wants_reu_flags_buffered_asid(self):
         from c64cast.app.config import Config, SceneCfg

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 from _fakes import FakeAPI
@@ -28,6 +29,8 @@ from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE, Voice
 from c64cast.sid.voice_scope import (
     BITMAP_H,
     BITMAP_W,
+    D018_CHAR_DEFAULT,
+    D018_HIRES_BITMAP,
     META_ROW,
     SCREEN_W_CHARS,
     TIME_BASE_AUTO,
@@ -402,6 +405,33 @@ class PaintInfoRowsTest(unittest.TestCase):
             r._build_title_line()
         with self.assertRaises(NotImplementedError):
             r._build_meta_line()
+
+
+class D018CharDefaultTest(unittest.TestCase):
+    """`D018_CHAR_DEFAULT` is what all three scope scenes hand the next scene at
+    teardown, and its whole claim is that it equals what a char mode engages.
+
+    Each scene's teardown test asserts the byte it *wrote*, so on its own it can
+    only ever compare the constant to itself: setting `D018_CHAR_DEFAULT = 0x18`
+    — the exact regression the CHANGELOG records as fixed — left all three green.
+    This is the independent half: it drives a real char-mode engage from another
+    module and compares against what the VIC is actually left holding there.
+    """
+
+    def test_matches_what_a_char_mode_engage_writes(self):
+        from c64cast.hw.backend import C64Backend
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        api = FakeAPI()
+        BlankDisplayMode().setup(cast(C64Backend, api))
+        self.assertEqual(api.memories["D018"], f"{D018_CHAR_DEFAULT:02X}")
+
+    def test_is_not_the_scope_s_own_bitmap_layout(self):
+        # The teardown these constants serve exists precisely to move the matrix
+        # pointer OFF the scope's layout, so equal values would make it a no-op.
+        self.assertNotEqual(D018_CHAR_DEFAULT, D018_HIRES_BITMAP)
+        # $D018 bit 3 selects the bitmap at bank+$2000; a char mode has it clear.
+        self.assertEqual(D018_CHAR_DEFAULT & 0x08, 0)
 
 
 if __name__ == "__main__":

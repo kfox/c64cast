@@ -70,6 +70,38 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **An ASID stream can no longer keep the C64's IRQ rate after its scene ends.**
+  The buffered ring player programs CIA #1 Timer A the moment it installs but
+  hooks `$0314` only once a real-frame prebuffer arrives — and teardown restored
+  the kernal latch only when it had reached that second step. A stream that sent
+  one `0x31` speed message and no register frames at all therefore left Timer A
+  at whatever rate it asked for: at the band ceiling that is a jiffy clock 16x
+  fast and a third of the machine's cycles spent in `$EA31`, for every scene
+  after it, until a power cycle. Teardown now restores the vector and the latch
+  whenever the player touched the machine at all, and the scene repeats the
+  restore itself rather than trusting the player's bookkeeping.
+- **A writer thread that outlived its shutdown can no longer arm the player
+  behind teardown's back.** The join that stops it is deliberately bounded, and
+  the arm sequence blocks in DMA before it swaps `$0314`, so an abandoned writer
+  could finish afterwards and hook the vector to `$C000` with the SID already
+  silenced and the next scene running — an orphaned handler rewriting the whole
+  REU control block at up to 960 Hz, into the register pair the next scene's
+  audio pump reads back as its write head. The arm and the disarm are now
+  mutually exclusive, and the arm refuses outright once shutdown has begun.
+- **A chip-count change is refused, rather than half-applied, while a writer is
+  still blocked on the link.** Bring-up and re-init both assign the ring's slot
+  size; doing that under a live writer sent the rest of its blocked burst out at
+  the new stride, so slots landed across slot boundaries and the C64-side player
+  decoded the op stream shifted — storing attacker-supplied bytes at
+  attacker-supplied addresses anywhere in memory. Both now leave the player down
+  instead, and say so; the next scene activation brings it up.
+- **A second lap of an ASID scene no longer inherits the previous stream's
+  cadence, chip count, or queued frames.** Playlists reuse scene instances, and
+  setup hands the stored frame rate straight to the player — so lap 1's host
+  chose the CIA rate lap 2 came up at, before a byte of the new stream arrived.
+  The wire-owned state is reset on activation, including the PAL/NTSC standard a
+  `0x31` may have switched (a hardware default restored for the wrong standard
+  leaves the jiffy clock ~3.8% off).
 - **A remote ASID frame no longer leaves the U64's SID address map rewritten
   for good.** The scene snapshots the SID-address config before it remaps, and
   restores it on teardown — but the snapshot is deliberately first-call-wins,

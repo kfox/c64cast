@@ -13,10 +13,12 @@ Tier-2 smoke run against an ASID host, not here.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _fakes import FakeAPI  # noqa: E402
@@ -313,6 +315,29 @@ class RingMathTest(unittest.TestCase):
             len(slots) * p.slot_size,
         )
 
+    def test_write_slots_keeps_one_stride_even_if_the_layout_moves_mid_call(self):
+        # A payload list and the stride it was built for must never disagree
+        # half way through a call: re-reading self.slot_size per burst put
+        # 912-byte slots at the 128-byte stride, so the 6502 read n_ops from a
+        # mid-op byte and executed the op stream shifted — STA anywhere in the
+        # C64's 64K, from the value bytes of attacker-supplied SID writes.
+        p, fake = self._player(n_chips=8)
+        slot_size = p.slot_size
+        per_burst = ap._MAX_DMA_BURST_BYTES // slot_size
+        slots = [bytes(slot_size)] * (per_burst + 5)
+        direct = fake.reu_write
+
+        def shrink_then_write(offset, data):
+            p.slot_size = ap.slot_size_for_chips(1)  # a reinit landing mid-burst
+            direct(offset, data)
+
+        fake.reu_write = shrink_then_write
+        p._write_slots(0, slots)
+        self.assertEqual(
+            [off for off, _payload in fake.socket_dma.reuwrites],
+            [ap.RING_BASE, ap.RING_BASE + per_burst * slot_size],
+        )
+
 
 class ArmGateTest(unittest.TestCase):
     """The lazy-arm prebuffer gate — "Symptom 1" in docs/caveats.md. Arming
@@ -362,6 +387,20 @@ class ArmGateTest(unittest.TestCase):
         self.assertFalse(p._armed)
         self.assertNotIn("0314", fake.regs)
         self.assertIn("discarded 3 prebuffer slot(s)", caught.output[0])
+
+    def test_does_not_arm_once_teardown_has_asked_the_writer_to_stop(self):
+        # _try_arm does several blocking DMA calls before it hooks $0314, which
+        # is exactly how it outlives _teardown_player's bounded join. If it
+        # armed anyway, the C64 would run the ASID IRQ into the next scene
+        # against a ring nobody feeds — and $C000 is where a later scene's
+        # DAC/NMI handler lands.
+        p, fake = self._unstarted(4)
+        for _ in range(4):
+            p.push_frame(ap.hold_slot(p.slot_size))
+        p._writer.stop()  # the first thing _teardown_player does
+        self.assertFalse(p._try_arm())
+        self.assertFalse(p._armed)
+        self.assertNotIn("0314", fake.regs)
 
 
 class BringUpTeardownTest(unittest.TestCase):
@@ -414,6 +453,143 @@ class BringUpTeardownTest(unittest.TestCase):
                     _packed_latch(kernal_cia1_latch(system)),
                 )
                 self.assertFalse(p._armed)
+
+    def test_stop_restores_the_kernal_latch_even_when_it_never_armed(self):
+        # start() programs CIA #1 immediately; the $0314 swap waits for a real
+        # frame. A sender controls that absolutely — one 0x31 and no 0x4E at
+        # all — so restoring on _armed left Timer A at the wire's rate for every
+        # scene after: at 960 Hz the machine burns a third of its cycles in
+        # $EA31 and the jiffy clock runs 16x fast until a power cycle.
+        from c64cast.hw.c64 import KERNAL, kernal_cia1_latch
+
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        p.set_frame_rate(960.0)
+        self.assertFalse(p._armed)
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"],
+            _packed_latch(ap.cia1_latch_for_rate(960.0, "NTSC")),
+        )
+        p.stop()
+        self.assertEqual(
+            api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
+        self.assertEqual(
+            api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        )
+
+    def test_a_writer_that_outlives_the_join_cannot_arm_behind_teardown(self):
+        # PollThread.stop() is documented to return with the worker still alive
+        # after a timed-out join, and _try_arm blocks in DMA before it hooks
+        # $0314. The abandoned writer used to finish and hook the vector AFTER
+        # the scene had silenced the SID and moved on — leaving an ASID IRQ
+        # handler that rewrites the whole REU control block at up to 960 Hz into
+        # the next scene's audio pump.
+        from c64cast.hw.c64 import KERNAL
+
+        api, fake = _fake_backend()
+        p = ap.AsidRingPlayer(api, system="NTSC", n_chips=1, prebuffer_seconds=0.0)
+        p.start(60.0)  # empty queue → installed but not armed
+        # Shorten the join rather than sleeping past the real 1 s one; the code
+        # path (join times out with the worker still inside a DMA call) is the
+        # same one, and BLOCK_S below keeps it blocked well past the timeout.
+        join_s, block_s = 0.05, 0.25
+        p._writer._join_timeout = join_s
+        inside = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        direct = fake.reu_write
+
+        def blocking_reu_write(offset, data):
+            inside.set()
+            release.wait(5.0)
+            direct(offset, data)
+
+        fake.reu_write = blocking_reu_write
+        p.push_frame(ap.hold_slot(p.slot_size))  # the writer picks this up and blocks
+        self.assertTrue(inside.wait(5.0), "the writer never reached the arm transfer")
+        threading.Timer(block_s, release.set).start()
+        # The timed-out join is the precondition, so assert it rather than
+        # assuming it (and keep PollThread's warning out of the test output).
+        with self.assertLogs("c64cast._pollthread", "WARNING") as caught:
+            p.stop()  # the writer is still inside the arm transfer
+        self.assertIn("did not stop", caught.output[0])
+        kernal = (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        self.assertEqual(fake.regs["0314"], kernal)
+        deadline = time.monotonic() + 5.0
+        while p._writer.is_running() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(p._writer.is_running(), "the writer never exited")
+        self.assertFalse(p._armed)
+        self.assertEqual(fake.regs["0314"], kernal, "the abandoned writer hooked $0314")
+
+    def test_start_refuses_to_install_over_a_writer_that_outlived_its_join(self):
+        # PollThread.start() declines a duplicate and therefore never clears the
+        # stop event, so the abandoned worker exits on its next check and
+        # nothing spawns a replacement: the player installs, never arms, and the
+        # scene is silent for its whole run — while the stranded worker keeps
+        # REUWRITEing at the old slot size into a ring this install just
+        # re-described.
+        p, api = self._player(prebuffer_seconds=0.0)
+        with mock.patch.object(p._writer, "is_running", return_value=True):
+            with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
+                p.start(60.0)
+        self.assertIn("refusing to install", caught.output[0])
+        self.assertFalse(p._installed)
+        self.assertEqual(api.memories, {})
+        self.assertEqual(api.mem_files, {})
+        self.assertEqual(api.socket_dma.reuwrites, [])
+
+    def test_reinit_refuses_to_move_the_layout_under_a_live_writer(self):
+        # _write_slots derives its ring offsets from slot_size, so assigning a
+        # new one while a writer is blocked mid-burst puts the rest of that
+        # burst's old-sized payloads at the new stride. One 0x5F SysEx reaches
+        # reinit, so the precondition is checked rather than assumed.
+        p, _ = self._player(prebuffer_seconds=0.0)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            with mock.patch.object(p._writer, "is_running", return_value=True):
+                with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
+                    p.reinit(8)
+            self.assertIn("refusing to re-init", caught.output[0])
+            self.assertEqual(p.n_chips, 1)
+            self.assertEqual(p.slot_size, ap.slot_size_for_chips(1))
+        finally:
+            p.stop()
+
+    def test_reset_returns_a_stopped_player_to_a_fresh_layout(self):
+        # Playlists reuse scene instances. Lap 2 starting on lap 1's chip count
+        # is what lets a later remap SHRINK the ring (reinit's guard only
+        # compares against the count it already holds), and lap 1's queued
+        # frames would otherwise become lap 2's prebuffer.
+        p, _ = self._player(prebuffer_seconds=0.0)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        p.reinit(8)
+        p.stop()
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.reset()
+        self.assertEqual(p.n_chips, 1)
+        self.assertEqual(p.slot_size, ap.slot_size_for_chips(1))
+        self.assertEqual(p._q.qsize(), 0)
+        self.assertEqual(p._write_pos, 0)
+
+    def test_take_slot_is_the_only_gate_and_it_drops_a_stale_size(self):
+        # Two of the three slot consumers filtered and the third did not: the
+        # blocking get in the writer's pad branch appended whatever it got. All
+        # three go through _take_slot now, so the check cannot be forgotten at a
+        # fourth site.
+        p, _ = self._player()
+        stale = bytes(ap.slot_size_for_chips(3))
+        good = bytes([1]) + bytes(p.slot_size - 1)
+        p.push_frame(stale)
+        p.push_frame(good)
+        self.assertEqual(p._take_slot(), good)
+        self.assertEqual(p._stale_slots, 1)
+        p.push_frame(stale)
+        self.assertIsNone(p._take_slot(timeout=0.01))
+        self.assertEqual(p._stale_slots, 2)
 
     def test_set_frame_rate_reanchors_without_losing_alignment(self):
         p, _ = self._player(prebuffer_seconds=0.0)

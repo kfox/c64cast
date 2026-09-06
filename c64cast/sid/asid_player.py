@@ -126,6 +126,11 @@ _SLOT_ALIGN = 16  # round slot size up to this so single-SID → 128 (plan pins 
 DEFAULT_LEAD_SLOTS_SECONDS = 0.30  # keep the write head this far ahead of read
 DEFAULT_PREBUFFER_SECONDS = 0.30  # seed the full lead before arming (max cushion)
 _QUEUE_MAX_SLOTS = 4096
+# How long teardown waits for the arm lock before restoring the C64 anyway. The
+# lock is only ever held across a bounded run of DMA writes, so overshooting it
+# means the link is wedged — and a wedged link is exactly when the kernal
+# restore matters most.
+_TEARDOWN_LOCK_TIMEOUT_S = 2.0
 # Cap one reu_write burst, so a 256-slot prebuffer or catch-up run at the 8-SID
 # slot size doesn't become a quarter-megabyte single transfer. Mirrors the same
 # cap in _prefill_holds. Well above the ~2.4 KB below which payload is free on
@@ -496,6 +501,29 @@ def tick_divider_for_rate(rate_hz: float) -> int:
     return max(1, min(255, round(rate_hz / 60.0)))
 
 
+def restore_kernal_irq(api: C64Backend, system: str) -> None:
+    """Hand the C64's IRQ back to the kernal: ``$0314/$0315`` → ``$EA31`` and
+    CIA #1 Timer A → this system's kernal latch.
+
+    Idempotent, best-effort (never raises), and both halves matter on their own,
+    which is why they live in one function rather than at each caller's
+    discretion. Restoring only the vector leaves the jiffy clock, SCNKEY and
+    every kernal timing service running at whatever cadence the ASID stream
+    asked for — a spec-legal 960 Hz ``0x31`` burns a third of the machine's
+    cycles in ``$EA31`` and runs the jiffy clock 16× fast for every scene that
+    follows, until a power cycle. Restoring only the latch leaves the kernal IRQ
+    vectored into a ring player nobody feeds."""
+    try:
+        api.write_regs(
+            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+        )
+        latch = kernal_cia1_latch(system)
+        api.write_memory(f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}")
+        api.flush()
+    except Exception as e:  # best-effort; teardown must not raise
+        log.debug("asid_player: kernal IRQ restore failed: %s", e)
+
+
 # --------------------------------------------------------------------------
 # Producer.
 # --------------------------------------------------------------------------
@@ -511,6 +539,7 @@ class AsidRingPlayer:
         player.set_frame_rate(hz)     # on a 0x31 change (retunes CIA + read head)
         player.reinit(n_chips)        # on a chip-count change (new slot size)
         player.stop()                 # disarm IRQ, restore CIA/$0314, join writer
+        player.reset()                # back to a fresh layout for the next lap
     """
 
     def __init__(
@@ -544,6 +573,14 @@ class AsidRingPlayer:
             self._writer_loop, name="asid-ring", manual=True, join_timeout=1.0
         )
         self._armed = False
+        # Set the moment start() begins touching the C64 and cleared by the
+        # teardown that puts it back. Distinct from _armed on purpose: start()
+        # programs the CIA #1 latch immediately but hooks $0314 only once a
+        # prebuffer arrives, so a stream that never sends a frame (one 0x31 and
+        # no 0x4E at all) leaves the machine running the KERNAL IRQ at the
+        # sender's rate with _armed still False. Teardown restores on this flag,
+        # not on _armed, so the wire can never keep the CIA.
+        self._installed = False
         self._lock = threading.Lock()  # guards rate/anchor accounting
 
         # Read-head accounting (cumulative consumed-slot estimate, drift-free).
@@ -559,6 +596,7 @@ class AsidRingPlayer:
         self._real_written = 0
         self._pushed = 0
         self._dropped_full = 0
+        self._stale_slots = 0  # dropped by _take_slot: sized for a previous layout
         # None = never sampled. A plain -1 sentinel collided with a genuinely
         # negative lead — the pathological state this telemetry exists to catch
         # — so the minimum tracked the current value and stop()'s guard then
@@ -589,7 +627,27 @@ class AsidRingPlayer:
         before the ASID host starts streaming, and real frames would land in
         already-consumed ring slots (heard as unbroken holds). Arming when the
         prebuffer is ready makes ``gate_time`` coincide with data actually
-        flowing, so the write head stays a full ``lead`` ahead."""
+        flowing, so the write head stays a full ``lead`` ahead.
+
+        **Refuses to bring up over a live writer.** A previous writer still
+        blocked in ``reu_write`` past its join timeout would otherwise be
+        stranded: ``PollThread.start()`` declines the duplicate, so it never
+        clears the stop event, the abandoned worker exits on its next check and
+        nothing spawns a replacement — the player would install, never arm, and
+        stay silent for the whole run while claiming it was padding holds. Worse,
+        that worker keeps REUWRITEing at the *old* slot size into a ring this
+        install just re-described at the new one. Staying down is the honest and
+        safe outcome; the next activation brings it up once the worker is gone."""
+        if self._writer.is_running():
+            log.warning(
+                "asid_player: the previous writer thread has not exited (blocked on the "
+                "DMA link); refusing to install a second player over it — the buffered "
+                "path stays down for this activation"
+            )
+            return
+        # From here on the C64's CIA #1 latch is ours, so teardown owes it a
+        # restore even if one of the install writes below raises.
+        self._installed = True
         frame_rate_hz = clamp_frame_rate(frame_rate_hz)
         self._latch = cia1_latch_for_rate(frame_rate_hz, self.system)
         self._rate = actual_rate_for_latch(self._latch, self.system)
@@ -626,14 +684,6 @@ class AsidRingPlayer:
         )
         self.api.flush()
 
-        if self._writer.is_running():
-            # PollThread refuses the duplicate for us; say so, because the
-            # consequence is a player that plays holds until the previous
-            # writer's blocked DMA call returns and the next reinit re-starts it.
-            log.warning(
-                "asid_player: the previous writer thread has not exited; refusing to "
-                "run two writers over one ring — the ring will pad holds until it does"
-            )
         self._writer.start()
         log.info(
             "asid_player: installed — %d chip(s), slot %d B, %.1f Hz (latch %d, N=%d), "
@@ -656,7 +706,9 @@ class AsidRingPlayer:
         """Arm once the queue holds a full prebuffer of real frames: drain them
         into ring slots 0.., anchor the read head at that instant, and swap
         ``$0314`` → the handler. Idempotent + thread-safe (start() and the writer
-        both call it). Returns True once armed.
+        both call it). Returns True once armed, and refuses to arm at all once a
+        teardown has set the writer's stop event — the blocking DMA below is how
+        this method outlives teardown's bounded join.
 
         The prebuffer goes out as **one** contiguous transfer rather than a write
         per slot: the whole method runs under the lock ``set_frame_rate`` needs
@@ -669,17 +721,14 @@ class AsidRingPlayer:
                 return True
             if self._q.qsize() < self._prebuffer_target:
                 return False
+            stale_before = self._stale_slots
             slots: list[bytes] = []
-            mismatched = 0
             while len(slots) < self._prebuffer_target:
-                try:
-                    slot = self._q.get_nowait()
-                except queue.Empty:
+                slot = self._take_slot()
+                if slot is None:
                     break
-                if len(slot) == self.slot_size:
-                    slots.append(slot)
-                else:
-                    mismatched += 1
+                slots.append(slot)
+            mismatched = self._stale_slots - stale_before
             n = len(slots)
             if mismatched:
                 # A chip-count reinit can leave stragglers packed at the old
@@ -699,6 +748,17 @@ class AsidRingPlayer:
                 return False
             self._write_slots(0, slots)
             self.api.flush()
+            if self._writer.stop_event.is_set():
+                # Teardown is in flight and its bounded join may already have
+                # given up on us — the blocking DMA above is exactly how this
+                # method outlives it. Hooking $0314 now would leave the C64
+                # running the ASID IRQ into the next scene, against a ring
+                # nobody feeds and at the CIA cadence this stream asked for,
+                # with $C000 (where a later scene's DAC/NMI handler lands) as
+                # the vector. The ring slots just written are inert: nothing
+                # reads them unless the vector is hooked.
+                log.debug("asid_player: arm abandoned — teardown in flight")
+                return False
             self._write_pos = n
             self._real_written += n
             self._rate_anchor = time.monotonic()
@@ -734,6 +794,40 @@ class AsidRingPlayer:
             self._pushed += 1
         except queue.Full:
             self._dropped_full += 1
+
+    def _take_slot(self, timeout: float | None = None) -> bytes | None:
+        """Pop the next queued slot that matches the current layout, or None
+        when the queue runs dry (within ``timeout``, if given).
+
+        **Every** consumer goes through here. A slot whose length doesn't match
+        ``slot_size`` is a straggler packed by the reader thread for a previous
+        chip count (see :meth:`reinit`), and ``_write_slots`` sizes its bursts by
+        slot *count*: one oversized slot writes past its run and misaligns every
+        slot after it in the ring. The 6502 player then reads ``n_ops`` from what
+        was an op's wait byte and decodes ``[value][wait]`` pairs as absolute
+        addresses — i.e. ``STA`` anywhere in the C64's 64K, including the handler
+        at $C000 and the $0314 vector. Two of the three consumers used to filter
+        and the third did not."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                if deadline is None:
+                    slot = self._q.get_nowait()
+                else:
+                    slot = self._q.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                return None
+            if len(slot) == self.slot_size:
+                return slot
+            self._stale_slots += 1
+
+    def _drain_queue(self) -> None:
+        """Drop every queued slot — the layout they were packed for is gone."""
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                return
 
     def set_frame_rate(self, frame_rate_hz: float) -> None:
         """Retune the consume rate on a ``0x31`` change: reprogram CIA #1 and
@@ -795,22 +889,59 @@ class AsidRingPlayer:
 
     def reinit(self, n_chips: int) -> None:
         """Re-install the player for a new chip count (new slot size). Called on a
-        chip-count change; briefly disarms and re-arms (rare, ~once per tune)."""
+        chip-count change; briefly disarms and re-arms (rare, ~once per tune).
+
+        The layout only ever moves with **no writer alive**. ``_write_slots``
+        derives its ring offsets from ``slot_size``, so assigning a new one while
+        a writer is blocked mid-burst in ``reu_write`` put the rest of that
+        burst's old-sized payloads at the new stride: slots land across slot
+        boundaries, the 6502 reads ``n_ops`` from a mid-op byte and executes the
+        stream shifted — arbitrary ``STA``s across the C64's 64K. A single
+        ``0x5F`` SysEx reaches this method, so the precondition is checked, not
+        assumed; failing it leaves the player down (teardown has already handed
+        the machine back to the kernal) rather than half-reconfigured."""
         n_chips = max(1, n_chips)
         if n_chips == self.n_chips:
             return
         rate = self._rate
         self._teardown_player()
-        # Drain any queued slots sized for the old layout.
-        while not self._q.empty():
-            try:
-                self._q.get_nowait()
-            except queue.Empty:
-                break
-        self.n_chips = n_chips
-        self.slot_size = slot_size_for_chips(n_chips)
-        self._write_pos = 0
+        if self._writer.is_running():
+            log.warning(
+                "asid_player: the writer thread is still blocked on the DMA link; "
+                "refusing to re-init to %d chip(s) under it — the buffered path stays "
+                "down until the scene is re-activated",
+                n_chips,
+            )
+            return
+        self._drain_queue()
+        self._set_layout(n_chips)
         self.start(rate)
+
+    def reset(self, n_chips: int = 1) -> None:
+        """Put a stopped player back to a fresh ``n_chips`` layout for the next
+        scene activation.
+
+        Playlists reuse scene instances, so without this lap 2 starts on lap 1's
+        chip count — which is what makes :meth:`reinit`'s ``n_chips ==
+        self.n_chips`` guard let the ring *shrink* — and with lap 1's leftover
+        frames still queued, so the new stream's prebuffer arms on the previous
+        tune's registers."""
+        if self._writer.is_running():
+            log.warning(
+                "asid_player: the writer thread from the previous activation is still "
+                "blocked on the DMA link; keeping its %d-chip layout",
+                self.n_chips,
+            )
+            return
+        self._drain_queue()
+        self._set_layout(n_chips)
+
+    def _set_layout(self, n_chips: int) -> None:
+        """Adopt a chip count and the ring geometry that follows from it. Only
+        ever called with no writer alive (see :meth:`reinit`)."""
+        self.n_chips = max(1, n_chips)
+        self.slot_size = slot_size_for_chips(self.n_chips)
+        self._write_pos = 0
 
     # ---- writer loop ------------------------------------------------------
     def _writer_loop(self, stop: threading.Event) -> None:
@@ -829,17 +960,14 @@ class AsidRingPlayer:
             if deficit <= 0:
                 time.sleep(0.002)
                 continue
-            # Gather up to `deficit` real slots without blocking. Drop any slot
-            # whose size doesn't match the current layout — a chip-count reinit
-            # can leave a straggler of the old size in flight (see reinit()).
+            # Gather up to `deficit` real slots without blocking (_take_slot
+            # drops any straggler sized for a previous layout).
             slots: list[bytes] = []
             for _ in range(deficit):
-                try:
-                    slot = self._q.get_nowait()
-                except queue.Empty:
+                slot = self._take_slot()
+                if slot is None:
                     break
-                if len(slot) == self.slot_size:
-                    slots.append(slot)
+                slots.append(slot)
             pad_seconds = 0.0
             if slots:
                 self._real_written += len(slots)
@@ -849,11 +977,11 @@ class AsidRingPlayer:
                 # just wait for the producer (no glitch). Holds make the SID hold
                 # its last state (no echo).
                 if lead > self._lead_panic:
-                    try:
-                        slots.append(self._q.get(timeout=0.02))
-                        self._real_written += 1
-                    except queue.Empty:
+                    slot = self._take_slot(timeout=0.02)
+                    if slot is None:
                         continue
+                    slots.append(slot)
+                    self._real_written += 1
                 else:
                     # Pad a batch in one contiguous write, then sleep the time it
                     # buys. Nothing else paces this branch: a spec-legal 16×
@@ -876,53 +1004,81 @@ class AsidRingPlayer:
     def _write_slots(self, start_index: int, slots: list[bytes]) -> None:
         """REUWRITE consecutive slots starting at absolute ``start_index``,
         splitting into runs that don't cross the ring wrap (so each run is one
-        contiguous transfer) and don't exceed ``_MAX_DMA_BURST_BYTES``."""
+        contiguous transfer) and don't exceed ``_MAX_DMA_BURST_BYTES``.
+
+        The stride is snapshotted once: ``self.slot_size`` is re-read nowhere in
+        the loop, so a payload list and the stride it was built for can never
+        disagree half way through a call. (:meth:`reinit` now refuses to move the
+        layout while a writer is alive, which is the real guarantee; this keeps
+        the function correct on its own terms rather than on that promise.)"""
         i = 0
         n = len(slots)
-        slots_per_burst = max(1, _MAX_DMA_BURST_BYTES // self.slot_size)
+        slot_size = self.slot_size
+        slots_per_burst = max(1, _MAX_DMA_BURST_BYTES // slot_size)
         while i < n:
             ring_slot = (start_index + i) % RING_SLOTS
             run = min(n - i, RING_SLOTS - ring_slot, slots_per_burst)
             payload = b"".join(slots[i : i + run])
-            self.api.reu_write(self.ring_base + ring_slot * self.slot_size, payload)
+            self.api.reu_write(self.ring_base + ring_slot * slot_size, payload)
             i += run
 
     # ---- shutdown ---------------------------------------------------------
     def _teardown_player(self) -> None:
-        """Stop the writer + disarm the C64 IRQ (restore $0314 + CIA #1 latch).
-        Idempotent; leaves the SID untouched (the scene silences it)."""
+        """Stop the writer + hand the C64's IRQ back to the kernal ($0314 + the
+        CIA #1 latch). Idempotent; leaves the SID untouched (the scene silences
+        it).
+
+        Restores on ``_installed``, never on ``_armed``: ``start()`` programs the
+        CIA the moment it runs, so a stream that sends a ``0x31`` and no frames
+        never arms yet has already retuned the machine's jiffy IRQ. Both writes
+        go out whenever the player touched the C64 at all — they are idempotent,
+        cost two DMA ops, and the alternative is a wrong CIA latch surviving into
+        every later scene."""
         # Stop the thread but KEEP the PollThread object: after a timed-out join
         # it deliberately holds its reference so a later start() refuses a
         # duplicate. Discarding it here is what let reinit() (reachable from one
         # 0x5F SysEx via _reconfigure_chips) run a second writer alongside an
-        # abandoned one, racing self._write_pos over a single REU ring.
+        # abandoned one, racing self._write_pos over a single REU ring. The stop
+        # event it sets is also what makes an in-flight _try_arm abandon its arm.
         self._writer.stop()
-        if not self._armed:
+        if not self._claim_installed():
             return
+        restore_kernal_irq(self.api, self.system)
+
+    def _claim_installed(self) -> bool:
+        """Clear the armed/installed state under the arm lock, reporting whether
+        the C64 still owes a restore. False on a player that never installed.
+
+        The lock is the one that :meth:`_try_arm` holds across its whole arm
+        sequence, so the disarm cannot interleave with an arm and lose the race
+        to write ``$0314``. It is taken with a bound because ``_try_arm`` holds
+        it across blocking DMA: teardown must never hang on the link, so a
+        timeout says so and restores anyway — a racing restore beats none."""
+        acquired = self._lock.acquire(timeout=_TEARDOWN_LOCK_TIMEOUT_S)
         try:
-            # Vector restore FIRST so the next kernal IRQ doesn't fire into a
-            # handler we're dismantling, then CIA #1 latch back to the kernal
-            # default so jiffy/SCNKEY resume at ~60 Hz.
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+            installed = self._installed
+            self._installed = False
+            self._armed = False
+        finally:
+            if acquired:
+                self._lock.release()
+        if not acquired:
+            log.warning(
+                "asid_player: the arm lock was still held after %.1f s (a DMA write is "
+                "wedged); restoring the kernal IRQ anyway",
+                _TEARDOWN_LOCK_TIMEOUT_S,
             )
-            latch = kernal_cia1_latch(self.system)
-            self.api.write_memory(
-                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-            )
-            self.api.flush()
-        except Exception as e:  # best-effort; teardown must not raise
-            log.debug("asid_player: disarm write failed: %s", e)
-        self._armed = False
+        return installed
 
     def stop(self) -> None:
         self._teardown_player()
         log.info(
-            "asid_player: pushed=%d real_written=%d holds=%d dropped_full=%d",
+            "asid_player: pushed=%d real_written=%d holds=%d dropped_full=%d stale=%d",
             self._pushed,
             self._real_written,
             self._underrun_pads,
             self._dropped_full,
+            self._stale_slots,
         )
         if self._lead_min is not None:
             log.info(

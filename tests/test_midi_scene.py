@@ -879,13 +879,16 @@ class LifecycleTests(_MidiTestCase):
     def test_teardown_leaves_d018_on_the_char_mode_default(self):
         # The scope ran in hires ($18). Teardown hands the next scene the
         # char-mode matrix pointer, not the bitmap layout it was using.
-        from c64cast.sid.voice_scope import D018_CHAR_DEFAULT
-
         scene, api = _make_scene()
         scene._apply_vic_hires_bank()
         self.assertEqual(api.memories.get("D018"), "18")
         scene.teardown()
-        self.assertEqual(api.memories.get("D018"), f"{D018_CHAR_DEFAULT:02X}")
+        # The literal is the point: comparing against D018_CHAR_DEFAULT compares
+        # teardown's write to the constant it wrote it from, which stayed green
+        # with the constant set to the hires $18. $14 is the char-mode byte every
+        # char-mode engage in the tree writes (matrix at bank+$0400, char gen at
+        # +$1000, bitmap bit clear); test_voice_scope pins the constant to it.
+        self.assertEqual(api.memories.get("D018"), "14")
 
     def test_setup_programs_sid_and_starts_reader(self):
         scene, api = _make_scene(filter_mode="lowpass", master_volume=15)

@@ -58,7 +58,13 @@ from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from . import asid
-from .asid_player import AsidRingPlayer, clamp_frame_rate, pack_slot, serialize_frame
+from .asid_player import (
+    AsidRingPlayer,
+    clamp_frame_rate,
+    pack_slot,
+    restore_kernal_irq,
+    serialize_frame,
+)
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .emusid_mixer import apply_emusid_routing
 from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
@@ -129,6 +135,13 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
         self.port_name = port
         self.system = system
+        # The system the *machine* runs, kept apart from `self.system` because a
+        # wire `0x31` retunes that one to whatever standard the tune declares.
+        # Anything restoring a hardware default (the kernal CIA #1 latch is
+        # PAL/NTSC-specific) has to use this: writing PAL's $4025 back on an NTSC
+        # machine leaves the jiffy clock ~3.8% fast for every scene after.
+        # AsidRingPlayer is constructed with the same value for the same reason.
+        self._machine_system = system
 
         # Voice trace colors — pad the configured names to 3 with C64-friendly
         # defaults; the scope mixin requires at least 3.
@@ -647,6 +660,43 @@ class AsidScene(VoiceScopeRenderer, Scene):
         return _layout_lr(tags, f"VOL {vol:2d}")
 
     # ---- Scene lifecycle -----------------------------------------------------
+    def _reset_stream_state(self) -> None:
+        """Forget the previous stream. Playlists reuse scene instances, so every
+        field the *wire* owns has to come back to its configured default here or
+        lap 2 begins mid-conversation with lap 1's host.
+
+        The cadence fields are the ones that reach hardware: `setup` passes
+        `_frame_rate_hz` straight to `AsidRingPlayer.start`, so a stream that
+        pushed the rate to the 1000 Hz ceiling and went away had the *next* lap
+        program the CIA to it before a single byte arrived. The player's chip
+        count is reset for a related reason — its `reinit` guard compares against
+        the count it already holds, so a stale 8 is what lets a later remap
+        *shrink* the ring — and `reset` drops the previous tune's queued frames
+        with it, which would otherwise become the new stream's prebuffer."""
+        self.system = self._machine_system
+        self._video_hz = 50.0 if self._machine_system.upper() == "PAL" else 60.0
+        # The emulator clocks move with `self.system` (the reader only switches
+        # them on a *change*), so they have to come back together with it or a
+        # lap-2 stream declaring the machine's own standard reads as "no change"
+        # and leaves every emulator on lap 1's clock.
+        with self._reg_lock:
+            for emu in self._emulators:
+                emu.clock = CLOCK_PAL if self._video_hz == 50.0 else CLOCK_NTSC
+        self._frame_rate_hz = self._video_hz
+        self._speed_request_hz = self._video_hz
+        self._recipe = None
+        self._frame_regs.clear()
+        self._frame_ctrl_first.clear()
+        self._frame_has_data = False
+        self._dirty_chips.clear()
+        self._pending_ctrl_first.clear()
+        self._pending_flush = False
+        self._playing = False
+        self._status_text = ""
+        self._chip_type = None
+        if self._player is not None:
+            self._player.reset(1)
+
     def setup(self) -> None:
         super().setup()
         # Playlists reuse scene instances (every lap re-runs setup/teardown), so
@@ -659,6 +709,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._chip_addresses = [SID.BASE]
         self._max_chip_seen = 0
         self._set_window_count(1)
+        self._reset_stream_state()
         # Bitmap bring-up: invalidate the delta cache (previous scene may have
         # used $0400/$2000 for char content), engage hires, paint idle strips +
         # info rows, allocate render buffers, then start the MIDI reader +
@@ -745,8 +796,18 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # Stop the ring player FIRST: it restores $0314 → the kernal IRQ tail and
         # the CIA #1 latch, so the C64 stops popping the ring before we silence
         # the SID(s) and restore the display below.
+        #
+        # Then restore them AGAIN here, unconditionally. The scene owns the
+        # promise that the next scene gets a quiescent C64, and it must not
+        # delegate that to the player's own bookkeeping: the player's writer
+        # thread can outlive its bounded join, and an orphaned ASID handler is
+        # not merely noisy — every tick it rewrites the whole REU control block
+        # ($DF02-$DF08 + a $91 fetch-exec) at up to 960 Hz, and the next scene's
+        # audio pump reads $DF03 back as its live write head. Two idempotent DMA
+        # ops buy the guarantee outright.
         if self._player is not None:
             self._player.stop()
+            restore_kernal_irq(self.api, self._machine_system)
         if self._midi_port is not None:
             try:
                 self._midi_port.close()
