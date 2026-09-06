@@ -70,6 +70,24 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **An ASID host could buy an unbounded amount of log work with one 62-byte
+  message.** The MIDI reader's drain is bounded at 64 messages a pass so the
+  coalesced register flush and the stop check that ends teardown always run —
+  but that bounds *messages*, and the wire picks the *work* per message. One
+  WARNING costs ~322 us through the default terminal handler, so 64 of them in
+  a pass is 20.6 ms on a loop that is otherwise sub-millisecond, and two
+  warnings on the ASID path fired once per message with no gate at all: the
+  over-long `0x30` timing recipe (18 MB/s into an unrotated `--log-file` at full
+  decode rate) and the ring player's slot-truncation report, which runs at the
+  ASID frame rate, 60 to 960 Hz, and can hold for a whole scene rather than a
+  frame. Both now report at most once a second per stream — first occurrence at
+  WARNING as written, a repeat at DEBUG carrying how many occurrences it stands
+  for — through one shared throttle rather than a hand-rolled flag apiece, and a
+  drain pass now releases after a quarter of the flush period however cheap the
+  count bound thinks it has been. Nothing is dropped that used to be delivered:
+  the pass checks its deadline before taking a message off the port, and the
+  first message of a pass is never gated.
+
 - **A SID whose INIT was cut short reported a complete RAM footprint.** The
   footprint places the relocated C64-side player in RAM the tune demonstrably
   never touches, and it carries a flag saying whether the sample can be

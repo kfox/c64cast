@@ -16,10 +16,18 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# The drain's work bound reads the clock through this name so a test can drive a
+# pass without sleeping through one. Rebinding the module attribute is the only
+# injection point: `poll_pending` is a free function with no object to hang a
+# clock off, and the call sites that matter (`AsidScene._reader`,
+# `MidiScene._reader`) pass no arguments of their own.
+_monotonic = time.monotonic
 
 # Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
 # of None — the MIDI_AVAILABLE flag is the runtime guard. Also sidesteps
@@ -73,15 +81,47 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
 # 8-SID ASID frame is ~9 messages per 1 ms pass).
 MAX_MSGS_PER_DRAIN = 64
 
+# The coalescing flush both readers run *after* their drain — AsidScene and
+# MidiScene each flush at 1/60 s — i.e. the deadline a drain pass must not eat.
+_READER_FLUSH_PERIOD_S = 1.0 / 60.0
+
+# The share of that period one pass may spend retiring messages. A quarter
+# leaves the flush at most 25% late, and still runs the stop check ~240x a
+# second against `PollThread`'s 1 s join, while giving an ordinary pass (the
+# busiest legitimate stream is ~9 sub-millisecond messages) room it never uses.
+_DRAIN_BUDGET_FRACTION = 0.25
+
+# How long one drain pass may spend retiring messages, whatever the count bound
+# would still permit. :data:`MAX_MSGS_PER_DRAIN` bounds the message *count*, but
+# the wire chooses the *work* per message: one WARNING through the default
+# terminal handler costs ~322 us of Rich rendering, so 64 of them is 20.6 ms
+# inside a pass whose loop is otherwise sub-millisecond — which starves exactly
+# the two things the count bound exists to protect. A pass always hands out at
+# least one message, so a consumer slower than the whole budget still makes
+# progress instead of spinning.
+MAX_DRAIN_WORK_S = _READER_FLUSH_PERIOD_S * _DRAIN_BUDGET_FRACTION
+
 
 def poll_pending(
-    port: Any, stop: threading.Event, *, limit: int = MAX_MSGS_PER_DRAIN
+    port: Any,
+    stop: threading.Event,
+    *,
+    limit: int = MAX_MSGS_PER_DRAIN,
+    budget_s: float = MAX_DRAIN_WORK_S,
 ) -> Iterator[Any]:
-    """Yield at most ``limit`` messages already waiting on ``port``, stopping
-    early once ``stop`` is set. The bounded, stop-aware stand-in for mido's
-    ``iter_pending()`` in a reader loop — see :data:`MAX_MSGS_PER_DRAIN` for why
-    the bound is load-bearing rather than a tuning knob."""
-    for _ in range(limit):
+    """Yield at most ``limit`` messages already waiting on ``port``, for at most
+    ``budget_s`` of consumer work, stopping early once ``stop`` is set.
+
+    The bounded, stop-aware stand-in for mido's ``iter_pending()`` in a reader
+    loop. Both bounds are load-bearing rather than tuning knobs — see
+    :data:`MAX_MSGS_PER_DRAIN` for the count and :data:`MAX_DRAIN_WORK_S` for
+    the work. The clock is read between messages, i.e. after the consumer has
+    processed the previous one, and never after a ``poll()`` that already took a
+    message off the queue, so releasing the pass drops nothing."""
+    deadline = _monotonic() + budget_s
+    for retired in range(limit):
+        if retired and _monotonic() >= deadline:
+            return
         msg = port.poll()
         if msg is None or stop.is_set():
             return

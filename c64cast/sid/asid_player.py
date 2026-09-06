@@ -70,11 +70,18 @@ from c64cast.hw.c64 import (
 )
 
 from .asid import _ASID_REG_TO_OFFSET
+from .wire_log import LogThrottle
 
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger("c64cast.sid.asid_player")
+
+# `pack_slot` truncates on wire-driven input at the ASID frame rate (60-960 Hz),
+# and there is a reachable state in which the condition is permanent rather than
+# occasional, so its report is throttled instead of logged per frame. Module
+# level because `pack_slot` is a free function; see :mod:`c64cast.sid.wire_log`.
+_truncated_slot_log = LogThrottle(log)
 
 # --------------------------------------------------------------------------
 # Memory map. AsidScene runs no DAC/NMI/pump, so $C000-$CFFF and the REU are
@@ -329,10 +336,14 @@ def pack_slot(ops: list[tuple[int, int, int]], slot_size: int) -> bytes:
     derived from the chip count on the assumption that 28 ops per chip is a hard
     ceiling, so a truncation means something upstream broke it. It used to be
     silent, which is how an over-long ``0x30`` recipe deleted a whole chip's
-    frame (every op past the cut belongs to the later chips in the slot)."""
+    frame (every op past the cut belongs to the later chips in the slot).
+
+    Loud, but throttled: this runs once per ASID frame (60-960 Hz) on the MIDI
+    reader thread, and the mismatch that trips it can persist for a whole scene,
+    so the report is O(1) per stream — :mod:`c64cast.sid.wire_log`."""
     max_ops = (slot_size - 1) // OP_BYTES
     if len(ops) > max_ops:
-        log.warning(
+        _truncated_slot_log.warn(
             "asid_player: frame carries %d ops but the %d B slot holds %d; "
             "dropping %d — later chips in this slot lose their writes",
             len(ops),

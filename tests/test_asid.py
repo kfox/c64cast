@@ -214,6 +214,13 @@ class OtherCommandsTest(unittest.TestCase):
 
 
 class TimingRecipeTest(unittest.TestCase):
+    def setUp(self):
+        # The over-cap report is throttled through module state, so a test that
+        # asserts the WARNING has to start from a clean stream or it inherits
+        # whichever test ran before it.
+        asid._overlong_recipe_log.reset()
+        self.addCleanup(asid._overlong_recipe_log.reset)
+
     def test_identity_order_no_waits(self):
         # Two pairs, register ids 0 and 1, both wait 0.
         payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x00, 0x00, 0x01, 0x00)
@@ -263,6 +270,24 @@ class TimingRecipeTest(unittest.TestCase):
             recipe = _ok(tuple(payload)).timing_recipe
         self.assertEqual(len(recipe), asid.MAX_TIMING_RECIPE_PAIRS)
         self.assertIn("timing recipe carries 400 pairs", caught.output[0])
+
+    def test_a_repeated_over_cap_recipe_reports_once_not_once_per_message(self):
+        # The smallest message that trips the cap is 29 pairs = 62 bytes, and
+        # the decoder retires ~105,000 of them a second: one WARNING each is
+        # 18 MB/s into an unrotated --log-file and ~322 us of Rich rendering
+        # apiece on the MIDI reader thread. The report has to be O(1) per
+        # stream, so the throttle must be *consulted* here, not merely defined.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
+            payload += [i & 0x3F, 0x00]
+        self.assertEqual(len(payload) - 2, 58)  # 29 pairs, 62 bytes with F0/F7
+        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
+            for _ in range(500):
+                self.assertEqual(
+                    len(_ok(tuple(payload)).timing_recipe), asid.MAX_TIMING_RECIPE_PAIRS
+                )
+        self.assertEqual(len(caught.records), 1)
+        self.assertEqual(caught.records[0].levelname, "WARNING")
 
     def test_capped_and_deduped_recipe_cannot_outgrow_a_slot(self):
         # The two bounds together: 28 pairs all naming register id 0 (fully

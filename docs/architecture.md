@@ -34,6 +34,7 @@ the two lists account for every module in the tree.
 | `sid/asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
 | `sid/asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `sid/asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
+| `sid/wire_log.py` | [SID playback & the oscilloscope](architecture/sid.md#wire_logpy--wire-triggered-logging-is-o1-per-stream) |
 | `audio/audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |

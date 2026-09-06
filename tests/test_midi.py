@@ -75,6 +75,14 @@ class PollPendingTest(unittest.TestCase):
     starving the register flush that follows the drain, and the `stop` re-check
     is what keeps a flooded reader from outliving a bounded teardown join."""
 
+    def setUp(self):
+        # These pin the *count* bound, so freeze the clock the *work* bound
+        # reads: a stalled worker on a loaded machine must not be able to
+        # release a pass early and turn a count assertion into a flake.
+        patcher = mock.patch.object(_midi, "_monotonic", lambda: 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def _port(n_messages, stop=None, stop_after=None):
         """A port with `n_messages` queued, then empty. `stop_after` sets
@@ -113,6 +121,73 @@ class PollPendingTest(unittest.TestCase):
         stop = threading.Event()
         port = self._port(50)
         self.assertEqual(len(list(_midi.poll_pending(port, stop, limit=4))), 4)
+
+
+class DrainWorkBoundTest(unittest.TestCase):
+    """The count bound alone is not enough: it bounds *messages* while the wire
+    chooses the *work* per message. One WARNING through the default terminal
+    handler costs ~322 us, so 64 of them is 20.6 ms inside a pass whose loop is
+    otherwise sub-millisecond — long enough to starve the coalesced flush and
+    the stop check the count bound exists to reach."""
+
+    @staticmethod
+    def _port(n_messages):
+        state = {"served": 0}
+
+        def poll():
+            if state["served"] >= n_messages:
+                return None
+            state["served"] += 1
+            return f"msg{state['served']}"
+
+        return SimpleNamespace(poll=poll, served=state)
+
+    @staticmethod
+    def _clock(step):
+        """A monotonic stand-in advancing `step` per read, so a pass can burn
+        its work budget without the test spending that time."""
+        state = {"now": 1000.0}
+
+        def monotonic():
+            state["now"] += step
+            return state["now"]
+
+        return monotonic
+
+    def test_a_pass_releases_once_it_has_spent_its_work_budget(self):
+        stop = threading.Event()
+        port = self._port(1000)
+        expensive = self._clock(_midi.MAX_DRAIN_WORK_S / 3)
+        with mock.patch.object(_midi, "_monotonic", expensive):
+            drained = list(_midi.poll_pending(port, stop))
+        self.assertLess(len(drained), _midi.MAX_MSGS_PER_DRAIN)
+        self.assertGreater(len(drained), 0)
+
+    def test_a_pass_always_hands_out_at_least_one_message(self):
+        # A consumer slower than the entire budget must still make progress
+        # rather than spin: the deadline is not checked before the first message.
+        stop = threading.Event()
+        port = self._port(1000)
+        with mock.patch.object(_midi, "_monotonic", self._clock(1.0)):
+            self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
+
+    def test_releasing_the_pass_drops_no_message(self):
+        # The deadline is checked *before* `port.poll()`, never after — a poll
+        # has already taken the message off the port's queue, so a check on the
+        # far side of it would silently eat a frame of SID register writes.
+        stop = threading.Event()
+        port = self._port(20)
+        seen = []
+        with mock.patch.object(_midi, "_monotonic", self._clock(_midi.MAX_DRAIN_WORK_S / 3)):
+            for _ in range(20):
+                seen.extend(_midi.poll_pending(port, stop))
+        self.assertEqual(seen, [f"msg{i}" for i in range(1, 21)])
+
+    def test_the_work_budget_is_a_fraction_of_the_flush_period_it_protects(self):
+        # Both readers flush at 1/60 s; a pass that could spend the whole period
+        # would halve the flush rate rather than bound it.
+        self.assertGreater(_midi.MAX_DRAIN_WORK_S, 0.0)
+        self.assertLess(_midi.MAX_DRAIN_WORK_S, 1.0 / 60.0)
 
 
 if __name__ == "__main__":

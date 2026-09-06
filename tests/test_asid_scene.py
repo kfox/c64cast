@@ -453,6 +453,48 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(len(polls_at_first_flush), 1)
         self.assertLessEqual(polls_at_first_flush[0], MAX_MSGS_PER_DRAIN)
 
+    def test_reader_releases_a_pass_of_expensive_messages_and_still_flushes(self):
+        """The count bound alone does not protect the flush: it bounds messages
+        while the wire picks the work per message. A WARNING rendered by the
+        default terminal handler costs ~322 us, so 64 of them inside one pass is
+        20.6 ms — the flush and the stop check both live after the drain."""
+        from c64cast import _midi
+
+        scene, _ = self._make()
+        stop = threading.Event()
+        polls = {"n": 0}
+        payload = _reg_msg({0: 0x34, 22: 0x41})
+
+        def poll():
+            polls["n"] += 1
+            return SimpleNamespace(type="sysex", data=payload) if polls["n"] <= 5000 else None
+
+        # Each message costs a third of the drain's work budget — the same shape
+        # as a Rich-rendered WARNING, an order of magnitude cheaper.
+        clock = {"now": 1000.0}
+
+        def monotonic():
+            clock["now"] += _midi.MAX_DRAIN_WORK_S / 3
+            return clock["now"]
+
+        polls_at_first_flush: list[int] = []
+        real_flush = scene._flush_to_sid
+
+        def flush():
+            real_flush()
+            polls_at_first_flush.append(polls["n"])
+            stop.set()
+
+        scene._midi_port = SimpleNamespace(poll=poll, iter_pending=lambda: iter(poll, None))
+        with mock.patch.object(_midi, "_monotonic", monotonic):
+            with mock.patch.object(scene, "_flush_to_sid", side_effect=flush):
+                scene._reader(stop)
+        # The flush ran, with the backlog still deep and long before the count
+        # bound would have released the pass on its own.
+        self.assertEqual(len(polls_at_first_flush), 1)
+        self.assertLessEqual(polls_at_first_flush[0], 8)
+        self.assertLess(polls["n"], 5000)
+
     def test_reader_stops_mid_drain_when_the_stop_event_is_set(self):
         scene, _ = self._make()
         stop = threading.Event()

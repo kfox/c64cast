@@ -316,6 +316,12 @@ class FrameBudgetTest(unittest.TestCase):
 
 
 class PackSlotTest(unittest.TestCase):
+    def setUp(self):
+        # The truncation report is throttled through module state, so a test
+        # that asserts the WARNING has to start from a clean stream.
+        ap._truncated_slot_log.reset()
+        self.addCleanup(ap._truncated_slot_log.reset)
+
     def test_layout_and_padding(self):
         slot = ap.pack_slot([(0xD404, 0x41, 2), (0xD400, 0x34, 0)], 128)
         self.assertEqual(len(slot), 128)
@@ -338,6 +344,18 @@ class PackSlotTest(unittest.TestCase):
             slot = ap.pack_slot(many, 128)
         self.assertEqual(slot[0], (128 - 1) // ap.OP_BYTES)
         self.assertIn("later chips in this slot lose their writes", caught.output[0])
+
+    def test_a_permanent_truncation_reports_once_not_once_per_frame(self):
+        # There is a reachable state in which this condition holds for the rest
+        # of the scene, and it is evaluated once per ASID frame — 60 to 960 Hz
+        # on the MIDI reader thread. One record per frame is the whole defect,
+        # so the throttle must be *consulted* here, not merely defined.
+        many = [(0xD400, 0, 0)] * 100
+        with self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught:
+            for _ in range(960):
+                self.assertEqual(ap.pack_slot(many, 128)[0], (128 - 1) // ap.OP_BYTES)
+        self.assertEqual(len(caught.records), 1)
+        self.assertEqual(caught.records[0].levelname, "WARNING")
 
 
 class MemoryMapTest(unittest.TestCase):
