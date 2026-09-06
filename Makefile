@@ -5,6 +5,7 @@
 #   make sync       # uv sync --all-extras (refresh the project env)
 #   make lint       # ruff check
 #   make fmt        # ruff format
+#   make mutation-ready  # arm hash-based .pyc invalidation before a mutation pass
 #   make test       # unittest suite (whole tree, parallel across cores)
 #   make test T=tests.test_midi_scene   # just that module/class/method
 #   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
@@ -38,6 +39,7 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
+	mutation-ready \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
@@ -111,6 +113,7 @@ help:
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
 	@echo "  lint       ruff check"
 	@echo "  fmt        ruff format"
+	@echo "  mutation-ready  hash-based .pyc invalidation, so a mutation pass cannot read stale bytecode"
 	@echo "  test       unittest suite, parallel (T=tests.test_foo runs just that, serial)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
@@ -139,6 +142,25 @@ lint: $(SYNC)
 
 fmt:
 	uv run ruff format .
+
+# Makes a mutation pass trustworthy, and it is the difference between evidence
+# and a false result. CPython validates a .pyc against the source's mtime
+# truncated to WHOLE SECONDS plus its size, so a same-length edit applied and
+# reverted inside one second is invisible: Python runs the bytecode it already
+# had. The mutation then reports green, which is the answer you half-expect, so
+# you conclude the test does not pin that line and rewrite a test that was fine.
+# Hash-based invalidation (PEP 552) keys on content instead, CPython preserves
+# the mode when it rewrites a .pyc, and it costs nothing measurable (10.09s vs
+# 10.14s wall on the full suite). PYTHONDONTWRITEBYTECODE=1 does NOT fix this --
+# it suppresses writing, not reading -- and neither does `touch`, which sets
+# mtime to now, the same second.
+#
+# -f is load-bearing: without it compileall SKIPS any file whose timestamp
+# cache is still valid, so on a warm checkout -- which is every real one -- the
+# target runs, prints nothing, converts nothing, and leaves you believing you
+# are protected. Re-run whenever the tree gains a module.
+mutation-ready: $(SYNC)
+	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
 
 # `make test` runs the whole suite in parallel (unittest_parallel forks one
 # process per test module — still stdlib unittest, ~3x faster since the suite

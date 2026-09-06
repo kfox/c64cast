@@ -50,6 +50,13 @@ they are enforced by tests that fail late:
 - **A test run prints only pass/fail/skip.** Wrap every by-product where it
   fires: `assertRaises`, `assertLogs`, `redirect_stdout`, or `quiet_logging()`.
   `quiet_logging` and `assertLogs` must never nest.
+- **Prove a test can fail before claiming it pins anything.** Mutate the line it
+  covers, watch a *named* assertion go red, revert, re-run green. "Tests cover
+  this" is an argument; a named victim is evidence. Run `make mutation-ready`
+  first — CPython validates bytecode against the source mtime in whole seconds,
+  so a same-length edit applied and reverted inside one second silently runs
+  stale bytecode and reports a false result. `PYTHONDONTWRITEBYTECODE=1` does
+  not fix that, and neither does `touch`.
 - **The suite cannot touch files outside the checkout**, and an audit hook
   enforces it. When a test trips the sandbox, point the code under test at a
   temp fixture — never widen the sandbox.
