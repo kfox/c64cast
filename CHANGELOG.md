@@ -70,6 +70,58 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **One ASID speed message can no longer wedge the C64 and flood the link.** A
+  `0x31` carries a frame delta in microseconds, and a delta of 1 asked the
+  buffered ring player for a 1 MHz consume rate. Nothing rejected it: the CIA
+  helper clamps the *timer latch*, not the rate, so the request landed on the
+  fastest timer the chip can run — an IRQ every two cycles into a handler that
+  needs hundreds, leaving the 6510 unable to reach the jiffy clock, the keyboard
+  scan or anything else until a power cycle. On the host side the computed read
+  head then advanced half a million slots a second, so the writer thread chased
+  it at the link's maximum rate forever, taking the whole Ultimate DMA socket
+  the video render path shares. ASID-derived rates are now clamped to the band
+  the protocol and the CIA can actually express (roughly 15-1000 Hz — 16× the
+  video rate is the fastest the spec's speed multiplier can ask for), with a
+  warning naming the clamp, and the kernal-chain tick divider is bounded to the
+  8-bit immediate that carries it instead of being silently truncated.
+- **An oversized `0x30` timing recipe no longer amplifies every later frame or
+  silently deletes a SID chip.** The recipe is a SID write order, so it can be
+  no longer than the register table and can name each register once — but
+  neither bound was enforced, and the recipe persists until the next `0x30`. A
+  400 KB SysEx message decoded to 200,000 entries and turned an ordinary
+  four-register frame into 200,004 write ops, per frame, on the MIDI reader
+  thread. The ops past what a slot holds were then dropped in silence, and
+  because a multi-SID slot packs the chips in order, the ones that vanished
+  belonged to the later chips: a two-chip tune lost its second chip's frame
+  entirely with nothing logged. The decoder now caps the recipe and keeps a
+  repeated register at its first position, and a slot that has to truncate says
+  so.
+- **A quiet ASID host no longer saturates the Ultimate DMA socket.** When the
+  ring's write-ahead lead drains, the player pads "hold" slots so the SID keeps
+  its last state. That padding had no pacing at all, so a spec-legal 16×
+  multispeed stream that then went quiet padded at the link's maximum rate
+  indefinitely — the entire measured write budget, spent on silence, with the
+  render path queued behind it. Pads now go out in one batched write and cost a
+  fixed handful of writes per second at any rate in the band.
+- **A chip-count change mid-tune can no longer leave two writer threads racing
+  one ring.** Re-initializing the player for a new SID count discarded its
+  writer-thread handle after a bounded join, which is exactly the state the
+  thread helper keeps a reference for: a writer still blocked in a DMA call was
+  abandoned rather than waited for, and the restart then ran a second one
+  against the same ring position counter. The handle is now kept, the loop exits
+  on its own stop signal rather than a shared flag, and a start that would
+  duplicate a live writer is refused and logged.
+- **An Ultimate 64 SID map can no longer put an emulated core on top of a real
+  chip.** Planning for a `.sid` file's own chip addresses claimed a physical
+  socket first and then placed the UltiSID cores without knowing where that
+  socket sat. Because the firmware aligns a split core's base *downward*, a
+  four-chip tune whose first address matched the socketed chip's model enabled
+  the socket at `$D400` and put a half-split core over `$D400` too — the tune
+  playing on the real chip and the emulation at once, audible as a detuned
+  double, which is the one state this planner exists to prevent. Core placement
+  now refuses a window that covers a claimed socket, and gives the socket up
+  rather than the map when no split level clears it. Core bases are also bounded
+  above, against the firmware's own address enum, instead of only below.
 - **The documented default duration for a waveform scene is now the one the
   code uses: three minutes, not thirty seconds.** A tune with no explicit
   `duration_s` and no song-length database match has run for 180 seconds for a

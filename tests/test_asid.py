@@ -56,11 +56,20 @@ class DecodeDispatchTest(unittest.TestCase):
 
     def test_unsupported_commands_dropped(self):
         # Multi-SID (0x50-0x5F) is honored (see MultiSidTest) and the timing
-        # recipe (0x30) is now decoded (see TimingRecipeTest); only OPL-FM
-        # remains dropped.
+        # recipe (0x30) is now decoded (see TimingRecipeTest); OPL-FM is the
+        # recognized-but-unsupported one.
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_OPL, 0x00))
         self.assertTrue(u.dropped, "OPL-FM should be dropped")
         self.assertFalse(u.regs)
+
+    def test_unknown_command_falls_through_to_dropped(self):
+        # The catch-all, not just 0x60: this decoder's input is untrusted
+        # network/MIDI SysEx, so an unrecognized command must come back inert
+        # rather than reach a dispatch branch that half-applies it.
+        u = _ok((asid.ASID_MANUFACTURER_ID, 0x33, 0x7F, 0x7F))
+        self.assertTrue(u.dropped)
+        self.assertFalse(u.regs)
+        self.assertEqual(u.command, 0x33)
 
 
 class MultiSidTest(unittest.TestCase):
@@ -191,6 +200,18 @@ class OtherCommandsTest(unittest.TestCase):
         self.assertEqual(u.chip_index, 1)
         self.assertEqual(u.chip_type, "8580")
 
+    def test_sid_type_chip_index_is_clamped_to_the_protocol_range(self):
+        # mido hands up a full 0..127 data byte; no consumer should ever be
+        # handed an index higher than the multi-SID commands can produce.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0x7F, 0))
+        self.assertEqual(u.chip_index, asid.MAX_CHIP_INDEX)
+
+    def test_short_speed_payload_leaves_frame_delta_unset(self):
+        # The field is None (not 0) when the payload carries no delta — the
+        # consumer picks the speed-multiplier path from that.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01))
+        self.assertIsNone(u.frame_delta_us)
+
 
 class TimingRecipeTest(unittest.TestCase):
     def test_identity_order_no_waits(self):
@@ -223,6 +244,31 @@ class TimingRecipeTest(unittest.TestCase):
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING))
         self.assertEqual(u.timing_recipe, [])
         self.assertFalse(u.dropped)
+
+    def test_repeated_register_id_keeps_only_its_first_position(self):
+        # A write order names each register once. A repeat would otherwise make
+        # serialize_frame emit that register's write again per occurrence, so op
+        # count would track recipe length instead of the frame's write count.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x00, 0x0A, 0x01, 0x00, 0x00, 0x14)
+        self.assertEqual(_ok(payload).timing_recipe, [(0, 10), (1, 0)])
+
+    def test_overlong_payload_is_capped_at_the_write_order_length(self):
+        # SysEx has no length limit on a virtual/network MIDI port, and the
+        # recipe persists until the next 0x30 — so an uncapped decode lets one
+        # message amplify every later frame. 400 distinct ids, cap 28.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(400):
+            payload += [i & 0x3F, 0x00]
+        with self.assertLogs("c64cast.sid.asid", "WARNING") as caught:
+            recipe = _ok(tuple(payload)).timing_recipe
+        self.assertEqual(len(recipe), asid.MAX_TIMING_RECIPE_PAIRS)
+        self.assertIn("timing recipe carries 400 pairs", caught.output[0])
+
+    def test_capped_and_deduped_recipe_cannot_outgrow_a_slot(self):
+        # The two bounds together: 28 pairs all naming register id 0 (fully
+        # spec-legal length) must not yield 28 recipe entries for one register.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING] + [0x00, 0x00] * 28
+        self.assertEqual(_ok(tuple(payload)).timing_recipe, [(0, 0)])
 
 
 if __name__ == "__main__":

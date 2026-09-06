@@ -434,6 +434,15 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
   waits, summed across all chips) must fit the frame period. Realistic content
   fits — it's how the tune runs natively — but a pathological 8-SID × 16× frame
   can overrun and queue ticks, an inherent limit like the NMI DAC cycle budget.
+  What a *stream* can generate is bounded: a `0x30` recipe caps at 28 pairs with
+  each register named once, so one chip's frame can never serialize past
+  `MAX_OPS_PER_CHIP`, and a slot that still has to truncate logs it.
+* **Consume rate is clamped to ~15-1000 Hz.** The ceiling is 16× the video rate
+  (all the `0x31` speed multiplier can express); the floor is the slowest
+  cadence a 16-bit CIA latch can realize. A host asking for more gets the bound
+  and a warning, because `cia1_latch_for_rate` clamps the latch rather than the
+  rate — an unclamped `frame_delta_us = 1` became the fastest timer the CIA can
+  run, which the 6510 cannot service and the host cannot feed.
 * **Coarse cycle delay.** The on-C64 busy-wait approximates each `0x30`
   `wait_cycles` within a few cycles (≈`DELAY_CYCLES_PER_UNIT` per unit) — far
   better than dropped/instant, a refinement target if it ever matters audibly.

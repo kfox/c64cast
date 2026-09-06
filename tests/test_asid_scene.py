@@ -325,7 +325,9 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         assert player is not None
         rates: list[float] = []
         player.set_frame_rate = rates.append  # type: ignore[method-assign]
-        player._armed = True  # so _apply_speed forwards
+        # _apply_speed has no _armed gate (it forwards whenever a buffered
+        # player exists); the flag is set only so the fake player looks armed.
+        player._armed = True
         # NTSC, multiplier 4 (data0 bits 1-4 = 3 → ×4).
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (3 << 1) | 0x01))
         self.assertTrue(rates)

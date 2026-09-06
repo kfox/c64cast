@@ -77,7 +77,10 @@ log = logging.getLogger("c64cast.sid.asid_player")
 
 # --------------------------------------------------------------------------
 # Memory map. AsidScene runs no DAC/NMI/pump, so $C000-$CFFF and the REU are
-# entirely free. Pinned by tests.
+# entirely free. The literal addresses and their disjointness are pinned by
+# MemoryMapTest in tests/test_asid_player.py — the symbolic assertions elsewhere
+# move with the constant, so relocating HANDLER_ADDR onto LANDING_BUF (a handler
+# the REU pull overwrites every tick) used to leave the whole suite green.
 # --------------------------------------------------------------------------
 HANDLER_ADDR = 0xC000  # player IRQ handler + inline delay subroutine
 LANDING_BUF = 0xC400  # REU→RAM pull target (page-aligned; up to ~1 KB slot)
@@ -123,6 +126,33 @@ _SLOT_ALIGN = 16  # round slot size up to this so single-SID → 128 (plan pins 
 DEFAULT_LEAD_SLOTS_SECONDS = 0.30  # keep the write head this far ahead of read
 DEFAULT_PREBUFFER_SECONDS = 0.30  # seed the full lead before arming (max cushion)
 _QUEUE_MAX_SLOTS = 4096
+# Cap one reu_write burst, so a 256-slot prebuffer or catch-up run at the 8-SID
+# slot size doesn't become a quarter-megabyte single transfer. Mirrors the same
+# cap in _prefill_holds. Well above the ~2.4 KB below which payload is free on
+# the U64 DMA link (see CLAUDE.md), so widening a run up to here costs nothing.
+_MAX_DMA_BURST_BYTES = 32 * 1024
+
+# The band a wire-supplied 0x31 may steer the consume rate into.
+#
+# Ceiling: the ASID spec's speed multiplier is 4 bits against the video frame
+# rate, so 16 x 60 Hz = 960 Hz is the fastest cadence the protocol can ask for;
+# 1000 Hz leaves headroom for a host deriving the same 16x from frame_delta_us.
+# Past it the numbers stop meaning anything: frame_delta_us = 1 asks for 1 MHz,
+# and because cia1_latch_for_rate clamps the *latch* rather than the rate, that
+# lands on latch 1 — a CIA IRQ every 2 cycles into a handler that needs hundreds,
+# so the 6510 never leaves it (jiffy clock, SCNKEY and the kernal tail dead until
+# a power cycle) while the read head advances ~511,000 slots/s and the writer
+# floods the shared single-connection DMA socket forever (measured: 767
+# reu_write/s against the ~200/s ceiling CLAUDE.md documents, starving the video
+# render path that shares the socket).
+#
+# Floor: CIA #1 Timer A is a 16-bit down-counter, so the slowest cadence the
+# hardware can realize is cpu_clock / 65536 — 15.6 Hz on NTSC, 15.0 Hz on PAL.
+# Take the lower of the two: below it the latch saturates and the request means
+# nothing. A malformed rate (NaN, or a delta the decoder aliased) clamps to the
+# floor rather than the ceiling — slow is the safe direction here.
+MAX_FRAME_RATE_HZ = 1000.0
+MIN_FRAME_RATE_HZ = 15.0
 
 # SID control-register offsets (voice 0/1/2), i.e. the ASID ids 22-27 targets.
 _CONTROL_OFFSETS = (0x04, 0x0B, 0x12)
@@ -205,9 +235,16 @@ def serialize_frame(
         ordered: list[tuple[int, int, int]] = []
         seen: set[int] = set()
         for rid, wait_cycles in recipe:
+            # A register id repeated in the write order emits its write once, at
+            # its first position. Without this, op count tracks recipe length
+            # rather than the frame's write count, and a spec-legal 28-pair
+            # recipe naming one id can push a single chip past MAX_OPS_PER_CHIP
+            # — which pack_slot then truncates, taking later chips with it.
+            if rid in seen:
+                continue
+            seen.add(rid)
             for _, offset, value, _dw in by_id.get(rid, ()):  # noqa: B007
                 ordered.append((base_addr + offset, value, _wait_units_for_cycles(wait_cycles)))
-            seen.add(rid)
         for rid, offset, value, dw in writes:
             if rid not in seen:
                 ordered.append((base_addr + offset, value, dw))
@@ -221,10 +258,23 @@ def pack_slot(ops: list[tuple[int, int, int]], slot_size: int) -> bytes:
 
     ``[n_ops]`` then 4 bytes per op ``[addr_lo, addr_hi, value, wait]``,
     zero-padded to ``slot_size``. ``n_ops`` fits one byte (multi-SID tops out at
-    8 × 28 = 224 ops < 256). Ops beyond what fits are dropped (should never
-    happen: ``slot_size`` is derived from the chip count)."""
+    8 × 28 = 224 ops < 256).
+
+    Ops beyond what fits are dropped, and that is **loud**: ``slot_size`` is
+    derived from the chip count on the assumption that 28 ops per chip is a hard
+    ceiling, so a truncation means something upstream broke it. It used to be
+    silent, which is how an over-long ``0x30`` recipe deleted a whole chip's
+    frame (every op past the cut belongs to the later chips in the slot)."""
     max_ops = (slot_size - 1) // OP_BYTES
     if len(ops) > max_ops:
+        log.warning(
+            "asid_player: frame carries %d ops but the %d B slot holds %d; "
+            "dropping %d — later chips in this slot lose their writes",
+            len(ops),
+            slot_size,
+            max_ops,
+            len(ops) - max_ops,
+        )
         ops = ops[:max_ops]
     out = bytearray(slot_size)
     out[0] = len(ops) & 0xFF
@@ -246,7 +296,10 @@ def hold_slot(slot_size: int) -> bytes:
 
 # --------------------------------------------------------------------------
 # 6502 handler builder — a tiny label-based assembler keeps the many relative
-# branches correct; tests pin the exact output bytes.
+# branches correct. The mnemonics live in comments, so BuildPlayerTest pins the
+# exact output bytes against a committed golden blob: without it, flipping the
+# op loop's `STA $0000` (0x8D) to `STX` (0x8E) — every SID write storing X
+# instead of the value, i.e. total silence — left all 110 ASID tests green.
 # --------------------------------------------------------------------------
 class _Asm:
     """Minimal 6502 assembler: emit bytes, mark labels, resolve rel/abs refs."""
@@ -303,7 +356,13 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
     slot's ops (self-modify a ``STA`` target, write value, busy-wait ``wait``
     units), then chain ``$EA31`` every ``tick_divider``-th tick (keeping SCNKEY /
     jiffy ~60 Hz) and lean-exit the rest. A/X/Y are freely clobbered — the kernal
-    ROM IRQ entry ($FF48) already saved them and the tail restores them."""
+    ROM IRQ entry ($FF48) already saved them and the tail restores them.
+
+    ``tick_divider`` must be 1..255 — it becomes an ``LDA #N`` immediate, and
+    silently masking it to 8 bits is how a divider of 333 became 77 and a
+    multiple of 256 became "chain once every 256 ticks"."""
+    if not 1 <= tick_divider <= 255:
+        raise ValueError(f"tick_divider must be 1..255, got {tick_divider}")
     ring_size = RING_SLOTS * slot_size
     ring_end = ring_base + ring_size
     b_lo, b_mi, b_hi = ring_base & 0xFF, (ring_base >> 8) & 0xFF, (ring_base >> 16) & 0xFF
@@ -386,7 +445,7 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
     a.label("tail")
     a.emit(0xCE, TICK_COUNTER_ADDR & 0xFF, (TICK_COUNTER_ADDR >> 8) & 0xFF)  # DEC tick
     a.branch(0xD0, "lean")  # BNE lean
-    a.emit(0xA9, tick_divider & 0xFF)  # LDA #N
+    a.emit(0xA9, tick_divider)  # LDA #N
     a.emit(0x8D, TICK_COUNTER_ADDR & 0xFF, (TICK_COUNTER_ADDR >> 8) & 0xFF)  # STA tick
     a.emit(0x4C, KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)  # JMP $EA31
     a.label("lean")
@@ -404,10 +463,37 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
     return a.resolve()
 
 
+def clamp_frame_rate(frame_rate_hz: float) -> float:
+    """Clamp a wire-derived ASID frame rate into the band the protocol and the
+    CIA can express (:data:`MIN_FRAME_RATE_HZ`..:data:`MAX_FRAME_RATE_HZ`),
+    warning when it has to. **This is the boundary** — every path that turns a
+    ``0x31`` message into a consume rate goes through it, because the damage
+    (C64 IRQ storm + a permanently flooded DMA socket) is done by the time the
+    rate reaches the CIA latch."""
+    if MIN_FRAME_RATE_HZ <= frame_rate_hz <= MAX_FRAME_RATE_HZ:
+        return frame_rate_hz
+    # Anything not inside the band — including NaN, which fails both
+    # comparisons — clamps toward the floor unless it is definitely too fast.
+    clamped = MAX_FRAME_RATE_HZ if frame_rate_hz > MAX_FRAME_RATE_HZ else MIN_FRAME_RATE_HZ
+    log.warning(
+        "asid_player: requested frame rate %s Hz is outside the %.0f-%.0f Hz band; using %.1f Hz",
+        frame_rate_hz,
+        MIN_FRAME_RATE_HZ,
+        MAX_FRAME_RATE_HZ,
+        clamped,
+    )
+    return clamped
+
+
 def tick_divider_for_rate(rate_hz: float) -> int:
-    """How many consume ticks per kernal-tail chain so SCNKEY/jiffy stay ~60 Hz
-    (≥ 1). At single speed → 1 (chain every tick); at 960 Hz → 16."""
-    return max(1, round(rate_hz / 60.0))
+    """How many consume ticks per kernal-tail chain so SCNKEY/jiffy stay ~60 Hz.
+    At single speed → 1 (chain every tick); at 960 Hz → 16.
+
+    Clamped to 1..255: the value is emitted as an ``LDA #N`` immediate, so a
+    divider above 255 would be truncated to a different number entirely and an
+    exact multiple of 256 would emit 0 — "chain once every 256 ticks", with the
+    jiffy clock and SCNKEY running far slower than this function promises."""
+    return max(1, min(255, round(rate_hz / 60.0)))
 
 
 # --------------------------------------------------------------------------
@@ -447,8 +533,16 @@ class AsidRingPlayer:
         self.slot_size = slot_size_for_chips(self.n_chips)
 
         self._q: queue.Queue[bytes] = queue.Queue(maxsize=_QUEUE_MAX_SLOTS)
-        self._writer: PollThread | None = None
-        self._running = False
+        # ONE PollThread for the player's lifetime, restarted across reinit()
+        # rather than replaced. Its "already running" guard lives on the object
+        # (see _pollthread's module docstring), so a fresh object per start()
+        # threw the guard away — and a writer still blocked in reu_write past
+        # the join timeout would then race a second one over self._write_pos and
+        # one REU ring. The loop exits on this thread's own stop event, so a
+        # start() that does spawn a replacement can never un-stop the old one.
+        self._writer = PollThread(
+            self._writer_loop, name="asid-ring", manual=True, join_timeout=1.0
+        )
         self._armed = False
         self._lock = threading.Lock()  # guards rate/anchor accounting
 
@@ -465,8 +559,12 @@ class AsidRingPlayer:
         self._real_written = 0
         self._pushed = 0
         self._dropped_full = 0
-        self._lead_min = -1
-        self._lead_max = -1
+        # None = never sampled. A plain -1 sentinel collided with a genuinely
+        # negative lead — the pathological state this telemetry exists to catch
+        # — so the minimum tracked the current value and stop()'s guard then
+        # suppressed the whole line on exactly the run worth reading.
+        self._lead_min: int | None = None
+        self._lead_max: int | None = None
 
     # ---- rate / read-head accounting --------------------------------------
     def _recompute_lead(self) -> None:
@@ -492,6 +590,7 @@ class AsidRingPlayer:
         already-consumed ring slots (heard as unbroken holds). Arming when the
         prebuffer is ready makes ``gate_time`` coincide with data actually
         flowing, so the write head stays a full ``lead`` ahead."""
+        frame_rate_hz = clamp_frame_rate(frame_rate_hz)
         self._latch = cia1_latch_for_rate(frame_rate_hz, self.system)
         self._rate = actual_rate_for_latch(self._latch, self.system)
         self._recompute_lead()
@@ -527,13 +626,14 @@ class AsidRingPlayer:
         )
         self.api.flush()
 
-        self._running = True
-        # The loop's stop signal is self._running (reinit/teardown flip it),
-        # so the PollThread event goes unused — the poll supplies the
-        # daemon-thread start/join lifecycle.
-        self._writer = PollThread(
-            lambda stop: self._writer_loop(), name="asid-ring", manual=True, join_timeout=1.0
-        )
+        if self._writer.is_running():
+            # PollThread refuses the duplicate for us; say so, because the
+            # consequence is a player that plays holds until the previous
+            # writer's blocked DMA call returns and the next reinit re-starts it.
+            log.warning(
+                "asid_player: the previous writer thread has not exited; refusing to "
+                "run two writers over one ring — the ring will pad holds until it does"
+            )
         self._writer.start()
         log.info(
             "asid_player: installed — %d chip(s), slot %d B, %.1f Hz (latch %d, N=%d), "
@@ -556,21 +656,48 @@ class AsidRingPlayer:
         """Arm once the queue holds a full prebuffer of real frames: drain them
         into ring slots 0.., anchor the read head at that instant, and swap
         ``$0314`` → the handler. Idempotent + thread-safe (start() and the writer
-        both call it). Returns True once armed."""
+        both call it). Returns True once armed.
+
+        The prebuffer goes out as **one** contiguous transfer rather than a write
+        per slot: the whole method runs under the lock ``set_frame_rate`` needs
+        on the MIDI reader thread, and at a spec-legal 16× the prebuffer pins at
+        ``RING_SLOTS // 2`` = 256 slots — 256 blocking DMA writes is ~1.3 s of
+        held lock, during which the reader is not draining ``iter_pending()``.
+        Contiguous slots cost the same as one on this link (CLAUDE.md)."""
         with self._lock:
             if self._armed:
                 return True
             if self._q.qsize() < self._prebuffer_target:
                 return False
-            n = 0
-            while n < self._prebuffer_target:
+            slots: list[bytes] = []
+            mismatched = 0
+            while len(slots) < self._prebuffer_target:
                 try:
                     slot = self._q.get_nowait()
                 except queue.Empty:
                     break
                 if len(slot) == self.slot_size:
-                    self._write_slot_at(n, slot)
-                    n += 1
+                    slots.append(slot)
+                else:
+                    mismatched += 1
+            n = len(slots)
+            if mismatched:
+                # A chip-count reinit can leave stragglers packed at the old
+                # slot size in flight from the reader thread.
+                log.warning(
+                    "asid_player: discarded %d prebuffer slot(s) sized for a previous "
+                    "chip count; %d of %d realized",
+                    mismatched,
+                    n,
+                    self._prebuffer_target,
+                )
+            if n < self._prebuffer_target:
+                # Arming here would start the read-head clock against a ring the
+                # prebuffer never filled — Symptom 1 with extra steps. The
+                # discarded stragglers are gone, so the next call re-checks
+                # against fresh, correctly-sized frames.
+                return False
+            self._write_slots(0, slots)
             self.api.flush()
             self._write_pos = n
             self._real_written += n
@@ -618,12 +745,20 @@ class AsidRingPlayer:
         would arm at the wrong (initial video-rate) cadence and silently decimate
         the tune to that rate. Pre-arm it just retunes the CIA latch + rebuilds
         the handler's tick divider so the correct rate takes effect the moment
-        the vector swaps; post-arm it also re-anchors the running read head."""
+        the vector swaps; post-arm it also re-anchors the running read head.
+
+        The requested rate is clamped to the ASID band first — see
+        :func:`clamp_frame_rate`. This is the boundary the scene's ``0x31``
+        handling should route through."""
+        frame_rate_hz = clamp_frame_rate(frame_rate_hz)
         latch = cia1_latch_for_rate(frame_rate_hz, self.system)
         rate = actual_rate_for_latch(latch, self.system)
         divider = tick_divider_for_rate(rate)
-        armed = self._armed
         with self._lock:
+            # Read _armed under the lock _try_arm holds across the whole arm
+            # sequence, so an arm in progress serializes ahead of this and the
+            # post-arm re-anchor below actually runs.
+            armed = self._armed
             if armed:
                 self._consumed_base = self._read_head()
                 self._rate_anchor = time.monotonic()
@@ -641,8 +776,10 @@ class AsidRingPlayer:
             f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
         )
         if not armed:
-            # Safe to rebuild the handler in place — its vector isn't hooked yet —
-            # so the tick divider matches the real rate before it starts running.
+            # The vector isn't hooked yet, so rebuild the handler in place — the
+            # tick divider then matches the real rate before it starts running.
+            # (`armed` came from the locked read above, so this branch can no
+            # longer lose a race against an arm and rewrite a live handler.)
             self.api.write_memory_file(
                 f"{HANDLER_ADDR:04X}",
                 build_player(self.slot_size, divider, ring_base=self.ring_base),
@@ -676,18 +813,18 @@ class AsidRingPlayer:
         self.start(rate)
 
     # ---- writer loop ------------------------------------------------------
-    def _writer_loop(self) -> None:
+    def _writer_loop(self, stop: threading.Event) -> None:
         # Phase 1: wait for a real-frame prebuffer, then arm (start the read-head
         # clock + swap $0314). See start()/_try_arm for why we don't arm eagerly.
-        while self._running and not self._armed:
+        while not stop.is_set() and not self._armed:
             if not self._try_arm():
                 time.sleep(0.005)
         # Phase 2: steady state — keep the write head a `lead` ahead of the read.
-        while self._running:
+        while not stop.is_set():
             read_head = self._read_head()
             lead = self._write_pos - read_head
-            self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
-            self._lead_max = max(self._lead_max, lead)
+            self._lead_min = lead if self._lead_min is None else min(self._lead_min, lead)
+            self._lead_max = lead if self._lead_max is None else max(self._lead_max, lead)
             deficit = self._lead_target - lead
             if deficit <= 0:
                 time.sleep(0.002)
@@ -703,6 +840,7 @@ class AsidRingPlayer:
                     break
                 if len(slot) == self.slot_size:
                     slots.append(slot)
+            pad_seconds = 0.0
             if slots:
                 self._real_written += len(slots)
             else:
@@ -717,24 +855,34 @@ class AsidRingPlayer:
                     except queue.Empty:
                         continue
                 else:
-                    slots.append(hold_slot(self.slot_size))
-                    self._underrun_pads += 1
+                    # Pad a batch in one contiguous write, then sleep the time it
+                    # buys. Nothing else paces this branch: a spec-legal 16×
+                    # (960 Hz) stream that then goes quiet leaves the lead
+                    # negative forever, and padding one slot per unpaced
+                    # iteration ran at the link's maximum rate indefinitely
+                    # (measured: 705 reu_write/s — the whole ~200/s DMA ceiling
+                    # on real hardware, taken from the render path that shares
+                    # the socket). Batched + paced, holds cost `rate / pads`
+                    # writes per second, ~15/s at any rate in the band.
+                    pads = min(deficit, max(1, self._lead_panic))
+                    slots.extend([hold_slot(self.slot_size)] * pads)
+                    self._underrun_pads += pads
+                    pad_seconds = pads / self._rate
             self._write_slots(self._write_pos, slots)
             self._write_pos += len(slots)
-
-    def _write_slot_at(self, slot_index: int, slot: bytes) -> None:
-        pos = (slot_index % RING_SLOTS) * self.slot_size
-        self.api.reu_write(self.ring_base + pos, slot)
+            if pad_seconds:
+                time.sleep(pad_seconds)
 
     def _write_slots(self, start_index: int, slots: list[bytes]) -> None:
         """REUWRITE consecutive slots starting at absolute ``start_index``,
-        splitting into runs that don't cross the ring wrap so each run is one
-        contiguous transfer."""
+        splitting into runs that don't cross the ring wrap (so each run is one
+        contiguous transfer) and don't exceed ``_MAX_DMA_BURST_BYTES``."""
         i = 0
         n = len(slots)
+        slots_per_burst = max(1, _MAX_DMA_BURST_BYTES // self.slot_size)
         while i < n:
             ring_slot = (start_index + i) % RING_SLOTS
-            run = min(n - i, RING_SLOTS - ring_slot)
+            run = min(n - i, RING_SLOTS - ring_slot, slots_per_burst)
             payload = b"".join(slots[i : i + run])
             self.api.reu_write(self.ring_base + ring_slot * self.slot_size, payload)
             i += run
@@ -743,10 +891,12 @@ class AsidRingPlayer:
     def _teardown_player(self) -> None:
         """Stop the writer + disarm the C64 IRQ (restore $0314 + CIA #1 latch).
         Idempotent; leaves the SID untouched (the scene silences it)."""
-        self._running = False
-        if self._writer is not None:
-            self._writer.stop()
-            self._writer = None
+        # Stop the thread but KEEP the PollThread object: after a timed-out join
+        # it deliberately holds its reference so a later start() refuses a
+        # duplicate. Discarding it here is what let reinit() (reachable from one
+        # 0x5F SysEx via _reconfigure_chips) run a second writer alongside an
+        # abandoned one, racing self._write_pos over a single REU ring.
+        self._writer.stop()
         if not self._armed:
             return
         try:
@@ -774,7 +924,7 @@ class AsidRingPlayer:
             self._underrun_pads,
             self._dropped_full,
         )
-        if self._lead_min >= 0:
+        if self._lead_min is not None:
             log.info(
                 "asid_player: write-ahead lead min=%d max=%d slots (target=%d)",
                 self._lead_min,

@@ -13,6 +13,7 @@ Tier-2 smoke run against an ASID host, not here.
 from __future__ import annotations
 
 import sys
+import time
 import unittest
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +31,29 @@ def _fake_backend() -> tuple[C64Backend, Any]:
     plus the same object typed as Any for asserting on its fake attributes."""
     api = FakeAPI()
     return cast(C64Backend, api), api
+
+
+def _packed_latch(latch: int) -> str:
+    """The little-endian hex pair write_memory sends for a CIA Timer A latch."""
+    return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+
+
+# The assembled IRQ player for build_player(128, 1), byte for byte. Every other
+# assertion in this file is symbolic or structural, which is why two mutations
+# that corrupt the generated 6502 — the op loop's `STA $0000` (0x8D) flipped to
+# `STX` (0x8E), so every SID write stores X instead of the value, and
+# HANDLER_ADDR relocated onto LANDING_BUF, where the REU pull overwrites the
+# handler every tick — both left all 110 ASID tests green. Regenerate this blob
+# only when the handler deliberately changes, and read the diff opcode by opcode.
+_GOLDEN_PLAYER_128_1 = bytes.fromhex(
+    "ad00c88d04dfad01c88d05dfad02c88d06dfa9008d02dfa9c48d03dfa9808d07"
+    "dfa9008d08dfa9008d0adfa9918d01df18ad00c869808d00c8ad01c869008d01"
+    "c8ad02c869008d02c8ad02c8c9319021d010ad01c8c9009018d007ad00c8c900"
+    "900fa9008d00c8a9008d01c8a9308d02c8a90085fba9c485fca000b1fbf0378d"
+    "04c8e6fbd002e6fca000b1fb8d9bc0a001b1fb8d9cc0a002b1fb8d0000a003b1"
+    "fbf00320c9c0a5fb18690485fb9002e6fcce04c8d0d2ce03c8d008a9018d03c8"
+    "4c31eaad0ddc4c81eaa888d0fd60"
+)
 
 
 class SlotSizeTest(unittest.TestCase):
@@ -86,6 +110,23 @@ class SerializeFrameTest(unittest.TestCase):
             ],
         )
 
+    def test_recipe_repeating_an_id_emits_that_write_once(self):
+        # Op count must track the frame's write count, not the recipe's length.
+        # A 28-pair recipe (spec-legal) all naming id 0 used to emit 28 ops for
+        # one register, pushing the slot past MAX_OPS_PER_CHIP.
+        ops = ap.serialize_frame({0x00: 0xAA, 0x01: 0xBB}, {}, 0xD400, recipe=[(0, 10)] * 28)
+        self.assertEqual(ops[0], (0xD400, 0xAA, ap._wait_units_for_cycles(10)))
+        self.assertEqual(len(ops), 2)  # + the id-1 register the recipe omits
+
+    def test_a_full_frame_under_any_legal_recipe_fits_one_chips_ops(self):
+        # The bound pack_slot's slot sizing assumes: one chip's serialized frame
+        # never exceeds MAX_OPS_PER_CHIP, whatever order a 0x30 asks for.
+        regs = dict.fromkeys(range(0x19), 0x11)
+        control_first = {0: 0x08, 1: 0x08, 2: 0x08}
+        recipe = [(rid, 255) for rid in range(28)] + [(0, 255)] * 28
+        ops = ap.serialize_frame(regs, control_first, 0xD400, recipe=recipe)
+        self.assertLessEqual(len(ops), ap.MAX_OPS_PER_CHIP)
+
     def test_recipe_appends_registers_it_omits(self):
         # Recipe mentions only id 0; the frame's id-1 register still gets written
         # (default order, after the recipe-ordered ones).
@@ -109,14 +150,49 @@ class PackSlotTest(unittest.TestCase):
         self.assertEqual(len(slot), 128)
         self.assertEqual(slot[0], 0)  # n_ops == 0 → hold tick
 
-    def test_overfull_ops_truncated(self):
-        # More ops than the slot can hold are dropped (never happens in practice).
+    def test_overfull_ops_truncated_loudly(self):
+        # More ops than the slot can hold are dropped — and said out loud. The
+        # ops past the cut belong to the later chips in a multi-SID slot, so a
+        # silent truncation deleted a whole chip's frame.
         many = [(0xD400, 0, 0)] * 100
-        slot = ap.pack_slot(many, 128)
+        with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
+            slot = ap.pack_slot(many, 128)
         self.assertEqual(slot[0], (128 - 1) // ap.OP_BYTES)
+        self.assertIn("later chips in this slot lose their writes", caught.output[0])
+
+
+class MemoryMapTest(unittest.TestCase):
+    """The $C000 memory map by literal address, not by symbol. The symbolic
+    assertions elsewhere move with the constants, so relocating HANDLER_ADDR
+    onto LANDING_BUF — where the REU pull overwrites the handler every tick —
+    left the whole suite green."""
+
+    def test_literal_addresses(self):
+        self.assertEqual(ap.HANDLER_ADDR, 0xC000)
+        self.assertEqual(ap.LANDING_BUF, 0xC400)
+        self.assertEqual(ap.TRACKER_ADDR, 0xC800)
+        self.assertEqual(ap.TICK_COUNTER_ADDR, 0xC803)
+        self.assertEqual(ap.NOPS_COUNTER_ADDR, 0xC804)
+
+    def test_handler_does_not_overlap_the_landing_buffer_or_tracker(self):
+        # The 8-SID worst case is the biggest landing buffer and the longest
+        # handler, so it is the case that has to fit.
+        handler_end = ap.HANDLER_ADDR + len(ap.build_player(ap.slot_size_for_chips(8), 16))
+        self.assertLessEqual(handler_end, ap.LANDING_BUF)
+        self.assertLessEqual(ap.LANDING_BUF + ap.slot_size_for_chips(8), ap.TRACKER_ADDR)
 
 
 class BuildPlayerTest(unittest.TestCase):
+    def test_matches_the_golden_blob(self):
+        self.assertEqual(ap.build_player(128, 1).hex(), _GOLDEN_PLAYER_128_1.hex())
+
+    def test_rejects_a_tick_divider_the_immediate_cannot_hold(self):
+        # It becomes an `LDA #N`; masking to 8 bits turned 333 into 77 and any
+        # multiple of 256 into "chain once every 256 ticks".
+        for bad in (0, 256, 333):
+            with self.assertRaises(ValueError):
+                ap.build_player(128, bad)
+
     def test_deterministic_and_structure_stable(self):
         # Byte layout is identical across slot sizes / dividers — only operands
         # differ — so the length is a structural invariant.
@@ -158,6 +234,38 @@ class LatchHelpersTest(unittest.TestCase):
         self.assertEqual(ap.tick_divider_for_rate(960.0), 16)
         self.assertGreaterEqual(ap.tick_divider_for_rate(1.0), 1)
 
+    def test_tick_divider_never_exceeds_the_immediate(self):
+        # It is emitted as `LDA #N`. 20000 Hz used to return 333 (truncated to
+        # 77) and any exact multiple of 256 to emit 0.
+        for rate in (20000.0, 15360.0, 1e6):
+            self.assertLessEqual(ap.tick_divider_for_rate(rate), 255)
+            self.assertGreaterEqual(ap.tick_divider_for_rate(rate), 1)
+
+
+class ClampFrameRateTest(unittest.TestCase):
+    """One 0x31 must not be able to set an arbitrary consume rate: the CIA latch
+    clamps the *latch*, not the rate, so an out-of-band request becomes the
+    fastest timer the chip can run rather than an error."""
+
+    def test_in_band_rates_pass_through(self):
+        for rate in (50.0, 60.0, 960.0):
+            self.assertEqual(ap.clamp_frame_rate(rate), rate)
+
+    def test_a_frame_delta_of_one_microsecond_clamps_to_the_ceiling(self):
+        with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
+            clamped = ap.clamp_frame_rate(1_000_000.0)  # F0 2D 31 00 01 00 00 F7
+        self.assertEqual(clamped, ap.MAX_FRAME_RATE_HZ)
+        self.assertIn("outside the", caught.output[0])
+
+    def test_below_the_band_clamps_to_the_floor(self):
+        with self.assertLogs("c64cast.sid.asid_player", "WARNING"):
+            self.assertEqual(ap.clamp_frame_rate(0.001), ap.MIN_FRAME_RATE_HZ)
+
+    def test_a_malformed_rate_fails_slow(self):
+        # NaN fails both comparisons; the safe direction is the floor.
+        with self.assertLogs("c64cast.sid.asid_player", "WARNING"):
+            self.assertEqual(ap.clamp_frame_rate(float("nan")), ap.MIN_FRAME_RATE_HZ)
+
 
 class RingMathTest(unittest.TestCase):
     def _player(self, n_chips=1):
@@ -192,11 +300,74 @@ class RingMathTest(unittest.TestCase):
         p, _ = self._player()
         self.assertEqual(p._read_head(), 0)
 
+    def test_write_slots_caps_the_burst(self):
+        # A 256-slot prebuffer or catch-up run at the 8-SID slot size would
+        # otherwise be a single quarter-megabyte transfer.
+        p, fake = self._player(n_chips=8)
+        slots = [bytes(p.slot_size)] * 64
+        p._write_slots(0, slots)
+        for _off, payload in fake.socket_dma.reuwrites:
+            self.assertLessEqual(len(payload), ap._MAX_DMA_BURST_BYTES)
+        self.assertEqual(
+            sum(len(payload) for _off, payload in fake.socket_dma.reuwrites),
+            len(slots) * p.slot_size,
+        )
+
+
+class ArmGateTest(unittest.TestCase):
+    """The lazy-arm prebuffer gate — "Symptom 1" in docs/caveats.md. Arming
+    before real frames exist starts the read-head clock against an empty ring
+    and every real frame lands in an already-consumed slot (heard as unbroken
+    holds). Driven without start(), so no writer thread races the assertions."""
+
+    def _unstarted(self, target: int):
+        api, fake = _fake_backend()
+        p = ap.AsidRingPlayer(api, system="NTSC", n_chips=1)
+        p._prebuffer_target = target
+        return p, fake
+
+    def test_does_not_arm_below_the_prebuffer_target(self):
+        p, fake = self._unstarted(4)
+        for _ in range(3):
+            p.push_frame(ap.hold_slot(p.slot_size))
+        self.assertFalse(p._try_arm())
+        self.assertFalse(p._armed)
+        self.assertEqual(p._read_head(), 0)
+        self.assertNotIn("0314", fake.regs)
+        self.assertEqual(fake.socket_dma.reuwrites, [])
+
+    def test_arms_and_swaps_the_vector_once_the_prebuffer_is_full(self):
+        p, fake = self._unstarted(4)
+        frames = [bytes([n + 1]) + bytes(p.slot_size - 1) for n in range(4)]
+        for frame in frames:
+            p.push_frame(frame)
+        self.assertTrue(p._try_arm())
+        self.assertTrue(p._armed)
+        self.assertEqual(p._write_pos, 4)
+        self.assertEqual(fake.regs["0314"], (ap.HANDLER_ADDR & 0xFF, (ap.HANDLER_ADDR >> 8) & 0xFF))
+        # One contiguous transfer, not one per slot: the whole arm runs under
+        # the lock set_frame_rate needs on the MIDI reader thread, and a 16x
+        # stream pins the prebuffer at 256 slots.
+        self.assertEqual(fake.socket_dma.reuwrites, [(ap.RING_BASE, b"".join(frames))])
+
+    def test_does_not_arm_when_stale_slot_sizes_ate_the_prebuffer(self):
+        # A chip-count reinit leaves stragglers packed at the old slot size in
+        # flight from the reader thread; they satisfy qsize but not the ring.
+        p, fake = self._unstarted(4)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        for _ in range(3):
+            p.push_frame(ap.hold_slot(ap.slot_size_for_chips(3)))
+        with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
+            self.assertFalse(p._try_arm())
+        self.assertFalse(p._armed)
+        self.assertNotIn("0314", fake.regs)
+        self.assertIn("discarded 3 prebuffer slot(s)", caught.output[0])
+
 
 class BringUpTeardownTest(unittest.TestCase):
-    def _player(self, **kw):
+    def _player(self, system="NTSC", **kw):
         api, fake = _fake_backend()
-        return ap.AsidRingPlayer(api, system="NTSC", n_chips=1, **kw), fake
+        return ap.AsidRingPlayer(api, system=system, n_chips=1, **kw), fake
 
     def test_start_installs_handler_tracker_latch_and_vector(self):
         p, api = self._player(prebuffer_seconds=0.0)
@@ -223,16 +394,26 @@ class BringUpTeardownTest(unittest.TestCase):
             p.stop()
 
     def test_stop_restores_vector_and_latch(self):
-        p, api = self._player(prebuffer_seconds=0.0)
-        p.push_frame(ap.hold_slot(p.slot_size))
-        p.start(60.0)
-        p.stop()
-        from c64cast.hw.c64 import KERNAL
+        # The latch half is the one guard on a CHANGELOG-recorded regression:
+        # writing PAL's $4025 back on an NTSC machine ran the jiffy clock ~3.8%
+        # fast. Asserting the vector alone let a hardcoded 0x4025 stay green.
+        from c64cast.hw.c64 import KERNAL, kernal_cia1_latch
 
-        self.assertEqual(
-            api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
-        )
-        self.assertFalse(p._armed)
+        for system in ("NTSC", "PAL"):
+            with self.subTest(system=system):
+                p, api = self._player(system=system, prebuffer_seconds=0.0)
+                p.push_frame(ap.hold_slot(p.slot_size))
+                p.start(60.0)
+                p.stop()
+                self.assertEqual(
+                    api.regs["0314"],
+                    (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF),
+                )
+                self.assertEqual(
+                    api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"],
+                    _packed_latch(kernal_cia1_latch(system)),
+                )
+                self.assertFalse(p._armed)
 
     def test_set_frame_rate_reanchors_without_losing_alignment(self):
         p, _ = self._player(prebuffer_seconds=0.0)
@@ -247,6 +428,92 @@ class BringUpTeardownTest(unittest.TestCase):
             self.assertAlmostEqual(p._rate, 120.0, delta=1.0)
         finally:
             p.stop()
+
+    def test_set_frame_rate_before_arming_retunes_everything(self):
+        # "Symptom 2" in docs/caveats.md: a 0x31 almost always arrives at stream
+        # start, before the prebuffer fills. Dropping it pre-arm makes the player
+        # arm at the initial video-rate cadence and decimate the tune to it.
+        p, api = self._player()  # real prebuffer, empty queue → never arms
+        p.start(60.0)
+        try:
+            self.assertFalse(p._armed)
+            before = p._prebuffer_target
+            p.set_frame_rate(120.0)
+            self.assertAlmostEqual(p._rate, 120.0, delta=1.0)
+            self.assertEqual(p._divider, 2)
+            self.assertGreater(p._prebuffer_target, before)
+            # The CIA latch and the handler's baked-in divider both follow.
+            self.assertEqual(
+                api.memories[f"{ap.CIA1.TIMER_A_LO:04X}"],
+                _packed_latch(ap.cia1_latch_for_rate(120.0, "NTSC")),
+            )
+            self.assertEqual(
+                api.mem_files[f"{ap.HANDLER_ADDR:04X}"],
+                ap.build_player(p.slot_size, 2),
+            )
+        finally:
+            p.stop()
+
+    def test_a_hostile_speed_message_cannot_set_an_arbitrary_rate(self):
+        # frame_delta_us = 1 → 1 MHz. Unclamped this became CIA latch 1, i.e.
+        # _rate 511,364 Hz: an IRQ every 2 cycles on the C64 and a permanently
+        # flooded DMA socket on the host.
+        p, _ = self._player(prebuffer_seconds=0.0)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            with self.assertLogs("c64cast.sid.asid_player", "WARNING"):
+                p.set_frame_rate(1_000_000.0)
+            self.assertLessEqual(p._rate, ap.MAX_FRAME_RATE_HZ + 1.0)
+            self.assertGreaterEqual(p._rate, ap.MIN_FRAME_RATE_HZ)
+            self.assertLessEqual(p._divider, 255)
+        finally:
+            p.stop()
+
+    def test_hold_padding_is_paced_not_link_limited(self):
+        # A spec-legal 16x stream that then goes quiet leaves the lead negative
+        # forever. Unpaced, the pad branch appended one hold per iteration with
+        # no sleep and ran at the link's maximum rate indefinitely (measured 705
+        # reu_write/s against the ~200/s the U64 DMA socket can carry, taken
+        # from the render path that shares it). Batched + paced, holds cost
+        # `rate / lead_panic` writes per second whatever the rate.
+        # Needs a link slow enough that the read head genuinely outruns it —
+        # that is the whole condition, and an instant fake link hides it.
+        api, fake = _fake_backend()
+        direct = fake.reu_write
+
+        def slow_reu_write(offset, data):
+            time.sleep(0.001)
+            direct(offset, data)
+
+        fake.reu_write = slow_reu_write
+        p = ap.AsidRingPlayer(api, system="NTSC", n_chips=1, prebuffer_seconds=0.0)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(960.0)  # F0 2D 31 1E F7 — a spec-legal 16x, then the host goes quiet
+        try:
+            baseline = len(fake.socket_dma.reuwrites)
+            time.sleep(0.2)
+            pad_writes = len(fake.socket_dma.reuwrites) - baseline
+        finally:
+            p.stop()
+        self.assertGreater(p._underrun_pads, 0, "the pad branch never ran")
+        # ~3 paced against this 1 ms link; unpaced it was ~200, i.e. flat out.
+        self.assertLess(pad_writes, 30, f"{pad_writes} pad writes in 0.2 s")
+
+    def test_reinit_keeps_the_writer_object_so_a_duplicate_is_refused(self):
+        # PollThread's "already running" guard lives on the object: discarding
+        # it let a writer still blocked in reu_write past the join timeout race
+        # a freshly started one over self._write_pos and one REU ring.
+        p, _ = self._player(prebuffer_seconds=0.0)
+        p.push_frame(ap.hold_slot(p.slot_size))
+        p.start(60.0)
+        try:
+            writer = p._writer
+            p.reinit(3)
+            self.assertIs(p._writer, writer)
+        finally:
+            p.stop()
+        self.assertFalse(p._writer.is_running())
 
     def test_reinit_changes_slot_size(self):
         p, _ = self._player(prebuffer_seconds=0.0)

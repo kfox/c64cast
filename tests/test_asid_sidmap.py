@@ -143,6 +143,28 @@ def _realized_addresses(sm: m.SidMap) -> set[int]:
     return {addr for addrs in _realized_by_source(sm).values() for addr in addrs}
 
 
+# Target sets the address-driven planner is swept over: consecutive runs, a
+# split across two pages, a cartridge-I/O base, and one that doesn't start at
+# $D400 (a PSID header need not).
+_TARGET_SETS: tuple[tuple[int, ...], ...] = (
+    (0xD400,),
+    (0xD400, 0xD420),
+    (0xD400, 0xD420, 0xD440),
+    (0xD400, 0xD420, 0xD440, 0xD460),
+    (0xD400, 0xD420, 0xD500, 0xD520),
+    (0xD400, 0xD500),
+    (0xD400, 0xDE00),
+    (0xD420, 0xD440),
+)
+_SOCKET_MODEL_COMBOS: tuple[tuple[str | None, str | None], ...] = (
+    (None, None),
+    ("6581", None),
+    (None, "6581"),
+    ("6581", "6581"),
+    ("8580", "6581"),
+)
+
+
 class RealizationOracleTest(unittest.TestCase):
     """Every planned map must realize each routed chip on the source that plans
     to play it, with no aliasing beyond the deliberate LED mirrors."""
@@ -187,6 +209,43 @@ class RealizationOracleTest(unittest.TestCase):
                         self._assert_realizable(sm)
                         self._assert_only_mirrors_alias(sm)
 
+    def test_for_addresses_over_target_sets_and_socket_models(self):
+        """The same oracle over the *other* planner.
+
+        It used to run against `plan_sid_map` only — which gets socket/core
+        non-collision for free by moving cores to the $D5xx page — while
+        `plan_sid_map_for_addresses`, the one that runs for every .sid file with
+        a multi-SID header, went unchecked. That is why a 4-SID header whose
+        first base matched a socketed chip's model could enable SID Socket 1 at
+        $D400 *and* place a 1/2-split UltiSID core over it.
+        """
+        for addresses in _TARGET_SETS:
+            for socket_models in _SOCKET_MODEL_COMBOS:
+                for required in ((), ("6581",) * 8, ("8580",) * 8):
+                    sm = m.plan_sid_map_for_addresses(
+                        addresses, socket_models=socket_models, required_models=required
+                    )
+                    if sm is None:
+                        continue
+                    with self.subTest(a=addresses, s=socket_models, r=required[:1]):
+                        self._assert_realizable(sm)
+                        self._assert_only_mirrors_alias(sm)
+
+    def test_a_split_core_never_covers_an_enabled_sockets_address(self):
+        # The repro: the firmware aligns a 1/2-split core's base down to $D400,
+        # pulling its window back over the socket the planner just enabled, so
+        # chip 0 sounds on the real chip and the core at once — the "detuned
+        # double" the module docstring forbids.
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440, 0xD460),
+            socket_models=("6581", None),
+            required_models=("6581",) * 4,
+        )
+        assert sm is not None
+        self._assert_realizable(sm)
+        self._assert_only_mirrors_alias(sm)
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
+
 
 class PlanForAddressesTest(unittest.TestCase):
     """plan_sid_map_for_addresses: realize a SID file's *own* fixed chip
@@ -230,6 +289,16 @@ class PlanForAddressesTest(unittest.TestCase):
 
     def test_empty_returns_none(self):
         self.assertIsNone(m.plan_sid_map_for_addresses(()))
+
+    def test_core_base_outside_the_firmware_enum_is_unrealizable(self):
+        # The base is bounded below ($D400) and now above: the firmware's
+        # u64_sid_base[] enum covers $D400-$D7E0 and $DE00-$DFE0 only, so a
+        # header-chosen target elsewhere must fall back, not be PUT verbatim.
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xDA00,)))
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xD800)))
+        # Both ends of the legal windows still plan.
+        for legal in (0xD400, 0xD7E0, 0xDE00, 0xDFE0):
+            self.assertIsNotNone(m.plan_sid_map_for_addresses((legal,)), hex(legal))
 
 
 class ModelAwareRoutingTest(unittest.TestCase):
@@ -319,11 +388,20 @@ class SidMapSourcesTest(unittest.TestCase):
         sm = m.plan_sid_map(2)
         self.assertEqual(sm.sources, ("ultisid1", "ultisid2"))
 
-    def test_through_four_chips_every_source_is_distinct(self):
-        # The pannable-independently guarantee sid_panning documents.
+    def test_through_four_chips_every_source_is_distinct_with_both_sockets(self):
+        # The pannable-independently guarantee sid_panning documents — which
+        # holds only when both sockets are populated. See the no-socket case
+        # below for what the ordinary ASID stream on a stock U64 actually gets.
         for n in range(1, 5):
             sm = m.plan_sid_map(n, socket1_present=True, socket2_present=True)
             self.assertEqual(len(set(sm.sources)), n, sm.sources)
+
+    def test_with_no_socket_in_play_sharing_starts_at_three_chips(self):
+        # Two UltiSID cores are the only sources, so the third chip necessarily
+        # doubles onto a split core and shares its pan. SidMap's docstring used
+        # to promise distinct sources until 5 chips.
+        self.assertEqual(m.plan_sid_map(2).sources, ("ultisid1", "ultisid2"))
+        self.assertEqual(m.plan_sid_map(3).sources, ("ultisid1", "ultisid1", "ultisid2"))
 
     def test_split_core_hosts_several_chips_on_one_source(self):
         sm = m.plan_sid_map(6, socket1_present=True, socket2_present=True)
