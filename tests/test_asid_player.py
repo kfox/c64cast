@@ -102,13 +102,14 @@ class SerializeFrameTest(unittest.TestCase):
 
     def test_recipe_reorders_and_applies_waits(self):
         # Recipe writes id 1 (offset 0x01) before id 0 (offset 0x00) and assigns
-        # per-op waits (cycles → delay units via DELAY_CYCLES_PER_UNIT).
+        # per-op waits. The expected units are literal (10 and 20 cycles at
+        # DELAY_CYCLES_PER_UNIT) — see CostModelConstantsTest for why.
         ops = ap.serialize_frame({0x00: 0xAA, 0x01: 0xBB}, {}, 0xD400, recipe=[(1, 10), (0, 20)])
         self.assertEqual(
             ops,
             [
-                (0xD401, 0xBB, ap._wait_units_for_cycles(10)),
-                (0xD400, 0xAA, ap._wait_units_for_cycles(20)),
+                (0xD401, 0xBB, 2),
+                (0xD400, 0xAA, 4),
             ],
         )
 
@@ -117,7 +118,7 @@ class SerializeFrameTest(unittest.TestCase):
         # A 28-pair recipe (spec-legal) all naming id 0 used to emit 28 ops for
         # one register, pushing the slot past MAX_OPS_PER_CHIP.
         ops = ap.serialize_frame({0x00: 0xAA, 0x01: 0xBB}, {}, 0xD400, recipe=[(0, 10)] * 28)
-        self.assertEqual(ops[0], (0xD400, 0xAA, ap._wait_units_for_cycles(10)))
+        self.assertEqual(ops[0], (0xD400, 0xAA, 2))
         self.assertEqual(len(ops), 2)  # + the id-1 register the recipe omits
 
     def test_a_full_frame_under_any_legal_recipe_fits_one_chips_ops(self):
@@ -173,8 +174,8 @@ class SerializeFrameTest(unittest.TestCase):
         self.assertEqual(
             ops,
             [
-                (0xD404, 0x08, ap._wait_units_for_cycles(100)),
-                (0xD404, 0x41, ap._wait_units_for_cycles(50)),
+                (0xD404, 0x08, 20),
+                (0xD404, 0x41, 10),
             ],
         )
 
@@ -182,7 +183,7 @@ class SerializeFrameTest(unittest.TestCase):
         # Recipe ids arrive as `data0 & 0x3F`, so 28-63 are reachable from the
         # wire and name no register.
         ops = ap.serialize_frame({0x00: 0xAA}, {}, 0xD400, recipe=[(63, 10), (0, 20)])
-        self.assertEqual(ops, [(0xD400, 0xAA, ap._wait_units_for_cycles(20))])
+        self.assertEqual(ops, [(0xD400, 0xAA, 4)])
 
     def test_recipe_appends_registers_it_omits(self):
         # Recipe mentions only id 0; the frame's id-1 register still gets written
@@ -191,6 +192,68 @@ class SerializeFrameTest(unittest.TestCase):
         self.assertEqual(ops[0], (0xD400, 0xAA, 0))
         self.assertIn((0xD401, 0xBB, 0), ops)
         self.assertEqual(len(ops), 2)
+
+
+class CostModelConstantsTest(unittest.TestCase):
+    """The three constants of the frame cost model, pinned to the 6502
+    `build_player` emits — literally, by hand-counted opcode cycles.
+
+    `test_matches_the_golden_blob` pins the assembly; nothing used to pin the
+    Python numbers *to* that assembly. Every wait-column expectation in this
+    file called `_wait_units_for_cycles`, i.e. compared the conversion to
+    itself, so `DELAY_CYCLES_PER_UNIT = 17` (a 3.4x error) left the whole ASID
+    suite green and `PER_OP_CYCLES = 50` left the whole suite green. Nothing
+    here may compute its expectation from the constant it pins — an assertion
+    derived from `DELAY_CYCLES_PER_UNIT` is the same blindness under a new
+    name. Regenerating the golden blob means re-deriving these numbers off the
+    new `oploop`/`dloop`, not nudging them until this file passes.
+    """
+
+    def test_delay_cycles_per_unit_is_the_dey_bne_pair(self):
+        # `dloop`: DEY (2) + BNE taken (3). The last iteration's BNE falls
+        # through at 2, so the real loop costs 5N-1 — the model rounds up,
+        # which errs toward calling a frame too expensive.
+        self.assertEqual(ap.DELAY_CYCLES_PER_UNIT, 5)
+
+    def test_per_op_cycles_is_the_oploop_hand_count(self):
+        # `oploop` with no wait: four LDY #n + LDA ($FB),Y pairs at 7 (2+5)
+        # with three absolute STAs at 4 between them = 40 to unpack the op and
+        # store the value; BEQ skipdelay taken = 3; LDA $FB + CLC + ADC #4 +
+        # STA $FB (3+2+2+3) plus BCC taken (3) = 13 to advance the slot
+        # pointer; DEC nops (6) + BNE oploop (3) = 9. 40+3+13+9.
+        self.assertEqual(ap.PER_OP_CYCLES, 65)
+
+    def test_waited_op_extra_cycles_is_the_delay_call_around_the_loop(self):
+        # A nonzero wait falls THROUGH the BEQ (2 — one less than the 3
+        # PER_OP_CYCLES already charged) and pays JSR delay (6) + TAY (2) +
+        # RTS (6). -1 + 14 = 13, on top of DELAY_CYCLES_PER_UNIT per unit.
+        self.assertEqual(ap.WAITED_OP_EXTRA_CYCLES, 13)
+
+    def test_the_wire_maximum_wait_converts_to_a_literal_unit_count(self):
+        # 255 C64 cycles is the largest wait a `0x30` pair can carry; at 5
+        # cycles a unit that is 51 delay-loop iterations.
+        self.assertEqual(ap._wait_units_for_cycles(255), 51)
+        self.assertEqual(ap._wait_units_for_cycles(10), 2)
+        self.assertEqual(ap._wait_units_for_cycles(0), 0)
+        self.assertEqual(ap._wait_units_for_cycles(-1), 0)
+
+    def test_the_unit_count_saturates_at_the_slots_one_wait_byte(self):
+        # A recipe wait far above the spec's 255 still has to pack into the
+        # slot's single wait byte.
+        self.assertEqual(ap._wait_units_for_cycles(100_000), 255)
+
+    def test_a_maximal_chip_frame_costs_a_literal_number_of_cycles(self):
+        # MAX_OPS_PER_CHIP ops each carrying the wire maximum: 65 + 13 + 51x5
+        # = 333 cycles an op, 9324 for the frame. That is over half a 60 Hz
+        # NTSC frame (17045 cycles) for ONE chip — the arithmetic
+        # FRAME_BUDGET_FRACTION exists for, and the number an under-counted
+        # PER_OP_CYCLES would quietly shrink.
+        self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 51)] * 28), 9324)
+
+    def test_an_unwaited_frame_costs_the_op_count_alone(self):
+        # No wait, so neither WAITED_OP_EXTRA_CYCLES nor the delay loop is
+        # charged: 28 x 65.
+        self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 0)] * 28), 1820)
 
 
 class FrameBudgetTest(unittest.TestCase):

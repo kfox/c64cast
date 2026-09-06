@@ -35,7 +35,7 @@ from _fakes import FakeAPI, quiet_logging  # noqa: E402
 
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
-from c64cast.sid.asid_player import _wait_units_for_cycles, frame_cycle_cost  # noqa: E402
+from c64cast.sid.asid_player import frame_cycle_cost  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
 
 
@@ -801,7 +801,10 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         with self.assertNoLogs("c64cast.sid.asid_scene", level="WARNING"):
             self._maximal_recipe_frame(scene)
         waits = {wait for _a, _v, wait in self._slot_ops(pushed[0])}
-        self.assertEqual(waits, {_wait_units_for_cycles(255)})
+        # 51 units, literal: the wire maximum 255 cycles at DELAY_CYCLES_PER_UNIT.
+        # Computing it from the converter under test is what let a 3.4x error
+        # in that constant pass (tests/test_asid_player.py CostModelConstantsTest).
+        self.assertEqual(waits, {51})
 
     def _multi_msg(self, chip_index: int, values: dict[int, int]) -> tuple[int, ...]:
         cmd = asid.CMD_MULTI_SID_LO + (chip_index - 1)
