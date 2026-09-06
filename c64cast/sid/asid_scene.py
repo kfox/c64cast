@@ -51,14 +51,14 @@ import threading
 import time
 from collections.abc import Sequence
 
-from c64cast._midi import MIDI_AVAILABLE, open_input_port
+from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from . import asid
-from .asid_player import AsidRingPlayer, pack_slot, serialize_frame
+from .asid_player import AsidRingPlayer, clamp_frame_rate, pack_slot, serialize_frame
 from .asid_sidmap import MAX_SIDS, SidMap, plan_sid_map
 from .emusid_mixer import apply_emusid_routing
 from .sid_hw_config import SidHwSession, apply_sid_map, detect_sockets
@@ -66,7 +66,7 @@ from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
+from .voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +90,8 @@ _WAVE_ABBREV = {
 # Offset of the master volume / filter-mode register within the shadow.
 _MODE_VOL_OFFSET = SID.MODE_VOL - SID.BASE
 
-# Config items snapshotted before a multi-SID remap and restored on teardown.
+# The exact (category, item) set the teardown snapshot round-trips lives with
+# the snapshot machinery: sid_hw_config.MANAGED_* / SidHwSession.
 
 
 class AsidScene(VoiceScopeRenderer, Scene):
@@ -224,6 +225,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._frame_has_data = False
         self._recipe: list[tuple[int, int]] | None = None
         self._frame_rate_hz = self._video_hz  # ASID cadence (0x31 retunes it)
+        # The last *unclamped* rate a 0x31 asked for, so a repeated message is
+        # dropped before it costs a DMA round trip (or a clamp warning).
+        self._speed_request_hz = self._video_hz
         # Highest chip index seen on the wire (reader thread); process_frame
         # compares against _active_chips to trigger a live remap on the main
         # thread (avoids mutating display state from the reader).
@@ -232,6 +236,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # restore on teardown. Empty until a remap happens.
         self._sid_session = SidHwSession(api)
         self._socket_present = (False, False)
+        self._remap_failed = False  # one-shot WARNING gate for a failing remap
         # [ultimate64].sid_panning — empty means the auto spread. Applied at
         # setup for the initial single chip and re-applied on every remap.
         self._sid_panning = list(sid_panning or ())
@@ -261,18 +266,25 @@ class AsidScene(VoiceScopeRenderer, Scene):
         port = self._midi_port
         if port is None:
             return
-        # Drain all pending SysEx each pass into the per-chip register shadows,
-        # then flush coalesced block writes at a bounded rate. An ASID host
-        # sends up to ~50-60 frames/sec (higher for multispeed tunes), each
-        # touching most of the 25 registers of one or more chips; applying every
-        # frame as its own DMA burst would outrun the U64's write ceiling and
-        # drop the socket. Coalescing to the latest shadows keeps the link
-        # healthy (a multispeed tune loses some intermediate frames — a known
-        # v1 limitation).
+        # Drain pending SysEx each pass into the per-chip register shadows, then
+        # flush coalesced block writes at a bounded rate. An ASID host sends up
+        # to ~50-60 frames/sec (higher for multispeed tunes), each touching most
+        # of the 25 registers of one or more chips; applying every frame as its
+        # own DMA burst would outrun the U64's write ceiling and drop the
+        # socket. Coalescing to the latest shadows keeps the link healthy (a
+        # multispeed tune loses some intermediate frames — a known v1
+        # limitation).
+        #
+        # `poll_pending` (not mido's `iter_pending`) bounds the drain and
+        # re-checks `stop`: a flood arriving faster than it is retired must not
+        # be able to starve the flush below — the SID would hold whatever was
+        # last written and keep sounding — nor outlive `teardown`'s bounded
+        # join, which abandons a still-running reader that could then land a
+        # block write after `silence_sid()`.
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     if msg.type == "sysex":
                         self._handle_sysex(msg.data)
                 now = time.time()
@@ -286,9 +298,11 @@ class AsidScene(VoiceScopeRenderer, Scene):
     def _chip_for(self, chip_index: int) -> int:
         """Map an ASID chip index to the shadow/emulator slot we use.
 
-        Multi-SID enabled: the index itself, clamped to the max we can host
-        (the surplus is dropped once, warned). Disabled: everything downmixes
-        to the primary SID (slot 0) with a one-time warning."""
+        Multi-SID enabled: the index itself while it is within ``_max_sids``;
+        anything beyond that downmixes to the primary SID (slot 0), warned once
+        — the cap drops the surplus chip rather than renumbering it, which is
+        what ``asid_max_sids``'s own documentation promises. Disabled:
+        everything downmixes to slot 0 with the same one-time warning."""
         if not self._multi_sid:
             if chip_index > 0 and not self._warned_downmix:
                 self._warned_downmix = True
@@ -356,10 +370,14 @@ class AsidScene(VoiceScopeRenderer, Scene):
                         cf[voice] = fval
                 self._dirty_chips.add(chip)
                 self._pending_flush = True
-            if self._multi_sid and update.chip_index > self._max_chip_seen:
+            if self._multi_sid and chip > self._max_chip_seen:
                 # Grow handled on the main thread (process_frame) to keep display
-                # mutation off the reader thread.
-                self._max_chip_seen = min(update.chip_index, self._max_sids - 1)
+                # mutation off the reader thread. The request comes from the
+                # *mapped* slot, not the wire index: an index past `_max_sids`
+                # was already downmixed to slot 0 above, so growing on it would
+                # map, pan and re-init the ring player for chips no data can
+                # ever reach (every window past the first permanently blank).
+                self._max_chip_seen = chip
         if update.text is not None:
             self._status_text = update.text
             self._dirty = True
@@ -392,21 +410,45 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
         Frame delta (µs) wins when present; else the speed multiplier scales the
         system video rate. A no-op for the coalesced path (it flushes on its own
-        timer)."""
+        timer).
+
+        The derived rate goes through :func:`~c64cast.sid.asid_player.clamp_frame_rate`
+        — the single boundary for wire-derived rates — before it is stored, so
+        the scene's own accounting agrees with the cadence the player programs
+        (``set_frame_rate`` clamps again; an in-band value logs nothing).
+        Forwarding is unconditional on *arming*, because a `0x31` almost always
+        arrives before the prebuffer fills and dropping it decimates the tune —
+        but a request identical to the one already in force is dropped before
+        the clamp, because each retune costs a blocking CIA-latch write plus a
+        `flush()` round trip on the single shared DMA socket (and, pre-arm, a
+        full handler re-upload). A host that repeats its `0x31` every frame
+        would otherwise spend the render path's whole write budget — and, for an
+        out-of-band request, its whole log — saying nothing new."""
         if update.frame_delta_us:
             rate = 1_000_000.0 / update.frame_delta_us
         elif update.speed_multiplier:
             rate = self._video_hz * update.speed_multiplier
         else:
             rate = self._video_hz
-        self._frame_rate_hz = rate
+        if rate == self._speed_request_hz:
+            return
+        self._speed_request_hz = rate
+        self._frame_rate_hz = clamp_frame_rate(rate)
         if self._use_buffered_player and self._player is not None:
-            self._player.set_frame_rate(rate)
+            self._player.set_frame_rate(self._frame_rate_hz)
 
     def _emit_buffered_frame(self) -> None:
         """Serialize the accumulated frame (all mapped chips) into one ring slot,
         push it to the player, and mirror it into the host emulators for the
-        scope. Reader thread."""
+        scope. Reader thread.
+
+        Only the chips actually serialized have their accumulators cleared. A
+        chip's *first* frame arrives before `process_frame` has run
+        `_reconfigure_chips`, so it has no mapped address yet — and because this
+        path serializes *deltas*, clearing it would lose that chip's initial
+        ADSR / pulse-width / control setup for good (the host never re-sends
+        it). Carrying it forward is what the coalesced `_flush_to_sid` does for
+        the same case."""
         player = self._player
         if player is not None and self._frame_has_data:
             all_ops: list[tuple[int, int, int]] = []
@@ -427,14 +469,22 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 emu_updates.append((chip, retrigger))
             player.push_frame(pack_slot(all_ops, player.slot_size))
             # Mirror into the emulators (scope) — the C64 plays the real SID.
+            # Only the serialized chips, so the scope can't show a voice
+            # configured on hardware that has not been programmed yet.
             with self._reg_lock:
                 for chip, retrigger in emu_updates:
                     self._emulators[chip].update_registers(
                         bytes(self._sid_shadows[chip]), retrigger=retrigger
                     )
-        self._frame_regs.clear()
-        self._frame_ctrl_first.clear()
-        self._frame_has_data = False
+            for chip, _ in emu_updates:
+                self._frame_regs.pop(chip, None)
+                self._frame_ctrl_first.pop(chip, None)
+        else:
+            # No player to carry anything forward to — drop the accumulators
+            # rather than growing them without bound.
+            self._frame_regs.clear()
+            self._frame_ctrl_first.clear()
+        self._frame_has_data = bool(self._frame_regs)
 
     def _flush_to_sid(self) -> None:
         """Write the accumulated per-chip register shadows to the real SID(s)
@@ -474,21 +524,44 @@ class AsidScene(VoiceScopeRenderer, Scene):
     def _reconfigure_chips(self, n: int) -> None:
         """Grow the active SID map to `n` chips: configure the U64 address map
         live, update routing, and reflow the split scope. Runs on the main
-        (render) thread from process_frame."""
+        (render) thread from process_frame.
+
+        The hardware half is guarded, because it is the half that can raise:
+        `AsidRingPlayer.reinit` restarts the writer over the shared DMA link. A
+        raise escaping here reaches `Playlist._render_scene_frame`, which retires
+        a crashing scene for good — so one transient link hiccup used to end the
+        whole ASID set. Leaving the display state untouched keeps the growth
+        guard in `process_frame` true, so the next frame retries."""
         n = max(1, min(n, self._max_sids))
         self._sid_session.snapshot()
         sid_map = plan_sid_map(
             n, socket1_present=self._socket_present[0], socket2_present=self._socket_present[1]
         )
-        apply_sid_map(self.api, sid_map)
-        self._chip_addresses = list(sid_map.addresses)
-        self._active_chips = sid_map.n
-        # Resize the buffered ring player for the new chip count (bigger slot).
-        # Frames the reader serializes during the brief re-init window are
-        # self-describing (n_ops-bounded) and any wrong-sized ones the writer
-        # drops, so a couple of transient frames may be skipped — no corruption.
-        if self._use_buffered_player and self._player is not None:
-            self._player.reinit(sid_map.n)
+        try:
+            apply_sid_map(self.api, sid_map)
+            self._chip_addresses = list(sid_map.addresses)
+            # Resize the buffered ring player for the new chip count (bigger
+            # slot). Frames the reader serializes during the brief re-init window
+            # are self-describing (n_ops-bounded) and any wrong-sized ones the
+            # writer drops, so a couple of transient frames may be skipped — no
+            # corruption.
+            if self._use_buffered_player and self._player is not None:
+                self._player.reinit(sid_map.n)
+        except Exception:
+            # WARNING once per failure run, DEBUG while it keeps failing: the
+            # retry is per rendered frame, so an unrecoverable link would
+            # otherwise log 30 times a second.
+            if self._remap_failed:
+                log.debug("AsidScene: SID remap retry failed", exc_info=True)
+            else:
+                self._remap_failed = True
+                log.warning(
+                    "AsidScene: mapping %d SID chip(s) failed — retrying on the next frame",
+                    sid_map.n,
+                    exc_info=True,
+                )
+            return
+        self._remap_failed = False
         log.info(
             "AsidScene: mapped %d SID chip(s) → %s",
             sid_map.n,
@@ -497,7 +570,16 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # Reflow the split scope: new window count, then a full bitmap bring-up
         # to clear the old windows' pixels and repaint idle strips + info rows.
         # Panning runs after _set_window_count, which resets the column order.
+        #
+        # `_active_chips` is published only once the scope has the windows to
+        # match, and never before a step that can raise: `reinit` writes to the
+        # DMA link, and a link hiccup there used to leave _active_chips ahead of
+        # _n_windows — process_frame then indexed past `_scope_emulators()` and
+        # raised IndexError on every later frame, which the playlist treats as a
+        # crashed scene. Publishing last keeps the growth guard true so the next
+        # frame simply retries the remap.
         self._set_window_count(sid_map.n)
+        self._active_chips = sid_map.n
         self._apply_sid_mixer(sid_map)
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
@@ -567,12 +649,28 @@ class AsidScene(VoiceScopeRenderer, Scene):
     # ---- Scene lifecycle -----------------------------------------------------
     def setup(self) -> None:
         super().setup()
+        # Playlists reuse scene instances (every lap re-runs setup/teardown), so
+        # the multi-SID shape has to come back to single-chip here: teardown put
+        # the user's SID addressing back, and a stale `_max_chip_seen` would
+        # leave process_frame's growth guard false, so the map would never be
+        # re-applied while the scene kept writing chip 1..N to addresses the
+        # restored config no longer routes.
+        self._active_chips = 1
+        self._chip_addresses = [SID.BASE]
+        self._max_chip_seen = 0
+        self._set_window_count(1)
         # Bitmap bring-up: invalidate the delta cache (previous scene may have
         # used $0400/$2000 for char content), engage hires, paint idle strips +
         # info rows, allocate render buffers, then start the MIDI reader +
         # envelope ticker. No SID pre-programming — the ASID stream sets it all.
         if self._multi_sid:
             self._socket_present = detect_sockets(self.api)
+            # Take the SID-address baseline BEFORE the mixer pass folds its
+            # originals in. `SidHwSession.snapshot()` is first-call-wins, so a
+            # fold makes it a no-op — and `_reconfigure_chips`'s snapshot then
+            # captured nothing, leaving the six MANAGED_ADDRESSING_ITEMS that a
+            # remote 0x50-0x5F frame rewrites with no restore at teardown.
+            self._sid_session.snapshot()
         self._apply_sid_mixer()
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
@@ -659,7 +757,10 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self._poll.stop()
             self._poll = None
         # Silence every mapped SID, restore the SID-address config we changed,
-        # then restore VIC bank 0 + default $D018 for the next scene's char mode.
+        # then restore VIC bank 0 + the char-mode $D018 for the next scene (the
+        # next scene's mode engage owns $D011; this only puts the matrix pointer
+        # back where a char mode expects it, instead of leaving it on the bitmap
+        # layout the scope used).
         try:
             for base in self._chip_addresses:
                 if base != SID.BASE:
@@ -667,7 +768,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
             self.api.silence_sid()
             self._restore_config()
             self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
+            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
             self.api.flush()
         except Exception:
             log.debug("AsidScene: teardown silence/restore failed", exc_info=True)

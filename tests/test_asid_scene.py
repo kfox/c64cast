@@ -14,8 +14,10 @@ separately by a Tier-2 smoke run against an ASID host, not here.
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -141,7 +143,7 @@ class AsidSceneTest(unittest.TestCase):
         from c64cast.app.config import Config, SceneCfg
         from c64cast.app.scene_factory import _validate_asid
 
-        # AsidScene is bitmap-only: the validator synthesises a hires mode so
+        # AsidScene is bitmap-only: the validator synthesizes a hires mode so
         # overlay-compat rejects PETSCII overlays (as on a waveform scene).
         mode = _validate_asid(SceneCfg(type="asid"), Config())
         self.assertIsInstance(mode, DisplayMode)
@@ -159,6 +161,18 @@ class AsidSceneTest(unittest.TestCase):
         scene.teardown()
         self.assertIn("SILENCE", api.regs)  # SID silenced
         self.assertIn("DD00", api.memories)  # VIC bank restored
+
+    def test_teardown_leaves_d018_on_the_char_mode_default(self):
+        # The scope ran in hires ($18 = bitmap at bank+$2000). Teardown claims
+        # to hand the next scene the char-mode default, so it must write the
+        # value every char-mode engage in the tree writes, not its own.
+        from c64cast.sid.voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP
+
+        scene, api = self._make()
+        self._bring_up(scene)
+        self.assertEqual(api.memories["D018"], f"{D018_HIRES_BITMAP:02X}")
+        scene.teardown()
+        self.assertEqual(api.memories["D018"], f"{D018_CHAR_DEFAULT:02X}")
 
     # ---- multi-SID ----------------------------------------------------------
     def _make_multi(self, sockets=None, **kwargs):
@@ -239,21 +253,185 @@ class AsidSceneTest(unittest.TestCase):
         # The snapshotted split value is restored.
         self.assertIn((CAT_ADDRESSING, "UltiSID Range Split", "Off"), api.config_puts)
 
+    def test_addressing_baseline_survives_the_setup_mixer_fold(self):
+        """The whole lifecycle, not just the remap: setup()'s mixer pass folds
+        originals into the same first-call-wins session, so the addressing
+        baseline has to be taken before it — otherwise the remap's own
+        snapshot() no-ops and a remote 0x50 frame rewrites the U64's SID
+        addressing with nothing to put back."""
+        from c64cast.sid.asid_sidmap import CAT_ADDRESSING
+
+        scene, api = self._make_multi()
+        # A stock-shaped machine: a real addressing baseline, and a mixer that
+        # is NOT already at the pan/volume target (so the mixer pass has
+        # originals to fold, which is the precondition for the bug).
+        api.config_store[CAT_ADDRESSING] = {
+            "UltiSID 1 Address": "$D400",
+            "UltiSID Range Split": "Off",
+            "Auto Address Mirroring": "Enabled",
+        }
+        api.config_store["Audio Mixer"] = {"Pan UltiSID 1": "Left 3", "Vol UltiSID 1": "-6 dB"}
+        with self._stub_port(scene), quiet_logging():
+            scene.setup()
+            scene._reconfigure_chips(2)
+        saved = scene._sid_session.saved or {}
+        self.assertIn((CAT_ADDRESSING, "Auto Address Mirroring"), saved)
+        api.config_puts.clear()
+        with quiet_logging():
+            scene.teardown()
+        self.assertIn(
+            (CAT_ADDRESSING, "Auto Address Mirroring", "Enabled"),
+            api.config_puts,
+        )
+
+    def test_out_of_range_chip_index_does_not_drive_a_remap(self):
+        """`_chip_for` downmixes an index past the cap to slot 0, so the growth
+        request must come from that mapped slot: growing on the raw wire index
+        maps chips no data can ever reach."""
+        scene, api = self._make_multi(max_sids=2)
+        self._bring_up(scene)
+        with self.assertLogs("c64cast.sid.asid_scene", level="WARNING"):
+            scene._handle_sysex(self._multi_msg(5, {0: 0x11}))  # chip 5, cap 2
+        self.assertEqual(scene._max_chip_seen, 0)
+        scene.process_frame(0.0)
+        self.assertEqual(scene._active_chips, 1)
+        self.assertEqual(scene._n_windows, 1)
+        self.assertFalse(any(cat == "SID Addressing" for cat, _, _ in api.config_puts))
+        # The data still landed, downmixed onto the primary chip.
+        self.assertEqual(scene._sid_shadows[0][0x00], 0x11)
+
+    def test_in_range_chip_index_still_grows_the_map(self):
+        # Same shape, one field varied: an index inside the cap must remap.
+        scene, api = self._make_multi(max_sids=2)
+        self._bring_up(scene)
+        scene._handle_sysex(self._multi_msg(1, {0: 0x11}))
+        self.assertEqual(scene._max_chip_seen, 1)
+        scene.process_frame(0.0)
+        self.assertEqual(scene._active_chips, 2)
+        self.assertTrue(any(cat == "SID Addressing" for cat, _, _ in api.config_puts))
+
+    def test_failed_remap_retries_instead_of_killing_the_scene(self):
+        """A link hiccup inside the remap must not leave `_active_chips` ahead
+        of the scope's window count (every later frame would then IndexError,
+        and the playlist retires a crashing scene for good)."""
+        scene, api = self._make_multi(buffered_player="auto")
+        self._bring_up(scene)
+        scene._handle_sysex(self._multi_msg(1, {0: 0x22}))
+        assert scene._player is not None
+        # The successful retry re-inits the ring player, which starts its writer
+        # thread — stop it however this test exits.
+        self.addCleanup(scene._player.stop)
+        failing = mock.patch.object(scene._player, "reinit", side_effect=OSError("DMA link hiccup"))
+        with failing, self.assertLogs("c64cast.sid.asid_scene", level="WARNING") as cm:
+            scene.process_frame(0.0)
+        self.assertIn("retrying on the next frame", cm.output[0])
+        self.assertEqual(scene._active_chips, 1)
+        self.assertEqual(scene._n_windows, 1)
+        # Later frames render rather than raise, and the remap is retried.
+        with quiet_logging():
+            scene.process_frame(0.1)
+        self.assertEqual(scene._active_chips, 2)
+        self.assertEqual(scene._n_windows, 2)
+
+    def test_reactivation_re_derives_the_sid_map(self):
+        """Playlists reuse scene instances. Lap 2 must re-apply the address map
+        the lap-1 teardown just restored, which means the multi-SID shape has
+        to be back to single-chip when setup() returns."""
+        scene, api = self._make_multi()
+        with self._stub_port(scene), quiet_logging():
+            scene.setup()
+            scene._handle_sysex(self._multi_msg(1, {0: 0x22}))
+            scene.process_frame(0.0)
+            self.assertEqual(scene._active_chips, 2)
+            scene.teardown()
+            scene.setup()
+        try:
+            self.assertEqual(scene._active_chips, 1)
+            self.assertEqual(scene._n_windows, 1)
+            self.assertEqual(scene._max_chip_seen, 0)
+            self.assertEqual(scene._chip_addresses, [SID.BASE])
+            api.config_puts.clear()
+            with quiet_logging():
+                scene._handle_sysex(self._multi_msg(1, {0: 0x22}))
+                scene.process_frame(0.1)
+            self.assertTrue(any(cat == "SID Addressing" for cat, _, _ in api.config_puts))
+        finally:
+            with quiet_logging():
+                scene.teardown()
+
+    def _stub_port(self, scene):
+        """Patch `_open_port` with a stub MIDI port that polls empty, so setup()
+        can run its real lifecycle without MIDI hardware."""
+        port = mock.MagicMock()
+        port.poll.return_value = None
+        return mock.patch.object(
+            scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
+        )
+
     def test_setup_opens_port_and_starts_threads(self):
         scene, api = self._make()
         # Avoid touching real MIDI hardware: a stub port that never yields a
         # message keeps the reader loop alive so is_running() is observable.
-        port = mock.MagicMock()
-        port.iter_pending.return_value = iter(())
-        with mock.patch.object(
-            scene, "_open_port", side_effect=lambda: setattr(scene, "_midi_port", port)
-        ):
+        with self._stub_port(scene):
             scene.setup()
         try:
             self.assertGreaterEqual(api.cache_invalidations, 1)
             self.assertTrue(scene._reader_poll.is_running())
         finally:
             scene.teardown()
+
+    # ---- reader drain --------------------------------------------------------
+    def test_reader_drain_is_bounded_so_the_flush_is_always_reached(self):
+        """A backlog arriving faster than it is retired must not starve the
+        coalesced flush (the SID would hold its last state and keep sounding)
+        or the stop check that ends teardown."""
+        from c64cast._midi import MAX_MSGS_PER_DRAIN
+
+        scene, _ = self._make()
+        stop = threading.Event()
+        polls = {"n": 0}
+        payload = _reg_msg({0: 0x34, 22: 0x41})
+
+        def poll():
+            polls["n"] += 1
+            # A large but finite backlog: an unbounded drain consumes it all
+            # before reaching the flush, a bounded one stops at the cap.
+            return SimpleNamespace(type="sysex", data=payload) if polls["n"] <= 5000 else None
+
+        polls_at_first_flush: list[int] = []
+        real_flush = scene._flush_to_sid
+
+        def flush():
+            real_flush()
+            polls_at_first_flush.append(polls["n"])
+            stop.set()
+
+        scene._midi_port = SimpleNamespace(
+            poll=poll,
+            iter_pending=lambda: iter(poll, None),
+        )
+        with mock.patch.object(scene, "_flush_to_sid", side_effect=flush):
+            scene._reader(stop)
+        self.assertEqual(len(polls_at_first_flush), 1)
+        self.assertLessEqual(polls_at_first_flush[0], MAX_MSGS_PER_DRAIN)
+
+    def test_reader_stops_mid_drain_when_the_stop_event_is_set(self):
+        scene, _ = self._make()
+        stop = threading.Event()
+        seen: list[int] = []
+        payload = _reg_msg({0: 0x34})
+
+        def poll():
+            seen.append(1)
+            if len(seen) == 3:
+                stop.set()  # teardown lands mid-backlog
+            # A finite backlog, so a drain that ignores `stop` still terminates
+            # (and is then visible as an over-long read rather than a hang).
+            return SimpleNamespace(type="sysex", data=payload) if len(seen) <= 200 else None
+
+        scene._midi_port = SimpleNamespace(poll=poll, iter_pending=lambda: iter(poll, None))
+        scene._reader(stop)
+        self.assertEqual(len(seen), 3)
 
 
 @unittest.skipUnless(HAVE_MIDI, "mido not installed (midi extra)")
@@ -319,19 +497,134 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         self.assertEqual(len(pushed), 1)
         self.assertFalse(scene._frame_has_data)
 
-    def test_speed_message_retunes_player(self):
-        scene, _ = self._make()
+    def _capture_rates(self, scene) -> list[float]:
         player = scene._player
         assert player is not None
         rates: list[float] = []
         player.set_frame_rate = rates.append  # type: ignore[method-assign]
-        # _apply_speed has no _armed gate (it forwards whenever a buffered
-        # player exists); the flag is set only so the fake player looks armed.
-        player._armed = True
+        return rates
+
+    def test_speed_message_retunes_player_before_it_ever_arms(self):
+        """`_apply_speed` has no `_armed` gate on purpose: a 0x31 almost always
+        arrives at stream start, before the prebuffer fills, and dropping it
+        arms at the wrong cadence and decimates the tune (sid.md 'Symptom 2')."""
+        scene, _ = self._make()
+        rates = self._capture_rates(scene)
+        assert scene._player is not None
+        self.assertFalse(scene._player._armed)
         # NTSC, multiplier 4 (data0 bits 1-4 = 3 → ×4).
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (3 << 1) | 0x01))
         self.assertTrue(rates)
         self.assertAlmostEqual(rates[-1], 60.0 * 4, delta=1.0)
+        self.assertAlmostEqual(scene._frame_rate_hz, 60.0 * 4, delta=1.0)
+
+    def test_speed_clamps_a_hostile_frame_delta(self):
+        """One 8-byte SysEx asking for a 1 µs frame delta is a 1 MHz consume
+        rate; `cia1_latch_for_rate` clamps the latch, not the rate, so it used
+        to reach the CIA as a ~511 kHz IRQ storm. The scene hands the derived
+        rate to the player's single clamp boundary."""
+        from c64cast.sid.asid_player import MAX_FRAME_RATE_HZ
+
+        scene, _ = self._make()
+        rates = self._capture_rates(scene)
+        with self.assertLogs("c64cast.sid.asid_player", level="WARNING") as cm:
+            scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01, 0x01, 0x00, 0x00))
+        self.assertIn("outside the", cm.output[0])
+        self.assertEqual(rates, [MAX_FRAME_RATE_HZ])
+        # The scene's own accounting agrees with what the player was given.
+        self.assertEqual(scene._frame_rate_hz, MAX_FRAME_RATE_HZ)
+
+    def test_speed_at_the_band_edge_is_forwarded_unclamped(self):
+        """The same shape with one field varied: a delta landing exactly on the
+        ceiling is legitimate and must pass through silently, so the clamp is a
+        bound rather than a cap on ordinary multispeed."""
+        from c64cast.sid.asid_player import MAX_FRAME_RATE_HZ
+
+        scene, _ = self._make()
+        rates = self._capture_rates(scene)
+        # frame_delta_us = 1000 → exactly MAX_FRAME_RATE_HZ.
+        with self.assertNoLogs("c64cast.sid.asid_player", level="WARNING"):
+            scene._handle_sysex(
+                (asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01, 1000 & 0x7F, 1000 >> 7, 0x00)
+            )
+        self.assertEqual(rates, [MAX_FRAME_RATE_HZ])
+
+    def test_repeated_speed_message_does_not_retune_again(self):
+        """Each retune is a blocking CIA write plus a flush() round trip on the
+        single shared DMA socket, so an identical 0x31 must cost nothing."""
+        scene, _ = self._make()
+        rates = self._capture_rates(scene)
+        msg = (asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (3 << 1) | 0x01)
+        for _ in range(5):
+            scene._handle_sysex(msg)
+        self.assertEqual(len(rates), 1)
+        # A genuinely different request still gets through.
+        scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (1 << 1) | 0x01))
+        self.assertEqual(len(rates), 2)
+
+    def test_repeated_out_of_band_speed_message_warns_once(self):
+        # The dedupe sits before the clamp, so a flood of identical hostile
+        # 0x31s can't turn into a WARNING per message either.
+        scene, _ = self._make()
+        self._capture_rates(scene)
+        msg = (asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01, 0x01, 0x00, 0x00)
+        with self.assertLogs("c64cast.sid.asid_player", level="WARNING") as cm:
+            for _ in range(10):
+                scene._handle_sysex(msg)
+        self.assertEqual(len(cm.output), 1)
+
+    def test_unmapped_chip_keeps_its_deltas_until_the_remap(self):
+        """The buffered path serializes deltas, so a chip's first frame — which
+        arrives before process_frame has mapped it — must be carried forward,
+        not cleared. Clearing loses that chip's initial ADSR / pulse-width /
+        control setup for good; the host never re-sends it."""
+        from c64cast.hw.backend import HardwareProfile
+        from c64cast.sid.asid_scene import AsidScene
+
+        api = FakeAPI()
+        api.profile = HardwareProfile(
+            name="Fake", family="fake", supports_config=True, supports_sid_config=True
+        )
+        scene = AsidScene(api, None, buffered_player="auto")
+        scene._apply_vic_hires_bank()
+        scene._alloc_scope_buffers()
+        player = scene._player
+        assert player is not None
+        # The remap re-inits the ring player, which starts its writer thread.
+        self.addCleanup(player.stop)
+        pushed: list[bytes] = []
+        player.push_frame = pushed.append  # type: ignore[method-assign]
+
+        # Chip 1's setup frame, then a chip-0 message closing the frame — chip 1
+        # is not mapped yet, so nothing of its can be serialized.
+        scene._handle_sysex(self._multi_msg(1, {4: 0x11, 5: 0x22, 22: 0x41}))
+        scene._handle_sysex(_reg_msg({0: 0x34}))  # frame boundary: emits, drops nothing
+        self.assertEqual(len(pushed), 1)
+        self.assertEqual(pushed[0][0], 0)  # no ops — chip 1 had no address yet
+        self.assertEqual(scene._frame_regs.get(1), {0x05: 0x11, 0x06: 0x22, 0x04: 0x41})
+
+        # The remap lands, and the next boundary carries chip 1's held deltas.
+        with quiet_logging():
+            scene.process_frame(0.0)
+        self.assertEqual(scene._active_chips, 2)
+        pushed.clear()
+        scene._handle_sysex(_reg_msg({0: 0x40}))
+        chip1_base = scene._chip_addresses[1]
+        targets = self._slot_addresses(pushed[0])
+        self.assertIn(chip1_base + 0x05, targets)  # voice-1 attack/decay
+        self.assertIn(chip1_base + 0x04, targets)  # voice-1 control
+        # Chip 1's accumulator is only cleared once it has actually been sent.
+        self.assertNotIn(1, scene._frame_regs)
+
+    @staticmethod
+    def _slot_addresses(slot: bytes) -> list[int]:
+        """The op target addresses in a packed ring slot ([n_ops][lo hi val wait]*)."""
+        n_ops = slot[0]
+        return [slot[1 + i * 4] | (slot[2 + i * 4] << 8) for i in range(n_ops)]
+
+    def _multi_msg(self, chip_index: int, values: dict[int, int]) -> tuple[int, ...]:
+        cmd = asid.CMD_MULTI_SID_LO + (chip_index - 1)
+        return (asid.ASID_MANUFACTURER_ID, cmd, *_reg_msg(values)[2:])
 
     def test_recipe_stored_from_timing_message(self):
         scene, _ = self._make()

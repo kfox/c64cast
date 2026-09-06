@@ -5,7 +5,9 @@ even the `midi` extra) is needed."""
 
 from __future__ import annotations
 
+import threading
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from c64cast import _midi
@@ -65,6 +67,52 @@ class OpenInputPortTest(unittest.TestCase):
         with mock.patch.object(_midi, "MIDI_AVAILABLE", False):
             with self.assertRaisesRegex(RuntimeError, "midi.*extra"):
                 _midi.open_input_port(None, label="test")
+
+
+class PollPendingTest(unittest.TestCase):
+    """The bounded, stop-aware drain both SID scene readers use in place of
+    mido's `iter_pending()`. The bound is what keeps a message flood from
+    starving the register flush that follows the drain, and the `stop` re-check
+    is what keeps a flooded reader from outliving a bounded teardown join."""
+
+    @staticmethod
+    def _port(n_messages, stop=None, stop_after=None):
+        """A port with `n_messages` queued, then empty. `stop_after` sets
+        `stop` once that many messages have been handed out."""
+        state = {"served": 0}
+
+        def poll():
+            if state["served"] >= n_messages:
+                return None
+            state["served"] += 1
+            if stop is not None and state["served"] == stop_after:
+                stop.set()
+            return f"msg{state['served']}"
+
+        return SimpleNamespace(poll=poll, served=state)
+
+    def test_drains_everything_below_the_bound(self):
+        stop = threading.Event()
+        port = self._port(5)
+        self.assertEqual(len(list(_midi.poll_pending(port, stop))), 5)
+
+    def test_never_hands_out_more_than_the_bound_in_one_pass(self):
+        stop = threading.Event()
+        port = self._port(_midi.MAX_MSGS_PER_DRAIN * 10)
+        drained = list(_midi.poll_pending(port, stop))
+        self.assertEqual(len(drained), _midi.MAX_MSGS_PER_DRAIN)
+        # And the rest is still there for the caller's next pass.
+        self.assertEqual(len(list(_midi.poll_pending(port, stop))), _midi.MAX_MSGS_PER_DRAIN)
+
+    def test_stops_mid_pass_once_the_stop_event_is_set(self):
+        stop = threading.Event()
+        port = self._port(_midi.MAX_MSGS_PER_DRAIN * 10, stop=stop, stop_after=3)
+        self.assertEqual(len(list(_midi.poll_pending(port, stop))), 2)
+
+    def test_an_explicit_limit_overrides_the_default(self):
+        stop = threading.Event()
+        port = self._port(50)
+        self.assertEqual(len(list(_midi.poll_pending(port, stop, limit=4))), 4)
 
 
 if __name__ == "__main__":

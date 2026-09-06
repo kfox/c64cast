@@ -15,6 +15,8 @@ patch `c64cast._midi.mido`.
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Iterator
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -59,3 +61,28 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
     port = mido.open_input(match)
     log.info("%s: opened MIDI port %r", label, match)
     return port, match
+
+
+# How many already-queued messages a reader pass may retire. mido's
+# `iter_pending()` yields until the port queue is momentarily *empty*, and
+# rtmidi's input queue has no size limit — so a backlog arriving faster than the
+# reader retires it never returns, and whatever the reader does after the drain
+# is never reached: the rate-bounded register flush that keeps the SID current,
+# and the stop check that lets teardown's bounded join finish. 64 leaves ~7x
+# headroom over the busiest legitimate stream we know of (a 16x multispeed
+# 8-SID ASID frame is ~9 messages per 1 ms pass).
+MAX_MSGS_PER_DRAIN = 64
+
+
+def poll_pending(
+    port: Any, stop: threading.Event, *, limit: int = MAX_MSGS_PER_DRAIN
+) -> Iterator[Any]:
+    """Yield at most ``limit`` messages already waiting on ``port``, stopping
+    early once ``stop`` is set. The bounded, stop-aware stand-in for mido's
+    ``iter_pending()`` in a reader loop — see :data:`MAX_MSGS_PER_DRAIN` for why
+    the bound is load-bearing rather than a tuning knob."""
+    for _ in range(limit):
+        msg = port.poll()
+        if msg is None or stop.is_set():
+            return
+        yield msg

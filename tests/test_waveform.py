@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from _fakes import FakeAPI, bare_waveform_scene, make_psid
+from _fakes import FakeAPI, bare_waveform_scene, make_psid, quiet_logging
 
 from c64cast.sid.sidemu import (
     ACCUMULATOR_RANGE,
@@ -849,6 +849,7 @@ class WaveformSceneTest(unittest.TestCase):
                 api, audio=None, file=overlap_sid, song=1, duration_s=10.0
             )  # must NOT raise
             scene.setup()
+            self.addCleanup(scene.teardown)  # setup() starts the register poll thread
             self.assertEqual(scene._dd00, CIA2.PORT_A_BANK_2)
             self.assertEqual(scene._bitmap_base, VIC_BANK_2.BITMAP)
             self.assertEqual(scene._screen_base, VIC_BANK_2.SCREEN)
@@ -1120,6 +1121,20 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertIn("SILENCE", api.regs)
         self.assertIn("RESTORE_IRQ", api.regs)
 
+    def test_teardown_leaves_d018_on_the_char_mode_default(self):
+        # The scope ran in hires ($18). Teardown hands the next scene the
+        # char-mode matrix pointer, not the bitmap layout it was using.
+        from c64cast.sid.voice_scope import D018_CHAR_DEFAULT
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path)
+        scene.setup()
+        self.addCleanup(scene.teardown)  # setup() starts the register poll thread
+        self.assertEqual(api.memories.get("D018"), "18")
+        scene.teardown()
+        self.assertEqual(api.memories.get("D018"), f"{D018_CHAR_DEFAULT:02X}")
+
     def test_teardown_silences_extra_chips_before_config_restore(self):
         # A 2SID tune on the U2+ emulated-stereo-SID surface: teardown must
         # zero the chip at $D420 BEFORE the config restore re-points that
@@ -1152,7 +1167,13 @@ class WaveformSceneTest(unittest.TestCase):
         self.addCleanup(os.unlink, path)
 
         scene = WaveformScene(api, audio=None, file=path)
-        scene.setup()
+        # This 2SID tune on an undeclared machine warns about the second chip —
+        # incidental here (setup is only scaffolding for the teardown ordering),
+        # and asserted by test_multi_sid_on_an_undeclared_machine_warns_about_
+        # the_second_chip. It stayed silent only because that test happened to
+        # leave sid_resolved's one-shot flag set in the same worker.
+        with quiet_logging():
+            scene.setup()
         api.ops.clear()  # only the teardown ordering is under test
         scene.teardown()
 
@@ -1202,14 +1223,19 @@ class WaveformSceneTest(unittest.TestCase):
         from c64cast.sid import sid_resolved
 
         sid_resolved._unplaceable_logged = False
+        # Module-global one-shot flag: leave it back at its pristine value so a
+        # later test doesn't inherit "already logged" from this one.
+        self.addCleanup(setattr, sid_resolved, "_unplaceable_logged", False)
         with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
             f.write(make_psid(second_sid_addr=0xD420, payload=bytes(2048)))
             path = f.name
         self.addCleanup(os.unlink, path)
         from c64cast.sid.waveform import WaveformScene
 
+        scene = WaveformScene(api, audio=None, file=path)
         with self.assertLogs("c64cast.sid", level="INFO") as cm:
-            WaveformScene(api, audio=None, file=path).setup()
+            scene.setup()
+        self.addCleanup(scene.teardown)  # setup() starts the register poll thread
         return " ".join(r.getMessage() for r in cm.records)
 
     def test_multi_sid_on_a_bare_link_does_not_claim_the_second_chip_is_lost(self):

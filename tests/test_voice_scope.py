@@ -247,6 +247,105 @@ class VoiceTimeWindowTest(unittest.TestCase):
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W), 1 / 30.0)
 
 
+def _knobbed_renderer(**knobs) -> VoiceScopeRenderer:
+    """A renderer taken through the real `_init_scope_knobs` entry point, so
+    the render-mode derivation and the window layout are the shipped ones."""
+    r = VoiceScopeRenderer()
+    r._init_scope_knobs(
+        color_mode=knobs.pop("color_mode", "per_voice"),
+        voice_colors=["cyan", "yellow", "light green"],
+        waveform_colors=None,
+        time_base=knobs.pop("time_base", TIME_BASE_WALLCLOCK),
+        auto_cycles=knobs.pop("auto_cycles", 4.0),
+        persistence=knobs.pop("persistence", "off"),
+        scroll_columns=knobs.pop("scroll_columns", 0),
+        frame_time_s=1 / 30.0,
+        n_windows=knobs.pop("n_windows", 1),
+    )
+    assert not knobs, knobs
+    return r
+
+
+class WindowChipOrderTest(unittest.TestCase):
+    """set_window_chip_order + _scope_emulators: the one choke point every
+    window-indexed render path goes through, so a pan order that reaches it
+    wrong draws every chip in the wrong column."""
+
+    def _renderer(self, n_windows, n_emulators=None):
+        r = _knobbed_renderer(n_windows=n_windows)
+        r._emulators = [SimpleNamespace(name=i) for i in range(n_emulators or n_windows)]
+        return r
+
+    def test_columns_follow_the_requested_order(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([1, 0, 2])
+        self.assertEqual([e.name for e in r._scope_emulators()], [1, 0, 2])
+
+    def test_identity_order_leaves_columns_in_chip_order(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([0, 1, 2])
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+    def test_mismatched_length_order_is_ignored(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([1, 0, 2])
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG"):
+            r.set_window_chip_order([1, 0])  # stale order from a 2-chip layout
+        # The rejected order leaves the previous one in place (the caller's
+        # _set_window_count is what resets to identity).
+        self.assertEqual([e.name for e in r._scope_emulators()], [1, 0, 2])
+
+    def test_non_permutation_order_is_ignored(self):
+        r = self._renderer(3)
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG"):
+            r.set_window_chip_order([0, 0, 1])  # duplicates chip 0, drops chip 2
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+    def test_reflow_resets_the_order_to_identity(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([2, 1, 0])
+        r._set_window_count(3)
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+
+class SetWindowCountRenderModesTest(unittest.TestCase):
+    """_set_window_count re-derives the per-voice render modes rather than
+    clobbering them, so the multi-window force-to-fast is reversible."""
+
+    def test_single_window_keeps_the_configured_echo_mode(self):
+        r = _knobbed_renderer(persistence="medium")
+        self.assertEqual(r._voice_render_modes, ["echo"] * 3)
+        self.assertFalse(r._fast_path)
+
+    def test_growing_past_one_window_forces_fast_and_says_so(self):
+        r = _knobbed_renderer(persistence="medium")
+        with self.assertLogs("c64cast.sid.voice_scope", level="WARNING") as cm:
+            r._set_window_count(2)
+        self.assertIn("forcing the fast render path", cm.output[0])
+        self.assertEqual(r._voice_render_modes, ["fast"] * 3)
+        self.assertTrue(r._fast_path)
+
+    def test_shrinking_back_to_one_window_restores_the_configured_mode(self):
+        r = _knobbed_renderer(scroll_columns=[4, 0, 0], persistence="short")
+        configured = list(r._voice_render_modes)
+        self.assertEqual(configured, ["scroll", "echo", "echo"])
+        with self.assertLogs("c64cast.sid.voice_scope", level="WARNING"):
+            r._set_window_count(2)
+        r._set_window_count(1)
+        self.assertEqual(r._voice_render_modes, configured)
+        self.assertFalse(r._fast_path)
+        # And the buffers the restored modes need are allocated again.
+        r._alloc_scope_buffers()
+        assert r._strips is not None
+        self.assertIsNotNone(r._strips[0])
+
+    def test_an_all_fast_config_reflows_without_a_warning(self):
+        r = _knobbed_renderer()  # persistence off, no scroll
+        with self.assertNoLogs("c64cast.sid.voice_scope", level="WARNING"):
+            r._set_window_count(4)
+        self.assertEqual(r._voice_render_modes, ["fast"] * 3)
+
+
 class PaintInfoRowsTest(unittest.TestCase):
     """_paint_info_rows renders the two subclass-supplied 40-char lines into
     the title/meta cell rows with the shared colors and region IDs."""

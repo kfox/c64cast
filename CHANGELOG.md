@@ -70,6 +70,52 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A remote ASID frame no longer leaves the U64's SID address map rewritten
+  for good.** The scene snapshots the SID-address config before it remaps, and
+  restores it on teardown — but the snapshot is deliberately first-call-wins,
+  and setup's mixer pass folded its own values into the same record first, so
+  the remap's snapshot silently captured nothing. Any peer on the MIDI/network
+  port could then send one `0x50`-`0x5F` register frame and permanently change
+  the machine's SID addressing (`Auto Address Mirroring` included), with only
+  pan and volume put back. The baseline is now taken at setup, before anything
+  folds. The regression test that was supposed to cover this only passed
+  because its fixture skipped `setup()`; it now drives the real lifecycle.
+- **A second lap of an ASID scene re-applies the SID address map.** Playlists
+  reuse scene instances, and nothing reset the multi-SID state at teardown — so
+  on lap 2 the growth check saw the chip count it had already reached, never
+  re-issued the map the lap-1 teardown had just restored, and went on writing
+  chips 2..N to addresses the machine no longer routed there.
+- **An ASID stream that merely mentions a high SID index no longer triggers a
+  full 8-SID reconfiguration.** ASID can name up to chip 17, and a chip past
+  `asid_max_sids` is downmixed onto the primary SID as documented — but the
+  *growth* request was taken from the raw wire index instead, so a single
+  message naming chip 11 mapped eight addresses, split the scope into eight
+  windows (seven of which could never show anything), panned eight mixer
+  sources and re-initialized the ring player.
+- **A transient link error during an ASID SID remap no longer ends the scene.**
+  The remap's hardware half is now guarded and retried on the next frame, and
+  the active chip count is published only once the scope has the windows to
+  match it. Previously a raise between the two left the scene indexing past its
+  own window list on every later frame, which the playlist treats as a crashed
+  scene and retires permanently.
+- **The buffered ASID path no longer drops a new SID chip's first frame.** That
+  frame arrives before the chip has an address, and because this path sends
+  register *deltas*, discarding it lost the chip's initial ADSR, pulse width and
+  control setup for good — while the oscilloscope still showed a
+  correctly-configured voice the hardware was not playing. Deltas for a
+  not-yet-mapped chip are now carried forward, as the non-buffered path already
+  did.
+- **A flood of ASID messages can no longer leave the SID sounding or outlive
+  teardown.** The reader drained its MIDI port until the queue was momentarily
+  empty, which under a backlog never happens — so the register flush that
+  follows the drain was never reached (the chip held whatever was last written
+  and kept playing) and the stop check that ends teardown was never re-read.
+  The drain is now bounded per pass and re-checks the stop signal inside it.
+- **A repeated ASID `0x31` no longer costs a hardware round trip each time.** An
+  identical speed request is dropped instead of re-programming the CIA timer —
+  each retune blocks on the single shared Ultimate DMA socket that the video
+  render path also uses, and a host that sends `0x31` every frame was spending a
+  large share of the write budget saying nothing new.
 - **One ASID speed message can no longer wedge the C64 and flood the link.** A
   `0x31` carries a frame delta in microseconds, and a delta of 1 asked the
   buffered ring player for a 1 MHz consume rate. Nothing rejected it: the CIA
@@ -83,7 +129,25 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the protocol and the CIA can actually express (roughly 15-1000 Hz — 16× the
   video rate is the fastest the spec's speed multiplier can ask for), with a
   warning naming the clamp, and the kernal-chain tick divider is bounded to the
-  8-bit immediate that carries it instead of being silently truncated.
+  8-bit immediate that carries it instead of being silently truncated. The ASID
+  scene's own copy of that rate now goes through the same clamp rather than
+  keeping an unclamped value the hardware never received.
+- **A multi-chip scope no longer discards `persistence` / `scroll_columns` in
+  silence — and gives them back.** Per-window trails are not supported, so a
+  stream or tune revealing a second SID forces every voice to the plain redraw
+  path; that happened with nothing in the log and nothing in the docs, so a
+  configured `persistence = "long"` simply stopped trailing mid-scene. It now
+  warns, and the ASID example lists the limitation. The force was also one-way:
+  a waveform scene that played a 2SID tune and then a 1SID one never got its
+  trails back for the rest of the run. The render modes are re-derived on every
+  reflow instead of being overwritten.
+- **The three oscilloscope scenes restore the char-mode `$D018` they claim to.**
+  `AsidScene`, `MidiScene` and `WaveformScene` each said they put the default
+  `$D018` back for the next scene's char mode and then wrote their own hires
+  value (`$18`), leaving the VIC's matrix pointer on the bitmap layout. Harmless
+  today because the next scene engages its own display mode — but a false claim
+  a maintainer could act on. All three now write `$14`, the value every
+  char-mode engage in the tree uses.
 - **An oversized `0x30` timing recipe no longer amplifies every later frame or
   silently deletes a SID chip.** The recipe is a SID write order, so it can be
   no longer than the register table and can name each register once — but

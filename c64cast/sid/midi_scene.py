@@ -40,14 +40,14 @@ import logging
 import threading
 import time
 
-from c64cast._midi import MIDI_AVAILABLE, open_input_port
+from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
+from .voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
 
@@ -394,12 +394,19 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # continuous controller down to its newest value, and flush those at
         # a bounded rate. Notes stay discrete and are applied immediately so
         # attack latency isn't affected.
+        #
+        # The drain itself is bounded by `poll_pending` rather than mido's
+        # `iter_pending`, which only ends when the port queue is momentarily
+        # empty: a controller sending faster than `_handle_msg`'s DMA writes
+        # retire it would otherwise never reach the coalescing flush below or
+        # the `stop` check that lets teardown's bounded join finish. Same
+        # reasoning, same helper, as AsidScene's reader.
         pending_pitch: int | None = None
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
+                for msg in poll_pending(port, stop):
                     if msg.type in ("note_on", "note_off"):
                         self._handle_msg(msg)
                     elif msg.type == "pitchwheel":
@@ -912,13 +919,13 @@ class MidiScene(VoiceScopeRenderer, Scene):
         if self._poll is not None:
             self._poll.stop()
             self._poll = None
-        # Silence the SID, then restore VIC bank 0 + the default $D018 so the
+        # Silence the SID, then restore VIC bank 0 + the char-mode $D018 so the
         # next scene's char-mode display renders cleanly (we left VIC in hires
         # bitmap mode).
         try:
             self.api.silence_sid()
             self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
+            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
             self.api.flush()
         except Exception:
             log.debug("MidiScene: teardown silence/restore failed", exc_info=True)

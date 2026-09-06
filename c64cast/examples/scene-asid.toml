@@ -10,7 +10,7 @@
 # (ASID 0x4F) or a per-voice waveform + volume summary. (Bitmap-only: PETSCII
 # overlays don't apply, like a waveform scene.)
 #
-# Unlike the `midi` scene (which synthesises SID writes from notes/CCs), ASID
+# Unlike the `midi` scene (which synthesizes SID writes from notes/CCs), ASID
 # carries the finished register bytes — the whole tune, exactly as its player
 # would write it — so there are no synth knobs here. This is a NEW INPUT path,
 # not an audio change: it plays only SID chip-music (not arbitrary/PCM audio),
@@ -46,7 +46,11 @@
 # Known v1 limits: OPL-FM streams are recognized but not applied; the buffered
 # player's cycle delay is coarse, and a pathological 8-SID x 16x frame can
 # overrun the frame period. With the buffered player off, high-multispeed tunes
-# are frame-decimated to protect the DMA link.
+# are frame-decimated to protect the DMA link. And the split scope is fast-path
+# only: the moment a stream reveals a second chip, `persistence` and
+# `scroll_columns` below are dropped (logged once) for as long as the scene
+# stays multi-chip — per-window trails need the persistence buffers re-keyed per
+# chip, which v1 does not do.
 #
 # Run:
 #   c64cast --config example:scene-asid

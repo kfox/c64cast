@@ -91,27 +91,23 @@ class _FakePort:
     def __init__(self) -> None:
         self.closed = False
 
-    def iter_pending(self):
-        return iter(())
+    def poll(self):
+        return None
 
     def close(self) -> None:
         self.closed = True
 
 
 class _ScriptedPort:
-    """Yields one queued batch of messages on the first iter_pending()
-    call (mirroring a controller flood arriving at once), then nothing."""
+    """Hands out one queued batch of messages (mirroring a controller flood
+    arriving at once), then nothing. The reader polls one message at a time."""
 
     def __init__(self, batch) -> None:
-        self._batch = batch
-        self._done = False
+        self._pending = list(batch)
         self.closed = False
 
-    def iter_pending(self):
-        if self._done:
-            return iter(())
-        self._done = True
-        return iter(self._batch)
+    def poll(self):
+        return self._pending.pop(0) if self._pending else None
 
     def close(self) -> None:
         self.closed = True
@@ -879,6 +875,17 @@ class LifecycleTests(_MidiTestCase):
         self.assertEqual(spy.teardown_calls, 1)
         # SID is silenced on the way out so the next scene starts clean.
         self.assertIn("SILENCE", api.regs)
+
+    def test_teardown_leaves_d018_on_the_char_mode_default(self):
+        # The scope ran in hires ($18). Teardown hands the next scene the
+        # char-mode matrix pointer, not the bitmap layout it was using.
+        from c64cast.sid.voice_scope import D018_CHAR_DEFAULT
+
+        scene, api = _make_scene()
+        scene._apply_vic_hires_bank()
+        self.assertEqual(api.memories.get("D018"), "18")
+        scene.teardown()
+        self.assertEqual(api.memories.get("D018"), f"{D018_CHAR_DEFAULT:02X}")
 
     def test_setup_programs_sid_and_starts_reader(self):
         scene, api = _make_scene(filter_mode="lowpass", master_volume=15)

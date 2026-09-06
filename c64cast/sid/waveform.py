@@ -112,6 +112,7 @@ from .voice_scope import (
     BITMAP_STRIPS,  # noqa: F401  (re-exported)
     BITMAP_W,  # noqa: F401  (re-exported)
     CELL_PX,
+    D018_CHAR_DEFAULT,
     D018_HIRES_BITMAP,
     LEFT_ARROW_SCREEN_CODE,
     META_ROW,
@@ -1218,12 +1219,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 if base != SID.BASE:
                     self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
             self.api.silence_sid()
-            # Restore VIC bank 0 + the default $D018 so the next scene's
-            # bank-0 display renders (a no-op when we never relocated; the
-            # next scene's mode setup also writes $D018, but restore it for
-            # symmetry). Mirrors modes.py teardown.
+            # Restore VIC bank 0 + the char-mode $D018 so the next scene's
+            # bank-0 display renders. Not a no-op even when we never relocated:
+            # the scope leaves the matrix pointer on its bitmap layout, and
+            # writing the hires value back here left it there while claiming
+            # otherwise. Mirrors hires.py's own teardown, which writes the same
+            # char-mode value for the same reason.
             self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
+            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
             self.api.flush()
         except Exception:
             log.exception("waveform: teardown silence/restore failed")
