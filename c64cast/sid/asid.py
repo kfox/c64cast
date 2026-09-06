@@ -122,7 +122,7 @@ class AsidUpdate:
     # apply AFTER that register's write. Empty list = no recipe carried. At most
     # MAX_TIMING_RECIPE_PAIRS entries, each register id appearing at most once.
     timing_recipe: list[tuple[int, int]] = field(default_factory=list)
-    dropped: bool = False  # command recognized but not applied (OPL-FM)
+    dropped: bool = False  # not applied: OPL-FM, or an unrecognized command byte
 
 
 def decode(data: Sequence[int]) -> AsidUpdate | None:

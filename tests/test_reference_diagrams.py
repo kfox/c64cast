@@ -6,7 +6,7 @@ against the template, and a committed PNG no longer being what the script
 draws. Neither shows up in a build -- the book renders a wrong-colored or
 out-of-date figure perfectly happily.
 
-Pixels are deliberately not compared. Pillow's rasteriser is not stable across
+Pixels are deliberately not compared. Pillow's rasterizer is not stable across
 versions, so a byte-for-byte drift test fails on an unrelated dependency bump;
 what is compared is the geometry the script asks for and the shot list it
 writes.

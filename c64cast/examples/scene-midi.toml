@@ -1,7 +1,7 @@
 #:schema ../data/c64cast.schema.json
 # Single-scene demo: MIDI → SID synth + oscilloscope.
 #
-# Listens on a MIDI input port and synthesises notes on the U64's
+# Listens on a MIDI input port and synthesizes notes on the U64's
 # hardware SID — turns the C64 into a 3-voice MIDI sound module — and
 # draws a full-screen hires oscilloscope of the three voices. Voices draw in
 # color while sounding and gray out when idle; the bottom rows show the

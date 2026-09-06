@@ -5,7 +5,7 @@ number: 4
 # Sound
 
 The Commodore was never designed to play recorded audio. It has a
-three-voice synthesiser and, on the Ultimate, a modern FPGA that can play PCM
+three-voice synthesizer and, on the Ultimate, a modern FPGA that can play PCM
 from expansion memory; between those two facts sits everything c64cast does
 with sound. This chapter is the sound path in both directions — a decoded
 soundtrack going out, a SID tune playing on the real chip, and a microphone
@@ -660,7 +660,7 @@ ASID packs SID register writes into MIDI system-exclusive messages. An ASID
 *host* sends the stream and the `asid` scene receives it and plays it on the
 chip; Chapter 2's entry for that scene names the hosts and how to open a port
 for them. It is a new input, not a fidelity change: the protocol carries only
-what a SID can synthesise, never sampled audio.
+what a SID can synthesize, never sampled audio.
 
 There are two ways to play what arrives, chosen by `asid_buffered_player`.
 
@@ -687,7 +687,7 @@ involved.
 
 ### MIDI
 
-The `midi` scene turns the Commodore into a three-voice synthesiser. Notes set
+The `midi` scene turns the Commodore into a three-voice synthesizer. Notes set
 each voice's frequency and gate; pitch-bend moves gated voices by up to two
 semitones; velocity lands in the voice's sustain level.
 

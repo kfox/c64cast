@@ -53,7 +53,7 @@ def _read_window(api, start_slot: int, count: int, quantum: int, nslots: int) ->
     """Read `count` consecutive slots starting at `start_slot`, wrapping the
     ring. Split into two calls across the wrap rather than reading the whole
     ring: an 8 KB read is ~0.25 s on the TR link and would stall the write
-    cadence we are trying to characterise."""
+    cadence we are trying to characterize."""
     if start_slot + count <= nslots:
         return api.read_memory(_slot_addr(start_slot, quantum), count * quantum)
     first = nslots - start_slot

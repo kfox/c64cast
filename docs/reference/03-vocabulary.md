@@ -38,7 +38,10 @@ plane, a MIDI pad or a gesture.
 
 **`duration_s` elapsing.** The default depends on the type: a waveform scene
 without one plays for the tune's real length if the song-length database is
-loaded, and 30 seconds otherwise; slideshow and generative scenes default to
+loaded, and 30 seconds otherwise; a generative scene with
+`audio_source = "file"` plays for the decoded track's length, which is what
+makes `c64cast tune.mp3` play the whole song (30 seconds if the container
+reports no duration); slideshow and every other generative scene default to
 30 seconds; webcam and blank scenes run forever *when they are the only scene*
 and 30 seconds otherwise, because an infinite scene in a rotation would never
 hand over. An explicit `duration_s = 0` means "run forever" for every type
@@ -158,7 +161,7 @@ ASID host at a port c64cast can open: DeepSID in a browser, SIDFactory II,
 Plogue chipsynth C64, an Elektron with ASID-XP. On macOS enable the IAC driver
 in Audio MIDI Setup; on Linux `modprobe snd-virmidi`.
 
-This scene has no synthesiser knobs, because ASID carries the whole tune's
+This scene has no synthesizer knobs, because ASID carries the whole tune's
 register state and c64cast is only relaying it. What it has instead is three
 keys about how that state is delivered. `asid_multi_sid` and `asid_max_sids`
 gate and cap the routing of a multi-SID stream onto extra chips, which needs
@@ -280,7 +283,7 @@ at once, each player hearing their own machine.
 
 ### `midi`
 
-Turns the Commodore into a three-voice synthesiser played from a MIDI
+Turns the Commodore into a three-voice synthesizer played from a MIDI
 keyboard, with the same oscilloscope as the waveform scene.
 
 ```toml

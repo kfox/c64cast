@@ -1204,16 +1204,19 @@ class SceneCfg:
     )
     # None = scene-type default: webcam/blank run forever in a single-scene
     # playlist (else 30s so a rotation still advances), songlengths-or-180s
-    # (WaveformScene.FALLBACK_DURATION_S) for waveform, 30s for everything
-    # else. 0 = run forever (any type). Video scenes reject any value
-    # (video-driven).
+    # (WaveformScene.FALLBACK_DURATION_S) for waveform, the decoded track's
+    # length for a generative scene with audio_source = "file" (set in
+    # _build_generative_live so `c64cast tune.mp3` plays the whole song), 30s
+    # for everything else. 0 = run forever (any type). Video scenes reject any
+    # value (video-driven).
     duration_s: float | None = field(
         default=None,
         metadata={
             "help": "Seconds before auto-advance; 0 = run forever. Unset = "
             "scene-type default (webcam/blank run forever when they're the "
             "only scene, else 30s; waveform = song length or 180s; "
-            "everything else = 30s). "
+            'generative with audio_source = "file" = the track\'s length, '
+            "or 30s when the container reports none; everything else = 30s). "
             "Video scenes reject this (they run until the file ends). "
             "For launcher this is the idle timeout (reset by player input).",
             "applies_to": (

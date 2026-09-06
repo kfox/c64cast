@@ -367,7 +367,7 @@ The form is also the *explained* view, which is the half the raw text cannot giv
 
 Five consequences worth knowing.
 
-The introspection document is ~150 KB and describes the *code*, so it cannot change while the process is up: `introspect.ts` memoises the in-flight promise, and a failed fetch clears it so a retry is possible.
+The introspection document is ~150 KB and describes the *code*, so it cannot change while the process is up: `introspect.ts` memoizes the in-flight promise, and a failed fetch clears it so a retry is possible.
 
 `is_default` is what powers "only what this file changes" — on by default, because a config has 167 settable fields and a show file names a dozen of them, and the dozen is the question being asked. That filter is also what a *writable* form trips over: the field you want to add is, by definition, one the file doesn't change yet. Hence the finder beside it, which overrides the filter while a query is in it — and a row with an unsaved edit is never hidden by either, because losing sight of a staged change is how it gets saved by accident.
 

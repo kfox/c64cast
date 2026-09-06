@@ -3,7 +3,7 @@ override / live device identity / offline fallback), schema-v2 persistence +
 per-socket entry selection, the socket-isolation config PUTs, the
 system-aware "auto"/"calibrated" resolver, and the slot-ring measurement
 primitive — ring construction, level extraction from a simulated capture, and
-the ladder fold. No real hardware; the capture is synthesised."""
+the ladder fold. No real hardware; the capture is synthesized."""
 
 # FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
 # file-wide so the test focus stays on behavior rather than type wrapping
@@ -833,7 +833,7 @@ class SlotRingLayoutTest(unittest.TestCase):
 class SlotRingExtractionTest(unittest.TestCase):
     """The extraction is where a calibration goes stably wrong: an open-loop
     slot grid reads mid-plateau on a drifting baseline and returns levels that
-    repeat perfectly and mean nothing. These drive it from a synthesised
+    repeat perfectly and mean nothing. These drive it from a synthesized
     capture with a known answer."""
 
     def test_recovers_known_levels_through_ac_coupling(self):

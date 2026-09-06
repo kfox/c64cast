@@ -70,6 +70,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The documented `duration_s` default was wrong for a quick-playback audio
+  file.** The config metadata — which the JSON schema, `--describe` and the
+  reference guide's scene-type appendix all render from one string — said
+  "everything else = 30s", but a `generative` scene with
+  `audio_source = "file"` and no explicit `duration_s` is sized to the decoded
+  track, and that is exactly the scene `c64cast tune.mp3` builds. Anyone
+  reading the schema to find out why a song kept playing past 30 seconds was
+  told the opposite of what the code does. The help and the guide's vocabulary
+  chapter now name that case, and say the 30 s fallback applies when the
+  container reports no duration.
 - **An ASID `0x30` write order can no longer invert a voice's hard restart.**
   A hard restart is two writes to one control register — gate off, then the
   re-attack — and the buffered player ordered a frame's writes by ASID register

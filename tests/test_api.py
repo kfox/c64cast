@@ -930,6 +930,7 @@ class LaunchProgramTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
+        self.addCleanup(patch.stopall)
         # flush()/invalidate_cache() touch the DMA socket; stub them.
         patch.object(self.api, "flush").start()
         patch.object(self.api, "invalidate_cache").start()
@@ -1260,6 +1261,25 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.reset()  # shutdown path — must not raise
 
 
+class _VirtualClock:
+    """A stand-in for the `time` module whose `sleep` advances its own `time`.
+
+    A poll loop bound to this clock advances exactly one poll interval per
+    iteration however loaded the machine is, which is what makes a fake that
+    answers "not yet" twice before signaling deterministic: on the real clock
+    that fake raced the deadline whenever a parallel worker stalled between
+    two of its reads."""
+
+    def __init__(self, now: float = 0.0) -> None:
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+    def sleep(self, seconds: float) -> None:
+        self._now += seconds
+
+
 class DumpCharRomTest(unittest.TestCase):
     """The shared dump orchestration on the Ultimate: upload the stub, SYS it
     via run_prg, wait for the completion flag, read the landing zone back.
@@ -1300,10 +1320,12 @@ class DumpCharRomTest(unittest.TestCase):
             return self.rom
 
         patch.object(self.api, "read_memory", side_effect=_fake_read).start()
-        patch("c64cast.hw.api.time.sleep").start()
-        # The deadline is real wall clock, and with sleep stubbed out the
-        # never-signals case would busy-spin the full production budget.
-        patch("c64cast.hw.api._CHAR_ROM_FLAG_TIMEOUT_S", 0.2).start()
+        # `dump_char_rom` walks a wall-clock deadline, so hand the module a
+        # clock the test owns: three flag reads plus two poll sleeps is pure
+        # arithmetic on it, and the full production budget costs no wall time.
+        # Bound over the module's own `time` name, never over an attribute of
+        # the stdlib module — see _fakes.FrozenClock for why.
+        patch("c64cast.hw.api.time", _VirtualClock()).start()
 
     def tearDown(self):
         patch.stopall()

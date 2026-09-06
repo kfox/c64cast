@@ -1287,7 +1287,7 @@ duration_s = 45.0
   bg_color = "black"
   messages = [
     { text = "WELCOME TO C64CAST!", color = "yellow", style = "static", pause_time_s = 2.0 },
-    { text = "EDIT c64cast.toml TO PERSONALISE", color = "purple" },
+    { text = "EDIT c64cast.toml TO PERSONALIZE", color = "purple" },
     { text = "ULTIMATE 64 TRICKS", color = "cyan" },
   ]
 

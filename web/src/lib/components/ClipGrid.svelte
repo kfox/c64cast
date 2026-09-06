@@ -19,7 +19,7 @@
     onpress(slot, pressed);
   }
 
-  // A keyboard-synthesised click has `detail === 0`, which is how it is told
+  // A keyboard-synthesized click has `detail === 0`, which is how it is told
   // apart from the click that follows a real pointer release (already handled).
   function keyFire(slot: number, event: MouseEvent): void {
     if (event.detail !== 0 || readOnly) return;

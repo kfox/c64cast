@@ -103,7 +103,7 @@ class InlineConversionTest(unittest.TestCase):
 
     def test_backslash_escape_does_not_open_emphasis(self):
         # Without escape handling the lone `*` pairs with the next one and
-        # italicises everything between, silently swallowing the prose.
+        # italicizes everything between, silently swallowing the prose.
         out = convert(r"Jost\* and *real* emphasis").strip()
         self.assertEqual(out, r"Jost\* and _real_ emphasis")
 
