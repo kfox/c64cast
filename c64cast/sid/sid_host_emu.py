@@ -125,6 +125,21 @@ _WALL_CLOCK_CHECK_STEPS = 4096
 # HostEmuBudget and get the smaller of this and what is left of it.
 _INIT_DEADLINE_S = 1.0
 
+# Wall-clock ceiling on a single PLAY pass, applied only on the *analysis*
+# paths (footprint runs, the pre-flight) — the paths that hold a HostEmuBudget.
+# A pass gets the smaller of this and what is left of that budget, so no single
+# indivisible pass can outlast the budget it is charged to.
+#
+# The live render path deliberately gets no wall-clock cap. Truncating a PLAY
+# there leaves the $D4xx shadow holding half a frame's writes — a visibly wrong
+# scope — and a scheduler hiccup landing inside a pass would do it for a tune
+# that is perfectly healthy. What bounds the render path instead is the poll
+# period, sized against a measured pass cost; see [sustainable_poll_period_s].
+#
+# 50 ms is ~3x the most expensive *legal* PLAY measured (a pass that stays just
+# inside _PLAY_CYCLE_CAP costs ~16 ms), so it binds on degenerate passes only.
+_PLAY_DEADLINE_S = 0.05
+
 # Default number of PLAY passes to run when profiling a tune's RAM write
 # footprint. ~2000 ticks ≈ 33 s of tune time at 60 Hz; footprints observed to
 # stabilize well before 1000 ticks. The footprint places the relocated
@@ -629,6 +644,16 @@ class SidHostEmu:
         budget: HostEmuBudget | None = None,
     ) -> None:
         self._parsed = parse_psid_for_player(sid_bytes, song=song)
+        # Every wall-clock instant this emulator compares — INIT's deadline,
+        # a PLAY pass's — is read from THIS clock, which is the budget's own
+        # when one was given. A deadline is only meaningful in the clock
+        # domain that produced it: `budget.deadline_for` returns an instant on
+        # the injected clock, and comparing that against `time.monotonic()`
+        # made the two disagree about when the same budget expired. Production
+        # was unaffected (the default clock IS time.monotonic), but every test
+        # that injected a clock was measuring something the shipped code does
+        # not do.
+        self._now: Callable[[], float] = time.monotonic if budget is None else budget.now
         # SID chip bases to shadow. Default: the tune's own header addresses
         # (chip 0 = $D400). A caller (WaveformScene) may override to honor a
         # filename ``_NSID`` hint the header understates. Chip 0 always $D400.
@@ -653,11 +678,21 @@ class SidHostEmu:
         # provides, so the scope can't render it faithfully and the C64-side
         # player would hang/silence it too.
         self.last_routine_capped: bool = False
+        # True once ANY routine on this emulator capped — the constructor's
+        # INIT included, which is the one no later flag could ever report
+        # because it ran before the caller held the object. `last_routine_capped`
+        # answers "did the pass I just ran terminate", which is the PLAY
+        # pre-flight's question; this answers "is anything sampled from this
+        # emulator a prefix", which is FootprintSample.complete's. Reading the per-pass
+        # flag for the second question let a truncated INIT — a fat
+        # decompressor stopped at the 2 M-cycle cap, or at the shared budget —
+        # report a full footprint, and everything after the cap was lost.
+        self.any_routine_capped: bool = False
         # True once any routine on this emulator ended on an opcode py65 does
         # not implement. Distinct from `last_routine_capped` on purpose: the
         # tune runs fine on the real 6510 (LAX/SAX/SLO are a normal hand-rolled
-        # player idiom), so this must NOT feed preflight_emu's "would hang the
-        # machine" verdict. What it does mean is that every pass stopped at the
+        # player idiom), so this must NOT feed the PLAY pre-flight's "would
+        # hang the machine" verdict. What it does mean is that every pass stopped at the
         # same instruction, so the RAM footprint sampled from this emulator is
         # a prefix of the truth and the placements built on it are not
         # trustworthy — see FootprintSample.complete.
@@ -675,7 +710,7 @@ class SidHostEmu:
         load_deadline = (
             budget.deadline_for(_INIT_DEADLINE_S)
             if budget is not None
-            else time.monotonic() + _INIT_DEADLINE_S
+            else self._now() + _INIT_DEADLINE_S
         )
         self._run_routine(
             self._parsed.init_addr,
@@ -698,17 +733,24 @@ class SidHostEmu:
         single-SID tune)."""
         return bytes(self._memory.sid_shadows[bank])
 
-    def tick_play(self) -> None:
+    def tick_play(self, deadline: float | None = None) -> None:
         """Run one PLAY pass. Re-entrant call into `play_addr`, same
-        sentinel-RTS + budget discipline as INIT. The budget bounds a
+        sentinel-RTS + budget discipline as INIT. The cycle/step caps bound a
         degenerate PLAY (one that spins waiting for a raster or an IRQ that
-        will never fire in this emulator) so the render thread isn't
-        starved."""
+        will never fire in this emulator) so the render thread isn't starved.
+
+        `deadline` is an optional absolute instant in this emulator's clock
+        domain (see `_now`). The analysis paths pass one so a single pass
+        cannot outlast the HostEmuBudget it is charged to; the live render
+        path passes none — see _PLAY_DEADLINE_S for why truncating a pass
+        there would be worse than the stall it saves."""
         # Clear hard-restart flags (all chips) so retriggers() reflects only
         # this tick.
         for gl in self._memory.gate_low_banks:
             gl[:] = bytes(SID.N_VOICES)
-        self._run_routine(self._parsed.play_addr, cap=_PLAY_CYCLE_CAP, tag="play")
+        self._run_routine(
+            self._parsed.play_addr, cap=_PLAY_CYCLE_CAP, tag="play", deadline=deadline
+        )
 
     def retriggers(self, bank: int = 0) -> tuple[bool, bool, bool]:
         """Per-voice hard-restart detection for chip `bank` on the most recent
@@ -780,7 +822,11 @@ class SidHostEmu:
         (_INIT_CYCLE_CAP is 40x _PLAY_CYCLE_CAP, and it used to be selected by
         comparing `tag` — the log label — against "init", so a third caller
         with a descriptive tag would have silently drawn the tight PLAY
-        budget). `deadline` is an optional absolute `time.monotonic()` instant.
+        budget). `deadline` is an optional absolute instant in THIS emulator's
+        clock domain (`self._now`) — the budget's own clock when one was
+        supplied, `time.monotonic` otherwise. Reading a different clock here
+        than the one that produced the instant is not a rounding error: it
+        makes the deadline meaningless.
 
         Four conditions end the routine early, and they do NOT all mean the
         same thing:
@@ -788,9 +834,14 @@ class SidHostEmu:
           * the cycle budget, the step budget (which is what actually bounds
             steps rather than trusting the cycle accounting — see
             _ILLEGAL_OPCODE_CYCLETIME), the wall-clock `deadline`, and an
-            exception out of py65 itself all set `last_routine_capped`. That
-            flag means "this routine does not terminate here", which is what
-            preflight_emu refuses a tune on.
+            exception out of py65 itself all set `last_routine_capped` AND
+            the sticky `any_routine_capped`. The first means "the pass just
+            run does not terminate here", which is what the PLAY pre-flight
+            refuses a tune on; the second means "something sampled from this
+            emulator is a prefix", which is what FootprintSample.complete
+            reports — including for the constructor's INIT, which no per-pass
+            flag could ever report because it ran before the caller held the
+            object.
           * an opcode py65 does not implement sets `saw_undecodable_opcode`
             and NOT `last_routine_capped`. Executing it would derail the
             instruction stream — py65 advances the PC by 2 regardless of the
@@ -827,8 +878,8 @@ class SidHostEmu:
             except Exception:
                 # py65 is not written against hostile input and neither is a
                 # .sid file trustworthy. Whatever it was, this routine did not
-                # return — say so the way a blown budget does, so preflight
-                # refuses the tune instead of the exception unwinding through
+                # return — say so the way a blown budget does, so the
+                # pre-flight refuses the tune instead of the exception unwinding
                 # the footprint helpers and out of the scene's ValueError-only
                 # handler, ending the whole playlist.
                 log.warning(
@@ -838,14 +889,14 @@ class SidHostEmu:
                     mpu.pc,
                     exc_info=True,
                 )
-                self.last_routine_capped = True
+                self._report_capped_routine()
                 return
             steps += 1
             if mpu.pc == sentinel:
                 return
             over_budget = mpu.processorCycles >= cap or steps >= cap
             if not over_budget and deadline is not None and steps % _WALL_CLOCK_CHECK_STEPS == 0:
-                over_budget = time.monotonic() >= deadline
+                over_budget = self._now() >= deadline
             if over_budget:
                 log.debug(
                     "sid_host_emu: %s budget reached at PC=$%04X (%d cycles, %d steps, "
@@ -856,8 +907,18 @@ class SidHostEmu:
                     steps,
                     cap,
                 )
-                self.last_routine_capped = True
+                self._report_capped_routine()
                 return
+
+    def _report_capped_routine(self) -> None:
+        """Record that the pass just run did not terminate.
+
+        Both flags move together and always through here: the per-pass verdict
+        the pre-flight reads, and the sticky one a footprint's `complete` reads.
+        Setting only the first is how a truncated INIT came back as a full
+        footprint."""
+        self.last_routine_capped = True
+        self.any_routine_capped = True
 
     def _report_undecodable_opcode(self, tag: str, opcode: int, pc: int) -> None:
         """End the pass at an opcode py65 can't execute, and remember it.
@@ -883,18 +944,29 @@ class FootprintSample(NamedTuple):
     """A tune's 64 KB RAM footprint bitmap plus whether it can be trusted.
 
     `ram` is the bitmap (1 = the address was touched). `complete` is False
-    when the run was cut short — the wall clock ran out, or a pass ended at an
-    opcode py65 cannot execute — in which case the bitmap is a *prefix* of the
-    tune's real behavior: every address it marks is genuine, but addresses the
-    tune touches later are missing.
+    when the run was cut short in ANY of the ways a run can be cut short — the
+    shared budget ran out between passes, a routine hit its cycle or step cap
+    or its own deadline, py65 raised, or a pass ended at an opcode py65 cannot
+    execute — in which case the bitmap is a *prefix* of the tune's real
+    behavior: every address it marks is genuine, but addresses the tune
+    touches later are missing.
+
+    The constructor's INIT counts, and is the worst of them: it runs before
+    the caller holds the emulator, once, and everything past its cap is lost
+    for every pass that follows. That is why the flag is computed from the
+    emulator's sticky `any_routine_capped` rather than from what the tick loop
+    happened to see.
 
     That distinction has to ride in the return value rather than only in a log
-    line, because both consumers place hardware on it: api._find_free_layout
-    puts the relocated C64-side player in the largest hole the bitmap leaves,
-    and _choose_display_layout picks the VIC bank from it. A missing late
-    write reads as free RAM, the player MC goes there, and PLAY overwrites it
-    — silence plus a crash to BASIC, which is the exact regression the
-    footprint was added to prevent.
+    line, because consumers place hardware on it: api._find_free_layout puts
+    the relocated C64-side player in the largest hole the bitmap leaves, and
+    _choose_display_layout picks the VIC bank from it. A missing late write
+    reads as free RAM, the player MC goes there, and PLAY overwrites it —
+    silence plus a crash to BASIC, which is the exact regression the footprint
+    was added to prevent. The two consumers that place a whole tune's hardware
+    reach these bitmaps only through [analyze_placement], which applies the
+    trust decision for them; the per-subtune scans in waveform.py handle it
+    themselves because their answer is "skip this subtune", not "widen".
     """
 
     ram: bytearray
@@ -904,11 +976,17 @@ class FootprintSample(NamedTuple):
 def _tick_until_budget(emu: SidHostEmu, ticks: int, budget: HostEmuBudget, what: str) -> bool:
     """Run up to `ticks` PLAY passes; stop early at FOOTPRINT_DEADLINE_S or at
     whatever is left of the shared `budget`, whichever comes first. Returns
-    True when all `ticks` passes ran and no pass ended on an opcode py65 can't
-    execute — i.e. when the footprint is a complete sample."""
+    True only when the resulting bitmap is a complete sample.
+
+    "Complete" is the AND of every way this emulator could have stopped short,
+    not only the ways this loop can see: all `ticks` passes ran, no pass ended
+    on an opcode py65 can't execute, and no routine on the emulator was ever
+    cut off by a cycle/step cap, a deadline, or an exception — INIT included.
+    INIT is the one that matters most, because it ran in the constructor and
+    everything past its cap is lost for every pass that follows."""
     give_up_at = budget.deadline_for(FOOTPRINT_DEADLINE_S)
     for done in range(ticks):
-        emu.tick_play()
+        emu.tick_play(budget.deadline_for(_PLAY_DEADLINE_S))
         if done + 1 < ticks and budget.now() >= give_up_at:
             log.warning(
                 "sid_host_emu: %s stopped after %d of %d PLAY passes (%.1fs left of the "
@@ -922,14 +1000,29 @@ def _tick_until_budget(emu: SidHostEmu, ticks: int, budget: HostEmuBudget, what:
                 ANALYSIS_BUDGET_S,
             )
             return False
-    return not emu.saw_undecodable_opcode
+    return not (emu.saw_undecodable_opcode or emu.any_routine_capped)
+
+
+class CatchupResult(NamedTuple):
+    """What one catch-up batch managed. `passes` is how many PLAY passes ran;
+    `overran` is True when the batch spent longer than the caller allowed it —
+    which, since a batch always runs at least one pass, means one PLAY pass on
+    its own costs more than the caller's whole time bound.
+
+    `overran` rides in the return value because that case is invisible in
+    `passes` alone: a batch asked for exactly one pass comes back "complete"
+    while having blown the bound by any margin at all. A caller that sees it is
+    running its poll thread at a duty cycle it did not choose."""
+
+    passes: int
+    overran: bool
 
 
 def run_catchup_passes(
     emu: SidHostEmu, on_tick: Callable[[], None], *, ticks: int, seconds: float
-) -> int:
+) -> CatchupResult:
     """Run up to `ticks` PLAY passes, calling `on_tick` after each, and stop
-    once `seconds` of host wall clock have gone by. Returns the passes run.
+    once `seconds` of host wall clock have gone by.
 
     Shared by the two threads that advance a host emulator to wall-clock —
     WaveformScene._poll_regs and SidFeatureStream._poll_loop — because both
@@ -940,14 +1033,48 @@ def run_catchup_passes(
     honors a CIA #1 Timer A latch up to 8x the video rate, written from PLAY),
     so without a time bound the thread could never catch up and simply pegged a
     core for the scene's whole duration. A caller that gets back fewer passes
-    than it asked for is running behind the audio and should say so once."""
+    than it asked for is running behind the audio and should say so once.
+
+    One PLAY pass is indivisible here — the pass is not given a deadline of its
+    own, because truncating it would leave the $D4xx shadow holding half a
+    frame's writes and the scope would show that (see _PLAY_DEADLINE_S). So
+    `seconds` cannot bound a batch below the cost of a single pass, and a tune
+    that writes CIA #1 Timer A for 400 Hz sets both sides of that comparison:
+    2.5 ms of poll period against a 10 ms pass ran the thread back to back for
+    the scene's whole duration. What keeps the bound binding is the caller
+    sizing its period against a measured pass cost — [sustainable_poll_period_s]
+    — and `overran` is how this function says the sizing was wrong anyway."""
     stop_at = time.monotonic() + seconds
     for done in range(ticks):
         emu.tick_play()
         on_tick()
-        if done + 1 < ticks and time.monotonic() >= stop_at:
-            return done + 1
-    return ticks
+        if time.monotonic() < stop_at:
+            continue
+        # Out of time. Running out on the FIRST pass is the case no smaller
+        # batch could have avoided — the bound did not bind, it was simply
+        # smaller than one indivisible unit of work.
+        return CatchupResult(done + 1, overran=done == 0)
+    return CatchupResult(ticks, overran=False)
+
+
+def sustainable_poll_period_s(tick_dt_s: float, pass_cost_s: float, fraction: float) -> float:
+    """The shortest poll period a catch-up thread may use: the tune's own PLAY
+    period, floored so one measured PLAY pass fits inside `fraction` of it.
+
+    The poll thread sleeps a fixed period *after* each wakeup, so its duty
+    cycle is work / (work + period). Ticking at the tune's real rate is only
+    affordable while a pass costs less than that rate allows; past there the
+    thread runs continuously and — under the GIL — takes the render thread's
+    time with it. Slowing the wakeups is the degradation that stays visible
+    (the scope falls behind the audio, and the caller says so once) instead of
+    the one that does not (a saturated core).
+
+    `tick_dt_s` stays the per-PLAY-tick song time the caller advances envelopes
+    by; only the wakeup period is stretched. Keeping those two the same number
+    is what conflated "how fast the song advances" with "how often we wake"."""
+    if pass_cost_s <= 0.0 or fraction <= 0.0:
+        return tick_dt_s
+    return max(tick_dt_s, pass_cost_s / fraction)
 
 
 def ram_write_footprint(
@@ -1035,30 +1162,55 @@ def ram_play_access_footprint(
 PREFLIGHT_TICKS = 50
 
 
-def preflight_emu(emu: SidHostEmu, ticks: int = PREFLIGHT_TICKS) -> bool:
-    """Return True when `emu`'s PLAY completes within its budget on at least
-    one of `ticks` passes; False when EVERY pass bails — a raster/IRQ-spinning
-    tune that would dead-machine the C64-side player.
+def play_preflight_failure(
+    emu: SidHostEmu, ticks: int = PREFLIGHT_TICKS, budget: HostEmuBudget | None = None
+) -> str | None:
+    """Return None when `emu`'s PLAY completes within its budget on at least
+    one of `ticks` passes; otherwise a one-line reason the caller can put in
+    front of a user.
 
-    The verdict reads `last_routine_capped` and nothing else, and that is the
-    whole classifier: a pass that ends any other way — including one that
-    stops at an undocumented opcode — counts as terminating, so the tune is
-    accepted. It has to be that way round. LAX/SAX/SLO in PLAY is a normal
+    The reason is returned rather than a bare False because the two ways to
+    fail are not the same fact and the caller's message has to say which. EVERY
+    pass bailing means a raster/IRQ-spinning tune that would dead-machine the
+    C64-side player. Running out of `budget` before any pass terminated means
+    we never found out — a different sentence entirely, and reporting it as the
+    first is the "error message blaming a raster spin that was not happening"
+    this gate has already been wrong about once. Both refuse the tune: an
+    un-pre-flighted PLAY that does hang leaves a machine needing a physical
+    reset, while refusing costs one scene while the playlist advances.
+
+    The healthy verdict reads `last_routine_capped` and nothing else, and that
+    is the whole classifier: a pass that ends any other way — including one
+    that stops at an undocumented opcode — counts as terminating, so the tune
+    is accepted. It has to be that way round. LAX/SAX/SLO in PLAY is a normal
     hand-rolled-player idiom that the U64's real 6510 executes; gating on "py65
-    could run every instruction" refused a large share of HVSC at scene setup,
-    with an error message blaming a raster spin that was not happening. What
-    such a tune loses is the trust placed in its RAM footprint, not the ability
-    to play — see FootprintSample.
+    could run every instruction" refused a large share of HVSC at scene setup.
+    What such a tune loses is the trust placed in its RAM footprint, not the
+    ability to play — see FootprintSample.
 
     The rule lives here so its two callers can't drift: `sid_play_preflight`
     builds a throwaway emulator for SidFileAudioSource, and WaveformScene runs
     it against the live `_host_emu` it is about to render from. Both leave the
-    emulator advanced by however many passes it took to reach the verdict."""
-    for _ in range(ticks):
-        emu.tick_play()
+    emulator advanced by however many passes it took to reach the verdict.
+
+    `budget` bounds the passes in seconds as well as in count. Without it the
+    only bound was the per-pass cycle/step cap, and 50 of those measured 0.6 s
+    per candidate — re-paid for every candidate in a pool walk."""
+    for done in range(ticks):
+        if budget is not None and budget.expired():
+            return (
+                f"PLAY could not be pre-flighted within the {ANALYSIS_BUDGET_S:.0f}s host "
+                f"analysis budget — {done} of {ticks} passes ran and none of them "
+                f"returned, so whether it would hang the C64-side player is unknown"
+            )
+        emu.tick_play(None if budget is None else budget.deadline_for(_PLAY_DEADLINE_S))
         if not emu.last_routine_capped:
-            return True
-    return False
+            return None
+    return (
+        f"PLAY never completes within the host emulator's budget over {ticks} passes "
+        f"— the tune spins on a raster/IRQ the player environment doesn't provide; "
+        f"it would hang the C64-side player (silent + unresponsive)"
+    )
 
 
 def sid_play_preflight(
@@ -1066,8 +1218,89 @@ def sid_play_preflight(
     song: int = 0,
     ticks: int = PREFLIGHT_TICKS,
     budget: HostEmuBudget | None = None,
-) -> bool:
-    """Construct-and-check wrapper around [preflight_emu] for callers that
-    don't already hold an emulator (SidFileAudioSource) — see PREFLIGHT_TICKS.
+) -> str | None:
+    """Construct-and-check wrapper around [play_preflight_failure] for callers
+    that don't already hold an emulator (SidFileAudioSource) — see
+    PREFLIGHT_TICKS. Returns None when the tune passes, else the reason.
     INIT already ran in __init__, under `budget` when one is given."""
-    return preflight_emu(SidHostEmu(sid_bytes, song=song, budget=budget), ticks)
+    return play_preflight_failure(SidHostEmu(sid_bytes, song=song, budget=budget), ticks, budget)
+
+
+class PlacementFootprints(NamedTuple):
+    """Everything one tune's analysis licenses a caller to place hardware from.
+
+    `avoid` is the RAM the relocated player MC must clear; `display` is the
+    view the VIC bank is chosen from; `play_bank` is the $01 value to use
+    around JSR play, or None to let run_sid_player's address heuristic decide.
+
+    The point of the type is that there is no way to reach a raw bitmap
+    without the trust decision having already been made. `complete` used to
+    ride back on two separate FootprintSample values that three call sites
+    each had to remember to consult, and two of them did not: they logged the
+    warning and then handed the prefix to api._find_free_layout and
+    _choose_display_layout anyway. `trusted` is reported for the log line, not
+    for a decision the caller still has to make."""
+
+    avoid: bytearray
+    display: bytearray
+    play_bank: int | None
+    trusted: bool
+
+
+def _union_of(first: bytes | bytearray, second: bytes | bytearray) -> bytearray:
+    """Elementwise OR of two 64 KB bitmaps. Pure Python on purpose — see the
+    note on _play_bank_for_footprints; it runs once, on the untrusted path."""
+    return bytearray(a | b for a, b in zip(first, second, strict=True))
+
+
+def analyze_placement(
+    sid_bytes: bytes, *, song: int, budget: HostEmuBudget, what: str
+) -> PlacementFootprints:
+    """Footprint one tune both ways and return the placement inputs, already
+    made safe for a sample that came back a prefix.
+
+    A prefix has to make a placement MORE conservative, never less. Every
+    address a truncated run marks is genuine; what is missing is the tail, and
+    a missing late write reads as free RAM — the player MC goes there, PLAY
+    overwrites it, and the tune is silent with a crash to BASIC, which is the
+    regression the footprint was added to prevent. So on an untrusted sample:
+
+      * both views widen to the union of everything the tune was observed to
+        touch at all, INIT writes included. Normally the display view excludes
+        INIT-only scratch because the bitmap is painted after INIT and may
+        cover it; giving that concession up is the cheapest real narrowing
+        available, and it uses observed data rather than guesswork.
+      * `play_bank` is dropped to None. Deriving $36 (BASIC out) from a prefix
+        means reading an intersection that the missing tail could have created
+        or destroyed either way; None is the pre-existing, correct-by-default
+        address heuristic.
+
+    If the widened bitmaps leave no room, the callers' existing ValueError
+    paths abort the scene and the playlist advances — which is the fail-closed
+    end of this, and it is reached by the same code that already handles "no
+    free VIC bank", not by a second refusal written next to it.
+
+    Refusing every untrusted tune outright was the other option and is the
+    wrong one: an undocumented opcode anywhere in PLAY makes a sample a prefix,
+    and that is a normal hand-rolled-player idiom — see play_preflight_failure.
+    """
+    write_sample = ram_write_footprint(sid_bytes, song=song, budget=budget)
+    access_sample = ram_play_access_footprint(sid_bytes, song=song, budget=budget)
+    trusted = write_sample.complete and access_sample.complete
+    if trusted:
+        return PlacementFootprints(
+            avoid=write_sample.ram,
+            display=access_sample.ram,
+            play_bank=_play_bank_for_footprints(write_sample.ram, access_sample.ram),
+            trusted=True,
+        )
+    union = _union_of(write_sample.ram, access_sample.ram)
+    log.warning(
+        "sid_host_emu: %s was only partially footprinted (%.1fs analysis budget) — "
+        "the player's RAM slot and the display bank are being placed from the union "
+        "of everything this tune was seen to touch, and its PLAY $01 bank falls back "
+        "to the address heuristic; the scene aborts if that leaves nothing free",
+        what,
+        ANALYSIS_BUDGET_S,
+    )
+    return PlacementFootprints(avoid=union, display=union, play_bank=None, trusted=False)

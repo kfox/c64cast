@@ -175,6 +175,68 @@ class CatchupBoundTest(unittest.TestCase):
         self.assertEqual(s._ticks_done, 2)
         self.assertIn("can't keep up", "\n".join(logs.output))
 
+    def test_a_full_batch_that_used_its_whole_bound_still_warns(self):
+        # One tick was due, it ran, and it outlasted the whole batch bound on
+        # its own — invisible in the pass count, which is why the bound needs
+        # to report it. Mirrors the same case in WaveformScene._poll_regs.
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        with (
+            patch("c64cast.scenes.music_features.time.time", return_value=1000.0 + 1 / 60.0),
+            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.5)),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s._poll_loop()
+        self.assertEqual(s._host_emu.tick_play.call_count, 1)
+        self.assertEqual(s._ticks_done, 1, "the batch ran every pass it was asked for")
+        self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_poll_period_is_stretched_when_one_pass_costs_more_than_the_rate_allows(self):
+        # The wakeup period is floored so one measured PLAY pass fits inside
+        # its allowed fraction; the per-tick song dt (which drives the onset
+        # envelope decay) is not, or the features would track the thread
+        # instead of the song.
+        s = SidFeatureStream(self.sid, song=0, system="NTSC")
+        with (
+            patch.object(SidFeatureStream, "_detect_play_rate_hz", return_value=(60.0, 0.05)),
+            patch("c64cast.scenes.music_features.PollThread") as poll_cls,
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s.start()
+        self.assertAlmostEqual(s._poll_dt, 1.0 / 60.0)
+        # A 50 ms pass may fill half a wakeup, so the wakeup becomes 100 ms.
+        self.assertAlmostEqual(s._poll_period, 0.1)
+        # ...and the thread has to actually wake at it.
+        self.assertAlmostEqual(poll_cls.call_args.kwargs["period"], 0.1)
+        self.assertIn("one PLAY pass costs", "\n".join(logs.output))
+
+    def test_the_catchup_bound_is_sized_off_the_wakeup_period_not_the_tick_rate(self):
+        # Mirrors WaveformScene: a stretched wakeup that the batch allowance
+        # is not sized against leaves the allowance at its old, too-small
+        # value. See sid_host_emu.sustainable_poll_period_s.
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        s._poll_period = 1.0
+        with (
+            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
+            patch(
+                "c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.005)
+            ),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING"),
+        ):
+            s._poll_loop()
+        # Half of the 1/60 s tick dt is 8.3 ms — two passes, per the test
+        # above. Half of the 1 s wakeup period is not.
+        self.assertGreater(s._host_emu.tick_play.call_count, 2)
+
     def test_lag_is_reported_once_not_per_wakeup(self):
         s = _PrimedStream.primed(self.sid)
         s._host_emu = MagicMock()
@@ -195,16 +257,15 @@ class CatchupBoundTest(unittest.TestCase):
 
     def test_rate_probe_stops_when_its_budget_is_spent(self):
         # The probe runs up to _RATE_PROBE_TICKS passes on a throwaway
-        # emulator; the count is not a time bound, so it gets a budget too.
+        # emulator; the count is not a time bound, so it runs under the
+        # caller's budget — the same one _prepare charges the persistent
+        # emulator's INIT to.
         s = SidFeatureStream(self.sid, song=0, system="NTSC")
-        with (
-            patch(
-                "c64cast.scenes.music_features.HostEmuBudget", lambda *a, **kw: HostEmuBudget(0.0)
-            ),
-            patch("c64cast.scenes.music_features.SidHostEmu") as cls,
-        ):
+        with patch("c64cast.scenes.music_features.SidHostEmu") as cls:
             cls.return_value.play_rate_hz.return_value = 60.0
-            self.assertAlmostEqual(s._detect_play_rate_hz(), 60.0)
+            rate, pass_cost_s = s._detect_play_rate_hz(HostEmuBudget(0.0))
+        self.assertAlmostEqual(rate, 60.0)
+        self.assertEqual(pass_cost_s, 0.0, "no pass ran, so nothing was measured")
         cls.return_value.tick_play.assert_not_called()
 
 

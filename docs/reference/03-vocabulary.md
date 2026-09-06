@@ -38,7 +38,8 @@ plane, a MIDI pad or a gesture.
 
 **`duration_s` elapsing.** The default depends on the type: a waveform scene
 without one plays for the tune's real length if the song-length database is
-loaded, and 30 seconds otherwise; a generative scene with
+loaded, and three minutes (`WaveformScene.FALLBACK_DURATION_S`) otherwise; a
+generative scene with
 `audio_source = "file"` plays for the decoded track's length, which is what
 makes `c64cast tune.mp3` play the whole song (30 seconds if the container
 reports no duration); slideshow and every other generative scene default to

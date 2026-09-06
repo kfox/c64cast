@@ -82,12 +82,14 @@ from .sid_host_emu import (
     _overlaps,
     _play_bank_for_footprints,
     _sid_payload_extent,
+    analyze_placement,
     detect_sid_addresses,
     parse_sid_header,
-    preflight_emu,
+    play_preflight_failure,
     ram_play_access_footprint,
     ram_write_footprint,
     run_catchup_passes,
+    sustainable_poll_period_s,
 )
 from .sid_hw_config import (
     SidHwSession,
@@ -332,8 +334,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     FALLBACK_DURATION_S = 180.0
 
     # Host-emu PLAY pre-flight pass count. The gate itself is
-    # sid_host_emu.preflight_emu — shared with SidFileAudioSource, which
-    # reaches it through sid_play_preflight's construct-and-check wrapper.
+    # sid_host_emu.play_preflight_failure — shared with SidFileAudioSource,
+    # which reaches it through sid_play_preflight's construct-and-check wrapper.
     # WaveformScene runs it against the live `_host_emu` it is about to render
     # from rather than a throwaway, so the two callers share the rule but not
     # the emulator. The tick count is PREFLIGHT_TICKS itself, so the tuning
@@ -595,11 +597,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 
-    def _load_sid_file(self, path: str) -> None:
+    def _load_sid_file(self, path: str, budget: HostEmuBudget | None = None) -> None:
         """Load + parse + validate one SID at `path`. Raises ValueError on
         any rejection (header parse, song-out-of-range, payload overlap).
         On success sets self._sid_file, self.sid_bytes, self.header,
-        self.song, self._host_emu and self._song_num_width."""
+        self.song, self._host_emu and self._song_num_width.
+
+        `budget` is the pool walk's shared analysis budget — see
+        _pick_and_load_sid."""
         if not os.path.exists(path):
             raise ValueError(f"waveform: SID file not found: {path}")
         with open(path, "rb") as f:
@@ -646,12 +651,12 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # reads return 0). Construction loads + runs INIT once; each
         # tick_play() advances one PLAY pass. A multi-SID tune shadows every
         # chip's register bank. See sid_host_emu.py.
-        self._host_emu = self._build_host_emu(self.song)
+        self._host_emu = self._build_host_emu(self.song, budget)
         # Song-number column width is derived from num_songs — recompute
         # so multi-pick scenes get the right padding per chosen SID.
         self._song_num_width = len(str(max(self.header.num_songs, 1)))
 
-    def _build_host_emu(self, song: int) -> SidHostEmu:
+    def _build_host_emu(self, song: int, budget: HostEmuBudget | None = None) -> SidHostEmu:
         """Build the parallel host emulator for `song` and pre-flight its PLAY.
 
         Raises ValueError when PLAY bails out of its budget on every one of
@@ -661,8 +666,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         masked, so the kernal IRQ never fires, $028D stops updating, and the
         machine goes dead/silent (the Hollywood Poker Pro failure). A tune whose
         PLAY merely uses an opcode py65 can't execute is NOT refused here — see
-        sid_host_emu.preflight_emu for why, and FootprintSample for what it does
-        cost such a tune.
+        sid_host_emu.play_preflight_failure for why, and FootprintSample for
+        what it does cost such a tune.
 
         Every construction site goes through here — the initial load, the
         SHIFT cue, and the $37→$36 hard relaunch — because INIT and PLAY are
@@ -672,15 +677,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         The pre-flight leaves the emulator advanced by however many passes it
         took to reach a verdict. That head start is cosmetically irrelevant to
-        the scope and not worth a rebuild."""
-        emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses)
-        if not preflight_emu(emu, self._PLAY_PREFLIGHT_TICKS):
+        the scope and not worth a rebuild.
+
+        `budget` charges the INIT and the pre-flight passes to the caller's
+        analysis budget. A pool walk passes one, because the per-pass cycle cap
+        alone let a directory of crafted tunes cost ~1.1 s per candidate for
+        _MAX_PICK_ATTEMPTS candidates on the thread that draws frames."""
+        emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses, budget=budget)
+        refusal = play_preflight_failure(emu, self._PLAY_PREFLIGHT_TICKS, budget)
+        if refusal is not None:
             raise ValueError(
-                f"waveform: {os.path.basename(self._sid_file)} song {song} PLAY "
-                f"never completes within the host emulator's budget over "
-                f"{self._PLAY_PREFLIGHT_TICKS} passes — the tune spins on a "
-                f"raster/IRQ the player environment doesn't provide; it would "
-                f"hang the C64-side player (silent + unresponsive). Refused."
+                f"waveform: {os.path.basename(self._sid_file)} song {song} {refusal}. Refused."
             )
         return emu
 
@@ -754,15 +761,24 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         The shuffle happens before `_order_by_host_fit` so that mode's grouping
         is a bias on top of a random order, not a reordering that would make one
-        tune the deterministic pick for a whole class of machines."""
+        tune the deterministic pick for a whole class of machines.
+
+        ONE analysis budget covers the whole walk, not one per candidate. Each
+        candidate costs an INIT plus _PLAY_PREFLIGHT_TICKS PLAY passes, and the
+        tune sets what those cost — a directory of crafted tunes measured ~1.1 s
+        each, so _MAX_PICK_ATTEMPTS of them blocked the constructing thread for
+        ~8.8 s before raising. With a shared budget, a pool that expensive runs
+        out of candidates instead of running out of the show; the raise below is
+        the same "none could be loaded" the caller already handles."""
         self._candidates = self._resolve_candidates()
         pool = list(self._candidates)
         random.shuffle(pool)
         pool = self._order_by_host_fit(pool)
+        budget = HostEmuBudget()
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
-                self._load_sid_file(path)
+                self._load_sid_file(path, budget)
             except ValueError as e:
                 log.warning("waveform: skipping %s: %s", os.path.basename(path), e)
                 last_error = e
@@ -928,21 +944,18 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # One budget covers this whole analysis — both runs here, and the
         # per-subtune scan below. Each run used to draw its own wall-clock
         # deadline, so an 18-run setup could legitimately spend 18 of them on
-        # the main render thread.
+        # the main render thread. analyze_placement owns what a truncated
+        # sample is allowed to place: there is no bitmap here that hasn't
+        # already been through that decision.
         budget = HostEmuBudget()
-        write_sample = ram_write_footprint(self.sid_bytes, song=self.song, budget=budget)
-        display_sample = ram_play_access_footprint(self.sid_bytes, song=self.song, budget=budget)
-        footprint = write_sample.ram
-        display_footprint = display_sample.ram
-        if not (write_sample.complete and display_sample.complete):
-            log.warning(
-                "waveform: %s song %d was only partially footprinted (%.1fs analysis "
-                "budget) — the player's RAM slot and the display bank are placed from "
-                "an incomplete sample of what this tune touches",
-                os.path.basename(self._sid_file),
-                self.song,
-                ANALYSIS_BUDGET_S,
-            )
+        placement = analyze_placement(
+            self.sid_bytes,
+            song=self.song,
+            budget=budget,
+            what=f"waveform: {os.path.basename(self._sid_file)} song {self.song}",
+        )
+        footprint = placement.avoid
+        display_footprint = placement.display
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
 
         # For a multi-song SID, try to pin ONE display bank free for the union
@@ -1018,10 +1031,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         ):
             avoid[lo:hi] = b"\x01" * (hi - lo)
 
-        # Decide the PLAY $01 bank: $36 (BASIC out) when this subtune reads
-        # live song data from RAM under BASIC ROM (e.g. ToL 2-11 at $B400),
-        # else None (heuristic). See _play_bank_for_footprints.
-        play_bank = _play_bank_for_footprints(footprint, display_footprint)
+        # The PLAY $01 bank: $36 (BASIC out) when this subtune reads live song
+        # data from RAM under BASIC ROM (e.g. ToL 2-11 at $B400), else None
+        # (heuristic). Derived inside analyze_placement so a prefix footprint
+        # can't produce one. See _play_bank_for_footprints.
+        play_bank = placement.play_bank
         self._current_needs_basic_out = play_bank == CPU.PORT_BASIC_OUT
 
         # Multi-SID: map the U64's extra SID chips to this tune's own addresses
@@ -1350,7 +1364,19 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         chosen_play_bank: int | None = None
         if chosen_access_fp is not None:
             write_fp = ram_write_footprint(self.sid_bytes, song=new_song, budget=budget)
-            chosen_play_bank = _play_bank_for_footprints(write_fp.ram, chosen_access_fp)
+            if write_fp.complete:
+                chosen_play_bank = _play_bank_for_footprints(write_fp.ram, chosen_access_fp)
+            else:
+                # A prefix write footprint can create or destroy the
+                # under-BASIC-ROM intersection either way, and getting $36
+                # wrong on a cue is a silent tune. None is the address
+                # heuristic — the same default the all-rejected path takes.
+                log.info(
+                    "waveform: cycle keeping the default PLAY $01 bank for song %d/%d "
+                    "— its write footprint is only a partial sample",
+                    new_song,
+                    n,
+                )
 
         # Stop the poll thread so it can't tick the host emulator while we
         # rebuild it. (The outgoing subtune was already silenced first, before
@@ -1361,6 +1387,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # re-INITs the real machine: each subtune is its own INIT/PLAY pair, so
         # a tune whose song 1 passed the load-time gate can still hand song 2 a
         # PLAY that dead-machines the C64-side player.
+        # Deliberately NOT charged to this SHIFT's budget. The budget bounds
+        # work whose COUNT the file sets — the candidate walk above, the pool
+        # walk at load. This is one INIT plus one pre-flight for one subtune,
+        # and a budget already spent by the walk would turn "the search took
+        # too long" into "the scene is over", since a refused pre-flight aborts.
         try:
             new_emu = self._build_host_emu(new_song)
         except ValueError as e:
@@ -1413,15 +1444,26 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         _MAX_CYCLE_CANDIDATES, and at `budget`: if every candidate is rejected
         (or either bound is hit), the first is returned with layout=None so
         SHIFT still changes the song and keeps the current display bank (the
-        new subtune may render imperfectly, but audio plays)."""
+        new subtune may render imperfectly, but audio plays).
+
+        A candidate whose PLAY footprint came back incomplete is rejected the
+        same way an unrenderable one is. The bitmap is a prefix, so a bank
+        chosen from it can be RAM the subtune is live in — and unlike setup's
+        one-off choice, this one is made while the audience is watching."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
         first_candidate = (self.song % n) + 1
+        # A candidate whose PLAY footprint came back a prefix is skipped, not
+        # placed from — see the skip below. That is what the walk was missing:
+        # it took `.ram` off the sample and dropped `.complete` on the floor,
+        # then handed the prefix to _choose_display_layout and kept it as the
+        # chosen subtune's access footprint.
         new_song = first_candidate
         chosen_duration: float | None = None
         chosen_layout: tuple[int, int, int, int] | None = None
         chosen_access_fp: bytearray | None = None
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
+        skipped_partial: list[int] = []
         candidate = first_candidate
         exhausted = False
         for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
@@ -1435,7 +1477,18 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     skipped_short.append((candidate, looked_up))
                     candidate = (candidate % n) + 1
                     continue
-            fp = ram_play_access_footprint(self.sid_bytes, song=candidate, budget=budget).ram
+            sample = ram_play_access_footprint(self.sid_bytes, song=candidate, budget=budget)
+            if not sample.complete:
+                # Same answer an unrenderable candidate gets, for the same
+                # reason: this footprint is a prefix, so a bank chosen from it
+                # may be RAM the subtune is live in — the bitmap would be
+                # painted over song data for as long as the subtune plays.
+                # Skipping costs a candidate; there are more, and the
+                # all-rejected fallback keeps the bank already on screen.
+                skipped_partial.append(candidate)
+                candidate = (candidate % n) + 1
+                continue
+            fp = sample.ram
             if self._unified_layout is not None:
                 # One bank was pinned for every subtune at setup() — never
                 # relocate (a per-subtune _choose_display_layout could pick an
@@ -1467,6 +1520,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         for sn in skipped_unrender:
             log.info(
                 "waveform: cycle skipping song %d/%d (no free VIC bank for its PLAY footprint)",
+                sn,
+                n,
+            )
+        for sn in skipped_partial:
+            log.info(
+                "waveform: cycle skipping song %d/%d (its PLAY footprint is only a "
+                "partial sample — placing the display bank from it isn't safe)",
                 sn,
                 n,
             )
@@ -1634,7 +1694,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         else:
             self._paint_metadata_row()
 
-    def _detect_play_rate_hz(self) -> float:
+    def _detect_play_rate_hz(self) -> tuple[float, float]:
         """Return the current subtune's effective PLAY rate in Hz.
 
         A user-pinned reg_poll_hz wins outright. Otherwise probe the rate on a
@@ -1657,9 +1717,15 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         On the fresh-launch path the scene's own host emu was already
         PLAY-pre-flighted by _load_sid_file, so it would self-detect — but
         probing unconditionally keeps every entry point (init, setup re-pick,
-        SHIFT cycle) on one correct code path."""
+        SHIFT cycle) on one correct code path.
+
+        Returns ``(rate_hz, pass_cost_s)``. The second is what one PLAY pass of
+        THIS tune measured on THIS host, which is the number the poll period
+        has to be sized against — see sustainable_poll_period_s. It is 0.0 when
+        no pass was timed (a user-pinned rate); callers treat that as "no
+        measurement, don't clamp"."""
         if self._user_reg_poll_hz is not None:
-            return float(self._user_reg_poll_hz)
+            return float(self._user_reg_poll_hz), 0.0
         # _RATE_PROBE_TICKS bounds the pass COUNT, and the tune sets what a
         # pass costs — the same gap the footprint runs had. Its own budget,
         # not the caller's: this probe runs from __init__ as well as from
@@ -1667,14 +1733,19 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         budget = HostEmuBudget()
         probe = SidHostEmu(self.sid_bytes, song=self.song, budget=budget)
         rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
+        passes = 0
+        spent = 0.0
         for _ in range(self._RATE_PROBE_TICKS):
             if abs(rate - self._video_hz) > 0.5:
                 break  # multispeed Timer A latch seen — rate is known
             if budget.expired():
                 break  # too expensive to emulate; the vsync default stands
+            started = time.monotonic()
             probe.tick_play()
+            spent += time.monotonic() - started
+            passes += 1
             rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
-        return float(rate)
+        return float(rate), (spent / passes if passes else 0.0)
 
     def _resolve_poll_rate(self) -> None:
         """Set the host-emu PLAY tick rate to the current tune's real rate and
@@ -1694,7 +1765,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         have a different rate. run_first=True so the first wakeup catches the
         host emulator up immediately (covering the _setup_hires bitmap-clear
         gap). See _poll_regs for the wall-clock catch-up model."""
-        rate = self._detect_play_rate_hz()
+        rate, pass_cost_s = self._detect_play_rate_hz()
         if self._user_reg_poll_hz is None and abs(rate - self._video_hz) > 0.5:
             log.info(
                 "waveform: %s is CIA-timed (multispeed) — host "
@@ -1706,10 +1777,34 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             )
         self._reg_poll_hz = float(rate)
         # Per-PLAY-tick dt used to advance the ADSR envelope — must match the
-        # tick rate so the envelope tracks wall-clock.
+        # tick RATE so the envelope tracks the song, not the thread.
         self._poll_dt = 1.0 / max(rate, 5.0)
+        # How often the thread actually wakes. Normally the same number, but
+        # floored so one measured PLAY pass fits inside _MAX_CATCHUP_PERIOD_-
+        # FRACTION of it: the tune sets both the rate and the pass cost, and a
+        # 400 Hz CIA latch against a 10 ms pass left the batch's time bound
+        # bounding nothing — one indivisible pass was 4x the whole period, so
+        # the thread ran back to back for the scene's duration and (under the
+        # GIL) took it from the render thread. Stretching the wakeups makes the
+        # scope fall behind the audio, which _warn_catchup_behind reports and
+        # the audience can see; a saturated core is neither.
+        self._poll_period = sustainable_poll_period_s(
+            self._poll_dt, pass_cost_s, self._MAX_CATCHUP_PERIOD_FRACTION
+        )
+        if self._poll_period > self._poll_dt:
+            log.warning(
+                "waveform: %s song %d — one PLAY pass costs %.1f ms, more than this "
+                "tune's %.1f Hz PLAY rate allows; waking the host emulator every "
+                "%.1f ms instead so the render thread keeps its share of the CPU. "
+                "The oscilloscope will lag the audio.",
+                os.path.basename(self._sid_file),
+                self.song,
+                pass_cost_s * 1000.0,
+                rate,
+                self._poll_period * 1000.0,
+            )
         self._poll = PollThread(
-            self._poll_regs, period=self._poll_dt, name="sid-reg-poll", run_first=True
+            self._poll_regs, period=self._poll_period, name="sid-reg-poll", run_first=True
         )
 
     def _poll_regs(self) -> None:
@@ -1741,14 +1836,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             # Ahead of (or exactly on) schedule — let wall-clock catch up.
             return
         n = min(n, self._MAX_CATCHUP_TICKS)
-        done = run_catchup_passes(
+        batch = run_catchup_passes(
             self._host_emu,
             self._absorb_play_tick,
             ticks=n,
-            seconds=self._poll_dt * self._MAX_CATCHUP_PERIOD_FRACTION,
+            seconds=self._poll_period * self._MAX_CATCHUP_PERIOD_FRACTION,
         )
-        self._ticks_done += done
-        if done < n:
+        self._ticks_done += batch.passes
+        if batch.passes < n or batch.overran:
             self._warn_catchup_behind(target - self._ticks_done)
 
     def _absorb_play_tick(self) -> None:
@@ -1771,14 +1866,19 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _warn_catchup_behind(self, shortfall: int) -> None:
         """Say once that this tune's PLAY is too expensive to emulate in real
         time. The scope falls behind the audio from here on; nothing else is
-        wrong, so this is a one-shot warning rather than a per-wakeup log."""
+        wrong, so this is a one-shot warning rather than a per-wakeup log.
+
+        Fires on a short batch AND on a batch that overran its time bound while
+        still running every pass it was asked for — with one pass requested,
+        those look identical in the pass count, and only the second says a
+        single indivisible PLAY outlasts the bound."""
         if self._catchup_warned:
             return
         self._catchup_warned = True
         log.warning(
             "waveform: %s song %d — the host emulator can't keep up with its own PLAY "
-            "rate (%.1f Hz, %d ticks behind after a full catch-up batch); the "
-            "oscilloscope will lag the audio",
+            "rate (%.1f Hz, %d ticks behind after a catch-up batch that used its whole "
+            "time bound); the oscilloscope will lag the audio",
             os.path.basename(self._sid_file),
             self.song,
             self._reg_poll_hz,

@@ -253,7 +253,7 @@ class SidHostEmuCycleCapTest(unittest.TestCase):
         play = bytes([0xA7, 0x10]) + _PLAY_WRITES
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play)
         with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING") as logs:
-            self.assertTrue(sid_play_preflight(sid))
+            self.assertIsNone(sid_play_preflight(sid))
         self.assertIn("undocumented opcode $A7", "\n".join(logs.output))
 
     def test_execution_at_the_top_of_memory_wraps_instead_of_raising(self):
@@ -574,6 +574,324 @@ class RamWriteFootprintTest(unittest.TestCase):
             fp = ram_write_footprint(sid, ticks=5)
         self.assertFalse(fp.complete, "a prefix footprint must not read as a complete one")
         self.assertTrue(fp.ram[0xD418], "what ran before the opcode is still recorded")
+
+
+class HostEmuClockDomainTest(unittest.TestCase):
+    """A deadline is only meaningful in the clock that produced it.
+
+    `HostEmuBudget.deadline_for` returns an instant on the budget's own
+    (injectable) clock; `_run_routine` used to compare it against
+    `time.monotonic()`. With the default clock the two coincide, so nothing
+    shipped wrong — but every test that injected a clock was measuring
+    something the code does not do, and any test combining an injected clock
+    with a routine that runs long enough to reach a wall-clock check would
+    have silently proved nothing."""
+
+    # Far enough in the future that time.monotonic() cannot reach it inside a
+    # test run, so a routine bounded by the WRONG clock never stops at all.
+    _FAKE_NOW = 1.0e9
+
+    def test_init_stops_at_the_deadline_measured_on_the_budgets_own_clock(self):
+        from c64cast.sid.sid_host_emu import _INIT_CYCLE_CAP, HostEmuBudget
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        # A budget already spent, on a clock whose instants are ~30 years past
+        # anything time.monotonic() will report during this test.
+        budget = HostEmuBudget(0.0, clock=lambda: self._FAKE_NOW)
+        emu = SidHostEmu(sid, budget=budget)
+        self.assertTrue(emu.last_routine_capped)
+        # Reading time.monotonic() here would compare a small number against
+        # _FAKE_NOW, never trip, and let INIT run to its 2 M-cycle cap.
+        self.assertLess(
+            emu._mpu.processorCycles,
+            _INIT_CYCLE_CAP // 10,
+            "INIT must stop at the deadline, not run on to the cycle cap",
+        )
+
+    def test_a_play_pass_stops_on_the_budgets_clock_too(self):
+        from c64cast.sid.sid_host_emu import _PLAY_CYCLE_CAP, HostEmuBudget
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
+        budget = HostEmuBudget(0.0, clock=lambda: self._FAKE_NOW)
+        emu = SidHostEmu(sid, budget=budget)
+        emu.tick_play(budget.deadline_for(1.0))
+        self.assertTrue(emu.last_routine_capped)
+        # Without the deadline binding, this JMP-to-itself PLAY runs to its
+        # full cycle cap; half of that is comfortably above the wall-clock
+        # check granularity and comfortably below the cap.
+        self.assertLess(
+            emu._mpu.processorCycles,
+            _PLAY_CYCLE_CAP // 2,
+            "a PLAY pass given a deadline must read the same clock INIT does",
+        )
+
+
+class TruncatedRoutineMakesAFootprintIncompleteTest(unittest.TestCase):
+    """`complete` has to mean "nothing about this sample was cut short", and a
+    capped routine is the way a sample is cut short that the tick loop cannot
+    see: INIT ran in the constructor, before the loop existed.
+
+    Reading only the wall clock and the undecodable-opcode flag meant a tune
+    whose INIT hit the 2 M-cycle cap — a fat decompressor, or one bounded by a
+    shared budget — reported a full footprint made of the bytes it had written
+    up to the cap, and api._find_free_layout put the relocated player MC in
+    what the rest of INIT was about to fill."""
+
+    def _init_that_writes_after_a_long_delay(self) -> bytes:
+        # A ~390 k-cycle countdown loop, then STA $C000, then RTS. Under the
+        # real INIT cycle cap it finishes and $C000 is marked; capped, it is
+        # not, and the footprint that omits it looks like free RAM.
+        return bytes(
+            [
+                0xA2,
+                0xFF,  # LDX #$FF
+                0xA0,
+                0xFF,  # LDY #$FF        (outer)
+                0x88,  # DEY             (inner)
+                0xD0,
+                0xFD,  # BNE inner
+                0xCA,  # DEX
+                0xD0,
+                0xF8,  # BNE outer
+                0xA9,
+                0x42,  # LDA #$42
+                0x8D,
+                0x00,
+                0xC0,  # STA $C000
+                0x60,  # RTS
+            ]
+        )
+
+    def test_a_full_init_marks_the_late_write_and_reports_complete(self):
+        # The control: nothing is capped, so the footprint is the whole story.
+        from c64cast.sid.sid_host_emu import ram_write_footprint
+
+        sid = _make_synthetic_sid(
+            init_code=self._init_that_writes_after_a_long_delay(), play_code=_PLAY_WRITES
+        )
+        fp = ram_write_footprint(sid, ticks=3)
+        self.assertTrue(fp.ram[0xC000], "INIT ran to completion, so its last write is recorded")
+        self.assertTrue(fp.complete)
+
+    def test_a_capped_init_reports_the_footprint_incomplete(self):
+        from c64cast.sid.sid_host_emu import _INIT_CYCLE_CAP, ram_write_footprint
+
+        sid = _make_synthetic_sid(
+            init_code=self._init_that_writes_after_a_long_delay(), play_code=_PLAY_WRITES
+        )
+        # Stand in for a decompressor that outruns the real 2 M-cycle cap.
+        with patch("c64cast.sid.sid_host_emu._INIT_CYCLE_CAP", 5_000):
+            fp = ram_write_footprint(sid, ticks=3)
+        self.assertLess(5_000, _INIT_CYCLE_CAP, "the patch must be a tightening, not the default")
+        self.assertFalse(fp.ram[0xC000], "the write past the cap is genuinely missing")
+        self.assertFalse(fp.complete, "a footprint missing INIT's tail must say so")
+
+    def test_a_capped_init_deadline_reports_the_footprint_incomplete(self):
+        # Same fact by the other route INIT can be cut short: the wall clock.
+        from c64cast.sid.sid_host_emu import ram_write_footprint
+
+        sid = _make_synthetic_sid(
+            init_code=self._init_that_writes_after_a_long_delay(), play_code=_PLAY_WRITES
+        )
+        with patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0):
+            fp = ram_write_footprint(sid, ticks=3)
+        self.assertFalse(fp.ram[0xC000])
+        self.assertFalse(fp.complete, "a footprint missing INIT's tail must say so")
+
+    def test_a_capped_play_reports_the_footprint_incomplete(self):
+        # And by the third: a PLAY that never returns. Every pass stops in the
+        # same place, so the bitmap is a prefix of one PLAY.
+        from c64cast.sid.sid_host_emu import ram_write_footprint
+
+        play = bytes([0xA9, 0x0F, 0x8D, 0x18, 0xD4]) + bytes([0x4C, 0x26, 0x08])
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play)
+        fp = ram_write_footprint(sid, ticks=2)
+        self.assertTrue(fp.ram[0xD418], "what ran before the spin is still recorded")
+        self.assertFalse(fp.complete, "a PLAY that never returns is a prefix sample")
+
+
+class AnalyzePlacementTest(unittest.TestCase):
+    """analyze_placement is the only way the two whole-tune consumers reach a
+    footprint, so the trust decision cannot be skipped at a call site. It was
+    skipped at two of them: both logged the warning and then handed the prefix
+    to api._find_free_layout and _choose_display_layout anyway."""
+
+    # INIT writes $B400 (live song data under BASIC ROM, the Times of Lore
+    # shape) and $A000 (one-time scratch a bitmap may paint over); PLAY reads
+    # $B400 back and scratches $5000.
+    _INIT = bytes(
+        [
+            0xA9,
+            0x55,  # LDA #$55
+            0x8D,
+            0x00,
+            0xB4,  # STA $B400
+            0x8D,
+            0x00,
+            0xA0,  # STA $A000
+            0x60,  # RTS
+        ]
+    )
+    _PLAY = bytes(
+        [
+            0xAD,
+            0x00,
+            0xB4,  # LDA $B400
+            0x8D,
+            0x00,
+            0x50,  # STA $5000
+        ]
+    )
+
+    def _sid(self, *, truncated: bool) -> bytes:
+        # $02 is an opcode py65 cannot execute: the pass ends there, so the
+        # sample is a prefix — the commonest way a real HVSC tune produces one.
+        tail = bytes([0x02]) if truncated else bytes([0x60])
+        return _make_synthetic_sid(init_code=self._INIT, play_code=self._PLAY + tail)
+
+    def test_a_trusted_sample_keeps_the_two_views_apart(self):
+        from c64cast.sid.sid_host_emu import HostEmuBudget, analyze_placement
+
+        placement = analyze_placement(
+            self._sid(truncated=False), song=1, budget=HostEmuBudget(), what="unit test"
+        )
+        self.assertTrue(placement.trusted)
+        self.assertTrue(placement.avoid[0xA000], "INIT scratch belongs in the player-avoid view")
+        self.assertFalse(
+            placement.display[0xA000],
+            "INIT-only scratch is paintable, so the display view excludes it",
+        )
+        self.assertTrue(placement.display[0xB400], "PLAY reads $B400 every frame — it is live")
+        self.assertEqual(placement.play_bank, 0x36, "PLAY reads RAM the tune wrote under BASIC")
+
+    def test_a_prefix_sample_widens_both_views_and_drops_the_play_bank(self):
+        from c64cast.sid.sid_host_emu import HostEmuBudget, analyze_placement
+
+        with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING") as logs:
+            placement = analyze_placement(
+                self._sid(truncated=True), song=1, budget=HostEmuBudget(), what="unit test"
+            )
+        self.assertFalse(placement.trusted)
+        self.assertIn("only partially footprinted", "\n".join(logs.output))
+        # The display view is no longer allowed its INIT-scratch concession:
+        # what was paintable on a complete sample is off-limits on a prefix.
+        self.assertTrue(
+            placement.display[0xA000],
+            "an untrusted display view widens to everything the tune touched",
+        )
+        self.assertEqual(placement.avoid, placement.display, "both views become the union")
+        self.assertIsNone(
+            placement.play_bank, "a $01 bank derived from a prefix is a guess, not a finding"
+        )
+
+
+class PreflightBudgetTest(unittest.TestCase):
+    """The pre-flight is an INIT plus 50 PLAY passes and the tune prices both.
+    Bounding it in passes alone left ~1.1 s per candidate, re-paid for every
+    candidate of a pool walk."""
+
+    def test_the_budget_stops_the_pass_loop_and_says_which_refusal_it_is(self):
+        from c64cast.sid.sid_host_emu import (
+            PREFLIGHT_TICKS,
+            HostEmuBudget,
+            SidHostEmu,
+            play_preflight_failure,
+        )
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        # A clock that advances 1 s per reading spends a 3 s budget within a
+        # few passes — deterministically, without the test sleeping.
+        ticks = iter(range(10_000))
+        budget = HostEmuBudget(3.0, clock=lambda: float(next(ticks)))
+        emu = SidHostEmu(sid, budget=budget)
+        # This PLAY returns, so a healthy pre-flight accepts on pass 1. Force
+        # every pass to look non-terminating so the loop runs to a bound.
+        with patch.object(SidHostEmu, "tick_play", autospec=True) as tick:
+
+            def _capped(self_, deadline=None):
+                self_.last_routine_capped = True
+
+            tick.side_effect = _capped
+            refusal = play_preflight_failure(emu, PREFLIGHT_TICKS, budget)
+        assert refusal is not None
+        self.assertIn("could not be pre-flighted", refusal)
+        self.assertLess(
+            tick.call_count,
+            PREFLIGHT_TICKS,
+            "the budget must stop the loop well before the pass count does",
+        )
+
+    def test_without_a_budget_the_verdict_is_still_about_the_tune(self):
+        from c64cast.sid.sid_host_emu import PREFLIGHT_TICKS, SidHostEmu, play_preflight_failure
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
+        emu = SidHostEmu(sid)
+        refusal = play_preflight_failure(emu, PREFLIGHT_TICKS)
+        assert refusal is not None
+        self.assertIn("spins on a raster/IRQ", refusal)
+
+
+class CatchupBoundTest(unittest.TestCase):
+    """`run_catchup_passes` runs a PLAY pass before it consults the clock,
+    because a pass is indivisible — truncating one leaves the $D4xx shadow
+    holding half a frame's writes. So `seconds` cannot bound a batch below the
+    cost of one pass, and a tune that programs CIA #1 Timer A for 400 Hz sets
+    both sides of that comparison: 1.25 ms of allowance against a 10 ms pass
+    ran the poll thread back to back for the scene's whole duration."""
+
+    def _emu(self):
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        return SidHostEmu(sid)
+
+    def test_a_batch_that_fits_reports_no_overrun(self):
+        from c64cast.sid.sid_host_emu import run_catchup_passes
+
+        result = run_catchup_passes(self._emu(), lambda: None, ticks=3, seconds=60.0)
+        self.assertEqual(result.passes, 3)
+        self.assertFalse(result.overran)
+
+    def test_one_pass_outlasting_the_whole_bound_is_reported(self):
+        # The case a pass count cannot express: every pass asked for ran, and
+        # the bound was still blown — by the first pass, on its own.
+        from c64cast.sid.sid_host_emu import run_catchup_passes
+
+        result = run_catchup_passes(self._emu(), lambda: None, ticks=1, seconds=0.0)
+        self.assertEqual(result.passes, 1, "a batch always makes progress")
+        self.assertTrue(result.overran, "one indivisible pass outlasting the bound must be loud")
+
+    def test_a_short_batch_is_still_a_short_batch(self):
+        from c64cast.sid.sid_host_emu import run_catchup_passes
+
+        result = run_catchup_passes(self._emu(), lambda: None, ticks=9, seconds=0.0)
+        self.assertEqual(result.passes, 1)
+        self.assertTrue(result.overran)
+
+
+class SustainablePollPeriodTest(unittest.TestCase):
+    """The bound that makes `run_catchup_passes`' bound bind: stretch the poll
+    period until one measured PLAY pass fits inside its allowed fraction."""
+
+    def test_a_cheap_pass_leaves_the_tunes_own_period_alone(self):
+        from c64cast.sid.sid_host_emu import sustainable_poll_period_s
+
+        # 60 Hz song, a 1 ms pass, half a period allowed: 0.001/0.5 = 0.002 s,
+        # under the 1/60 s period, so nothing is stretched.
+        self.assertAlmostEqual(sustainable_poll_period_s(1.0 / 60.0, 0.001, 0.5), 1.0 / 60.0)
+
+    def test_an_expensive_pass_stretches_the_period_to_fit(self):
+        from c64cast.sid.sid_host_emu import sustainable_poll_period_s
+
+        # The 400 Hz multispeed case: a 2.5 ms period against a 10 ms pass.
+        # Half a period must hold a whole pass, so the period becomes 20 ms.
+        self.assertAlmostEqual(sustainable_poll_period_s(0.0025, 0.010, 0.5), 0.020)
+
+    def test_an_unmeasured_pass_changes_nothing(self):
+        from c64cast.sid.sid_host_emu import sustainable_poll_period_s
+
+        # A user-pinned rate runs no probe passes, so there is no measurement
+        # to clamp against — and inventing one would slow the poll thread for
+        # a tune nothing was ever measured about.
+        self.assertAlmostEqual(sustainable_poll_period_s(0.004, 0.0, 0.5), 0.004)
 
 
 def _sid_with_extra_addrs(

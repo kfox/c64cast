@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from typing import cast
 
-from _fakes import FakeAPI, make_psid
+from _fakes import FakeAPI, make_psid, quiet_logging
 
 from c64cast.audio.audio_source import SidFileAudioSource
 from c64cast.hw.backend import C64Backend
@@ -72,12 +72,29 @@ class SidHostEmuHelpersTest(unittest.TestCase):
 
     def test_preflight_accepts_returning_play(self):
         sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60))
-        self.assertTrue(sid_play_preflight(sid))
+        self.assertIsNone(sid_play_preflight(sid), "a returning PLAY has nothing to report")
 
     def test_preflight_rejects_spinning_play(self):
         # play=$1001 JMP $1001 → caps every pass.
         sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10))
-        self.assertFalse(sid_play_preflight(sid))
+        refusal = sid_play_preflight(sid)
+        assert refusal is not None
+        self.assertIn("spins on a raster/IRQ", refusal)
+
+    def test_preflight_says_so_when_the_budget_ran_out_first(self):
+        # The two refusals are different facts and the caller's message has to
+        # tell them apart: "this tune spins" is a verdict about the tune,
+        # "we ran out of analysis budget" is a verdict about us. Reporting the
+        # second as the first is a message this gate has already been wrong
+        # about once, and it sends a maintainer looking for a raster spin that
+        # is not there.
+        from c64cast.sid.sid_host_emu import HostEmuBudget
+
+        sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60))
+        refusal = sid_play_preflight(sid, budget=HostEmuBudget(0.0))
+        assert refusal is not None
+        self.assertIn("could not be pre-flighted", refusal)
+        self.assertNotIn("spins on a raster", refusal)
 
 
 class SidFileAudioSourceTest(unittest.TestCase):
@@ -295,6 +312,35 @@ class SidFileAudioSourceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "none could be loaded"):
             self._src(path, is_bitmapped=False)
 
+    def test_the_pool_walk_shares_one_analysis_budget(self):
+        # Each candidate costs an INIT plus a 50-pass PLAY pre-flight, both
+        # priced by the tune, so a per-candidate bound is no bound on the walk.
+        # The budget object handed to the pre-flight must be the same one for
+        # every candidate — that identity IS the bound.
+        from unittest.mock import patch
+
+        from c64cast.sid import sid_host_emu
+
+        d = tempfile.mkdtemp()
+        for name in ("one.sid", "two.sid", "three.sid"):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(make_psid())
+        seen: list[object] = []
+
+        def refuse_and_record(_sid_bytes, song=0, ticks=50, budget=None):
+            seen.append(budget)
+            return "PLAY never completes (stubbed)"
+
+        with (
+            patch.object(sid_host_emu, "sid_play_preflight", refuse_and_record),
+            quiet_logging(),
+            self.assertRaisesRegex(ValueError, "none could be loaded"),
+        ):
+            self._src(d + "/*.sid", is_bitmapped=False)
+        self.assertGreaterEqual(len(seen), 2, "more than one candidate must be attempted")
+        self.assertIsNotNone(seen[0], "the pre-flight has to be given a budget at all")
+        self.assertEqual(len(set(map(id, seen))), 1, "every candidate shares one budget")
+
     def test_features_none_before_setup(self):
         path = self._write(make_psid())
         src = self._src(path)
@@ -305,6 +351,11 @@ class SidFileAudioSourceTest(unittest.TestCase):
 
         path = self._write(make_psid())
         src = self._src(path, reactive=True)
+        # A real poll thread runs here. It warns when a catch-up batch uses up
+        # its whole time bound, which on a loaded worker is possible and is
+        # incidental to what this test asserts; music_features.CatchupBoundTest
+        # is where that warning is asserted.
+        self.enterContext(quiet_logging())
         src.setup()
         self.addCleanup(src.teardown)
         self.assertIsInstance(src.features(), MusicModulation)

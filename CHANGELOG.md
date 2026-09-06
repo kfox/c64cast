@@ -70,6 +70,55 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A SID whose INIT was cut short reported a complete RAM footprint.** The
+  footprint places the relocated C64-side player in RAM the tune demonstrably
+  never touches, and it carries a flag saying whether the sample can be
+  trusted. That flag was computed from the wall clock and one instruction-set
+  check, and never from the emulator's own "this routine did not finish" —
+  so a tune whose INIT hit its 2 M-cycle cap (a fat decompressor) or its
+  deadline handed the player a hole that the rest of INIT was about to fill.
+  The result is the exact failure the footprint exists to prevent: silence and
+  a crash to BASIC. Every way a run can end short now marks the sample.
+- **A partly-sampled tune is now placed conservatively instead of optimistically.**
+  Three places consult that trust flag; two of them logged a warning and then
+  placed the player MC and the VIC display bank from the prefix anyway. The
+  two whole-tune consumers (`waveform`, and a `generative` scene with
+  `audio_source = "sid"`) no longer see the raw bitmap: on an untrusted sample
+  both the player-avoid and display views widen to everything the tune was
+  observed to touch, and the PLAY-time `$01` bank falls back to the address
+  heuristic. A tune left with nothing free aborts its scene and the playlist
+  advances, as it already did when no VIC bank was free. The SHIFT-cycle
+  candidate walk now skips such a subtune the way it skips an unrenderable
+  one, rather than repointing the display from a prefix mid-show.
+- **A multispeed tune could peg a CPU core for a whole scene.** The host
+  emulator's catch-up batch is bounded by a fraction of one poll period, but a
+  tune sets both the PLAY rate that period comes from (a CIA #1 Timer A latch,
+  up to 8x the video rate) and the cost of a PLAY pass — and a pass runs before
+  the clock is consulted, because truncating one would leave the oscilloscope
+  showing half a frame's register writes. A 400 Hz latch against a 10 ms pass
+  gave a 401% duty cycle, back to back, for the scene's whole duration. The
+  poll thread's wakeup period is now floored against a measured pass cost so a
+  pass fits inside its allowance, and a batch that blows its allowance on a
+  single pass says so instead of looking complete. The scope (or the reactive
+  visuals) then lags the audio, which is visible and logged once, rather than
+  starving the render thread.
+- **A directory of expensive SIDs no longer stalls scene startup unbounded.**
+  Each candidate costs a host-emulated INIT plus a 50-pass PLAY pre-flight, and
+  the tune prices both; with a per-candidate bound only, a pool of crafted
+  tunes measured ~8.8 s of blocked startup before the scene gave up. Both pool
+  walks — `waveform` and SID audio — now share one wall-clock analysis budget
+  across the whole walk. A candidate refused because that budget ran out says
+  so, instead of being reported as a tune that spins on a raster interrupt.
+- **The multi-SID architecture note claimed `$DF00` was accepted.** The decoder
+  refuses any second/third SID address whose 25-byte register window reaches
+  the REU command registers — zeroing those at teardown would point the audio
+  ring's DMA at `$0000` — and the same document says so correctly a few
+  hundred lines earlier. The multi-SID section now names the carve-out.
+- **The reference guide still gave the waveform fallback duration as 30
+  seconds.** `WaveformScene` falls back to three minutes when no explicit
+  `duration_s` and no song-length database match are available. The config
+  help, the schema and the sound chapter were corrected earlier; the
+  vocabulary chapter — the page "What Ends a Scene" links to — was not.
 - **The documented `duration_s` default was wrong for a quick-playback audio
   file.** The config metadata — which the JSON schema, `--describe` and the
   reference guide's scene-type appendix all render from one string — said
