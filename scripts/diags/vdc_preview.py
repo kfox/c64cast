@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline: show what an image will look like on the C128 VDC in 640x200
-8x2-colour bitmap mode. **No hardware.**
+8x2-color bitmap mode. **No hardware.**
 
 Runs the same conversion the eventual ``VDCDisplayMode`` will use
 (``c64cast.hw.vdc.pack_bitmap_frame``) and renders the packed frame straight
@@ -11,7 +11,7 @@ source framing without a C128 or an RGBI capture card in the loop.
     scripts/diags/vdc_preview.py pic.jpg --out preview.png --dump pic.vdc
     scripts/diags/vdc_preview.py pic.jpg --fit contain --aspect
 
-Reports how many 8x2 blocks contained more than 2 colours (a colour "clash" —
+Reports how many 8x2 blocks contained more than 2 colors (a color "clash" —
 those blocks lose detail), which is the number that predicts conversion quality.
 
 ``--dump`` writes the raw 24000-byte frame (16000 bitmap + 8000 attributes,
@@ -88,9 +88,9 @@ def main() -> int:
 
     clashes = clash_count(idx)
     total = vdc.ATTR_ROWS * vdc.ATTR_COLS
-    print(f"source colours used:  {len(np.unique(idx))} / 16")
-    print(f"colour clashes:       {clashes} / {total} blocks ({100 * clashes / total:.1f}%)")
-    print("                      (blocks with >2 colours lose detail)")
+    print(f"source colors used:  {len(np.unique(idx))} / 16")
+    print(f"color clashes:       {clashes} / {total} blocks ({100 * clashes / total:.1f}%)")
+    print("                      (blocks with >2 colors lose detail)")
 
     import cv2
 

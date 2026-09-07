@@ -97,7 +97,7 @@ def stage_identify(port: vdc.VdcPorthole) -> dict:
     print(f"    chip version:          {version}")
     print(f"    VRAM size:             {size} KiB" if size else "    VRAM size:  unknown")
     if size == 16:
-        print("    -> 16 KiB: 640x200 mono only; no 8x2-colour bitmap, no page-flip buffer.")
+        print("    -> 16 KiB: 640x200 mono only; no 8x2-color bitmap, no page-flip buffer.")
     return {"present": True, "version": version, "ram_kib": size}
 
 
@@ -154,18 +154,18 @@ def _enter_bitmap_mode(port: vdc.VdcPorthole) -> None:
 
 
 def pattern_bars(port: vdc.VdcPorthole) -> None:
-    print("\n[5] pattern: 16 horizontal colour bars (bitmap mode, via block-fill)")
+    print("\n[5] pattern: 16 horizontal color bars (bitmap mode, via block-fill)")
     _enter_bitmap_mode(port)
     for row in range(vdc.ATTR_ROWS):
         color = (row * 16) // vdc.ATTR_ROWS
         port.block_fill(vdc.ATTR_BASE + row * vdc.ATTR_COLS, color << 4, vdc.ATTR_COLS)
-    print("    -> the RGBI monitor should show 16 stacked colour bands, black at top.")
+    print("    -> the RGBI monitor should show 16 stacked color bands, black at top.")
 
 
 def pattern_bitmap(port: vdc.VdcPorthole, image_path: str) -> None:
     import cv2
 
-    print(f"\n[5] pattern: {image_path} -> 640x200 8x2-colour bitmap (full upload)")
+    print(f"\n[5] pattern: {image_path} -> 640x200 8x2-color bitmap (full upload)")
     img = cv2.imread(image_path)
     if img is None:
         raise SystemExit(f"could not read image {image_path!r}")

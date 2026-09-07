@@ -39,6 +39,7 @@ special case at index 6 (``170,85,0`` rather than ``170,170,0``).
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Final
 
@@ -155,11 +156,11 @@ BITMAP_W: Final = 640
 BITMAP_H: Final = 200
 BITMAP_BYTES: Final = BITMAP_W * BITMAP_H // 8  # 16000
 ATTR_COLS: Final = BITMAP_W // 8  # 80
-ATTR_ROWS: Final = BITMAP_H // 2  # 100  (8x2 colour blocks)
+ATTR_ROWS: Final = BITMAP_H // 2  # 100  (8x2 color blocks)
 ATTR_BYTES: Final = ATTR_COLS * ATTR_ROWS  # 8000
 FRAME_BYTES: Final = BITMAP_BYTES + ATTR_BYTES  # 24000
 
-# Default VRAM layout for a single 640x200 8x2-colour bitmap frame (from
+# Default VRAM layout for a single 640x200 8x2-color bitmap frame (from
 # ~/src/vdc-ega/src/view320x200x4.bas): bitmap at 0, attributes at 16000.
 BITMAP_BASE: Final = 0x0000
 ATTR_BASE: Final = 16000
@@ -227,13 +228,26 @@ class VdcPorthole:
     on-C128 8502 routine (or an ARM-side firmware token); see the plan doc.
     """
 
-    def __init__(self, write: WriteFn, read: ReadFn) -> None:
+    def __init__(self, write: WriteFn, read: ReadFn, block_settle_s: float = 0.002) -> None:
         self._write = write
         self._read = read
+        # A block op keeps running after its last R30 write, and reprogramming
+        # R18/R19 while it is in flight diverts it — writing the fill byte into
+        # whatever region the new address points at. Measured on an 8563 R8/R9:
+        # 20 back-to-back 80-byte fills corrupt 308/1600 bytes with no pause and
+        # 0/1600 with 0.5 ms; 2 ms covers fills up to 16 KB. Tests pass 0.
+        self._block_settle_s = block_settle_s
+        # R24 carries the vertical smooth scroll (bits 0-4) and reverse-screen
+        # (bit 6) alongside the block-op mode bit, and porthole reads are
+        # occasionally lossy — so a read-modify-write to flip the mode bit can
+        # scribble a garbage scroll offset over the display. Track it instead.
+        self._v_scroll_ctrl = 0x20
 
     # ---- register access ------------------------------------------------
 
     def write_reg(self, reg: int, value: int) -> None:
+        if reg == R.V_SCROLL_CTRL:
+            self._v_scroll_ctrl = value & ~V_SCROLL_COPY_BIT & 0xFF
         self._write(D600_ADDR_STATUS, bytes([reg & 0xFF]))
         self._write(D601_DATA, bytes([value & 0xFF]))
 
@@ -286,10 +300,12 @@ class VdcPorthole:
         block-write (R24 bit 7 clear). The R31 write places the first byte and
         R30 carries the rest.
 
-        Measured on an 8563 R8/R9 over a TeensyROM+ serial link: 16000 bytes in
-        24.5 ms (654 KB/s), 120x the byte-at-a-time poke rate."""
-        r24 = self.read_reg(R.V_SCROLL_CTRL) or 0
-        self.write_reg(R.V_SCROLL_CTRL, r24 & ~V_SCROLL_COPY_BIT)
+        Measured on an 8563 R8/R9 over a TeensyROM+ serial link: 16000 bytes of
+        host commands in ~25 ms. That is command time, not completion time —
+        the op runs on past the last R30 write, which is what ``block_settle_s``
+        covers. For anything that must be exactly right, ``write_ram`` is the
+        path with no such doubt."""
+        self.write_reg(R.V_SCROLL_CTRL, self._v_scroll_ctrl)
         self.set_update_addr(vram_addr)
         self.write_reg(R.DATA, value)  # the VDC copies this byte forward
         self._emit_word_count(count - 1)  # first byte already written
@@ -298,8 +314,7 @@ class VdcPorthole:
         """Copy ``count`` bytes within VRAM using the VDC's hardware block-copy
         (R24 bit 7 set). Near-free — used for front->back buffer copies and
         scrolling."""
-        r24 = self.read_reg(R.V_SCROLL_CTRL) or 0
-        self.write_reg(R.V_SCROLL_CTRL, r24 | V_SCROLL_COPY_BIT)
+        self.write_reg(R.V_SCROLL_CTRL, self._v_scroll_ctrl | V_SCROLL_COPY_BIT)
         self.write_reg(R.BLOCK_COPY_SRC_HI, (src >> 8) & 0xFF)
         self.write_reg(R.BLOCK_COPY_SRC_LO, src & 0xFF)
         self.set_update_addr(dst)
@@ -316,6 +331,8 @@ class VdcPorthole:
             chunk = min(count, 255)
             self.write_reg(R.WORD_COUNT, chunk)
             count -= chunk
+        if self._block_settle_s:
+            time.sleep(self._block_settle_s)
 
     def page_flip(self, display_addr: int, attr_addr: int) -> None:
         """Point the VDC at a different bitmap + attribute buffer (4 register
@@ -383,7 +400,7 @@ def probe_ram_size_kib(port: VdcPorthole) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Offline: pack an indexed image into a VDC 640x200 8x2-colour bitmap frame
+# Offline: pack an indexed image into a VDC 640x200 8x2-color bitmap frame
 # ---------------------------------------------------------------------------
 
 
@@ -392,7 +409,7 @@ def pack_bitmap_frame(indexed: np.ndarray) -> tuple[bytes, bytes]:
     ``(bitmap, attributes)`` — 16000 + 8000 bytes, ready to DMA into VRAM at
     :data:`BITMAP_BASE` / :data:`ATTR_BASE`.
 
-    Each 8x2 block gets the two most-populated colours as (background,
+    Each 8x2 block gets the two most-populated colors as (background,
     foreground); every pixel picks whichever of the two it is nearer to in RGB
     space, and the bitmap bit is set for foreground. The attribute byte is
     ``(bg << 4) | fg`` (matches ``~/src/vdc-ega/src/bmp320200x4.bas``).

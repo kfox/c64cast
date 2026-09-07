@@ -80,7 +80,7 @@ class FakeVdc:
 
 
 def porthole(fake: FakeVdc) -> vdc.VdcPorthole:
-    return vdc.VdcPorthole(fake.write, fake.read)
+    return vdc.VdcPorthole(fake.write, fake.read, block_settle_s=0)
 
 
 class ProbeTest(unittest.TestCase):
@@ -127,7 +127,7 @@ class PortholeRamTest(unittest.TestCase):
             calls += 1
             real_write(a, d)
 
-        vdc.VdcPorthole(counting_write, fake.read).block_fill(0x0000, 0xAA, 16000)
+        vdc.VdcPorthole(counting_write, fake.read, block_settle_s=0).block_fill(0x0000, 0xAA, 16000)
         self.assertEqual(fake.ram[:16000], b"\xaa" * 16000)
         self.assertLess(calls, 200)  # ~1 write per 256 bytes, not per byte
 
@@ -145,7 +145,7 @@ class PortholeRamTest(unittest.TestCase):
                     seen.append(b)
             fake.write(addr, data)
 
-        vdc.VdcPorthole(spy, fake.read).block_fill(0x0000, 0x11, 1000)
+        vdc.VdcPorthole(spy, fake.read, block_settle_s=0).block_fill(0x0000, 0x11, 1000)
         self.assertEqual(sum(seen), 999)  # the R31 write placed the first byte
         self.assertTrue(all(0 < c <= 255 for c in seen), seen)
         self.assertEqual(fake.ram[:1000], b"\x11" * 1000)
@@ -179,9 +179,9 @@ class PackBitmapTest(unittest.TestCase):
         self.assertEqual(bitmap, b"\x00" * vdc.BITMAP_BYTES)
         self.assertEqual(set(attr), {0x44})  # bg=fg=4
 
-    def test_two_colour_image_round_trips_through_the_simulator(self):
+    def test_two_color_image_round_trips_through_the_simulator(self):
         idx = np.zeros((vdc.BITMAP_H, vdc.BITMAP_W), dtype=np.uint8)
-        idx[:, ::2] = 15  # white vertical stripes on black — 2 colours per block
+        idx[:, ::2] = 15  # white vertical stripes on black — 2 colors per block
         bitmap, attr = vdc.pack_bitmap_frame(idx)
         shown = vdc.simulate_frame(bitmap, attr)
         self.assertEqual(shown.shape, (vdc.BITMAP_H, vdc.BITMAP_W, 3))
@@ -224,7 +224,7 @@ class BitmapRegisterProgramTest(unittest.TestCase):
 
 
 class QuantizeTest(unittest.TestCase):
-    def test_exact_palette_colours_map_to_their_index(self):
+    def test_exact_palette_colors_map_to_their_index(self):
         rgb = vdc.VDC_PALETTE.astype(np.uint8).reshape(1, 16, 3)
         np.testing.assert_array_equal(vdc.quantize_to_vdc(rgb)[0], np.arange(16))
 
