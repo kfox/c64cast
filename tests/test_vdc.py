@@ -215,6 +215,12 @@ class BitmapRegisterProgramTest(unittest.TestCase):
         self.assertEqual((regs[vdc.R.V_TOTAL] + 1) * lines_per_row, 264)
         self.assertEqual(regs[vdc.R.V_DISPLAYED] * lines_per_row, vdc.BITMAP_H)
 
+    def test_horizontal_scroll_is_not_left_at_zero(self):
+        # hscroll 0 puts pixel column 0 off the left edge of the picture.
+        regs = vdc.BITMAP_640x200_REGS
+        self.assertEqual(regs[vdc.R.H_SCROLL_CTRL] & 0x0F, vdc.H_SCROLL_NEUTRAL)
+        self.assertGreater(vdc.H_SCROLL_NEUTRAL, 0)
+
     def test_selects_bitmap_attributes_and_64k(self):
         regs = vdc.BITMAP_640x200_REGS
         self.assertTrue(regs[vdc.R.H_SCROLL_CTRL] & vdc.H_SCROLL_BITMAP_BIT)

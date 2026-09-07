@@ -113,6 +113,14 @@ class R:
 
 V_SCROLL_COPY_BIT: Final = 0x80  # R24 bit 7: set = block copy, clear = block fill
 
+# R25's low nibble shifts the picture horizontally. Leaving it at 0 puts pixel
+# column 0 off the left edge — invisible, and not recoverable with the monitor's
+# own horizontal position control, because the pixel is never emitted. Swept on
+# an 8563 R8/R9 against the timing below: 0-2 lose the left edge, 3 is where it
+# first appears, 5 pushes it a further pixel in, 7 wraps. 4 keeps the whole
+# raster with a pixel of margin. Retune this if H_TOTAL or H_SYNC_POS change.
+H_SCROLL_NEUTRAL: Final = 4
+
 # Time the VDC needs per byte of a block op, measured on an 8563 R8/R9: a
 # 255-byte chunk is clean at 4 ms between R30 writes and drops chunks at 2 ms.
 BLOCK_BYTE_TIME_S: Final = 1.6e-5
@@ -200,7 +208,7 @@ BITMAP_640x200_REGS: Final = {
     R.CHAR_H_TOTAL: 0x78,
     R.CHAR_V_DISPLAYED: 8,
     R.V_SCROLL_CTRL: 0x20,
-    R.H_SCROLL_CTRL: H_SCROLL_BITMAP_BIT | H_SCROLL_ATTR_BIT,
+    R.H_SCROLL_CTRL: H_SCROLL_BITMAP_BIT | H_SCROLL_ATTR_BIT | H_SCROLL_NEUTRAL,
     R.FG_BG_COLOR: 0xF0,
     R.ROW_ADDR_INCREMENT: 0,
     R.CHARSET_ADDR: CHARSET_64K_BITS,
