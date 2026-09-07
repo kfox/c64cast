@@ -112,6 +112,11 @@ class R:
 
 
 V_SCROLL_COPY_BIT: Final = 0x80  # R24 bit 7: set = block copy, clear = block fill
+
+# Time the VDC needs per byte of a block op, measured on an 8563 R8/R9: a
+# 255-byte chunk is clean at 4 ms between R30 writes and drops chunks at 2 ms.
+BLOCK_BYTE_TIME_S: Final = 1.6e-5
+BLOCK_POLL_LIMIT: Final = 40
 H_SCROLL_BITMAP_BIT: Final = 0x80  # R25 bit 7: bitmap (graphics) mode
 H_SCROLL_ATTR_BIT: Final = 0x40  # R25 bit 6: per-cell attributes enabled
 CHARSET_64K_BITS: Final = 0x18  # R28: OR in to address the full 64 KiB
@@ -228,15 +233,15 @@ class VdcPorthole:
     on-C128 8502 routine (or an ARM-side firmware token); see the plan doc.
     """
 
-    def __init__(self, write: WriteFn, read: ReadFn, block_settle_s: float = 0.002) -> None:
+    def __init__(self, write: WriteFn, read: ReadFn, *, block_wait: bool = True) -> None:
         self._write = write
         self._read = read
-        # A block op keeps running after its last R30 write, and reprogramming
-        # R18/R19 while it is in flight diverts it — writing the fill byte into
-        # whatever region the new address points at. Measured on an 8563 R8/R9:
-        # 20 back-to-back 80-byte fills corrupt 308/1600 bytes with no pause and
-        # 0/1600 with 0.5 ms; 2 ms covers fills up to 16 KB. Tests pass 0.
-        self._block_settle_s = block_settle_s
+        # An R30 write issued while the VDC is still executing the previous one
+        # is DROPPED, and reprogramming R18/R19 mid-op diverts the rest of it.
+        # Measured on an 8563 R8/R9: filling 8000 bytes as 32 chunks corrupts
+        # 6348 bytes back-to-back and 0 with 4 ms between chunks, and the
+        # failures are always the trailing chunks. Tests pass block_wait=False.
+        self._block_wait = block_wait
         # R24 carries the vertical smooth scroll (bits 0-4) and reverse-screen
         # (bit 6) alongside the block-op mode bit, and porthole reads are
         # occasionally lossy — so a read-modify-write to flip the mode bit can
@@ -330,9 +335,23 @@ class VdcPorthole:
         while count > 0:
             chunk = min(count, 255)
             self.write_reg(R.WORD_COUNT, chunk)
+            self._await_block(chunk)
             count -= chunk
-        if self._block_settle_s:
-            time.sleep(self._block_settle_s)
+
+    def _await_block(self, nbytes: int) -> None:
+        """Wait out a running block op before issuing anything else.
+
+        Sleep the expected duration first, then confirm with the status bit: a
+        poll costs a read round trip, so paying only one of them beats spinning
+        from zero. Gives up after a bounded number of polls rather than hanging
+        on a link that has stopped answering."""
+        if not self._block_wait:
+            return
+        time.sleep(nbytes * BLOCK_BYTE_TIME_S)
+        for _ in range(BLOCK_POLL_LIMIT):
+            status = self.read_status()
+            if status is None or status & STATUS_READY:
+                return
 
     def page_flip(self, display_addr: int, attr_addr: int) -> None:
         """Point the VDC at a different bitmap + attribute buffer (4 register

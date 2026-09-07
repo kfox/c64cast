@@ -80,7 +80,7 @@ class FakeVdc:
 
 
 def porthole(fake: FakeVdc) -> vdc.VdcPorthole:
-    return vdc.VdcPorthole(fake.write, fake.read, block_settle_s=0)
+    return vdc.VdcPorthole(fake.write, fake.read, block_wait=False)
 
 
 class ProbeTest(unittest.TestCase):
@@ -127,7 +127,7 @@ class PortholeRamTest(unittest.TestCase):
             calls += 1
             real_write(a, d)
 
-        vdc.VdcPorthole(counting_write, fake.read, block_settle_s=0).block_fill(0x0000, 0xAA, 16000)
+        vdc.VdcPorthole(counting_write, fake.read, block_wait=False).block_fill(0x0000, 0xAA, 16000)
         self.assertEqual(fake.ram[:16000], b"\xaa" * 16000)
         self.assertLess(calls, 200)  # ~1 write per 256 bytes, not per byte
 
@@ -145,7 +145,7 @@ class PortholeRamTest(unittest.TestCase):
                     seen.append(b)
             fake.write(addr, data)
 
-        vdc.VdcPorthole(spy, fake.read, block_settle_s=0).block_fill(0x0000, 0x11, 1000)
+        vdc.VdcPorthole(spy, fake.read, block_wait=False).block_fill(0x0000, 0x11, 1000)
         self.assertEqual(sum(seen), 999)  # the R31 write placed the first byte
         self.assertTrue(all(0 < c <= 255 for c in seen), seen)
         self.assertEqual(fake.ram[:1000], b"\x11" * 1000)
