@@ -64,7 +64,7 @@ class FakeVdc:
                     self.ram[self._addr()] = b
                     self._bump_addr()
                 elif self._selected == vdc.R.WORD_COUNT:
-                    self._run_block(b or 256)
+                    self._run_block(b)
 
     def read(self, addr: int, n: int) -> bytes:
         out = bytearray()
@@ -131,6 +131,34 @@ class PortholeRamTest(unittest.TestCase):
         self.assertEqual(fake.ram[:16000], b"\xaa" * 16000)
         self.assertLess(calls, 200)  # ~1 write per 256 bytes, not per byte
 
+    def test_word_count_is_chunked_to_255_and_never_zero(self):
+        fake = FakeVdc()
+        seen: list[int] = []
+        selected = 0
+
+        def spy(addr, data):
+            nonlocal selected
+            for b in data:
+                if addr == vdc.D600_ADDR_STATUS:
+                    selected = b & 0x3F
+                elif addr == vdc.D601_DATA and selected == vdc.R.WORD_COUNT:
+                    seen.append(b)
+            fake.write(addr, data)
+
+        vdc.VdcPorthole(spy, fake.read).block_fill(0x0000, 0x11, 1000)
+        self.assertEqual(sum(seen), 999)  # the R31 write placed the first byte
+        self.assertTrue(all(0 < c <= 255 for c in seen), seen)
+        self.assertEqual(fake.ram[:1000], b"\x11" * 1000)
+        self.assertEqual(fake.ram[1000], 0)  # and not one byte further
+
+    def test_block_copy_spans_more_than_one_word_count_write(self):
+        fake = FakeVdc()
+        want = bytes((i * 3) & 0xFF for i in range(600))
+        fake.ram[0:600] = want
+        porthole(fake).block_copy(0x0000, 0x4000, 600)
+        self.assertEqual(fake.ram[0x4000 : 0x4000 + 600], want)
+        self.assertEqual(fake.ram[0x4000 + 600], 0)
+
     def test_block_copy_moves_a_span_within_vram(self):
         fake = FakeVdc()
         fake.ram[0:100] = bytes(range(100))
@@ -163,6 +191,36 @@ class PackBitmapTest(unittest.TestCase):
     def test_rejects_wrong_shape(self):
         with self.assertRaises(ValueError):
             vdc.pack_bitmap_frame(np.zeros((100, 100), dtype=np.uint8))
+
+
+class BitmapRegisterProgramTest(unittest.TestCase):
+    def test_program_is_self_contained(self):
+        # Entered from C64 mode there is no working base timing to inherit, so
+        # the program has to carry the timing registers itself.
+        for reg in (
+            vdc.R.H_TOTAL,
+            vdc.R.H_DISPLAYED,
+            vdc.R.V_TOTAL,
+            vdc.R.V_DISPLAYED,
+            vdc.R.V_SYNC_POS,
+            vdc.R.CHAR_V_TOTAL,
+            vdc.R.H_SCROLL_CTRL,
+            vdc.R.CHARSET_ADDR,
+        ):
+            self.assertIn(reg, vdc.BITMAP_640x200_REGS)
+
+    def test_timing_adds_up_to_264_scanlines(self):
+        regs = vdc.BITMAP_640x200_REGS
+        lines_per_row = regs[vdc.R.CHAR_V_TOTAL] + 1
+        self.assertEqual((regs[vdc.R.V_TOTAL] + 1) * lines_per_row, 264)
+        self.assertEqual(regs[vdc.R.V_DISPLAYED] * lines_per_row, vdc.BITMAP_H)
+
+    def test_selects_bitmap_attributes_and_64k(self):
+        regs = vdc.BITMAP_640x200_REGS
+        self.assertTrue(regs[vdc.R.H_SCROLL_CTRL] & vdc.H_SCROLL_BITMAP_BIT)
+        self.assertTrue(regs[vdc.R.H_SCROLL_CTRL] & vdc.H_SCROLL_ATTR_BIT)
+        self.assertEqual(regs[vdc.R.CHARSET_ADDR] & vdc.CHARSET_64K_BITS, vdc.CHARSET_64K_BITS)
+        self.assertEqual(regs[vdc.R.ATTR_HI] << 8 | regs[vdc.R.ATTR_LO], vdc.ATTR_BASE)
 
 
 class QuantizeTest(unittest.TestCase):

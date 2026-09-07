@@ -167,17 +167,41 @@ ATTR_BASE: Final = 16000
 # The 640x200 / 8x2-block / 64 KiB register program, straight from that .bas.
 # Applied *after* selecting 64 KiB VRAM (R28 |= CHARSET_64K_BITS) and bitmap
 # mode (R25 |= H_SCROLL_BITMAP_BIT).
+# The full register program, not a set of deltas: entered from C64 mode the VDC's
+# registers are unprogrammed (they read back $FF), so there is no working base
+# timing to inherit. vdc-ega's R0=127/R4=155 is 312 scanlines (~50 Hz) and rolls
+# on an RGBI monitor expecting the C128's native ~60 Hz, so the timing here is
+# 128 char clocks x 264 scanlines instead — verified stable on an 8563 R8/R9.
 BITMAP_640x200_REGS: Final = {
-    R.H_TOTAL: 127,
-    R.V_TOTAL: 155,
-    R.V_DISPLAYED: 100,
-    R.V_SYNC_POS: 140,
+    R.H_TOTAL: 126,
+    R.H_DISPLAYED: 80,
+    R.H_SYNC_POS: 102,
+    R.SYNC_WIDTH: 0x49,
+    R.V_TOTAL: 131,
+    R.V_TOTAL_ADJUST: 0,
+    R.V_DISPLAYED: 100,  # 100 rows x 2 scanlines = 200 displayed lines
+    R.V_SYNC_POS: 116,
+    R.INTERLACE: 0,
     R.CHAR_V_TOTAL: 1,  # 2 scanlines per char row -> 8x2 attribute blocks
-    R.DRAM_REFRESH: 0,  # minimum refresh -> fastest porthole RAM access
+    R.CURSOR_START: 0x20,
+    R.CURSOR_END: 7,
     R.DISPLAY_HI: BITMAP_BASE >> 8,
     R.DISPLAY_LO: BITMAP_BASE & 0xFF,
+    R.CURSOR_HI: 0,
+    R.CURSOR_LO: 0,
     R.ATTR_HI: ATTR_BASE >> 8,
     R.ATTR_LO: ATTR_BASE & 0xFF,
+    R.CHAR_H_TOTAL: 0x78,
+    R.CHAR_V_DISPLAYED: 8,
+    R.V_SCROLL_CTRL: 0x20,
+    R.H_SCROLL_CTRL: H_SCROLL_BITMAP_BIT | H_SCROLL_ATTR_BIT,
+    R.FG_BG_COLOR: 0xF0,
+    R.ROW_ADDR_INCREMENT: 0,
+    R.CHARSET_ADDR: CHARSET_64K_BITS,
+    R.UNDERLINE_SCAN: 7,
+    R.DISPLAY_ENABLE_BEGIN: 0x7D,
+    R.DISPLAY_ENABLE_END: 0x64,
+    R.DRAM_REFRESH: 0,  # minimum refresh -> fastest porthole RAM access
 }
 
 
@@ -233,7 +257,11 @@ class VdcPorthole:
         self.write_reg(R.UPDATE_LO, vram_addr & 0xFF)
 
     def read_ram(self, vram_addr: int, length: int) -> bytes | None:
-        """Read ``length`` bytes from VRAM. One porthole round-trip per byte."""
+        """Read ``length`` bytes from VRAM. One porthole round-trip per byte.
+
+        Rarely, a long burst comes back with a single corrupted byte (~1 pass in
+        20 at 300 bytes). A caller that must trust the bytes should re-read and
+        compare rather than chunk the read, which does not help."""
         self.set_update_addr(vram_addr)
         self._write(D600_ADDR_STATUS, bytes([R.DATA]))
         out = bytearray()
@@ -255,8 +283,11 @@ class VdcPorthole:
 
     def block_fill(self, vram_addr: int, value: int, count: int) -> None:
         """Fill ``count`` VRAM bytes with ``value`` using the VDC's hardware
-        block-write (R24 bit 7 clear). ~1 porthole write per 256 bytes — this
-        is the near-free primitive the Tier-1 design leans on for clears."""
+        block-write (R24 bit 7 clear). The R31 write places the first byte and
+        R30 carries the rest.
+
+        Measured on an 8563 R8/R9 over a TeensyROM+ serial link: 16000 bytes in
+        24.5 ms (654 KB/s), 120x the byte-at-a-time poke rate."""
         r24 = self.read_reg(R.V_SCROLL_CTRL) or 0
         self.write_reg(R.V_SCROLL_CTRL, r24 & ~V_SCROLL_COPY_BIT)
         self.set_update_addr(vram_addr)
@@ -275,15 +306,16 @@ class VdcPorthole:
         self._emit_word_count(count)
 
     def _emit_word_count(self, count: int) -> None:
-        """Write R30 (word count) to run a block op for ``count`` bytes. R30 is
-        8-bit; each write processes up to 256, so a large count is one write of
-        the low byte then one ``0`` write per further 256 (mirrors
-        ``vdclib.a``'s ``vdc_do_YYAA_cycles``)."""
-        low, pages = count & 0xFF, count >> 8
-        if low:
-            self.write_reg(R.WORD_COUNT, low)
-        for _ in range(pages):
-            self.write_reg(R.WORD_COUNT, 0)
+        """Run ``count`` block operations by writing R30. A write of K performs
+        exactly K operations, so a large count goes out 255 at a time.
+
+        No settle between writes: an 8563 R8/R9 completes 1000 bytes in 1.4 ms
+        of pure host time, far inside one porthole round trip, and its ready bit
+        never drops for a caller to poll."""
+        while count > 0:
+            chunk = min(count, 255)
+            self.write_reg(R.WORD_COUNT, chunk)
+            count -= chunk
 
     def page_flip(self, display_addr: int, attr_addr: int) -> None:
         """Point the VDC at a different bitmap + attribute buffer (4 register

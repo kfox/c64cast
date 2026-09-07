@@ -147,10 +147,8 @@ def stage_block_copy(port: vdc.VdcPorthole, nbytes: int, ram_kib: int | None) ->
 
 
 def _enter_bitmap_mode(port: vdc.VdcPorthole) -> None:
-    r28 = port.read_reg(vdc.R.CHARSET_ADDR) or 0
-    port.write_reg(vdc.R.CHARSET_ADDR, r28 | vdc.CHARSET_64K_BITS)
-    r25 = port.read_reg(vdc.R.H_SCROLL_CTRL) or 0
-    port.write_reg(vdc.R.H_SCROLL_CTRL, r25 | vdc.H_SCROLL_BITMAP_BIT | vdc.H_SCROLL_ATTR_BIT)
+    # Absolute values, not a read-modify-write: in C64 mode the VDC's registers
+    # are unprogrammed and read back $FF, so OR-ing onto them sets every bit.
     port.write_regs(vdc.BITMAP_640x200_REGS)
     port.block_fill(vdc.BITMAP_BASE, 0x00, vdc.BITMAP_BYTES)  # clear pixels -> all bg
 
@@ -206,6 +204,13 @@ def main() -> int:
     )
     ap.add_argument("--image", help="image file for --pattern bitmap")
     ap.add_argument("--rate-bytes", type=int, default=2000, help="bytes for the poke-rate test")
+    ap.add_argument(
+        "--hold",
+        type=float,
+        default=0.0,
+        help="seconds to leave the pattern up before blanking (default: prompt on a "
+        "tty, 5s otherwise — set this when driving the probe from a script)",
+    )
     ap.add_argument("--reset-settle", type=float, default=3.0)
     ap.add_argument("--keep", action="store_true", help="leave the pattern on VRAM (don't blank)")
     ap.add_argument("--no-reset-exit", action="store_true", help="don't reset the C128 on exit")
@@ -243,7 +248,12 @@ def main() -> int:
             pattern_bitmap(port, args.image)
 
         if args.pattern != "none":
-            if sys.stdin.isatty():
+            if args.hold:
+                print(f"\nlook at the RGBI monitor — holding {args.hold:.0f}s ...")
+                for left in range(int(args.hold), 0, -15):
+                    print(f"    {left}s ...", flush=True)
+                    time.sleep(min(15, left))
+            elif sys.stdin.isatty():
                 input("\nlook at the RGBI monitor. press Enter to blank + reset ... ")
             else:
                 time.sleep(5)
