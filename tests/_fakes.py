@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from unittest import mock
 
+from c64cast.hw import vdc
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
 
@@ -432,6 +433,149 @@ def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] 
         if mpu.pc in kernal_tails:
             return SimpleNamespace(memory=memory, exit_pc=mpu.pc, mpu=mpu)
     raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
+
+
+class FakeVdc:
+    """A minimal VDC behind the ``$D600``/``$D601`` porthole. Construct with
+    ``ram_kib`` (16 or 64) and ``version`` (0/1/2); pass ``.write`` / ``.read``
+    to ``VdcPorthole``, or hand the whole object to :class:`VdcMachine`."""
+
+    def __init__(self, ram_kib: int = 64, version: int = 2) -> None:
+        self.regs = [0] * 38
+        self.ram = bytearray(65536)
+        self._mask = 0x3FFF if ram_kib == 16 else 0xFFFF
+        self._version = version
+        self._selected = 0
+
+    # -- address aliasing on 16 KiB parts --
+    def _addr(self) -> int:
+        return ((self.regs[vdc.R.UPDATE_HI] << 8) | self.regs[vdc.R.UPDATE_LO]) & self._mask
+
+    def _bump_addr(self) -> None:
+        a = ((self.regs[vdc.R.UPDATE_HI] << 8) | self.regs[vdc.R.UPDATE_LO]) + 1
+        self.regs[vdc.R.UPDATE_HI], self.regs[vdc.R.UPDATE_LO] = (
+            (a >> 8) & 0xFF,
+            a & 0xFF,
+        )
+
+    def _run_block(self, count: int) -> None:
+        copy = bool(self.regs[vdc.R.V_SCROLL_CTRL] & vdc.V_SCROLL_COPY_BIT)
+        for _ in range(count):
+            dst = self._addr()
+            if copy:
+                src = (
+                    (self.regs[vdc.R.BLOCK_COPY_SRC_HI] << 8) | self.regs[vdc.R.BLOCK_COPY_SRC_LO]
+                ) & self._mask
+                self.ram[dst] = self.ram[src]
+                s = src + 1
+                self.regs[vdc.R.BLOCK_COPY_SRC_HI], self.regs[vdc.R.BLOCK_COPY_SRC_LO] = (
+                    (s >> 8) & 0xFF,
+                    s & 0xFF,
+                )
+            else:
+                self.ram[dst] = self.regs[vdc.R.DATA]
+            self._bump_addr()
+
+    # -- the porthole --
+    def write(self, addr: int, data: bytes) -> None:
+        for b in data:
+            if addr == vdc.D600_ADDR_STATUS:
+                self._selected = b & 0x3F
+            elif addr == vdc.D601_DATA:
+                self.regs[self._selected] = b
+                if self._selected == vdc.R.DATA:
+                    self.ram[self._addr()] = b
+                    self._bump_addr()
+                elif self._selected == vdc.R.WORD_COUNT:
+                    self._run_block(b)
+
+    def read(self, addr: int, n: int) -> bytes:
+        out = bytearray()
+        for _ in range(n):
+            if addr == vdc.D600_ADDR_STATUS:
+                out.append(vdc.STATUS_READY | (self._version & 0x07))
+            elif addr == vdc.D601_DATA and self._selected == vdc.R.DATA:
+                out.append(self.ram[self._addr()])
+                self._bump_addr()
+            else:
+                out.append(self.regs[self._selected])
+        return bytes(out)
+
+
+class _PortholeRam:
+    """Flat 64 KiB for py65, with ``$D600``/``$D601`` diverted to a FakeVdc.
+
+    Banking is deliberately not modeled: the C128 MMU write that the resident
+    loop makes lands in RAM here, and the cartridge stays visible at ``$8000``
+    after it. That costs nothing, because the loop jumps to RAM and never looks
+    back — and modeling the MMU would only test the model."""
+
+    def __init__(self, fake: FakeVdc) -> None:
+        self.ram = bytearray(65536)
+        self.fake = fake
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return self.ram[index]
+        if index in (vdc.D600_ADDR_STATUS, vdc.D601_DATA):
+            return self.fake.read(index, 1)[0]
+        return self.ram[index]
+
+    def __setitem__(self, index, value) -> None:
+        if isinstance(index, slice):
+            self.ram[index] = value
+        elif index in (vdc.D600_ADDR_STATUS, vdc.D601_DATA):
+            self.fake.write(index, bytes([value & 0xFF]))
+        else:
+            self.ram[index] = value & 0xFF
+
+    def __len__(self) -> int:
+        return len(self.ram)
+
+
+class VdcMachine:
+    """A bare 6502 running a C128-mode cartridge image against a FakeVdc.
+
+    Enough of a C128 to execute ``hw/vdc_rom.py``'s ROM end to end — the parts
+    it needs are RAM, a CPU, and the porthole. The step budgets turn a
+    mis-assembled branch, which would hang a real machine, into a failed
+    assertion."""
+
+    def __init__(self, rom: bytes, load: int = 0x8000) -> None:
+        from py65.devices.mpu6502 import MPU
+
+        self.vdc = FakeVdc()
+        self.memory = _PortholeRam(self.vdc)
+        self.memory.ram[load : load + len(rom)] = rom
+        self.mpu = MPU(memory=self.memory)
+        self.mpu.pc = load
+        self.mpu.sp = 0xFF
+
+    def run_to(self, target_pc: int, budget: int = 400_000) -> None:
+        """Step until PC reaches ``target_pc``."""
+        for _ in range(budget):
+            if self.mpu.pc == target_pc:
+                return
+            self.mpu.step()
+        raise AssertionError(
+            f"never reached ${target_pc:04X} in {budget} steps (PC=${self.mpu.pc:04X})"
+        )
+
+    def run_until_byte(self, addr: int, value: int, budget: int = 400_000) -> None:
+        """Step until RAM at ``addr`` holds ``value`` — how the host waits for
+        the resident loop to acknowledge a command."""
+        for _ in range(budget):
+            if self.memory.ram[addr] == value:
+                return
+            self.mpu.step()
+        raise AssertionError(
+            f"${addr:04X} never became ${value:02X} in {budget} steps "
+            f"(is ${self.memory.ram[addr]:02X}, PC=${self.mpu.pc:04X})"
+        )
+
+    def steps(self, n: int) -> None:
+        for _ in range(n):
+            self.mpu.step()
 
 
 def bare_waveform_scene(**attrs):

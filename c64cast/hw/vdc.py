@@ -30,11 +30,14 @@ per-byte porthole path.
 
 ## The RGBI palette
 
-The VDC emits 16 fixed RGBI colors in the standard CGA/EGA index order, so the
-VDC palette index *is* the RGBI nibble — there is no per-unit calibration knob
-like the VIC's ``host_palette``. Values below are the de-facto reference set
-(matches ``~/src/vdc-ega/palettes/vdc-irfanview.pal``); note the CGA "brown"
-special case at index 6 (``170,85,0`` rather than ``170,170,0``).
+The VDC emits 16 fixed colors and the palette index *is* the RGBI nibble
+(``R G B I``, intensity in bit 0) — so there is no per-unit calibration knob
+like the VIC's ``host_palette``. This is **not** the CGA index order: adjacent
+even/odd indices are the dark/light pair of one hue (2/3 blue, 4/5 green, …),
+which is worth knowing before writing a test whose expected colors come from a
+CGA table. Values below match ``~/src/vdc-ega/palettes/vdc-irfanview.pal`` and
+were confirmed against a real 8563 R8/R9; note the "brown" special case at
+index 12 (``170,85,0`` rather than ``170,170,0``).
 """
 
 from __future__ import annotations
@@ -313,11 +316,10 @@ class VdcPorthole:
         block-write (R24 bit 7 clear). The R31 write places the first byte and
         R30 carries the rest.
 
-        Measured on an 8563 R8/R9 over a TeensyROM+ serial link: 16000 bytes of
-        host commands in ~25 ms. That is command time, not completion time —
-        the op runs on past the last R30 write, which is what ``block_settle_s``
-        covers. For anything that must be exactly right, ``write_ram`` is the
-        path with no such doubt."""
+        Measured on an 8563 R8/R9 over a TeensyROM+ serial link: ~45 KB/s once
+        the waiting in ``_emit_word_count`` is paid. Host command time alone is
+        far lower (16000 bytes go out in ~25 ms) but the op runs on past the
+        last R30 write, so that figure describes nothing a caller can use."""
         self.write_reg(R.V_SCROLL_CTRL, self._v_scroll_ctrl)
         self.set_update_addr(vram_addr)
         self.write_reg(R.DATA, value)  # the VDC copies this byte forward
@@ -337,9 +339,9 @@ class VdcPorthole:
         """Run ``count`` block operations by writing R30. A write of K performs
         exactly K operations, so a large count goes out 255 at a time.
 
-        No settle between writes: an 8563 R8/R9 completes 1000 bytes in 1.4 ms
-        of pure host time, far inside one porthole round trip, and its ready bit
-        never drops for a caller to poll."""
+        Each chunk is waited out before the next goes out. A write landing while
+        the VDC is still running the previous one is silently dropped, so
+        back-to-back chunks lose the tail of a large op rather than failing."""
         while count > 0:
             chunk = min(count, 255)
             self.write_reg(R.WORD_COUNT, chunk)
@@ -529,7 +531,10 @@ def build_c128_crt(rom: bytes, *, name: str = "c64cast VDC") -> bytes:
 
     header = bytearray(b"C128 CARTRIDGE  ")  # 16 bytes, space-padded
     header += _CRT_HEADER_LEN.to_bytes(4, "big")  # header length
-    header += (1).to_bytes(1, "big") + (0).to_bytes(1, "big")  # version 1.00
+    # Version 2.00 — C128 cartridges are a v2 addition, and this matches the
+    # reference image the TeensyROM firmware ships. The firmware only prints the
+    # version, but VICE and the CRT tooling do read it.
+    header += (2).to_bytes(1, "big") + (0).to_bytes(1, "big")
     header += (0).to_bytes(2, "big")  # hardware type: generic
     header += b"\x00"  # EXROM (0)
     header += b"\x00"  # GAME (0)

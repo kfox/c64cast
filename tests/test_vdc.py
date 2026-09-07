@@ -1,10 +1,10 @@
 """Offline contract tests for c64cast.hw.vdc — the C128 VDC support core.
 
-No hardware: a ``FakeVdc`` emulates the ``$D600``/``$D601`` porthole (register
-select, R31 auto-incrementing VRAM data, 16 KiB address aliasing, block
-fill/copy, version + ready status), and the packer/simulator/CRT helpers are
-pure. This pins the probe algorithms and the bitmap conversion so hardware time
-is spent on hardware questions, not on debugging the byte math.
+No hardware: ``_fakes.FakeVdc`` emulates the ``$D600``/``$D601`` porthole
+(register select, R31 auto-incrementing VRAM data, 16 KiB address aliasing,
+block fill/copy, version + ready status), and the packer/simulator/CRT helpers
+are pure. This pins the probe algorithms and the bitmap conversion so hardware
+time is spent on hardware questions, not on debugging the byte math.
 """
 
 from __future__ import annotations
@@ -12,71 +12,9 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+from _fakes import FakeVdc
 
 from c64cast.hw import vdc
-
-
-class FakeVdc:
-    """A minimal VDC behind the porthole. Construct with ``ram_kib`` (16 or 64)
-    and ``version`` (0/1/2); pass ``.write`` / ``.read`` to ``VdcPorthole``."""
-
-    def __init__(self, ram_kib: int = 64, version: int = 2) -> None:
-        self.regs = [0] * 38
-        self.ram = bytearray(65536)
-        self._mask = 0x3FFF if ram_kib == 16 else 0xFFFF
-        self._version = version
-        self._selected = 0
-
-    # -- address aliasing on 16 KiB parts --
-    def _addr(self) -> int:
-        return ((self.regs[vdc.R.UPDATE_HI] << 8) | self.regs[vdc.R.UPDATE_LO]) & self._mask
-
-    def _bump_addr(self) -> None:
-        a = ((self.regs[vdc.R.UPDATE_HI] << 8) | self.regs[vdc.R.UPDATE_LO]) + 1
-        self.regs[vdc.R.UPDATE_HI], self.regs[vdc.R.UPDATE_LO] = (a >> 8) & 0xFF, a & 0xFF
-
-    def _run_block(self, count: int) -> None:
-        copy = bool(self.regs[vdc.R.V_SCROLL_CTRL] & vdc.V_SCROLL_COPY_BIT)
-        for _ in range(count):
-            dst = self._addr()
-            if copy:
-                src = (
-                    (self.regs[vdc.R.BLOCK_COPY_SRC_HI] << 8) | self.regs[vdc.R.BLOCK_COPY_SRC_LO]
-                ) & self._mask
-                self.ram[dst] = self.ram[src]
-                s = src + 1
-                self.regs[vdc.R.BLOCK_COPY_SRC_HI], self.regs[vdc.R.BLOCK_COPY_SRC_LO] = (
-                    (s >> 8) & 0xFF,
-                    s & 0xFF,
-                )
-            else:
-                self.ram[dst] = self.regs[vdc.R.DATA]
-            self._bump_addr()
-
-    # -- the porthole --
-    def write(self, addr: int, data: bytes) -> None:
-        for b in data:
-            if addr == vdc.D600_ADDR_STATUS:
-                self._selected = b & 0x3F
-            elif addr == vdc.D601_DATA:
-                self.regs[self._selected] = b
-                if self._selected == vdc.R.DATA:
-                    self.ram[self._addr()] = b
-                    self._bump_addr()
-                elif self._selected == vdc.R.WORD_COUNT:
-                    self._run_block(b)
-
-    def read(self, addr: int, n: int) -> bytes:
-        out = bytearray()
-        for _ in range(n):
-            if addr == vdc.D600_ADDR_STATUS:
-                out.append(vdc.STATUS_READY | (self._version & 0x07))
-            elif addr == vdc.D601_DATA and self._selected == vdc.R.DATA:
-                out.append(self.ram[self._addr()])
-                self._bump_addr()
-            else:
-                out.append(self.regs[self._selected])
-        return bytes(out)
 
 
 def porthole(fake: FakeVdc) -> vdc.VdcPorthole:

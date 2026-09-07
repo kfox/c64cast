@@ -155,3 +155,5 @@ lines with nothing to say.
 | --- | --- |
 | `__main__.py` | `python -m c64cast` entry point |
 | `hw/vdc.py` | C128 VDC (8563/8568) support primitives. Pre-implementation research tooling — not yet wired into a backend or the display-mode hierarchy; the module docstring carries the rationale and points at the plan. |
+| `hw/vdc_rom.py` | The C128-mode cartridge ROM: a resident 8502 loop that blits host RAM into VDC video RAM, so the host does a bulk DMA instead of a porthole round trip per byte. Same research status as `hw/vdc.py`; the module docstring carries the banking and mailbox design. |
+| `hw/asm6502.py` | Two-pass 6502 assembler with labels, over py65's per-line assembler. Exists so `hw/vdc_rom.py` can be readable source rather than a hand-counted byte template; the module docstring carries the one sizing rule that matters. |
