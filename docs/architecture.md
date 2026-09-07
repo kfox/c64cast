@@ -154,3 +154,4 @@ lines with nothing to say.
 | Module | What it is |
 | --- | --- |
 | `__main__.py` | `python -m c64cast` entry point |
+| `hw/vdc.py` | C128 VDC (8563/8568) support primitives. Pre-implementation research tooling — not yet wired into a backend or the display-mode hierarchy; the module docstring carries the rationale and points at the plan. |
