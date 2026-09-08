@@ -55,11 +55,16 @@ porthole directly between commands.
 
 ## Clock speed
 
-The loop idles at 1 MHz and switches to 2 MHz only for the duration of a blit,
-then drops back. TeensyROM+ DMA timing against a 2 MHz C128 is unverified, and
-a loop that idled at 2 MHz could not be talked to if it were wrong. Blitting at
-2 MHz is safe because the 40-column VIC-II screen is blanked at startup: this
-display is the VDC.
+Everything runs at 1 MHz. Blitting at 2 MHz was tried first and rejected: it is
+faster (43 KB/s against 18) but it wedges. Five 24000-byte blits on an 8563
+R8/R9 gave four completions and one hang with the heartbeat frozen, the CPU
+stuck in the ``BIT $D600 / BPL`` wait, needing a reset to recover. A blit that
+is twice as fast and occasionally costs the machine is not a trade worth having.
+
+That wait loop is not optional either. Dropping it runs at 71 KB/s (1 MHz) or
+147 (2 MHz) and corrupts every sample chunk of the result: the VDC silently
+discards a porthole write that lands while it is busy, so the frame comes back
+missing bytes rather than late.
 """
 
 from __future__ import annotations
@@ -256,10 +261,7 @@ vfw:    BIT $D600
 vfd:    RTS
 
 ; ---- blit: MAIL_CNT bytes from MAIL_SRC to VRAM at MAIL_DST -------------
-blit:   LDA $D030
-        ORA #$01
-        STA $D030           ; 2 MHz; safe because the VIC-II is blanked
-        LDX #${vdc.R.UPDATE_HI:02X}
+blit:   LDX #${vdc.R.UPDATE_HI:02X}
         LDA ${MAIL_DST_HI:04X}
         JSR vdcw
         LDX #${vdc.R.UPDATE_LO:02X}
@@ -296,10 +298,7 @@ br1:    BIT $D600
         INY
         DEX
         BNE br1
-bdone:  LDA $D030
-        AND #$FE
-        STA $D030           ; back to 1 MHz for the host handoff
-        RTS
+bdone:  RTS
 
 {_vdc_register_table()}
 """

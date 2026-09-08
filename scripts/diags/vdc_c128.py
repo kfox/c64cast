@@ -35,6 +35,7 @@ import argparse
 import contextlib
 import sys
 import time
+from typing import Final
 
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work from any cwd)
 
@@ -102,23 +103,26 @@ def issue(
     return before
 
 
-def wait_done(client: TRClient, before: int, timeout: float = 15.0) -> float:
-    """Seconds until the loop acknowledged. Includes one read round trip, which
-    is why _poll_cost is measured and subtracted where it matters."""
+#: Gap between MAIL_DONE polls while a command runs. **Not a politeness knob.**
+#: Every DMA read halts the 8502, so polling while a command runs steals cycles
+#: from the command being waited on. A no-sleep poll is fatal: a 24000-byte blit
+#: that finishes in ~0.9 s under a sleeping poll does not finish in 15 s under a
+#: tight one. 5 ms is still inside the damage, just less obviously — an A/B of
+#: eight 4096-byte blits each hung twice at 5 ms against once at 50 ms, and left
+#: two of three completions corrupt against four of seven clean. The blit itself
+#: takes the same ~230 ms either way, so the only thing a shorter gap buys is
+#: timing resolution, and 50 ms against 230 is resolution enough.
+POLL_INTERVAL: Final = 0.050
+
+
+def wait_done(client: TRClient, before: int, timeout: float = 20.0) -> float:
+    """Seconds until the resident loop acknowledged, +/- POLL_INTERVAL."""
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < timeout:
         if client.read_segment(vdc_rom.MAIL_DONE, 1)[0] != before:
             return time.perf_counter() - t0
+        time.sleep(POLL_INTERVAL)
     raise TimeoutError(f"resident loop never acknowledged command (>{timeout}s)")
-
-
-def _poll_cost(client: TRClient, samples: int = 12) -> float:
-    """One MAIL_DONE read round trip. wait_done cannot resolve a blit finer
-    than this, so it is reported alongside every timing that uses it."""
-    t0 = time.perf_counter()
-    for _ in range(samples):
-        client.read_segment(vdc_rom.MAIL_DONE, 1)
-    return (time.perf_counter() - t0) / samples
 
 
 # ---------------------------------------------------------------------------
@@ -168,15 +172,20 @@ def stage_launch(client: TRClient, settle: float) -> bool:
 
 def stage_boot_state(port: vdc.VdcPorthole) -> None:
     print("\n[2] boot state, read back through the porthole")
+    # R28's unused low bits read back as 1s on an 8563 R8/R9, so a written $18
+    # reads as $3F. Compare only the bit that carries meaning here: bit 4, the
+    # 64 KiB address select. The charset-base bits above it are don't-care in
+    # bitmap mode.
     checks = [
-        (vdc.R.V_DISPLAYED, "R6  rows displayed"),
-        (vdc.R.H_SCROLL_CTRL, "R25 bitmap/attr/hscroll"),
-        (vdc.R.CHARSET_ADDR, "R28 charset + 64K bit"),
+        (vdc.R.V_DISPLAYED, "R6  rows displayed", 0xFF),
+        (vdc.R.H_SCROLL_CTRL, "R25 bitmap/attr/hscroll", 0xFF),
+        (vdc.R.CHARSET_ADDR, "R28 64K address select", 0x10),
     ]
-    for reg, label in checks:
-        want = vdc.BITMAP_640x200_REGS[reg]
+    for reg, label, mask in checks:
+        want = vdc.BITMAP_640x200_REGS[reg] & mask
         got = port.read_reg(reg)
-        state = "OK" if got == want else f"MISMATCH (wanted ${want:02X})"
+        ok = got is not None and (got & mask) == want
+        state = "OK" if ok else f"MISMATCH (wanted ${want:02X} under ${mask:02X})"
         got_text = "unreadable" if got is None else f"${got:02X}"
         print(f"    {label:26s} {got_text:>10s}  {state}")
 
@@ -187,30 +196,44 @@ def stage_boot_state(port: vdc.VdcPorthole) -> None:
     print(f"    attributes flat-filled     {'OK' if ok_attr else 'NO'}")
 
 
-def stage_dma_rate(client: TRClient, nbytes: int) -> float:
+def stage_dma_rate(client: TRClient, nbytes: int) -> bytes:
     print(f"\n[3] host -> C128 RAM DMA rate ({nbytes} B)")
     payload = bytes((i * 37) & 0xFF for i in range(nbytes))
     t0 = time.perf_counter()
     client.write_segment(vdc_rom.FRAMEBUF_ADDR, payload)
-    dt = time.perf_counter() - t0
+    # A read cannot be answered until everything queued ahead of it has been
+    # processed, so it is what turns a buffered send into a measured transfer.
     back = client.read_segment(vdc_rom.FRAMEBUF_ADDR, 64)
+    dt = time.perf_counter() - t0
     ok = back == payload[:64]
     print(f"    {nbytes / dt:9.0f} B/s   ({dt:.3f}s)   readback {'OK' if ok else 'MISMATCH'}")
-    return dt
+    return payload
 
 
-def stage_blit_rate(client: TRClient, nbytes: int, poll: float) -> float:
+def stage_blit_rate(client: TRClient, port: vdc.VdcPorthole, payload: bytes) -> float:
+    nbytes = len(payload)
     print(f"\n[4] RAM -> VRAM blit rate ({nbytes} B, resident 8502 loop)")
     before = issue(
         client, vdc_rom.CMD_BLIT, dst=vdc.BITMAP_BASE, count=nbytes, src=vdc_rom.FRAMEBUF_ADDR
     )
-    total = wait_done(client, before)
-    dt = max(total - poll, 1e-6)
-    print(
-        f"    {nbytes / dt:9.0f} B/s   ({dt * 1000:.0f} ms, "
-        f"minus {poll * 1000:.0f} ms poll round trip)"
-    )
+    dt = wait_done(client, before)
+    print(f"    {nbytes / dt:9.0f} B/s   ({dt * 1000:.0f} ms +/- {POLL_INTERVAL * 1000:.0f} ms)")
     print(f"    -> versus 5500 B/s host-driven: {(nbytes / dt) / 5500:.0f}x")
+
+    # Timing a blit without reading it back would call a corrupt one fast: the
+    # VDC loses roughly one bit per thousand bytes written, always 1 -> 0, at
+    # offsets that move from run to run. The whole region has to be compared,
+    # because a lost porthole write shifts everything after it.
+    got = port.read_ram(vdc.BITMAP_BASE, nbytes)
+    if got is None:
+        print("    verify: VRAM UNREADABLE")
+        return dt
+    bad = [i for i in range(nbytes) if got[i] != payload[i]]
+    if not bad:
+        print("    verify: every byte landed")
+    else:
+        bits = sum(bin(got[i] ^ payload[i]).count("1") for i in bad)
+        print(f"    verify: {len(bad)} of {nbytes} bytes wrong ({bits} bits), first at {bad[0]}")
     return dt
 
 
@@ -332,9 +355,8 @@ def main() -> int:
         port = make_porthole(client)
         stage_boot_state(port)
 
-        poll = _poll_cost(client)
-        stage_dma_rate(client, args.rate_bytes)
-        stage_blit_rate(client, args.rate_bytes, poll)
+        payload = stage_dma_rate(client, args.rate_bytes)
+        stage_blit_rate(client, port, payload)
         stage_end_to_end(client)
 
         if args.pattern == "image":

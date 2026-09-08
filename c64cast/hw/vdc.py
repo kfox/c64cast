@@ -111,7 +111,7 @@ class R:
     BLOCK_COPY_SRC_LO: Final = 33
     DISPLAY_ENABLE_BEGIN: Final = 34
     DISPLAY_ENABLE_END: Final = 35
-    DRAM_REFRESH: Final = 36  # 0 = minimum refresh -> fastest RAM access
+    DRAM_REFRESH: Final = 36  # low nibble: refresh cycles per scanline
 
 
 V_SCROLL_COPY_BIT: Final = 0x80  # R24 bit 7: set = block copy, clear = block fill
@@ -134,7 +134,7 @@ CHARSET_64K_BITS: Final = 0x18  # R28: OR in to address the full 64 KiB
 
 
 # ---------------------------------------------------------------------------
-# The RGBI palette (index == RGBI nibble, standard CGA/EGA order)
+# The RGBI palette (index == RGBI nibble: R G B I, intensity in bit 0)
 # ---------------------------------------------------------------------------
 
 # (R, G, B), 0-255. Index 0..15. Matches ~/src/vdc-ega/palettes/vdc-irfanview.pal.
@@ -218,7 +218,13 @@ BITMAP_640x200_REGS: Final = {
     R.UNDERLINE_SCAN: 7,
     R.DISPLAY_ENABLE_BEGIN: 0x7D,
     R.DISPLAY_ENABLE_END: 0x64,
-    R.DRAM_REFRESH: 0,  # minimum refresh -> fastest porthole RAM access
+    # Zero is no refresh at all, not "minimum" — and it is still the right
+    # value here, because raising it costs more than it buys. Swept at runtime
+    # on an 8563 R8/R9 against a 4096-byte blit: $00 verified clean, $01 came
+    # back with 32 single-bit errors, $05 and $0F with thousands. Refresh
+    # cycles are stolen from the same memory the porthole is writing through,
+    # and the display's own fetches already refresh most of VRAM.
+    R.DRAM_REFRESH: 0,
 }
 
 

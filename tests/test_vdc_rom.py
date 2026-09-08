@@ -68,8 +68,7 @@ class BootTest(unittest.TestCase):
         self.assertEqual(booted().memory.ram[0xFF00], vdc_rom.MMU_ALL_RAM_IO)
 
     def test_blanks_the_vic_screen(self):
-        # The 40-col screen is off because the VDC is the display — and because
-        # a blanked VIC-II is what makes 2 MHz safe during a blit.
+        # The 40-col screen is off because the VDC is the display.
         self.assertEqual(booted().memory.ram[0xD011] & 0x10, 0)
 
     def test_points_the_nmi_and_irq_vectors_at_an_rti(self):
@@ -172,12 +171,13 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(machine.vdc.ram[0x0200:0x0264], b"\xa5" * 100)
         self.assertEqual(machine.vdc.ram[0x0200 + 100], guard)
 
-    def test_blit_leaves_the_cpu_back_at_1mhz(self):
-        # The loop must not idle at 2 MHz: TeensyROM+ DMA against a 2 MHz C128
-        # is unverified, and a host that cannot be heard cannot be recovered.
+    def test_blit_does_not_touch_the_clock_register(self):
+        # An earlier version ran the blit at 2 MHz. It was faster and it hung
+        # the machine one run in five, so $D030 is left alone now.
         machine = booted()
+        machine.memory.ram[0xD030] = 0xA5
         self._blit(machine, b"\x11" * 32, 0x0000)
-        self.assertEqual(machine.memory.ram[0xD030] & 0x01, 0)
+        self.assertEqual(machine.memory.ram[0xD030], 0xA5)
 
     def test_vdc_reg_command_writes_one_register(self):
         machine = booted()
