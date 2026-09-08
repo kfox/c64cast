@@ -23,7 +23,10 @@ Stages
   3. host -> C128 RAM DMA rate (the TeensyROM+ link's bulk path)
   4. RAM -> VRAM blit rate (the resident loop's inner loop)
   5. end-to-end frame time and the frame rate that implies
-  6. optional visible pattern: image | animate | none
+  6. optional visible pattern: image | animate | palette | none
+
+Stages 3-5 are skippable with --pattern-only, for runs whose point is the
+picture rather than the numbers.
 
 Leaves the C128 reset on the way out (the standing silence-and-reset rule),
 unless --no-reset-exit.
@@ -299,6 +302,79 @@ def pattern_image(client: TRClient, image_path: str) -> None:
     print("       Compare against scripts/diags/vdc_preview.py for this image.")
 
 
+#: Sixteen bands of 12 scanlines, which is 192 of the 200 and leaves every band
+#: boundary on an even line. That matters: a color block is 8x2, so a band edge
+#: on an odd line would put two band colors and the label color in one block,
+#: and a block only carries two.
+PALETTE_BAND_H: Final = 12
+
+#: Commodore's 80-column names, from the color table in the C128 Programmer's
+#: Reference Guide. Deliberately not the VIC-II names: the two tables differ,
+#: and entry 12 is "dark yellow" on this screen where the 40-column list says
+#: brown.
+PALETTE_NAMES: Final = (
+    "BLACK",
+    "DARK GRAY",
+    "DARK BLUE",
+    "LIGHT BLUE",
+    "DARK GREEN",
+    "LIGHT GREEN",
+    "DARK CYAN",
+    "LIGHT CYAN",
+    "DARK RED",
+    "LIGHT RED",
+    "DARK PURPLE",
+    "LIGHT PURPLE",
+    "DARK YELLOW",
+    "LIGHT YELLOW",
+    "LIGHT GRAY",
+    "WHITE",
+)
+
+
+def pattern_palette(client: TRClient) -> None:
+    """One band per palette entry, each labeled in whichever of black or white
+    stands off it further."""
+    import cv2
+    import numpy as np
+
+    print("\n[6] pattern: the 16-color palette, one labeled band each")
+    idx = np.zeros((vdc.BITMAP_H, vdc.BITMAP_W), dtype=np.uint8)
+    luma = vdc.VDC_PALETTE @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+    for color in range(16):
+        y0 = color * PALETTE_BAND_H
+        band = idx[y0 : y0 + PALETTE_BAND_H]
+        band[:] = color
+        ink = 0 if luma[color] > 128 else 15
+        # Draw into a scratch mask so putText's antialiasing cannot invent a
+        # third color inside a block that can only hold two.
+        mask = np.zeros(band.shape, dtype=np.uint8)
+        cv2.putText(
+            mask,
+            f"{color:2d}  {PALETTE_NAMES[color]}",
+            (8, PALETTE_BAND_H - 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            255,
+            1,
+            cv2.LINE_8,
+        )
+        band[mask > 0] = ink
+
+    bitmap, attr = vdc.pack_bitmap_frame(idx)
+    client.write_segment(vdc_rom.FRAMEBUF_ADDR, bitmap + attr)
+    before = issue(
+        client,
+        vdc_rom.CMD_BLIT,
+        dst=vdc.BITMAP_BASE,
+        count=vdc.FRAME_BYTES,
+        src=vdc_rom.FRAMEBUF_ADDR,
+    )
+    wait_done(client, before, timeout=30.0)
+    print("    -> 16 labeled bands, black at the top and white at the bottom.")
+
+
 def pattern_animate(client: TRClient, seconds: float) -> None:
     """A moving bar, blitting only the attribute plane. Deliberately the cheap
     plane: it is the honest demonstration of what this path can sustain."""
@@ -337,7 +413,7 @@ def main() -> int:
     )
     ap.add_argument("--tcp", metavar="HOST", help="TR over TCP")
     ap.add_argument("--serial", metavar="PORT", help="TR over serial")
-    ap.add_argument("--pattern", choices=("none", "image", "animate"), default="none")
+    ap.add_argument("--pattern", choices=("none", "image", "animate", "palette"), default="none")
     ap.add_argument("--image", help="source image for --pattern image")
     ap.add_argument(
         "--hold",
@@ -352,6 +428,15 @@ def main() -> int:
         help="payload size for the DMA and blit rate stages",
     )
     ap.add_argument("--reset-settle", type=float, default=3.0)
+    ap.add_argument(
+        "--pattern-only",
+        action="store_true",
+        help=(
+            "skip the rate stages and go straight to --pattern. A blit hangs "
+            "roughly one run in six, and a run that needs a person watching the "
+            "monitor should risk that once rather than four times."
+        ),
+    )
     ap.add_argument(
         "--no-reset-exit",
         action="store_true",
@@ -369,9 +454,10 @@ def main() -> int:
         port = make_porthole(client)
         stage_boot_state(port)
 
-        payload = stage_dma_rate(client, args.rate_bytes)
-        stage_blit_rate(client, port, payload)
-        stage_end_to_end(client)
+        if not args.pattern_only:
+            payload = stage_dma_rate(client, args.rate_bytes)
+            stage_blit_rate(client, port, payload)
+            stage_end_to_end(client)
 
         if args.pattern == "image":
             pattern_image(client, args.image)
@@ -379,6 +465,10 @@ def main() -> int:
             time.sleep(args.hold)
         elif args.pattern == "animate":
             pattern_animate(client, args.hold)
+        elif args.pattern == "palette":
+            pattern_palette(client)
+            print(f"\nlook at the RGBI monitor — holding {args.hold:.0f}s ...")
+            time.sleep(args.hold)
     except (OSError, TRError, TimeoutError) as e:
         print(f"\nABORTED: {e}")
         return 1

@@ -151,7 +151,15 @@ VDC_PALETTE_RGB: Final = (
     (0xFF, 0x55, 0x55),  # 9  light red
     (0xAA, 0x00, 0xAA),  # 10 magenta
     (0xFF, 0x55, 0xFF),  # 11 light magenta
-    (0xAA, 0x55, 0x00),  # 12 brown (CGA special case, not 0xAAAA00)
+    # Commodore's own name for this one is "dark yellow" — the C128
+    # Programmer's Reference Guide prints the 40- and 80-column color tables
+    # side by side, and "brown" appears only in the 40-column (VIC-II) list.
+    # The value stays the darkened, reddened one rather than a literal RGBI
+    # 0xAAAA00, because that is what the signal actually looks like: on an
+    # Amiga 1080 fed the C128's RGBI, entry 12 reads as amber. What a digital
+    # code becomes is the monitor's decision, so treat this as a match target
+    # for quantization, not as a statement about the chip.
+    (0xAA, 0x55, 0x00),  # 12 dark yellow
     (0xFF, 0xFF, 0x55),  # 13 yellow
     (0xAA, 0xAA, 0xAA),  # 14 light grey
     (0xFF, 0xFF, 0xFF),  # 15 white
