@@ -170,6 +170,20 @@ def stage_launch(client: TRClient, settle: float) -> bool:
     return False
 
 
+def blank_screen(port: vdc.VdcPorthole) -> None:
+    """Leave the 80-column display solid black.
+
+    Nothing reprograms the VDC on the way out: a reset drops the machine into
+    the TeensyROM menu, which is a 40-column screen, so whatever register
+    program and video RAM this run left behind stay on the RGBI output and show
+    as a flickering picture. Turning per-cell attributes off hands the whole
+    screen to R26, so black on black there is one write rather than an
+    8000-byte attribute fill."""
+    print("\nblanking the 80-column screen ...")
+    port.write_reg(vdc.R.H_SCROLL_CTRL, vdc.H_SCROLL_BITMAP_BIT | vdc.H_SCROLL_NEUTRAL)
+    port.write_reg(vdc.R.FG_BG_COLOR, 0x00)
+
+
 def stage_boot_state(port: vdc.VdcPorthole) -> None:
     print("\n[2] boot state, read back through the porthole")
     # R28's unused low bits read back as 1s on an 8563 R8/R9, so a written $18
@@ -370,6 +384,8 @@ def main() -> int:
         return 1
     finally:
         if not args.no_reset_exit:
+            with contextlib.suppress(OSError, TRError):
+                blank_screen(make_porthole(client))
             print("\nresetting the C128 ...")
             with contextlib.suppress(OSError, TRError):
                 client.reset()
