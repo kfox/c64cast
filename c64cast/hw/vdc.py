@@ -218,12 +218,15 @@ BITMAP_640x200_REGS: Final = {
     R.UNDERLINE_SCAN: 7,
     R.DISPLAY_ENABLE_BEGIN: 0x7D,
     R.DISPLAY_ENABLE_END: 0x64,
-    # Zero is no refresh at all, not "minimum" — and it is still the right
-    # value here, because raising it costs more than it buys. Swept at runtime
-    # on an 8563 R8/R9 against a 4096-byte blit: $00 verified clean, $01 came
-    # back with 32 single-bit errors, $05 and $0F with thousands. Refresh
-    # cycles are stolen from the same memory the porthole is writing through,
-    # and the display's own fetches already refresh most of VRAM.
+    # Zero is no refresh at all, not "minimum". Raising it is the documented
+    # cure for VDC character corruption, and on an 8563 R8/R9 under this
+    # register program it is worse than the disease: swept at boot with six
+    # 8192-byte blits per value, $00 lost one bit per run, while $01 and $05
+    # hung the resident loop five runs in six and $02 hung twice and corrupted
+    # most of what it did finish. Refresh cycles come out of the same memory
+    # the porthole writes through, so the ready bit stops arriving and the
+    # 8502 waits forever. One lost bit per 8 KB is one pixel of a moving
+    # picture; a hang costs the machine.
     R.DRAM_REFRESH: 0,
 }
 
