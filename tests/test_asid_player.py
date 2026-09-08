@@ -12,6 +12,7 @@ Tier-2 smoke run against an ASID host, not here.
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -254,6 +255,38 @@ class CostModelConstantsTest(unittest.TestCase):
         # No wait, so neither WAITED_OP_EXTRA_CYCLES nor the delay loop is
         # charged: 28 x 65.
         self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 0)] * 28), 1820)
+
+
+class CostModelProseTest(unittest.TestCase):
+    """The maximal-frame figure is quoted in prose, and prose does not run.
+
+    `asid_player`'s `FRAME_BUDGET_FRACTION` comment and the architecture note
+    both cite the cost of a maximal chip frame to argue the wait column is a
+    real amplifier. Both said 8820 — a figure matching no constant the module
+    ships — while `frame_cycle_cost` returned 9324, and the literal assertion
+    above pinned only the code. A cited number nothing recomputes is the same
+    defect as a comment claiming test coverage it does not have.
+    """
+
+    _SITES = (
+        Path("c64cast/sid/asid_player.py"),
+        Path("docs/architecture/sid.md"),
+    )
+
+    def test_both_prose_sites_cite_the_cost_the_model_computes(self):
+        root = Path(__file__).resolve().parent.parent
+        cost = ap.frame_cycle_cost([(0xD400, 0x11, 51)] * ap.MAX_OPS_PER_CHIP)
+
+        for site in self._SITES:
+            text = (root / site).read_text()
+            quoted = re.search(r"wait cost ([\d,]+)", text)
+            self.assertIsNotNone(quoted, f"{site} no longer quotes the figure")
+            assert quoted is not None
+            self.assertEqual(
+                int(quoted.group(1).replace(",", "")),
+                cost,
+                f"{site} quotes a maximal-frame cost the model does not compute",
+            )
 
 
 class FrameBudgetTest(unittest.TestCase):

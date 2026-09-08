@@ -133,7 +133,7 @@ WAITED_OP_EXTRA_CYCLES = 13
 # kernal IRQ entry/exit, and the $EA31 chain every Nth tick — and it is a coarse
 # reserve, not a model: the point is to keep the 6510 out of the ASID handler,
 # not to predict the last cycle. Without a budget the wait column is a wire-
-# supplied amplifier: 28 ops each carrying the maximum 255-cycle wait cost 8820
+# supplied amplifier: 28 ops each carrying the maximum 255-cycle wait cost 9324
 # cycles per chip, over half a 60 Hz NTSC frame for ONE chip, and the read head
 # is open-loop — the host keeps writing at the requested rate while the C64
 # consumes at whatever it can manage, with no way to resynchronize.
