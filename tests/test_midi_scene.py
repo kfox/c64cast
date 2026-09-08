@@ -556,6 +556,45 @@ class ProgramChangeTests(_MidiTestCase):
         scene._handle_msg(mido.Message("program_change", program=3, channel=1))
         self.assertEqual(scene.voice_wave_names, ["pulse", "noise", "pulse"])
 
+    def _drive_reader_until(self, scene, batch, done, timeout_s=1.0):
+        """Run one batch of messages through the real `_reader` thread.
+
+        Every other test in this class hands its message straight to
+        `_handle_msg`, so none of them can see whether the reader routes that
+        type there at all."""
+        scene._midi_port = _ScriptedPort(batch)
+        stop = threading.Event()
+        reader = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
+        reader.start()
+        deadline = time.time() + timeout_s
+        while time.time() < deadline and not done():
+            time.sleep(0.005)
+        stop.set()
+        reader.join(timeout=1.0)
+
+    def test_the_reader_routes_program_change_to_the_dispatch(self):
+        scene, _ = _make_scene(waveform="pulse")
+        self._drive_reader_until(
+            scene,
+            [mido.Message("program_change", program=1)],  # sawtooth
+            lambda: scene.waveform == "sawtooth",
+        )
+        self.assertEqual(scene.waveform, "sawtooth")
+        self.assertEqual(scene.voice_wave_bits, [SID.WAVE_SAWTOOTH] * 3)
+
+    def test_a_type_the_dispatch_does_not_handle_is_a_no_op(self):
+        # The reader now sends everything except the two coalesced controller
+        # types to `_handle_msg`, so the types it has no branch for have to
+        # fall through harmlessly rather than raise on the reader thread.
+        scene, api = _make_scene(waveform="pulse")
+        self._drive_reader_until(
+            scene,
+            [mido.Message("aftertouch", value=64), mido.Message("program_change", program=1)],
+            lambda: scene.waveform == "sawtooth",
+        )
+        self.assertEqual(scene.waveform, "sawtooth")
+        self.assertTrue(api.ops, "the reader died before it reached the program change")
+
 
 class MultitimbralTests(_MidiTestCase):
     def test_channels_route_to_fixed_voices(self):

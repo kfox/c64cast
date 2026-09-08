@@ -447,12 +447,12 @@ class MidiScene(VoiceScopeRenderer, Scene):
         try:
             while not stop.is_set():
                 for msg in poll_pending(port, stop, budget_s=budget_s):
-                    if msg.type in ("note_on", "note_off"):
-                        self._handle_msg(msg)
-                    elif msg.type == "pitchwheel":
+                    if msg.type == "pitchwheel":
                         pending_pitch = msg.pitch
                     elif msg.type == "control_change":
                         pending_cc[msg.control] = msg.value
+                    else:
+                        self._handle_msg(msg)
                 now = time.time()
                 if (
                     pending_pitch is not None or pending_cc
