@@ -150,12 +150,19 @@ bytecode from before your edit and reports a green run that means nothing.
 `PYTHONDONTWRITEBYTECODE=1` does not help — it suppresses writing, not reading
 — and neither does `touch`. The target recompiles the tree in PEP 552
 hash-based mode, where the check is over the source's contents instead, and
-then verifies that every module an import can reach really is armed.
+then verifies that every compiled module an import here could read really is
+armed. It cannot tell you a module *has* compiled bytecode — absence is
+indistinguishable from "never imported" — so what it rules out is the wrong
+mode, not the missing file.
 
 It has to be re-run more often than it looks: `make clean` deletes every
 `__pycache__`, a fresh worktree has none to begin with, and a `uv sync` that
-moves the Python minor invalidates the lot. The verification step is there so
-that a lapse is a loud failure rather than a quiet false green.
+moves the Python minor invalidates the lot. Every one of those is silent, and
+they all happen *after* the arming — so `make mutation-check` is the check on
+its own, to run at the moment a proof's green is about to be believed. It is
+deliberately not part of `make test`: arming matters only for a mutation proof,
+and failing every ordinary run on an unarmed tree would teach everyone to
+bypass it.
 
 Several tests exist purely to stop documentation from drifting — the JSON schema
 against the config metadata, the annotated example TOML against the dataclass

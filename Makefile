@@ -6,6 +6,7 @@
 #   make lint       # ruff check
 #   make fmt        # ruff format
 #   make mutation-ready  # arm hash-based .pyc invalidation before a mutation pass
+#   make mutation-check  # verify it is still armed, before believing a proof
 #   make test       # unittest suite (whole tree, parallel across cores)
 #   make test T=tests.test_midi_scene   # just that module/class/method
 #   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
@@ -40,6 +41,7 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
 	mutation-ready \
+	mutation-check \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
@@ -114,6 +116,7 @@ help:
 	@echo "  lint       ruff check"
 	@echo "  fmt        ruff format"
 	@echo "  mutation-ready  hash-based .pyc invalidation, so a mutation pass cannot read stale bytecode"
+	@echo "  mutation-check  verify the tree is still armed (a clean/worktree/sync un-arms it silently)"
 	@echo "  test       unittest suite, parallel (T=tests.test_foo runs just that, serial)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
@@ -169,6 +172,16 @@ fmt:
 # its "which files can an import actually reach" rule live in the script.
 mutation-ready: $(SYNC)
 	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+
+# The check on its own, for the case the arming above cannot cover: it runs one
+# line after the compileall, so it can only ever confirm that compileall just
+# worked. The lapses are all LATER -- a `make clean`, a new worktree, a uv sync
+# -- so this is the target to run at the moment a mutation proof's green is
+# about to be believed, which is where a false one does its damage. It is NOT a
+# prerequisite of `test`: arming matters only for a mutation proof, and failing
+# every ordinary test run on an unarmed tree would teach everyone to bypass it.
+mutation-check: $(SYNC)
 	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
 
 # `make test` runs the whole suite in parallel (unittest_parallel forks one

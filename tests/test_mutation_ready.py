@@ -14,7 +14,10 @@ tests/test_build_site.py does).
 from __future__ import annotations
 
 import compileall
+import contextlib
 import importlib.util
+import io
+import os
 import py_compile
 import struct
 import sys
@@ -43,6 +46,12 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         (self.root / "mod.py").write_text("X = 1\n", encoding="utf-8")
 
+    def _unarmed(self):
+        """Just the paths — the tests that care about the inspected count
+        assert on `scan`'s whole return value instead."""
+        unarmed, _inspected = check.scan([str(self.root)])
+        return [pyc for pyc, _flags in unarmed]
+
     def _compile(self, mode):
         compileall.compile_dir(str(self.root), quiet=2, force=True, invalidation_mode=mode)
         pycs = list(self.root.rglob("__pycache__/*.pyc"))
@@ -51,40 +60,85 @@ class HashBasedPycCheckTest(unittest.TestCase):
 
     def test_a_checked_hash_tree_passes(self):
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
-        self.assertEqual(check.unarmed([str(self.root)]), [])
+        self.assertEqual(self._unarmed(), [])
 
     def test_a_timestamp_tree_is_reported(self):
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
-        self.assertEqual(check.unarmed([str(self.root)]), [pyc])
+        self.assertEqual(self._unarmed(), [pyc])
 
     def test_unchecked_hash_is_reported_too(self):
         # It is hash-based but skips validation entirely, so it never notices a
         # mutation either — the same silent green with a different cause. Bit 0
         # alone would call this armed.
         pyc = self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
-        self.assertEqual(check.unarmed([str(self.root)]), [pyc])
+        self.assertEqual(self._unarmed(), [pyc])
 
     def test_a_pyc_for_another_interpreter_is_ignored(self):
         # A checkout run under more than one Python minor accumulates these and
         # no import here will ever read one. Failing on them would make the
         # check noise, which is how a check gets deleted.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
-        other = pyc.with_name("mod.cpython-001.pyc")
-        pyc.rename(other)
-        self.assertEqual(check.unarmed([str(self.root)]), [])
+        pyc.rename(pyc.with_name("mod.cpython-001.pyc"))
+        self.assertEqual(check.scan([str(self.root)]), ([], 0))
 
     def test_an_orphaned_pyc_is_ignored(self):
         # Same reasoning, other cause: the source moved or was renamed, so
         # nothing imports this either.
         self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
         (self.root / "mod.py").unlink()
-        self.assertEqual(check.unarmed([str(self.root)]), [])
+        self.assertEqual(check.scan([str(self.root)]), ([], 0))
+
+    def test_an_optimized_pyc_is_not_mistaken_for_another_interpreters(self):
+        # `mod.cpython-314.opt-1.pyc` is what an import under -O reads, and
+        # taking the cache tag as everything after the FIRST dot yielded
+        # "cpython-314.opt-1", which matches no interpreter — so every
+        # optimized build was skipped as an orphan and an unarmed one passed.
+        pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
+        opt = pyc.with_name(f"mod.{sys.implementation.cache_tag}.opt-1.pyc")
+        pyc.rename(opt)
+        self.assertEqual(self._unarmed(), [opt])
+
+    def test_an_empty_scan_is_not_a_pass(self):
+        # Absence is the un-armed state's other shape — a wiped __pycache__, a
+        # fresh worktree — and it is indistinguishable from "never imported".
+        # A wrong cwd or a renamed root would otherwise exit 0 silently, which
+        # is the failure this whole check exists to remove.
+        self.assertEqual(check.scan([str(self.root / "nope")]), ([], 0))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(check.main(["prog", str(self.root / "nope")]), 1)
+        self.assertIn("nothing was checked", err.getvalue())
+
+    def test_an_armed_tree_exits_zero(self):
+        self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
+        self.assertEqual(check.main(["prog", str(self.root)]), 0)
+
+    def test_the_failure_names_the_mode_it_found(self):
+        # The message said "still timestamp-based" for every failure, which
+        # sends the reader after mtimes on an unchecked-hash pyc — one of the
+        # two cases the both-bits test was added for.
+        self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(check.main(["prog", str(self.root)]), 1)
+        self.assertIn("unchecked-hash", err.getvalue())
+        self.assertNotIn("timestamp-based", err.getvalue())
+
+    def test_an_unreadable_pyc_fails_closed(self):
+        # A file we cannot read is a file we cannot vouch for, and the scan
+        # still covers the remaining roots rather than aborting on it.
+        pyc = self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
+        pyc.chmod(0o000)
+        self.addCleanup(pyc.chmod, 0o644)
+        if os.access(pyc, os.R_OK):
+            self.skipTest("running as a user that can read a 000 file")
+        self.assertEqual(self._unarmed(), [pyc])
 
     def test_a_truncated_pyc_raises_rather_than_passing_quietly(self):
         pyc = self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
         pyc.write_bytes(pyc.read_bytes()[:4])
         with self.assertRaisesRegex(ValueError, "truncated header"):
-            check.unarmed([str(self.root)])
+            check.scan([str(self.root)])
 
     def test_the_flags_word_is_read_where_pep_552_puts_it(self):
         # The offset and endianness are the whole check, and getting either
@@ -96,7 +150,7 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<I", raw, 4)[0], 0b11)
         struct.pack_into("<I", raw, 4, 0b00)
         pyc.write_bytes(bytes(raw))
-        self.assertEqual(check.unarmed([str(self.root)]), [pyc])
+        self.assertEqual(self._unarmed(), [pyc])
 
 
 if __name__ == "__main__":
