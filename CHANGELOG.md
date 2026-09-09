@@ -130,8 +130,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   when its input poller failed to join. The three composable audio sources are
   guarded on the same terms, and a failing step now says so: it is reported at
   ERROR with the name of the guarantee that was abandoned, where `AsidScene`
-  and `MidiScene` previously logged a single DEBUG line for the whole group and
-  so said nothing at all unless you were running with `-v`. `WaveformScene`
+  and `MidiScene` previously logged at DEBUG — one line for the port close and
+  one for the whole silence/restore group — and so said nothing at all unless
+  you were running with `-v`. `WaveformScene`
   already reported at ERROR. A playlist run against an unreachable U64 is
   therefore noisier at every scene boundary than it was — one record per
   abandoned restore rather than none — which is the intended direction: those

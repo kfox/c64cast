@@ -888,11 +888,13 @@ class AsidScene(VoiceScopeRenderer, Scene):
         return True
 
     def teardown(self) -> None:
-        # Shut the wire off before the restores below it. (Not before every
-        # restore: step 0 is the base teardown, whose `display_mode.teardown`
-        # unhooks the staged-REU raster IRQ — a machine restore, and one an
-        # abandoned reader does not reach, since a retune writes the CIA #1
-        # latch and $C000 rather than $0314 or $DD00.)
+        # Shut the wire off FIRST, before anything restores the machine. The
+        # `base teardown` step ahead of it restores nothing here: this scene and
+        # the other two SID scenes pass `display_mode=None`, so `Scene.teardown`
+        # takes its `is not None` guard and does nothing. Worth saying, because
+        # that base call *is* a machine restore for the video scenes — it
+        # unhooks the staged-REU raster IRQ — and reading it that way here makes
+        # this invariant look narrower than it is.
         #
         # The reader's poll stop is a bounded join that `_pollthread` documents
         # as abandoning its worker, so a reader blocked in a DMA write survives
@@ -910,7 +912,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # the CIA #1 latch, so the C64 stops popping the ring before we silence
         # the SID(s) and restore the display below.
         #
-        # Then restore them AGAIN here, unconditionally. The scene owns the
+        # Then restore them AGAIN here, unconditionally — meaning not
+        # conditional on the player's own `stop()` having succeeded; the two
+        # steps above are gated on there *being* a player. The scene owns the
         # promise that the next scene gets a quiescent C64, and it must not
         # delegate that to the player's own bookkeeping: the player's writer
         # thread can outlive its bounded join, and an orphaned ASID handler is

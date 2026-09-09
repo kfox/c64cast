@@ -948,12 +948,20 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         `_player`.) Closing the port is what stops it reading one more `0x31`,
         so it has to run before the restores below and not after them: a retune
         landing afterward hands the next scene the exact CIA state these steps
-        exist to undo. This pins the order against those restores, not against
-        the base teardown that runs ahead of all of them.
+        exist to undo. The `base teardown` step ahead of them is a no-op for
+        this scene (`display_mode` is None), so pinning the port close against
+        the restores below pins it against every restore there is.
         """
         order: list[str] = []
         scene, _ = self._make()
         assert scene._player is not None
+        # The docstring's "every restore there is" rests on this: give the scene
+        # a display mode and `Scene.teardown` becomes a real machine restore
+        # running ahead of the port close, which narrows the invariant without
+        # touching this test's own steps.
+        self.assertIsNone(
+            scene.display_mode, "the base teardown step would restore the machine first"
+        )
         # Recorded on the port itself rather than on a wrapper method, so the
         # order is asserted against the call teardown actually makes.
         scene._midi_port = SimpleNamespace(close=lambda: order.append("port close"))
