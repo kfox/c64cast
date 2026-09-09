@@ -619,9 +619,10 @@ def stage_blit_errors(p: Probe, rounds: int) -> list[int]:
     return all_xors
 
 
-def stage_vblank_stream(p: Probe, pads: tuple[int, ...]) -> dict[int, list[int]]:
+def stage_vblank_stream(p: Probe, pads: tuple[int, ...]) -> dict[int, list[tuple[int, int]]]:
     """Stream unpolled inside blanking, sweeping size against spacing. Returns
-    the correct-byte counts per spacing, which is where the window falls out."""
+    per spacing the (size asked, bytes correct) pairs, which is where the window
+    falls out."""
     print("\n[5] unpolled stream inside blanking")
     print("    each cell: bytes correct before the first divergence, and how it failed")
     payload = bytes((i * 37 + 11) & 0xFF for i in range(256))
@@ -629,7 +630,7 @@ def stage_vblank_stream(p: Probe, pads: tuple[int, ...]) -> dict[int, list[int]]
     p.stage(vdc_rom.FRAMEBUF_ADDR, payload)
     p.stage(vdc_rom.FRAMEBUF_ADDR + 0x100, sentinel)
 
-    windows: dict[int, list[int]] = {}
+    windows: dict[int, list[tuple[int, int]]] = {}
     for pad in pads:
         cycles = PAD_CYCLES[pad]
         print(f"\n    --- {cycles} cycles/byte (MAIL_ARG={pad}) ---")
@@ -650,7 +651,7 @@ def stage_vblank_stream(p: Probe, pads: tuple[int, ...]) -> dict[int, list[int]]
             flag = "" if stable else "  (noisy readback)"
             print(f"      {n:3d} B: {note}{flag}")
             first = next((i for i in range(n) if got[i] != payload[i]), n)
-            windows.setdefault(cycles, []).append(first)
+            windows.setdefault(cycles, []).append((n, first))
     return windows
 
 
@@ -658,7 +659,7 @@ def summarize(
     p: Probe,
     duty: float,
     xors: list[int],
-    windows: dict[int, list[int]],
+    windows: dict[int, list[tuple[int, int]]],
     version: str,
     measured: bool,
 ) -> None:
@@ -683,10 +684,10 @@ def summarize(
     print(f"  of {len(xors)} errors, {single} were a single bit (this rig: all of them, all $40)")
 
     for cycles in sorted(windows):
-        # A run that diverged only at the last byte tested never found its
-        # window, so averaging it in would drag the estimate toward the sweep's
-        # own ceiling rather than the machine's.
-        capped = [w for w in windows[cycles] if w < max(SWEEP_SIZES)]
+        # Only a run that actually diverged locates the window. Keeping the
+        # clean ones, which report their own size, makes a machine with no
+        # errors at all report the median of SWEEP_SIZES as its window.
+        capped = [first for size, first in windows[cycles] if first < size]
         if capped:
             median = int(statistics.median(capped))
             print(
@@ -748,7 +749,7 @@ def main() -> int:
         measured = stage_identity(p)
         duty = stage_blanking(p, args.samples)
         xors: list[int] = []
-        windows: dict[int, list[int]] = {}
+        windows: dict[int, list[tuple[int, int]]] = {}
         if measured:
             xors = stage_blit_errors(p, args.rounds)
             windows = stage_vblank_stream(p, pads)
