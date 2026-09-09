@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from _fakes import frozen_throttle
+from _fakes import frozen_throttle, frozen_throttles
 
 from c64cast.sid import asid
 
@@ -36,10 +36,15 @@ def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
     return (asid.ASID_MANUFACTURER_ID, asid.CMD_REG, *mask, *msb, *data)
 
 
-def _ok(msg) -> asid.AsidUpdate:
+def _ok(msg, recipe_log=None) -> asid.AsidUpdate:
     """decode() the message and assert it's a recognized ASID message (narrows
-    the Optional for the type checker)."""
-    u = asid.decode(msg)
+    the Optional for the type checker).
+
+    `recipe_log` is the caller's when it asserts on the throttle and a fresh
+    one otherwise — fresh rather than shared, so one test's over-cap report
+    cannot spend another test's budget. That is the same per-stream reasoning
+    the parameter exists for in production, applied to tests."""
+    u = asid.decode(msg, recipe_log=recipe_log or asid.new_recipe_log())
     assert u is not None
     return u
 
@@ -47,10 +52,12 @@ def _ok(msg) -> asid.AsidUpdate:
 class DecodeDispatchTest(unittest.TestCase):
     def test_non_asid_sysex_returns_none(self):
         # Wrong manufacturer id (0x7E = universal non-realtime).
-        self.assertIsNone(asid.decode((0x7E, 0x00, 0x01)))
+        self.assertIsNone(asid.decode((0x7E, 0x00, 0x01), recipe_log=asid.new_recipe_log()))
 
     def test_too_short_returns_none(self):
-        self.assertIsNone(asid.decode((asid.ASID_MANUFACTURER_ID,)))
+        self.assertIsNone(
+            asid.decode((asid.ASID_MANUFACTURER_ID,), recipe_log=asid.new_recipe_log())
+        )
 
     def test_start_stop(self):
         self.assertIs(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_START)).playing, True)
@@ -216,12 +223,11 @@ class OtherCommandsTest(unittest.TestCase):
 
 
 class TimingRecipeTest(unittest.TestCase):
-    def setUp(self):
-        # The over-cap report is throttled through module state, so a test that
-        # asserts the WARNING has to start from a clean stream or it inherits
-        # whichever test ran before it.
-        asid._overlong_recipe_log.reset()
-        self.addCleanup(asid._overlong_recipe_log.reset)
+    # No setUp resetting a shared throttle: `_ok` builds a fresh one per decode
+    # unless the test hands it one, so no test can inherit another's spent
+    # budget. That used to need a reset and a cleanup because the budget was
+    # module state, which is the same per-process/per-stream confusion the
+    # production change removed.
 
     def test_identity_order_no_waits(self):
         # Two pairs, register ids 0 and 1, both wait 0.
@@ -283,16 +289,58 @@ class TimingRecipeTest(unittest.TestCase):
         for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
             payload += [i & 0x3F, 0x00]
         self.assertEqual(len(payload) - 2, 58)  # 29 pairs, 62 bytes with F0/F7
-        with (
-            frozen_throttle(asid, "_overlong_recipe_log"),
-            self.assertLogs("c64cast.sid.asid", "DEBUG") as caught,
-        ):
+        # One throttle across all 500 decodes, because one throttle is what a
+        # stream has. Handed in rather than patched: the test now owns the
+        # object it is asserting about.
+        throttle = frozen_throttle(asid.log)
+        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
             for _ in range(500):
                 self.assertEqual(
-                    len(_ok(tuple(payload)).timing_recipe), asid.MAX_TIMING_RECIPE_PAIRS
+                    len(_ok(tuple(payload), recipe_log=throttle).timing_recipe),
+                    asid.MAX_TIMING_RECIPE_PAIRS,
                 )
         self.assertEqual(len(caught.records), 1)
         self.assertEqual(caught.records[0].levelname, "WARNING")
+
+    def test_each_call_for_a_stream_budget_answers_with_a_new_one(self):
+        # The whole of "per stream" in one line: a factory that answered with a
+        # shared instance would be the module-level throttle again, wearing a
+        # function's name.
+        self.assertIsNot(asid.new_recipe_log(), asid.new_recipe_log())
+
+    def test_one_streams_flood_does_not_spend_another_streams_budget(self):
+        # The regression the `recipe_log` parameter exists for. Both throttles
+        # are frozen, so neither window ever closes and each has exactly one
+        # report to give: with a single module-level throttle, stream A's flood
+        # took it and stream B — a different system, on its own MIDI port, in
+        # the same process — never reported its own first over-cap recipe at
+        # all. That is the ensemble case, and "O(1) per stream" is what the
+        # module promises.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
+            payload += [i & 0x3F, 0x00]
+        # Through the factory, not built here: two `frozen_throttle`s built
+        # directly are trivially distinct objects, so a test that does that
+        # asserts something about `LogThrottle` and nothing about whether
+        # production hands out two. `frozen_throttles` freezes whatever the
+        # factory constructs inside the block, which leaves the factory itself
+        # in the path being tested.
+        with frozen_throttles(asid):
+            stream_a = asid.new_recipe_log()
+            stream_b = asid.new_recipe_log()
+
+        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
+            for _ in range(500):
+                _ok(tuple(payload), recipe_log=stream_a)
+            spent_by_a = len(caught.records)
+            _ok(tuple(payload), recipe_log=stream_b)
+
+        # A got its one report and then went quiet; B's first message still
+        # reports, at WARNING, because it stands for one occurrence and not a
+        # flood it has already been told about.
+        self.assertEqual(spent_by_a, 1)
+        self.assertEqual(len(caught.records), 2)
+        self.assertEqual([r.levelname for r in caught.records], ["WARNING", "WARNING"])
 
     def test_capped_and_deduped_recipe_cannot_outgrow_a_slot(self):
         # The two bounds together: 28 pairs all naming register id 0 (fully

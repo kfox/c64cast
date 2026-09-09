@@ -18,6 +18,20 @@ a noisy site swallow a quiet site's first report — but they all share this cod
 because two hand-rolled copies of a gate is how the two drift and six is how the
 seventh site forgets.
 
+**Per stream is not per site, and the difference only shows with two streams.**
+A throttle owned by the object that reads the wire gets this for free, which is
+what ``control/midi_control.py``'s three do (one listener, one control surface,
+three ``self._`` instances). A throttle at a module's top level is per
+*process*, and reads identically until a second stream exists: ``asid.decode``
+and ``asid_player.pack_slot`` are free functions, so theirs sat at module level,
+and in an ensemble — one ``AsidScene`` per system, each on its own MIDI port —
+system A's flood then suppressed system B's *first ever* report of the same
+condition, which is precisely the "noisy site swallows a quiet site's first
+report" failure the previous paragraph rules out, one scope up. A free function
+therefore takes its stream's throttle as a required argument rather than
+defaulting to one; ``asid.new_recipe_log`` and ``asid_player.new_truncation_log``
+build them, and ``AsidScene`` owns one of each.
+
 The rule is about a *wire*, not about ASID, so the gate is not ASID's alone:
 ``control/midi_control.py`` logged a full traceback per message it could not
 handle — on a dispatch failure, a clock-feed failure, and a mapped action

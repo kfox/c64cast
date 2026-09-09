@@ -8,10 +8,10 @@ hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.
 
 This module is a **pure** decoder — no mido, no hardware, and a decode's result
 depends on nothing but its bytes — so it's trivially unit-testable: feed a byte
-sequence, assert the resulting register map. (The one piece of module state,
-``_overlong_recipe_log``, gates *how often* the over-cap warning is logged and
-never what a decode returns; :mod:`c64cast._wire_log` says why it has to
-exist.) The
+sequence, assert the resulting register map. It holds no module state at all:
+the one thing that would have been state, the over-cap warning's report budget,
+is passed in by the caller that owns the stream (:func:`new_recipe_log`), which
+is what makes that budget per-stream rather than per-process. The
 :class:`~c64cast.sid.asid_scene.AsidScene` owns the MIDI port, the register shadow,
 the DMA writes, and the oscilloscope.
 
@@ -52,11 +52,24 @@ from c64cast._wire_log import LogThrottle
 
 log = logging.getLogger("c64cast.sid.asid")
 
-# The one warning this decoder can be made to emit is chosen by the sender, so
-# it is throttled rather than logged per message — the smallest message that
-# trips it is 62 bytes. Module-level because the decoder is a free function with
-# no per-stream object to hang the gate off; see :mod:`c64cast._wire_log`.
-_overlong_recipe_log = LogThrottle(log)
+
+def new_recipe_log() -> LogThrottle:
+    """One ASID stream's report budget for the over-cap ``0x30`` warning.
+
+    The warning is chosen by the sender — the smallest message that trips it is
+    62 bytes — so it is throttled rather than logged per message; see
+    :mod:`c64cast._wire_log`. A factory rather than a module-level instance
+    because the rule there is O(1) per *stream*, and a decoder is a free
+    function: the throttle has to come from whatever owns the stream, which is
+    one :class:`~c64cast.sid.asid_scene.AsidScene` per MIDI port. A module-level
+    instance made it O(1) per *process*, so in ensemble mode one system's flood
+    suppressed another system's first report.
+
+    The logger is this module's, so a record lands where a reader of
+    ``c64cast.sid.asid`` expects it whoever built the throttle.
+    """
+    return LogThrottle(log)
+
 
 # SysEx manufacturer id chosen by Elektron for ASID (45 = 0x2D).
 ASID_MANUFACTURER_ID = 0x2D
@@ -137,12 +150,18 @@ class AsidUpdate:
     dropped: bool = False  # not applied: OPL-FM, or an unrecognized command byte
 
 
-def decode(data: Sequence[int]) -> AsidUpdate | None:
+def decode(data: Sequence[int], *, recipe_log: LogThrottle) -> AsidUpdate | None:
     """Decode one ASID SysEx payload (``msg.data`` from mido, i.e. the bytes
     between ``F0`` and ``F7``, starting with the ``0x2D`` manufacturer id).
 
     Returns an :class:`AsidUpdate`, or ``None`` if this isn't an ASID message
     (wrong/absent manufacturer id) so the caller can ignore foreign SysEx.
+
+    ``recipe_log`` is this stream's budget for the one warning a sender can
+    provoke here — :func:`new_recipe_log` builds one, and it is required rather
+    than defaulted so that a new caller has to answer which stream it is
+    reading. A default would silently be a process-wide one, which is the bug
+    this parameter exists to remove.
     """
     if len(data) < 2 or data[0] != ASID_MANUFACTURER_ID:
         return None
@@ -165,7 +184,7 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
     if cmd == CMD_SID_TYPE:
         return _decode_sid_type(payload)
     if cmd == CMD_TIMING:
-        return _decode_timing(payload)
+        return _decode_timing(payload, recipe_log)
     # Recognized-but-unsupported (OPL-FM) and anything unknown: flag as dropped
     # so the scene can warn once and move on.
     return AsidUpdate(command=cmd, dropped=True)
@@ -236,7 +255,7 @@ def _decode_speed(payload: Sequence[int]) -> AsidUpdate:
     return update
 
 
-def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
+def _decode_timing(payload: Sequence[int], recipe_log: LogThrottle) -> AsidUpdate:
     """Decode a 0x30 recipe into ordered ``(asid_reg_id, wait_cycles)`` pairs.
 
     The payload is up to :data:`MAX_TIMING_RECIPE_PAIRS` two-byte pairs; pair *i*
@@ -248,13 +267,14 @@ def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
 
     Pairs past the cap are dropped with a throttled warning (the sender picks
     how often this fires, so the report is O(1) per stream — see
-    :mod:`c64cast._wire_log`), and a register id repeated in the order keeps
+    :mod:`c64cast._wire_log`, and `recipe_log` is what makes "per stream" true
+    rather than per process), and a register id repeated in the order keeps
     its first position — see :data:`MAX_TIMING_RECIPE_PAIRS` for why both bounds
     have to be enforced here, at the wire boundary."""
     update = AsidUpdate(command=CMD_TIMING)
     pairs = len(payload) // 2
     if pairs > MAX_TIMING_RECIPE_PAIRS:
-        _overlong_recipe_log.warn(
+        recipe_log.warn(
             "asid: 0x30 timing recipe carries %d pairs; keeping the first %d "
             "(a SID write order can be no longer than the register table)",
             pairs,

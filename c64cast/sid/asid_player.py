@@ -77,11 +77,22 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("c64cast.sid.asid_player")
 
-# `pack_slot` truncates on wire-driven input at the ASID frame rate (60-960 Hz),
-# and there is a reachable state in which the condition is permanent rather than
-# occasional, so its report is throttled instead of logged per frame. Module
-# level because `pack_slot` is a free function; see :mod:`c64cast._wire_log`.
-_truncated_slot_log = LogThrottle(log)
+
+def new_truncation_log() -> LogThrottle:
+    """One ASID stream's report budget for :func:`pack_slot`'s truncation.
+
+    `pack_slot` truncates on wire-driven input at the ASID frame rate
+    (60-960 Hz), and there is a reachable state in which the condition is
+    permanent rather than occasional, so its report is throttled instead of
+    logged per frame; see :mod:`c64cast._wire_log`. A factory rather than a
+    module-level instance for the same reason as
+    :func:`c64cast.sid.asid.new_recipe_log`: the rule is O(1) per *stream*,
+    `pack_slot` is a free function, and one module-level instance made it O(1)
+    per *process* — so with two systems in an ensemble, one flooding stream
+    suppressed the other's first-ever report.
+    """
+    return LogThrottle(log)
+
 
 # --------------------------------------------------------------------------
 # Memory map. AsidScene runs no DAC/NMI/pump, so $C000-$CFFF and the REU are
@@ -325,7 +336,9 @@ def serialize_frame(
     return [(base_addr + offset, value, dw) for (_rid, offset, value, dw) in writes]
 
 
-def pack_slot(ops: list[tuple[int, int, int]], slot_size: int) -> bytes:
+def pack_slot(
+    ops: list[tuple[int, int, int]], slot_size: int, *, truncation_log: LogThrottle
+) -> bytes:
     """Pack concatenated ops (all active chips) into one fixed-size slot.
 
     ``[n_ops]`` then 4 bytes per op ``[addr_lo, addr_hi, value, wait]``,
@@ -340,10 +353,14 @@ def pack_slot(ops: list[tuple[int, int, int]], slot_size: int) -> bytes:
 
     Loud, but throttled: this runs once per ASID frame (60-960 Hz) on the MIDI
     reader thread, and the mismatch that trips it can persist for a whole scene,
-    so the report is O(1) per stream — :mod:`c64cast._wire_log`."""
+    so the report is O(1) per stream — :mod:`c64cast._wire_log`.
+    ``truncation_log`` is that stream's budget (:func:`new_truncation_log`),
+    required rather than defaulted so a new caller has to say which stream it is
+    packing for; a default would be a process-wide one, which is what made the
+    rule false."""
     max_ops = (slot_size - 1) // OP_BYTES
     if len(ops) > max_ops:
-        _truncated_slot_log.warn(
+        truncation_log.warn(
             "asid_player: frame carries %d ops but the %d B slot holds %d; "
             "dropping %d — later chips in this slot lose their writes",
             len(ops),

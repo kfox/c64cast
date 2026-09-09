@@ -63,6 +63,7 @@ from .asid_player import (
     clamp_frame_rate,
     fit_frame_to_budget,
     frame_cycle_cost,
+    new_truncation_log,
     pack_slot,
     restore_kernal_irq,
     serialize_frame,
@@ -142,6 +143,14 @@ class AsidScene(VoiceScopeRenderer, Scene):
 
         self.port_name = port
         self.system = system
+
+        # This scene *is* the stream — one MIDI input port — so the two
+        # wire-triggered report budgets belong here rather than at either
+        # module's top level, where they were per-process: in ensemble mode a
+        # flooding system then suppressed another system's first-ever report of
+        # the same condition. See :mod:`c64cast._wire_log`.
+        self._recipe_log = asid.new_recipe_log()
+        self._truncation_log = new_truncation_log()
         # The system the *machine* runs, kept apart from `self.system` because a
         # wire `0x31` retunes that one to whatever standard the tune declares.
         # Anything restoring a hardware default (the kernal CIA #1 latch is
@@ -359,7 +368,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         accumulators are only ever touched here (single-threaded), so they need
         no lock; the emulators (shared with the render + envelope threads) are
         guarded in _flush_to_sid / _emit_buffered_frame."""
-        update = asid.decode(data)
+        update = asid.decode(data, recipe_log=self._recipe_log)
         if update is None:
             return  # foreign SysEx — not ASID
         if update.dropped:
@@ -516,7 +525,9 @@ class AsidScene(VoiceScopeRenderer, Scene):
                     retrigger = tuple(mask)
                 emu_updates.append((chip, retrigger))
             all_ops = self._fit_to_frame_budget(all_ops, player)
-            player.push_frame(pack_slot(all_ops, player.slot_size))
+            player.push_frame(
+                pack_slot(all_ops, player.slot_size, truncation_log=self._truncation_log)
+            )
             # Mirror into the emulators (scope) — the C64 plays the real SID.
             # Only the serialized chips, so the scope can't show a voice
             # configured on hardware that has not been programmed yet.

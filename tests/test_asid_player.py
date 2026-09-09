@@ -22,7 +22,7 @@ from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, frozen_throttle  # noqa: E402
+from _fakes import FakeAPI, frozen_throttle, frozen_throttles  # noqa: E402
 
 from c64cast.hw.backend import C64Backend  # noqa: E402
 from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
@@ -528,14 +528,18 @@ class FrameBudgetTest(unittest.TestCase):
 
 
 class PackSlotTest(unittest.TestCase):
-    def setUp(self):
-        # The truncation report is throttled through module state, so a test
-        # that asserts the WARNING has to start from a clean stream.
-        ap._truncated_slot_log.reset()
-        self.addCleanup(ap._truncated_slot_log.reset)
+    # No setUp resetting a shared throttle: `_pack` builds a fresh one per call
+    # unless the test hands it one. The reset existed because the budget was
+    # module state, i.e. per process rather than per stream.
+
+    @staticmethod
+    def _pack(ops, slot_size, truncation_log=None):
+        return ap.pack_slot(
+            ops, slot_size, truncation_log=truncation_log or ap.new_truncation_log()
+        )
 
     def test_layout_and_padding(self):
-        slot = ap.pack_slot([(0xD404, 0x41, 2), (0xD400, 0x34, 0)], 128)
+        slot = self._pack([(0xD404, 0x41, 2), (0xD400, 0x34, 0)], 128)
         self.assertEqual(len(slot), 128)
         self.assertEqual(slot[0], 2)  # n_ops
         self.assertEqual(tuple(slot[1:5]), (0x04, 0xD4, 0x41, 0x02))  # op0
@@ -553,9 +557,37 @@ class PackSlotTest(unittest.TestCase):
         # silent truncation deleted a whole chip's frame.
         many = [(0xD400, 0, 0)] * 100
         with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
-            slot = ap.pack_slot(many, 128)
+            slot = self._pack(many, 128)
         self.assertEqual(slot[0], (128 - 1) // ap.OP_BYTES)
         self.assertIn("later chips in this slot lose their writes", caught.output[0])
+
+    def test_each_call_for_a_stream_budget_answers_with_a_new_one(self):
+        # "Per stream" in one line, the same as asid.new_recipe_log's: a
+        # factory answering with a shared instance is the module-level throttle
+        # again, wearing a function's name.
+        self.assertIsNot(ap.new_truncation_log(), ap.new_truncation_log())
+
+    def test_one_streams_flood_does_not_spend_another_streams_budget(self):
+        # The ensemble regression, on the player's side of it: one AsidScene per
+        # system, each packing its own frames, and with a module-level throttle
+        # the first system to truncate took the only report. Built through the
+        # factory inside `frozen_throttles` so the factory stays in the path —
+        # two throttles built directly would be distinct whatever production
+        # does.
+        many = [(0xD400, 0, 0)] * 100
+        with frozen_throttles(ap):
+            stream_a = ap.new_truncation_log()
+            stream_b = ap.new_truncation_log()
+
+        with self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught:
+            for _ in range(960):
+                self._pack(many, 128, stream_a)
+            spent_by_a = len(caught.records)
+            self._pack(many, 128, stream_b)
+
+        self.assertEqual(spent_by_a, 1)
+        self.assertEqual(len(caught.records), 2)
+        self.assertEqual([r.levelname for r in caught.records], ["WARNING", "WARNING"])
 
     def test_a_permanent_truncation_reports_once_not_once_per_frame(self):
         # There is a reachable state in which this condition holds for the rest
@@ -563,12 +595,12 @@ class PackSlotTest(unittest.TestCase):
         # on the MIDI reader thread. One record per frame is the whole defect,
         # so the throttle must be *consulted* here, not merely defined.
         many = [(0xD400, 0, 0)] * 100
-        with (
-            frozen_throttle(ap, "_truncated_slot_log"),
-            self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught,
-        ):
+        # One throttle across all 960 frames — one stream, one budget — held by
+        # the test rather than patched into the module.
+        throttle = frozen_throttle(ap.log)
+        with self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught:
             for _ in range(960):
-                self.assertEqual(ap.pack_slot(many, 128)[0], (128 - 1) // ap.OP_BYTES)
+                self.assertEqual(self._pack(many, 128, throttle)[0], (128 - 1) // ap.OP_BYTES)
         self.assertEqual(len(caught.records), 1)
         self.assertEqual(caught.records[0].levelname, "WARNING")
 

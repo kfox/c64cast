@@ -494,7 +494,7 @@ def bare_waveform_scene(**attrs):
     return scene
 
 
-def _frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
+def frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
     """A `LogThrottle` whose clock never advances, so its report window never
     closes and it emits exactly one record for the life of the test.
 
@@ -510,36 +510,29 @@ def _frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
     point of standing in for the class is that every construction in the module
     gets frozen, and a site that spells its clock explicitly is the one most
     likely to be the one under test.
+
+    Called directly by a test that owns the throttle it asserts on, which is
+    every wire-triggered site now that they take one as an argument. This name
+    used to belong to a context manager that patched a module-level throttle by
+    attribute; there are no module-level throttles left to patch, and a
+    `LogThrottle` used in a `with` fails loudly, so the rename cannot pass
+    silently for a stale caller.
     """
     kwargs["monotonic"] = lambda: 0.0
     return LogThrottle(logger, **kwargs)
 
 
 @contextlib.contextmanager
-def frozen_throttle(module, name: str) -> Iterator[None]:
-    """Freeze one module-level `LogThrottle`, named by attribute.
-
-    The instance is replaced rather than reconfigured because a call site reads
-    it off the module by name at call time, and a test that reached into
-    `_reported_at` would be asserting against the implementation of the thing
-    it is testing. Its `logger` is read off the throttle being stood in for
-    rather than guessed from `module.__name__`: a module whose logger name is
-    not its own would send the record somewhere the caller's `assertLogs` is
-    not watching, and that failure reads as the gate's.
-    """
-    with mock.patch.object(module, name, _frozen_throttle(getattr(module, name).logger)):
-        yield
-
-
-@contextlib.contextmanager
 def frozen_throttles(module) -> Iterator[None]:
     """Freeze every `LogThrottle` a module builds while the block runs.
 
-    The companion to [frozen_throttle], for throttles that are per-instance
-    attributes rather than module state: there is no attribute to patch, so
-    what gets patched is the class the module constructs them with.
+    The companion to [frozen_throttle], for a module that builds its throttles
+    itself — per-instance attributes, or a factory a caller goes through — where
+    there is no one instance to hand the test. What gets patched is the class
+    the module constructs them with, so every throttle built inside the block
+    is frozen.
     """
-    with mock.patch.object(module, "LogThrottle", _frozen_throttle):
+    with mock.patch.object(module, "LogThrottle", frozen_throttle):
         yield
 
 

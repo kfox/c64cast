@@ -120,9 +120,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   ASID frame rate, 60 to 960 Hz, and can hold for a whole scene rather than a
   frame. Both now report at most once a second per stream — first occurrence at
   WARNING as written, a repeat at DEBUG carrying how many occurrences it stands
-  for — through one shared throttle rather than a hand-rolled flag apiece, and a
-  drain pass now releases after a quarter of the flush period however cheap the
-  count bound thinks it has been. Nothing is dropped that used to be delivered:
+  for. One shared implementation rather than a hand-rolled flag apiece, and one
+  instance per stream, owned by the scene that reads the port — so two systems
+  in an ensemble each keep their own first report instead of whichever one is
+  flooded first spending the other's. A drain pass now also releases after a
+  quarter of the flush period however cheap the count bound thinks it has
+  been. Nothing is dropped that used to be delivered:
   the pass checks its deadline before taking a message off the port, and the
   first message of a pass is never gated. That quarter-period budget is sized
   for the ASID reader, whose per-message cost is microseconds; the MIDI

@@ -88,6 +88,18 @@ class AsidSceneTest(unittest.TestCase):
         scene = AsidScene(api, None, **kwargs)
         return scene, api
 
+    def test_two_scenes_do_not_share_their_wire_report_budgets(self):
+        # The production half of the per-stream rule: one AsidScene is one MIDI
+        # input port, so two of them in a process — an ensemble, one per system
+        # — must not share a report budget, or the first system to be flooded
+        # takes the only report and the second never reports its own first
+        # occurrence. The decoder and the packer are free functions, so the
+        # scene is what owns the two budgets; see c64cast/_wire_log.py.
+        a, _ = self._make(port="A")
+        b, _ = self._make(port="B")
+        self.assertIsNot(a._recipe_log, b._recipe_log)
+        self.assertIsNot(a._truncation_log, b._truncation_log)
+
     def _bring_up(self, scene) -> None:
         """Run the bitmap bring-up a full setup() would, minus MIDI/threads."""
         scene._apply_vic_hires_bank()
