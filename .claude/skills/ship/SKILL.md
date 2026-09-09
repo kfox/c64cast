@@ -15,7 +15,8 @@ The standard workflow for non-trivial work in this repository. Every stage is
 mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
-branch → implement → commit → adversarial review to convergence → PR → CI/GHAS green → STOP
+branch → (implement → commit → review that changeset)* → adversarial panel
+       over the branch, to convergence → PR → CI/GHAS green → STOP
 ```
 
 **Never merge.** The user merges. Do not run `gh pr merge`, do not enable
@@ -79,11 +80,32 @@ make schema    # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
 ```
 
-## 4. Adversarial review, to convergence
+**Then review the commit you just made, scoped to that commit alone** —
+`/code-review <sha>`, which reviews only that commit's own diff, not
+`<sha>...HEAD` and not the branch — act on what it finds, and record it with
+`~/.claude/hooks/changeset-review.sh record <sha>`. This is not the panel
+in step 4; it is a narrow pass, and it is the one that catches things. A push
+is denied while any commit on the branch has no recorded review.
+
+Do not batch this to the end. The whole point is that the reviewer sees one
+changeset instead of a branch: a wide scope spends its attention before it
+reaches the small commit, and reads back as a clean pass. Fixes for what it
+finds are their own commits, and get their own review.
+
+## 4. Adversarial panel over the branch, to convergence
+
+The per-changeset reviews in step 3 are the first net and the one that catches
+most defects. This is the **second** net: the panel sees what no single-commit
+review can — how the commits interact, a guarantee one commit made and a later
+one quietly dropped, a design the branch drifted into. Run it once, after every
+commit has had its own review, never instead of them.
 
 Invoke the `adverse-review` skill in its **convergence loop** shape, scoped to
 `origin/main...HEAD`. Do not hand-roll a review; the skill's deterministic
 triage, ledger, and stop condition are the point.
+
+A clean panel here does not mean the branch is clean — it means nothing
+survived *both* nets. Read a wide pass that finds nothing as weak evidence.
 
 Three things to pass it that it cannot work out for itself:
 
