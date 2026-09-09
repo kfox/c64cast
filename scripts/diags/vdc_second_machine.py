@@ -107,6 +107,22 @@ PAD_CYCLES: Final = {0: 17, 1: 24, 2: 29, 3: 34}
 POLL_INTERVAL: Final = 0.050
 VRAM_TYPE_BIT: Final = 0x10  # R28 bit 4: set selects 64 KiB addressing
 
+#: Bits the 8563 returns set on a register read whatever was written to them,
+#: from VICE's ``vdc-mem.c`` regmask table. Comparing a raw readback against the
+#: value programmed reports R9 = $01 as a mismatch when it reads back $E1.
+REG_READ_ONES: Final = {
+    5: 0xE0,
+    8: 0xFC,
+    9: 0xE0,
+    10: 0x80,
+    11: 0xE0,
+    23: 0xE0,
+    28: 0x0F,
+    29: 0xE0,
+    36: 0xF0,
+    37: 0x3F,
+}
+
 
 # ---------------------------------------------------------------------------
 # The probe cartridge
@@ -459,7 +475,7 @@ def vram_is_16k(p: Probe) -> bool:
     is four bits wide and need not alias the whole byte."""
     r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
     if r28 is not None:
-        p.port.write_reg(vdc.R.CHARSET_ADDR, r28 | VRAM_TYPE_BIT)
+        p.port.write_reg(vdc.R.CHARSET_ADDR, (r28 | VRAM_TYPE_BIT) & ~REG_READ_ONES[28])
     p.port.write_ram(0x0000, b"\x00")
     p.port.write_ram(0x8000, b"\xff")
     got = p.port.read_ram(0x0000, 1)
@@ -507,7 +523,7 @@ def stage_identity(p: Probe) -> bool:
         size = "64 KiB" if r28 & 0x10 else "16 KiB"
         print(f"    R28 = ${r28:02X}               VRAM {size}")
     for reg in (vdc.R.H_TOTAL, vdc.R.V_TOTAL, vdc.R.V_DISPLAYED, vdc.R.CHAR_V_TOTAL):
-        want = vdc.BITMAP_640x200_REGS[reg]
+        want = vdc.BITMAP_640x200_REGS[reg] | REG_READ_ONES.get(reg, 0)
         got = p.port.read_reg(reg)
         if got is None:
             print(f"    R{reg:<2d} unreadable")
@@ -522,7 +538,7 @@ def stage_identity(p: Probe) -> bool:
         if aliases or p.vram_64k is False:
             r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
             if r28 is not None:
-                p.port.write_reg(vdc.R.CHARSET_ADDR, r28 & ~VRAM_TYPE_BIT)
+                p.port.write_reg(vdc.R.CHARSET_ADDR, r28 & ~VRAM_TYPE_BIT & ~REG_READ_ONES[28])
             print("    -> cleared R28 bit 4. The cartridge is frozen and programs")
             print("       64 KiB addressing on every machine, which decodes wrong")
             print("       here. Timing registers are untouched, so stage 3 and the")
