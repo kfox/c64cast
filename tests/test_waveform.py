@@ -2225,6 +2225,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
         scene._emulators = [scene.emulator]
         scene._reg_poll_hz = 60.0
         scene._poll_dt = 1.0 / 60.0
+        # Pinned, not inherited from __init__: the constructor's own value is
+        # floored against a PLAY pass timed on the real clock, so leaving it
+        # made every batch bound in this class depend on how fast the machine
+        # was during construction. A test that wants a different wakeup period
+        # sets its own, as the one below the expensive-pass tests does.
+        scene._poll_period = 1.0 / 60.0
         scene._ticks_done = 0
         return scene
 

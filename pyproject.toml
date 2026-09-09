@@ -332,10 +332,9 @@ ignore = [
     "SIM117", # nested with: blocks read fine for resource-pair management
 ]
 
-# `annotationlib` is standard library as of 3.14, which is the interpreter this
-# project runs and requires. Ruff classifies imports by `target-version`, still
-# py311 here for pyupgrade's sake, and so files it as third-party and moves it
-# below the first-party block.
+# `annotationlib` is standard library as of 3.14. Ruff classifies imports by
+# `target-version`, still py311 here for pyupgrade's sake, so without this it
+# files the name as third-party and moves it below the first-party block.
 [tool.ruff.lint.isort]
 extra-standard-library = ["annotationlib"]
 

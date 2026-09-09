@@ -17,7 +17,6 @@ what one throttle does, and [NoProcessWideThrottleTest] plus
 
 from __future__ import annotations
 
-import annotationlib
 import collections
 import contextlib
 import functools
@@ -227,6 +226,22 @@ _NAMES_LOGGER = re.compile(r"\bLogger\b")
 
 # This package's own logger names, which is how much of the process-wide
 # logger registry counts as its import scope. See [NoProcessWideThrottleTest].
+# `annotationlib` is 3.14, and this project supports 3.11 (`requires-python`).
+# Below 3.14 there is no lazy evaluation to defeat: annotations are evaluated at
+# definition time, so a module holding an unquoted `if TYPE_CHECKING` name would
+# raise on *import* — meaning no module this walk can reach carries one, and
+# reading `__annotations__` directly is safe there. `Format.STRING` is therefore
+# an upgrade for one interpreter, not the only way to read an annotation.
+_read_annotations: Callable[[object], dict[str, object]] | None = None
+_STRING_SIGNATURE: dict[str, object] = {}
+if sys.version_info >= (3, 14):
+    import annotationlib
+
+    _read_annotations = functools.partial(
+        annotationlib.get_annotations, format=annotationlib.Format.STRING
+    )
+    _STRING_SIGNATURE = {"annotation_format": annotationlib.Format.STRING}
+
 _PACKAGE = c64cast.__name__
 _PACKAGE_PREFIX = f"{_PACKAGE}."
 
@@ -247,11 +262,30 @@ def _annotations_of(target: object) -> dict[str, str]:
     taking the check down at discovery rather than a factory quietly dropped.
     `Format.STRING` answers with what was written and evaluates nothing — and
     so does the `annotation_format` that [ThrottleFactoryTest._arguments_for]
-    hands `inspect.signature`, which resolves annotations of its own.
+    hands `inspect.signature`, which resolves annotations of its own. Below
+    3.14 there is no such access to be unsafe, for the reason
+    [_read_annotations] gives, so the direct read is the fallback there.
     """
     with contextlib.suppress(Exception):
-        return dict(annotationlib.get_annotations(target, format=annotationlib.Format.STRING))
+        if _read_annotations is not None:
+            return {name: str(value) for name, value in _read_annotations(target).items()}
+        written = getattr(target, "__annotations__", {})
+        return {name: _as_written(value) for name, value in written.items()}
     return {}
+
+
+def _as_written(value: object) -> str:
+    """One annotation as text, whatever the interpreter handed back.
+
+    A pre-3.14 `__annotations__` holds strings in a module with
+    `from __future__ import annotations` and evaluated objects in one without,
+    and [_is_logger] and the two name patterns match the written form either
+    way — `Logger` reads out of `<class 'logging.Logger'>` as readily as out of
+    `"logging.Logger"`. `repr` rather than nothing for the objects that carry no
+    `__name__`, such as `str | None`."""
+    if isinstance(value, str):
+        return value
+    return getattr(value, "__name__", None) or repr(value)
 
 
 def _annotated_target(
@@ -633,7 +667,7 @@ class ThrottleFactoryTest(unittest.TestCase):
         skipped every partially-applied factory.
         """
         try:
-            # `annotation_format` is not decoration: `inspect.signature`
+            # On 3.14 `annotation_format` is not decoration: `inspect.signature`
             # resolves annotations too, and its default asks for values — so
             # under PEP 649 reading the signature of a factory in one of the
             # 14 modules without `from __future__ import annotations` raised
@@ -643,9 +677,9 @@ class ThrottleFactoryTest(unittest.TestCase):
             signature = inspect.signature(
                 factory,
                 follow_wrapped=follow_wrapped,
-                # pyright is pinned to 3.11 stubs (pyproject), which predate
-                # this 3.14 parameter; the runtime requires 3.14.
-                annotation_format=annotationlib.Format.STRING,  # pyright: ignore[reportCallIssue]
+                # Empty below 3.14, where the parameter does not exist and
+                # nothing needs it — see [_read_annotations].
+                **_STRING_SIGNATURE,  # pyright: ignore[reportArgumentType]
             )
         except Exception:  # noqa: BLE001 - a signature we cannot read we do not call
             # Wider than the two documented raises on purpose: a callable whose
