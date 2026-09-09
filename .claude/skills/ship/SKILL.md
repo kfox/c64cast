@@ -161,11 +161,12 @@ Then work the loop:
   commits the way step 3 does, as you make it. They are commits on the branch,
   the gate counts them, and leaving them to the end is the batching step 3
   forbids, done at the point where the branch is closest to shipping. This is
-  **not** the loop's own regression pass over the fixes
-  (`references/convergence-loop.md`, Phase 9): that one asks whether a fix
-  broke something or missed the finding, and it records nothing the gate can
-  see. Both are required, and running the loop's pass instead of this one
-  leaves `gh pr create` blocked in step 5.
+  **not** the loop's own regression pass over the fixes — Phase 9 of the
+  `adverse-review` skill's own `references/convergence-loop.md`, which asks
+  whether a fix broke something or missed its finding, is recommended rather
+  than required there, and records nothing this gate can see. The step-3
+  review is the required one, and running the loop's pass in its place leaves
+  `gh pr create` blocked in step 5.
 - **Record a decision for every finding, not only the blocking ones —
   including the ones you decline.** The ledger is what stops the next pass
   from re-litigating them, whether the finding was blocking or advisory; a
