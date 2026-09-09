@@ -125,12 +125,20 @@ def poll_pending(
     The bounded, stop-aware stand-in for mido's ``iter_pending()`` in a reader
     loop. Both bounds are load-bearing rather than tuning knobs — see
     :data:`MAX_MSGS_PER_DRAIN` for the count and :data:`MAX_DRAIN_WORK_S` for
-    the work. The clock is read between messages, i.e. after the consumer has
+    the work. The *clock* is read between messages, i.e. after the consumer has
     processed the previous one, and never after a ``poll()`` that already took a
-    message off the queue, so releasing the pass drops nothing. Between
+    message off the queue, so releasing on the budget drops nothing. Between
     messages means after the first, so **a pass never gates the message it
     opens with**, and a consumer slower than the whole budget still makes
     progress rather than spinning.
+
+    The ``stop`` re-check is the one release that does drop, and deliberately:
+    it sits *after* the ``poll()``, so a pass ending on ``stop`` discards the
+    message it had just taken. That is the teardown path — `PollThread`'s
+    bounded join is what is waiting on it — and losing one frame of register
+    writes to a scene that is going away beats draining a port whose owner has
+    stopped reading. `test_stops_mid_pass_once_the_stop_event_is_set` pins both
+    counts, the polled and the yielded.
 
     Both bounds accept ``None``, which is not "unbounded": it selects
     :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)
@@ -140,11 +148,13 @@ def poll_pending(
 
     A zero is honored rather than read as absent, but the two bounds do not
     answer it alike, and only ``limit=0`` hands out nothing whatever the port
-    holds. ``budget_s=0`` yields *at most* one message: one whenever anything
-    is waiting, and none on an idle port or an already-set ``stop``, where the
-    ``poll()`` ends the pass before the yield. It is one rather than none
-    because a pass never gates the message it opens with, which the paragraph
-    on the clock above states and
+    holds. ``budget_s=0`` yields *at most* one message: one when something is
+    waiting **and** ``stop`` is clear, and none otherwise — on an idle port,
+    where the ``poll()`` returns ``None`` before the yield, or under an
+    already-set ``stop``, where the poll instead succeeds and the message it
+    took is discarded, as the paragraph above says. It is one rather than none
+    because a pass never gates the message it opens with, which that same
+    paragraph states and
     `test_a_pass_always_hands_out_at_least_one_message` pins. That one message
     reaches the consumer, which on these two readers is a real SID register
     write or ASID frame, so a caller wanting a pass that cannot retire anything

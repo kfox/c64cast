@@ -117,6 +117,25 @@ class PollPendingTest(unittest.TestCase):
         port = self._port(_midi.MAX_MSGS_PER_DRAIN * 10, stop=stop, stop_after=3)
         self.assertEqual(len(list(_midi.poll_pending(port, stop))), 2)
 
+        # Three polled, two handed out: the `stop` re-check sits *after* the
+        # poll, so the message that tripped it is off the port's queue and
+        # never reaches a consumer. That asymmetry is the one release that
+        # drops — the budget check is deliberately before the poll so it
+        # cannot — and asserting only the yield count left it unpinned while
+        # two paragraphs of the docstring said a release drops nothing.
+        self.assertEqual(port.served["served"], 3)
+
+    def test_a_pass_entered_with_stop_already_set_drops_the_message_it_polls(self):
+        # The limit case of the above, and the one the zero-bound paragraph
+        # describes: nothing is yielded, but the pass is not a no-op — it polls
+        # once and discards. A caller cannot treat a stopped pass as having left
+        # the queue untouched.
+        stop = threading.Event()
+        stop.set()
+        port = self._port(3)
+        self.assertEqual(list(_midi.poll_pending(port, stop)), [])
+        self.assertEqual(port.served["served"], 1)
+
     def test_an_explicit_limit_overrides_the_default(self):
         stop = threading.Event()
         port = self._port(50)
