@@ -48,7 +48,7 @@ from typing import Final
 
 import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work from any cwd)
 
-from c64cast.hw import vdc_rom
+from c64cast.hw import vdc, vdc_rom
 from c64cast.hw.teensyrom_dma import (
     DEFAULT_BAUD,
     DEFAULT_TCP_PORT,
@@ -118,6 +118,17 @@ class Tally:
                 self.cleared[bit] += 1
             else:
                 self.set[bit] += 1
+
+
+def blank_screen(client: TRClient) -> None:
+    """Leave the 80-column display black.
+
+    Quiescing programs the VDC for a bitmap it never draws into, and a reset
+    lands in the 40-column menu, which never touches the VDC again — so without
+    this the RGBI output keeps showing whatever the run left behind."""
+    port = vdc.VdcPorthole(client.write_segment, client.read_segment)
+    port.write_reg(vdc.R.H_SCROLL_CTRL, vdc.H_SCROLL_BITMAP_BIT | vdc.H_SCROLL_NEUTRAL)
+    port.write_reg(vdc.R.FG_BG_COLOR, 0x00)
 
 
 def connect(*, tcp: str | None, serial: str | None) -> TRClient:
@@ -325,6 +336,8 @@ def main() -> int:
         return 1
     finally:
         if not args.no_reset_exit:
+            with contextlib.suppress(OSError, TRError):
+                blank_screen(client)
             print("\nresetting ...")
             with contextlib.suppress(OSError, TRError):
                 client.reset()
