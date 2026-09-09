@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 from c64cast.scenes.scenes import (
     LauncherScene,
     SourceScene,
+    VideoScene,
     WebcamScene,
     run_teardown_steps,
 )
@@ -137,3 +138,25 @@ class SceneTeardownTests(unittest.TestCase):
             with self.assertLogs(_SCENES_LOG, level="ERROR"):
                 scene.teardown()
         self.assertTrue(api.reset.called, "a launched .crt stays active into the next scene")
+
+    def test_a_failing_border_restore_does_not_starve_the_video_guarantees(self):
+        # The most-used scene type, and the first thing after the self-guarding
+        # base teardown is a $D020 write over the link -- so it fails like any
+        # other DMA op, and used to take the three guarantees behind it down.
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = os.path.join(tmp, "clip.mp4")
+            with open(clip, "wb") as f:
+                f.write(b"\x00" * 16)
+            audio = MagicMock()
+            scene = VideoScene(MagicMock(), audio, MagicMock(), clip)
+            source = MagicMock()
+            scene.source = source
+            scene._last_osd_shown = "12:00"
+            scene.transport.set_record_border = MagicMock(  # type: ignore[method-assign]
+                side_effect=RuntimeError("DMA link down")
+            )
+            with self.assertLogs(_SCENES_LOG, level="ERROR"):
+                scene.teardown()
+        self.assertTrue(source.close.called, "the PyAV handle leaks for the rest of the run")
+        self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
+        self.assertIsNone(scene._last_osd_shown, "lap 2 suppresses its first OSD repaint")

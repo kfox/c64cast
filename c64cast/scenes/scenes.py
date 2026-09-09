@@ -31,6 +31,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import cv2
@@ -1894,31 +1895,46 @@ class VideoScene(MediaFileMixin, Scene):
             )
 
     def teardown(self) -> None:
-        super().teardown()
-        # Idempotent no-op if a loop was never armed — restores the border
-        # if the scene ends (or is interrupted) mid-record so a red border
-        # never lingers into the next scene. See VideoTransportControls.
-        self.transport.set_record_border(False)
-        if self._av_lag_count:
-            wall = time.time() - self.wall_start_time
-            clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
-            log.info(
-                "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
-                "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
-                self._av_lag_min * 1000,
-                (self._av_lag_sum / self._av_lag_count) * 1000,
-                self._av_lag_max * 1000,
-                int(self._av_buf_min),
-                clock_wall,
-                self._av_lag_count,
-            )
-        if self.source:
-            self.source.close()
-            self.source = None
+        src, self.source = self.source, None
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            # Idempotent no-op if a loop was never armed — restores the border
+            # if the scene ends (or is interrupted) mid-record so a red border
+            # never lingers into the next scene. See VideoTransportControls.
+            ("record border restore", partial(self.transport.set_record_border, False)),
+        ]
+        if src is not None:
+            steps.append(("source close", src.close))
         if self.audio:
-            self.audio.stop()
+            steps.append(("audio stop", self.audio.stop))
+        steps += [
+            ("identity-skip cache reset", self._reset_identity_skip_cache),
+            # Diagnostics last: a summary that fails must not cost a guarantee.
+            ("A/V lag summary", self._log_av_lag_summary),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _reset_identity_skip_cache(self) -> None:
+        # Nothing resets these on setup(), so a stale value reaches lap 2 and
+        # suppresses its first OSD repaint.
         self._last_rendered_img = None
         self._last_osd_shown = None
+
+    def _log_av_lag_summary(self) -> None:
+        if not self._av_lag_count:
+            return
+        wall = time.time() - self.wall_start_time
+        clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
+        log.info(
+            "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
+            "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
+            self._av_lag_min * 1000,
+            (self._av_lag_sum / self._av_lag_count) * 1000,
+            self._av_lag_max * 1000,
+            int(self._av_buf_min),
+            clock_wall,
+            self._av_lag_count,
+        )
 
 
 class LauncherScene(MediaFileMixin, Scene):
