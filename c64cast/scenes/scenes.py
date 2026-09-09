@@ -1903,13 +1903,8 @@ class VideoScene(MediaFileMixin, Scene):
             # never lingers into the next scene. See VideoTransportControls.
             ("record border restore", partial(self.transport.set_record_border, False)),
         ]
-        # Ahead of the audio stop, which zeroes the position the summary's
-        # clock/wall gauge divides: `AudioStreamer.stop` clears its pushed-sample
-        # count and the sampler's `position_seconds` short-circuits to 0.0 once
-        # stopped, so a summary read afterwards reports clock/wall = 0.0000 for
-        # every audible video scene. `run_teardown_steps` is what makes the
-        # position free to choose -- a failing step starves nothing wherever it
-        # sits -- so it sits where the reading is still valid.
+        # Ahead of the audio stop: that zeroes `position_seconds()`, which is
+        # what this summary's clock/wall gauge divides.
         steps.append(("A/V lag summary", self._log_av_lag_summary))
         if src is not None:
             steps.append(("source close", src.close))

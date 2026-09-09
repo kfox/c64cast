@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -192,6 +193,13 @@ class SceneTeardownTests(unittest.TestCase):
             scene._av_buf_min = 3
             with self.assertLogs(_SCENES_LOG, level="INFO") as caught:
                 scene.teardown()
-        summaries = [line for line in caught.output if "A/V lag summary" in line]
+        # Match the emitted prefix, not the step label: the runner's own
+        # failure line is `teardown step 'A/V lag summary' failed`, so a filter
+        # on the label alone stays green when the summary raises and the gauge
+        # is gone entirely.
+        summaries = [line for line in caught.output if "video A/V lag summary:" in line]
         self.assertEqual(len(summaries), 1, caught.output)
-        self.assertNotIn("clock/wall=0.0000", summaries[0])
+        gauge = re.search(r"clock/wall=([0-9.]+)", summaries[0])
+        self.assertIsNotNone(gauge, summaries[0])
+        assert gauge is not None  # for the type checker
+        self.assertGreater(float(gauge.group(1)), 0.0, summaries[0])
