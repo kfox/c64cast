@@ -26,7 +26,8 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from c64cast._wire_log import LogThrottle
+from _fakes import frozen_throttles
+
 from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
 from c64cast.control.midi_control import (
@@ -599,17 +600,6 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
 
     N_MESSAGES = 20
 
-    @staticmethod
-    def _frozen_throttles():
-        """Build listeners whose throttles read a frozen clock: a one-second
-        stall on a loaded machine must not be able to turn "reported once" into
-        "reported twice" and flake the count."""
-        return mock.patch.object(
-            midi_control,
-            "LogThrottle",
-            lambda logger, **kw: LogThrottle(logger, monotonic=lambda: 0.0, **kw),
-        )
-
     def _run_reader(self, listener, reader, port_attr, batch) -> None:
         setattr(listener, port_attr, _ScriptedPort(batch))
         stop = threading.Event()
@@ -620,7 +610,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         t.join(timeout=1.0)
 
     def test_a_repeating_dispatch_failure_reports_once_not_once_per_message(self):
-        with self._frozen_throttles():
+        with frozen_throttles(midi_control):
             listener = MidiControlListener(
                 {"system": _fake_playlist("system")},
                 [{"type": "note", "number": 36, "action": "skip"}],
@@ -635,7 +625,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         self.assertIsNotNone(cm.records[0].exc_info)
 
     def test_a_repeating_clock_feed_failure_reports_once_not_once_per_message(self):
-        with self._frozen_throttles():
+        with frozen_throttles(midi_control):
             listener = MidiControlListener({"system": _fake_playlist("system")}, [])
         batch = [mido.Message("clock")] * self.N_MESSAGES
         with (
@@ -652,7 +642,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         pl = _fake_playlist("system")
         pl.skip_event = mock.MagicMock()
         pl.skip_event.set.side_effect = RuntimeError("boom")
-        with self._frozen_throttles():
+        with frozen_throttles(midi_control):
             listener = MidiControlListener(
                 {"system": pl}, [{"type": "note", "number": 36, "action": "skip"}]
             )

@@ -117,6 +117,15 @@ class LogThrottle:
             self._reported_at = now
             return stands_for
 
+    @property
+    def logger(self) -> logging.Logger:
+        """The logger this site's records go to. Exposed so a test standing a
+        throttle in for another one does not have to guess it from a module
+        name — a logger whose name is not its module's would send the record
+        somewhere the test's `assertLogs` is not watching, and the failure
+        would read as the gate's."""
+        return self._log
+
     def warn(self, msg: str, *args: object) -> None:
         """Record one occurrence of this site's condition, emitting at most one
         log record per :data:`THROTTLE_INTERVAL_S`.

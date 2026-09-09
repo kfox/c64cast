@@ -448,28 +448,47 @@ def bare_waveform_scene(**attrs):
     return scene
 
 
-@contextlib.contextmanager
-def frozen_throttle(module, name: str) -> Iterator[None]:
-    """Swap a module's `LogThrottle` for one whose clock never advances.
+def _frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
+    """A `LogThrottle` whose clock never advances, so its report window never
+    closes and it emits exactly one record for the life of the test.
 
     A throttle test loops hundreds of times and asserts *exactly one* record,
-    which makes THROTTLE_INTERVAL_S part of the assertion: if the loop ever
-    outlasts the window, a second record goes out and the test fails for a
-    reason that has nothing to do with the gate under test. The margin is wide
-    today — 960 `pack_slot` calls measure 3 ms against a 1 s window — but it is
-    a margin, and the tests read as though they were about the gate. Frozen,
-    the window never closes and they are.
+    which quietly makes THROTTLE_INTERVAL_S part of the assertion: outlast the
+    window and a second record goes out, on a gate that is working. The margin
+    is wide today — 960 `pack_slot` calls measure 3 ms against a 1 s window —
+    but it is a margin, and the tests read as though they were about the gate.
 
-    The throttle is replaced rather than reconfigured because a live one is
-    module state a call site reads by name at call time, and a test that
-    reaches into `_reported_at` would be asserting against the implementation
-    of the thing it is testing.
+    Signature-compatible with `LogThrottle` itself so it can stand in for the
+    class; see [frozen_throttles].
     """
-    with mock.patch.object(
-        module,
-        name,
-        LogThrottle(logging.getLogger(module.__name__), monotonic=lambda: 0.0),
-    ):
+    return LogThrottle(logger, monotonic=lambda: 0.0, **kwargs)
+
+
+@contextlib.contextmanager
+def frozen_throttle(module, name: str) -> Iterator[None]:
+    """Freeze one module-level `LogThrottle`, named by attribute.
+
+    The instance is replaced rather than reconfigured because a call site reads
+    it off the module by name at call time, and a test that reached into
+    `_reported_at` would be asserting against the implementation of the thing
+    it is testing. Its `logger` is read off the throttle being stood in for
+    rather than guessed from `module.__name__`: a module whose logger name is
+    not its own would send the record somewhere the caller's `assertLogs` is
+    not watching, and that failure reads as the gate's.
+    """
+    with mock.patch.object(module, name, _frozen_throttle(getattr(module, name).logger)):
+        yield
+
+
+@contextlib.contextmanager
+def frozen_throttles(module) -> Iterator[None]:
+    """Freeze every `LogThrottle` a module builds while the block runs.
+
+    The companion to [frozen_throttle], for throttles that are per-instance
+    attributes rather than module state: there is no attribute to patch, so
+    what gets patched is the class the module constructs them with.
+    """
+    with mock.patch.object(module, "LogThrottle", _frozen_throttle):
         yield
 
 
