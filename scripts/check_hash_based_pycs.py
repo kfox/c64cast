@@ -150,26 +150,30 @@ def main(argv: list[str]) -> int:
     roots = argv[1:] or ["c64cast", "tests", "scripts"]
     stale, sources = scan(roots)
     empty = [root for root, n in sources.items() if not n]
+
+    # Both floors report, and neither returns early. They are independent
+    # facts, both known by the time the scan returns, and a mistyped root on a
+    # freshly cleaned tree hits both: returning on the first one showed the
+    # operator a typo, and only after they fixed it the 403 unarmed modules
+    # underneath. Two round trips for two problems already in hand.
     if empty:
         print(
             f"no Python sources under {', '.join(empty)} — nothing was checked there, "
             "so this is not a pass. Run `make mutation-check` from the repository root.",
             file=sys.stderr,
         )
-        return 1
-    if not stale:
-        return 0
-    print(
-        f"{len(stale)} module(s) are not armed for a mutation proof, so a same-second "
-        "mutation would run stale bytecode and report a false green. "
-        "Run `make mutation-ready`.",
-        file=sys.stderr,
-    )
-    for pyc, flags in stale[:10]:
-        print(f"  {pyc}: {describe(flags)}", file=sys.stderr)
-    if len(stale) > 10:
-        print(f"  ... and {len(stale) - 10} more", file=sys.stderr)
-    return 1
+    if stale:
+        print(
+            f"{len(stale)} module(s) are not armed for a mutation proof, so a same-second "
+            "mutation would run stale bytecode and report a false green. "
+            "Run `make mutation-ready`.",
+            file=sys.stderr,
+        )
+        for pyc, flags in stale[:10]:
+            print(f"  {pyc}: {describe(flags)}", file=sys.stderr)
+        if len(stale) > 10:
+            print(f"  ... and {len(stale) - 10} more", file=sys.stderr)
+    return 1 if empty or stale else 0
 
 
 if __name__ == "__main__":

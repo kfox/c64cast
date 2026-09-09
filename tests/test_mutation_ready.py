@@ -176,13 +176,29 @@ class HashBasedPycCheckTest(unittest.TestCase):
     def test_an_empty_scan_is_not_a_pass(self):
         # A wrong working directory or a renamed root would otherwise exit 0
         # silently, which is the failure this whole check exists to remove.
-        # (Absence of *bytecode* is a different matter and deliberately not an
-        # error — it cannot be told from "the module was never imported".)
+        # This is the *source* floor specifically: absence of bytecode is a
+        # different fact, and it has its own floor and its own tests. It used
+        # to say here that absence was deliberately not an error because it
+        # could not be told from "the module was never imported" — which is
+        # false (compileall compiles every source whether imported or not),
+        # and that sentence, in this repository, is what licensed deleting the
+        # bytecode floor once already.
         missing = str(self.root / "nope")
         self.assertEqual(check.scan([missing]), ([], {missing: 0}))
         code, err = self._stderr_of_main(missing)
         self.assertEqual(code, 1)
         self.assertIn("nothing was checked", err)
+
+    def test_both_floors_report_in_one_pass(self):
+        # They are independent facts, both known when the scan returns, and a
+        # mistyped root on a freshly cleaned tree hits both. Returning on the
+        # first showed the operator a typo and hid the unarmed tree underneath
+        # it until they had fixed the typo and run again — two round trips for
+        # two problems already in hand.
+        code, err = self._stderr_of_main(str(self.root), str(self.root / "nope"))
+        self.assertEqual(code, 1)
+        self.assertIn("no Python sources", err)
+        self.assertIn("has no compiled bytecode", err)
 
     def test_an_armed_tree_exits_zero(self):
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)

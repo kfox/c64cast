@@ -221,7 +221,7 @@ class RunDeadline(NamedTuple):
     Deriving the answer where the `min` is taken narrows both to one place.
     There is one thing to pass, `from_budget` is settled by the comparison
     `min` itself makes rather than reconstructed later, and every production
-    caller goes through :meth:`HostEmuBudget.run_deadline` or :meth:`own_cap`,
+    caller goes through :meth:`HostEmuBudget.run_deadline` or :meth:`RunDeadline.own_cap`,
     which cannot produce a mismatched triple. What it does not do is make one
     unrepresentable: this is a plain `NamedTuple`, so its three fields can
     still be passed independently — the tests build deliberately mismatched

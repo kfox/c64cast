@@ -133,8 +133,15 @@ def poll_pending(
     :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)
     respectively. They read as parameter defaults would, except that the value
     is picked when the pass runs — see the comment below. A caller wanting no
-    bound at all passes a large number, and one wanting none of a bound passes
-    ``0``, which is honored rather than read as absent.
+    bound at all passes a large number.
+
+    A zero is honored rather than read as absent, but the two bounds do not
+    answer it alike, and only ``limit=0`` hands out nothing. ``budget_s=0``
+    yields exactly one message, because a pass never gates its first — see the
+    paragraph above, and `test_a_pass_always_hands_out_at_least_one_message`.
+    That one message reaches the consumer, which on these two readers is a real
+    SID register write or ASID frame, so a caller wanting a pass that retires
+    nothing wants ``limit=0``.
 
     The ``budget_s`` default is sized for a microsecond-per-message consumer; a
     caller whose consumer blocks on the link must pass its own or it will retire
@@ -142,10 +149,10 @@ def poll_pending(
     belongs to the caller."""
     # Read here, not bound as the parameters' defaults, so that rebinding
     # either constant is not a silent no-op — this module's one injection idiom
-    # is rebinding, as the next statement does for `_monotonic`. Full rationale
-    # in docs/architecture/config.md under `_midi.py`. Note that rebinding
-    # reaches only the callers that take the default (AsidScene): MidiScene's
-    # reader always passes its own `budget_s`.
+    # is rebinding, as the deadline below does for `_monotonic`. Full rationale
+    # in docs/architecture/config.md under `_midi.py`, which also says which
+    # reader a rebind of `MAX_DRAIN_WORK_S` reaches and which lever moves the
+    # other one.
     if limit is None:
         limit = MAX_MSGS_PER_DRAIN
     if budget_s is None:
