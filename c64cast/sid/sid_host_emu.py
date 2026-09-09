@@ -1404,21 +1404,42 @@ def analyze_placement(
       * both views widen to the union of everything the tune was observed to
         touch at all, INIT writes included. Normally the display view excludes
         INIT-only scratch because the bitmap is painted after INIT and may
-        cover it; giving that concession up is the cheapest real narrowing
-        available, and it uses observed data rather than guesswork.
+        cover it; giving that concession up uses observed data rather than
+        guesswork.
       * `play_bank` is dropped to None. Deriving $36 (BASIC out) from a prefix
         means reading an intersection that the missing tail could have created
         or destroyed either way; None is the pre-existing, correct-by-default
         address heuristic.
 
-    If the widened bitmaps leave no room, the callers' existing ValueError
-    paths abort the scene and the playlist advances — which is the fail-closed
-    end of this, and it is reached by the same code that already handles "no
-    free VIC bank", not by a second refusal written next to it.
+    **The widening does not close the class, and this is the load-bearing
+    caveat.** It is near-inert for the cause that is common. Both runs execute
+    the same 6502 code with the same tick count, so an undocumented opcode
+    truncates BOTH at the identical instruction: the union adds only the
+    read-versus-write difference between two samples that stopped in the same
+    place. Measured on a PSID whose PLAY is
+    ``STA $2000 / LAX $3000 / STA $4000 / RTS`` — both samples incomplete, the
+    two differing at **5** addresses, and ``avoid[$4000] == 0`` for a write
+    PLAY makes on every frame. A tune with a LAX in PLAY can still get the
+    player MC placed in RAM its untraced tail writes, which is the exact
+    regression the footprint exists to prevent. What the widening genuinely
+    buys is the *nondeterministic* truncation cause — the wall-clock deadline,
+    where the two runs can stop at different points and the union really does
+    carry information neither sample has alone.
 
-    Refusing every untrusted tune outright was the other option and is the
-    wrong one: an undocumented opcode anywhere in PLAY makes a sample a prefix,
-    and that is a normal hand-rolled-player idiom — see play_preflight_failure.
+    So the trust flag is not what protects the placement in the common case.
+    What does is api._find_free_layout: it excludes the payload extent and
+    prefers the LARGEST free hole, which is the same margin that stands between
+    a finite-but-complete sample and an unreached write pattern. A trusted
+    sample is a sample too. And if the widened bitmaps leave no room at all,
+    the callers' existing ValueError paths abort the scene and the playlist
+    advances — the fail-closed end, reached by the code that already handles
+    "no free VIC bank" rather than a second refusal written beside it.
+
+    Refusing every untrusted tune outright is the alternative, and choosing it
+    is a product decision rather than a correctness one: an undocumented opcode
+    anywhere in PLAY makes a sample a prefix, that is a normal hand-rolled-player
+    idiom, and refusing on it takes a large share of HVSC off the air — see
+    play_preflight_failure, which had to be talked out of the same gate.
     """
     write_sample = ram_write_footprint(sid_bytes, song=song, budget=budget)
     access_sample = ram_play_access_footprint(sid_bytes, song=song, budget=budget)
@@ -1439,4 +1460,8 @@ def analyze_placement(
         what,
         ANALYSIS_BUDGET_S,
     )
-    return PlacementFootprints(avoid=union, display=union, play_bank=None, trusted=False)
+    # Two bitmaps, not one shared object: the type advertises `avoid` and
+    # `display` as independent views and both callers mark reservations into
+    # them. They copy before mutating today, so nothing breaks — but a shared
+    # bytearray means the next in-place mark on one silently rewrites the other.
+    return PlacementFootprints(avoid=union, display=bytearray(union), play_bank=None, trusted=False)

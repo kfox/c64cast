@@ -790,6 +790,66 @@ class AnalyzePlacementTest(unittest.TestCase):
         self.assertIsNone(
             placement.play_bank, "a $01 bank derived from a prefix is a guess, not a finding"
         )
+        # assertFalse on the identity, not assertIsNot: the latter's failure
+        # message renders both 64 KB bitmaps into the test output.
+        self.assertFalse(
+            placement.avoid is placement.display,
+            "equal is not identical: an in-place mark on one must not rewrite the other",
+        )
+
+    def test_the_widening_says_nothing_about_the_tail_an_opcode_cut_off(self):
+        """The limit, pinned so it cannot be re-claimed as a safety property.
+
+        Both footprint runs execute the same 6502 code for the same tick count,
+        so an undocumented opcode truncates both at the identical instruction.
+        The union therefore carries only the read-versus-write difference
+        between two samples that stopped in the same place — it says nothing
+        about the writes past the cut. What actually keeps the player MC out of
+        those addresses is api._find_free_layout's payload exclusion and
+        largest-hole preference, which protect a trusted finite sample just the
+        same. See analyze_placement's docstring.
+        """
+        from c64cast.sid.sid_host_emu import (
+            HostEmuBudget,
+            analyze_placement,
+            ram_play_access_footprint,
+            ram_write_footprint,
+        )
+
+        # STA $2000 / LAX $3000 / STA $4000 / RTS: $4000 is written on every
+        # real PLAY, and sits past an opcode py65 will not execute.
+        play = bytes(
+            [
+                0xA9,
+                0xAA,  # LDA #$AA
+                0x8D,
+                0x00,
+                0x20,  # STA $2000  -- traced
+                0xAF,
+                0x00,
+                0x30,  # LAX $3000  -- undocumented; the pass ends here
+                0x8D,
+                0x00,
+                0x40,  # STA $4000  -- the untraced tail
+                0x60,  # RTS
+            ]
+        )
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play)
+        write = ram_write_footprint(sid, song=1)
+        access = ram_play_access_footprint(sid, song=1)
+        self.assertFalse(write.complete)
+        self.assertFalse(access.complete)
+        self.assertTrue(write.ram[0x2000], "the write before the opcode is traced")
+        self.assertFalse(write.ram[0x4000], "the write after it is not, in either sample")
+        self.assertFalse(access.ram[0x4000])
+
+        with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING"):
+            placement = analyze_placement(sid, song=1, budget=HostEmuBudget(), what="unit test")
+        self.assertFalse(placement.trusted)
+        self.assertFalse(
+            placement.avoid[0x4000],
+            "the union cannot widen onto a write neither sample reached",
+        )
 
 
 class PreflightBudgetTest(unittest.TestCase):
