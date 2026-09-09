@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import unittest
 from typing import cast
 from unittest.mock import MagicMock
@@ -160,3 +161,37 @@ class SceneTeardownTests(unittest.TestCase):
         self.assertTrue(source.close.called, "the PyAV handle leaks for the rest of the run")
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
         self.assertIsNone(scene._last_osd_shown, "lap 2 suppresses its first OSD repaint")
+
+    def test_the_av_lag_summary_reads_the_clock_before_the_audio_stops(self):
+        """The summary's `clock/wall` gauge divides by a clock the audio stop
+        zeroes.
+
+        `AudioStreamer.stop()` clears its pushed-sample count and
+        `UltimateAudioSampler.position_seconds` short-circuits to 0.0 once
+        stopped, so a summary logged *after* the audio-stop step reports
+        `clock/wall=0.0000` for every audible video scene. That reading is the
+        only one at `-v` (the live line is DEBUG), and
+        `scripts/diags/mhires_tempo_clock_ab.py` parses it as `clock_final`, so
+        a constant zero silently breaks the tempo calibration instrument.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = os.path.join(tmp, "clip.mp4")
+            with open(clip, "wb") as f:
+                f.write(b"\x00" * 16)
+            audio = MagicMock()
+            audio.sample_rate = 8000
+            audio.position_seconds.return_value = 12.0
+            # What the real streamer does on stop: the position collapses.
+            audio.stop.side_effect = lambda: setattr(audio.position_seconds, "return_value", 0.0)
+            scene = VideoScene(MagicMock(), audio, MagicMock(), clip)
+            scene.wall_start_time = time.time() - 12.0
+            scene._av_lag_count = 1
+            scene._av_lag_min = 0.001
+            scene._av_lag_max = 0.002
+            scene._av_lag_sum = 0.001
+            scene._av_buf_min = 3
+            with self.assertLogs(_SCENES_LOG, level="INFO") as caught:
+                scene.teardown()
+        summaries = [line for line in caught.output if "A/V lag summary" in line]
+        self.assertEqual(len(summaries), 1, caught.output)
+        self.assertNotIn("clock/wall=0.0000", summaries[0])

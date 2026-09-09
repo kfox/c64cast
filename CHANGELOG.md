@@ -106,11 +106,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   the next scene a machine still holding a sounding SID, a hooked IRQ, or a VIC
   left on the bitmap layout the scope had been using. Every guarantee is now its
   own guarded step: a step that fails is logged with its name and the remaining
-  restores still run. `AsidScene` also closes its MIDI port before the restores
+  restores still run. The four non-SID scenes with the same shape are guarded
+  too. `AsidScene` also closes its MIDI port before the restores
   rather than after them, so a reader thread abandoned by teardown's bounded
   join cannot read one more speed message and put CIA #1 back on the stream's
-  rate behind them. The three non-SID scenes with the same shape are guarded
-  too: the `webcam` and generative scenes could hand the next scene a
+  rate behind them: the `webcam` and generative scenes could hand the next scene a
   still-streaming audio pump or a leaked capture handle when the live
   `force_palette` worker failed to stop, the `video` scene could do both (plus
   suppress the next lap's first OSD repaint) when the record-border restore hit
