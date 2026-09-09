@@ -29,8 +29,11 @@ import logging
 import os
 import random
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from c64cast._teardown import run_teardown_steps
 
 if TYPE_CHECKING:
     from c64cast.app.config import AudioCfg, AudioFeaturesCfg
@@ -196,10 +199,14 @@ class MicAudioSource:
         # Unhook the sink before the streamer stops, so no callback can push
         # into a tap whose analyzer thread is already going away.
         self._audio.analysis_sink = None
-        if self._features is not None:
-            self._features.stop()
-            self._features = None
-        self._audio.stop()
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if features is not None:
+            # A PollThread join, which `_pollthread` documents as able to
+            # raise RuntimeError.
+            steps.append(("feature stream stop", features.stop))
+        steps.append(("audio stop", self._audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         return None
@@ -437,13 +444,15 @@ class AudioFileSource:
         # stops (so no callback pushes into a dying tap), then stop everything.
         self._stop.set()
         self._audio.analysis_sink = None
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-        if self._features is not None:
-            self._features.stop()
-            self._features = None
-        self._audio.stop()
+        thread, self._thread = self._thread, None
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if thread is not None:
+            steps.append(("decode thread join", partial(thread.join, 2.0)))
+        if features is not None:
+            steps.append(("feature stream stop", features.stop))
+        steps.append(("audio stop", self._audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         # The DAC consumer clock — exposed for the protocol; the scene ends on its
@@ -767,28 +776,35 @@ class SidFileAudioSource:
         restore the SID config — the restore may re-point a U2+ emulated SID at
         its home base, and a side moved home mid-note keeps ringing where no
         write can ever reach it (a machine reset does not clear the emulation's
-        voice state — HW-verified). Finally suppress the cursor blink — the
-        player MC's `JMP *` spin survives teardown, so a following char scene
-        would otherwise blink the cursor cell (HW-verified in
-        WaveformScene.teardown). No VIC-bank restore: a SID source never moved
-        the bank (the display owns bank 0 throughout)."""
+        voice state — HW-verified). No VIC-bank restore: a SID source never
+        moved the bank (the display owns bank 0 throughout), and nothing here
+        suppresses the cursor blink: `suppress_cursor_blink()` was removed in
+        #232 because poking BLNSW never held — the editor's input-wait loop
+        overwrites that byte microseconds after the DMA lands — and the BASIC
+        clear-and-loop PRG is what actually keeps the cursor off."""
         from c64cast.hw.c64 import SID
         from c64cast.sid.sidemu import SID_REG_COUNT
 
-        if self._features is not None:
-            self._features.stop()  # pure host-side; no U64 I/O
-            self._features = None
-        try:
-            self._api.restore_kernal_irq_vector()
-            self._api.flush()
-            for base in self.header.sid_addresses if self.header is not None else ():
-                if base != SID.BASE:
-                    self._api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
-            self._api.silence_sid()
-            self._api.flush()
-        except Exception:
-            log.exception("sid audio: teardown silence/restore failed")
-        self._sid_session.restore()
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if features is not None:
+            steps.append(("feature stream stop", features.stop))  # host-side; no U64 I/O
+        zeros = bytes(SID_REG_COUNT)
+        steps += [
+            ("kernal IRQ vector restore", self._api.restore_kernal_irq_vector),
+            ("flush vector restore", self._api.flush),
+        ]
+        steps += [
+            (f"silence SID at ${base:04X}", partial(self._api.write_regs, f"{base:04X}", *zeros))
+            for base in (self.header.sid_addresses if self.header is not None else ())
+            if base != SID.BASE
+        ]
+        steps += [
+            ("primary SID silence", self._api.silence_sid),
+            ("flush silence", self._api.flush),
+            ("SID address config restore", self._sid_session.restore),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         return None

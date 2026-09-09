@@ -54,8 +54,9 @@ from functools import partial
 
 from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
-from c64cast.scenes.scenes import Scene, run_teardown_steps
+from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from . import asid

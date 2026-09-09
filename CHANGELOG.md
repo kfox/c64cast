@@ -115,7 +115,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `force_palette` worker failed to stop, the `video` scene could do both (plus
   suppress the next lap's first OSD repaint) when the record-border restore hit
   a link error, and the `launcher` scene could leave a `.crt` cartridge active
-  when its input poller failed to join.
+  when its input poller failed to join. The three composable audio sources are
+  guarded on the same terms — the `mic`, `listen` and `file` sources could hand
+  the next scene a streaming pump when the analyzer's poll thread (or the decode
+  thread) refused to join, and the `sid` source wrapped the KERNAL-vector
+  restore and the chip silences in one `try`, so a REST hiccup on the vector
+  left every SID ringing until something else happened to write `$D418`.
 
 - **MIDI Program Change did nothing in the `midi` scene, though it is on by
   default.** `midi_program_change` defaults to `True` and the scene's dispatch

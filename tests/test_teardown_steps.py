@@ -3,11 +3,13 @@
 A scene's teardown steps are independent promises to the next scene, not a
 transaction. This module pins the property those scenes rely on: a step that
 raises does not starve the steps after it — for the runner itself, and for each
-`scenes.py` teardown built on it whose subject has no test module of its own.
+teardown built on it whose subject has no test module of its own (`scenes.py`'s
+four, plus the two live audio sources under `SourceScene`).
 
-The three SID scenes are covered where they live (`test_asid_scene.py`,
-`test_midi_scene.py`, `test_waveform.py`), because each has other reasons to
-build a scene.
+The subjects that do have one are covered where they live: the three SID scenes
+in `test_asid_scene.py`, `test_midi_scene.py` and `test_waveform.py`, and
+`SidFileAudioSource` in `test_audio_source_sid.py`, because each has other
+reasons to build its subject.
 """
 
 from __future__ import annotations
@@ -18,21 +20,28 @@ import re
 import tempfile
 import time
 import unittest
-from typing import cast
+import wave
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
+from c64cast._teardown import run_teardown_steps
+from c64cast.audio.audio_source import AudioFileSource, MicAudioSource
 from c64cast.scenes.scenes import (
     LauncherScene,
     SourceScene,
     VideoScene,
     WebcamScene,
-    run_teardown_steps,
 )
 from c64cast.video.rolling_palette import RollingForcePalette
+from c64cast.video.video import ensure_pyav
+
+if TYPE_CHECKING:
+    from c64cast.audio.audio_features import AudioFeatureStream
 
 log = logging.getLogger("c64cast.tests.teardown_steps")
 
 _SCENES_LOG = "c64cast.scenes.scenes"
+_SOURCES_LOG = "c64cast.audio.audio_source"
 
 
 class _WedgedPalette:
@@ -45,6 +54,22 @@ class _WedgedPalette:
 
 def _wedged_palette() -> RollingForcePalette:
     return cast(RollingForcePalette, _WedgedPalette())
+
+
+class _WedgedFeatures:
+    """An `AudioFeatureStream` whose `stop()` raises, as a real one can: it
+    joins a PollThread."""
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+        raise RuntimeError("analyzer poll wedged")
+
+
+def _wedged_features() -> AudioFeatureStream:
+    return cast("AudioFeatureStream", _WedgedFeatures())
 
 
 def _boom() -> None:
@@ -203,3 +228,43 @@ class SceneTeardownTests(unittest.TestCase):
         self.assertIsNotNone(gauge, summaries[0])
         assert gauge is not None  # for the type checker
         self.assertGreater(float(gauge.group(1)), 0.0, summaries[0])
+
+
+class AudioSourceTeardownTests(unittest.TestCase):
+    """The two live `audio_source.py` teardowns that sequenced independent
+    guarantees.
+
+    Both end in the audio stop, which is what keeps the next scene from
+    inheriting a streaming pump — and both put a thread join in front of it.
+    """
+
+    def test_a_failing_feature_stop_does_not_starve_the_mic_audio_stop(self):
+        audio = MagicMock()
+        source = MicAudioSource(audio, MagicMock())
+        source._features = _wedged_features()
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            source.teardown()
+        self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
+        self.assertIsNone(source._features, "a dead analyzer is still referenced")
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_a_failing_decode_join_does_not_starve_the_file_audio_stop(self):
+        # `Thread.join` is the first step here, and `_pollthread` documents it
+        # as able to raise RuntimeError on a thread that joins itself.
+        audio, features = MagicMock(), _WedgedFeatures()
+        with tempfile.TemporaryDirectory() as tmp:
+            tune = os.path.join(tmp, "tune.wav")
+            with wave.open(tune, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(8000)
+                w.writeframes(b"\x00\x00" * 800)
+            source = AudioFileSource(audio, tune)
+        thread = MagicMock()
+        thread.join.side_effect = RuntimeError("cannot join current thread")
+        source._thread = thread
+        source._features = cast("AudioFeatureStream", features)
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            source.teardown()
+        self.assertTrue(features.stopped, "the analyzer thread outlives the scene")
+        self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")

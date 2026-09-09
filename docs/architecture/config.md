@@ -25,11 +25,12 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`playlist_support.py` — playlist collaborators](#playlist_supportpy--playlist-collaborators)
 * [`profiler.py` — per-frame timing](#profilerpy--per-frame-timing)
 * [`recording_metadata.py` — per-scene SCENE_CONFIG_JSON logging](#recording_metadatapy--per-scene-scene_config_json-logging)
-* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_wire_log.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy-_redactpy-_wire_logpy)
+* [The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_wire_log.py`](#the-package-root-utilities--_pollthreadpy-_midipy-_native_iopy-_redactpy-_teardownpy-_wire_logpy)
   * [`_pollthread.py` — the background-loop idiom](#_pollthreadpy--the-background-loop-idiom)
   * [`_midi.py` — the guarded mido import](#_midipy--the-guarded-mido-import)
   * [`_redact.py` — keeping the console token off the durable log paths](#_redactpy--keeping-the-console-token-off-the-durable-log-paths)
   * [`_native_io.py` — fd-level stderr muting](#_native_iopy--fd-level-stderr-muting)
+  * [`_teardown.py` — a teardown's steps are independent guarantees](#_teardownpy--a-teardowns-steps-are-independent-guarantees)
   * [`_wire_log.py` — wire-triggered logging is O(1) per stream](#_wire_logpy--wire-triggered-logging-is-o1-per-stream)
 
 ---
@@ -408,9 +409,9 @@ The `source` block is scene-type-specific. For `video`, `config.build_scene` (se
 
 `extract_scene_configs(log_text)` pulls every `SCENE_CONFIG_JSON` payload back out of a `--log-file` run (formatter-agnostic — it searches for the marker substring, not a fixed line format), and `render_description(payload)` renders one entry as a human, paste-ready text block; both are pure functions so [scripts/scene_config_to_description.py](../../scripts/scene_config_to_description.py) is a thin argparse+file-I/O shell around them (default: render the last entry; `--all`/`--index N` for the rest).
 
-## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_wire_log.py`
+## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_wire_log.py`
 
-The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these five: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
+The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these six: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
 
 ### `_pollthread.py` — the background-loop idiom
 
@@ -439,6 +440,14 @@ The split — terminal keeps, everything durable or shared redacts — is why th
 Some native dependencies write diagnostics straight to file descriptor 2 — below Python's `logging`, `sys.stderr`, and any library verbosity flag — so an fd-level `dup2` redirect is the only thing that catches them. Three sites use it, each scoped to the one call that emits: MediaPipe's C++/absl chatter (`vision.py`), OpenCV's AVFoundation probe of camera indices past the last valid one (`--list-devices`), and the Obj-C runtime's one-time "class implemented in both" warning when PyAV's bundled libavdevice loads on top of cv2's (`video._ensure_pyav`) — harmless, since the duplicated classes are the AVFoundation capture device neither file-decode path uses, but printed on every video run. The first two silences existed inline; the third made it a shared context manager. The scoping rule is the point: wrap only the emitting import/probe, so real stderr from elsewhere is never swallowed.
 
 fd 2 is process-global, and `video._ensure_pyav` is a lazily-triggered entrant reachable from playlist worker threads (one per system, in an ensemble) — so two overlapping (non-nested) callers were reachable in practice, not just in theory. A module-level depth counter (behind a `threading.Lock`) makes the redirect reentrant across both nesting and overlap: only the outermost `__enter__` actually touches fd 2, and only the matching outermost `__exit__` restores it. Without that, the second caller's own `os.dup(2)` captures the *first* caller's `/dev/null` redirect as its "saved" fd, and whichever caller happens to exit last then `dup2`s that captured `/dev/null` back onto fd 2 — pinning the process's stderr to `/dev/null` for good. The same pass closed the two descriptor leaks on the failure paths (an `os.open`/`os.dup2` raising used to leave `saved`/`devnull` open respectively). `tests/test_native_io.py` swaps real fd 2 for a pipe to pin all three: silencing, no fd growth across ~200 cycles, and the overlapping-threads case restoring cleanly.
+
+### `_teardown.py` — a teardown's steps are independent guarantees
+
+`run_teardown_steps(log, who, steps)` takes `(label, callable)` pairs, runs every one, and logs `teardown step '<label>' failed; continuing` at ERROR against `who` rather than letting the first raise abandon the promises behind it. It catches `Exception` and not `BaseException` on purpose — teardown is the shutdown path, and a `KeyboardInterrupt` there must propagate instead of being logged as a failed step and dropped.
+
+It sits at the package root rather than beside its first caller because two layers owe those promises and one of them cannot reach the other: the scenes in `scenes/scenes.py`, and the `AudioSource` implementations in `audio/audio_source.py` that a `SourceScene` teardown calls into. `tests/test_audio_source_sid.py`'s `AudioSourceImportWeightTest` pins `audio_source` against importing numpy (it is imported for *every* SourceScene, mic and null included), and importing `scenes.py` would drag numpy in — so the runner moved down here instead of the callers reaching up.
+
+What the guarantees are per caller, and the two step positions that are *not* free to move once guarded, are in [scenes.md](scenes.md#scenespy--scene-state-machine) and [sid.md](sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene).
 
 ### `_wire_log.py` — wire-triggered logging is O(1) per stream
 

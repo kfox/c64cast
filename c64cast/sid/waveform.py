@@ -58,12 +58,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA2, CPU, SCREEN, SID, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.modulation import MusicModulation
-from c64cast.scenes.scenes import Scene, run_teardown_steps
+from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .emusid_mixer import apply_emusid_model, apply_emusid_routing

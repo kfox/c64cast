@@ -252,6 +252,34 @@ class SidFileAudioSourceTest(unittest.TestCase):
         )
         self.assertLess(zero_fill, restore)
 
+    def test_a_failing_vector_restore_does_not_starve_the_silence(self):
+        # The IRQ-vector restore is a REST call, and the silences behind it are
+        # this source's promise to the next scene. One `try` around both meant
+        # a link error on the vector left every chip ringing until something
+        # else happened to write $D418 — and `SourceScene`'s teardown swallows
+        # the raise, so the tune just kept playing with no failure in sight.
+        path = self._write(make_psid(second_sid_addr=0xD420))
+        api = FakeAPI()
+        silenced: list[str] = []
+
+        def boom(*_a, **_k):
+            raise RuntimeError("REST link down")
+
+        def note_silence(*_a, **_k):
+            silenced.append("silence_sid")
+
+        api.restore_kernal_irq_vector = boom
+        api.silence_sid = note_silence
+        src = SidFileAudioSource(
+            cast(C64Backend, api),
+            path,
+            display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
+        )
+        with self.assertLogs("c64cast.audio.audio_source", level="ERROR"):
+            src.teardown()
+        self.assertEqual(api.regs.get("D420"), tuple(bytes(25)), "the second chip keeps ringing")
+        self.assertEqual(silenced, ["silence_sid"], "the primary chip keeps ringing")
+
     def test_emusid_sides_are_set_to_the_requested_model(self):
         # sid_model on the U2+ reaches the emulated SIDs: the side snooping the
         # tune's chip is told which chip to be, and teardown puts the user's
