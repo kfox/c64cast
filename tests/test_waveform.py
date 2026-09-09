@@ -1486,6 +1486,68 @@ class WaveformSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
+    def test_a_pinned_bank_keeps_a_prefix_sampled_subtune(self):
+        # With `_unified_layout` set, nothing is placed from the per-subtune
+        # sample: the bank was pinned over the union at setup(). The skip's own
+        # reason ("a bank chosen from it may be RAM the subtune is live in")
+        # therefore does not apply, and skipping cost a playable subtune per
+        # prefix. The sample's only other consumer, the PLAY $01 bank
+        # intersection, refuses the prefix itself — the safe fallback that
+        # a prefix *write* footprint has always taken.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            scene._unified_layout = (0x0400, 0x2000, 0, 0)
+
+            def per_song(_sid_bytes, song=0, **_kw):
+                return FootprintSample(bytearray(65536), song != 2)
+
+            with (
+                patch("c64cast.sid.waveform.ram_play_access_footprint", per_song),
+                quiet_logging(),
+            ):
+                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
+                    4, HostEmuBudget()
+                )
+            self.assertEqual(new_song, 2, "the pin makes the prefix harmless here")
+            self.assertEqual(layout, scene._unified_layout)
+            assert access_fp is not None
+            self.assertFalse(access_fp.complete, "the sample is handed on with its verdict")
+        finally:
+            scene.teardown()
+
+    def test_a_prefix_access_footprint_drops_the_play_bank_and_says_which_one(self):
+        # The other half: the candidate is kept, so the $01 bank decision is
+        # the one that has to refuse the prefix. It reported "write footprint"
+        # for both sides before the access side could reach it.
+        from c64cast.sid.waveform import WaveformScene
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene.setup()
+        try:
+            scene._unified_layout = (0x0400, 0x2000, 0, 0)
+
+            def per_song(_sid_bytes, song=0, **_kw):
+                return FootprintSample(bytearray(65536), song != 2)
+
+            with (
+                patch("c64cast.sid.waveform.ram_play_access_footprint", per_song),
+                patch(
+                    "c64cast.sid.waveform.ram_write_footprint",
+                    return_value=FootprintSample(bytearray(65536), True),
+                ),
+                self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+            ):
+                scene.cycle_style(api)
+            joined = "\n".join(logs.output)
+            self.assertIn("PLAY-access footprint is only a partial sample", joined)
+        finally:
+            scene.teardown()
+
     def test_cycle_keeps_the_default_play_bank_when_the_write_footprint_is_partial(self):
         # cycle_style's own write-footprint run had the same bug as the walk:
         # it read `.ram` and dropped `.complete`, then derived the PLAY $01

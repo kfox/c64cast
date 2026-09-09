@@ -77,6 +77,7 @@ from .sid_autoconfig import plan_model_config_for_header, required_models_for
 from .sid_host_emu import (
     ANALYSIS_BUDGET_S,
     PREFLIGHT_TICKS,
+    FootprintSample,
     HostEmuBudget,
     SidHostEmu,
     _overlaps,
@@ -1395,18 +1396,21 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         chosen_play_bank: int | None = None
         if chosen_access_fp is not None:
             write_fp = ram_write_footprint(self.sid_bytes, song=new_song, budget=budget)
-            if write_fp.complete:
-                chosen_play_bank = _play_bank_for_footprints(write_fp.ram, chosen_access_fp)
+            if write_fp.complete and chosen_access_fp.complete:
+                chosen_play_bank = _play_bank_for_footprints(write_fp.ram, chosen_access_fp.ram)
             else:
-                # A prefix write footprint can create or destroy the
-                # under-BASIC-ROM intersection either way, and getting $36
-                # wrong on a cue is a silent tune. None is the address
-                # heuristic — the same default the all-rejected path takes.
+                # A prefix on EITHER side can create or destroy the
+                # under-BASIC-ROM intersection, and getting $36 wrong on a cue
+                # is a silent tune. None is the address heuristic — the same
+                # default the all-rejected path takes. The access side reaches
+                # here only when a unified layout is pinned; without one, such
+                # a candidate was already skipped above.
                 log.info(
                     "waveform: cycle keeping the default PLAY $01 bank for song %d/%d "
-                    "— its write footprint is only a partial sample",
+                    "— its %s footprint is only a partial sample",
                     new_song,
                     n,
+                    "write" if not write_fp.complete else "PLAY-access",
                 )
 
         # Stop the poll thread so it can't tick the host emulator while we
@@ -1467,7 +1471,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
     def _cycle_pick_candidate(
         self, n: int, budget: HostEmuBudget
-    ) -> tuple[int, float | None, tuple[int, int, int, int] | None, bytearray | None]:
+    ) -> tuple[int, float | None, tuple[int, int, int, int] | None, FootprintSample | None]:
         """Walk candidates from the next subtune, skipping ones that are too
         short (SFX, when the DB knows) or un-renderable (no free VIC bank for
         this subtune's PLAY footprint). Returns ``(new_song, duration, layout,
@@ -1479,20 +1483,22 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         new subtune may render imperfectly, but audio plays).
 
         A candidate whose PLAY footprint came back incomplete is rejected the
-        same way an unrenderable one is. The bitmap is a prefix, so a bank
-        chosen from it can be RAM the subtune is live in — and unlike setup's
-        one-off choice, this one is made while the audience is watching."""
+        same way an unrenderable one is — but only when a bank is about to be
+        chosen from it. The bitmap is a prefix, so that bank can be RAM the
+        subtune is live in, and unlike setup's one-off choice this one is made
+        while the audience is watching. When `_unified_layout` pinned one bank
+        for every subtune at setup, nothing is chosen from this sample and
+        that reason does not apply: the candidate is kept, and its only other
+        consumer — the caller's PLAY `$01` bank intersection — refuses a
+        prefix on its own, exactly as it already does for a prefix *write*
+        footprint. Discarding the subtune there was stricter than the safe
+        fallback it already had, and it cost a playable subtune per prefix."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
         first_candidate = (self.song % n) + 1
-        # A candidate whose PLAY footprint came back a prefix is skipped, not
-        # placed from — see the skip below. That is what the walk was missing:
-        # it took `.ram` off the sample and dropped `.complete` on the floor,
-        # then handed the prefix to _choose_display_layout and kept it as the
-        # chosen subtune's access footprint.
         new_song = first_candidate
         chosen_duration: float | None = None
         chosen_layout: tuple[int, int, int, int] | None = None
-        chosen_access_fp: bytearray | None = None
+        chosen_access_fp: FootprintSample | None = None
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
         skipped_partial: list[int] = []
@@ -1510,7 +1516,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     candidate = (candidate % n) + 1
                     continue
             sample = ram_play_access_footprint(self.sid_bytes, song=candidate, budget=budget)
-            if not sample.complete:
+            if self._unified_layout is not None:
+                # One bank was pinned for every subtune at setup() — never
+                # relocate (a per-subtune _choose_display_layout could pick an
+                # earlier-preference bank and reintroduce the live bank move
+                # this pin exists to avoid). The union fits every subtune, so
+                # no candidate is unrenderable here — and nothing is placed
+                # from this sample, so a prefix does not disqualify it. The
+                # caller's PLAY $01 bank step refuses the prefix instead.
+                layout = self._unified_layout
+            elif not sample.complete:
                 # Same answer an unrenderable candidate gets, for the same
                 # reason: this footprint is a prefix, so a bank chosen from it
                 # may be RAM the subtune is live in — the bitmap would be
@@ -1520,17 +1535,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 skipped_partial.append(candidate)
                 candidate = (candidate % n) + 1
                 continue
-            fp = sample.ram
-            if self._unified_layout is not None:
-                # One bank was pinned for every subtune at setup() — never
-                # relocate (a per-subtune _choose_display_layout could pick an
-                # earlier-preference bank and reintroduce the live bank move
-                # this pin exists to avoid). The union fits every subtune, so
-                # no candidate is unrenderable here.
-                layout = self._unified_layout
             else:
                 try:
-                    layout = _choose_display_layout(payload_lo, payload_hi, fp)
+                    layout = _choose_display_layout(payload_lo, payload_hi, sample.ram)
                 except ValueError:
                     skipped_unrender.append(candidate)
                     candidate = (candidate % n) + 1
@@ -1538,7 +1545,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             new_song = candidate
             chosen_duration = looked_up
             chosen_layout = layout
-            chosen_access_fp = fp
+            chosen_access_fp = sample
             break
 
         for sn, sl in skipped_short:
