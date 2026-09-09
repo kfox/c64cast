@@ -278,7 +278,7 @@ class CostModelProseTest(unittest.TestCase):
         cost = ap.frame_cycle_cost([(0xD400, 0x11, 51)] * ap.MAX_OPS_PER_CHIP)
 
         for site in self._SITES:
-            text = (root / site).read_text()
+            text = (root / site).read_text(encoding="utf-8")
             quoted = re.search(r"wait cost ([\d,]+)", text)
             self.assertIsNotNone(quoted, f"{site} no longer quotes the figure")
             assert quoted is not None
