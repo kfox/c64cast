@@ -24,6 +24,8 @@ import importlib
 import inspect
 import logging
 import pkgutil
+import re
+import sys
 import types
 import typing
 import unittest
@@ -209,7 +211,29 @@ def _package_modules():
         yield importlib.import_module(found.name)
 
 
+# Returned when an annotation cannot be resolved at all. Distinct from None,
+# which means "no annotation": a name imported under `if TYPE_CHECKING` is
+# unresolvable and may still be the one that matters, so the two cases have to
+# be told apart rather than both read as "not a factory".
+_UNRESOLVED = object()
+
+# Matched against an annotation this process cannot resolve, whose only
+# remaining form is the source text. Word-bounded so `LogThrottleFactory` does
+# not match. No looser than the resolved path, which accepts `LogThrottle`
+# anywhere in the type's arguments.
+_NAMES_THROTTLE = re.compile(r"\bLogThrottle\b")
+_NAMES_LOGGER = re.compile(r"\bLogger\b")
+
+
 def _is_logger(hint: object) -> bool:
+    """Whether `hint` asks for a logger, resolved or as written.
+
+    A string arrives when the annotation could not be resolved — see
+    [ThrottleFactoryTest._hints_of] — and refusing to read it there would skip
+    exactly the factory whose *other* parameter is the unresolvable one.
+    """
+    if isinstance(hint, str):
+        return bool(_NAMES_LOGGER.search(hint))
     return hint is logging.Logger or logging.Logger in typing.get_args(hint)
 
 
@@ -226,17 +250,40 @@ class NoProcessWideThrottleTest(unittest.TestCase):
     So this walks what importing the package produced: every module global,
     then containers (`deque` included) at any depth, dicts, classes, nested
     classes, and the `__dict__` *and* `__slots__` of any object a module holds.
-    The walk stops only at a module, because a module's globals are the next
-    module's roots and following them would be a walk of the whole interpreter.
     It deliberately does not ask who defined a holder's class: an earlier
     version descended only into classes this package defines, and a
     `types.SimpleNamespace`, a `threading.local` or a `deque` — all shapes a
     real author writes — hid a throttle from it.
 
-    The depth bound is a backstop, not a policy. Nothing in the tree reaches
-    even depth 10 today, so a truncation means the graph grew past what this
-    check can see; truncations are collected and asserted empty rather than
-    passing quietly.
+    Two things stop it. A module, because a module's globals are the next
+    module's roots and following them would be a walk of the whole
+    interpreter. And `logging.Manager`, because every throttle holds a logger
+    and every logger holds the manager, whose `loggerDict` is the *process*
+    registry — so one hop off a c64cast logger lands on every other library's
+    loggers, handlers, formatters and filters. That is not this package's
+    import scope, it is the interpreter's, and it was what the depth budget
+    was being spent on. Measured with it in, the deepest path this check
+    explores is
+    `…log.parent.parent.manager.loggerDict['urllib3.util.retry'].parent.handlers[0].filters`
+    — another library's retry logger — at depth 8 of a bound of 12, with 6
+    paths past depth 8; stopping at the manager takes the deepest to 5. So a
+    dependency that nests one more object inside a handler no longer trips a
+    hard failure in a test about this package's throttles.
+
+    The depth bound is a backstop, not a policy, and the truncation rule is
+    what keeps it from becoming one. A truncation is recorded only for an
+    object the walk would otherwise have descended into — something with
+    children it has not already explored by a shallower path — so a long chain
+    of leaves and a re-reached object are not reported as places this check
+    could not see. Both were: a 12-hop chain ending in a `str`, and an object
+    fully explored at depth 2 and re-reached at depth 12, each reddened the
+    suite with a message telling the author to raise `_MAX_DEPTH`, which only
+    moves the wall.
+
+    With both of those in place nothing the walk explores runs deeper than 5
+    hops from a root, against a bound of 12 — so a truncation means the graph
+    grew, not that the bound was always marginal. Truncations are collected
+    and asserted empty rather than passing quietly.
 
     [ThrottleFactoryTest] is the other half, and it is a separate check rather
     than a wider walk because no walk of import scope can reach what it looks
@@ -245,6 +292,7 @@ class NoProcessWideThrottleTest(unittest.TestCase):
 
     _MAX_DEPTH = 12
     _CONTAINERS = (list, tuple, set, frozenset, collections.deque)
+    _STOPS = (types.ModuleType, logging.Manager)
 
     def _attributes_of(self, obj: object) -> dict[str, object]:
         """`obj`'s own stored attributes — `__dict__` plus every `__slots__`
@@ -271,53 +319,84 @@ class NoProcessWideThrottleTest(unittest.TestCase):
                     stored.setdefault(slot, getattr(obj, slot))
         return stored
 
-    def _reachable(self, root: object, label: str) -> tuple[list[str], list[str]]:
-        """`(throttles, truncated)` reachable from `root` without calling
+    def _children_of(self, obj: object) -> list[tuple[str, object]]:
+        """What `obj` holds, as `(path suffix, child)` — empty for anything the
+        walk does not descend into.
+
+        Emptiness is what the truncation rule reads, so leaves and stops
+        answer the same way as an object that genuinely holds nothing. A
+        scalar needs no case of its own: a `str` has no `__dict__` and no
+        `__slots__`, so `_attributes_of` already answers `{}` for it.
+        """
+        if isinstance(obj, self._STOPS):
+            return []
+        if isinstance(obj, self._CONTAINERS):
+            return [(f"[{index}]", item) for index, item in enumerate(obj)]
+        if isinstance(obj, dict):
+            return [(f"[{key!r}]", item) for key, item in obj.items()]
+        return [(f".{name}", item) for name, item in self._attributes_of(obj).items()]
+
+    def _reachable(self, roots: list[tuple[str, object]]) -> tuple[list[str], list[str]]:
+        """`(throttles, truncated)` reachable from `roots` without calling
         anything.
 
         `seen` records the *shallowest* depth each object was reached at rather
         than merely that it was reached: keyed by id alone, an object first
         found deep enough to be truncated short-circuits the shallower path
-        that would have explored it in full.
+        that would have explored it in full. It is consulted *before* the depth
+        bound for the same reason — an object already explored in full is not a
+        place this check could not see, whichever path re-reaches it.
+
+        One memo across every root, not one per root. Both halves of that
+        matter. Correctness: a truncation is only real if *no* path explored
+        the object in full, and per-root memos made that answer depend on which
+        module happened to be walked first. Cost: the roots share most of their
+        graph, and re-walking it from each of the 6,769 of them was 298,451
+        visits in 0.329 s against 37,318 in 0.041 s with one memo.
+
+        A truncation still cannot be judged the moment it is hit — the
+        shallower path may come later in the same walk — so each one is
+        recorded with the id it stopped at and filtered at the end against
+        what the memo finally knows.
         """
         throttles: list[str] = []
-        truncated: list[str] = []
+        stopped: list[tuple[int, str]] = []
         seen: dict[int, int] = {}
 
         def walk(obj: object, where: str, depth: int) -> None:
             if isinstance(obj, LogThrottle):
                 throttles.append(where)
                 return
-            if depth >= self._MAX_DEPTH:
-                truncated.append(where)
-                return
             if seen.get(id(obj), self._MAX_DEPTH + 1) <= depth:
                 return
+            children = self._children_of(obj)
+            if not children:
+                return
+            if depth >= self._MAX_DEPTH:
+                stopped.append((id(obj), where))
+                return
             seen[id(obj)] = depth
-            if isinstance(obj, self._CONTAINERS):
-                for index, item in enumerate(obj):
-                    walk(item, f"{where}[{index}]", depth + 1)
-                return
-            if isinstance(obj, dict):
-                for key, item in obj.items():
-                    walk(item, f"{where}[{key!r}]", depth + 1)
-                return
-            if isinstance(obj, types.ModuleType):
-                return
-            for name, item in self._attributes_of(obj).items():
-                walk(item, f"{where}.{name}", depth + 1)
+            for suffix, item in children:
+                walk(item, f"{where}{suffix}", depth + 1)
 
-        walk(root, label, 0)
+        for label, root in roots:
+            walk(root, label, 0)
+        unexplored = self._MAX_DEPTH + 1
+        truncated = [
+            where for oid, where in stopped if seen.get(oid, unexplored) >= self._MAX_DEPTH
+        ]
         return throttles, truncated
 
     def test_no_throttle_is_reachable_from_import_scope(self) -> None:
-        throttles: list[str] = []
-        truncated: list[str] = []
-        for module in _package_modules():
-            for name, value in vars(module).items():
-                found, cut = self._reachable(value, f"{module.__name__}.{name}")
-                throttles.extend(found)
-                truncated.extend(cut)
+        # Materialized before the walk: `_package_modules` imports as it
+        # yields, and an import can add a name to a module already being
+        # iterated.
+        roots = [
+            (f"{module.__name__}.{name}", value)
+            for module in _package_modules()
+            for name, value in list(vars(module).items())
+        ]
+        throttles, truncated = self._reachable(roots)
         self.assertEqual(
             throttles,
             [],
@@ -346,10 +425,21 @@ class ThrottleFactoryTest(unittest.TestCase):
     Return types are resolved with `typing.get_type_hints` rather than matched
     as written, because the package uses `from __future__ import annotations`:
     `-> _wire_log.LogThrottle` and `-> LogThrottle | None` arrive as source
-    text that no literal comparison catches. Discovery follows `__wrapped__`
-    and `functools.partial`, and covers the classmethods and staticmethods of
-    module-scope classes as well as module-level functions, so a decorated or
-    partially-applied factory is checked rather than skipped.
+    text that no literal comparison catches. The return annotation is resolved
+    **on its own**, and an unresolvable one is read as source text rather than
+    as a no: resolving a whole signature at once means one parameter typed with
+    a name imported under `if TYPE_CHECKING` — the idiom in 64 modules here —
+    raises `NameError` and silently deletes the factory from discovery.
+
+    Discovery follows `__wrapped__` and `functools.partial`, and covers the
+    classmethods and staticmethods of module-scope classes as well as
+    module-level functions, so a decorated or partially-applied factory is
+    checked rather than skipped. What is followed for the *hints* is not
+    followed for the *call*: `inspect.signature` reads through `__wrapped__`,
+    so a decorator that supplies the logger presents no parameters while its
+    inner function is annotated as taking one. Both the wrapper's shape and the
+    unwrapped one are tried, in that order, and only a factory that neither
+    shape can call is skipped.
 
     **A factory that takes arguments is not a failure.** `LogThrottle(logger)`
     is the constructor, so `def new_x_log(logger: logging.Logger)` is the most
@@ -357,7 +447,10 @@ class ThrottleFactoryTest(unittest.TestCase):
     fully complies with the rule is how a guard gets worked around or deleted.
     A logger parameter is supplied; a required parameter this check cannot
     synthesize skips that factory by name, which reads as a skip in the run
-    rather than as silence.
+    rather than as silence. So does a factory no argument shape can call, and
+    a `-> LogThrottle | None` one that answers `None` — nothing was built, so
+    there is no shared budget to report, and asserting on the two `None`s
+    instead read as the failure this class exists to catch.
 
     What stays out of reach of both checks: a throttle only a call can produce
     where the call cannot be made from here — an instance method, which needs
@@ -368,17 +461,45 @@ class ThrottleFactoryTest(unittest.TestCase):
     """
 
     def _returns(self, value: Callable[..., object]) -> object:
+        """The return annotation alone, resolved against its own module.
+
+        A proxy carrying only that one annotation is what keeps a parameter
+        from deciding the question: `typing.get_type_hints` resolves every
+        annotation a function has, and raises for the whole function if any one
+        of them names something that exists only under `if TYPE_CHECKING`.
+        `globalns` is passed explicitly because the proxy is defined *here*, so
+        the fallback would resolve the package's annotations against this test
+        module's imports.
+        """
         target: Callable[..., object] = (
             value.func if isinstance(value, functools.partial) else value
         )
-        try:
-            return typing.get_type_hints(inspect.unwrap(target)).get("return")
-        except Exception:  # noqa: BLE001 - an unresolvable hint names no factory here
+        target = inspect.unwrap(target)
+        written = (getattr(target, "__annotations__", None) or {}).get("return")
+        if written is None:
             return None
+
+        def proxy() -> None: ...
+
+        proxy.__annotations__ = {"return": written}
+        module = sys.modules.get(getattr(target, "__module__", "") or "")
+        try:
+            return typing.get_type_hints(proxy, vars(module) if module else {})["return"]
+        except Exception:  # noqa: BLE001 - fall back to the text, below
+            return _UNRESOLVED if _NAMES_THROTTLE.search(str(written)) else None
 
     def _is_factory(self, value: Callable[..., object]) -> bool:
         returns = self._returns(value)
+        if returns is _UNRESOLVED:
+            return True
         return returns is LogThrottle or LogThrottle in typing.get_args(returns)
+
+    def _hints_of(self, func: Callable[..., object]) -> dict[str, object]:
+        """Parameter hints, resolved where they can be and as written where
+        they cannot — see [_is_logger] for the second half."""
+        with contextlib.suppress(Exception):
+            return dict(typing.get_type_hints(func))
+        return dict(getattr(func, "__annotations__", None) or {})
 
     def _candidates(self, module):
         """Module-level callables, plus the classmethods and staticmethods of
@@ -396,32 +517,49 @@ class ThrottleFactoryTest(unittest.TestCase):
                     yield f"{where}.{attr}", getattr(value, attr)
 
     def _factories(self):
-        seen: set[int] = set()
+        """Each discovered factory once, keyed by the object that gets called.
+
+        Keyed by the wrapper and not by `inspect.unwrap` of it, because a
+        memoizing wrapper is a *different* factory from the function it wraps —
+        `lru_cache(maxsize=None)(new_plain_log)` is per process forever, and
+        collapsing the two skipped it as a duplicate of the compliant function
+        underneath. The map holds the candidate rather than just its id: a
+        classmethod is a fresh bound method on every `getattr`, and an id whose
+        object has been freed is an id the next one can be handed.
+        """
+        seen: dict[int, Callable[..., object]] = {}
         for module in _package_modules():
             for where, candidate in self._candidates(module):
                 if isinstance(candidate, type) or not callable(candidate):
                     continue
                 if not self._is_factory(candidate):
                     continue
-                key = id(inspect.unwrap(candidate))
-                if key in seen:
+                if id(candidate) in seen:
                     continue
-                seen.add(key)
+                seen[id(candidate)] = candidate
                 yield where, candidate
 
-    def _arguments_for(self, factory):
+    def _arguments_for(self, factory, *, follow_wrapped: bool):
         """`(positional, keywords)` to call `factory` with, or None when it
         asks for something this check cannot synthesize.
 
         A parameter with a default is left to it. Python does not allow a
         required positional to follow a defaulted one, so skipping the
         defaulted ones cannot misalign what is passed positionally.
+
+        A `functools.partial` is read for its remaining parameters — which
+        `inspect.signature` computes — but its hints come from `.func`, since a
+        partial carries no annotations of its own and reading them off it
+        skipped every partially-applied factory.
         """
         try:
-            signature = inspect.signature(factory)
-            hints = typing.get_type_hints(inspect.unwrap(factory))
-        except Exception:  # noqa: BLE001 - a callable we cannot introspect we do not call
+            signature = inspect.signature(factory, follow_wrapped=follow_wrapped)
+        except (TypeError, ValueError):
             return None
+        hinted: Callable[..., object] = (
+            factory.func if isinstance(factory, functools.partial) else factory
+        )
+        hints = self._hints_of(inspect.unwrap(hinted) if follow_wrapped else hinted)
         positional: list[object] = []
         keywords: dict[str, object] = {}
         for parameter in signature.parameters.values():
@@ -437,6 +575,24 @@ class ThrottleFactoryTest(unittest.TestCase):
                 positional.append(_FACTORY_LOGGER)
         return positional, keywords
 
+    def _call_shapes(self, factory):
+        """The argument shapes to try, in order: as the factory is called, then
+        as the function underneath it is annotated.
+
+        One signature cannot answer both. `inspect.signature` follows
+        `__wrapped__`, so a decorator that supplies the logger reads as taking
+        one and is then called with one it does not accept; refusing to follow
+        it reads a pass-through `(*args, **kwargs)` wrapper as taking none, and
+        the inner function is the one that raises. Both are ordinary shapes, so
+        both are tried.
+        """
+        shapes = []
+        for follow_wrapped in (False, True):
+            shape = self._arguments_for(factory, follow_wrapped=follow_wrapped)
+            if shape is not None and shape not in shapes:
+                shapes.append(shape)
+        return shapes
+
     def test_every_throttle_factory_answers_with_a_new_one(self) -> None:
         factories = list(self._factories())
         self.assertTrue(
@@ -446,16 +602,29 @@ class ThrottleFactoryTest(unittest.TestCase):
         )
         for where, factory in factories:
             with self.subTest(factory=where):
-                arguments = self._arguments_for(factory)
-                if arguments is None:
+                built = None
+                for positional, keywords in self._call_shapes(factory):
+                    # A factory that logs on construction would put records
+                    # between the suite's dots, and a wire-log factory has no
+                    # business logging anyway — so the purity is asserted, not
+                    # suppressed. A TypeError means this shape is not how the
+                    # factory is called, which is a fact about the synthesis
+                    # and not about the code under test.
+                    with (
+                        contextlib.suppress(TypeError),
+                        self.assertNoLogs("c64cast", level="DEBUG"),
+                    ):
+                        built = (
+                            factory(*positional, **keywords),
+                            factory(*positional, **keywords),
+                        )
+                    if built is not None:
+                        break
+                if built is None:
                     self.skipTest(f"{where} asks for arguments this check cannot synthesize")
-                positional, keywords = arguments
-                # A factory that logs on construction would put records between
-                # the suite's dots, and a wire-log factory has no business
-                # logging anyway — so the purity is asserted, not suppressed.
-                with self.assertNoLogs("c64cast", level="DEBUG"):
-                    first = factory(*positional, **keywords)
-                    second = factory(*positional, **keywords)
+                first, second = built
+                if first is None and second is None:
+                    self.skipTest(f"{where} answered None, so nothing was built to share")
                 self.assertIsNot(
                     first,
                     second,
