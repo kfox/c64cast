@@ -202,6 +202,42 @@ RATE_PROBE_TICKS = 64
 UNMEASURED_PASS_COST_S = 0.016
 
 
+class RunDeadline(NamedTuple):
+    """The instant one host-emulation run may not pass, carried together with
+    which of the two bounds `HostEmuBudget.deadline_for` took the min of
+    produced it.
+
+    The two travel as one value because they were briefly two, and two could
+    disagree. `_run_routine` took a `deadline` and a `deadline_cap_s` from its
+    caller with nothing binding them, so a caller could hand it an instant
+    derived from one cap and name another — the message would then quote a
+    bound that never applied, which is the whole defect the message exists to
+    avoid. And the provenance was recovered *afterwards*, by comparing the
+    instant against the emulator's own budget, which answers for that budget
+    rather than for the one this deadline actually came from: the footprint and
+    pre-flight helpers take a budget as a parameter, so those two need not be
+    the same object.
+
+    Deriving the answer where the `min` is taken removes both. There is one
+    thing to pass, it cannot disagree with itself, and `from_budget` is settled
+    by the comparison `min` itself makes rather than reconstructed later.
+    """
+
+    #: The absolute instant, in the clock domain that produced it.
+    at: float
+    #: True when the shared budget's remaining instant won the min — the only
+    #: case in which something other than this run can have spent it.
+    from_budget: bool
+    #: The per-run cap the other operand was built from, for the message.
+    cap_s: float
+
+    @classmethod
+    def own_cap(cls, now: float, cap_s: float) -> RunDeadline:
+        """A deadline for a run with no shared budget: its own cap, and nothing
+        else can have spent it."""
+        return cls(now + cap_s, False, cap_s)
+
+
 class HostEmuBudget:
     """One wall-clock budget shared by every host-emulation run a single tune's
     analysis performs — footprint passes and the INITs between them alike.
@@ -233,8 +269,23 @@ class HostEmuBudget:
 
     def deadline_for(self, seconds: float) -> float:
         """The instant one run may not pass: its own per-run cap or what is
-        left of the shared budget, whichever comes first."""
-        return min(self.deadline, self._clock() + seconds)
+        left of the shared budget, whichever comes first.
+
+        For a loop bound, where only the instant is wanted. A routine run takes
+        :meth:`run_deadline` instead, so the instant and its provenance stay
+        one value; this delegates rather than repeating the `min` so the two can
+        never answer differently."""
+        return self.run_deadline(seconds).at
+
+    def run_deadline(self, seconds: float) -> RunDeadline:
+        """The instant one run may not pass, and which of the two bounds it is.
+
+        `min` returns one of its operands rather than a computation over them,
+        so `from_budget` is exact and matches the tie-break `min` itself makes:
+        on a tie the budget has exactly this run's cap left, which is a budget
+        already spent down to the cap, so the shared reading is the honest one."""
+        own = self._clock() + seconds
+        return RunDeadline(min(self.deadline, own), self.deadline <= own, seconds)
 
     def now(self) -> float:
         return self._clock()
@@ -688,10 +739,6 @@ class SidHostEmu:
         # that injected a clock was measuring something the shipped code does
         # not do.
         self._now: Callable[[], float] = time.monotonic if budget is None else budget.now
-        # Kept because a deadline alone cannot say which of the two instants
-        # `deadline_for` took the min of produced it, and only one of them can
-        # have been spent by another tune. See _deadline_provenance.
-        self._budget = budget
         # SID chip bases to shadow. Default: the tune's own header addresses
         # (chip 0 = $D400). A caller (WaveformScene) may override to honor a
         # filename ``_NSID`` hint the header understates. Chip 0 always $D400.
@@ -754,15 +801,14 @@ class SidHostEmu:
         # millions of cycles — so it gets an explicit deadline, tightened to
         # whatever is left of the caller's shared analysis budget.
         load_deadline = (
-            budget.deadline_for(_INIT_DEADLINE_S)
+            budget.run_deadline(_INIT_DEADLINE_S)
             if budget is not None
-            else self._now() + _INIT_DEADLINE_S
+            else RunDeadline.own_cap(self._now(), _INIT_DEADLINE_S)
         )
         self._run_routine(
             self._parsed.init_addr,
             a=(self._parsed.song_to_play - 1) & 0xFF,
             cap=_INIT_CYCLE_CAP,
-            deadline_cap_s=_INIT_DEADLINE_S,
             tag="init",
             deadline=load_deadline,
         )
@@ -786,17 +832,19 @@ class SidHostEmu:
         single-SID tune)."""
         return bytes(self._memory.sid_shadows[bank])
 
-    def tick_play(self, deadline: float | None = None, deadline_cap_s: float | None = None) -> None:
+    def tick_play(self, deadline: RunDeadline | None = None) -> None:
         """Run one PLAY pass. Re-entrant call into `play_addr`, same
         sentinel-RTS + budget discipline as INIT. The cycle/step caps bound a
         degenerate PLAY (one that spins waiting for a raster or an IRQ that
         will never fire in this emulator) so the render thread isn't starved.
 
-        `deadline` is an optional absolute instant in this emulator's clock
-        domain (see `_now`). The paths that *sample* a pass — footprint runs
-        and the pre-flight — pass one, so no single pass outlasts the
-        HostEmuBudget it is charged to; a truncated sample is one they already
-        distrust. The paths that *price* or *render* a pass pass none: the live
+        `deadline` is an optional `RunDeadline` in this emulator's clock domain
+        (see `_now`), built by the caller from the budget it is charging the
+        pass to. The paths that *sample* a pass — footprint runs and the
+        pre-flight — pass one, so no single pass outlasts the HostEmuBudget it
+        is charged to; a truncated sample is one they already distrust. It
+        carries its own per-run cap, so this method has no cap of its own to
+        supply and no way to name one the deadline did not come from. The paths that *price* or *render* a pass pass none: the live
         render path, because truncating there leaves a visibly wrong scope (see
         _PLAY_DEADLINE_S), and [detect_play_rate_hz], because a truncated pass
         priced as a whole one is a censored measurement."""
@@ -809,12 +857,6 @@ class SidHostEmu:
             cap=_PLAY_CYCLE_CAP,
             tag="play",
             deadline=deadline,
-            # Read here, not bound as the parameter's default: a default
-            # expression is evaluated at definition time, so patching the
-            # module constant in a test would leave the reported cap at
-            # whatever it was when the file was imported — a false green of
-            # exactly the shape this whole message exists to remove.
-            deadline_cap_s=_PLAY_DEADLINE_S if deadline_cap_s is None else deadline_cap_s,
         )
 
     def retriggers(self, bank: int = 0) -> tuple[bool, bool, bool]:
@@ -879,8 +921,7 @@ class SidHostEmu:
         cap: int,
         tag: str,
         a: int = 0,
-        deadline: float | None = None,
-        deadline_cap_s: float,
+        deadline: RunDeadline | None = None,
     ) -> None:
         """JSR-equivalent: push a sentinel return address, set PC = target,
         step until PC == sentinel or the routine exhausts its budget.
@@ -968,13 +1009,21 @@ class SidHostEmu:
             if mpu.pc == sentinel:
                 return
             over_cap = mpu.processorCycles >= cap or steps >= cap
-            over_clock = (
-                not over_cap
-                and deadline is not None
-                and steps % _WALL_CLOCK_CHECK_STEPS == 0
-                and self._now() >= deadline
+            # The deadline itself rather than a bool, so the arm that reports it
+            # holds the value it fired on: its provenance and its cap travel
+            # with it, and there is nothing to look up afterwards against a
+            # budget that need not be the one it came from.
+            fired = (
+                deadline
+                if (
+                    not over_cap
+                    and deadline is not None
+                    and steps % _WALL_CLOCK_CHECK_STEPS == 0
+                    and self._now() >= deadline.at
+                )
+                else None
             )
-            if over_cap or over_clock:
+            if over_cap or fired is not None:
                 log.debug(
                     "sid_host_emu: %s budget reached at PC=$%04X (%d cycles, %d steps, "
                     "cap %d) — giving up this pass",
@@ -990,7 +1039,7 @@ class SidHostEmu:
                 # budget can be nothing to do with this tune, because earlier
                 # candidates spent it. Reporting them together quoted a 2 M
                 # cycle cap the tune had not come near.
-                if over_cap:
+                if fired is None:
                     self._report_capped_routine(
                         f"it reached its cycle/step cap at PC=${mpu.pc:04X} "
                         f"({mpu.processorCycles} cycles, {steps} steps, cap {cap})"
@@ -999,32 +1048,29 @@ class SidHostEmu:
                     self._report_capped_routine(
                         f"it ran past its wall-clock deadline at PC=${mpu.pc:04X} "
                         f"({mpu.processorCycles} cycles, {steps} steps) — "
-                        f"{self._deadline_provenance(deadline, deadline_cap_s)}"
+                        f"{self._deadline_provenance(fired)}"
                     )
                 return
 
-    def _deadline_provenance(self, deadline: float | None, cap_s: float) -> str:
+    def _deadline_provenance(self, deadline: RunDeadline) -> str:
         """Which of the two instants `HostEmuBudget.deadline_for` takes the min
         of is the one that just fired.
 
-        `cap_s` is the per-run cap the deadline was derived from, passed down
-        rather than read from a module constant because `_run_routine` runs with
-        two of them — `_INIT_DEADLINE_S` (1 s) and `_PLAY_DEADLINE_S` (0.05 s).
-        Reading `_INIT_DEADLINE_S` here quoted a 1 s cap for a 0.05 s one, which
-        is latent only because `_routine_end_cause` is read solely by the
-        constructor's INIT today; the first caller to surface a PLAY cause would
-        have inherited the wrong number. `_run_routine` takes it as a required
-        keyword for the same reason it takes `cap`: a default would be one more
-        thing a third caller could silently draw from the wrong routine.
-
-        `None` cannot reach here — a run with no deadline cannot end on one —
-        and it is accepted rather than asserted because the comparison already
-        answers it: no float equals `None`, so it lands on the own-cap arm,
-        which is the safe reading either way.
+        The answer is read off the deadline rather than worked out here, and
+        that is the point: it was settled by the same `min` that chose the
+        instant, in the budget that chose it. Reconstructing it afterwards
+        needed two things this method cannot be sure of — that `cap_s` is the
+        cap the instant was derived from, and that the budget it is compared
+        against is the budget the instant came from. Neither holds by
+        construction: `_run_routine` runs with two caps, `_INIT_DEADLINE_S`
+        (1 s) and `_PLAY_DEADLINE_S` (0.05 s), and the footprint and pre-flight
+        helpers take a budget as a parameter, so an emulator's own budget need
+        not be the one a pass was charged to. Both misreadings are the same
+        20x-wrong, wrong-direction overclaim the message exists to remove.
 
         Neither arm claims a budget is *absent*, only which instant won: a
-        budget is threaded, never flagged, so "a budget was passed" is all the
-        code knows. `analyze_placement` threads one private budget across two
+        budget is threaded, never flagged, so "the budget's instant won" is all
+        the code knows. `analyze_placement` threads one budget across two
         footprint runs and a walk threads one across candidates, and nothing
         distinguishes them — so the shared-budget arm says what follows *if* it
         is being shared rather than asserting that it is.
@@ -1036,17 +1082,16 @@ class SidHostEmu:
         `HostEmuBudget()` has ANALYSIS_BUDGET_S left, so the per-run cap is what
         wins the min, and `SidFeatureStream` builds exactly that — a private
         per-tune budget with no pool walk anywhere on its path — then surfaces
-        this notice at WARNING. The equality is exact because the value
-        returned is one of the two operands, not a computation over them."""
-        if self._budget is not None and deadline == self._budget.deadline:
+        this notice at WARNING."""
+        if deadline.from_budget:
             return (
                 "the deadline is what was left of the analysis budget, which was less "
                 "than this run's own cap — so if that budget is being shared down a "
                 "candidate walk, an earlier candidate can be what spent it"
             )
         return (
-            f"the deadline is this run's own {cap_s:g}s cap rather than what was left of "
-            "an analysis budget — nothing but this tune spent it"
+            f"the deadline is this run's own {deadline.cap_s:g}s cap rather than what was "
+            "left of an analysis budget — nothing but this tune spent it"
         )
 
     def _report_capped_routine(self, cause: str) -> None:
@@ -1133,7 +1178,7 @@ def _tick_until_budget(emu: SidHostEmu, ticks: int, budget: HostEmuBudget, what:
     everything past its cap is lost for every pass that follows."""
     give_up_at = budget.deadline_for(FOOTPRINT_DEADLINE_S)
     for done in range(ticks):
-        emu.tick_play(budget.deadline_for(_PLAY_DEADLINE_S))
+        emu.tick_play(budget.run_deadline(_PLAY_DEADLINE_S))
         if done + 1 < ticks and budget.now() >= give_up_at:
             log.warning(
                 "sid_host_emu: %s stopped after %d of %d PLAY passes (%.1fs left of the "
@@ -1453,7 +1498,7 @@ def play_preflight_failure(
                 f"analysis budget — {done} of {ticks} passes ran and none of them "
                 f"returned, so whether it would hang the C64-side player is unknown"
             )
-        emu.tick_play(None if budget is None else budget.deadline_for(_PLAY_DEADLINE_S))
+        emu.tick_play(None if budget is None else budget.run_deadline(_PLAY_DEADLINE_S))
         if not emu.last_routine_capped:
             return None
     return (

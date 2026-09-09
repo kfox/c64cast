@@ -14,6 +14,7 @@ the parts unique to SidHostEmu:
 
 from __future__ import annotations
 
+import itertools
 import time
 import unittest
 from typing import cast
@@ -23,6 +24,7 @@ from _fakes import FrozenClock, quiet_logging
 
 from c64cast.hw.c64 import cpu_clock
 from c64cast.sid.sid_host_emu import (
+    RunDeadline,
     SidHostEmu,
     TrappedRam,
     _append_distinct_sid_base,
@@ -621,7 +623,7 @@ class HostEmuClockDomainTest(unittest.TestCase):
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
         budget = HostEmuBudget(0.0, clock=lambda: self._FAKE_NOW)
         emu = SidHostEmu(sid, budget=budget)
-        emu.tick_play(budget.deadline_for(1.0))
+        emu.tick_play(budget.run_deadline(1.0))
         self.assertTrue(emu.last_routine_capped)
         # Without the deadline binding, this JMP-to-itself PLAY runs to its
         # full cycle cap; half of that is comfortably above the wall-clock
@@ -952,8 +954,8 @@ class InitTruncationNoticeTest(unittest.TestCase):
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
         budget = sid_host_emu.HostEmuBudget()
         emu = SidHostEmu(sid, budget=budget)
-        shared = emu._deadline_provenance(budget.deadline, 1.0)
-        own = emu._deadline_provenance(budget.deadline + 1.0, 1.0)
+        shared = emu._deadline_provenance(RunDeadline(budget.deadline, True, 1.0))
+        own = emu._deadline_provenance(RunDeadline(budget.deadline + 1.0, False, 1.0))
         self.assertIn("if that budget is being shared", shared)
         self.assertNotIn("no shared budget", own)
         self.assertNotIn("not a shared budget", own)
@@ -967,22 +969,57 @@ class InitTruncationNoticeTest(unittest.TestCase):
 
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
         emu = SidHostEmu(sid)
-        self.assertIn("0.05s cap", emu._deadline_provenance(1.0, sid_host_emu._PLAY_DEADLINE_S))
-        self.assertIn("1s cap", emu._deadline_provenance(1.0, sid_host_emu._INIT_DEADLINE_S))
+        play = RunDeadline.own_cap(1.0, sid_host_emu._PLAY_DEADLINE_S)
+        init = RunDeadline.own_cap(1.0, sid_host_emu._INIT_DEADLINE_S)
+        self.assertIn("0.05s cap", emu._deadline_provenance(play))
+        self.assertIn("1s cap", emu._deadline_provenance(init))
 
-    def test_a_play_pass_that_ends_on_its_own_cap_quotes_the_play_cap(self):
-        # Through tick_play rather than the helper, because what has to be
-        # right is the cap `tick_play` supplies when a caller names none —
-        # asserting on the helper alone left that default free to be the INIT
-        # one, which is the 20x-wrong figure.
+    def test_a_production_play_pass_quotes_the_cap_that_deadline_came_from(self):
+        # Through a production caller rather than the helper. `tick_play` has
+        # no cap of its own to supply any more — the caller derives the instant
+        # and names the cap in one call — so what has to be right is that the
+        # two paths which deadline a PLAY pass hand it the PLAY figure. Reading
+        # `_INIT_DEADLINE_S` here quoted 1 s for a 0.05 s bound.
+        from c64cast.sid import sid_host_emu
+
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
-        emu = SidHostEmu(sid)
-        emu.tick_play(deadline=emu._now() - 1.0)
-        self.assertTrue(emu.last_routine_capped)
+        # Advances past a 0.05 s per-run cap on every few reads and never past
+        # the 6 s budget, so the pass ends on its own cap and not on the budget.
+        clock = itertools.count(1000.0, 0.02)
+        budget = sid_host_emu.HostEmuBudget(6.0, clock=lambda: next(clock))
+        emu = SidHostEmu(sid, budget=budget)
+        self.assertIsNotNone(sid_host_emu.play_preflight_failure(emu, ticks=2, budget=budget))
         cause = emu._routine_end_cause
         assert cause is not None
         self.assertIn("0.05s cap", cause)
         self.assertNotIn("1s cap", cause)
+
+    def test_a_pass_charged_to_a_budget_that_is_not_the_emulators_own(self):
+        # The footprint and pre-flight helpers take a budget as a *parameter*,
+        # so the budget a pass is charged to need not be the one the emulator
+        # was built with. Recovering the provenance afterwards compared against
+        # the emulator's own, which answers the wrong question and gets it
+        # wrong in the direction that denies a shared budget: a spent pool-walk
+        # budget was reported as "nothing but this tune spent it". The answer
+        # now travels with the deadline, settled by the `min` that chose it.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
+        # One clock for both, because a deadline only means anything in the
+        # domain that produced it. The walk's 0.04 s is chosen to sit between
+        # the two bounds that matter: still unexpired when the pre-flight loop
+        # checks, and already less than the 0.05 s per-run cap by the time the
+        # deadline is derived, so the walk's instant is the one that wins.
+        clock = itertools.count(1000.0, 0.02)
+        tick = lambda: next(clock)  # noqa: E731
+        own = sid_host_emu.HostEmuBudget(6.0, clock=tick)
+        emu = SidHostEmu(sid, budget=own)
+        walk = sid_host_emu.HostEmuBudget(0.04, clock=tick)
+        self.assertIsNotNone(sid_host_emu.play_preflight_failure(emu, ticks=2, budget=walk))
+        cause = emu._routine_end_cause
+        assert cause is not None
+        self.assertIn("what was left of the analysis budget", cause)
+        self.assertNotIn("nothing but this tune spent it", cause)
 
     def test_the_cap_is_read_when_the_routine_runs_not_when_the_file_loads(self):
         # A default argument expression is evaluated at definition time, so
