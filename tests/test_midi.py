@@ -122,6 +122,25 @@ class PollPendingTest(unittest.TestCase):
         port = self._port(50)
         self.assertEqual(len(list(_midi.poll_pending(port, stop, limit=4))), 4)
 
+    def test_the_count_bound_is_read_when_the_pass_runs_not_when_the_file_loads(self):
+        # As a parameter default the constant was bound at definition time, so
+        # rebinding it here was a silent no-op — and this file's other
+        # injection point, `_monotonic`, is rebound exactly this way and does
+        # work. One idiom that does nothing beside one that does is how a test
+        # gets written, passes, and pins nothing.
+        stop = threading.Event()
+        port = self._port(50)
+        with mock.patch.object(_midi, "MAX_MSGS_PER_DRAIN", 3):
+            self.assertEqual(len(list(_midi.poll_pending(port, stop))), 3)
+
+    def test_a_zero_limit_hands_out_nothing(self):
+        # The bound is restored from `None`, not from falsiness: `limit or
+        # MAX_MSGS_PER_DRAIN` would read a deliberate zero as "use the
+        # default" and hand out 64 messages to a caller that asked for none.
+        stop = threading.Event()
+        port = self._port(50)
+        self.assertEqual(list(_midi.poll_pending(port, stop, limit=0)), [])
+
 
 class DrainWorkBoundTest(unittest.TestCase):
     """The count bound alone is not enough: it bounds *messages* while the wire
@@ -170,6 +189,36 @@ class DrainWorkBoundTest(unittest.TestCase):
         port = self._port(1000)
         with mock.patch.object(_midi, "_monotonic", self._clock(1.0)):
             self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
+
+    def test_a_zero_work_budget_releases_after_one_message(self):
+        # The bound is restored from `None`, not from falsiness. The sibling
+        # test above cannot show this: its clock steps a whole second, so a
+        # zero budget and the real default both release after one message. A
+        # clock that does not advance separates them — a real budget then never
+        # expires and the pass runs to the count bound.
+        stop = threading.Event()
+        port = self._port(1000)
+        with mock.patch.object(_midi, "_monotonic", lambda: 1000.0):
+            self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
+
+    def test_the_work_budget_is_read_when_the_pass_runs_not_when_the_file_loads(self):
+        # Widened rather than shrunk, so the assertion cannot pass on the
+        # bound the sibling test above already produces: with the real default
+        # this clock releases the pass after a handful of messages, and only a
+        # budget read at call time lets the count bound be the one that binds.
+        stop = threading.Event()
+        port = self._port(1000)
+        # Sized off the real constant before the patch is entered: a
+        # parenthesized `with` evaluates each expression after entering the one
+        # before it, so reading it inside would size the clock off 1000.0 and
+        # release the pass on message three — green, and for the wrong reason.
+        step = _midi.MAX_DRAIN_WORK_S / 3
+        with (
+            mock.patch.object(_midi, "MAX_DRAIN_WORK_S", 1000.0),
+            mock.patch.object(_midi, "_monotonic", self._clock(step)),
+        ):
+            drained = list(_midi.poll_pending(port, stop))
+        self.assertEqual(len(drained), _midi.MAX_MSGS_PER_DRAIN)
 
     def test_releasing_the_pass_drops_no_message(self):
         # The deadline is checked *before* `port.poll()`, never after — a poll

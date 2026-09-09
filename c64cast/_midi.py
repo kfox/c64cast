@@ -116,8 +116,8 @@ def poll_pending(
     port: Any,
     stop: threading.Event,
     *,
-    limit: int = MAX_MSGS_PER_DRAIN,
-    budget_s: float = MAX_DRAIN_WORK_S,
+    limit: int | None = None,
+    budget_s: float | None = None,
 ) -> Iterator[Any]:
     """Yield at most ``limit`` messages already waiting on ``port``, for at most
     ``budget_s`` of consumer work, stopping early once ``stop`` is set.
@@ -133,6 +133,18 @@ def poll_pending(
     consumer; a caller whose consumer blocks on the link must pass its own or it
     will retire exactly one message a pass. :data:`MAX_DRAIN_WORK_S` says why
     the sizing belongs to the caller."""
+    # Both bounds are read here rather than bound as the parameters' defaults:
+    # a default expression is evaluated at definition time, so rebinding either
+    # module constant would leave this pass running whatever the constant held
+    # at import. This file establishes rebinding as its injection idiom — the
+    # next statement reads `_monotonic` through the module attribute for
+    # exactly that reason — so a default here would put one idiom that silently
+    # does nothing beside one that works.
+    if limit is None:
+        limit = MAX_MSGS_PER_DRAIN
+    if budget_s is None:
+        budget_s = MAX_DRAIN_WORK_S
+
     deadline = _monotonic() + budget_s
     for retired in range(limit):
         if retired and _monotonic() >= deadline:
