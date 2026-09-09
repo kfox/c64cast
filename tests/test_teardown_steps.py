@@ -18,11 +18,12 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import unittest
 import wave
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio_source import AudioFileSource, MicAudioSource
@@ -57,15 +58,11 @@ def _wedged_palette() -> RollingForcePalette:
 
 
 class _WedgedFeatures:
-    """An `AudioFeatureStream` whose `stop()` raises, as a real one can: it
-    joins a PollThread."""
-
-    def __init__(self) -> None:
-        self.stopped = False
+    """An `AudioFeatureStream` whose `stop()` raises the `RuntimeError` its
+    `PollThread` gives for a join of the current thread."""
 
     def stop(self) -> None:
-        self.stopped = True
-        raise RuntimeError("analyzer poll wedged")
+        raise RuntimeError("cannot join current thread")
 
 
 def _wedged_features() -> AudioFeatureStream:
@@ -239,6 +236,13 @@ class AudioSourceTeardownTests(unittest.TestCase):
     """
 
     def test_a_failing_feature_stop_does_not_starve_the_mic_audio_stop(self):
+        # The raise is injected, not reproduced: `AudioFeatureStream.stop` is a
+        # `PollThread.stop`, which raises only the join-current-thread
+        # `RuntimeError` that `_pollthread` makes its lifecycle lock reentrant
+        # to produce — and nothing tears a mic source down from inside the
+        # analyzer's own tick. So this pins the runner's property at this site
+        # rather than a live defect; the file and SID sources next to it are
+        # reproductions.
         audio = MagicMock()
         source = MicAudioSource(audio, MagicMock())
         source._features = _wedged_features()
@@ -248,10 +252,20 @@ class AudioSourceTeardownTests(unittest.TestCase):
         self.assertIsNone(source._features, "a dead analyzer is still referenced")
 
     @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
-    def test_a_failing_decode_join_does_not_starve_the_file_audio_stop(self):
-        # `Thread.join` is the first step here, and `_pollthread` documents it
-        # as able to raise RuntimeError on a thread that joins itself.
-        audio, features = MagicMock(), _WedgedFeatures()
+    def test_a_decode_thread_that_never_started_does_not_starve_the_audio_stop(self):
+        """The whole path, not an injected raise.
+
+        `setup` publishes the decode thread before starting it, so a `start()`
+        that fails — the OS out of threads — leaves an *unstarted* thread on the
+        source, and `Thread.join` raises `RuntimeError` on one of those. That is
+        reachable rather than theoretical: `SourceScene.setup` catches an audio
+        source that fails to start, logs, and flips `is_done`, so the playlist
+        advances and tears the scene down. On the DAC path
+        `start_for_external_source()` has already run by then, so the starved
+        step was the `audio.stop()` that keeps the next scene from inheriting a
+        live pump.
+        """
+        audio = MagicMock()
         with tempfile.TemporaryDirectory() as tmp:
             tune = os.path.join(tmp, "tune.wav")
             with wave.open(tune, "wb") as w:
@@ -259,12 +273,15 @@ class AudioSourceTeardownTests(unittest.TestCase):
                 w.setsampwidth(2)
                 w.setframerate(8000)
                 w.writeframes(b"\x00\x00" * 800)
-            source = AudioFileSource(audio, tune)
-        thread = MagicMock()
-        thread.join.side_effect = RuntimeError("cannot join current thread")
-        source._thread = thread
-        source._features = cast("AudioFeatureStream", features)
-        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            source = AudioFileSource(audio, tune, reactive=False)
+            with patch.object(
+                threading.Thread, "start", side_effect=RuntimeError("can't start new thread")
+            ):
+                with self.assertRaises(RuntimeError):
+                    source.setup()
+        self.assertIsNotNone(source._thread, "setup published the thread it could not start")
+        audio.stop.reset_mock()
+        with self.assertLogs(_SOURCES_LOG, level="ERROR") as caught:
             source.teardown()
-        self.assertTrue(features.stopped, "the analyzer thread outlives the scene")
+        self.assertIn("decode thread join", caught.output[0])
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")

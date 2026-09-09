@@ -116,11 +116,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   suppress the next lap's first OSD repaint) when the record-border restore hit
   a link error, and the `launcher` scene could leave a `.crt` cartridge active
   when its input poller failed to join. The three composable audio sources are
-  guarded on the same terms — the `mic`, `listen` and `file` sources could hand
-  the next scene a streaming pump when the analyzer's poll thread (or the decode
-  thread) refused to join, and the `sid` source wrapped the KERNAL-vector
-  restore and the chip silences in one `try`, so a REST hiccup on the vector
-  left every SID ringing until something else happened to write `$D418`.
+  guarded on the same terms. The `sid` source wrapped the KERNAL-vector restore
+  and the chip silences in one `try`, so a REST hiccup on the vector left every
+  SID ringing until something else happened to write `$D418`. The `file` source
+  could hand the next scene a streaming pump when its decode thread failed to
+  start at all: the thread is published before it is started, a machine out of
+  threads leaves an unstarted one behind, and joining that raises — after the
+  audio output had already been brought up. The `mic` and `listen` sources are
+  guarded to match, though nothing reaches the raise their analyzer stop can
+  give.
 
 - **MIDI Program Change did nothing in the `midi` scene, though it is on by
   default.** `midi_program_change` defaults to `True` and the scene's dispatch

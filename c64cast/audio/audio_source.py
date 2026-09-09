@@ -202,8 +202,6 @@ class MicAudioSource:
         features, self._features = self._features, None
         steps: list[tuple[str, Callable[[], object]]] = []
         if features is not None:
-            # A PollThread join, which `_pollthread` documents as able to
-            # raise RuntimeError.
             steps.append(("feature stream stop", features.stop))
         steps.append(("audio stop", self._audio.stop))
         run_teardown_steps(log, type(self).__name__, steps)
@@ -448,6 +446,10 @@ class AudioFileSource:
         features, self._features = self._features, None
         steps: list[tuple[str, Callable[[], object]]] = []
         if thread is not None:
+            # `setup` publishes the thread before starting it, so a `start()`
+            # that fails leaves an unstarted thread here and this join raises
+            # `RuntimeError` — reachable, because `SourceScene.setup` catches
+            # that failure and self-aborts the scene, which tears it down.
             steps.append(("decode thread join", partial(thread.join, 2.0)))
         if features is not None:
             steps.append(("feature stream stop", features.stop))
