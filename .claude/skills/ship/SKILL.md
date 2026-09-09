@@ -2,8 +2,9 @@
 name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
-  to merge: branch, implement, commit, run an adversarial review to convergence,
-  open the PR, and watch CI and GHAS until green. Stops before merging — the
+  to merge: branch, implement, commit, review each changeset as it lands, run an
+  adversarial panel over the branch to convergence, open the PR, and watch CI and
+  GHAS until green. Stops before merging — the
   merge is always the user's. Use when asked to implement a non-trivial change,
   or when asked to "ship", "land", or "take this to a PR". Trigger phrases
   include "ship this", "take it to a PR", "full workflow", "branch and review".
@@ -15,7 +16,8 @@ The standard workflow for non-trivial work in this repository. Every stage is
 mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
-branch → implement → commit → adversarial review to convergence → PR → CI/GHAS green → STOP
+branch → (implement → commit → review that changeset)* → adversarial panel
+       over the branch, to convergence → PR → CI/GHAS green → STOP
 ```
 
 **Never merge.** The user merges. Do not run `gh pr merge`, do not enable
@@ -50,6 +52,17 @@ they are enforced by tests that fail late:
 - **A test run prints only pass/fail/skip.** Wrap every by-product where it
   fires: `assertRaises`, `assertLogs`, `redirect_stdout`, or `quiet_logging()`.
   `quiet_logging` and `assertLogs` must never nest.
+- **Prove a test can fail before claiming it pins anything.** Mutate the line it
+  covers, watch a *named* assertion go red, revert, re-run green. "Tests cover
+  this" is an argument; a named victim is evidence. Run `make mutation-ready`
+  first — CPython validates bytecode against the source mtime in whole seconds,
+  so a same-length edit applied and reverted inside one second silently runs
+  stale bytecode and reports a false result. `PYTHONDONTWRITEBYTECODE=1` does
+  not fix that, and neither does `touch`. Arming does not stay done, and every
+  way it lapses is silent: a fresh worktree has no bytecode at all, `make clean`
+  deletes it, and a `uv sync` that moves the Python minor invalidates it.
+  `make mutation-check` verifies the state — run it before believing a proof
+  whose arming happened earlier in the session or in another directory.
 - **The suite cannot touch files outside the checkout**, and an audit hook
   enforces it. When a test trips the sandbox, point the code under test at a
   temp fixture — never widen the sandbox.
@@ -72,11 +85,45 @@ make schema    # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
 ```
 
-## 4. Adversarial review, to convergence
+**Then review the commit you just made, scoped to that commit alone** —
+`/code-review <sha>`, and tell it to review that commit's own diff, not
+`<sha>...HEAD` and not the branch. Act on what it finds, then record it; the
+report is read from **stdin**, and an empty one is refused:
+
+```bash
+~/.claude/hooks/changeset-review.sh record <sha> <<'REPORT'
+<looked at / found / did>
+REPORT
+```
+
+The placeholder above is deliberately under the hook's floor: the report has
+to say what you looked at, what you found, and what you did about each
+finding, and a copy of the placeholder is refused rather than recorded.
+
+This is not the panel in step 4; it is a narrow pass, and it is the one that
+catches things. Both `git push` and `gh pr create` are denied while any commit
+on the branch has no recorded review — so skipping this does not defer the
+cost, it blocks step 5.
+
+Do not batch this to the end. The whole point is that the reviewer sees one
+changeset instead of a branch: a wide scope spends its attention before it
+reaches the small commit, and reads back as a clean pass. Fixes for what it
+finds are their own commits, and get their own review.
+
+## 4. Adversarial panel over the branch, to convergence
+
+The per-changeset reviews in step 3 are the first net and the one that catches
+most defects. This is the **second** net: the panel sees what no single-commit
+review can — how the commits interact, a guarantee one commit made and a later
+one quietly dropped, a design the branch drifted into. Run it once, after every
+commit has had its own review, never instead of them.
 
 Invoke the `adverse-review` skill in its **convergence loop** shape, scoped to
 `origin/main...HEAD`. Do not hand-roll a review; the skill's deterministic
 triage, ledger, and stop condition are the point.
+
+A clean panel here does not mean the branch is clean — it means nothing
+survived *both* nets. Read a wide pass that finds nothing as weak evidence.
 
 Three things to pass it that it cannot work out for itself:
 
@@ -114,7 +161,16 @@ Three things to pass it that it cannot work out for itself:
 
 Then work the loop:
 
-- Fix the blocking findings. Commit the fixes.
+- Fix the blocking findings. Commit the fixes — and review each of those
+  commits the way step 3 does, as you make it. They are commits on the branch,
+  the gate counts them, and leaving them to the end is the batching step 3
+  forbids, done at the point where the branch is closest to shipping. This is
+  **not** the loop's own regression pass over the fixes — Phase 9 of the
+  `adverse-review` skill's own `references/convergence-loop.md`, which asks
+  whether a fix broke something or missed its finding, is recommended rather
+  than required there, and records nothing this gate can see. The step-3
+  review is the required one, and running the loop's pass in its place leaves
+  `gh pr create` blocked in step 5.
 - **Record a decision for every finding, not only the blocking ones —
   including the ones you decline.** The ledger is what stops the next pass
   from re-litigating them, whether the finding was blocking or advisory; a

@@ -23,6 +23,21 @@ from c64cast.hw import hw_provision
 # Pure register helpers
 # ---------------------------------------------------------------------------
 class PureHelperTest(unittest.TestCase):
+    def test_the_mapped_io_page_matches_the_channel_register_files(self):
+        # ULTIMATE_AUDIO.IO_BASE/IO_END is what the SID planners and the PSID
+        # header decoder refuse to place a chip on (hw.c64.RESERVED_IO_WINDOWS),
+        # so it has to stay the range this register spec actually occupies: the
+        # firmware switch is named "Map Ultimate Audio $DF20-DFFF" and seven
+        # 32-byte channel files fill exactly that.
+        from c64cast.hw.c64 import ULTIMATE_AUDIO
+
+        self.assertEqual(s.SAMPLER_IO_BASE, ULTIMATE_AUDIO.IO_BASE)
+        self.assertEqual(
+            s.SAMPLER_IO_BASE + s.SAMPLER_NUM_CHANNELS * s.SAMPLER_CHANNEL_STRIDE - 1,
+            ULTIMATE_AUDIO.IO_END,
+        )
+        self.assertEqual(s.channel_base(s.SAMPLER_NUM_CHANNELS - 1), 0xDFE0)
+
     def test_divider_table_matches_doc(self):
         # round(6.25 MHz / rate); 44100 -> 142 is the documented value.
         self.assertEqual(s.divider_for_rate(44100), 142)

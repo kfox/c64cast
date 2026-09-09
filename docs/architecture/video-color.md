@@ -243,7 +243,7 @@ The hires/mhires VIC bring-up is one shared module-level primitive, `engage_bitm
 
 **Per-caller differences are arguments, not forks:**
 
-* `dd00` plus `bitmap_base`/`screen_base`/`d018` let the scope **relocate the VIC bank**, switching bank 0↔2 according to the SID footprint.
+* `dd00` plus `bitmap_base`/`screen_base`/`d018` let the scope **relocate the VIC bank**, moving between bank 0, bank 2 and bank 1 according to the SID footprint (`waveform._DISPLAY_BANKS` carries all three, in that preference order; the bank-1 exception is written up in [hardware-io.md](hardware-io.md)).
 * `clear_region_ids` selects the **delta-cached `write_region`** clear — used by the scope, which reuses stable region IDs to also blank its spacer rows — versus the **`write_memory_file`** bulk clear, the display modes' one-time clear that bypasses the cache the first `push` rebuilds.
 * `clear=False` lets the REU and host-DMA double-buffer paths take only the register pokes, since they zero both VIC *banks* themselves during setup.
 

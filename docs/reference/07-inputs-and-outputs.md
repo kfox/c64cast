@@ -1080,6 +1080,6 @@ individual systems its own way:
 | WLED | A segment, in ensemble order |
 | The web console | A tab per system |
 
-The MIDI convention is the one worth internalising: a performer retargets by
+The MIDI convention is the one worth internalizing: a performer retargets by
 changing their controller's transmit channel, with no round trip through a menu
 or a network call. In a single-system run the channel is ignored entirely.

@@ -279,7 +279,7 @@ not have. Two families, and they are integrated differently:
 
 **Ordered** — `ordered` and `blue_noise` — add a fixed, position-dependent
 offset to every channel before the nearest-color search. They are one
-vectorised operation over the frame, they hold real-time frame rates, and
+vectorized operation over the frame, they hold real-time frame rates, and
 because the pattern is constant at a given screen position a still source
 dithers identically frame after frame and a moving one gains no shimmer.
 `ordered` tiles the classic 8×8 Bayer matrix and shows its cross-hatch at C64

@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from unittest import mock
 
+from c64cast._wire_log import LogThrottle
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
 
@@ -434,6 +435,52 @@ def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] 
     raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
 
 
+def unspendable_budget(seconds: float = 6.0):
+    """A `HostEmuBudget` on a clock that never advances, so it cannot expire.
+
+    A test that hands a scan loop a default `HostEmuBudget()` is asserting
+    against the real `time.monotonic`, which makes the assertion depend on how
+    loaded the machine is: the loop breaks out early, returns its
+    all-rejected fallback, and the test fails for a reason that has nothing to
+    do with what it is about. Tests *about* the budget inject a spent one
+    instead — see the `HostEmuBudget(0.0, clock=...)` uses in
+    tests/test_sid_host_emu.py.
+    """
+    from c64cast.sid.sid_host_emu import HostEmuBudget
+
+    return HostEmuBudget(seconds, clock=lambda: 0.0)
+
+
+def fake_host_emu(**attrs):
+    """A `SidHostEmu` stand-in already answering "healthy" for every flag a
+    scene consults, plus whatever `attrs` override.
+
+    Every default here is a trap a bare `MagicMock` walks straight into,
+    because an unset attribute is a truthy object rather than a falsy one:
+    `last_routine_capped` then reads as "this pass never terminated", which
+    the PLAY pre-flight turns into a false rejection, and `init_truncation`
+    reads as "INIT stopped short", which makes the scene warn about a
+    truncation that never happened. `regs()` and `play_rate_hz()` have to
+    return real values because the scene does float math on them.
+
+    One builder rather than five hand-configured `setUp`s: the flags were
+    copied between them by hand, so each new one had to be remembered in
+    every copy — and three of the five leaked a WARNING into the test output
+    the first time one was added.
+    """
+    emu = mock.MagicMock()
+    emu.regs.return_value = bytes(25)
+    emu.retriggers.return_value = (False, False, False)
+    emu.last_routine_capped = False
+    emu.any_routine_capped = False
+    emu.saw_undecodable_opcode = False
+    emu.init_truncation = None
+    emu.play_rate_hz.return_value = 60.0
+    for name, value in attrs.items():
+        setattr(emu, name, value)
+    return emu
+
+
 def bare_waveform_scene(**attrs):
     """A WaveformScene that skips the SID-loading __init__ (which needs a
     real PSID file + emulator bring-up); each caller sets exactly the
@@ -447,32 +494,122 @@ def bare_waveform_scene(**attrs):
     return scene
 
 
-class FrozenClock:
-    """A stand-in for the stdlib ``time`` module with one function pinned.
+def frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
+    """A `LogThrottle` whose clock never advances, so its report window never
+    closes and it emits exactly one record for the life of the test.
+
+    A throttle test loops hundreds of times and asserts *exactly one* record,
+    which quietly makes THROTTLE_INTERVAL_S part of the assertion: outlast the
+    window and a second record goes out, on a gate that is working. The margin
+    is wide today — 960 `pack_slot` calls measure 3 ms against a 1 s window —
+    but it is a margin, and the tests read as though they were about the gate.
+
+    Signature-compatible with `LogThrottle` itself so it can stand in for the
+    class — see [frozen_throttles] — which means it has to tolerate a site that
+    passes its own `monotonic`. Overriding rather than colliding: the whole
+    point of standing in for the class is that every construction in the module
+    gets frozen, and a site that spells its clock explicitly is the one most
+    likely to be the one under test.
+
+    Called directly by a test that owns the throttle it asserts on, which is
+    every wire-triggered site now that they take one as an argument. This name
+    used to belong to a context manager that patched a module-level throttle by
+    attribute; there are no module-level throttles left to patch, and a
+    `LogThrottle` used in a `with` fails loudly, so the rename cannot pass
+    silently for a stale caller.
+    """
+    kwargs["monotonic"] = lambda: 0.0
+    return LogThrottle(logger, **kwargs)
+
+
+@contextlib.contextmanager
+def frozen_throttles(module) -> Iterator[None]:
+    """Freeze every `LogThrottle` a module builds while the block runs.
+
+    The companion to [frozen_throttle], for a module that builds its throttles
+    itself — per-instance attributes, or a factory a caller goes through — where
+    there is no one instance to hand the test. What gets patched is the class
+    the module constructs them with, so every throttle built inside the block
+    is frozen.
+    """
+    with mock.patch.object(module, "LogThrottle", frozen_throttle):
+        yield
+
+
+class FakeTime:
+    """A stand-in for the stdlib ``time`` module with some functions replaced.
 
     Bind it over a **module's own** ``time`` name::
+
+        with mock.patch.object(api, "time", FakeTime(sleep=lambda _s: None)):
+            ...                       # api.time.sleep() returns at once
+
+    and never over an attribute of the stdlib module itself
+    (``mock.patch("c64cast.hw.api.time.sleep")``, which resolves through the
+    alias to the one shared module object). The latter rebinds the function for
+    the entire process, so every thread in the suite gets it too — and the suite
+    leaves worker threads running. A worker measuring an interval against a
+    clock that never advances, or skipping a sleep it needed, is a flake with no
+    connection to the test that caused it. The same aliasing already broke the
+    preview pump tests under ``make coverage``, where every module shares one
+    process. It also hides which module actually reads the clock: four waveform
+    tests pinned ``waveform.time.monotonic`` to steer code in ``sid_host_emu``,
+    and ``waveform`` never calls ``monotonic`` at all.
+
+    Each keyword pins one name. A callable is installed as it is — pass a
+    ``MagicMock`` when the test wants to assert on the calls — and anything else
+    is returned as a constant, whatever arguments the caller passes, so
+    ``FakeTime(sleep=None)`` is a working no-op sleep and not a ``TypeError``
+    from inside the code under test. Every other name delegates to the real
+    module, so code that also calls ``time.monotonic()`` or ``time.sleep()``
+    while the fake is installed keeps working.
+    """
+
+    def __init__(self, **pinned) -> None:
+        def constant(value):
+            return lambda *_args, **_kwargs: value
+
+        self._pinned = {
+            name: value if callable(value) else constant(value) for name, value in pinned.items()
+        }
+
+    def __getattr__(self, name: str):
+        # Only reached for names not on the instance, so the attributes set in
+        # __init__ never route back through here.
+        pinned = self.__dict__.get("_pinned", {})
+        if name in pinned:
+            return pinned[name]
+        return getattr(time, name)
+
+
+class FrozenClock(FakeTime):
+    """A [FakeTime] whose one pinned clock the test drives itself.
 
         with mock.patch.object(scenes, "time", FrozenClock(10.0)):
             ...                       # scenes.time.time() == 10.0
 
-    and never over an attribute of the stdlib module itself
-    (``mock.patch.object(scenes.time, "time", return_value=10.0)``). The
-    latter rebinds ``time.time`` for the entire process, so every thread in
-    the suite reads the frozen value too — and the suite leaves worker
-    threads running. A worker measuring an interval against a clock that
-    never advances, or that jumps decades when the patch lifts, is a flake
-    with no connection to the test that caused it. The same aliasing already
-    broke the preview pump tests under ``make coverage``, where every module
-    shares one process.
+    ``step`` makes the clock advance by itself, one increment per reading, which
+    is what a test pricing an interval needs::
 
-    Any attribute other than the pinned one delegates to the real module, so
-    code that also calls ``time.monotonic()`` or ``time.sleep()`` while the
-    fake is installed keeps working.
+        with mock.patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.1)):
+            ...               # each monotonic() reading is 100 ms after the last
+
+    That is what ``side_effect=itertools.count(0.0, 0.1)`` did, minus the
+    process-wide aliasing [FakeTime] is about. Further keywords pin more names
+    the same way [FakeTime] does.
     """
 
-    def __init__(self, now: float, attr: str = "time") -> None:
+    def __init__(self, now: float = 0.0, attr: str = "time", step: float = 0.0, **pinned) -> None:
+        if attr in pinned:
+            raise TypeError(
+                f"{attr!r} is both this clock's pinned name and a keyword pin — pass "
+                f"one or the other. Without this, the same name reaches super() twice "
+                f"and Python raises 'got multiple values for keyword argument', which "
+                f"does not say which name or which of the two spellings to drop."
+            )
         self._now = float(now)
-        self._attr = attr
+        self._step = float(step)
+        super().__init__(**{attr: self._read}, **pinned)
 
     def advance(self, dt: float) -> None:
         """Move the pinned clock forward — lets a test drive a poller's tick
@@ -480,9 +617,7 @@ class FrozenClock:
         apart) instead of racing a real thread against wall time."""
         self._now += dt
 
-    def __getattr__(self, name: str):
-        # Only reached for names not on the instance, so `_now`/`_attr` never
-        # route back through here.
-        if name == self._attr:
-            return lambda: self._now
-        return getattr(time, name)
+    def _read(self) -> float:
+        now = self._now
+        self._now += self._step
+        return now

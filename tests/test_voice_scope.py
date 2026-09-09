@@ -18,16 +18,19 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 from _fakes import FakeAPI
 
 from c64cast.hw.c64 import RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code
-from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE
+from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE, Voice
 from c64cast.sid.voice_scope import (
     BITMAP_H,
     BITMAP_W,
+    D018_CHAR_DEFAULT,
+    D018_HIRES_BITMAP,
     META_ROW,
     SCREEN_W_CHARS,
     TIME_BASE_AUTO,
@@ -216,8 +219,11 @@ class VoiceTimeWindowTest(unittest.TestCase):
     with silent voices falling back to wallclock."""
 
     def _renderer(self, *, time_base, voice=None, auto_cycles=4):
+        # Real Voice objects, not stand-ins: the silence rule lives on Voice
+        # (Voice.is_silent), so a namespace carrying only the raw fields would
+        # stop exercising the predicate this method delegates to.
         emu = SimpleNamespace(
-            voices=[voice if voice is not None else SimpleNamespace()],
+            voices=[voice if voice is not None else Voice()],
             clock=1_000_000,
         )
         return _bare_renderer(
@@ -233,15 +239,114 @@ class VoiceTimeWindowTest(unittest.TestCase):
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W // 2), 1 / 60.0)
 
     def test_auto_spans_auto_cycles_of_the_voice_period(self):
-        voice = SimpleNamespace(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=1.0)
+        voice = Voice(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=1.0)
         r = self._renderer(time_base=TIME_BASE_AUTO, voice=voice, auto_cycles=4)
         period_s = ACCUMULATOR_RANGE / (0x2000 * 1_000_000)
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W), 4 * period_s)
 
     def test_auto_falls_back_to_wallclock_for_a_silent_voice(self):
-        voice = SimpleNamespace(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=0.0)
+        voice = Voice(freq=0x2000, control=WAVE_TRIANGLE, envelope_level=0.0)
         r = self._renderer(time_base=TIME_BASE_AUTO, voice=voice)
         self.assertAlmostEqual(r._voice_time_window_s(0, BITMAP_W), 1 / 30.0)
+
+
+def _knobbed_renderer(**knobs) -> VoiceScopeRenderer:
+    """A renderer taken through the real `_init_scope_knobs` entry point, so
+    the render-mode derivation and the window layout are the shipped ones."""
+    r = VoiceScopeRenderer()
+    r._init_scope_knobs(
+        color_mode=knobs.pop("color_mode", "per_voice"),
+        voice_colors=["cyan", "yellow", "light green"],
+        waveform_colors=None,
+        time_base=knobs.pop("time_base", TIME_BASE_WALLCLOCK),
+        auto_cycles=knobs.pop("auto_cycles", 4.0),
+        persistence=knobs.pop("persistence", "off"),
+        scroll_columns=knobs.pop("scroll_columns", 0),
+        frame_time_s=1 / 30.0,
+        n_windows=knobs.pop("n_windows", 1),
+    )
+    assert not knobs, knobs
+    return r
+
+
+class WindowChipOrderTest(unittest.TestCase):
+    """set_window_chip_order + _scope_emulators: the one choke point every
+    window-indexed render path goes through, so a pan order that reaches it
+    wrong draws every chip in the wrong column."""
+
+    def _renderer(self, n_windows, n_emulators=None):
+        r = _knobbed_renderer(n_windows=n_windows)
+        r._emulators = [SimpleNamespace(name=i) for i in range(n_emulators or n_windows)]
+        return r
+
+    def test_columns_follow_the_requested_order(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([1, 0, 2])
+        self.assertEqual([e.name for e in r._scope_emulators()], [1, 0, 2])
+
+    def test_identity_order_leaves_columns_in_chip_order(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([0, 1, 2])
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+    def test_mismatched_length_order_is_ignored(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([1, 0, 2])
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG"):
+            r.set_window_chip_order([1, 0])  # stale order from a 2-chip layout
+        # The rejected order leaves the previous one in place (the caller's
+        # _set_window_count is what resets to identity).
+        self.assertEqual([e.name for e in r._scope_emulators()], [1, 0, 2])
+
+    def test_non_permutation_order_is_ignored(self):
+        r = self._renderer(3)
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG"):
+            r.set_window_chip_order([0, 0, 1])  # duplicates chip 0, drops chip 2
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+    def test_reflow_resets_the_order_to_identity(self):
+        r = self._renderer(3)
+        r.set_window_chip_order([2, 1, 0])
+        r._set_window_count(3)
+        self.assertEqual([e.name for e in r._scope_emulators()], [0, 1, 2])
+
+
+class SetWindowCountRenderModesTest(unittest.TestCase):
+    """_set_window_count re-derives the per-voice render modes rather than
+    clobbering them, so the multi-window force-to-fast is reversible."""
+
+    def test_single_window_keeps_the_configured_echo_mode(self):
+        r = _knobbed_renderer(persistence="medium")
+        self.assertEqual(r._voice_render_modes, ["echo"] * 3)
+        self.assertFalse(r._fast_path)
+
+    def test_growing_past_one_window_forces_fast_and_says_so(self):
+        r = _knobbed_renderer(persistence="medium")
+        with self.assertLogs("c64cast.sid.voice_scope", level="WARNING") as cm:
+            r._set_window_count(2)
+        self.assertIn("forcing the fast render path", cm.output[0])
+        self.assertEqual(r._voice_render_modes, ["fast"] * 3)
+        self.assertTrue(r._fast_path)
+
+    def test_shrinking_back_to_one_window_restores_the_configured_mode(self):
+        r = _knobbed_renderer(scroll_columns=[4, 0, 0], persistence="short")
+        configured = list(r._voice_render_modes)
+        self.assertEqual(configured, ["scroll", "echo", "echo"])
+        with self.assertLogs("c64cast.sid.voice_scope", level="WARNING"):
+            r._set_window_count(2)
+        r._set_window_count(1)
+        self.assertEqual(r._voice_render_modes, configured)
+        self.assertFalse(r._fast_path)
+        # And the buffers the restored modes need are allocated again.
+        r._alloc_scope_buffers()
+        assert r._strips is not None
+        self.assertIsNotNone(r._strips[0])
+
+    def test_an_all_fast_config_reflows_without_a_warning(self):
+        r = _knobbed_renderer()  # persistence off, no scroll
+        with self.assertNoLogs("c64cast.sid.voice_scope", level="WARNING"):
+            r._set_window_count(4)
+        self.assertEqual(r._voice_render_modes, ["fast"] * 3)
 
 
 class PaintInfoRowsTest(unittest.TestCase):
@@ -300,6 +405,33 @@ class PaintInfoRowsTest(unittest.TestCase):
             r._build_title_line()
         with self.assertRaises(NotImplementedError):
             r._build_meta_line()
+
+
+class D018CharDefaultTest(unittest.TestCase):
+    """`D018_CHAR_DEFAULT` is what all three scope scenes hand the next scene at
+    teardown, and its whole claim is that it equals what a char mode engages.
+
+    Each scene's teardown test asserts the byte it *wrote*, so on its own it can
+    only ever compare the constant to itself: setting `D018_CHAR_DEFAULT = 0x18`
+    — the exact regression the CHANGELOG records as fixed — left all three green.
+    This is the independent half: it drives a real char-mode engage from another
+    module and compares against what the VIC is actually left holding there.
+    """
+
+    def test_matches_what_a_char_mode_engage_writes(self):
+        from c64cast.hw.backend import C64Backend
+        from c64cast.video.modes.blank import BlankDisplayMode
+
+        api = FakeAPI()
+        BlankDisplayMode().setup(cast(C64Backend, api))
+        self.assertEqual(api.memories["D018"], f"{D018_CHAR_DEFAULT:02X}")
+
+    def test_is_not_the_scope_s_own_bitmap_layout(self):
+        # The teardown these constants serve exists precisely to move the matrix
+        # pointer OFF the scope's layout, so equal values would make it a no-op.
+        self.assertNotEqual(D018_CHAR_DEFAULT, D018_HIRES_BITMAP)
+        # $D018 bit 3 selects the bitmap at bank+$2000; a char mode has it clear.
+        self.assertEqual(D018_CHAR_DEFAULT & 0x08, 0)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,12 @@ the emulated cores for the primary voices):
      previous run must never be allowed to survive into this one.
   5. A core left over after every chip is placed is **mirrored** onto a
      socket-served address rather than unmapped (see :func:`mirror_bases`).
+  6. No core instance may land on I/O c64cast drives itself
+     (:data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` — the REU's command registers
+     and the Ultimate Audio sampler's page, both inside the cartridge-I/O
+     window the firmware lets a core sit in). Because the firmware aligns a
+     split core's base *downward*, this has to be tested against the base the
+     planner realizes, not the one a `.sid` header declared.
 
 :func:`plan_sid_map_for_addresses` additionally takes the tune's per-chip model
 requirements, so a socket only claims an address when its chip is the model the
@@ -47,6 +53,8 @@ ASID tops out at chip 16 and real multi-SID tunes are 2-3 SID. We support up to
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from c64cast.hw.c64 import RESERVED_IO_WINDOWS
 
 # Config category / item names — must match the firmware exactly (u64_config.cc).
 CAT_ADDRESSING = "SID Addressing"
@@ -180,8 +188,10 @@ class SidMap:
     ``"ultisid1"``/``"ultisid2"`` — realizing chip *i*, parallel to
     ``addresses``. The U64 mixes each source at its own stereo pan, so
     :mod:`c64cast.sid.sid_panning` needs the source (not the address) to pan a
-    chip. Two chips can share one source when a split core hosts both (≥5
-    SIDs); they then share that source's pan."""
+    chip. Two chips share one source whenever a split core hosts both — from 3
+    chips with no socket in play (the ordinary case for an ASID stream on a
+    stock U64: only two cores, so the third chip doubles up), from 5 with both
+    sockets. They then share that source's pan."""
 
     addresses: tuple[int, ...]
     config: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -286,15 +296,67 @@ _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
     (SPLIT_HALF, 2, 0x40),
     (SPLIT_QUARTER, 4, 0x80),
 )
-# Lowest base an UltiSID core may sit at ($D400 page; below this is unmapped).
-_ULTISID_MIN_BASE = 0xD400
+# The base addresses an UltiSID core may sit at, as inclusive $20-granular
+# windows — a transcription of the firmware's own `u64_sid_base[]` enum
+# (u64_config.cc): the $D4xx-$D7xx SID page and the $DExx/$DFxx cartridge I/O
+# page. A base outside them is a string the REST PUT would simply reject, so the
+# planner must treat it as unrealizable rather than emit it; unbounded above,
+# any $20-aligned address up to $FFFF looked realizable.
+#
+# This is a transcription of what the firmware *accepts*, deliberately kept
+# separate from what c64cast is *willing to emit*: every base from $DF00 up is
+# refused by :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, so the second window's
+# top half is unreachable in practice. Widening the reserved set must not
+# require editing an enum transcription.
+_ULTISID_BASE_WINDOWS: tuple[tuple[int, int], ...] = ((0xD400, 0xD7E0), (0xDE00, 0xDFE0))
 
 
-def _plan_ultisid_cores(targets: list[int]) -> tuple[str, list[int]] | None:
+def _is_legal_ultisid_base(base: int) -> bool:
+    return any(low <= base <= high for low, high in _ULTISID_BASE_WINDOWS)
+
+
+def _reaches_reserved_io(
+    instance_base: int, reserved: tuple[tuple[int, int], ...] = RESERVED_IO_WINDOWS
+) -> bool:
+    """True when the $20 a core instance at `instance_base` answers overlaps I/O
+    c64cast drives itself (:data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`).
+
+    An instance answers a whole $20-granular span, not just the 25 SID
+    registers, because the core is decoded off A5/A6 — so the span is what has
+    to clear the reserved range. Both windows happen to start on a $20 boundary
+    today, which makes the span and the base equivalent; `reserved` is a
+    parameter so that generality is testable rather than assumed."""
+    span_end = instance_base + _SPLIT_STRIDE - 1
+    return any(instance_base <= high and span_end >= low for low, high in reserved)
+
+
+def _plan_ultisid_cores(
+    targets: list[int], *, blocked: frozenset[int] = frozenset()
+) -> tuple[str, list[int]] | None:
     """Cover `targets` (a list of $Dxx0 bases) with up to two UltiSID cores that
     share one split. Returns ``(split_label, [core_base, ...])`` or None if two
     cores can't realize the set. Extra instances a split creates beyond the
-    targets are harmless (that address simply stays silent)."""
+    targets are harmless (that address simply stays silent) — **unless** they
+    land on `blocked`, the addresses an enabled physical socket already answers.
+    The firmware force-aligns a split core's base downward, so a window can be
+    pulled back over a socket the caller just claimed; the core and the real chip
+    then both answer it, which is the detuned double policy point 4 of the module
+    docstring forbids. A split level whose window would do that is rejected, and
+    the search falls through to the next.
+
+    **The same test applies to the I/O c64cast drives itself**, and it has to be
+    applied to the base this planner *realizes*, not the one a caller declared.
+    `sid_host_emu._decode_extra_sid_addr` refuses a declared base overlapping
+    :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` — but downward alignment moves
+    the base after that test has passed, so a header declaring $DF20 and $DF60
+    (two bytes of a downloaded `.sid`) used to be covered by one 1/4-split core
+    at $DF00: a live REST PUT putting a SID on the REU's own command registers,
+    which the audio pump and the ASID ring player both drive and the audio NMI
+    handler reads $DF03 back from mid-transfer. Every instance a level realizes
+    is checked, and a level that cannot be placed clear falls through to the
+    next exactly as the socket case does. Running out of levels returns None,
+    which the caller turns into a warning and the canonical-layout fallback —
+    never a placement."""
     if not targets:
         return (SPLIT_OFF, [])
     for split, cap, align in _SPLIT_LEVELS:
@@ -305,11 +367,17 @@ def _plan_ultisid_cores(targets: list[int]) -> tuple[str, list[int]] | None:
             if t in covered:
                 continue
             base = t & ~(align - 1) & 0xFFFF
-            if base < _ULTISID_MIN_BASE:
+            if not _is_legal_ultisid_base(base):
                 realizable = False
                 break
             window = {base + k * _SPLIT_STRIDE for k in range(cap)}
             if t not in window:  # alignment pushed the window past t
+                realizable = False
+                break
+            if window & blocked:  # would double a socket-served address
+                realizable = False
+                break
+            if any(_reaches_reserved_io(instance) for instance in window):
                 realizable = False
                 break
             bases.append(base)
@@ -320,6 +388,34 @@ def _plan_ultisid_cores(targets: list[int]) -> tuple[str, list[int]] | None:
         if realizable and len(bases) <= 2 and all(t in covered for t in targets):
             return (split, bases)
     return None
+
+
+def _claim_sockets(
+    targets: list[int],
+    models: dict[int, str | None],
+    socket_models: tuple[str | None, str | None],
+) -> dict[int, str]:
+    """Which physical socket serves which target address. A socket claims its
+    fixed base only when the tune asks for a chip there *and* the socket carries
+    the model that chip requires."""
+    served: dict[int, str] = {}
+    for index, (_addr_item, _en_item, base) in enumerate(_SOCKET_SPECS):
+        socketed = socket_models[index]
+        required = models.get(base)
+        if socketed is None or base not in targets or (required and socketed != required):
+            continue
+        served[base] = f"socket{index + 1}"
+    return served
+
+
+def _enable_claimed_sockets(
+    config: dict[tuple[str, str], str], served_by_socket: dict[int, str]
+) -> None:
+    """Address + enable the sockets a plan actually claimed."""
+    for index, (addr_item, en_item, base) in enumerate(_SOCKET_SPECS):
+        if served_by_socket.get(base) == f"socket{index + 1}":
+            config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
+            config[(CAT_SOCKETS, en_item)] = "Enabled"
 
 
 def _source_for_address(
@@ -395,20 +491,28 @@ def plan_sid_map_for_addresses(
     models = _models_by_address(addresses, required_models)
     config: dict[tuple[str, str], str] = {}
 
-    served_by_socket: dict[int, str] = {}
-    for index, (addr_item, en_item, base) in enumerate(_SOCKET_SPECS):
-        socketed = socket_models[index]
-        required = models.get(base)
-        if socketed is None or base not in targets or (required and socketed != required):
-            continue
-        config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
-        config[(CAT_SOCKETS, en_item)] = "Enabled"
-        served_by_socket[base] = f"socket{index + 1}"
-
-    remaining = [t for t in targets if t not in served_by_socket]
-    core_plan = _plan_ultisid_cores(remaining)
+    served_by_socket = _claim_sockets(targets, models, socket_models)
+    core_plan = _plan_ultisid_cores(
+        [t for t in targets if t not in served_by_socket],
+        blocked=frozenset(served_by_socket),
+    )
+    if core_plan is None and served_by_socket:
+        # A socket claim that boxes the cores in costs more than it buys. The
+        # firmware aligns a split core's base *downward*, so for some target sets
+        # no split level has a window that clears the claimed socket — and since
+        # the same downward alignment is what can pull a base into
+        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, a claimed socket can also
+        # be what leaves every otherwise-legal level reserved. Both exhaust the
+        # levels the same way and both are worth one retry without the socket.
+        # Give the socket up and let the cores answer everything — every chip
+        # audible on emulated cores beats handing the caller None and falling
+        # back to the canonical layout, which ignores the file's own addresses
+        # entirely.
+        served_by_socket = {}
+        core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:
         return None
+    _enable_claimed_sockets(config, served_by_socket)
     split_label, core_bases = core_plan
     capacity = _SPLIT_CAPACITY[split_label]
     config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split_label

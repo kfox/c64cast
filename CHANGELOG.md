@@ -21,6 +21,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **A warning when a tune's INIT does not finish running on the host
+  emulator.** The scope and the reactive visuals are both drawn from a
+  host-side 6502 running the same tune the SID chip plays, and a tune whose
+  INIT is slow enough to hit the emulator's bound (a fat depacker, say) leaves
+  that emulator holding only part of the register state the tune sets up. The
+  tune still plays — the audio comes from the real chip — but the picture can
+  disagree with it, and until now nothing said so unless you were running with
+  `-vv`. The line says which of the three things stopped the INIT, and notes
+  that the detected PLAY rate may be affected too, since it is measured the
+  same way. A tune picked from a pool is only reported on once it is the one
+  being played, and a subtune is reported on once however many times you cue
+  it.
+
 - **A PERF button on the `/perf` console — performance mode.** While the C64 is in
   front of an audience, nothing should draw text over it, but a scrub, a knob
   sweep or a loop mark each post an OSD line. That readout is wanted while
@@ -70,6 +83,417 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A CIA-timed SID tune could peg a core for the whole scene, and the guard
+  against it was skipped on exactly those tunes.** The oscilloscope and the
+  reactive-visuals feature stream size their poll period so one emulated PLAY
+  pass fits inside a fraction of it — otherwise a multispeed tune's short
+  period and long pass leave the thread running back to back, taking the render
+  thread's time with it. The measurement came from the PLAY-rate probe, which
+  read the tune's rate at the top of its loop and stopped as soon as it knew
+  it. A tune that programs CIA #1 Timer A from its INIT settles the rate before
+  the first pass, so the probe stopped having timed nothing, reported a pass
+  cost of zero, and the floor never applied: a 399.3 Hz tune kept a 2.50 ms
+  poll period against a pass it had never priced. The probe now times a pass
+  before it reads the rate. A tune too expensive to probe at all is charged the
+  worst a legal pass can cost rather than nothing — those were the same value
+  before, and the cheap reading won.
+
+- **MIDI Program Change did nothing in the `midi` scene, though it is on by
+  default.** `midi_program_change` defaults to `True` and the scene's dispatch
+  has handled Program Change all along — but the reader thread that feeds it
+  only forwarded note on/off, so the message was dropped before reaching the
+  dispatch and no keyboard or DAW could select a voice's waveform. The reader
+  now forwards everything it does not deliberately coalesce, so the two cannot
+  drift apart again: the only types it holds back are the continuous
+  controllers (pitch bend and CC) it collapses to their newest value on
+  purpose.
+
+- **An ASID host could buy an unbounded amount of log work with one 62-byte
+  message.** The MIDI reader's drain is bounded at 64 messages a pass so the
+  coalesced register flush and the stop check that ends teardown always run —
+  but that bounds *messages*, and the wire picks the *work* per message. One
+  WARNING costs ~322 us through the default terminal handler, so 64 of them in
+  a pass is 20.6 ms on a loop that is otherwise sub-millisecond, and two
+  warnings on the ASID path fired once per message with no gate at all: the
+  over-long `0x30` timing recipe (18 MB/s into an unrotated `--log-file` at full
+  decode rate) and the ring player's slot-truncation report, which runs at the
+  ASID frame rate, 60 to 960 Hz, and can hold for a whole scene rather than a
+  frame. Both now report at most once a second per stream — first occurrence at
+  WARNING as written, a repeat at DEBUG carrying how many occurrences it stands
+  for. One shared implementation rather than a hand-rolled flag apiece, and one
+  instance per stream, owned by the scene that reads the port — so two systems
+  in an ensemble each keep their own first report instead of whichever one is
+  flooded first spending the other's. A drain pass now also releases after a
+  quarter of the flush period however cheap the count bound thinks it has
+  been. Nothing is dropped that used to be delivered:
+  the pass checks its deadline before taking a message off the port, and the
+  first message of a pass is never gated. That quarter-period budget is sized
+  for the ASID reader, whose per-message cost is microseconds; the MIDI
+  instrument scene, which writes to the SID over the link *inside* its drain,
+  sizes its own from what a chord of notes costs on the link in use, so a note
+  flood still retires a chord a pass rather than one message.
+
+- **A MIDI controller could buy a traceback per message on the control
+  surface.** `midi_control`'s reader, clock reader, and per-system action
+  dispatch each logged a full traceback every time a message failed — which,
+  for a held pad or a swept controller against a mapping this build mishandles,
+  is once per message at the controller's rate, on the thread the next pad
+  press waits behind. The same throttle the ASID wire got now bounds all three
+  to one report per second per site: the first at ERROR with the traceback as
+  before, repeats counted and folded into the next report. Nothing that used to
+  reach the log at ERROR is lost — the first occurrence is always emitted.
+
+- **A SID whose INIT was cut short reported a complete RAM footprint.** The
+  footprint places the relocated C64-side player in RAM the tune demonstrably
+  never touches, and it carries a flag saying whether the sample can be
+  trusted. That flag was computed from the wall clock and one instruction-set
+  check, and never from the emulator's own "this routine did not finish" —
+  so a tune whose INIT hit its 2 M-cycle cap (a fat decompressor) or its
+  deadline handed the player a hole that the rest of INIT was about to fill.
+  The result is the exact failure the footprint exists to prevent: silence and
+  a crash to BASIC. Every way a run can end short now marks the sample.
+- **A partly-sampled tune is now placed conservatively instead of optimistically.**
+  Three places consult that trust flag; two of them logged a warning and then
+  placed the player MC and the VIC display bank from the prefix anyway. The
+  two whole-tune consumers (`waveform`, and a `generative` scene with
+  `audio_source = "sid"`) no longer see the raw bitmap: on an untrusted sample
+  both the player-avoid and display views widen to everything the tune was
+  observed to touch, and the PLAY-time `$01` bank falls back to the address
+  heuristic. A tune left with nothing free aborts its scene and the playlist
+  advances, as it already did when no VIC bank was free. The SHIFT-cycle
+  candidate walk now skips such a subtune the way it skips an unrenderable
+  one, rather than repointing the display from a prefix mid-show — unless the
+  display bank was pinned at startup, in which case nothing is being chosen
+  from that sample and the subtune stays playable, cued only after any
+  candidate whose own sample is whole.
+- **A multispeed tune could peg a CPU core for a whole scene.** The host
+  emulator's catch-up batch is bounded by a fraction of one poll period, but a
+  tune sets both the PLAY rate that period comes from (a CIA #1 Timer A latch,
+  up to 8x the video rate) and the cost of a PLAY pass — and a pass runs before
+  the clock is consulted, because truncating one would leave the oscilloscope
+  showing half a frame's register writes. A 400 Hz latch against a 10 ms pass
+  gave a 401% duty cycle, back to back, for the scene's whole duration. The
+  poll thread's wakeup period is now floored against a measured pass cost so a
+  pass fits inside its allowance, and a batch that blows its allowance on a
+  single pass says so instead of looking complete. The scope (or the reactive
+  visuals) then lags the audio, which is visible and logged once, rather than
+  starving the render thread.
+- **A directory of expensive SIDs no longer stalls scene startup unbounded.**
+  Each candidate costs a host-emulated INIT plus a 50-pass PLAY pre-flight, and
+  the tune prices both; with a per-candidate bound only, a pool of crafted
+  tunes measured ~8.8 s of blocked startup before the scene gave up. Both pool
+  walks — `waveform` and SID audio — now share one wall-clock analysis budget
+  across the whole walk. A candidate refused because that budget ran out says
+  so, instead of being reported as a tune that spins on a raster interrupt.
+- **A crafted `.sid` header could put a SID on the REU's own registers.** The
+  U64 firmware force-aligns a split UltiSID core's base *downward*, so the
+  address the multi-SID planner emits is not the one the header declared — and
+  the guard that refuses a declared base over hardware c64cast drives itself
+  never saw the emitted one. A PSID v4 header whose second and third SID bytes
+  are `$F2` and `$F6` declares `$DF20` and `$DF60`, both spec-legal; the `1/4`
+  split that covers them realized at `$DF00`, and that live REST PUT put a SID
+  on the REU status/command/address/length registers the DAC audio pump and the
+  ASID ring player both drive — the same ones the audio NMI handler reads
+  `$DF03` back from mid-transfer. Two bytes of a downloaded tune chose it. The
+  planner now tests every `$20`-granular instance a split level would realize
+  and falls through to the next level, refusing outright (caller warns and uses
+  the canonical layout) when no level fits. The reserved ranges are one tuple
+  shared with the header decoder instead of a second copy, and they now also
+  carry the **Ultimate Audio sampler's `$DF20-$DFFF`** — the page the FPGA
+  plays video audio out of, which the same two paths could reach and which
+  scene teardown's 25-byte zero write would have walked mid-playback. A tune
+  declaring an extra SID anywhere in `$DFxx` therefore degrades to single-SID,
+  as one declaring `$DF00` already did; `$DE00-$DEE0` is unaffected.
+- **The multi-SID architecture note claimed `$DF00` was accepted.** The decoder
+  refuses any second/third SID address whose 25-byte register window reaches
+  the REU command registers — zeroing those at teardown would point the audio
+  ring's DMA at `$0000` — and the same document says so correctly a few
+  hundred lines earlier. The multi-SID section now names the carve-out.
+- **The reference guide still gave the waveform fallback duration as 30
+  seconds.** `WaveformScene` falls back to three minutes when no explicit
+  `duration_s` and no song-length database match are available. The config
+  help, the schema and the sound chapter were corrected earlier; the
+  vocabulary chapter — the page "What Ends a Scene" links to — was not.
+- **The documented `duration_s` default was wrong for a quick-playback audio
+  file.** The config metadata — which the JSON schema, `--describe` and the
+  reference guide's scene-type appendix all render from one string — said
+  "everything else = 30s", but a `generative` scene with
+  `audio_source = "file"` and no explicit `duration_s` is sized to the decoded
+  track, and that is exactly the scene `c64cast tune.mp3` builds. Anyone
+  reading the schema to find out why a song kept playing past 30 seconds was
+  told the opposite of what the code does. The help and the guide's vocabulary
+  chapter now name that case, and say the 30 s fallback applies when the
+  container reports no duration.
+- **An ASID `0x30` write order can no longer invert a voice's hard restart.**
+  A hard restart is two writes to one control register — gate off, then the
+  re-attack — and the buffered player ordered a frame's writes by ASID register
+  id. A recipe that named the second control id (25-27, the ordinary ones) but
+  not the first emitted the re-attack at the recipe's position and the gate-off
+  value after it, so the voice ended the frame gated off and never sounded. The
+  order within a register is now the serializer's own property: the pair is
+  positioned as a unit, whatever ids a recipe names or omits, and each write
+  still takes the wait its own id was given.
+- **A `0x30` recipe can no longer stall the C64 with inter-write waits.** The
+  number of writes per frame was capped, but their *cost* was not: 28 writes
+  each carrying the protocol's maximum wait are over half a 60 Hz NTSC frame for
+  a single SID, and two chips already outrun the period. That does not drop a
+  frame — the timer fires again before the handler returns, so the 6510 never
+  leaves it and the jiffy clock and keyboard scan stop. Each frame is now priced
+  against the consume period and its waits scaled down to fit, with a one-time
+  warning; every register write still reaches the chip.
+- **A `0x31` speed flood can no longer freeze video and starve audio.** The only
+  throttle on the ASID retune was dropping a request identical to the one in
+  force, which alternating any two rates defeated — and 999 Hz and 1000 Hz are
+  both legal, so nothing even warned. Each surviving message cost a blocking
+  write plus a round trip on the single DMA link the video path shares, from the
+  MIDI reader thread, so an ordinary 60 Hz arrival rate spent most of the link
+  budget and let the MIDI input queue grow without bound behind it. Retunes are
+  now rate-limited to one per 250 ms; a request inside that window is coalesced
+  rather than dropped, so the newest speed still takes effect.
+- **A reused ASID scene no longer sends the previous tune's registers to the
+  chip.** A flush writes the whole 25-byte register image, so the first frame of
+  a new stream that touched a few registers carried the last tune's envelopes,
+  pulse widths and filter settings along with it. Re-activation now clears the
+  shadows with the rest of the stream state.
+
+- **An ASID stream can no longer keep the C64's IRQ rate after its scene ends.**
+  The buffered ring player programs CIA #1 Timer A the moment it installs but
+  hooks `$0314` only once a real-frame prebuffer arrives — and teardown restored
+  the kernal latch only when it had reached that second step. A stream that sent
+  one `0x31` speed message and no register frames at all therefore left Timer A
+  at whatever rate it asked for: at the band ceiling that is a jiffy clock 16x
+  fast and a third of the machine's cycles spent in `$EA31`, for every scene
+  after it, until a power cycle. Teardown now restores the vector and the latch
+  whenever the player touched the machine at all, and the scene repeats the
+  restore itself rather than trusting the player's bookkeeping.
+- **A writer thread that outlived its shutdown can no longer arm the player
+  behind teardown's back.** The join that stops it is deliberately bounded, and
+  the arm sequence blocks in DMA before it swaps `$0314`, so an abandoned writer
+  could finish afterwards and hook the vector to `$C000` with the SID already
+  silenced and the next scene running — an orphaned handler rewriting the whole
+  REU control block at up to 960 Hz, into the register pair the next scene's
+  audio pump reads back as its write head. The arm and the disarm are now
+  mutually exclusive, and the arm refuses outright once shutdown has begun.
+- **A chip-count change is refused, rather than half-applied, while a writer is
+  still blocked on the link.** Bring-up and re-init both assign the ring's slot
+  size; doing that under a live writer sent the rest of its blocked burst out at
+  the new stride, so slots landed across slot boundaries and the C64-side player
+  decoded the op stream shifted — storing attacker-supplied bytes at
+  attacker-supplied addresses anywhere in memory. Both now leave the player down
+  instead, and say so; the next scene activation brings it up.
+- **A second lap of an ASID scene no longer inherits the previous stream's
+  cadence, chip count, or queued frames.** Playlists reuse scene instances, and
+  setup hands the stored frame rate straight to the player — so lap 1's host
+  chose the CIA rate lap 2 came up at, before a byte of the new stream arrived.
+  The wire-owned state is reset on activation, including the PAL/NTSC standard a
+  `0x31` may have switched (a hardware default restored for the wrong standard
+  leaves the jiffy clock ~3.8% off).
+- **A remote ASID frame no longer leaves the U64's SID address map rewritten
+  for good.** The scene snapshots the SID-address config before it remaps, and
+  restores it on teardown — but the snapshot is deliberately first-call-wins,
+  and setup's mixer pass folded its own values into the same record first, so
+  the remap's snapshot silently captured nothing. Any peer on the MIDI/network
+  port could then send one `0x50`-`0x5F` register frame and permanently change
+  the machine's SID addressing (`Auto Address Mirroring` included), with only
+  pan and volume put back. The baseline is now taken at setup, before anything
+  folds. The regression test that was supposed to cover this only passed
+  because its fixture skipped `setup()`; it now drives the real lifecycle.
+- **A second lap of an ASID scene re-applies the SID address map.** Playlists
+  reuse scene instances, and nothing reset the multi-SID state at teardown — so
+  on lap 2 the growth check saw the chip count it had already reached, never
+  re-issued the map the lap-1 teardown had just restored, and went on writing
+  chips 2..N to addresses the machine no longer routed there.
+- **An ASID stream that merely mentions a high SID index no longer triggers a
+  full 8-SID reconfiguration.** ASID can name up to chip 17, and a chip past
+  `asid_max_sids` is downmixed onto the primary SID as documented — but the
+  *growth* request was taken from the raw wire index instead, so a single
+  message naming chip 11 mapped eight addresses, split the scope into eight
+  windows (seven of which could never show anything), panned eight mixer
+  sources and re-initialized the ring player.
+- **A transient link error during an ASID SID remap no longer ends the scene.**
+  The remap's hardware half is now guarded and retried on the next frame, and
+  the active chip count is published only once the scope has the windows to
+  match it. Previously a raise between the two left the scene indexing past its
+  own window list on every later frame, which the playlist treats as a crashed
+  scene and retires permanently.
+- **The buffered ASID path no longer drops a new SID chip's first frame.** That
+  frame arrives before the chip has an address, and because this path sends
+  register *deltas*, discarding it lost the chip's initial ADSR, pulse width and
+  control setup for good — while the oscilloscope still showed a
+  correctly-configured voice the hardware was not playing. Deltas for a
+  not-yet-mapped chip are now carried forward, as the non-buffered path already
+  did.
+- **A flood of ASID messages can no longer leave the SID sounding or outlive
+  teardown.** The reader drained its MIDI port until the queue was momentarily
+  empty, which under a backlog never happens — so the register flush that
+  follows the drain was never reached (the chip held whatever was last written
+  and kept playing) and the stop check that ends teardown was never re-read.
+  The drain is now bounded per pass and re-checks the stop signal inside it.
+- **A repeated ASID `0x31` no longer costs a hardware round trip each time.** An
+  identical speed request is dropped instead of re-programming the CIA timer —
+  each retune blocks on the single shared Ultimate DMA socket that the video
+  render path also uses, and a host that sends `0x31` every frame was spending a
+  large share of the write budget saying nothing new.
+- **One ASID speed message can no longer wedge the C64 and flood the link.** A
+  `0x31` carries a frame delta in microseconds, and a delta of 1 asked the
+  buffered ring player for a 1 MHz consume rate. Nothing rejected it: the CIA
+  helper clamps the *timer latch*, not the rate, so the request landed on the
+  fastest timer the chip can run — an IRQ every two cycles into a handler that
+  needs hundreds, leaving the 6510 unable to reach the jiffy clock, the keyboard
+  scan or anything else until a power cycle. On the host side the computed read
+  head then advanced half a million slots a second, so the writer thread chased
+  it at the link's maximum rate forever, taking the whole Ultimate DMA socket
+  the video render path shares. ASID-derived rates are now clamped to the band
+  the protocol and the CIA can actually express (roughly 15-1000 Hz — 16× the
+  video rate is the fastest the spec's speed multiplier can ask for), with a
+  warning naming the clamp, and the kernal-chain tick divider is bounded to the
+  8-bit immediate that carries it instead of being silently truncated. The ASID
+  scene's own copy of that rate now goes through the same clamp rather than
+  keeping an unclamped value the hardware never received.
+- **A multi-chip scope no longer discards `persistence` / `scroll_columns` in
+  silence — and gives them back.** Per-window trails are not supported, so a
+  stream or tune revealing a second SID forces every voice to the plain redraw
+  path; that happened with nothing in the log and nothing in the docs, so a
+  configured `persistence = "long"` simply stopped trailing mid-scene. It now
+  warns, and the ASID example lists the limitation. The force was also one-way:
+  a waveform scene that played a 2SID tune and then a 1SID one never got its
+  trails back for the rest of the run. The render modes are re-derived on every
+  reflow instead of being overwritten.
+- **The three oscilloscope scenes restore the char-mode `$D018` they claim to.**
+  `AsidScene`, `MidiScene` and `WaveformScene` each said they put the default
+  `$D018` back for the next scene's char mode and then wrote their own hires
+  value (`$18`), leaving the VIC's matrix pointer on the bitmap layout. Harmless
+  today because the next scene engages its own display mode — but a false claim
+  a maintainer could act on. All three now write `$14`, the value every
+  char-mode engage in the tree uses.
+- **An oversized `0x30` timing recipe no longer amplifies every later frame or
+  silently deletes a SID chip.** The recipe is a SID write order, so it can be
+  no longer than the register table and can name each register once — but
+  neither bound was enforced, and the recipe persists until the next `0x30`. A
+  400 KB SysEx message decoded to 200,000 entries and turned an ordinary
+  four-register frame into 200,004 write ops, per frame, on the MIDI reader
+  thread. The ops past what a slot holds were then dropped in silence, and
+  because a multi-SID slot packs the chips in order, the ones that vanished
+  belonged to the later chips: a two-chip tune lost its second chip's frame
+  entirely with nothing logged. The decoder now caps the recipe and keeps a
+  repeated register at its first position, and a slot that has to truncate says
+  so.
+- **A quiet ASID host no longer saturates the Ultimate DMA socket.** When the
+  ring's write-ahead lead drains, the player pads "hold" slots so the SID keeps
+  its last state. That padding had no pacing at all, so a spec-legal 16×
+  multispeed stream that then went quiet padded at the link's maximum rate
+  indefinitely — the entire measured write budget, spent on silence, with the
+  render path queued behind it. Pads now go out in one batched write and cost a
+  fixed handful of writes per second at any rate in the band.
+- **A chip-count change mid-tune can no longer leave two writer threads racing
+  one ring.** Re-initializing the player for a new SID count discarded its
+  writer-thread handle after a bounded join, which is exactly the state the
+  thread helper keeps a reference for: a writer still blocked in a DMA call was
+  abandoned rather than waited for, and the restart then ran a second one
+  against the same ring position counter. The handle is now kept, the loop exits
+  on its own stop signal rather than a shared flag, and a start that would
+  duplicate a live writer is refused and logged.
+- **An Ultimate 64 SID map can no longer put an emulated core on top of a real
+  chip.** Planning for a `.sid` file's own chip addresses claimed a physical
+  socket first and then placed the UltiSID cores without knowing where that
+  socket sat. Because the firmware aligns a split core's base *downward*, a
+  four-chip tune whose first address matched the socketed chip's model enabled
+  the socket at `$D400` and put a half-split core over `$D400` too — the tune
+  playing on the real chip and the emulation at once, audible as a detuned
+  double, which is the one state this planner exists to prevent. Core placement
+  now refuses a window that covers a claimed socket, and gives the socket up
+  rather than the map when no split level clears it. Core bases are also bounded
+  above, against the firmware's own address enum, instead of only below.
+- **The documented default duration for a waveform scene is now the one the
+  code uses: three minutes, not thirty seconds.** A tune with no explicit
+  `duration_s` and no song-length database match has run for 180 seconds for a
+  long time; the reference guide, the `duration_s` help text, the generated
+  scene-type appendix and the JSON schema all said 30, a six-fold error that
+  reads as a playback bug when a jukebox holds each tune for three minutes. The
+  same help text credited `midi` scenes with song-length resolution they have
+  never had. Documented alongside it: a waveform scene can also end *early*,
+  six seconds after every voice falls silent, which it has done since the
+  silence detector shipped.
+- **A `.sid` file can no longer point c64cast's SID-silencing writes at
+  arbitrary I/O chips.** A PSID v3/v4 header declares its extra SID chips as
+  one byte each, decoded as `$D000 | byte << 4`. That arithmetic always lands
+  inside `$D010-$DFF0`, so the range check meant to reject a malformed byte
+  could never fire and *every* nonzero byte named a chip — including `$C0`,
+  which put a "SID" on CIA #1, where the waveform scene's 25-byte teardown
+  write stops the jiffy IRQ and the keyboard scan until the machine is
+  physically reset. Extra-SID bytes are now validated against the windows the
+  PSID spec actually permits (even bytes resolving to `$D420-$D7E0` or
+  `$DE00-$DFE0`), and a byte outside them degrades to single-SID the way the
+  code always claimed it did. Chip bases are also de-duplicated: two chips
+  declared at the same — or overlapping — address used to let the later one
+  silently take over the earlier one's register shadow, leaving that chip's
+  scope window flat for the whole tune while the audience heard it play.
+- **A hostile or broken tune can no longer freeze playback indefinitely.** The
+  host-side 6502 the oscilloscope runs in parallel bounded each INIT/PLAY call
+  by *emulated cycles*, and py65 charges zero cycles for the 105 undocumented
+  opcodes it does not implement — so a PLAY built out of those spun for free,
+  measured at 7-21 seconds per frame against a budget meant to be 4 ms. Calls
+  are now bounded by interpreter steps as well, an unimplemented opcode ends
+  the pass with a warning instead of derailing the instruction stream, and the
+  SHIFT-cycle's subtune search is capped the way scene setup's already was — a
+  tune declaring 65535 subtunes used to walk all of them, one full emulation
+  run each, on the render thread. A tune whose PLAY uses an undocumented
+  opcode still plays: those are a normal idiom in hand-written players and the
+  real 6510 runs them. What such a tune loses is the trust placed in the RAM
+  footprint sampled from it, not its place in the playlist.
+- **A tune's whole host-emulation analysis now shares one time budget, and a
+  cut-short measurement says so.** Scene setup emulates a SID once per
+  footprint and once per subtune — up to 18 runs — and each run drew its own
+  wall-clock deadline, so a 306-byte file declaring 16 subtunes blocked the
+  main thread for 43 seconds before the first note, and one SHIFT press
+  re-spent it with the audio already silenced. The runs now share a single
+  six-second budget, an INIT is bounded by the clock instead of only by an
+  emulated-cycle count, and a run that gives up early is reported as an
+  incomplete sample rather than returned as if it had finished. An incomplete
+  sample no longer pins one display bank for every subtune, and it is called
+  out in the log where the C64-side player's RAM slot is chosen from it.
+- **A slow tune no longer pegs a core to keep the oscilloscope in step.** The
+  poll thread catches the host emulator up to wall clock each wakeup, bounded
+  by a tick count that assumed each tick costs 0.2 ms. A PLAY that stays
+  legally inside the emulator's per-pass budget can cost 15.8 ms, making the
+  same batch 1.9 seconds long on a thread whose period is a sixtieth of a
+  second — and the tune sets the rate the batch is sized against. The batch
+  now also stops after half a poll period, leaving the rest to the renderer,
+  and says once that the scope is running behind the audio.
+- **A `.sid` header can no longer declare a SID chip on top of the REU.** The
+  PSID spec permits an extra chip anywhere in `$DE00-$DFE0`, and `$DF00` is
+  where c64cast drives its own REU: a 25-byte teardown write there lands on
+  the command registers, two of which the audio ring's interrupt handler reads
+  back mid-transfer as its destination pointer. Bases whose register window
+  reaches the REU are refused and the tune degrades to single-SID.
+- **A crafted `.sid` can no longer end the whole show with an emulator
+  crash.** The host emulator's memory refused an address past `$FFFF` instead
+  of wrapping the way a real 6510's address bus does, and six bytes of 6502
+  were enough to ask for one. The resulting error was not the kind the SID
+  pool pickers catch, so it unwound past "log it and try the next candidate"
+  and aborted the playlist. Addresses wrap, and anything else the interpreter
+  raises is now reported as a non-terminating pass — the same verdict a tune
+  that spins gets.
+- **SHIFT-cycling into a subtune that needs a full relaunch no longer leaves
+  the oscilloscope on the previous song.** That path re-runs the player but
+  never rebuilt the host emulator, so the scope drew song N-1's waveforms under
+  song N's audio and could end the scene early watching the wrong song's
+  envelopes decay. Every subtune now also gets the PLAY pre-flight that only
+  the first-loaded song used to get — each subtune is its own entry point, so
+  song 1 completing said nothing about song 2, and a spinning one was cued
+  straight onto the real machine.
+- **`system = "ntsc"` selects the NTSC clock in the SID visualizer.** The
+  setting is documented and validated as case-insensitive, but the emulator
+  compared it against `"NTSC"` exactly, so any lowercase spelling silently got
+  the PAL clock — 3.7% off, which also fed the PLAY-rate probe and drifted the
+  scope about seven seconds behind the audio over a three-minute tune. The
+  spelling is normalized once, where the clock is chosen, for all four scenes
+  that build one.
+- **A voice resting at frequency 0 draws the resting line, not a flat line
+  pinned near the top of its strip.** With the waveform bits still selected and
+  the envelope still open, a zero frequency froze the phase accumulator and
+  every sample took the same value. The scope's own time-base picker already
+  counted that case as silent; both now ask one predicate on the voice.
 - **A scene hidden with the `osd.position` pad no longer stays dark for the
   rest of the run.** Performance mode is a per-scene flag re-stamped each lap,
   but the pad's hide was only ever stamped *on* — and the mode is turned back

@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
-from _fakes import make_psid
+from _fakes import FrozenClock, make_psid, quiet_logging
 
 from c64cast.hw.c64 import SID
+from c64cast.scenes import music_features
 from c64cast.scenes.modulation import MusicModulation
-from c64cast.scenes.music_features import SidFeatureStream
+from c64cast.scenes.music_features import HostEmuBudget, SidFeatureStream
+from c64cast.sid import sid_host_emu
+from c64cast.sid.sid_host_emu import UNMEASURED_PASS_COST_S, sustainable_poll_period_s
 
 
 def _regs(*, gate: bool, freq: int = 0x2000, voice: int = 0, sustain: int = 0xF) -> bytes:
@@ -142,9 +146,155 @@ class FeatureMathTest(unittest.TestCase):
         self.assertAlmostEqual(s._tempo.bpm, 120.0, delta=1.0)  # estimate unchanged
 
 
+class CatchupBoundTest(unittest.TestCase):
+    """The poll thread advances the host emulator to wall clock each wakeup.
+    _MAX_CATCHUP_TICKS bounds the pass COUNT, and the tune sets what a pass
+    costs and the rate the batch is sized against — so a count alone let an
+    expensive tune keep this thread permanently busy. Mirrors the same bound
+    in WaveformScene._poll_regs; both go through
+    sid_host_emu.run_catchup_passes."""
+
+    def setUp(self):
+        self.sid = make_psid()
+
+    def test_catchup_stops_at_half_a_poll_period(self):
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        with (  # 5 ms of host time per monotonic reading
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s._poll_loop()
+        # Half of the poll period is well under 10 ms, so the second pass ends
+        # the batch — far short of the 120 the count alone would have allowed.
+        self.assertEqual(s._host_emu.tick_play.call_count, 2)
+        self.assertEqual(s._ticks_done, 2)
+        self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_a_full_batch_that_used_its_whole_bound_still_warns(self):
+        # One tick was due, it ran, and it outlasted the whole batch bound on
+        # its own — invisible in the pass count, which is why the bound needs
+        # to report it. Mirrors the same case in WaveformScene._poll_regs.
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        with (
+            patch.object(music_features, "time", FrozenClock(1000.0 + 1 / 60.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.5)),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s._poll_loop()
+        self.assertEqual(s._host_emu.tick_play.call_count, 1)
+        self.assertEqual(s._ticks_done, 1, "the batch ran every pass it was asked for")
+        self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_poll_period_is_stretched_when_one_pass_costs_more_than_the_rate_allows(self):
+        # The wakeup period is floored so one measured PLAY pass fits inside
+        # its allowed fraction; the per-tick song dt (which drives the onset
+        # envelope decay) is not, or the features would track the thread
+        # instead of the song.
+        s = SidFeatureStream(self.sid, song=0, system="NTSC")
+        with (
+            patch.object(SidFeatureStream, "_detect_play_rate_hz", return_value=(60.0, 0.05)),
+            patch("c64cast.scenes.music_features.PollThread") as poll_cls,
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            s.start()
+        self.assertAlmostEqual(s._poll_dt, 1.0 / 60.0)
+        # A 50 ms pass may fill half a wakeup, so the wakeup becomes 100 ms.
+        self.assertAlmostEqual(s._poll_period, 0.1)
+        # ...and the thread has to actually wake at it.
+        self.assertAlmostEqual(poll_cls.call_args.kwargs["period"], 0.1)
+        self.assertIn("one PLAY pass costs", "\n".join(logs.output))
+
+    def test_the_catchup_bound_is_sized_off_the_wakeup_period_not_the_tick_rate(self):
+        # Mirrors WaveformScene: a stretched wakeup that the batch allowance
+        # is not sized against leaves the allowance at its old, too-small
+        # value. See sid_host_emu.sustainable_poll_period_s.
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        s._poll_period = 1.0
+        with (
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING"),
+        ):
+            s._poll_loop()
+        # Half of the 1/60 s tick dt is 8.3 ms — two passes, per the test
+        # above. Half of the 1 s wakeup period is not.
+        self.assertGreater(s._host_emu.tick_play.call_count, 2)
+
+    def test_lag_is_reported_once_not_per_wakeup(self):
+        s = _PrimedStream.primed(self.sid)
+        s._host_emu = MagicMock()
+        s._host_emu.regs.return_value = _regs(gate=False)
+        s._host_emu.retriggers.return_value = (False, False, False)
+        s._sid_start_time = 1000.0
+        s._ticks_done = 0
+        with (
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            for _ in range(4):
+                s._poll_loop()
+        self.assertEqual(len(logs.output), 1)
+
+    def test_rate_probe_stops_when_its_budget_is_spent(self):
+        # The probe runs up to RATE_PROBE_TICKS passes on a throwaway emulator;
+        # the count is not a time bound, so it runs under the caller's budget —
+        # the same one _prepare charges the persistent emulator's INIT to.
+        s = SidFeatureStream(self.sid, song=0, system="NTSC")
+        with patch("c64cast.scenes.music_features.SidHostEmu") as cls:
+            cls.return_value.play_rate_hz.return_value = 60.0
+            rate, pass_cost_s = s._detect_play_rate_hz(HostEmuBudget(0.0))
+        self.assertAlmostEqual(rate, 60.0)
+        cls.return_value.tick_play.assert_not_called()
+        # Nothing ran, so nothing was measured — and that must not read as
+        # "measured, and free". A budget already spent on this tune is evidence
+        # the tune is expensive, which is the direction the sizing has to fail
+        # in; see sustainable_poll_period_s.
+        self.assertIsNone(pass_cost_s, "an unmeasured pass is not a free pass")
+        self.assertGreater(
+            sustainable_poll_period_s(1.0 / 400.0, pass_cost_s, 0.5),
+            1.0 / 400.0,
+            "an unmeasured pass must still floor the poll period",
+        )
+
+    def test_a_pass_too_quick_to_time_is_free_but_an_untimed_one_is_not(self):
+        # The two readings that used to be one value. 0.0 back from a pass that
+        # DID run means the host clock could not resolve it, and needs no
+        # floor; None means no pass ran at all, and takes the worst-case charge.
+        tick_dt_s = 1.0 / 400.0
+        self.assertAlmostEqual(
+            sustainable_poll_period_s(tick_dt_s, 0.0, 0.5), tick_dt_s, msg="measured as free"
+        )
+        self.assertAlmostEqual(
+            sustainable_poll_period_s(tick_dt_s, None, 0.5),
+            UNMEASURED_PASS_COST_S / 0.5,
+            msg="never measured",
+        )
+
+
 class StreamLifecycleTest(unittest.TestCase):
     def test_start_stop_smoke_produces_features(self):
         s = SidFeatureStream(make_psid(), song=0, system="NTSC")
+        # The poll thread warns if a catch-up batch runs out of time; on a
+        # loaded worker that is possible and incidental here. CatchupBoundTest
+        # is where that warning is asserted.
+        self.enterContext(quiet_logging())
         s.start()
         try:
             # Give the poll thread a moment to run a few PLAY ticks.
@@ -156,6 +306,33 @@ class StreamLifecycleTest(unittest.TestCase):
         # A second start after stop is allowed (rebuilds the thread).
         s.start()
         s.stop()
+
+
+class InitTruncationWarningTest(unittest.TestCase):
+    """A truncated INIT leaves _host_emu holding a prefix of the tune's
+    register state, and the reactive visuals are keyed off exactly that. The
+    stream plays on and says so — refusing every slow-INIT tune would take a
+    large share of them off the air for a fault that is usually cosmetic."""
+
+    def test_a_truncated_init_warns_once_and_prepare_still_completes(self):
+        # init=$1000 JMP $1000 (spins); play=$1003 RTS. The INIT deadline is
+        # zeroed so the spin caps at the first wall-clock check.
+        sid = make_psid(init=0x1000, play=0x1003, payload=[0x4C, 0x00, 0x10, 0x60])
+        stream = SidFeatureStream(sid, song=0, system="NTSC")
+        with (
+            patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            stream._prepare()
+        self.assertIsNotNone(stream._host_emu, "a truncated INIT is not a refusal")
+        matches = [line for line in logs.output if "INIT did not run to completion" in line]
+        self.assertEqual(len(matches), 1, "one notice per tune, not one per emulator")
+        self.assertIn("the reactive visuals may not match the audio", matches[0])
+
+    def test_a_healthy_init_says_nothing(self):
+        stream = SidFeatureStream(make_psid(), song=0, system="NTSC")
+        with self.assertNoLogs("c64cast.scenes.music_features", level="WARNING"):
+            stream._prepare()
 
 
 if __name__ == "__main__":

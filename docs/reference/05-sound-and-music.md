@@ -5,7 +5,7 @@ number: 4
 # Sound
 
 The Commodore was never designed to play recorded audio. It has a
-three-voice synthesiser and, on the Ultimate, a modern FPGA that can play PCM
+three-voice synthesizer and, on the Ultimate, a modern FPGA that can play PCM
 from expansion memory; between those two facts sits everything c64cast does
 with sound. This chapter is the sound path in both directions — a decoded
 soundtrack going out, a SID tune playing on the real chip, and a microphone
@@ -377,13 +377,21 @@ and its own column in each voice row.
 
 ### Duration and Subtunes
 
-Playback gives no end-of-tune signal, so a scene ends when its timer does. Set
-`[playlist].songlengths_file` to an HVSC song-length database and every tune
-gets its real length automatically; without one, a tune with no explicit
-`duration_s` runs for 30 seconds.
+Playback gives no end-of-tune signal, so a scene normally ends when its timer
+does. Set `[playlist].songlengths_file` to an HVSC song-length database and
+every tune gets its real length automatically; without one, a tune with no
+explicit `duration_s` runs for three minutes.
+
+The one thing that can end a tune sooner is silence: once the tune has sounded
+at least once, six seconds with every voice silent ends the scene and the
+playlist moves on, rather than holding a frozen flat trace for the rest of the
+timer. A musical rest is nowhere near long enough to trip it.
 
 SHIFT advances to the next subtune, rebuilding the emulator and re-resolving
-the duration. With a song-length database loaded, subtunes shorter than five
+the duration. A subtune that the emulator cannot run at all — one that spins
+waiting for an interrupt the player never provides — ends the scene with an
+error in the log instead of being cued, because playing it would leave the C64
+silent and unresponsive. With a song-length database loaded, subtunes shorter than five
 seconds are skipped while cycling — most of those are a game's sound effects,
 and the scope of a sound effect is a flat line. A subtune you asked for
 explicitly, or the file's own start song, always plays however short it is.
@@ -652,7 +660,7 @@ ASID packs SID register writes into MIDI system-exclusive messages. An ASID
 *host* sends the stream and the `asid` scene receives it and plays it on the
 chip; Chapter 2's entry for that scene names the hosts and how to open a port
 for them. It is a new input, not a fidelity change: the protocol carries only
-what a SID can synthesise, never sampled audio.
+what a SID can synthesize, never sampled audio.
 
 There are two ways to play what arrives, chosen by `asid_buffered_player`.
 
@@ -679,7 +687,7 @@ involved.
 
 ### MIDI
 
-The `midi` scene turns the Commodore into a three-voice synthesiser. Notes set
+The `midi` scene turns the Commodore into a three-voice synthesizer. Notes set
 each voice's frequency and gate; pitch-bend moves gated voices by up to two
 semitones; velocity lands in the voice's sustain level.
 

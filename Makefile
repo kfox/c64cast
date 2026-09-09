@@ -5,6 +5,8 @@
 #   make sync       # uv sync --all-extras (refresh the project env)
 #   make lint       # ruff check
 #   make fmt        # ruff format
+#   make mutation-ready  # arm hash-based .pyc invalidation before a mutation pass
+#   make mutation-check  # verify it is still armed, before believing a proof
 #   make test       # unittest suite (whole tree, parallel across cores)
 #   make test T=tests.test_midi_scene   # just that module/class/method
 #   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
@@ -38,6 +40,8 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
+	mutation-ready \
+	mutation-check \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
@@ -111,6 +115,8 @@ help:
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
 	@echo "  lint       ruff check"
 	@echo "  fmt        ruff format"
+	@echo "  mutation-ready  hash-based .pyc invalidation, so a mutation pass cannot read stale bytecode"
+	@echo "  mutation-check  verify the tree is still armed (a clean/worktree/sync un-arms it silently)"
 	@echo "  test       unittest suite, parallel (T=tests.test_foo runs just that, serial)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
@@ -139,6 +145,44 @@ lint: $(SYNC)
 
 fmt:
 	uv run ruff format .
+
+# Makes a mutation pass trustworthy, and it is the difference between evidence
+# and a false result. CPython validates a .pyc against the source's mtime
+# truncated to WHOLE SECONDS plus its size, so a same-length edit applied and
+# reverted inside one second is invisible: Python runs the bytecode it already
+# had. The mutation then reports green, which is the answer you half-expect, so
+# you conclude the test does not pin that line and rewrite a test that was fine.
+# Hash-based invalidation (PEP 552) keys on content instead, CPython preserves
+# the mode when it rewrites a .pyc, and it costs nothing measurable (10.09s vs
+# 10.14s wall on the full suite). PYTHONDONTWRITEBYTECODE=1 does NOT fix this --
+# it suppresses writing, not reading -- and neither does `touch`, which sets
+# mtime to now, the same second.
+#
+# -f is load-bearing: without it compileall SKIPS any file whose timestamp
+# cache is still valid, so on a warm checkout -- which is every real one -- the
+# target runs, prints nothing, converts nothing, and leaves you believing you
+# are protected.
+#
+# The conversion is real but it is not durable: it arms the pycs that exist
+# when it runs, and a newly written one always lands in timestamp mode. Four
+# routine things un-arm the tree with no output at all -- `make clean` wipes
+# every __pycache__, a fresh worktree starts with none, a uv sync that moves
+# the Python minor changes the magic tag, and `make test PY=python` does the
+# same. So the state is checked rather than assumed; the check's rationale and
+# its "which files can an import actually reach" rule live in the script.
+mutation-ready: $(SYNC)
+	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+
+# The check on its own, for the case the arming above cannot cover: it runs one
+# line after the compileall, so it can only ever confirm that compileall just
+# worked. The lapses are all LATER -- a `make clean`, a new worktree, a uv sync
+# -- so this is the target to run at the moment a mutation proof's green is
+# about to be believed, which is where a false one does its damage. It is NOT a
+# prerequisite of `test`: arming matters only for a mutation proof, and failing
+# every ordinary test run on an unarmed tree would teach everyone to bypass it.
+mutation-check: $(SYNC)
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
 
 # `make test` runs the whole suite in parallel (unittest_parallel forks one
 # process per test module — still stdlib unittest, ~3x faster since the suite

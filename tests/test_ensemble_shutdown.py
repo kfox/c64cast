@@ -18,7 +18,7 @@ import unittest
 import unittest.mock
 from unittest.mock import MagicMock
 
-from _fakes import fake_system_stack
+from _fakes import FrozenClock, fake_system_stack
 
 from c64cast.app import session
 from c64cast.app.cli import teardown_stack
@@ -198,13 +198,14 @@ class JoinPlaylistsTest(unittest.TestCase):
         t.start()
         # Fast-forwards join_bounded's deadline past its 5s budget on the very
         # first check, so the thread reads as abandoned without a real wait.
-        clock = iter([0.0])
-
-        def fake_monotonic():
-            return next(clock, 100.0)
+        # The 100 s step is what does it, and it is a step rather than a
+        # second reading on purpose: this test starts a thread of its own, so
+        # any reading may be consumed by something else. Whatever reading n
+        # join_bounded gets, its deadline is n+5 and the next reading is n+100.
+        clock = FrozenClock(0.0, "monotonic", step=100.0)
 
         try:
-            with unittest.mock.patch.object(session.time, "monotonic", side_effect=fake_monotonic):
+            with unittest.mock.patch.object(session, "time", clock):
                 with self.assertLogs("c64cast", level="ERROR") as cm:
                     session.join_playlists([t], stacks, stop_event)
             self.assertTrue(any("playlist-stuck" in m and "5s" in m for m in cm.output))

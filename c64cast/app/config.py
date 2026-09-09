@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Surfaced to `--describe` and the JSON schema as the valid `choices` for a
 # field. These mirror the authoritative constants in the heavy runtime modules
-# (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, waveform.TIME_BASE_NAMES,
+# (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, voice_scope.TIME_BASE_NAMES,
 # …) but are duplicated here so config.py stays import-light (no numpy / cv2
 # pulled in just to load a TOML). tests/test_introspect.py asserts each list
 # stays in sync with its source of truth, so the duplication can't drift.
@@ -88,9 +88,18 @@ HOST_SID_CHIP_MODEL_CHOICES = ("6581", "8580", "unknown")
 # render as authored. "prefer" is a bias, not a filter: it only changes which
 # candidate is tried first, so a pool with no match still plays something.
 HOST_SID_TUNE_MATCH_CHOICES = ("off", "prefer", "require")
-# The window a PSID second/third-SID address byte can land in ($D000 | byte<<4,
-# see sid_host_emu._decode_extra_sid_addr), so a declared chip address and a
-# tune's declared chip address are range-checked against the same bounds.
+# The window `[hardware].host_sid_chips` addresses are range-checked against:
+# the $Dxx0 I/O page a PSID second/third-SID address byte can encode
+# ($D000 | byte<<4).
+#
+# These bounds are deliberately WIDER than sid_host_emu._decode_extra_sid_addr's,
+# which rejects anything outside the $D420-$D7E0 / $DE00-$DFE0 windows the PSID
+# spec permits. The two are validating different things and no longer share a
+# rule: that decode reads an untrusted header byte and turns it into a DMA write
+# target, so it must refuse everything the spec forbids, while this field is the
+# user describing where the chips in their own machine actually answer — a real
+# rig is not bound by what a file format may declare, and getting it wrong costs
+# a wrong routing decision, not a write to a CIA.
 _HOST_SID_ADDR_LO = 0xD000
 _HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
@@ -1194,16 +1203,20 @@ class SceneCfg:
         metadata={"help": "Display name (shown in interstitials/logs; ensemble match key)."},
     )
     # None = scene-type default: webcam/blank run forever in a single-scene
-    # playlist (else 30s so a rotation still advances), songlengths-or-30s for
-    # waveform/midi, 30s for slideshow/generative. 0 = run forever (any type).
-    # Video scenes reject any value (video-driven).
+    # playlist (else 30s so a rotation still advances), songlengths-or-180s
+    # (WaveformScene.FALLBACK_DURATION_S) for waveform, the decoded track's
+    # length for a generative scene with audio_source = "file" (set in
+    # _build_generative_live so `c64cast tune.mp3` plays the whole song), 30s
+    # for everything else. 0 = run forever (any type). Video scenes reject any
+    # value (video-driven).
     duration_s: float | None = field(
         default=None,
         metadata={
             "help": "Seconds before auto-advance; 0 = run forever. Unset = "
             "scene-type default (webcam/blank run forever when they're the "
-            "only scene, else 30s; waveform = song length or 30s; "
-            "slideshow/generative = 30s). "
+            "only scene, else 30s; waveform = song length or 180s; "
+            'generative with audio_source = "file" = the track\'s length, '
+            "or 30s when the container reports none; everything else = 30s). "
             "Video scenes reject this (they run until the file ends). "
             "For launcher this is the idle timeout (reset by player input).",
             "applies_to": (

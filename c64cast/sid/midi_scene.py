@@ -40,14 +40,15 @@ import logging
 import threading
 import time
 
-from c64cast._midi import MIDI_AVAILABLE, open_input_port
+from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
+from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
+from .voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,52 @@ _PW_MAX_AUDIBLE = 3968  # ~97% duty
 # filter cutoff, volume) are flushed to the SID. 60 Hz is smooth to the ear
 # and keeps wheel sweeps from bursting the DMA socket. See _reader().
 _CONTROL_FLUSH_INTERVAL_S = 1.0 / 60.0
+
+# Blocking link writes one note message can cost `_program_voice`: the gate-off
+# byte that forces the envelope's 0->1 edge on a re-press, plus the seven-
+# register voice block. Both are `api.write_*` calls, i.e. both are paid on the
+# reader thread inside the drain.
+_WRITES_PER_NOTE = 2
+
+# Notes one drain pass must be able to retire whatever they cost. A chord
+# arrives as one message per voice; splitting it across passes spreads its
+# attacks by the reader's 1 ms poll sleep apiece (an audible arpeggio on a
+# chord meant to land together) and multiplies the coalescing flushes a
+# concurrent wheel sweep contends with.
+_NOTES_PER_DRAIN = SID.N_VOICES
+
+
+def _drain_budget_s(profile: HardwareProfile) -> float:
+    """Work budget for one `_reader` drain pass on `profile`'s link.
+
+    `_midi.MAX_DRAIN_WORK_S` is sized for a consumer whose per-message cost is
+    microseconds, which is true of `AsidScene._handle_sysex` and false here:
+    `_handle_msg` reaches `_program_voice`, which blocks on the link. On an
+    Ultimate one write costs 5.222 ms against a 4.167 ms default budget, so the
+    deadline is already past after message one and the pass retires exactly one
+    note — for a scene that never sees 160 notes/s, that trades throughput and
+    a 1 ms sleep per note for flush and stop checks nobody needed that often.
+
+    So the caller supplies the budget, because the caller is what knows its own
+    per-message cost. `_midi` cannot: importing a hardware profile there would
+    invert the layering, and the other caller's cost is a different number.
+    Never *tighter* than the shared default — a link whose writes are cheap
+    (TeensyROM, 0.287 ms) keeps the default's larger pass — and widened only far
+    enough that a full chord of worst-case notes still retires in one pass.
+
+    On an Ultimate that widening lands at 31.332 ms, which is 1.88x
+    `_CONTROL_FLUSH_INTERVAL_S` — so this budget deliberately breaks the
+    "a fraction of the flush period it protects" relationship that
+    `MAX_DRAIN_WORK_S` keeps. What it costs is bounded and is not a halved
+    flush rate: the flush check sits after the drain and is itself
+    rate-limited, so a pass that spends the whole budget delays one wheel/CC
+    flush by the difference and the next pass finds the period already
+    elapsed. Buying that with an arpeggiated chord is the trade this function
+    exists to refuse. Both halves are pinned in tests/test_midi.py.
+    """
+    note_cost_s = profile.write_cost_s(SID.BYTES_PER_VOICE) * _WRITES_PER_NOTE
+    return max(MAX_DRAIN_WORK_S, note_cost_s * _NOTES_PER_DRAIN)
+
 
 # SHIFT advances each voice one step through these, in order. The four single
 # waveforms come first (so a uniform default cycles exactly as it always has),
@@ -394,18 +441,28 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # continuous controller down to its newest value, and flush those at
         # a bounded rate. Notes stay discrete and are applied immediately so
         # attack latency isn't affected.
+        #
+        # The drain itself is bounded by `poll_pending` rather than mido's
+        # `iter_pending`, which only ends when the port queue is momentarily
+        # empty: a controller sending faster than `_handle_msg`'s DMA writes
+        # retire it would otherwise never reach the coalescing flush below or
+        # the `stop` check that lets teardown's bounded join finish. Same
+        # reasoning, same helper, as AsidScene's reader — but not the same work
+        # budget, because those DMA writes are what a note message costs here
+        # and AsidScene's shadow poke costs microseconds. See `_drain_budget_s`.
+        budget_s = _drain_budget_s(self.api.profile)
         pending_pitch: int | None = None
         pending_cc: dict[int, int] = {}
         last_flush = 0.0
         try:
             while not stop.is_set():
-                for msg in port.iter_pending():
-                    if msg.type in ("note_on", "note_off"):
-                        self._handle_msg(msg)
-                    elif msg.type == "pitchwheel":
+                for msg in poll_pending(port, stop, budget_s=budget_s):
+                    if msg.type == "pitchwheel":
                         pending_pitch = msg.pitch
                     elif msg.type == "control_change":
                         pending_cc[msg.control] = msg.value
+                    else:
+                        self._handle_msg(msg)
                 now = time.time()
                 if (
                     pending_pitch is not None or pending_cc
@@ -912,13 +969,13 @@ class MidiScene(VoiceScopeRenderer, Scene):
         if self._poll is not None:
             self._poll.stop()
             self._poll = None
-        # Silence the SID, then restore VIC bank 0 + the default $D018 so the
+        # Silence the SID, then restore VIC bank 0 + the char-mode $D018 so the
         # next scene's char-mode display renders cleanly (we left VIC in hires
         # bitmap mode).
         try:
             self.api.silence_sid()
             self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
+            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
             self.api.flush()
         except Exception:
             log.debug("MidiScene: teardown silence/restore failed", exc_info=True)

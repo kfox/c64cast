@@ -6,7 +6,7 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
   * **Writes** (`write_memory*`, `write_regs`, `write_region`) ride the
     shared `BufferedWriteBackend` delta-cache path; `_emit` splits each push
     into WriteC64Mem segments and waits for the per-segment ack.
-  * **reset** maps to ResetC64Token; **run_prg** is synthesised from
+  * **reset** maps to ResetC64Token; **run_prg** is synthesized from
     PostFile (upload to SD/USB) + LaunchFile; **probe** uses Ping.
   * **read_memory** rides ReadC64Mem (`0x64FD`), added in the cycle-clean TR+
     firmware (v0.7.2.5). The protocol-level capability is declared on the

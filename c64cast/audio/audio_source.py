@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
     from c64cast.scenes.modulation import MusicModulation
     from c64cast.scenes.music_features import SidFeatureStream
-    from c64cast.sid.sid_host_emu import SidHeader
+    from c64cast.sid.sid_host_emu import HostEmuBudget, SidHeader
     from c64cast.video.modes import DisplayMode
 
     from .audio import AudioStreamer
@@ -558,11 +558,17 @@ class SidFileAudioSource:
 
     # ---- SID selection / validation ----------------------------------------
 
-    def _validate_candidate(self, path: str) -> tuple[bytes, int, SidHeader]:
+    def _validate_candidate(
+        self, path: str, budget: HostEmuBudget | None = None
+    ) -> tuple[bytes, int, SidHeader]:
         """Load + header-parse + bank-0 payload-clearance + PLAY pre-flight for
         one .sid. Raises ValueError on any rejection; returns (sid_bytes,
         resolved_song, header) on success. Shared by __init__'s early check
-        and setup()'s authoritative pick."""
+        and setup()'s authoritative pick.
+
+        `budget` is the pool walk's shared analysis budget — see _pick_and_load.
+        The pre-flight is an INIT plus PREFLIGHT_TICKS PLAY passes, and the tune
+        sets what those cost; per candidate, that was unbounded in seconds."""
         from c64cast.sid.sid_host_emu import (
             _sid_payload_extent,
             parse_sid_header,
@@ -593,13 +599,9 @@ class SidFileAudioSource:
                 f"display (petscii/mcm — they reserve only $0400) or a SID that "
                 f"loads above ${hi:04X}."
             )
-        if not sid_play_preflight(sid_bytes, song=song):
-            raise ValueError(
-                f"sid audio: {os.path.basename(path)} PLAY never completes within "
-                f"the host emulator's cycle cap — the tune spins on a raster/IRQ "
-                f"the player environment doesn't provide; it would hang the "
-                f"C64-side player (silent + unresponsive). Refused."
-            )
+        refusal = sid_play_preflight(sid_bytes, song=song, budget=budget)
+        if refusal is not None:
+            raise ValueError(f"sid audio: {os.path.basename(path)} {refusal}. Refused.")
         return sid_bytes, song, header
 
     def _pick_and_load(self) -> None:
@@ -607,6 +609,7 @@ class SidFileAudioSource:
         validates. Sets self._sid_file/sid_bytes/song/header. Raises if every
         attempt fails (mirrors WaveformScene._pick_and_load_sid)."""
         from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
+        from c64cast.sid.sid_host_emu import HostEmuBudget
 
         # Same recursion into the default SID dir the factory's validate
         # pass used, so a setup() re-pick sees the same HVSC pool.
@@ -615,10 +618,14 @@ class SidFileAudioSource:
         )
         pool = list(candidates)
         random.shuffle(pool)
+        # ONE analysis budget for the whole walk. Each candidate costs an INIT
+        # plus a 50-pass pre-flight, both host-emulated and both priced by the
+        # tune, so a per-candidate bound is no bound on the walk at all.
+        budget = HostEmuBudget()
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
-                sid_bytes, song, header = self._validate_candidate(path)
+                sid_bytes, song, header = self._validate_candidate(path, budget)
             except ValueError as e:
                 log.warning("sid audio: skipping %s: %s", os.path.basename(path), e)
                 last_error = e
@@ -648,11 +655,7 @@ class SidFileAudioSource:
         run_sid_player refuses the tune — RSID / load<$0820 / under KERNAL);
         SourceScene.setup converts that into an aborted scene so the playlist
         advances."""
-        from c64cast.sid.sid_host_emu import (
-            _play_bank_for_footprints,
-            ram_play_access_footprint,
-            ram_write_footprint,
-        )
+        from c64cast.sid.sid_host_emu import HostEmuBudget, analyze_placement
 
         self._pick_and_load()
         # The player MC must be relocated into RAM the tune never writes (its
@@ -660,10 +663,20 @@ class SidFileAudioSource:
         # rendering into. The audio DAC ring ($4000-$5FFF, VIC bank 1) is NOT
         # used by a SID source, so it isn't reserved — the payload may freely
         # live there.
-        footprint = ram_write_footprint(self.sid_bytes, song=self.song)
+        # One budget across both footprint runs (and the INIT each one costs),
+        # so a tune whose PLAY is expensive can't spend a fresh wall-clock
+        # deadline per call. See sid_host_emu.ANALYSIS_BUDGET_S. analyze_placement
+        # owns what a truncated sample may place: nothing reaches a raw bitmap
+        # here without that decision having been made.
+        placement = analyze_placement(
+            self.sid_bytes,
+            song=self.song,
+            budget=HostEmuBudget(),
+            what=f"sid audio: {os.path.basename(self._sid_file)} song {self.song}",
+        )
         from c64cast.hw.c64 import SCREEN, VIC_BANK_0
 
-        avoid = bytearray(footprint)
+        avoid = bytearray(placement.avoid)
         avoid[VIC_BANK_0.SCREEN : VIC_BANK_0.SCREEN + SCREEN.N_CELLS] = b"\x01" * SCREEN.N_CELLS
         if self._is_bitmapped:
             avoid[VIC_BANK_0.BITMAP : VIC_BANK_0.BITMAP + SCREEN.BITMAP_BYTES] = (
@@ -672,8 +685,7 @@ class SidFileAudioSource:
         # $36 (BASIC out) when this tune reads live song data from RAM under
         # BASIC ROM (e.g. Galway's Times of Lore at $B400); else None (let
         # run_sid_player's address heuristic decide). See _play_bank_for_footprints.
-        access_fp = ram_play_access_footprint(self.sid_bytes, song=self.song)
-        play_bank = _play_bank_for_footprints(footprint, access_fp)
+        play_bank = placement.play_bank
         log.info(
             "sid audio: %s #%d → run_sid_player (display %s, play_bank=%s)",
             os.path.basename(self._sid_file),

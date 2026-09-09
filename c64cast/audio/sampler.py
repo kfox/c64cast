@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast.hw.c64 import ULTIMATE_AUDIO
 
 if TYPE_CHECKING:
     from c64cast.hw.backend import C64Backend
@@ -49,7 +50,7 @@ log = logging.getLogger("c64cast.audio.sampler")
 # --------------------------------------------------------------------------
 # Register spec (Ultimate Audio v0.2). Multi-byte fields are BIG-ENDIAN.
 # --------------------------------------------------------------------------
-SAMPLER_IO_BASE = 0xDF20  # channel 0 base; reads here give the IRQ status reg
+SAMPLER_IO_BASE = ULTIMATE_AUDIO.IO_BASE  # channel 0; reads give the IRQ status reg
 SAMPLER_VERSION_REG = 0xDF21  # reads $10 when the sampler is present
 SAMPLER_CHANNEL_STRIDE = 0x20  # each channel occupies 32 consecutive bytes
 SAMPLER_NUM_CHANNELS = 7

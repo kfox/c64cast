@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from c64cast.hw.c64 import CLOCK_NTSC, CLOCK_PAL, SID
+from c64cast.hw.c64 import SID, cpu_clock
 
 # Re-export the wave-select bit constants under their historical names so
 # existing imports (`from c64cast.sid.sidemu import WAVE_NOISE, ...`) keep
@@ -114,29 +114,63 @@ class Voice:
     def gated(self) -> bool:
         return bool(self.control & GATE)
 
+    def is_silent(self) -> bool:
+        """True when this voice's oscillator can't produce a trace: no
+        waveform selected, a zero frequency (the phase accumulator never
+        advances, so every sample freezes on one phase), or a dead envelope.
+
+        Owned here, next to the fields it reads, because the rule had been
+        rewritten independently in every consumer and the copies disagreed:
+        `voice_samples` omitted the frequency test and drew a DC-offset flat
+        line pinned near the top of the strip for a rest written as freq 0
+        with the waveform bits still set, while `VoiceScopeRenderer` already
+        counted that case as silent when choosing the time base."""
+        return primary_waveform(self.control) == 0 or self.freq == 0 or self.envelope_level <= 0.0
+
 
 class SIDEmulator:
     """Stateful per-voice waveform generator.
 
     Usage from a scene:
         emu = SIDEmulator(system="NTSC")
+        host = SidHostEmu(sid_bytes, song=1)   # sid_host_emu.py
         # each frame:
-        regs = api.read_memory(0xD400, 25)
-        emu.update_registers(regs)
+        host.tick_play()                       # advance the parallel 6502
+        emu.update_registers(host.regs(), retrigger=host.retriggers())
         emu.advance_envelopes(dt_seconds)
         for v in range(3):
             samples = emu.voice_samples(v, n=320)   # float32 in [-1, 1]
+
+    The registers have to come from a host-side source — a `SidHostEmu`
+    shadow, MIDI note state, or an ASID stream. `api.read_memory(0xD400, 25)`
+    cannot supply them: SID I/O is write-only, so the U64 answers with
+    open-bus zeros (and the call is typed `bytes | None`, so a failed read
+    hands `update_registers` a `None`). Recovering the register state without
+    reading the chip is the whole reason `SidHostEmu` exists.
     """
 
     # Fallback visualization rate used only when a caller of
-    # voice_samples() doesn't pass time_window_s. WaveformScene always
-    # passes one frame's worth of audio time, which locks the displayed
-    # waveform phase to wall-clock (pitch changes you hear line up with
-    # wave shape changes you see).
+    # voice_samples() doesn't pass time_window_s. The scope callers always
+    # pass one: VoiceScopeRenderer._voice_time_window_s supplies either one
+    # display frame of audio time (`time_base = "wallclock"`, which locks the
+    # displayed waveform phase to wall-clock so pitch changes you hear line up
+    # with wave-shape changes you see) or `auto_cycles` periods of the voice's
+    # own frequency (`time_base = "auto"`, which instead holds the displayed
+    # cycle count fixed as pitch moves), scaled by the column batch in scroll
+    # mode.
     SAMPLE_RATE = 22050
 
     def __init__(self, system: str = "NTSC"):
-        self.clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
+        # Normalize here rather than at each of the four construction sites
+        # (WaveformScene, MidiScene, AsidScene, MusicFeatures): `system` comes
+        # from `[ultimate64].system`, which config.py validates
+        # case-insensitively and documents as accepting `"ntsc"`. A bare
+        # `system == "NTSC"` here quietly gave those spellings the PAL clock —
+        # 3.7% low, which also propagates into `_detect_play_rate_hz` and
+        # drifts the scope ~6.7 s behind the audio over a three-minute tune.
+        # cpu_clock raises on anything but NTSC/PAL, matching every other
+        # derived timing constant in the tree.
+        self.clock = cpu_clock(system)
         self.voices: list[Voice] = [Voice() for _ in range(SID.N_VOICES)]
         # Per-voice deterministic noise sequences so the visualization
         # is stable across reset.
@@ -225,13 +259,16 @@ class SIDEmulator:
 
         Advances the voice's internal accumulator by n samples so successive
         calls produce continuous output. When time_window_s is None, falls
-        back to n / SAMPLE_RATE; WaveformScene passes 1/target_fps so one
-        rendered row covers exactly one display frame of audio time."""
+        back to n / SAMPLE_RATE. The caller owns the window: the scope's
+        `VoiceScopeRenderer._voice_time_window_s` supplies one display frame
+        of audio time under `time_base = "wallclock"` and `auto_cycles`
+        periods of the voice's own frequency under `time_base = "auto"` —
+        see SAMPLE_RATE."""
         v = self.voices[voice_idx]
-        wave = primary_waveform(v.control)
-        if wave == 0 or v.envelope_level <= 0.0:
+        if v.is_silent():
             # Silent — return the resting zero line.
             return np.zeros(n, dtype=np.float32)
+        wave = primary_waveform(v.control)
 
         # Per-sample CPU-clock advance: total clocks across the window
         # (clock * time_window_s) divided across n samples, then scaled
@@ -256,17 +293,7 @@ class SIDEmulator:
             WAVE_PULSE,
             WAVE_NOISE,
         ):
-            if wave == WAVE_SAWTOOTH:
-                out = 2.0 * phases - 1.0
-            elif wave == WAVE_TRIANGLE:
-                # /\ shape spanning [-1, 1].
-                out = np.where(phases < 0.5, 4.0 * phases - 1.0, 3.0 - 4.0 * phases)
-            elif wave == WAVE_PULSE:
-                pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
-                out = np.where(phases < pw_frac, 1.0, -1.0)
-            else:  # WAVE_NOISE
-                rng = self._noise_rng[voice_idx]
-                out = np.array([rng.uniform(-1.0, 1.0) for _ in range(n)], dtype=np.float64)
+            out = self._waveform_unit(wave, phases, voice_idx) * 2.0 - 1.0
         else:
             # Combined waveform: the SID wires the selected waveforms' 12-bit
             # oscillator outputs onto a shared bus, bitwise-ANDing them. We
@@ -278,24 +305,33 @@ class SIDEmulator:
             combined = np.full(n, 0x0FFF, dtype=np.uint16)
             for bit in (WAVE_TRIANGLE, WAVE_SAWTOOTH, WAVE_PULSE, WAVE_NOISE):
                 if v.control & bit:
-                    combined &= self._waveform_u12(bit, phases, v, voice_idx, n)
+                    unit = self._waveform_unit(bit, phases, voice_idx)
+                    combined &= (unit * 0x0FFF).astype(np.uint16)
             out = combined.astype(np.float64) / 2047.5 - 1.0
 
         return (out * v.envelope_level).astype(np.float32)
 
-    def _waveform_u12(
-        self, bit: int, phases: np.ndarray, v: Voice, voice_idx: int, n: int
-    ) -> np.ndarray:
-        """One selected waveform's unsigned 12-bit oscillator output (0..4095)
-        over `phases`, for the combined (bitwise-AND) path in voice_samples."""
+    def _waveform_unit(self, bit: int, phases: np.ndarray, voice_idx: int) -> np.ndarray:
+        """One selected waveform's oscillator output over `phases`, as a unit
+        ramp in [0, 1] — the single place that knows what each SID waveform's
+        shape is.
+
+        Both of voice_samples' scalings derive from this and neither moves:
+        the single-waveform trace is ``unit * 2 - 1`` and the combined path's
+        unsigned 12-bit form is ``unit * 0x0FFF``, which are the exact
+        expressions the two branches used to spell out separately (the
+        triangle's bipolar form agrees to within one float64 ulp, far below
+        the float32 the trace is returned in). Keeping both scalings — rather
+        than deriving the bipolar trace from the truncated 12-bit one — is
+        what preserves the byte-identical guarantee noted above."""
+        v = self.voices[voice_idx]
         if bit == WAVE_SAWTOOTH:
-            u = phases * 0x0FFF
-        elif bit == WAVE_TRIANGLE:
-            u = (1.0 - np.abs(2.0 * phases - 1.0)) * 0x0FFF
-        elif bit == WAVE_PULSE:
+            return phases
+        if bit == WAVE_TRIANGLE:
+            return 1.0 - np.abs(2.0 * phases - 1.0)
+        if bit == WAVE_PULSE:
             pw_frac = max(1, v.pulse_width) / PULSE_WIDTH_RANGE
-            u = np.where(phases < pw_frac, float(0x0FFF), 0.0)
-        else:  # WAVE_NOISE
-            rng = self._noise_rng[voice_idx]
-            u = np.array([rng.uniform(0.0, float(0x0FFF)) for _ in range(n)], dtype=np.float64)
-        return u.astype(np.uint16)
+            return np.where(phases < pw_frac, 1.0, 0.0)
+        # WAVE_NOISE
+        rng = self._noise_rng[voice_idx]
+        return np.array([rng.random() for _ in range(len(phases))], dtype=np.float64)

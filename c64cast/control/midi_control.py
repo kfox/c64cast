@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
 from c64cast._pollthread import PollThread
+from c64cast._wire_log import LogThrottle
 
 from . import live_tune
 from .transport import TransportEvent
@@ -536,6 +537,21 @@ class MidiControlListener:
             self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
         )
         self._warned_channels: set[int] = set()
+        # A dispatch/clock-feed failure is per *message*, and the message comes
+        # off the wire: a controller sending something this build mishandles
+        # buys a full traceback per message inside an unbounded `iter_pending()`
+        # drain, on the thread a performer's next pad press waits behind. Same
+        # class, same gate as the ASID wire — see `_wire_log.py`. One
+        # throttle per reader, so a jammed dispatch cannot swallow the clock
+        # port's first report.
+        self._dispatch_errors = LogThrottle(log)
+        self._clock_feed_errors = LogThrottle(log)
+        # Same class one level down: `_apply` raising is per *message* too, and
+        # a held pad or a swept CC repeats it at the controller's rate. One
+        # throttle for the site, not one per (action, system) — a site's report
+        # budget is what `_wire_log` bounds, and a second report a second later
+        # names whichever action is still failing.
+        self._action_errors = LogThrottle(log)
         # Per-playlist last-tap time for the osd.position double-tap detection.
         self._osd_last_tap: dict[str, float] = {}
         # LED feedback to a grid controller (Live DJ/VJ Phase 4). Opens a MIDI
@@ -833,7 +849,7 @@ class MidiControlListener:
                     try:
                         self._dispatch(msg)
                     except Exception:
-                        log.exception("midi_control: dispatch failed for %r", msg)
+                        self._dispatch_errors.exception("midi_control: dispatch failed for %r", msg)
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control reader crashed")
@@ -851,7 +867,9 @@ class MidiControlListener:
                     try:
                         self._feed_tempo(msg)
                     except Exception:
-                        log.exception("midi_control: clock feed failed for %r", msg)
+                        self._clock_feed_errors.exception(
+                            "midi_control: clock feed failed for %r", msg
+                        )
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control clock reader crashed")
@@ -913,7 +931,7 @@ class MidiControlListener:
             try:
                 self._apply(pl, mapping, value, pressed)
             except Exception:
-                log.exception(
+                self._action_errors.exception(
                     "midi_control: action %r failed on system %r", mapping.action, pl.name
                 )
 

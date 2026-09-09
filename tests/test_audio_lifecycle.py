@@ -20,7 +20,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI
+from _fakes import FakeAPI, FakeTime
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -680,12 +680,15 @@ class NmiArmVerifyTest(unittest.TestCase):
         # It must keep the old behavior exactly — one arm, no retry latency.
         api = FakeAPI()  # read_memory → None for the read pointer
         s = self._streamer(api)
-        with mock.patch.object(audio_mod.time, "sleep") as sleep:
+        # The sleep under test is audio_rate.NmiTimer.start's, not one of
+        # audio.py's — scoping this to audio_mod made the assertion below
+        # vacuous, which the aliased patch it replaced had hidden.
+        with mock.patch.object(audio_rate_mod, "time", FakeTime(sleep=mock.MagicMock())) as faked:
             with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
                 s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 1)
         self.assertEqual(s.nmi.arm_attempts, 1)
-        sleep.assert_not_called()
+        faked.sleep.assert_not_called()
 
     def test_stop_clears_arm_state(self):
         api = _RFakeAPI([0, 240])

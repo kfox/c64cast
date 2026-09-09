@@ -253,6 +253,38 @@ class REU:
     CMD_FETCH_EXEC: Final = CMD_EXEC | CMD_FF00_OFF | CMD_DIR_REU_TO_C64  # $91
 
 
+class ULTIMATE_AUDIO:
+    """The U64's Ultimate Audio FPGA PCM sampler, mapped into cartridge I/O 2
+    by the firmware's "Map Ultimate Audio $DF20-DFFF" switch (hw_provision
+    enables it live+volatile per run). Seven 32-byte channel register files
+    fill the page from $DF20 to its end — the register spec itself lives in
+    c64cast.audio.sampler, which takes its base from here."""
+
+    IO_BASE: Final = 0xDF20
+    IO_END: Final = 0xDFFF
+
+
+# I/O that c64cast drives *itself*, as inclusive ``(lo, hi)`` byte ranges.
+#
+# Both windows sit inside the $DE00-$DFE0 "cartridge I/O" range the PSID spec
+# lets a .sid header declare an extra SID on, and which the U64 firmware lets
+# an UltiSID core be based at — so two independent paths can aim SID register
+# traffic at hardware c64cast is using: the header byte a tune declares
+# (sid_host_emu._decode_extra_sid_addr, whose caller zero-writes 25 bytes at
+# every declared base on teardown) and the core base the multi-SID planner
+# realizes from it (asid_sidmap._plan_ultisid_cores, which force-aligns a split
+# core's base DOWNWARD, so a declared $DF20 becomes an emitted $DF00). Both
+# refuse a window that overlaps these ranges, and they share this one tuple
+# because two copies is how they drift apart.
+#
+# Written as ranges against the devices' own constants, not as excluded
+# literals, so the rule stays right if either device moves.
+RESERVED_IO_WINDOWS: Final[tuple[tuple[int, int], ...]] = (
+    (REU.BASE, REU.ADDR_CONTROL),
+    (ULTIMATE_AUDIO.IO_BASE, ULTIMATE_AUDIO.IO_END),
+)
+
+
 # ---------------------------------------------------------------------------
 # Kernal ROM entry points + IRQ/NMI vectors
 # ---------------------------------------------------------------------------
