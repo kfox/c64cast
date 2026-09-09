@@ -168,13 +168,14 @@ def quiesce(client: TRClient, settle: float) -> bool:
     return False
 
 
-def stage_write_read(client: TRClient, rounds: int, reads: int, tally: Tally) -> None:
-    print(
-        f"\n[2] write/read soak ({BLOCK_BYTES} B x {rounds} rounds x {len(patterns(1))} patterns)"
-    )
+def stage_write_read(
+    client: TRClient, rounds: int, reads: int, tally: Tally, chosen: tuple[str, ...]
+) -> None:
+    pool = {k: v for k, v in patterns(BLOCK_BYTES).items() if k in chosen}
+    print(f"\n[2] write/read soak ({BLOCK_BYTES} B x {rounds} rounds x {len(pool)} patterns)")
     print("    per round: bytes wrong, and whether they were wrong in RAM or wrong on the way back")
     for rnd in range(1, rounds + 1):
-        for name, want in patterns(BLOCK_BYTES).items():
+        for name, want in pool.items():
             client.write_segment(BLOCK_ADDR, want)
             passes = [client.read_segment(BLOCK_ADDR, BLOCK_BYTES) for _ in range(reads)]
             tally.bytes_checked += BLOCK_BYTES
@@ -277,12 +278,22 @@ def main() -> int:
     ap.add_argument("--tcp", metavar="HOST", help="TeensyROM+ over TCP")
     ap.add_argument("--serial", metavar="PORT", help="TeensyROM+ over serial (default: autodetect)")
     ap.add_argument("--rounds", type=int, default=5, help="write/read rounds per pattern")
+    ap.add_argument(
+        "--patterns",
+        default=",".join(patterns(1)),
+        help="comma-separated subset to soak, for narrowing a run onto the payload that fails",
+    )
     ap.add_argument("--reads", type=int, default=3, help="readbacks per write in stage 2")
     ap.add_argument("--read-soak", type=int, default=20, help="readbacks in stage 3")
     ap.add_argument("--reset-settle", type=float, default=3.0)
     ap.add_argument("--no-quiesce", action="store_true", help="skip the cartridge, test as found")
     ap.add_argument("--no-reset-exit", action="store_true")
     args = ap.parse_args()
+
+    chosen = tuple(x.strip() for x in args.patterns.split(","))
+    unknown = [x for x in chosen if x not in patterns(1)]
+    if unknown:
+        ap.error(f"unknown pattern(s) {unknown}; choose from {list(patterns(1))}")
 
     print("[1] connect + quiesce")
     client = connect(tcp=args.tcp, serial=args.serial)
@@ -295,7 +306,7 @@ def main() -> int:
             print("    Re-run with --no-quiesce to soak the link anyway; a link this")
             print("    unreliable may not be able to upload a cartridge intact.")
             return 1
-        stage_write_read(client, args.rounds, args.reads, tally)
+        stage_write_read(client, args.rounds, args.reads, tally, chosen)
         stage_read_only(client, args.read_soak)
         stage_addresses(client)
         summarize(tally)
