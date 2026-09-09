@@ -563,7 +563,12 @@ def build_c128_crt(rom: bytes, *, name: str = "c64cast VDC") -> bytes:
     chip += (_CHIP_HEADER_LEN + len(body)).to_bytes(4, "big")
     chip += (0).to_bytes(2, "big")  # chip type: ROM
     chip += (0).to_bytes(2, "big")  # bank
-    chip += (0).to_bytes(2, "big")  # load address (payload runs at $8000)
+    # Load address. $0000 even though the payload runs at $8000: the firmware
+    # routes to rtBinC128 only on $0000, and $8000 with EXROM and GAME both
+    # deasserted matches its C64 branch instead, which boots the machine into
+    # C64 mode. VICE reads this field the other way and will not attach a C128
+    # cartridge unless it says $8000, so the two cannot both be satisfied here.
+    chip += (0).to_bytes(2, "big")
     chip += len(body).to_bytes(2, "big")
     assert len(chip) == _CHIP_HEADER_LEN
 
