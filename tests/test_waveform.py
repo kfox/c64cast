@@ -1286,6 +1286,24 @@ class WaveformSceneTest(unittest.TestCase):
         # +$1000, bitmap bit clear); test_voice_scope pins the constant to it.
         self.assertEqual(api.memories.get("D018"), "14")
 
+    def test_a_failing_irq_restore_does_not_starve_the_silence_and_display(self):
+        # This teardown's comment reasons at length about the ORDER of its
+        # restores, and every one of them used to share a single try -- so the
+        # first raise abandoned all of them.
+        from c64cast.sid.waveform import WaveformScene
+
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path)
+        scene.setup()
+        api.restore_kernal_irq_vector = link_down  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.waveform", level="ERROR"):
+            scene.teardown()
+        self.assertIn("SILENCE", api.regs)
+        self.assertEqual(api.memories.get("D018"), "14")
+
     def test_teardown_silences_extra_chips_before_config_restore(self):
         # A 2SID tune on the U2+ emulated-stereo-SID surface: teardown must
         # zero the chip at $D420 BEFORE the config restore re-points that

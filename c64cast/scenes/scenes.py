@@ -29,13 +29,16 @@ import os
 import random
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import cv2
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast.app.profiler import get_profiler
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -659,12 +662,20 @@ class WebcamScene(Scene):
         return True
 
     def teardown(self) -> None:
-        super().teardown()
-        if self._rolling_fp is not None:
-            self._rolling_fp.stop()
-            self._rolling_fp = None
+        # The palette worker and the audio streamer are independent promises to
+        # the next scene: `RollingForcePalette.stop()` joins a worker that
+        # touches the DMA link, and a raise there used to starve `audio.stop()`
+        # — handing the next scene the previous scene's audio still streaming,
+        # silently, because `safe_teardown` swallows it. The handle is cleared
+        # before the call, so a failing stop does not leave a dead worker
+        # referenced either.
+        fp, self._rolling_fp = self._rolling_fp, None
+        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        if fp is not None:
+            steps.append(("rolling palette stop", fp.stop))
         if self.audio:
-            self.audio.stop()
+            steps.append(("audio stop", self.audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
 
 def _effect_modulation(
@@ -902,14 +913,20 @@ class SourceScene(Scene):
         # Display teardown first (unhook any IRQ), then stop audio + source —
         # mirrors WebcamScene so audio.stop() latency doesn't pile on a still-
         # firing IRQ.
-        super().teardown()
-        if self._rolling_fp is not None:
-            self._rolling_fp.stop()
-            self._rolling_fp = None
-        try:
-            self.audio_source.teardown()
-        finally:
-            self.source.teardown()
+        #
+        # The `try/finally` this replaces protected the source handle from a
+        # failing audio source and nothing else, so the rolling-palette stop
+        # above it could starve both and leak the PyAV/capture handle for the
+        # rest of the run. Each guarantee is its own step instead.
+        fp, self._rolling_fp = self._rolling_fp, None
+        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        if fp is not None:
+            steps.append(("rolling palette stop", fp.stop))
+        steps += [
+            ("audio source teardown", self.audio_source.teardown),
+            ("source teardown", self.source.teardown),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
 
 
 class BlankScene(Scene):
@@ -1861,31 +1878,45 @@ class VideoScene(MediaFileMixin, Scene):
             )
 
     def teardown(self) -> None:
-        super().teardown()
-        # Idempotent no-op if a loop was never armed — restores the border
-        # if the scene ends (or is interrupted) mid-record so a red border
-        # never lingers into the next scene. See VideoTransportControls.
-        self.transport.set_record_border(False)
-        if self._av_lag_count:
-            wall = time.time() - self.wall_start_time
-            clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
-            log.info(
-                "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
-                "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
-                self._av_lag_min * 1000,
-                (self._av_lag_sum / self._av_lag_count) * 1000,
-                self._av_lag_max * 1000,
-                int(self._av_buf_min),
-                clock_wall,
-                self._av_lag_count,
-            )
-        if self.source:
-            self.source.close()
-            self.source = None
+        src, self.source = self.source, None
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            # Idempotent no-op if a loop was never armed — restores the border
+            # if the scene ends (or is interrupted) mid-record so a red border
+            # never lingers into the next scene. See VideoTransportControls.
+            ("record border restore", partial(self.transport.set_record_border, False)),
+        ]
+        # Ahead of the audio stop: that zeroes `position_seconds()`, which is
+        # what this summary's clock/wall gauge divides.
+        steps.append(("A/V lag summary", self._log_av_lag_summary))
+        if src is not None:
+            steps.append(("source close", src.close))
         if self.audio:
-            self.audio.stop()
+            steps.append(("audio stop", self.audio.stop))
+        steps.append(("identity-skip cache reset", self._reset_identity_skip_cache))
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _reset_identity_skip_cache(self) -> None:
+        # Nothing resets these on setup(), so a stale value reaches lap 2 and
+        # suppresses its first OSD repaint.
         self._last_rendered_img = None
         self._last_osd_shown = None
+
+    def _log_av_lag_summary(self) -> None:
+        if not self._av_lag_count:
+            return
+        wall = time.time() - self.wall_start_time
+        clock_wall = self.transport.clock_s() / wall if wall > 0 else 0.0
+        log.info(
+            "video A/V lag summary: min=%+.0f avg=%+.0f max=%+.0f ms, "
+            "min buffer depth=%d, clock/wall=%.4f over %d displayed frames",
+            self._av_lag_min * 1000,
+            (self._av_lag_sum / self._av_lag_count) * 1000,
+            self._av_lag_max * 1000,
+            int(self._av_buf_min),
+            clock_wall,
+            self._av_lag_count,
+        )
 
 
 class LauncherScene(MediaFileMixin, Scene):
@@ -2028,11 +2059,20 @@ class LauncherScene(MediaFileMixin, Scene):
         return (current_time - last_input) < self.duration_s
 
     def teardown(self) -> None:
-        self._poll.stop()
-        super().teardown()
-        # Clear the program (mandatory for .crt, which run_crt leaves active)
-        # so the next scene paints onto a clean machine.
-        self.api.reset()
+        # The reset is mandatory for a `.crt` (`run_crt` leaves it active), so
+        # the input poll stop must not be able to take it down: `PollThread.stop`
+        # joins, and `_pollthread` documents `Thread.join` raising RuntimeError
+        # on a target that stopped its own poller. Unguarded and first in the
+        # sequence, that raise left a cartridge live into the next scene.
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                ("input poll stop", self._poll.stop),
+                ("base teardown", super().teardown),
+                ("program reset", self.api.reset),
+            ],
+        )
 
     # -- input polling --------------------------------------------------
 

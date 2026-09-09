@@ -319,6 +319,52 @@ class ReservedIoTest(unittest.TestCase):
         # layout, which is the loud direction to fail in.
         self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60)))
 
+    def test_every_target_in_a_split_window_realizes_that_windows_base(self):
+        # The retry comment's proof that dropping a socket claim cannot rescue a
+        # reserved-window exhaustion rests on this and nothing else: every
+        # target inside a window realizes the *same* base, so it walks the same
+        # instances past the reserved check whether it opens its own window or
+        # rides in a lower target's.
+        #
+        # Asserted through `_align_down` itself, over every address the planner
+        # can be handed, rather than through the `cap * stride == align` identity
+        # that used to stand in for it. That identity is necessary and not
+        # sufficient: `_align_down` masks, so it is only alignment for a
+        # power-of-two `align`, and a `(3, 0x60)` level would satisfy the
+        # identity while landing $D420 on itself instead of on $D400 — the
+        # window splits in two, and the comment above the retry becomes an
+        # argument for behavior the code no longer has. The identity is kept as
+        # the second assertion because the comment cites the width too, and a
+        # window narrower than its alignment leaves part of the block uncovered
+        # without any target realizing a different base.
+        for split, cap, align in m._SPLIT_LEVELS:
+            with self.subTest(split=split):
+                self.assertEqual(cap * m._SPLIT_STRIDE, align, "window is not align wide")
+                for target in range(0xD000, 0x10000):
+                    base = m._align_down(target, align)
+                    window = [base + k * m._SPLIT_STRIDE for k in range(cap)]
+                    for instance in window:
+                        self.assertEqual(
+                            m._align_down(instance, align),
+                            base,
+                            f"${instance:04X} in the window of ${base:04X} realizes "
+                            f"a different base at {split}",
+                        )
+
+    def test_giving_the_socket_up_does_not_rescue_a_reserved_window(self):
+        # Same targets, one field varied: a socket that carries a chip for
+        # $D400. The caller drops the claim and re-plans when the cores run out
+        # of levels, and the comment there used to say a claimed socket could be
+        # what left every level *reserved* — so a reader would expect this to
+        # come back with a plan. It cannot: $DF20's realized base is $DF20 at
+        # the `Off` level and $DF00 at the two wider ones, and all three of
+        # those addresses sit inside RESERVED_IO_WINDOWS ($DF00-$DF0A, the REU;
+        # $DF20-$DFFF, the sampler) whether or not $D400 is claimed. The retry
+        # addresses `blocked` and only `blocked`.
+        self.assertIsNone(
+            m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60), socket_models=("6581", None))
+        )
+
     def test_a_core_alone_is_never_based_on_reserved_io(self):
         # One field varied: the pair, and whether a socket is in play at all.
         # A near miss that still lands a core on a reserved register would make
@@ -488,6 +534,30 @@ class ModelAwareRoutingTest(unittest.TestCase):
         self.assertEqual(sm.sources, ("socket1", "socket2"))
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID1_ADDR)], "$D400")
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID2_ADDR)], "$D420")
+
+    def test_a_claim_that_boxes_the_cores_in_is_given_up_for_the_map(self):
+        # The one thing the socket-give-up retry is for, and it had no test at
+        # all. Socket 1 carries a chip, so it claims $D400, and the other three
+        # addresses then defeat all three levels: `Off` gives one address per
+        # core and there are only two cores, while the two levels wide enough to
+        # cover three ($40- and $80-aligned) both align back onto $D400 and are
+        # rejected as `blocked`. Measured per level, because "blocked at every
+        # level" would be the wrong reason for the first one.
+        self.assertIsNone(
+            m._plan_ultisid_cores([0xD420, 0xD440, 0xD460], blocked=frozenset({0xD400}))
+        )
+
+        # So the claim is dropped rather than the map. Asserted on what the
+        # caller can observe: every chip is answered, by a core rather than the
+        # socket, and the socket is explicitly disabled despite carrying a
+        # 6581 — "every chip audible on emulated cores beats handing back None".
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440, 0xD460), socket_models=("6581", None)
+        )
+        assert sm is not None
+        self.assertEqual(sm.addresses, (0xD400, 0xD420, 0xD440, 0xD460))
+        self.assertEqual(sm.sources, ("ultisid1", "ultisid1", "ultisid2", "ultisid2"))
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
 
 
 class SidMapSourcesTest(unittest.TestCase):

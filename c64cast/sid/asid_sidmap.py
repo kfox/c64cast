@@ -311,6 +311,18 @@ _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
 _ULTISID_BASE_WINDOWS: tuple[tuple[int, int], ...] = ((0xD400, 0xD7E0), (0xDE00, 0xDFE0))
 
 
+def _align_down(target: int, align: int) -> int:
+    """The window base a `target` falls in, for an `align`-wide split level.
+
+    Masking, not division, so `align` has to be a power of two -- and every
+    :data:`_SPLIT_LEVELS` entry is one. A width that was merely equal to its
+    alignment would not be enough: at `(3, 0x60)` the mask lands $D420 on
+    itself rather than on $D400, splitting one window into two realized bases.
+    Pinned by `test_every_target_in_a_split_window_realizes_that_windows_base`.
+    """
+    return target & ~(align - 1) & 0xFFFF
+
+
 def _is_legal_ultisid_base(base: int) -> bool:
     return any(low <= base <= high for low, high in _ULTISID_BASE_WINDOWS)
 
@@ -366,7 +378,7 @@ def _plan_ultisid_cores(
         for t in sorted(set(targets)):
             if t in covered:
                 continue
-            base = t & ~(align - 1) & 0xFFFF
+            base = _align_down(t, align)
             if not _is_legal_ultisid_base(base):
                 realizable = False
                 break
@@ -498,16 +510,27 @@ def plan_sid_map_for_addresses(
     )
     if core_plan is None and served_by_socket:
         # A socket claim that boxes the cores in costs more than it buys. The
-        # firmware aligns a split core's base *downward*, so for some target sets
-        # no split level has a window that clears the claimed socket — and since
-        # the same downward alignment is what can pull a base into
-        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, a claimed socket can also
-        # be what leaves every otherwise-legal level reserved. Both exhaust the
-        # levels the same way and both are worth one retry without the socket.
-        # Give the socket up and let the cores answer everything — every chip
-        # audible on emulated cores beats handing the caller None and falling
-        # back to the canonical layout, which ignores the file's own addresses
-        # entirely.
+        # firmware aligns a split core's base *downward*, so for some target
+        # sets every level wide enough to cover them aligns back over the
+        # claimed socket and is rejected as `blocked`. Dropping the claim is
+        # what clears those levels: give the socket up and let the cores answer
+        # everything, because every chip audible on emulated cores beats handing
+        # the caller None and falling back to the canonical layout, which
+        # ignores the file's own addresses entirely.
+        #
+        # `blocked` is the only rejection the claim can cause, so it is the only
+        # one this retry can clear. In particular it cannot rescue a
+        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` exhaustion. Each level's
+        # window holds `cap` instances at `_SPLIT_STRIDE`, which is exactly
+        # `align` wide and `align`-aligned, so any target inside a window has
+        # ``_align_down(t, align) == base`` (pinned directly, over every level
+        # and every address the planner can see, by
+        # `test_every_target_in_a_split_window_realizes_that_windows_base`). A target's
+        # realized base is therefore ``align_down(t)`` whether it opens its own
+        # window or rides in a lower target's, the reserved test walks the same
+        # instances either way, and the retry's wider target list can only add
+        # windows, never move one off reserved I/O. Both directions are pinned
+        # in tests/test_asid_sidmap.py.
         served_by_socket = {}
         core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:

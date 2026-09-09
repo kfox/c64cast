@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.hw.c64 import CIA2, SCREEN, RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from c64cast.scenes.bitmap_text import load_glyphs as _load_glyphs
 from c64cast.video.modes import engage_bitmap_mode
@@ -186,6 +186,16 @@ _PERSISTENCE_RANDOM_CHOICES = ("short", "medium", "long")
 LEFT_ARROW_SCREEN_CODE = 0x1F
 
 
+def restore_char_mode_display(api: C64Backend) -> None:
+    """Put VIC bank 0 and the char-mode $D018 back for the next scene.
+
+    Every scope scene renders from a bitmap layout. The next scene's mode engage
+    owns $D011 but not the matrix pointer, so a $D018 left on the bitmap layout
+    makes a char-mode scene read its matrix from the wrong offset."""
+    api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
+    api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
+
+
 def _mirror_glyph_h(glyph: bytes) -> bytes:
     """Horizontally flip an 8-byte cell glyph by bit-reversing each row byte.
     Used to synthesize a right-arrow from the ROM's left-arrow glyph."""
@@ -305,6 +315,10 @@ class VoiceScopeRenderer:
     # that pans its chips reorders this so columns run left-to-right across the
     # stereo field instead of by chip number (see sid_panning.window_order_for_pans).
     _window_chip_order: list[int]
+    # Whether the >1-window force-to-fast warning has been emitted on this
+    # instance, in the shape AsidScene's `_warned_downmix` uses. A class default
+    # so no host has to supply it; the warning sets the instance attribute.
+    _warned_forced_fast: bool = False
 
     def _scope_emulators(self) -> list[SIDEmulator]:
         """The per-window SID sources, in window (left-to-right) order —
@@ -362,18 +376,28 @@ class VoiceScopeRenderer:
         per-voice render modes — forcing the fast path for n>1, and restoring
         the configured scroll/echo when the count shrinks back to 1.
 
-        The force is announced: a user who configured `persistence`/
-        `scroll_columns` and then hits a multi-chip stream would otherwise watch
-        the trails vanish with nothing in the log."""
+        The force is announced once per instance: a user who configured
+        `persistence`/`scroll_columns` and then hits a multi-chip stream would
+        otherwise watch the trails vanish with nothing in the log. Once, because
+        the message is a consequence of the knobs plus `n` and so is identical
+        every time, while the reflow is not a one-off — a playlist reuses scene
+        instances and re-runs `setup()` each lap, and `WaveformScene` reflows per
+        tune. Repeats go to DEBUG rather than nowhere, so `-v` still shows each
+        reflow."""
         self._n_windows = max(1, n)
         self._window_slices = _compute_window_slices(self._n_windows)
         self._window_chip_order = list(range(self._n_windows))
         self._voice_render_modes, self._fast_path = self._resolve_render_modes()
         if self._n_windows > 1 and not self._fast_path:
-            log.warning(
+            forced = (
                 "voice_scope: scroll/persistence not supported for the multi-chip "
                 "split scope — forcing the fast render path"
             )
+            if self._warned_forced_fast:
+                log.debug(forced)
+            else:
+                self._warned_forced_fast = True
+                log.warning(forced)
             self._voice_render_modes = [RENDER_MODE_FAST] * len(BITMAP_STRIPS)
             self._fast_path = True
 
@@ -401,8 +425,8 @@ class VoiceScopeRenderer:
         strip; the layout itself is applied by ``_set_window_count``, which also
         derives the render modes. Single-chip scenes (waveform/midi) omit it →
         byte-identical output. When >1 the per-voice scroll/echo modes are
-        forced to "fast", with a warning (per-window persistence buffers are out
-        of scope for v1)."""
+        forced to "fast", announced once per instance (per-window persistence
+        buffers are out of scope for v1)."""
         if color_mode not in ("per_voice", "per_waveform"):
             raise ValueError("voice_scope: color_mode must be 'per_voice' or 'per_waveform'")
         if time_base not in TIME_BASE_NAMES:

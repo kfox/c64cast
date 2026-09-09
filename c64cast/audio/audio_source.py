@@ -29,8 +29,11 @@ import logging
 import os
 import random
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from c64cast._teardown import run_teardown_steps
 
 if TYPE_CHECKING:
     from c64cast.app.config import AudioCfg, AudioFeaturesCfg
@@ -196,10 +199,12 @@ class MicAudioSource:
         # Unhook the sink before the streamer stops, so no callback can push
         # into a tap whose analyzer thread is already going away.
         self._audio.analysis_sink = None
-        if self._features is not None:
-            self._features.stop()
-            self._features = None
-        self._audio.stop()
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if features is not None:
+            steps.append(("feature stream stop", features.stop))
+        steps.append(("audio stop", self._audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         return None
@@ -326,33 +331,40 @@ class AudioFileSource:
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
         the decode→audio thread. Never raises on a decode/analyzer hiccup —
-        degrades to non-reactive so the visual keeps running.
+        degrades to non-reactive so the visual keeps running. Plenty else does
+        escape, though — a file spec that resolves to nothing openable, a host
+        too short of threads to start the decode thread, and whatever the audio
+        bring-up raises over the link. `SourceScene.setup` catches all of it,
+        logs, and flips `is_done` so the playlist advances.
 
-        Ordering differs by backend. The 4-bit DAC's `start_for_external_source`
-        just arms its worker (non-blocking), so it starts before the decode
+        Ordering differs by backend, by what each bring-up call *waits* for
+        rather than by whether it touches the link — both do. The 4-bit DAC's
+        `start_for_external_source` uploads the NMI routine and the ring and
+        returns without waiting on a producer, so it goes before the decode
         thread. The sampler's `start()` blocks up to ~2 s collecting a prebuffer
         from `push_samples`, so the decode thread must already be feeding it —
         start decode FIRST, then bring the ring up. `push_samples` accepts data
         before the ring is gated (it enqueues, blocking only when full), so the
         prebuffer fills promptly and playback starts without the empty-prebuffer
-        stall."""
+        stall.
+
+        That sampler ordering is why a `start()` that raises is the awkward one:
+        it leaves the decode thread running with no writer to drain the queue,
+        and `UltimateAudioSampler.push_samples` waits on the *sampler's* stopped
+        flag rather than this source's, so `teardown`'s `_stop` does not release
+        a thread parked on a full queue. Its bounded join spends the whole 2 s
+        and returns with the thread still alive; the `audio stop` step behind it
+        is what actually frees it. Every teardown promise is still kept, which
+        is what the guarded steps are for, but the shutdown pauses."""
         self._pick_and_probe()
         self._stop.clear()
         self._start_features()
         if self._is_sampler:
-            thread = threading.Thread(
-                target=self._decode_loop, daemon=True, name="audio-file-decode"
-            )
-            self._thread = thread
-            thread.start()
+            self._start_decode_thread()
             self._audio.start_for_external_source()
         else:
             self._audio.start_for_external_source()
-            thread = threading.Thread(
-                target=self._decode_loop, daemon=True, name="audio-file-decode"
-            )
-            self._thread = thread
-            thread.start()
+            self._start_decode_thread()
         log.info(
             "audio file: %s → %s @ %dHz%s",
             os.path.basename(self._path),
@@ -360,6 +372,26 @@ class AudioFileSource:
             self._audio.sample_rate,
             " (reactive)" if self._features is not None else "",
         )
+
+    def _start_decode_thread(self) -> None:
+        """Start the decode thread, and publish it only once it is running.
+
+        A thread published before `start()` is one `teardown` can reach before
+        it has ever run, and `Thread.join` raises on those. Publishing second
+        means a host out of threads leaves nothing behind to trip over.
+
+        `PollThread.start` takes the same order for a neighboring reason, and
+        the difference is worth knowing before this is copied: it is guarding
+        the publish window against a `stop()` arriving from another thread, and
+        it closes that window with an RLock this has no equivalent of. What
+        stands in for the lock here is that `setup` and `teardown` both run on
+        the playlist's worker thread, so nothing can land between the two
+        statements. A caller tearing a source down from anywhere else would
+        need the lock.
+        """
+        thread = threading.Thread(target=self._decode_loop, daemon=True, name="audio-file-decode")
+        thread.start()
+        self._thread = thread
 
     def _start_features(self) -> None:
         """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
@@ -437,13 +469,15 @@ class AudioFileSource:
         # stops (so no callback pushes into a dying tap), then stop everything.
         self._stop.set()
         self._audio.analysis_sink = None
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-        if self._features is not None:
-            self._features.stop()
-            self._features = None
-        self._audio.stop()
+        thread, self._thread = self._thread, None
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if thread is not None:
+            steps.append(("decode thread join", partial(thread.join, 2.0)))
+        if features is not None:
+            steps.append(("feature stream stop", features.stop))
+        steps.append(("audio stop", self._audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         # The DAC consumer clock — exposed for the protocol; the scene ends on its
@@ -767,28 +801,35 @@ class SidFileAudioSource:
         restore the SID config — the restore may re-point a U2+ emulated SID at
         its home base, and a side moved home mid-note keeps ringing where no
         write can ever reach it (a machine reset does not clear the emulation's
-        voice state — HW-verified). Finally suppress the cursor blink — the
-        player MC's `JMP *` spin survives teardown, so a following char scene
-        would otherwise blink the cursor cell (HW-verified in
-        WaveformScene.teardown). No VIC-bank restore: a SID source never moved
-        the bank (the display owns bank 0 throughout)."""
+        voice state — HW-verified). No VIC-bank restore: a SID source never
+        moved the bank (the display owns bank 0 throughout), and nothing here
+        suppresses the cursor blink: `suppress_cursor_blink()` was removed in
+        #232 because poking BLNSW never held — the editor's input-wait loop
+        overwrites that byte microseconds after the DMA lands — and the BASIC
+        clear-and-loop PRG is what actually keeps the cursor off."""
         from c64cast.hw.c64 import SID
         from c64cast.sid.sidemu import SID_REG_COUNT
 
-        if self._features is not None:
-            self._features.stop()  # pure host-side; no U64 I/O
-            self._features = None
-        try:
-            self._api.restore_kernal_irq_vector()
-            self._api.flush()
-            for base in self.header.sid_addresses if self.header is not None else ():
-                if base != SID.BASE:
-                    self._api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
-            self._api.silence_sid()
-            self._api.flush()
-        except Exception:
-            log.exception("sid audio: teardown silence/restore failed")
-        self._sid_session.restore()
+        features, self._features = self._features, None
+        steps: list[tuple[str, Callable[[], object]]] = []
+        if features is not None:
+            steps.append(("feature stream stop", features.stop))  # host-side; no U64 I/O
+        zeros = bytes(SID_REG_COUNT)
+        steps += [
+            ("kernal IRQ vector restore", self._api.restore_kernal_irq_vector),
+            ("flush vector restore", self._api.flush),
+        ]
+        steps += [
+            (f"silence SID at ${base:04X}", partial(self._api.write_regs, f"{base:04X}", *zeros))
+            for base in (self.header.sid_addresses if self.header is not None else ())
+            if base != SID.BASE
+        ]
+        steps += [
+            ("primary SID silence", self._api.silence_sid),
+            ("flush silence", self._api.flush),
+            ("SID address config restore", self._sid_session.restore),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
         return None

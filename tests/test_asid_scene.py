@@ -197,6 +197,19 @@ class AsidSceneTest(unittest.TestCase):
         self.assertIn("SILENCE", api.regs)  # SID silenced
         self.assertIn("DD00", api.memories)  # VIC bank restored
 
+    def test_a_failing_silence_does_not_starve_the_config_and_display_restores(self):
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        scene, api = self._make()
+        self._bring_up(scene)
+        self.assertEqual(api.memories["D018"], "18")
+        api.silence_sid = link_down  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.asid_scene", level="ERROR"):
+            scene.teardown()
+        # $14 is the char-mode byte; the scope left the bitmap layout ($18).
+        self.assertEqual(api.memories["D018"], "14")
+
     def test_teardown_leaves_d018_on_the_char_mode_default(self):
         # The scope ran in hires ($18 = bitmap at bank+$2000). Teardown claims
         # to hand the next scene the char-mode default, so it must write the
@@ -321,6 +334,39 @@ class AsidSceneTest(unittest.TestCase):
             (CAT_ADDRESSING, "Auto Address Mirroring", "Enabled"),
             api.config_puts,
         )
+
+    def test_a_second_lap_gets_its_own_baseline_after_a_failing_teardown(self):
+        """The starved restore compounded across laps, and the guarded steps are
+        what stop it.
+
+        `SidHwSession.snapshot()` is first-call-wins and only `restore()` clears
+        the recorded set, so a teardown that never reached the config restore
+        left lap 2's `snapshot()` a no-op — lap 2 then had no baseline of its
+        own, and every later lap inherited lap 1's. Failing the silence ahead of
+        the restore is the cheapest way to drive that path.
+        """
+        from c64cast.sid.asid_sidmap import CAT_ADDRESSING
+
+        scene, api = self._make_multi()
+        api.config_store[CAT_ADDRESSING] = {"UltiSID Range Split": "Off"}
+        with _stub_port(scene), quiet_logging():
+            scene.setup()
+            scene._reconfigure_chips(3)
+        with mock.patch.object(api, "silence_sid", side_effect=RuntimeError("DMA link down")):
+            with self.assertLogs("c64cast.sid.asid_scene", level="ERROR"):
+                scene.teardown()
+        self.assertIsNone(scene._sid_session.saved, "the config restore was starved")
+
+        # Lap 2, against a machine the user has since reconfigured. The restore
+        # has to put *this* lap's value back, not the one lap 1 recorded.
+        api.config_store[CAT_ADDRESSING] = {"UltiSID Range Split": "On"}
+        with _stub_port(scene), quiet_logging():
+            scene.setup()
+            scene._reconfigure_chips(3)
+        api.config_puts.clear()
+        with quiet_logging():
+            scene.teardown()
+        self.assertIn((CAT_ADDRESSING, "UltiSID Range Split", "On"), api.config_puts)
 
     def test_out_of_range_chip_index_does_not_drive_a_remap(self):
         """`_chip_for` downmixes an index past the cap to slot 0, so the growth
@@ -868,6 +914,70 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         scene, _ = self._make()
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x01, 0x00, 0x00, 0x00))
         self.assertEqual(scene._recipe, [(1, 0), (0, 0)])
+
+    def test_a_failing_player_stop_does_not_starve_the_kernal_irq_restore(self):
+        # teardown's own comment argues the scene must not delegate the
+        # quiescence promise to the player's bookkeeping. A stop() that raises
+        # is that argument's other half: the restore has to be a step of its
+        # own, not a statement sequenced behind the stop that can fail.
+        from c64cast.hw.c64 import KERNAL
+
+        def wedged() -> None:
+            raise RuntimeError("writer thread wedged")
+
+        scene, api = self._make()
+        assert scene._player is not None
+        scene._player.stop = wedged  # type: ignore[method-assign]
+        scene._apply_vic_hires_bank()
+        scene._alloc_scope_buffers()
+        with self.assertLogs("c64cast.sid.asid_scene", level="ERROR"):
+            scene.teardown()
+        self.assertEqual(
+            api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        )
+
+    def test_the_midi_port_closes_before_the_machine_is_restored(self):
+        """Ordering, not just membership.
+
+        The reader's poll stop is a bounded join that `_pollthread` documents as
+        abandoning a worker blocked on the link, and that worker's loop calls
+        `_retune_if_due` on every pass — on the buffered path a CIA #1 latch
+        write through the player, and pre-arm a handler re-upload over $C000.
+        (On the coalesced path `_player` is None and `_retune_if_due` reaches no
+        hardware at all, which is also why `kernal IRQ restore` is gated on
+        `_player`.) Closing the port is what stops it reading one more `0x31`,
+        so it has to run before the restores below and not after them: a retune
+        landing afterward hands the next scene the exact CIA state these steps
+        exist to undo. The `base teardown` step ahead of them is a no-op for
+        this scene (`display_mode` is None), so pinning the port close against
+        the restores below pins it against every restore there is.
+        """
+        order: list[str] = []
+        scene, _ = self._make()
+        assert scene._player is not None
+        # The docstring's "every restore there is" rests on this: give the scene
+        # a display mode and `Scene.teardown` becomes a real machine restore
+        # running ahead of the port close, which narrows the invariant without
+        # touching this test's own steps.
+        self.assertIsNone(
+            scene.display_mode, "the base teardown step would restore the machine first"
+        )
+        # Recorded on the port itself rather than on a wrapper method, so the
+        # order is asserted against the call teardown actually makes.
+        scene._midi_port = SimpleNamespace(close=lambda: order.append("port close"))
+        with (
+            mock.patch.object(
+                scene._player, "stop", side_effect=lambda: order.append("player stop")
+            ),
+            mock.patch(
+                "c64cast.sid.asid_scene.restore_kernal_irq",
+                side_effect=lambda *a: order.append("kernal IRQ restore"),
+            ),
+        ):
+            scene._apply_vic_hires_bank()
+            scene._alloc_scope_buffers()
+            scene.teardown()
+        self.assertEqual(order, ["port close", "player stop", "kernal IRQ restore"])
 
     def test_teardown_hands_the_irq_back_without_trusting_the_player(self):
         """The scene owns the promise that the next scene gets a quiescent C64.

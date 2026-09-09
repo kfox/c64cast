@@ -51,12 +51,14 @@ import os
 import random
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
@@ -121,7 +123,6 @@ from .voice_scope import (
     BITMAP_STRIPS,  # noqa: F401  (re-exported)
     BITMAP_W,  # noqa: F401  (re-exported)
     CELL_PX,
-    D018_CHAR_DEFAULT,
     D018_HIRES_BITMAP,
     LEFT_ARROW_SCREEN_CODE,
     META_ROW,
@@ -136,6 +137,7 @@ from .voice_scope import (
     _layout_lcr,  # noqa: F401  (re-exported; tests import from this module)
     _layout_lr,
     _mirror_glyph_h,
+    restore_char_mode_display,
 )
 
 if TYPE_CHECKING:
@@ -1337,8 +1339,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._sid_session.restore()
 
     def teardown(self):
-        super().teardown()
-        self._poll.stop()
         # Order: vector first, then silence, then the SID-config restore. If
         # silence happened before the vector restore, the IRQ could fire
         # between the volume-clear and gate-clears, rewriting both. Every
@@ -1350,31 +1350,32 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # state (HW-verified). Flush after the vector write so it has
         # actually landed before the silence writes; flush after silence so
         # the SID is genuinely quiet before the next scene begins.
-        try:
-            self.api.restore_kernal_irq_vector()
-            # Then CIA #1 Timer A back to the kernal default, undoing any
-            # PLAY-rate retune, so the jiffy clock / SCNKEY / cursor blink
-            # resume at ~60 Hz for the next scene. Vector first for the same
-            # reason as the ordering note above. No-op when never retuned.
-            self.api.restore_kernal_play_rate()
-            self.api.flush()
-            for base in self._sid_addresses:
-                if base != SID.BASE:
-                    self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
-            self.api.silence_sid()
-            # Restore VIC bank 0 + the char-mode $D018 so the next scene's
-            # bank-0 display renders. Not a no-op even when we never relocated:
-            # the scope leaves the matrix pointer on its bitmap layout, and
-            # writing the hires value back here left it there while claiming
-            # otherwise. Mirrors hires.py's own teardown, which writes the same
-            # char-mode value for the same reason.
-            self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
-            self.api.flush()
-        except Exception:
-            log.exception("waveform: teardown silence/restore failed")
-        finally:
-            self._restore_sid_hw_config()
+        #
+        # The PLAY-rate restore puts CIA #1 Timer A back to the kernal default,
+        # undoing any retune, so the jiffy clock / SCNKEY / cursor blink resume
+        # at ~60 Hz for the next scene. No-op when never retuned.
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            ("poll stop", self._poll.stop),
+            ("kernal IRQ vector restore", self.api.restore_kernal_irq_vector),
+            ("kernal PLAY rate restore", self.api.restore_kernal_play_rate),
+            ("flush vector restore", self.api.flush),
+        ]
+        steps += [
+            (f"silence SID at ${base:04X}", partial(self._silence_chip, base))
+            for base in self._sid_addresses
+            if base != SID.BASE
+        ]
+        steps += [
+            ("primary SID silence", self.api.silence_sid),
+            ("char-mode display restore", partial(restore_char_mode_display, self.api)),
+            ("flush silence", self.api.flush),
+            ("SID hardware config restore", self._restore_sid_hw_config),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _silence_chip(self, base: int) -> None:
+        self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
 
     def cycle_style(self, api: C64Backend) -> str | None:
         """SHIFT handler: advance to the next subtune in the SID.
