@@ -1114,13 +1114,21 @@ def detect_play_rate_hz(
     `run_catchup_passes` runs its pass before consulting its clock for the same
     reason.
 
-    The budget is consulted before each pass AND bounds the pass itself:
-    ``tick_play`` gets a deadline, exactly as the footprint and pre-flight
-    paths give it one. ``_PLAY_CYCLE_CAP`` bounds emulated cycles and not
-    seconds — py65 charges 0 for the 105 undocumented opcodes, and one measured
-    ``tick_play()`` built out of them burned 7-21 s — and unlike the loop this
-    replaced, at least one pass now always runs, from ``__init__``, ``setup``
-    and every SHIFT.
+    The budget is consulted before each pass but does not bound the pass
+    itself, and that is deliberate: the pass here has to cost what the pass on
+    the render path will cost, and the render path's ``tick_play()`` gets no
+    deadline. A deadlined probe pass is a *censored* measurement — truncated at
+    ``_PLAY_DEADLINE_S`` it reports 50 ms for a pass that will really spend
+    120 ms, and [sustainable_poll_period_s] then floors the period at less than
+    one pass, which is the back-to-back GIL starvation the floor exists to
+    prevent. [describe_pass_cost] would call that truncation a measurement,
+    which is the whole thing the ``None`` reading was added to stop.
+
+    What bounds one pass is the *step* cap in `_run_routine`, not the cycle cap
+    and not a clock: a PLAY that spins on a raster forever measures 7.1 ms
+    undeadlined, because 50 k steps is what binds. What bounds the loop is the
+    ``budget.expired()`` check above — an expensive pass ends the probe after
+    it, rather than being cut off inside it.
 
     ``None`` means only what it says: no pass was timed. That happens when the
     budget is already spent, or when `ticks` is non-positive; it is a distinct
@@ -1135,7 +1143,7 @@ def detect_play_rate_hz(
         if budget.expired():
             break  # too expensive to emulate; the vsync default stands
         started = time.monotonic()
-        probe.tick_play(budget.deadline_for(_PLAY_DEADLINE_S))
+        probe.tick_play()
         spent += time.monotonic() - started
         passes += 1
         rate = probe.play_rate_hz(video_hz, clock_hz)
@@ -1176,10 +1184,10 @@ def sustainable_poll_period_s(
     by; only the wakeup period is stretched. Keeping those two the same number
     is what conflated "how fast the song advances" with "how often we wake".
 
-    A `pass_cost_s` of ``None`` means the probe never timed a pass, which it
-    can only mean because this tune's analysis budget was already gone — so it
-    is charged UNMEASURED_PASS_COST_S, the worst a legal pass can cost, rather
-    than nothing. A measured 0.0 is different and stays free: a pass too quick
+    A `pass_cost_s` of ``None`` means the probe never timed a pass — because
+    the tune's analysis budget was already gone, or because it was asked for no
+    passes at all — so it is charged UNMEASURED_PASS_COST_S, the worst a legal
+    pass can cost, rather than nothing. A measured 0.0 is different and stays free: a pass too quick
     for the host clock to resolve needs no floor. The two used to be one value,
     and the expensive reading was the one that got lost."""
     if fraction <= 0.0:

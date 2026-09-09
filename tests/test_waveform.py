@@ -16,8 +16,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from _fakes import FakeAPI, bare_waveform_scene, make_psid, quiet_logging
+from _fakes import FakeAPI, FrozenClock, bare_waveform_scene, make_psid, quiet_logging
 
+from c64cast.sid import sid_host_emu
 from c64cast.sid.sid_host_emu import (
     RATE_PROBE_TICKS,
     FootprintSample,
@@ -802,7 +803,7 @@ class WaveformSceneTest(unittest.TestCase):
         # pass costs 100 ms against the pinned rate's 40 ms period; the floor
         # must stretch the wakeups even though the rate was the user's choice.
         with (
-            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.1)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.1)),
             self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
         ):
             scene._resolve_poll_rate()

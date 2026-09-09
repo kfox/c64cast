@@ -468,11 +468,26 @@ class FrozenClock:
     Any attribute other than the pinned one delegates to the real module, so
     code that also calls ``time.monotonic()`` or ``time.sleep()`` while the
     fake is installed keeps working.
+
+    ``step`` makes the pinned clock advance by itself, one increment per
+    reading, which is what a test wanting to price an interval needs::
+
+        with mock.patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.1)):
+            ...               # each monotonic() reading is 100 ms after the last
+
+    That is the same thing ``side_effect=itertools.count(0.0, 0.1)`` does, minus
+    the process-wide aliasing the paragraph above is about.
     """
 
-    def __init__(self, now: float, attr: str = "time") -> None:
+    def __init__(self, now: float, attr: str = "time", step: float = 0.0) -> None:
         self._now = float(now)
         self._attr = attr
+        self._step = float(step)
+
+    def _read(self) -> float:
+        now = self._now
+        self._now += self._step
+        return now
 
     def advance(self, dt: float) -> None:
         """Move the pinned clock forward — lets a test drive a poller's tick
@@ -484,5 +499,5 @@ class FrozenClock:
         # Only reached for names not on the instance, so `_now`/`_attr` never
         # route back through here.
         if name == self._attr:
-            return lambda: self._now
+            return self._read
         return getattr(time, name)

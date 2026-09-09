@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import time
 import unittest
+from typing import cast
 from unittest.mock import patch
+
+from _fakes import FrozenClock
 
 from c64cast.hw.c64 import cpu_clock
 from c64cast.sid.sid_host_emu import (
@@ -911,6 +914,28 @@ class SustainablePollPeriodTest(unittest.TestCase):
         )
 
 
+class _SlowProbe:
+    """A PLAY pass of a known cost, which truncates at a deadline exactly as
+    `SidHostEmu.tick_play` does. A MagicMock cannot stand in here: its pass is
+    free, so it prices the same whether or not the caller deadlines it — which
+    is the very difference under test."""
+
+    def __init__(self, clock: FrozenClock, cost_s: float) -> None:
+        self._clock = clock
+        self._cost_s = cost_s
+        self.deadlines: list[float | None] = []
+
+    def play_rate_hz(self, video_hz: float, clock_hz: float) -> float:
+        return video_hz
+
+    def tick_play(self, deadline: float | None = None) -> None:
+        self.deadlines.append(deadline)
+        spend = self._cost_s
+        if deadline is not None:
+            spend = min(spend, max(0.0, deadline - self._clock.monotonic()))
+        self._clock.advance(spend)
+
+
 class DetectPlayRateTest(unittest.TestCase):
     """The shared PLAY-rate probe. It prices a pass before it reads the rate,
     because the tunes whose rate is known earliest are the ones whose cost
@@ -950,6 +975,32 @@ class DetectPlayRateTest(unittest.TestCase):
         self.assertAlmostEqual(rate, 60.0)
         self.assertEqual(ticked.call_count, RATE_PROBE_TICKS, "no Timer A ever appears")
         self.assertIsNotNone(pass_cost_s)
+
+    def test_a_pass_is_priced_at_what_it_costs_not_at_a_deadline(self):
+        """Regression: the probe pass must carry no wall-clock deadline.
+
+        A deadlined pass is a censored measurement — truncated at
+        `_PLAY_DEADLINE_S` it prices a 120 ms pass at 50 ms, and the render
+        path, which passes no deadline of its own, then runs a pass longer than
+        the whole poll period the floor sized from it. `_SlowProbe` truncates
+        the way `tick_play` really does, so restoring the deadline turns this
+        red at 50 ms rather than leaving it green against a free mock."""
+        from c64cast.sid import sid_host_emu
+        from c64cast.sid.sid_host_emu import HostEmuBudget, SidHostEmu, detect_play_rate_hz
+
+        clock = FrozenClock(0.0, "monotonic")
+        probe = _SlowProbe(clock, cost_s=0.12)
+        with patch.object(sid_host_emu, "time", clock):
+            _rate, pass_cost_s = detect_play_rate_hz(
+                cast(SidHostEmu, probe),
+                video_hz=60.0,
+                clock_hz=_NTSC_CLOCK_HZ,
+                budget=HostEmuBudget(6.0, clock=clock.monotonic),
+                ticks=4,
+            )
+        assert pass_cost_s is not None
+        self.assertAlmostEqual(pass_cost_s, 0.12, msg="the full pass, not the deadline")
+        self.assertEqual(probe.deadlines, [None] * 4, "the probe pass is not deadlined")
 
     def test_a_spent_budget_times_nothing_and_says_so(self):
         from c64cast.sid.sid_host_emu import HostEmuBudget, detect_play_rate_hz
