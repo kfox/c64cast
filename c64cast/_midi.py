@@ -129,17 +129,23 @@ def poll_pending(
     processed the previous one, and never after a ``poll()`` that already took a
     message off the queue, so releasing the pass drops nothing.
 
-    ``budget_s`` defaults to a value sized for a microsecond-per-message
-    consumer; a caller whose consumer blocks on the link must pass its own or it
-    will retire exactly one message a pass. :data:`MAX_DRAIN_WORK_S` says why
-    the sizing belongs to the caller."""
-    # Both bounds are read here rather than bound as the parameters' defaults:
-    # a default expression is evaluated at definition time, so rebinding either
-    # module constant would leave this pass running whatever the constant held
-    # at import. This file establishes rebinding as its injection idiom — the
-    # next statement reads `_monotonic` through the module attribute for
-    # exactly that reason — so a default here would put one idiom that silently
-    # does nothing beside one that works.
+    Both bounds accept ``None``, which is not "unbounded": it selects
+    :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)
+    respectively. They read as parameter defaults would, except that the value
+    is picked when the pass runs — see the comment below. A caller wanting no
+    bound at all passes a large number, and one wanting none of a bound passes
+    ``0``, which is honored rather than read as absent.
+
+    The ``budget_s`` default is sized for a microsecond-per-message consumer; a
+    caller whose consumer blocks on the link must pass its own or it will retire
+    exactly one message a pass. :data:`MAX_DRAIN_WORK_S` says why the sizing
+    belongs to the caller."""
+    # Read here, not bound as the parameters' defaults, so that rebinding
+    # either constant is not a silent no-op — this module's one injection idiom
+    # is rebinding, as the next statement does for `_monotonic`. Full rationale
+    # in docs/architecture/config.md under `_midi.py`. Note that rebinding
+    # reaches only the callers that take the default (AsidScene): MidiScene's
+    # reader always passes its own `budget_s`.
     if limit is None:
         limit = MAX_MSGS_PER_DRAIN
     if budget_s is None:

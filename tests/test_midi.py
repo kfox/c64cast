@@ -140,6 +140,12 @@ class PollPendingTest(unittest.TestCase):
         stop = threading.Event()
         port = self._port(50)
         self.assertEqual(list(_midi.poll_pending(port, stop, limit=0)), [])
+        # And the port was never polled. That is the load-bearing half: a poll
+        # takes the message off the port's queue, so a count check moved to the
+        # far side of one would eat a message while still yielding nothing
+        # here — the same "releasing the pass drops no message" invariant the
+        # deadline path has its own test for.
+        self.assertEqual(port.served["served"], 0)
 
 
 class DrainWorkBoundTest(unittest.TestCase):
