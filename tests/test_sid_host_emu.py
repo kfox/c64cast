@@ -868,6 +868,50 @@ class AnalyzePlacementTest(unittest.TestCase):
         )
 
 
+class InitTruncationNoticeTest(unittest.TestCase):
+    """A truncated INIT leaves the emulator the scene renders FROM holding a
+    prefix of the tune's register state, and until this helper nothing above
+    DEBUG said so: the footprint's `complete` flag covers placement and the
+    pre-flight covers a non-terminating PLAY, and neither covers the render
+    emulator."""
+
+    def test_a_healthy_init_gets_no_notice(self):
+        from c64cast.sid.sid_host_emu import init_truncation_notice
+
+        emu = SidHostEmu(_make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES))
+        self.assertIsNone(init_truncation_notice(emu))
+
+    def test_a_truncated_init_is_named_with_both_of_its_consequences(self):
+        from c64cast.sid.sid_host_emu import HostEmuBudget, init_truncation_notice
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        emu = SidHostEmu(sid, budget=HostEmuBudget(0.0, clock=lambda: 1.0e9))
+        notice = init_truncation_notice(emu)
+        assert notice is not None
+        self.assertIn("INIT did not run to completion", notice)
+        # Both halves, because they are one fact: the registers rendered from
+        # and the rate detected the same way are equally derived from the
+        # prefix, which is why the probe does not warn a second time.
+        self.assertIn("register state", notice)
+        self.assertIn("PLAY rate", notice)
+
+    def test_the_notice_is_read_before_any_pass_because_the_flag_is_sticky(self):
+        # The flag `init_truncation_notice` reads is sticky by design, so a
+        # caller that pre-flights first can no longer tell a truncated INIT
+        # from a truncated pass. Both live callers read it on the fresh
+        # emulator; this pins why they have to.
+        from c64cast.sid.sid_host_emu import init_truncation_notice
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
+        emu = SidHostEmu(sid)
+        self.assertIsNone(init_truncation_notice(emu), "INIT itself was clean")
+        emu.tick_play()
+        self.assertIsNotNone(
+            init_truncation_notice(emu),
+            "after a capped pass the flag no longer distinguishes the two",
+        )
+
+
 class PreflightBudgetTest(unittest.TestCase):
     """The pre-flight is an INIT plus 50 PLAY passes and the tune prices both.
     Bounding it in passes alone left ~1.1 s per candidate, re-paid for every

@@ -86,6 +86,7 @@ from .sid_host_emu import (
     describe_pass_cost,
     detect_play_rate_hz,
     detect_sid_addresses,
+    init_truncation_notice,
     parse_sid_header,
     play_preflight_failure,
     ram_play_access_footprint,
@@ -677,6 +678,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         alone let a directory of crafted tunes cost ~1.1 s per candidate for
         _MAX_PICK_ATTEMPTS candidates on the thread that draws frames."""
         emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses, budget=budget)
+        # Before the pre-flight, which runs PLAY passes and so makes the sticky
+        # flag ambiguous. Not a refusal — see init_truncation_notice.
+        notice = init_truncation_notice(emu)
+        if notice is not None:
+            log.warning(
+                "waveform: %s song %d: %s; the scope may not match what the SID plays",
+                os.path.basename(self._sid_file),
+                song,
+                notice,
+            )
         refusal = play_preflight_failure(emu, self._PLAY_PREFLIGHT_TICKS, budget)
         if refusal is not None:
             raise ValueError(

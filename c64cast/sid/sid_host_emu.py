@@ -1355,6 +1355,45 @@ def play_preflight_failure(
     )
 
 
+def init_truncation_notice(emu: SidHostEmu) -> str | None:
+    """One line for a caller that is about to *render* from `emu`, when its
+    INIT did not run to completion; None when it did.
+
+    Call it on a freshly constructed emulator, before any `tick_play`. The
+    flag it reads is sticky by design, so once passes have run it can no
+    longer tell a truncated INIT from a truncated pass.
+
+    This is deliberately not a refusal, and it is not the footprint's
+    `complete` flag either. The two whole-tune placement consumers already
+    distrust a prefix, and the pre-flight already refuses a PLAY that never
+    terminates. What neither covers is the emulator the scene then renders
+    *from*: a fat decompressor stopped at `_INIT_CYCLE_CAP`, or an INIT that
+    ran out of the shared analysis budget, leaves that emulator holding a
+    register state that is a prefix of what the tune sets up — and nothing
+    above DEBUG said so, so a scope drawing the wrong waveform or reactive
+    visuals keyed off the wrong registers looked like a tune that simply
+    sounds that way. Refusing instead would take every slow-INIT tune off the
+    air for a fault that is usually cosmetic, so the caller says it out loud
+    and plays on.
+
+    It also covers the PLAY-rate probe, which INITs the same tune the same
+    way: a truncated INIT that never reached the tune's CIA #1 Timer A write
+    leaves the detected rate at the video rate, so the tick rate is suspect
+    for the same reason the registers are. That is one consequence of one
+    fact, which is why it is one notice rather than a second warning from the
+    probe.
+    """
+    if not emu.any_routine_capped:
+        return None
+    return (
+        f"INIT did not run to completion (it is bounded at {_INIT_CYCLE_CAP:,} "
+        f"emulated cycles and {_INIT_DEADLINE_S:.1f}s, tightened to whatever the "
+        f"{ANALYSIS_BUDGET_S:.0f}s shared analysis budget had left) — the register "
+        "state rendered from here, and the PLAY rate detected the same way, are "
+        "both derived from a prefix of what the tune really sets up"
+    )
+
+
 def sid_play_preflight(
     sid_bytes: bytes,
     song: int = 0,

@@ -706,6 +706,10 @@ class WaveformSceneTest(unittest.TestCase):
         # each tick_play(); a bare MagicMock attribute is truthy and would
         # read as "always capped" → false rejection. Report not-capped.
         self.mock_host_emu_cls.return_value.last_routine_capped = False
+        # Same trap on the sticky flag, which init_truncation_notice reads: a
+        # truthy MagicMock would make every scene here warn about a truncated
+        # INIT that never happened.
+        self.mock_host_emu_cls.return_value.any_routine_capped = False
         # _resolve_poll_rate() calls play_rate_hz() during construction; a
         # MagicMock return breaks the float math. Report the vsync rate.
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 60.0
@@ -2974,6 +2978,28 @@ class WaveformPlayPreflightTest(unittest.TestCase):
         s._load_sid_file(path)  # must not raise
         self.assertEqual(s._sid_file, path)
         self.assertIsNotNone(s._host_emu)
+
+
+class WaveformInitTruncationTest(WaveformPlayPreflightTest):
+    """A tune whose INIT is truncated still plays — the scope is drawn from a
+    prefix of its register state and says so, rather than being refused."""
+
+    def test_a_truncated_init_warns_and_still_loads(self):
+        # init=$1000 JMP $1000 (spins); play=$1003 RTS (terminates, so the
+        # pre-flight accepts it). The INIT deadline is zeroed so the spin caps
+        # at the first wall-clock check rather than at its 2 M-step bound.
+        sid = make_psid(init=0x1000, play=0x1003, payload=[0x4C, 0x00, 0x10, 0x60])
+        path = self._write(sid)
+        s = self._scene()
+        with (
+            patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0),
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            s._load_sid_file(path)
+        self.assertEqual(s._sid_file, path, "a truncated INIT is not a refusal")
+        joined = "\n".join(logs.output)
+        self.assertIn("INIT did not run to completion", joined)
+        self.assertIn("the scope may not match what the SID plays", joined)
 
 
 class ScopeGainTest(unittest.TestCase):

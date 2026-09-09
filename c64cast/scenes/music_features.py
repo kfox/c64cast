@@ -41,6 +41,7 @@ from c64cast.sid.sid_host_emu import (
     SidHostEmu,
     describe_pass_cost,
     detect_play_rate_hz,
+    init_truncation_notice,
     run_catchup_passes,
     sustainable_poll_period_s,
 )
@@ -143,6 +144,15 @@ class SidFeatureStream:
         # was ever bounding, and this runs on the audio source's setup path.
         budget = HostEmuBudget()
         self._host_emu = SidHostEmu(self._sid_bytes, song=self._song, budget=budget)
+        # Before the probe below, which INITs the same tune and would make the
+        # sticky flag say nothing about this emulator. Not a refusal — see
+        # init_truncation_notice.
+        notice = init_truncation_notice(self._host_emu)
+        if notice is not None:
+            log.warning(
+                "music features: %s; the reactive visuals may not match the audio",
+                notice,
+            )
 
         rate, pass_cost_s = self._detect_play_rate_hz(budget)
         if self._user_reg_poll_hz is None and abs(rate - self._video_hz) > 0.5:

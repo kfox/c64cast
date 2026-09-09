@@ -308,5 +308,32 @@ class StreamLifecycleTest(unittest.TestCase):
         s.stop()
 
 
+class InitTruncationWarningTest(unittest.TestCase):
+    """A truncated INIT leaves _host_emu holding a prefix of the tune's
+    register state, and the reactive visuals are keyed off exactly that. The
+    stream plays on and says so — refusing every slow-INIT tune would take a
+    large share of them off the air for a fault that is usually cosmetic."""
+
+    def test_a_truncated_init_warns_once_and_prepare_still_completes(self):
+        # init=$1000 JMP $1000 (spins); play=$1003 RTS. The INIT deadline is
+        # zeroed so the spin caps at the first wall-clock check.
+        sid = make_psid(init=0x1000, play=0x1003, payload=[0x4C, 0x00, 0x10, 0x60])
+        stream = SidFeatureStream(sid, song=0, system="NTSC")
+        with (
+            patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0),
+            self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
+        ):
+            stream._prepare()
+        self.assertIsNotNone(stream._host_emu, "a truncated INIT is not a refusal")
+        matches = [line for line in logs.output if "INIT did not run to completion" in line]
+        self.assertEqual(len(matches), 1, "one notice per tune, not one per emulator")
+        self.assertIn("the reactive visuals may not match the audio", matches[0])
+
+    def test_a_healthy_init_says_nothing(self):
+        stream = SidFeatureStream(make_psid(), song=0, system="NTSC")
+        with self.assertNoLogs("c64cast.scenes.music_features", level="WARNING"):
+            stream._prepare()
+
+
 if __name__ == "__main__":
     unittest.main()
