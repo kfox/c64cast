@@ -510,7 +510,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # with the audio. That's the video rate for vsync tunes, but a
         # CIA-timed (multispeed) tune programs its own faster rate — resolved
         # per-tune from the host emulator in _resolve_poll_rate(). An explicit
-        # reg_poll_hz pins the rate and disables auto-detection.
+        # reg_poll_hz pins the rate. It does not disable the probe, which is
+        # also what prices a PLAY pass for the poll-period floor.
         self._user_reg_poll_hz = reg_poll_hz
         # Current playback system's video standard ("PAL"/"NTSC"), surfaced in
         # the metadata row alongside the SID's composed-for standard so a

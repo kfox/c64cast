@@ -795,8 +795,24 @@ class WaveformSceneTest(unittest.TestCase):
             reg_poll_hz=25.0,
         )
         self.assertAlmostEqual(scene._reg_poll_hz, 25.0, msg="the pinned rate wins")
-        _rate, pass_cost_s = scene._detect_play_rate_hz()
-        self.assertIsNotNone(pass_cost_s, "a pinned rate must still be priced")
+
+        # And the consequence, not just the fact that a number came back: a
+        # mocked probe's tick_play is free, so asserting `pass_cost_s is not
+        # None` would stay green with the pricing deleted. Drive the clock so a
+        # pass costs 100 ms against the pinned rate's 40 ms period; the floor
+        # must stretch the wakeups even though the rate was the user's choice.
+        with (
+            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.1)),
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            scene._resolve_poll_rate()
+        self.assertIn("one PLAY pass costs 100.0 ms", logs.output[0])
+        self.assertAlmostEqual(scene._poll_dt, 1.0 / 25.0, msg="the song still advances at 25 Hz")
+        self.assertGreater(
+            scene._poll_period,
+            scene._poll_dt,
+            "a pinned rate does not make an expensive pass affordable",
+        )
 
     def test_rate_probe_ticks_play_before_reading_rate(self):
         """Regression: a multispeed tune that programs CIA #1 Timer A from its

@@ -184,6 +184,15 @@ RATE_PROBE_TICKS = 64
 # runs), which is only correlated with an expensive PLAY. What decides the
 # direction is that the two errors are not symmetric -- assuming free saturates
 # a core silently, assuming expensive slows the wakeups visibly and says so.
+#
+# It is worth being explicit that this charge always bites: against the
+# catch-up threads' 0.5 fraction it asks for a 32 ms period, above both the
+# 16.7 ms NTSC and 20 ms PAL vsync periods, so an unmeasured tune polls at
+# ~31 Hz and warns. That is the intended cost of not knowing, and it is not a
+# state either caller can currently reach -- a probe's budget is 6 s and the
+# most its two INITs can spend before the first pass is 2 (`_INIT_DEADLINE_S`
+# caps each at 1), measured. The branch is a fail-safe for a state the code can
+# express, not a live path.
 UNMEASURED_PASS_COST_S = 0.016
 
 
@@ -1105,12 +1114,19 @@ def detect_play_rate_hz(
     `run_catchup_passes` runs its pass before consulting its clock for the same
     reason.
 
-    The budget is still consulted first, so a tune too expensive to emulate
-    costs nothing here. ``None`` means only what it says — no pass was timed —
-    and with the default `ticks` a spent budget is the only way to get there.
-    It is a distinct value rather than another 0.0 because the two readings
-    must not be confused: a pass nobody timed is charged the worst a legal one
-    can cost, while a pass measured at 0.0 really was that quick.
+    The budget is consulted before each pass AND bounds the pass itself:
+    ``tick_play`` gets a deadline, exactly as the footprint and pre-flight
+    paths give it one. ``_PLAY_CYCLE_CAP`` bounds emulated cycles and not
+    seconds — py65 charges 0 for the 105 undocumented opcodes, and one measured
+    ``tick_play()`` built out of them burned 7-21 s — and unlike the loop this
+    replaced, at least one pass now always runs, from ``__init__``, ``setup``
+    and every SHIFT.
+
+    ``None`` means only what it says: no pass was timed. That happens when the
+    budget is already spent, or when `ticks` is non-positive; it is a distinct
+    value rather than another 0.0 because the two readings must not be
+    confused. A pass nobody timed is charged the worst a legal one can cost,
+    while a pass measured at 0.0 really was that quick.
     """
     rate = probe.play_rate_hz(video_hz, clock_hz)
     passes = 0
@@ -1119,7 +1135,7 @@ def detect_play_rate_hz(
         if budget.expired():
             break  # too expensive to emulate; the vsync default stands
         started = time.monotonic()
-        probe.tick_play()
+        probe.tick_play(budget.deadline_for(_PLAY_DEADLINE_S))
         spent += time.monotonic() - started
         passes += 1
         rate = probe.play_rate_hz(video_hz, clock_hz)
