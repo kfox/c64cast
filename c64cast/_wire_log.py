@@ -119,11 +119,7 @@ class LogThrottle:
 
     @property
     def logger(self) -> logging.Logger:
-        """The logger this site's records go to. Exposed so a test standing a
-        throttle in for another one does not have to guess it from a module
-        name — a logger whose name is not its module's would send the record
-        somewhere the test's `assertLogs` is not watching, and the failure
-        would read as the gate's."""
+        """The logger this site's records go to."""
         return self._log
 
     def warn(self, msg: str, *args: object) -> None:

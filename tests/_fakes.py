@@ -459,9 +459,14 @@ def _frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
     but it is a margin, and the tests read as though they were about the gate.
 
     Signature-compatible with `LogThrottle` itself so it can stand in for the
-    class; see [frozen_throttles].
+    class — see [frozen_throttles] — which means it has to tolerate a site that
+    passes its own `monotonic`. Overriding rather than colliding: the whole
+    point of standing in for the class is that every construction in the module
+    gets frozen, and a site that spells its clock explicitly is the one most
+    likely to be the one under test.
     """
-    return LogThrottle(logger, monotonic=lambda: 0.0, **kwargs)
+    kwargs["monotonic"] = lambda: 0.0
+    return LogThrottle(logger, **kwargs)
 
 
 @contextlib.contextmanager
