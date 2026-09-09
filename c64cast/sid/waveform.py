@@ -442,6 +442,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # self.api.
         self._pick_api = api
 
+        # (file, subtune) pairs whose truncated INIT has already been
+        # reported. Declared before the load below, which is what fills it.
+        # See _report_init_truncation.
+        self._init_truncation_reported: set[tuple[str, int]] = set()
+
         # Initial resolution: __init__ raises on bad specs (mirrors
         # validate_scene_cfg). Also raises if every candidate fails the
         # payload-extent check below. setup() re-picks from a fresh
@@ -646,6 +651,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # tick_play() advances one PLAY pass. A multi-SID tune shadows every
         # chip's register bank. See sid_host_emu.py.
         self._host_emu = self._build_host_emu(self.song, budget)
+        self._report_init_truncation(self._host_emu, self.song)
         # Song-number column width is derived from num_songs — recompute
         # so multi-pick scenes get the right padding per chosen SID.
         self._song_num_width = len(str(max(self.header.num_songs, 1)))
@@ -678,22 +684,43 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         alone let a directory of crafted tunes cost ~1.1 s per candidate for
         _MAX_PICK_ATTEMPTS candidates on the thread that draws frames."""
         emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses, budget=budget)
-        # Before the pre-flight, which runs PLAY passes and so makes the sticky
-        # flag ambiguous. Not a refusal — see init_truncation_notice.
-        notice = init_truncation_notice(emu)
-        if notice is not None:
-            log.warning(
-                "waveform: %s song %d: %s; the scope may not match what the SID plays",
-                os.path.basename(self._sid_file),
-                song,
-                notice,
-            )
         refusal = play_preflight_failure(emu, self._PLAY_PREFLIGHT_TICKS, budget)
         if refusal is not None:
             raise ValueError(
                 f"waveform: {os.path.basename(self._sid_file)} song {song} {refusal}. Refused."
             )
         return emu
+
+    def _report_init_truncation(self, emu: SidHostEmu, song: int) -> None:
+        """Say once that a subtune is being rendered from a truncated INIT.
+
+        Called only where a tune is committed to — after `_load_sid_file`'s
+        emulator is the scene's, and after a SHIFT cue's replacement survives
+        its pre-flight — and never from `_build_host_emu`. The pool walk calls
+        that once per candidate under one shared budget, so warning there
+        announced tunes the walk then discarded, and blamed a later candidate
+        for an INIT that capped because earlier candidates had spent the
+        budget.
+
+        Deduped per (file, subtune) because the SHIFT cue rebuilds the
+        emulator every time it is pressed, and the same cue re-pressed is the
+        same fact. A different subtune is a different INIT and does get its
+        own line. Same reason `_report_undecodable_opcode` warns once per
+        emulator: the pre-flight alone runs 50 passes.
+        """
+        notice = init_truncation_notice(emu)
+        if notice is None:
+            return
+        key = (self._sid_file, song)
+        if key in self._init_truncation_reported:
+            return
+        self._init_truncation_reported.add(key)
+        log.warning(
+            "waveform: %s song %d: %s; the scope may not match what the SID plays",
+            os.path.basename(self._sid_file),
+            song,
+            notice,
+        )
 
     def _host_fit_of(self, path: str) -> bool | None:
         """One candidate's host-chip verdict from its PSID header alone, or
@@ -1402,6 +1429,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             log.error("waveform: %s — scene aborting rather than cueing it.", e)
             self.is_done = True
             return None
+        self._report_init_truncation(new_emu, new_song)
 
         new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
         if new_needs_basic_out and not self._current_needs_basic_out:

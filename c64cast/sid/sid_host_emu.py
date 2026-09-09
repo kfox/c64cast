@@ -731,6 +731,13 @@ class SidHostEmu:
         # a prefix of the truth and the placements built on it are not
         # trustworthy — see FootprintSample.complete.
         self.saw_undecodable_opcode: bool = False
+        # Why the last routine ended early, in words, or None if it returned.
+        # The three causes are not interchangeable to anyone reading a log: a
+        # bound reached says the routine is expensive, an undocumented opcode
+        # says py65 could not follow it, and an exception says py65 broke on
+        # it. Inferring any of them from the flags alone reported the first
+        # for all three. See init_truncation_notice.
+        self._routine_end_cause: str | None = None
         # One undocumented-opcode warning per emulator (see _run_routine).
         self._illegal_opcode_reported: bool = False
         # Load the SID payload at its declared address.
@@ -753,6 +760,12 @@ class SidHostEmu:
             tag="init",
             deadline=load_deadline,
         )
+        # Captured here rather than derived later from `any_routine_capped`,
+        # which is sticky across PLAY passes and so stops meaning "the INIT"
+        # the moment the caller ticks. It also covers the undocumented-opcode
+        # ending, which sets no capped flag at all — the most common way an
+        # INIT stops short, and the one a capped-flag reading missed.
+        self.init_truncation: str | None = self._routine_end_cause
 
     @property
     def n_sids(self) -> int:
@@ -906,6 +919,7 @@ class SidHostEmu:
         sentinel = _SENTINEL_PC
         steps = 0
         self.last_routine_capped = False
+        self._routine_end_cause = None
         while mpu.pc != sentinel:
             if cycletime[ram[mpu.pc]] == _ILLEGAL_OPCODE_CYCLETIME:
                 self._report_undecodable_opcode(tag, ram[mpu.pc], mpu.pc)
@@ -926,7 +940,7 @@ class SidHostEmu:
                     mpu.pc,
                     exc_info=True,
                 )
-                self._report_capped_routine()
+                self._report_capped_routine(f"the 6502 interpreter raised at PC=${mpu.pc:04X}")
                 return
             steps += 1
             if mpu.pc == sentinel:
@@ -944,18 +958,25 @@ class SidHostEmu:
                     steps,
                     cap,
                 )
-                self._report_capped_routine()
+                self._report_capped_routine(
+                    f"it reached its bound at PC=${mpu.pc:04X} "
+                    f"({mpu.processorCycles} cycles, {steps} steps, cap {cap}"
+                    + ("" if deadline is None else ", or the wall-clock deadline")
+                    + ")"
+                )
                 return
 
-    def _report_capped_routine(self) -> None:
-        """Record that the pass just run did not terminate.
+    def _report_capped_routine(self, cause: str) -> None:
+        """Record that the pass just run did not terminate, and why.
 
-        Both flags move together and always through here: the per-pass verdict
-        the pre-flight reads, and the sticky one a footprint's `complete` reads.
+        All three move together and always through here: the per-pass verdict
+        the pre-flight reads, the sticky one a footprint's `complete` reads,
+        and the cause `init_truncation_notice` puts in front of a user.
         Setting only the first is how a truncated INIT came back as a full
         footprint."""
         self.last_routine_capped = True
         self.any_routine_capped = True
+        self._routine_end_cause = cause
 
     def _report_undecodable_opcode(self, tag: str, opcode: int, pc: int) -> None:
         """End the pass at an opcode py65 can't execute, and remember it.
@@ -963,6 +984,10 @@ class SidHostEmu:
         Warned once per emulator: every later pass stops at the same
         instruction, and the pre-flight alone runs 50 of them."""
         self.saw_undecodable_opcode = True
+        self._routine_end_cause = (
+            f"it stopped at undocumented opcode ${opcode:02X} at PC=${pc:04X}, "
+            "which py65 cannot execute (the real 6510 can)"
+        )
         if self._illegal_opcode_reported:
             return
         self._illegal_opcode_reported = True
@@ -1359,38 +1384,40 @@ def init_truncation_notice(emu: SidHostEmu) -> str | None:
     """One line for a caller that is about to *render* from `emu`, when its
     INIT did not run to completion; None when it did.
 
-    Call it on a freshly constructed emulator, before any `tick_play`. The
-    flag it reads is sticky by design, so once passes have run it can no
-    longer tell a truncated INIT from a truncated pass.
+    Reads `emu.init_truncation`, which the constructor froze from the INIT's
+    own ending. Not `any_routine_capped`: that flag is sticky across PLAY
+    passes, so it stops meaning "the INIT" the moment the caller ticks, and it
+    is not set at all when a routine ends on an undocumented opcode — which is
+    the most common way an INIT stops short here, since LAX/SAX/SLO are a
+    normal hand-rolled-player idiom. A capped-flag reading was silent on
+    exactly that case.
 
     This is deliberately not a refusal, and it is not the footprint's
     `complete` flag either. The two whole-tune placement consumers already
     distrust a prefix, and the pre-flight already refuses a PLAY that never
     terminates. What neither covers is the emulator the scene then renders
-    *from*: a fat decompressor stopped at `_INIT_CYCLE_CAP`, or an INIT that
-    ran out of the shared analysis budget, leaves that emulator holding a
-    register state that is a prefix of what the tune sets up — and nothing
+    *from*: an INIT stopped at `_INIT_CYCLE_CAP`, at the shared analysis
+    budget, or at an opcode py65 will not execute leaves that emulator holding
+    a register state that is a prefix of what the tune sets up — and nothing
     above DEBUG said so, so a scope drawing the wrong waveform or reactive
     visuals keyed off the wrong registers looked like a tune that simply
-    sounds that way. Refusing instead would take every slow-INIT tune off the
-    air for a fault that is usually cosmetic, so the caller says it out loud
-    and plays on.
+    sounds that way. Refusing instead would take every such tune off the air
+    for a fault that is usually cosmetic, so the caller says it out loud and
+    plays on.
 
-    It also covers the PLAY-rate probe, which INITs the same tune the same
-    way: a truncated INIT that never reached the tune's CIA #1 Timer A write
-    leaves the detected rate at the video rate, so the tick rate is suspect
-    for the same reason the registers are. That is one consequence of one
-    fact, which is why it is one notice rather than a second warning from the
-    probe.
+    The detected PLAY rate is named as *possibly* affected rather than as
+    affected. `detect_play_rate_hz` runs its own throwaway emulator, and in
+    WaveformScene that one gets a fresh budget while the scene's may be on a
+    spent pool-walk budget — so the two can truncate independently, and this
+    notice only ever knows about the one it was handed.
     """
-    if not emu.any_routine_capped:
+    if emu.init_truncation is None:
         return None
     return (
-        f"INIT did not run to completion (it is bounded at {_INIT_CYCLE_CAP:,} "
-        f"emulated cycles and {_INIT_DEADLINE_S:.1f}s, tightened to whatever the "
-        f"{ANALYSIS_BUDGET_S:.0f}s shared analysis budget had left) — the register "
-        "state rendered from here, and the PLAY rate detected the same way, are "
-        "both derived from a prefix of what the tune really sets up"
+        f"INIT did not run to completion — {emu.init_truncation}. The register "
+        "state rendered from here is a prefix of what the tune really sets up, "
+        "and the detected PLAY rate may be too: an INIT that never reached the "
+        "tune's CIA #1 Timer A write leaves it at the video rate"
     )
 
 

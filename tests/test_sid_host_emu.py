@@ -881,7 +881,7 @@ class InitTruncationNoticeTest(unittest.TestCase):
         emu = SidHostEmu(_make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES))
         self.assertIsNone(init_truncation_notice(emu))
 
-    def test_a_truncated_init_is_named_with_both_of_its_consequences(self):
+    def test_an_init_stopped_at_its_bound_names_the_bound(self):
         from c64cast.sid.sid_host_emu import HostEmuBudget, init_truncation_notice
 
         sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
@@ -889,26 +889,43 @@ class InitTruncationNoticeTest(unittest.TestCase):
         notice = init_truncation_notice(emu)
         assert notice is not None
         self.assertIn("INIT did not run to completion", notice)
-        # Both halves, because they are one fact: the registers rendered from
-        # and the rate detected the same way are equally derived from the
-        # prefix, which is why the probe does not warn a second time.
+        self.assertIn("reached its bound", notice)
         self.assertIn("register state", notice)
         self.assertIn("PLAY rate", notice)
 
-    def test_the_notice_is_read_before_any_pass_because_the_flag_is_sticky(self):
-        # The flag `init_truncation_notice` reads is sticky by design, so a
-        # caller that pre-flights first can no longer tell a truncated INIT
-        # from a truncated pass. Both live callers read it on the fresh
-        # emulator; this pins why they have to.
+    def test_an_init_stopped_at_an_undocumented_opcode_is_reported_too(self):
+        # The most common way an INIT stops short, and the one a reading of
+        # `any_routine_capped` was silent on: an undocumented opcode sets
+        # `saw_undecodable_opcode` and NO capped flag, on purpose, because the
+        # real 6510 executes it. The tune is fine; the register state sampled
+        # from this emulator still is not.
+        from c64cast.sid.sid_host_emu import init_truncation_notice
+
+        # $0B (ANC #imm) is one of the 105 opcodes py65 leaves unimplemented.
+        sid = _make_synthetic_sid(init_code=bytes([0x0B, 0x00, 0x60]), play_code=_PLAY_WRITES)
+        with quiet_logging():
+            emu = SidHostEmu(sid)
+        self.assertFalse(emu.any_routine_capped, "an opcode ending sets no capped flag")
+        self.assertTrue(emu.saw_undecodable_opcode)
+        notice = init_truncation_notice(emu)
+        assert notice is not None
+        self.assertIn("undocumented opcode $0B", notice)
+
+    def test_a_later_capped_pass_does_not_become_a_truncated_init(self):
+        # `any_routine_capped` is sticky, so reading it stopped meaning "the
+        # INIT" the moment the caller ticked. The verdict is frozen in the
+        # constructor instead, which is what lets the two live callers report
+        # after their pre-flight rather than before it.
         from c64cast.sid.sid_host_emu import init_truncation_notice
 
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
         emu = SidHostEmu(sid)
         self.assertIsNone(init_truncation_notice(emu), "INIT itself was clean")
         emu.tick_play()
-        self.assertIsNotNone(
+        self.assertTrue(emu.any_routine_capped, "the pass did cap")
+        self.assertIsNone(
             init_truncation_notice(emu),
-            "after a capped pass the flag no longer distinguishes the two",
+            "a capped PLAY pass is not a truncated INIT",
         )
 
 

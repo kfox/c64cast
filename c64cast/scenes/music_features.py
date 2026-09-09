@@ -144,9 +144,9 @@ class SidFeatureStream:
         # was ever bounding, and this runs on the audio source's setup path.
         budget = HostEmuBudget()
         self._host_emu = SidHostEmu(self._sid_bytes, song=self._song, budget=budget)
-        # Before the probe below, which INITs the same tune and would make the
-        # sticky flag say nothing about this emulator. Not a refusal — see
-        # init_truncation_notice.
+        # This emulator's own INIT verdict, frozen in its constructor — the
+        # probe below builds a throwaway one and cannot touch it. Not a
+        # refusal; see init_truncation_notice.
         notice = init_truncation_notice(self._host_emu)
         if notice is not None:
             log.warning(

@@ -15,7 +15,14 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from _fakes import FakeAPI, FrozenClock, bare_waveform_scene, make_psid, quiet_logging
+from _fakes import (
+    FakeAPI,
+    FrozenClock,
+    bare_waveform_scene,
+    fake_host_emu,
+    make_psid,
+    quiet_logging,
+)
 
 from c64cast.sid import sid_host_emu, waveform
 from c64cast.sid.sid_host_emu import (
@@ -698,21 +705,10 @@ class WaveformSceneTest(unittest.TestCase):
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
         self.mock_host_emu_cls = patcher.start()
-        # Each WaveformScene gets its own emulator instance; default the
-        # regs() shadow to all-zeros so the scene paints quiet traces
-        # unless a test overrides scene._reg_buf manually.
-        self.mock_host_emu_cls.return_value.regs.return_value = bytes(25)
-        # _load_sid_file's PLAY pre-flight checks last_routine_capped after
-        # each tick_play(); a bare MagicMock attribute is truthy and would
-        # read as "always capped" → false rejection. Report not-capped.
-        self.mock_host_emu_cls.return_value.last_routine_capped = False
-        # Same trap on the sticky flag, which init_truncation_notice reads: a
-        # truthy MagicMock would make every scene here warn about a truncated
-        # INIT that never happened.
-        self.mock_host_emu_cls.return_value.any_routine_capped = False
-        # _resolve_poll_rate() calls play_rate_hz() during construction; a
-        # MagicMock return breaks the float math. Report the vsync rate.
-        self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 60.0
+        # Every flag the scene consults, answered healthy in one place —
+        # see fake_host_emu for what each bare MagicMock attribute would
+        # otherwise be read as.
+        self.mock_host_emu_cls.return_value = fake_host_emu()
         # setup() footprints the tune via the real ram_write_footprint, which
         # builds a real SidHostEmu and rejects these header-only synthetic
         # SIDs (play_addr=0). Stub it to an empty avoid bitmap.
@@ -1355,12 +1351,7 @@ class WaveformSceneTest(unittest.TestCase):
         apart from "still the old one"."""
 
         def build(_sid_bytes, song=0, **_kwargs):
-            emu = MagicMock()
-            emu.regs.return_value = bytes(25)
-            emu.last_routine_capped = False
-            emu.play_rate_hz.return_value = 60.0
-            emu.song_built_for = song
-            return emu
+            return fake_host_emu(song_built_for=song)
 
         self.mock_host_emu_cls.side_effect = build
 
@@ -1939,10 +1930,7 @@ class WaveformPollCatchupTest(unittest.TestCase):
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
         cls = patcher.start()
-        cls.return_value.regs.return_value = bytes(25)
-        cls.return_value.retriggers.return_value = (False, False, False)
-        cls.return_value.last_routine_capped = False
-        cls.return_value.play_rate_hz.return_value = 60.0
+        cls.return_value = fake_host_emu()
 
     def tearDown(self):
         os.unlink(self.sid_path)
@@ -2127,11 +2115,7 @@ class WaveformPoolPickTest(unittest.TestCase):
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
         self.mock_host_emu_cls = patcher.start()
-        self.mock_host_emu_cls.return_value.regs.return_value = bytes(25)
-        # PLAY pre-flight reads last_routine_capped; keep it falsy (see
-        # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
-        self.mock_host_emu_cls.return_value.last_routine_capped = False
-        self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 60.0
+        self.mock_host_emu_cls.return_value = fake_host_emu()
         fp = patch(
             "c64cast.sid.waveform.ram_write_footprint",
             return_value=FootprintSample(bytearray(65536), True),
@@ -2529,11 +2513,7 @@ class WaveformVizKnobsTest(unittest.TestCase):
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
         mock_host = patcher.start()
-        mock_host.return_value.regs.return_value = bytes(25)
-        # PLAY pre-flight reads last_routine_capped; keep it falsy (see
-        # WaveformSceneTest.setUp) so these synthetic SIDs aren't rejected.
-        mock_host.return_value.last_routine_capped = False
-        mock_host.return_value.play_rate_hz.return_value = 60.0
+        mock_host.return_value = fake_host_emu()
         fp = patch(
             "c64cast.sid.waveform.ram_write_footprint",
             return_value=FootprintSample(bytearray(65536), True),
@@ -2953,7 +2933,7 @@ class WaveformPlayPreflightTest(unittest.TestCase):
     host emulator's cycle cap on every pass (the Hollywood Poker Pro hang)."""
 
     def _scene(self):
-        return bare_waveform_scene(_song_arg=0)
+        return bare_waveform_scene(_song_arg=0, _init_truncation_reported=set())
 
     def _write(self, sid_bytes):
         fd, path = tempfile.mkstemp(suffix=".sid")
@@ -2980,17 +2960,29 @@ class WaveformPlayPreflightTest(unittest.TestCase):
         self.assertIsNotNone(s._host_emu)
 
 
-class WaveformInitTruncationTest(WaveformPlayPreflightTest):
+class WaveformInitTruncationTest(unittest.TestCase):
     """A tune whose INIT is truncated still plays — the scope is drawn from a
-    prefix of its register state and says so, rather than being refused."""
+    prefix of its register state and says so, rather than being refused. The
+    reporting sits where a tune is committed to, not in _build_host_emu: the
+    pool walk calls that once per candidate under one shared budget, so
+    warning there announced tunes the walk then discarded."""
+
+    # init=$1000 JMP $1000 (spins); play=$1003 RTS, so the pre-flight accepts
+    # the tune. The INIT deadline is zeroed so the spin caps at the first
+    # wall-clock check rather than at its 2 M-step bound.
+    _SPINNING_INIT = [0x4C, 0x00, 0x10, 0x60]
+
+    def _write(self, sid_bytes):
+        fd, path = tempfile.mkstemp(suffix=".sid")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(sid_bytes)
+        self.addCleanup(os.remove, path)
+        return path
 
     def test_a_truncated_init_warns_and_still_loads(self):
-        # init=$1000 JMP $1000 (spins); play=$1003 RTS (terminates, so the
-        # pre-flight accepts it). The INIT deadline is zeroed so the spin caps
-        # at the first wall-clock check rather than at its 2 M-step bound.
-        sid = make_psid(init=0x1000, play=0x1003, payload=[0x4C, 0x00, 0x10, 0x60])
-        path = self._write(sid)
-        s = self._scene()
+        path = self._write(make_psid(init=0x1000, play=0x1003, payload=self._SPINNING_INIT))
+        s = bare_waveform_scene(_song_arg=0, _init_truncation_reported=set())
         with (
             patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0),
             self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
@@ -3000,6 +2992,34 @@ class WaveformInitTruncationTest(WaveformPlayPreflightTest):
         joined = "\n".join(logs.output)
         self.assertIn("INIT did not run to completion", joined)
         self.assertIn("the scope may not match what the SID plays", joined)
+
+    def test_the_same_subtune_is_reported_once(self):
+        # _build_host_emu is also the SHIFT-cue construction site, so without
+        # the dedupe a long scene re-warns on every press. A repeat load of
+        # the same (file, subtune) stands in for that here.
+        path = self._write(make_psid(init=0x1000, play=0x1003, payload=self._SPINNING_INIT))
+        s = bare_waveform_scene(_song_arg=0, _init_truncation_reported=set())
+        with (
+            patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0),
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            s._load_sid_file(path)
+            s._load_sid_file(path)
+        truncation = [line for line in logs.output if "INIT did not run to completion" in line]
+        self.assertEqual(len(truncation), 1, "one line per (file, subtune), not per emulator")
+
+    def test_a_refused_candidate_is_not_announced(self):
+        # A spinning INIT *and* a spinning PLAY: the pre-flight refuses the
+        # tune, so nothing should have told the user about a scope that will
+        # never be drawn. This is what warning from _build_host_emu did for
+        # every discarded candidate of a pool walk.
+        payload = [0x4C, 0x00, 0x10, 0x4C, 0x03, 0x10]
+        path = self._write(make_psid(init=0x1000, play=0x1003, payload=payload))
+        s = bare_waveform_scene(_song_arg=0, _init_truncation_reported=set())
+        with patch("c64cast.sid.sid_host_emu._INIT_DEADLINE_S", 0.0):
+            with self.assertNoLogs("c64cast.sid.waveform", level="WARNING"):
+                with self.assertRaisesRegex(ValueError, "PLAY never completes"):
+                    s._load_sid_file(path)
 
 
 class ScopeGainTest(unittest.TestCase):

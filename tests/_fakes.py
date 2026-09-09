@@ -435,6 +435,36 @@ def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] 
     raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
 
 
+def fake_host_emu(**attrs):
+    """A `SidHostEmu` stand-in already answering "healthy" for every flag a
+    scene consults, plus whatever `attrs` override.
+
+    Every default here is a trap a bare `MagicMock` walks straight into,
+    because an unset attribute is a truthy object rather than a falsy one:
+    `last_routine_capped` then reads as "this pass never terminated", which
+    the PLAY pre-flight turns into a false rejection, and `init_truncation`
+    reads as "INIT stopped short", which makes the scene warn about a
+    truncation that never happened. `regs()` and `play_rate_hz()` have to
+    return real values because the scene does float math on them.
+
+    One builder rather than five hand-configured `setUp`s: the flags were
+    copied between them by hand, so each new one had to be remembered in
+    every copy — and three of the five leaked a WARNING into the test output
+    the first time one was added.
+    """
+    emu = mock.MagicMock()
+    emu.regs.return_value = bytes(25)
+    emu.retriggers.return_value = (False, False, False)
+    emu.last_routine_capped = False
+    emu.any_routine_capped = False
+    emu.saw_undecodable_opcode = False
+    emu.init_truncation = None
+    emu.play_rate_hz.return_value = 60.0
+    for name, value in attrs.items():
+        setattr(emu, name, value)
+    return emu
+
+
 def bare_waveform_scene(**attrs):
     """A WaveformScene that skips the SID-loading __init__ (which needs a
     real PSID file + emulator bring-up); each caller sets exactly the

@@ -28,9 +28,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that emulator holding only part of the register state the tune sets up. The
   tune still plays — the audio comes from the real chip — but the picture can
   disagree with it, and until now nothing said so unless you were running with
-  `-vv`. The warning also covers the PLAY rate, which is measured the same way
-  and falls back to the video rate when a truncated INIT never reached the
-  tune's timer setup.
+  `-vv`. The line says which of the three things stopped the INIT, and notes
+  that the detected PLAY rate may be affected too, since it is measured the
+  same way. A tune picked from a pool is only reported on once it is the one
+  being played, and a subtune is reported on once however many times you cue
+  it.
 
 - **A PERF button on the `/perf` console — performance mode.** While the C64 is in
   front of an audience, nothing should draw text over it, but a scrub, a knob
