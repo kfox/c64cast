@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from unittest import mock
 
+from c64cast._wire_log import LogThrottle
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
 
@@ -445,6 +446,31 @@ def bare_waveform_scene(**attrs):
     for name, value in attrs.items():
         setattr(scene, name, value)
     return scene
+
+
+@contextlib.contextmanager
+def frozen_throttle(module, name: str) -> Iterator[None]:
+    """Swap a module's `LogThrottle` for one whose clock never advances.
+
+    A throttle test loops hundreds of times and asserts *exactly one* record,
+    which makes THROTTLE_INTERVAL_S part of the assertion: if the loop ever
+    outlasts the window, a second record goes out and the test fails for a
+    reason that has nothing to do with the gate under test. The margin is wide
+    today — 960 `pack_slot` calls measure 3 ms against a 1 s window — but it is
+    a margin, and the tests read as though they were about the gate. Frozen,
+    the window never closes and they are.
+
+    The throttle is replaced rather than reconfigured because a live one is
+    module state a call site reads by name at call time, and a test that
+    reaches into `_reported_at` would be asserting against the implementation
+    of the thing it is testing.
+    """
+    with mock.patch.object(
+        module,
+        name,
+        LogThrottle(logging.getLogger(module.__name__), monotonic=lambda: 0.0),
+    ):
+        yield
 
 
 class FakeTime:

@@ -22,7 +22,7 @@ from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, frozen_throttle  # noqa: E402
 
 from c64cast.hw.backend import C64Backend  # noqa: E402
 from c64cast.hw.c64 import CLOCK_NTSC  # noqa: E402
@@ -563,7 +563,10 @@ class PackSlotTest(unittest.TestCase):
         # on the MIDI reader thread. One record per frame is the whole defect,
         # so the throttle must be *consulted* here, not merely defined.
         many = [(0xD400, 0, 0)] * 100
-        with self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught:
+        with (
+            frozen_throttle(ap, "_truncated_slot_log"),
+            self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught,
+        ):
             for _ in range(960):
                 self.assertEqual(ap.pack_slot(many, 128)[0], (128 - 1) // ap.OP_BYTES)
         self.assertEqual(len(caught.records), 1)

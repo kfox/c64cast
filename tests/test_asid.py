@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import unittest
 
+from _fakes import frozen_throttle
+
 from c64cast.sid import asid
 
 
@@ -281,7 +283,10 @@ class TimingRecipeTest(unittest.TestCase):
         for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
             payload += [i & 0x3F, 0x00]
         self.assertEqual(len(payload) - 2, 58)  # 29 pairs, 62 bytes with F0/F7
-        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
+        with (
+            frozen_throttle(asid, "_overlong_recipe_log"),
+            self.assertLogs("c64cast.sid.asid", "DEBUG") as caught,
+        ):
             for _ in range(500):
                 self.assertEqual(
                     len(_ok(tuple(payload)).timing_recipe), asid.MAX_TIMING_RECIPE_PAIRS
