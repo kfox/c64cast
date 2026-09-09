@@ -266,8 +266,17 @@ def summarize(tally: Tally) -> None:
             continue
         print(f"   {bit}    D{bit}    {PIN_OF_BIT[bit]:2d}  {lo:6d}  {hi:6d}")
     pins = sorted(PIN_OF_BIT[b] for b in range(8) if tally.cleared[b] or tally.set[b])
-    span = "contiguous" if pins == list(range(pins[0], pins[-1] + 1)) else "scattered"
-    print(f"\n  failing pins             {pins}  ({span})")
+    print(f"\n  failing pins             {pins}")
+    # Only single-bit errors place a fault on a pin. A multi-bit error lights up
+    # every pin it touches whatever its cause, so counting those toward the span
+    # reports a connector-wide fault from one bad byte.
+    singles = [v for v in tally.xors.elements() if bin(v).count("1") == 1]
+    if not singles:
+        print("  (no single-bit errors, so nothing here places a fault on one pin)")
+    else:
+        sp = sorted({PIN_OF_BIT[v.bit_length() - 1] for v in singles})
+        span = "contiguous" if sp == list(range(sp[0], sp[-1] + 1)) else "scattered"
+        print(f"  from {len(singles)} single-bit errors  {sp}  ({span})")
     print("=" * 72)
 
 
