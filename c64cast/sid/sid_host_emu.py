@@ -204,7 +204,7 @@ UNMEASURED_PASS_COST_S = 0.016
 
 class RunDeadline(NamedTuple):
     """The instant one host-emulation run may not pass, carried together with
-    which of the two bounds `HostEmuBudget.deadline_for` took the min of
+    which of the two bounds `HostEmuBudget.run_deadline` took the min of
     produced it.
 
     The two travel as one value because they were briefly two, and two could
@@ -218,9 +218,15 @@ class RunDeadline(NamedTuple):
     pre-flight helpers take a budget as a parameter, so those two need not be
     the same object.
 
-    Deriving the answer where the `min` is taken removes both. There is one
-    thing to pass, it cannot disagree with itself, and `from_budget` is settled
-    by the comparison `min` itself makes rather than reconstructed later.
+    Deriving the answer where the `min` is taken narrows both to one place.
+    There is one thing to pass, `from_budget` is settled by the comparison
+    `min` itself makes rather than reconstructed later, and every production
+    caller goes through :meth:`HostEmuBudget.run_deadline` or :meth:`own_cap`,
+    which cannot produce a mismatched triple. What it does not do is make one
+    unrepresentable: this is a plain `NamedTuple`, so its three fields can
+    still be passed independently — the tests build deliberately mismatched
+    instances on purpose — and a new sampling path that constructs one by hand
+    can put the 20x-wrong figure back. Derive, do not construct.
     """
 
     #: The absolute instant, in the clock domain that produced it.
@@ -281,9 +287,13 @@ class HostEmuBudget:
         """The instant one run may not pass, and which of the two bounds it is.
 
         `min` returns one of its operands rather than a computation over them,
-        so `from_budget` is exact and matches the tie-break `min` itself makes:
-        on a tie the budget has exactly this run's cap left, which is a budget
-        already spent down to the cap, so the shared reading is the honest one."""
+        so for finite values `from_budget` is exact, and `<=` rather than `<` is
+        what matches the tie-break `min` itself makes: on a tie the budget has
+        exactly this run's cap left, which is a budget already spent down to the
+        cap, so the shared reading is the honest one. NaN is the one input that
+        would break the correspondence — `min` would return `self.deadline`
+        while the comparison reported False — and it is unreachable here, since
+        `seconds` is always a module constant and a clock is monotonic."""
         own = self._clock() + seconds
         return RunDeadline(min(self.deadline, own), self.deadline <= own, seconds)
 
@@ -838,16 +848,26 @@ class SidHostEmu:
         degenerate PLAY (one that spins waiting for a raster or an IRQ that
         will never fire in this emulator) so the render thread isn't starved.
 
-        `deadline` is an optional `RunDeadline` in this emulator's clock domain
-        (see `_now`), built by the caller from the budget it is charging the
-        pass to. The paths that *sample* a pass — footprint runs and the
-        pre-flight — pass one, so no single pass outlasts the HostEmuBudget it
-        is charged to; a truncated sample is one they already distrust. It
-        carries its own per-run cap, so this method has no cap of its own to
-        supply and no way to name one the deadline did not come from. The paths that *price* or *render* a pass pass none: the live
-        render path, because truncating there leaves a visibly wrong scope (see
-        _PLAY_DEADLINE_S), and [detect_play_rate_hz], because a truncated pass
-        priced as a whole one is a censored measurement."""
+        `deadline` is an optional `RunDeadline`, built by the caller from the
+        budget it is charging the pass to. It carries its own per-run cap, so
+        this method has no cap of its own to supply and no way to name one the
+        deadline did not come from.
+
+        Its instant must be on *this* emulator's clock (`_now`), which means
+        the charged budget has to be the one this emulator's clock came from,
+        or one sharing that clock. Nothing enforces it: a budget with its own
+        injected clock against an emulator built on another would compare
+        instants across domains, and the pass would then truncate on the first
+        check or never — silently, since production has both as
+        `time.monotonic`. The architecture note names this class.
+
+        The paths that *sample* a pass — footprint runs and the pre-flight —
+        pass one, so no single pass outlasts the HostEmuBudget it is charged
+        to; a truncated sample is one they already distrust. The paths that
+        *price* or *render* a pass pass none: the live render path, because
+        truncating there leaves a visibly wrong scope (see _PLAY_DEADLINE_S),
+        and [detect_play_rate_hz], because a truncated pass priced as a whole
+        one is a censored measurement."""
         # Clear hard-restart flags (all chips) so retriggers() reflects only
         # this tick.
         for gl in self._memory.gate_low_banks:
@@ -935,11 +955,11 @@ class SidHostEmu:
         (_INIT_CYCLE_CAP is 40x _PLAY_CYCLE_CAP, and it used to be selected by
         comparing `tag` — the log label — against "init", so a third caller
         with a descriptive tag would have silently drawn the tight PLAY
-        budget). `deadline` is an optional absolute instant in THIS emulator's
-        clock domain (`self._now`) — the budget's own clock when one was
-        supplied, `time.monotonic` otherwise. Reading a different clock here
-        than the one that produced the instant is not a rounding error: it
-        makes the deadline meaningless.
+        budget). `deadline` is an optional `RunDeadline`, whose `at` is an
+        absolute instant in THIS emulator's clock domain (`self._now`) — the
+        budget's own clock when one was supplied, `time.monotonic` otherwise.
+        Reading a different clock here than the one that produced the instant
+        is not a rounding error: it makes the deadline meaningless.
 
         Four conditions end the routine early, and they do NOT all mean the
         same thing:
@@ -1053,7 +1073,7 @@ class SidHostEmu:
                 return
 
     def _deadline_provenance(self, deadline: RunDeadline) -> str:
-        """Which of the two instants `HostEmuBudget.deadline_for` takes the min
+        """Which of the two instants `HostEmuBudget.run_deadline` takes the min
         of is the one that just fired.
 
         The answer is read off the deadline rather than worked out here, and

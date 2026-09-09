@@ -994,6 +994,26 @@ class InitTruncationNoticeTest(unittest.TestCase):
         self.assertIn("0.05s cap", cause)
         self.assertNotIn("1s cap", cause)
 
+    def test_a_tie_reads_as_a_budget_already_spent_down_to_the_cap(self):
+        # `min` returns its first operand on a tie, so `from_budget` has to be
+        # `<=` and not `<` if the flag is to name the operand actually
+        # returned. Pinned separately because inverting the predicate is not
+        # the same mutation: `<` differs from `<=` on exactly one input, and
+        # the four tests that die under a full inversion all live away from it.
+        # The case is real rather than a boundary curiosity — a tie means the
+        # budget has exactly this run's cap left, which is a budget something
+        # spent down to the cap, so `<` would flip precisely that run to
+        # "nothing but this tune spent it".
+        from c64cast.sid import sid_host_emu
+
+        cap = 0.25
+        budget = sid_host_emu.HostEmuBudget(cap, clock=lambda: 1000.0)
+        tie = budget.run_deadline(cap)
+        self.assertEqual(tie.at, budget.deadline)
+        self.assertTrue(tie.from_budget)
+        emu = SidHostEmu(_make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES))
+        self.assertIn("if that budget is being shared", emu._deadline_provenance(tie))
+
     def test_a_pass_charged_to_a_budget_that_is_not_the_emulators_own(self):
         # The footprint and pre-flight helpers take a budget as a *parameter*,
         # so the budget a pass is charged to need not be the one the emulator
@@ -1006,10 +1026,15 @@ class InitTruncationNoticeTest(unittest.TestCase):
 
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
         # One clock for both, because a deadline only means anything in the
-        # domain that produced it. The walk's 0.04 s is chosen to sit between
-        # the two bounds that matter: still unexpired when the pre-flight loop
-        # checks, and already less than the 0.05 s per-run cap by the time the
-        # deadline is derived, so the walk's instant is the one that wins.
+        # domain that produced it. Only one leg of the 0.04 s is load-bearing,
+        # and it is not the one it looks like: the walk is under the 0.05 s
+        # per-run cap at any read count, so its instant winning the min is not
+        # in question. What the number has to clear is `budget.expired()` at
+        # the top of the pre-flight loop, one clock step (0.02 s) after the
+        # budget was built — go under that and the loop returns its
+        # budget-exhausted string, which still satisfies `assertIsNotNone` but
+        # means no pass ever ran. So: more than one step, and no more than the
+        # per-run cap.
         clock = itertools.count(1000.0, 0.02)
         tick = lambda: next(clock)  # noqa: E731
         own = sid_host_emu.HostEmuBudget(6.0, clock=tick)
@@ -1216,16 +1241,23 @@ class _SlowProbe:
     def __init__(self, clock: FrozenClock, cost_s: float) -> None:
         self._clock = clock
         self._cost_s = cost_s
-        self.deadlines: list[float | None] = []
+        self.deadlines: list[RunDeadline | None] = []
 
     def play_rate_hz(self, video_hz: float, clock_hz: float) -> float:
         return video_hz
 
-    def tick_play(self, deadline: float | None = None) -> None:
+    def tick_play(self, deadline: RunDeadline | None = None) -> None:
+        # A `RunDeadline`, matching the real signature. It was left as a float
+        # when `tick_play` stopped taking one, and `cast(SidHostEmu, probe)` at
+        # the call site hid that from pyright: the double stayed green only
+        # because the path under test passes None, so restoring a deadline
+        # there — the regression the deadline assertions exist to catch — would
+        # have raised TypeError instead of pricing the pass, and gone red for
+        # the wrong reason.
         self.deadlines.append(deadline)
         spend = self._cost_s
         if deadline is not None:
-            spend = min(spend, max(0.0, deadline - self._clock.monotonic()))
+            spend = min(spend, max(0.0, deadline.at - self._clock.monotonic()))
         self._clock.advance(spend)
 
 
