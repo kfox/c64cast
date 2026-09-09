@@ -15,9 +15,10 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from _fakes import make_psid
+from _fakes import FakeTime, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
@@ -454,7 +455,7 @@ class BackendTest(unittest.TestCase):
             t.queue_token(TOK_ACK)
             t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
         t.queue_token(TOK_ACK)  # divider write
-        with mock.patch("c64cast.hw.api.time.sleep"):
+        with mock.patch.object(api, "time", FakeTime(sleep=mock.MagicMock())):
             n = b._tune_play_divider()
         self.assertEqual(n, 2)
         # Divider byte patched at player_base + DIVIDER_OFFSET ($C300+59=$C33B).

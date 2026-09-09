@@ -6,16 +6,17 @@ thread, no real chip. A small start()/stop() smoke covers the real poll path."""
 
 from __future__ import annotations
 
-import itertools
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from _fakes import make_psid, quiet_logging
+from _fakes import FrozenClock, make_psid, quiet_logging
 
 from c64cast.hw.c64 import SID
+from c64cast.scenes import music_features
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.music_features import HostEmuBudget, SidFeatureStream
+from c64cast.sid import sid_host_emu
 from c64cast.sid.sid_host_emu import UNMEASURED_PASS_COST_S, sustainable_poll_period_s
 
 
@@ -163,10 +164,9 @@ class CatchupBoundTest(unittest.TestCase):
         s._host_emu.retriggers.return_value = (False, False, False)
         s._sid_start_time = 1000.0
         s._ticks_done = 0
-        clock = itertools.count(0.0, 0.005)  # 5 ms of host time per reading
-        with (
-            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
-            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=clock),
+        with (  # 5 ms of host time per monotonic reading
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
         ):
             s._poll_loop()
@@ -187,8 +187,8 @@ class CatchupBoundTest(unittest.TestCase):
         s._sid_start_time = 1000.0
         s._ticks_done = 0
         with (
-            patch("c64cast.scenes.music_features.time.time", return_value=1000.0 + 1 / 60.0),
-            patch("c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.5)),
+            patch.object(music_features, "time", FrozenClock(1000.0 + 1 / 60.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.5)),
             self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
         ):
             s._poll_loop()
@@ -227,10 +227,8 @@ class CatchupBoundTest(unittest.TestCase):
         s._ticks_done = 0
         s._poll_period = 1.0
         with (
-            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
-            patch(
-                "c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.005)
-            ),
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.scenes.music_features", level="WARNING"),
         ):
             s._poll_loop()
@@ -246,10 +244,8 @@ class CatchupBoundTest(unittest.TestCase):
         s._sid_start_time = 1000.0
         s._ticks_done = 0
         with (
-            patch("c64cast.scenes.music_features.time.time", return_value=1100.0),
-            patch(
-                "c64cast.sid.sid_host_emu.time.monotonic", side_effect=itertools.count(0.0, 0.005)
-            ),
+            patch.object(music_features, "time", FrozenClock(1100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.scenes.music_features", level="WARNING") as logs,
         ):
             for _ in range(4):

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from _fakes import make_psid
+from _fakes import FakeTime, make_psid
 
+from c64cast.hw import api
 from c64cast.hw.api import (
     _REINIT_PATCH_BANK,
     _REINIT_PATCH_INIT_HI,
@@ -841,9 +842,17 @@ class TunePlayDividerTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
-        # Make the test fast: no settle sleep, no real CIA reads.
-        patch("c64cast.hw.api.time.sleep").start()
-        patch.object(self.api, "flush").start()
+        # Make the test fast: no settle sleep, no real CIA reads. The sleep is
+        # patched over the module's own `time` name and stopped on cleanup — a
+        # bare patch of `c64cast.hw.api.time.sleep` reaches the one shared
+        # stdlib module, and a .start() with no stop() leaves it that way for
+        # every later test in this worker process.
+        sleepless = patch.object(api, "time", FakeTime(sleep=MagicMock()))
+        self.addCleanup(sleepless.stop)
+        sleepless.start()
+        flushless = patch.object(self.api, "flush")
+        self.addCleanup(flushless.stop)
+        flushless.start()
         self.divider_writes: list[tuple[str, str]] = []
 
         def _fake_write(address, data_hex):

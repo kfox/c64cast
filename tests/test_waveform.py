@@ -7,7 +7,6 @@ playback)."""
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
-import itertools
 import os
 import random
 import shutil
@@ -18,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from _fakes import FakeAPI, FrozenClock, bare_waveform_scene, make_psid, quiet_logging
 
-from c64cast.sid import sid_host_emu
+from c64cast.sid import sid_host_emu, waveform
 from c64cast.sid.sid_host_emu import (
     RATE_PROBE_TICKS,
     FootprintSample,
@@ -1967,12 +1966,11 @@ class WaveformPollCatchupTest(unittest.TestCase):
         scene = self._scene()
         # 5 frames of elapsed time at 60 Hz → 5 PLAY ticks expected. Monotonic
         # is frozen so the batch's time bound can't race the tick count.
+        scene._sid_start_time = 1000.0
         with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.sid_host_emu.time.monotonic", return_value=0.0),
+            patch.object(waveform, "time", FrozenClock(1000.0 + 5 / 60.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic")),
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 5 / 60.0
             scene._poll_regs()
         self.assertEqual(scene._host_emu.tick_play.call_count, 5)
         self.assertEqual(scene._ticks_done, 5)
@@ -1983,10 +1981,9 @@ class WaveformPollCatchupTest(unittest.TestCase):
     def test_no_ticks_when_not_yet_due(self):
         scene = self._scene()
         scene._ticks_done = 10
-        with patch("c64cast.sid.waveform.time.time") as now:
-            scene._sid_start_time = 1000.0
-            # Only ~10 frames elapsed but we've already done 10 ticks.
-            now.return_value = 1000.0 + 10 / 60.0
+        scene._sid_start_time = 1000.0
+        # Only ~10 frames elapsed but we've already done 10 ticks.
+        with patch.object(waveform, "time", FrozenClock(1000.0 + 10 / 60.0)):
             scene._poll_regs()
         scene._host_emu.tick_play.assert_not_called()
         self.assertEqual(scene._ticks_done, 10)
@@ -1998,12 +1995,11 @@ class WaveformPollCatchupTest(unittest.TestCase):
         # wakeups. The batch's other bound is wall clock, so freeze it — this
         # test is about the count, and a real clock would make it a race
         # between 120 stubbed ticks and half a poll period.
-        with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.sid_host_emu.time.monotonic", return_value=0.0),
+        scene._sid_start_time = 1000.0
+        with (  # 6000 frames @ 60 Hz behind
+            patch.object(waveform, "time", FrozenClock(1000.0 + 100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic")),
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 100.0  # 6000 frames @ 60 Hz
             scene._poll_regs()
         self.assertEqual(scene._host_emu.tick_play.call_count, scene._MAX_CATCHUP_TICKS)
         self.assertEqual(scene._ticks_done, scene._MAX_CATCHUP_TICKS)
@@ -2014,14 +2010,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
         # measured 15.8 ms, making the 120-tick batch 1.9 s on a thread whose
         # period is 1/60 s — every wakeup, for the scene's whole duration.
         scene = self._scene()
-        clock = itertools.count(0.0, 0.005)  # 5 ms of host time per reading
-        with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.waveform.time.monotonic", side_effect=clock),
+        scene._sid_start_time = 1000.0
+        with (  # 6000 frames behind, 5 ms of host time per monotonic reading
+            patch.object(waveform, "time", FrozenClock(1000.0 + 100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 100.0  # 6000 frames behind
             scene._poll_regs()
         # Half of a 1/60 s period is 8.3 ms, so the second tick ends the batch
         # — far short of the 120 the count alone would have allowed.
@@ -2035,13 +2029,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
         # only on a SHORT batch left the 400 Hz multispeed case — one pass, 4x
         # the poll period, forever — reported as healthy.
         scene = self._scene()
-        with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.waveform.time.monotonic", side_effect=itertools.count(0.0, 0.5)),
+        scene._sid_start_time = 1000.0
+        with (  # exactly one tick due, and it costs 500 ms
+            patch.object(waveform, "time", FrozenClock(1000.0 + 1 / 60.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.5)),
             self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 1 / 60.0  # exactly one tick due
             scene._poll_regs()
         self.assertEqual(scene._host_emu.tick_play.call_count, 1)
         self.assertEqual(scene._ticks_done, 1, "the batch ran every pass it was asked for")
@@ -2086,14 +2079,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
         # two, which is the half-fix that looks right in every other test.
         scene = self._scene()
         scene._poll_period = 1.0  # one pass is expensive; the wakeup is slow
-        clock = itertools.count(0.0, 0.005)  # 5 ms of host time per reading
-        with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.waveform.time.monotonic", side_effect=clock),
+        scene._sid_start_time = 1000.0
+        with (  # 6000 frames behind, 5 ms of host time per monotonic reading
+            patch.object(waveform, "time", FrozenClock(1000.0 + 100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.sid.waveform", level="WARNING"),
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 100.0  # 6000 frames behind
             scene._poll_regs()
         # Half of the 1/60 s TICK dt is 8.3 ms, which the sibling test above
         # pins at exactly two passes. Half of the 1 s WAKEUP period is not.
@@ -2105,13 +2096,12 @@ class WaveformPollCatchupTest(unittest.TestCase):
 
     def test_catchup_lag_is_reported_once_not_per_wakeup(self):
         scene = self._scene()
+        scene._sid_start_time = 1000.0
         with (
-            patch("c64cast.sid.waveform.time.time") as now,
-            patch("c64cast.sid.waveform.time.monotonic", side_effect=itertools.count(0.0, 0.005)),
+            patch.object(waveform, "time", FrozenClock(1000.0 + 100.0)),
+            patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.005)),
             self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
         ):
-            scene._sid_start_time = 1000.0
-            now.return_value = 1000.0 + 100.0
             for _ in range(4):
                 scene._poll_regs()
         self.assertEqual(len(logs.output), 1, "the condition lasts all scene; the log must not")

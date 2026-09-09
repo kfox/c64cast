@@ -447,47 +447,69 @@ def bare_waveform_scene(**attrs):
     return scene
 
 
-class FrozenClock:
-    """A stand-in for the stdlib ``time`` module with one function pinned.
+class FakeTime:
+    """A stand-in for the stdlib ``time`` module with some functions replaced.
 
     Bind it over a **module's own** ``time`` name::
+
+        with mock.patch.object(api, "time", FakeTime(sleep=lambda _s: None)):
+            ...                       # api.time.sleep() returns at once
+
+    and never over an attribute of the stdlib module itself
+    (``mock.patch("c64cast.hw.api.time.sleep")``, which resolves through the
+    alias to the one shared module object). The latter rebinds the function for
+    the entire process, so every thread in the suite gets it too — and the suite
+    leaves worker threads running. A worker measuring an interval against a
+    clock that never advances, or skipping a sleep it needed, is a flake with no
+    connection to the test that caused it. The same aliasing already broke the
+    preview pump tests under ``make coverage``, where every module shares one
+    process. It also hides which module actually reads the clock: four waveform
+    tests pinned ``waveform.time.monotonic`` to steer code in ``sid_host_emu``,
+    and ``waveform`` never calls ``monotonic`` at all.
+
+    Each keyword pins one name. A callable is installed as it is — pass a
+    ``MagicMock`` when the test wants to assert on the calls — and anything else
+    is returned as a constant. Every other name delegates to the real module, so
+    code that also calls ``time.monotonic()`` or ``time.sleep()`` while the fake
+    is installed keeps working.
+    """
+
+    def __init__(self, **pinned) -> None:
+        self._pinned = {
+            name: value if callable(value) else (lambda value=value: value)
+            for name, value in pinned.items()
+        }
+
+    def __getattr__(self, name: str):
+        # Only reached for names not on the instance, so the attributes set in
+        # __init__ never route back through here.
+        pinned = self.__dict__.get("_pinned", {})
+        if name in pinned:
+            return pinned[name]
+        return getattr(time, name)
+
+
+class FrozenClock(FakeTime):
+    """A [FakeTime] whose one pinned clock the test drives itself.
 
         with mock.patch.object(scenes, "time", FrozenClock(10.0)):
             ...                       # scenes.time.time() == 10.0
 
-    and never over an attribute of the stdlib module itself
-    (``mock.patch.object(scenes.time, "time", return_value=10.0)``). The
-    latter rebinds ``time.time`` for the entire process, so every thread in
-    the suite reads the frozen value too — and the suite leaves worker
-    threads running. A worker measuring an interval against a clock that
-    never advances, or that jumps decades when the patch lifts, is a flake
-    with no connection to the test that caused it. The same aliasing already
-    broke the preview pump tests under ``make coverage``, where every module
-    shares one process.
-
-    Any attribute other than the pinned one delegates to the real module, so
-    code that also calls ``time.monotonic()`` or ``time.sleep()`` while the
-    fake is installed keeps working.
-
-    ``step`` makes the pinned clock advance by itself, one increment per
-    reading, which is what a test wanting to price an interval needs::
+    ``step`` makes the clock advance by itself, one increment per reading, which
+    is what a test pricing an interval needs::
 
         with mock.patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.1)):
             ...               # each monotonic() reading is 100 ms after the last
 
-    That is the same thing ``side_effect=itertools.count(0.0, 0.1)`` does, minus
-    the process-wide aliasing the paragraph above is about.
+    That is what ``side_effect=itertools.count(0.0, 0.1)`` did, minus the
+    process-wide aliasing [FakeTime] is about. Further keywords pin more names
+    the same way [FakeTime] does.
     """
 
-    def __init__(self, now: float, attr: str = "time", step: float = 0.0) -> None:
+    def __init__(self, now: float = 0.0, attr: str = "time", step: float = 0.0, **pinned) -> None:
         self._now = float(now)
-        self._attr = attr
         self._step = float(step)
-
-    def _read(self) -> float:
-        now = self._now
-        self._now += self._step
-        return now
+        super().__init__(**{attr: self._read}, **pinned)
 
     def advance(self, dt: float) -> None:
         """Move the pinned clock forward — lets a test drive a poller's tick
@@ -495,9 +517,7 @@ class FrozenClock:
         apart) instead of racing a real thread against wall time."""
         self._now += dt
 
-    def __getattr__(self, name: str):
-        # Only reached for names not on the instance, so `_now`/`_attr` never
-        # route back through here.
-        if name == self._attr:
-            return self._read
-        return getattr(time, name)
+    def _read(self) -> float:
+        now = self._now
+        self._now += self._step
+        return now
