@@ -105,6 +105,7 @@ PAD_CYCLES: Final = {0: 17, 1: 24, 2: 29, 3: 34}
 #: constant in vdc_c128.py, where a 5 ms gap made blits hang that a 50 ms gap
 #: completed.
 POLL_INTERVAL: Final = 0.050
+VRAM_TYPE_BIT: Final = 0x10  # R28 bit 4: set selects 64 KiB addressing
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +333,8 @@ class Probe:
         #: and takes them with it, so a sweep that survives a hang would go on
         #: streaming whatever the reset left behind unless they are restored.
         self.staged: dict[int, bytes] = {}
+        #: R28 bit 4 as the KERNAL left it, sampled before launch.
+        self.vram_64k: bool | None = None
 
     def stage(self, addr: int, data: bytes) -> None:
         self.staged[addr] = data
@@ -344,6 +347,13 @@ class Probe:
         print(f"    .crt {len(crt)} B   resident probe {used} B of {vdc_rom.RESIDENT_MAX}")
         self.client.reset()
         time.sleep(self.settle)
+        # R28 bit 4 is the documented RAM-type flag, but the cartridge programs
+        # R28 for itself at boot, so it has to be sampled here while the
+        # KERNAL's value still stands.
+        with contextlib.suppress(OSError, TRError):
+            r28 = self.port.read_reg(vdc.R.CHARSET_ADDR)
+            if r28 is not None:
+                self.vram_64k = bool(r28 & VRAM_TYPE_BIT)
         self.client._drain_stale(0.4)
         with contextlib.suppress(OSError, TRError):
             self.client.delete_file(UPLOAD_PATH)
@@ -439,6 +449,23 @@ def describe(payload: bytes, got: bytes, sentinel: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def vram_is_16k(p: Probe) -> bool:
+    """Is this a 16 KiB VDC? The C128 Editor ROM's own test.
+
+    Force 64 KiB addressing, clear $0000, write $FF at $8000, read $0000 back.
+    R28 bit 4 cannot answer this by itself: it configures the addressing rather
+    than reporting the chips, so the test has to assume 64 KiB and see whether
+    the far write aliases home. Any nonzero byte counts, because a 4416 machine
+    is four bits wide and need not alias the whole byte."""
+    r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
+    if r28 is not None:
+        p.port.write_reg(vdc.R.CHARSET_ADDR, r28 | VRAM_TYPE_BIT)
+    p.port.write_ram(0x0000, b"\x00")
+    p.port.write_ram(0x8000, b"\xff")
+    got = p.port.read_ram(0x0000, 1)
+    return bool(got and got[0])
+
+
 def _hexb(v: int | None) -> str:
     return "--" if v is None else f"${v:02X}"
 
@@ -488,6 +515,18 @@ def stage_identity(p: Probe) -> bool:
         mark = "OK" if got == want else f"MISMATCH (wanted ${want:02X})"
         print(f"    R{reg:<2d} = ${got:02X} ({got:3d})           {mark}")
     if writes_land(p):
+        boot = "unread" if p.vram_64k is None else "64 KiB" if p.vram_64k else "16 KiB"
+        aliases = vram_is_16k(p)
+        print(f"    VRAM as KERNAL set R28    {boot}  (configured, not measured)")
+        print(f"    VRAM by aliasing at $8000 {'16 KiB' if aliases else '64 KiB'}")
+        if aliases or p.vram_64k is False:
+            r28 = p.port.read_reg(vdc.R.CHARSET_ADDR)
+            if r28 is not None:
+                p.port.write_reg(vdc.R.CHARSET_ADDR, r28 & ~VRAM_TYPE_BIT)
+            print("    -> cleared R28 bit 4. The cartridge is frozen and programs")
+            print("       64 KiB addressing on every machine, which decodes wrong")
+            print("       here. Timing registers are untouched, so stage 3 and the")
+            print("       stream window stay comparable; only the picture differs.")
         return True
     print("\n    !! host register writes are not reaching the VDC.")
     print("       Selecting a register means writing $D600 first, so every readback")
