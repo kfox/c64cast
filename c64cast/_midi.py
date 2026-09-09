@@ -141,15 +141,18 @@ def poll_pending(
 
     `test_a_pass_entered_with_stop_already_set_drops_the_message_it_polls` is
     what pins that drop against a change to the ``stop`` release itself: hoist
-    the check above the ``poll()`` and it is the one test that reddens on the
-    drop rather than on a yield count.
-    `test_stops_mid_pass_once_the_stop_event_is_set` asserts the same two counts
-    a message earlier, where the fake sets ``stop`` from inside the ``poll()``
-    that trips it, so its yielded count moves first under that same hoist — but
-    its dequeued count is load-bearing under a *count*-bound change, which moves
-    the dequeued count while leaving the yielded one where the assertion expects
-    it. The counts are of messages dequeued, not of ``poll()`` calls: an
-    exhausted port answers ``None`` and takes nothing.
+    the check above the ``poll()`` and that test reddens on the drop — nothing
+    handed out, one message taken — rather than on a count of what was handed
+    out. `test_stops_mid_pass_once_the_stop_event_is_set` asserts the same pair
+    two messages further into the pass, where the fake sets ``stop`` from inside
+    the ``poll()`` that trips it, so its yielded count moves first under that
+    same hoist. Its dequeued count still earns its place: with
+    ``MAX_MSGS_PER_DRAIN = 2`` it reddens — 2 dequeued against the expected 3 —
+    while the yielded count beside it passes, a two-message pass handing out
+    exactly the two that assertion expects. That is the mutation that was run,
+    not a property of every count-bound one: at 1 the yielded count moves too.
+    The counts are of messages dequeued, not of ``poll()`` calls: an exhausted
+    port answers ``None`` and takes nothing.
 
     Both bounds accept ``None``, which is not "unbounded": it selects
     :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)
