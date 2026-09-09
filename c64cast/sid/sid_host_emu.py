@@ -996,8 +996,10 @@ class FootprintSample(NamedTuple):
 
     That distinction has to ride in the return value rather than only in a log
     line, because consumers place hardware on it: api._find_free_layout puts
-    the relocated C64-side player in the largest hole the bitmap leaves, and
-    _choose_display_layout picks the VIC bank from it. A missing late write
+    the relocated C64-side player in the largest hole the bitmap leaves —
+    once it is reached, which is only when the fixed $C300/$C400 default
+    fails an exact-overlap check — and _choose_display_layout picks the VIC
+    bank from it. A missing late write
     reads as free RAM, the player MC goes there, and PLAY overwrites it —
     silence plus a crash to BASIC, which is the exact regression the footprint
     was added to prevent. The two consumers that place a whole tune's hardware
@@ -1421,9 +1423,12 @@ def analyze_placement(
     truncates BOTH at the identical instruction: the union adds only the
     read-versus-write difference between two samples that stopped in the same
     place. Measured on a PSID whose PLAY is
-    ``STA $2000 / LAX $3000 / STA $4000 / RTS`` — both samples incomplete, the
-    two differing at **5** addresses, and ``avoid[$4000] == 0`` for a write
-    PLAY makes on every frame. A tune with a LAX in PLAY can still get the
+    ``STA $2000 / LAX $3000 / STA $4000 / RTS`` — both samples incomplete,
+    ``avoid[$4000] == 0`` for a write PLAY makes on every frame, and the only
+    bytes the two views differ at are ``$0821-$0825``: the LDA/STA pair that
+    actually executed, fetched as reads. What the union contributes on this
+    tune is the traced prefix's own code bytes, and nothing else. A tune with
+    a LAX in PLAY can still get the
     player MC placed in RAM its untraced tail writes, which is the exact
     regression the footprint exists to prevent. What the widening genuinely
     buys is the *nondeterministic* truncation cause — the wall-clock deadline,
@@ -1439,10 +1444,12 @@ def analyze_placement(
     api._choose_player_layout tries the fixed historical $C300/$C400 layout
     first and reaches _find_free_layout only when _layout_fits rejects it.
     _layout_fits does enforce real constraints — the $0820-$D000 bounds, the
-    $C000-$C2FF audio-handler region, non-overlap with the payload extent and
-    between the player and its stub — but every one of them is exact overlap
-    against a byte already known to be occupied. There is no hole preference
-    and no margin of any kind, which is the whole difference. A tune truncated
+    $C000-$C2FF audio-handler region, non-overlap with the payload extent,
+    non-overlap between the player and its stub, and the `avoid` bitmap
+    itself — but the bitmap test is `any(avoid[base:end])`: exact overlap
+    against a byte already marked occupied, with no hole preference and no
+    margin of any kind. That is the whole difference, because a byte the
+    sample never reached is a byte that test reads as free. A tune truncated
     by a LAX in PLAY whose untraced tail writes $C300-$C3FF therefore leaves
     those bytes clear in the bitmap, the default layout is accepted, and the
     player MC goes exactly where PLAY overwrites it. The display side is the
@@ -1450,9 +1457,9 @@ def analyze_placement(
     largest-hole preference.
 
     And if the widened bitmaps leave no room at all, the callers' existing
-    ValueError paths abort the scene and the playlist
-    advances — the fail-closed end, reached by the code that already handles
-    "no free VIC bank" rather than a second refusal written beside it.
+    ValueError paths abort the scene and the playlist advances — the
+    fail-closed end, reached by the code that already handles "no free VIC
+    bank" rather than a second refusal written beside it.
 
     Refusing every untrusted tune outright is the alternative, and choosing it
     is a product decision rather than a correctness one: an undocumented opcode
