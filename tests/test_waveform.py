@@ -817,6 +817,65 @@ class WaveformSceneTest(unittest.TestCase):
             "a pinned rate does not make an expensive pass affordable",
         )
 
+    def test_setup_charges_the_rate_probe_to_the_tunes_one_analysis_budget(self):
+        """The probe's INIT and its 64 PLAY passes are host emulation this
+        tune's analysis performs, so they belong on the budget setup() already
+        opened for the footprint runs. Drawing a second ANALYSIS_BUDGET_S let
+        one setup() block the render thread for 12 s against the 6 s that
+        constant says bounds the whole of one tune's analysis."""
+        from c64cast.sid.waveform import WaveformScene
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
+        self.mock_host_emu_cls.reset_mock()
+        with (
+            patch(
+                "c64cast.sid.waveform.analyze_placement",
+                return_value=PlacementFootprints(
+                    avoid=bytearray(65536),
+                    display=bytearray(65536),
+                    play_bank=None,
+                    trusted=True,
+                ),
+            ) as placement,
+            patch("c64cast.sid.waveform.PollThread"),
+        ):
+            scene.setup()
+
+        analysis_budget = placement.call_args.kwargs["budget"]
+        # Assert on what the probe was *constructed* with rather than on the
+        # argument _resolve_poll_rate threaded: the second half of this fix is
+        # inside _detect_play_rate_hz, and a test that stops at the call
+        # boundary stays green with the old `budget = HostEmuBudget()` still
+        # shadowing the parameter.
+        probe_budgets = [
+            call.kwargs["budget"]
+            for call in self.mock_host_emu_cls.call_args_list
+            if "budget" in call.kwargs
+        ]
+        self.assertTrue(probe_budgets, "setup() built no budgeted host emulator")
+        for budget in probe_budgets:
+            self.assertIs(
+                budget,
+                analysis_budget,
+                "every host emulation setup() performs rides its one analysis budget",
+            )
+
+    def test_setup_re_arms_the_catchup_warning_for_the_tune_it_just_picked(self):
+        """setup()'s pool re-pick can load a different tune, whose PLAY may be
+        affordable where the last one's was not. A latch held across the pick
+        reports the previous tune's verdict for the rest of the scene."""
+        from c64cast.sid.waveform import WaveformScene
+
+        scene = WaveformScene(
+            FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0, system="NTSC"
+        )
+        scene._catchup_warned = True
+        with patch("c64cast.sid.waveform.PollThread"):
+            scene.setup()
+        self.assertFalse(scene._catchup_warned)
+
     def test_rate_probe_ticks_play_before_reading_rate(self):
         """Regression: a multispeed tune that programs CIA #1 Timer A from its
         PLAY routine (not INIT) — Galway's Times of Lore — must be detected as
@@ -2246,6 +2305,38 @@ class WaveformPollCatchupTest(unittest.TestCase):
         self.assertEqual(scene._host_emu.tick_play.call_count, 1)
         self.assertEqual(scene._ticks_done, 1, "the batch ran every pass it was asked for")
         self.assertIn("can't keep up", "\n".join(logs.output))
+
+    def test_the_catchup_warning_is_reached_again_for_the_next_subtune(self):
+        """The warning is one-shot per *tune*, not per scene. A SHIFT cycle
+        loads a subtune with its own INIT/PLAY pair, and the verdict has to be
+        reached again: the old latch made a scene that warned on song 1 silent
+        about every later subtune, including one whose PLAY is worse."""
+        scene = self._scene()
+
+        def poll_one_expensive_pass():
+            scene._sid_start_time = 1000.0
+            with (
+                patch.object(waveform, "time", FrozenClock(1000.0 + 1 / 60.0)),
+                patch.object(sid_host_emu, "time", FrozenClock(0.0, "monotonic", 0.5)),
+            ):
+                scene._poll_regs()
+
+        with self.assertLogs("c64cast.sid.waveform", level="WARNING") as first:
+            poll_one_expensive_pass()
+        self.assertIn("can't keep up", "\n".join(first.output))
+
+        # Same tune, same expensive PLAY: silent, which is what the latch is for.
+        with self.assertNoLogs("c64cast.sid.waveform", level="WARNING"):
+            poll_one_expensive_pass()
+
+        with (
+            patch("c64cast.sid.waveform.PollThread"),
+            patch.object(waveform, "time", FrozenClock(1000.0)),
+        ):
+            scene._cycle_reset_render_state()
+        with self.assertLogs("c64cast.sid.waveform", level="WARNING") as after:
+            poll_one_expensive_pass()
+        self.assertIn("can't keep up", "\n".join(after.output))
 
     def test_poll_period_is_stretched_when_one_pass_costs_more_than_the_rate_allows(self):
         # The tune sets the PLAY rate AND what a pass costs, so it can set a

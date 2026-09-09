@@ -564,7 +564,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._sid_start_time = 0.0
         self._ticks_done = 0
         # One-shot latch for _warn_catchup_behind — the condition it reports
-        # persists for the whole scene, so it must not log per wakeup.
+        # persists for as long as the tune does, so it must not log per wakeup.
+        # Re-armed where a new tune starts (setup()'s pool re-pick,
+        # _cycle_reset_render_state's subtune switch), whose PLAY may be
+        # affordable where this one's was not, or the reverse.
         self._catchup_warned = False
         self._resolve_poll_rate()
 
@@ -1152,6 +1155,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.api.begin_sid_audio()
         self._sid_start_time = self.api.sid_audio_start_time() or time.time()
         self._ticks_done = 0
+        self._catchup_warned = False
 
         # Resolve the host-emu PLAY rate for this tune (vsync vs CIA
         # multispeed) and (re)build the poll thread at that period — the
@@ -1160,7 +1164,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # tune's PLAY was retuned to its native frame rate or left on the
         # kernal jiffy, and the scope has to advance the song at whichever won.
         self._video_hz = self.api.sid_vsync_play_rate_hz()
-        self._resolve_poll_rate()
+        self._resolve_poll_rate(budget)
         self._poll.start()
 
     def _apply_sid_hw_config(self) -> None:
@@ -1770,7 +1774,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         buffers — the U64 bitmap catches up on the next _render_hires());
         re-anchor the host-emu clock (the re-INIT stub runs on the next
         kernal IRQ, ~1 frame, so the new subtune's PLAY tick 0 lines up with
-        now; see _poll_regs); and rebuild + restart the poll thread at the
+        now; see _poll_regs); re-arm the one-shot catch-up warning, since the
+        new subtune's PLAY may be affordable where the old one's was not; and
+        rebuild + restart the poll thread at the
         new subtune's PLAY rate (it may be vsync vs the old one's CIA
         multispeed — _resolve_poll_rate builds a fresh PollThread; stop+start
         is the supported restart pattern)."""
@@ -1791,6 +1797,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 self._last_y[i] = None
         self._sid_start_time = now
         self._ticks_done = 0
+        self._catchup_warned = False
         # The new subtune may carry a different PSID speed flag, so the cue's
         # re-tune decision may have landed differently — re-read the rate.
         self._video_hz = self.api.sid_vsync_play_rate_hz()
@@ -1827,7 +1834,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         else:
             self._paint_metadata_row()
 
-    def _detect_play_rate_hz(self) -> tuple[float, float | None]:
+    def _detect_play_rate_hz(
+        self, budget: HostEmuBudget | None = None
+    ) -> tuple[float, float | None]:
         """Return ``(rate_hz, pass_cost_s)`` for the current tune.
 
         The rate is probed on a THROWAWAY host emulator: many multispeed
@@ -1854,11 +1863,20 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         floors the poll period against. Pinning 400 Hz does not make a 10 ms
         pass affordable.
 
-        The probe gets its own budget rather than the caller's: it runs from
-        __init__ as well as from setup(), and falling back to the video rate is
-        harmless. See sid_host_emu.detect_play_rate_hz for the loop and for
-        what `pass_cost_s = None` means."""
-        budget = HostEmuBudget()
+        `budget` is the caller's analysis budget: the probe's INIT and its
+        passes are host emulation this tune's analysis performs, so setup()
+        passes its own rather than letting one setup draw ANALYSIS_BUDGET_S
+        twice. A budget already spent costs the probe its measurement and falls
+        the rate back to video — the cost the first paragraph prices. None
+        opens a fresh one, for the callers with no analysis to charge it to:
+        __init__, and cycle_style's subtune switch, whose budget bounds a walk
+        whose length the file chooses (see the note at its _build_host_emu
+        call).
+
+        See sid_host_emu.detect_play_rate_hz for the loop and for what
+        `pass_cost_s = None` means."""
+        if budget is None:
+            budget = HostEmuBudget()
         probe = SidHostEmu(self.sid_bytes, song=self.song, budget=budget)
         rate, pass_cost_s = detect_play_rate_hz(
             probe,
@@ -1870,7 +1888,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             return float(self._user_reg_poll_hz), pass_cost_s
         return rate, pass_cost_s
 
-    def _resolve_poll_rate(self) -> None:
+    def _resolve_poll_rate(self, budget: HostEmuBudget | None = None) -> None:
         """Set the host-emu PLAY tick rate to the current tune's real rate and
         (re)build the poll thread at that period.
 
@@ -1888,8 +1906,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         pool re-pick, cycle_style()'s subtune switch) since the new tune may
         have a different rate. run_first=True so the first wakeup catches the
         host emulator up immediately (covering the _setup_hires bitmap-clear
-        gap). See _poll_regs for the wall-clock catch-up model."""
-        rate, pass_cost_s = self._detect_play_rate_hz()
+        gap). See _poll_regs for the wall-clock catch-up model, and
+        _detect_play_rate_hz for what `budget` charges the probe to."""
+        rate, pass_cost_s = self._detect_play_rate_hz(budget)
         if self._user_reg_poll_hz is None and abs(rate - self._video_hz) > 0.5:
             log.info(
                 "waveform: %s is CIA-timed (multispeed) — host "
