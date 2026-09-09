@@ -1129,13 +1129,13 @@ def detect_play_rate_hz(
     deadline. A deadlined probe pass is a *censored* measurement, and censored
     in the one direction that matters: whatever a pass really costs above
     ``_PLAY_DEADLINE_S``, it is priced at ``_PLAY_DEADLINE_S`` and no more.
-    [sustainable_poll_period_s] then floors the poll period at a fraction of
-    the truncation while the render path spends the whole pass — the
-    back-to-back GIL starvation the floor exists to prevent, reached through
-    the floor — and [describe_pass_cost] names the truncation as a
-    measurement, which is the whole thing the ``None`` reading was added to
-    stop. No number is put on the overshoot on purpose: it is exactly the part
-    a deadlined probe cannot see.
+    [sustainable_poll_period_s] then sizes the poll period off the truncation
+    rather than off the pass, so the period it settles on can be shorter than
+    the pass the render path really runs — the back-to-back GIL starvation the
+    floor exists to prevent, reached through the floor. [describe_pass_cost]
+    meanwhile names the truncation as a measurement, which is the whole thing
+    the ``None`` reading was added to stop. No number is put on the overshoot
+    on purpose: it is exactly the part a deadlined probe cannot see.
 
     What bounds one pass is the *step* cap in `_run_routine`, not the cycle cap
     and not a clock: a PLAY that spins on a raster forever measures 7.1 ms
@@ -1201,8 +1201,9 @@ def sustainable_poll_period_s(
     the tune's analysis budget was already gone, or because it was asked for no
     passes at all — so it is charged UNMEASURED_PASS_COST_S, the worst a legal
     pass can cost, rather than nothing. A measured 0.0 is different and stays
-    free: a pass too quick for the host clock to resolve needs no floor. The two used to be one value,
-    and the expensive reading was the one that got lost."""
+    free: a pass too quick for the host clock to resolve needs no floor. The
+    two used to be one value, and the expensive reading was the one that got
+    lost."""
     if fraction <= 0.0:
         return tick_dt_s
     if pass_cost_s is None:
