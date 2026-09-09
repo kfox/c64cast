@@ -578,6 +578,12 @@ def _choose_player_layout(
         payload). Kept for backward compatibility; the footprint path is
         strictly better and is what WaveformScene uses.
     Raises ValueError if no candidate slot is free.
+
+    The default is taken on exact overlap alone — [_layout_fits] has no hole
+    preference — so [_find_free_layout]'s margin against write patterns a
+    footprint sample never reached applies only once the default is rejected.
+    That is what makes a *prefix* footprint dangerous rather than merely
+    imprecise; see sid_host_emu.analyze_placement.
     """
     if _layout_fits(_DEFAULT_PLAYER_LAYOUT, parsed, avoid):
         return _DEFAULT_PLAYER_LAYOUT

@@ -1233,8 +1233,12 @@ def ram_write_footprint(
     read+write view — see [ram_play_access_footprint].
 
     Even a complete footprint is a sample over `ticks` passes, not a proof of
-    total RAM usage — api._find_free_layout pairs it with a largest-hole
-    preference to leave margin against patterns a short sample doesn't reach.
+    total RAM usage. api._find_free_layout pairs it with a largest-hole
+    preference for margin against patterns a short sample doesn't reach — but
+    only when it is reached: api._choose_player_layout tries the fixed
+    $C300/$C400 layout first and takes it on a bare non-overlap check. See
+    [analyze_placement] for what that means for a sample that came back a
+    prefix.
     Pass `budget` to charge this run against the tune's whole analysis rather
     than let it draw a fresh FOOTPRINT_DEADLINE_S; a caller that runs exactly
     one footprint can leave it None and get its own.
@@ -1433,16 +1437,20 @@ def analyze_placement(
     finite-but-complete sample and an unreached write pattern (a trusted sample
     is a sample too). But it is on the *relocation* path only.
     api._choose_player_layout tries the fixed historical $C300/$C400 layout
-    first and reaches _find_free_layout only when _layout_fits rejects it — and
-    _layout_fits consults this bitmap and nothing else, with no hole preference
-    of any kind. A tune truncated by a LAX in PLAY whose untraced tail writes
-    $C300-$C3FF therefore gets the default layout accepted and the player MC
-    put exactly where PLAY overwrites it. The display side is the same shape:
-    WaveformScene._choose_display_layout gets the payload extent, not a
+    first and reaches _find_free_layout only when _layout_fits rejects it.
+    _layout_fits does enforce real constraints — the $0820-$D000 bounds, the
+    $C000-$C2FF audio-handler region, non-overlap with the payload extent and
+    between the player and its stub — but every one of them is exact overlap
+    against a byte already known to be occupied. There is no hole preference
+    and no margin of any kind, which is the whole difference. A tune truncated
+    by a LAX in PLAY whose untraced tail writes $C300-$C3FF therefore leaves
+    those bytes clear in the bitmap, the default layout is accepted, and the
+    player MC goes exactly where PLAY overwrites it. The display side is the
+    same shape: waveform._choose_display_layout gets the payload extent, not a
     largest-hole preference.
 
-    And if the widened bitmaps leave no room at all,
-    the callers' existing ValueError paths abort the scene and the playlist
+    And if the widened bitmaps leave no room at all, the callers' existing
+    ValueError paths abort the scene and the playlist
     advances — the fail-closed end, reached by the code that already handles
     "no free VIC bank" rather than a second refusal written beside it.
 

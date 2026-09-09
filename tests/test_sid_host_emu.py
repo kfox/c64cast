@@ -804,10 +804,11 @@ class AnalyzePlacementTest(unittest.TestCase):
         so an undocumented opcode truncates both at the identical instruction.
         The union therefore carries only the read-versus-write difference
         between two samples that stopped in the same place — it says nothing
-        about the writes past the cut. What actually keeps the player MC out of
-        those addresses is api._find_free_layout's payload exclusion and
-        largest-hole preference, which protect a trusted finite sample just the
-        same. See analyze_placement's docstring.
+        about the writes past the cut. Nothing downstream reliably makes up the
+        difference either — api._choose_player_layout takes the fixed
+        $C300/$C400 layout on a bare non-overlap check before it ever reaches
+        _find_free_layout's largest-hole margin. See analyze_placement's
+        docstring, which carries the whole argument and the measurements.
         """
         from c64cast.sid.sid_host_emu import (
             HostEmuBudget,
@@ -835,10 +836,8 @@ class AnalyzePlacementTest(unittest.TestCase):
             ]
         )
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play)
-        # Each bare footprint run reports the undocumented opcode at WARNING.
-        # The message is the subject of its own test in
-        # TruncatedRoutineMakesAFootprintIncompleteTest; here it is incidental
-        # setup, and a leaked line buries a real failure.
+        # Incidental WARNING from each run; asserted in
+        # TruncatedRoutineMakesAFootprintIncompleteTest.
         with quiet_logging():
             write = ram_write_footprint(sid, song=1)
             access = ram_play_access_footprint(sid, song=1)
