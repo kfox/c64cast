@@ -167,11 +167,16 @@ load address + a small hand-encoded 6502 player (plus a SHIFT-driven
 re-INIT stub), then POSTs a matching `10 SYS <player_base>` BASIC stub
 via `runners:run_prg`. The player and stub are **relocated per-tune** by
 `_choose_player_layout` — the default location is `$C300` (so the BASIC
-stub is `SYS 49920`), but a tune whose payload would overlap gets the
-bundle relocated to free RAM the tune doesn't touch (the waveform scene
-passes a footprint and picks the largest hole the tune never writes; the
-generic path places the bundle just past the payload), with the SYS
-argument rebuilt to match. The real 6510 sets the CPU port (`$01`) bank
+stub is `SYS 49920`), and it is taken whenever the bundle clears every
+`_layout_fits` check: the `$0820`-`$D000` bounds, audio's `$C000`-`$C2FF`
+region, the payload extent, the player/stub overlap, and any byte the
+supplied footprint marks. Fail any one and the bundle is relocated to free
+RAM the tune doesn't touch (the waveform scene passes a footprint and picks
+the largest hole the tune never writes; the generic path places the bundle
+just past the payload), with the SYS argument rebuilt to match. Note the
+order: the largest-hole preference is on the relocation path only, so it is
+no margin at all against a write pattern a footprint sample never reached —
+see [sid.md](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene). The real 6510 sets the CPU port (`$01`) bank
 config around each call (see below), calls
 INIT once, installs an IRQ that calls PLAY then chains to kernal
 `$EA31` (so keyboard scan at `$028D` + cursor-blink suppression

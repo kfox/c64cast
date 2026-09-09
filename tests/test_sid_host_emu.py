@@ -817,8 +817,8 @@ class AnalyzePlacementTest(unittest.TestCase):
             ram_write_footprint,
         )
 
-        # STA $2000 / LAX $3000 / STA $4000 / RTS: $4000 is written on every
-        # real PLAY, and sits past an opcode py65 will not execute.
+        # LDA #$AA / STA $2000 / LAX $3000 / STA $4000 / RTS: $4000 is written
+        # on every real PLAY, and sits past an opcode py65 will not execute.
         play = bytes(
             [
                 0xA9,
@@ -846,6 +846,18 @@ class AnalyzePlacementTest(unittest.TestCase):
         self.assertTrue(write.ram[0x2000], "the write before the opcode is traced")
         self.assertFalse(write.ram[0x4000], "the write after it is not, in either sample")
         self.assertFalse(access.ram[0x4000])
+
+        # The measurement analyze_placement's docstring and
+        # docs/architecture/sid.md both quote. $0820 is the load address and
+        # INIT is one byte, so PLAY starts at $0821 and these five bytes are
+        # the LDA and the STA that ran before the LAX -- fetched as reads,
+        # which is the whole of what the union adds on this tune.
+        differ = [a for a in range(0x10000) if bool(write.ram[a]) != bool(access.ram[a])]
+        self.assertEqual(
+            differ,
+            [0x0821, 0x0822, 0x0823, 0x0824, 0x0825],
+            "the union's contribution here is the traced prefix's own code bytes",
+        )
 
         with self.assertLogs("c64cast.sid.sid_host_emu", level="WARNING"):
             placement = analyze_placement(sid, song=1, budget=HostEmuBudget(), what="unit test")
