@@ -435,6 +435,22 @@ def run_irq_handler(handler: bytes, *, addr: int = 0xC100, seed: dict[int, int] 
     raise AssertionError(f"handler never chained to the kernal (PC=${mpu.pc:04X})")
 
 
+def unspendable_budget(seconds: float = 6.0):
+    """A `HostEmuBudget` on a clock that never advances, so it cannot expire.
+
+    A test that hands a scan loop a default `HostEmuBudget()` is asserting
+    against the real `time.monotonic`, which makes the assertion depend on how
+    loaded the machine is: the loop breaks out early, returns its
+    all-rejected fallback, and the test fails for a reason that has nothing to
+    do with what it is about. Tests *about* the budget inject a spent one
+    instead — see the `HostEmuBudget(0.0, clock=...)` uses in
+    tests/test_sid_host_emu.py.
+    """
+    from c64cast.sid.sid_host_emu import HostEmuBudget
+
+    return HostEmuBudget(seconds, clock=lambda: 0.0)
+
+
 def fake_host_emu(**attrs):
     """A `SidHostEmu` stand-in already answering "healthy" for every flag a
     scene consults, plus whatever `attrs` override.

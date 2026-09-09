@@ -881,7 +881,11 @@ class InitTruncationNoticeTest(unittest.TestCase):
         emu = SidHostEmu(_make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES))
         self.assertIsNone(init_truncation_notice(emu))
 
-    def test_an_init_stopped_at_its_bound_names_the_bound(self):
+    def test_an_init_out_of_wall_clock_says_so_and_says_whose_clock(self):
+        # Naming "its bound" covered both bounds with one phrase, and they
+        # call for different responses: a spent wall clock can be another
+        # candidate's doing and re-running the tune alone may be clean, while
+        # a cycle cap is the tune's own INIT and will reach it every time.
         from c64cast.sid.sid_host_emu import HostEmuBudget, init_truncation_notice
 
         sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
@@ -889,9 +893,25 @@ class InitTruncationNoticeTest(unittest.TestCase):
         notice = init_truncation_notice(emu)
         assert notice is not None
         self.assertIn("INIT did not run to completion", notice)
-        self.assertIn("reached its bound", notice)
+        self.assertIn("wall-clock deadline", notice)
+        self.assertIn("shared analysis budget", notice)
         self.assertIn("register state", notice)
         self.assertIn("PLAY rate", notice)
+
+    def test_an_init_out_of_cycles_names_the_cap_instead(self):
+        # The cap patched down rather than a 2 M-cycle INIT emulated for real:
+        # which bound the code reports is the subject, and the cap's value is
+        # not.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        with patch.object(sid_host_emu, "_INIT_CYCLE_CAP", 200):
+            emu = SidHostEmu(sid)
+        notice = sid_host_emu.init_truncation_notice(emu)
+        assert notice is not None
+        self.assertIn("cycle/step cap", notice)
+        self.assertIn("cap 200", notice)
+        self.assertNotIn("wall-clock", notice)
 
     def test_an_init_stopped_at_an_undocumented_opcode_is_reported_too(self):
         # The most common way an INIT stops short, and the one a reading of

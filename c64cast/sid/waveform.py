@@ -217,6 +217,18 @@ def _bank_payload_feasible(
     )
 
 
+def _partial_footprint_names(write_complete: bool, access_complete: bool) -> str:
+    """Which footprint(s) came back a prefix, for the log line that says why
+    the PLAY `$01` bank fell back to the address heuristic. Both can be, and
+    naming only the write side understates the reason."""
+    partial = [
+        name
+        for name, complete in (("write", write_complete), ("PLAY-access", access_complete))
+        if not complete
+    ]
+    return " and ".join(partial)
+
+
 def _any_display_bank_fits_payload(payload_lo: int, payload_hi: int) -> bool:
     """True when at least one candidate VIC bank's display regions clear the
     payload. Used by _load_sid_file to refuse only the truly hopeless tunes
@@ -1410,7 +1422,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     "— its %s footprint is only a partial sample",
                     new_song,
                     n,
-                    "write" if not write_fp.complete else "PLAY-access",
+                    _partial_footprint_names(write_fp.complete, chosen_access_fp.complete),
                 )
 
         # Stop the poll thread so it can't tick the host emulator while we
@@ -1433,16 +1445,23 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             log.error("waveform: %s — scene aborting rather than cueing it.", e)
             self.is_done = True
             return None
-        self._report_init_truncation(new_emu, new_song)
 
         new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
         if new_needs_basic_out and not self._current_needs_basic_out:
-            return self._cycle_hard_relaunch(new_song, chosen_duration, n, new_emu)
+            relaunched = self._cycle_hard_relaunch(new_song, chosen_duration, n, new_emu)
+            if relaunched is not None:
+                self._report_init_truncation(new_emu, new_song)
+            return relaunched
 
         if not self._cycle_cue(api, new_song, chosen_play_bank):
             return None
         self._current_needs_basic_out = new_needs_basic_out
         self._cycle_rebuild_emulator(new_emu, chosen_duration)
+        # After the cue, not before it: _cycle_cue and _cycle_hard_relaunch can
+        # both still bail out with is_done set, and announcing a scope that
+        # will never be drawn is what this report was moved out of
+        # _build_host_emu for. The dedupe key would have been spent on it too.
+        self._report_init_truncation(new_emu, new_song)
         self._cycle_reset_render_state()
         self._cycle_repoint_display(chosen_layout)
         return f"song {self.song}/{n}"
@@ -1492,7 +1511,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         consumer — the caller's PLAY `$01` bank intersection — refuses a
         prefix on its own, exactly as it already does for a prefix *write*
         footprint. Discarding the subtune there was stricter than the safe
-        fallback it already had, and it cost a playable subtune per prefix."""
+        fallback it already had, and it cost a playable subtune per prefix.
+        It is still the *last* choice under a pin, though: a prefix-sampled
+        candidate is held back and only used when no later candidate offers a
+        whole sample, since a whole one yields a measured `$01` bank and a
+        prefix leaves the address heuristic to guess."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
         first_candidate = (self.song % n) + 1
         new_song = first_candidate
@@ -1502,6 +1525,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
         skipped_partial: list[int] = []
+        # A pinned-layout candidate whose sample is a prefix: usable, but only
+        # if nothing better turns up. See the docstring.
+        held_back: tuple[int, float | None, FootprintSample] | None = None
         candidate = first_candidate
         exhausted = False
         for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
@@ -1524,6 +1550,11 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 # no candidate is unrenderable here — and nothing is placed
                 # from this sample, so a prefix does not disqualify it. The
                 # caller's PLAY $01 bank step refuses the prefix instead.
+                if not sample.complete:
+                    if held_back is None:
+                        held_back = (candidate, looked_up, sample)
+                    candidate = (candidate % n) + 1
+                    continue
                 layout = self._unified_layout
             elif not sample.complete:
                 # Same answer an unrenderable candidate gets, for the same
@@ -1547,6 +1578,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             chosen_layout = layout
             chosen_access_fp = sample
             break
+        else:
+            if held_back is not None:
+                new_song, chosen_duration, chosen_access_fp = held_back
+                chosen_layout = self._unified_layout
+                log.info(
+                    "waveform: cycle taking song %d/%d on a partial PLAY footprint — no "
+                    "later candidate offered a whole one, and the pinned display bank "
+                    "does not come from it",
+                    new_song,
+                    n,
+                )
 
         for sn, sl in skipped_short:
             log.info(

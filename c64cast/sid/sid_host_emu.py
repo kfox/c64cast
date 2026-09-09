@@ -732,11 +732,12 @@ class SidHostEmu:
         # trustworthy — see FootprintSample.complete.
         self.saw_undecodable_opcode: bool = False
         # Why the last routine ended early, in words, or None if it returned.
-        # The three causes are not interchangeable to anyone reading a log: a
-        # bound reached says the routine is expensive, an undocumented opcode
-        # says py65 could not follow it, and an exception says py65 broke on
-        # it. Inferring any of them from the flags alone reported the first
-        # for all three. See init_truncation_notice.
+        # The four causes are not interchangeable to anyone reading a log: a
+        # cycle/step cap says this tune is expensive and will be every time, a
+        # spent wall clock can be an earlier pool-walk candidate's doing, an
+        # undocumented opcode says py65 could not follow the tune, and an
+        # exception says py65 broke on it. Inferring any of them from the flags
+        # alone reported "a bound" for all four. See init_truncation_notice.
         self._routine_end_cause: str | None = None
         # One undocumented-opcode warning per emulator (see _run_routine).
         self._illegal_opcode_reported: bool = False
@@ -945,10 +946,14 @@ class SidHostEmu:
             steps += 1
             if mpu.pc == sentinel:
                 return
-            over_budget = mpu.processorCycles >= cap or steps >= cap
-            if not over_budget and deadline is not None and steps % _WALL_CLOCK_CHECK_STEPS == 0:
-                over_budget = self._now() >= deadline
-            if over_budget:
+            over_cap = mpu.processorCycles >= cap or steps >= cap
+            over_clock = (
+                not over_cap
+                and deadline is not None
+                and steps % _WALL_CLOCK_CHECK_STEPS == 0
+                and self._now() >= deadline
+            )
+            if over_cap or over_clock:
                 log.debug(
                     "sid_host_emu: %s budget reached at PC=$%04X (%d cycles, %d steps, "
                     "cap %d) — giving up this pass",
@@ -958,12 +963,25 @@ class SidHostEmu:
                     steps,
                     cap,
                 )
-                self._report_capped_routine(
-                    f"it reached its bound at PC=${mpu.pc:04X} "
-                    f"({mpu.processorCycles} cycles, {steps} steps, cap {cap}"
-                    + ("" if deadline is None else ", or the wall-clock deadline")
-                    + ")"
-                )
+                # Which of the two bounds fired is known here, and they mean
+                # different things: the cap says the routine is expensive, the
+                # deadline says the clock ran out — which on a shared analysis
+                # budget can be nothing to do with this tune, because earlier
+                # candidates spent it. Reporting them together quoted a 2 M
+                # cycle cap the tune had not come near.
+                if over_cap:
+                    self._report_capped_routine(
+                        f"it reached its cycle/step cap at PC=${mpu.pc:04X} "
+                        f"({mpu.processorCycles} cycles, {steps} steps, cap {cap})"
+                    )
+                else:
+                    self._report_capped_routine(
+                        f"it ran past its wall-clock deadline at PC=${mpu.pc:04X} "
+                        f"({mpu.processorCycles} cycles, {steps} steps) — the deadline "
+                        f"is its own per-run cap tightened to whatever the "
+                        f"{ANALYSIS_BUDGET_S:.0f}s shared analysis budget had left, so a "
+                        f"pool walk's earlier candidates can be what spent it"
+                    )
                 return
 
     def _report_capped_routine(self, cause: str) -> None:

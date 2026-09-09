@@ -22,6 +22,7 @@ from _fakes import (
     fake_host_emu,
     make_psid,
     quiet_logging,
+    unspendable_budget,
 )
 
 from c64cast.sid import sid_host_emu, waveform
@@ -212,7 +213,9 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
             return FootprintSample(fp, True)
 
         with patch.object(wf, "ram_play_access_footprint", fake_fp):
-            return wf._choose_unified_display_layout(b"", lo, hi, len(per_song), HostEmuBudget())
+            return wf._choose_unified_display_layout(
+                b"", lo, hi, len(per_song), unspendable_budget()
+            )
 
     def test_tol_like_union_pins_bank1(self):
         # Song 1 footprint clears bank 2; songs 2-11 read bank 2's $B400.
@@ -241,7 +244,7 @@ class UnifiedDisplayLayoutTest(unittest.TestCase):
             patch.object(wf, "ram_play_access_footprint", truncated_fp),
             self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
         ):
-            layout = wf._choose_unified_display_layout(b"", 0x1000, 0x1100, 4, HostEmuBudget())
+            layout = wf._choose_unified_display_layout(b"", 0x1000, 0x1100, 4, unspendable_budget())
         self.assertIsNone(layout)
         self.assertIn("only a partial sample", "\n".join(logs.output))
 
@@ -1444,7 +1447,7 @@ class WaveformSceneTest(unittest.TestCase):
                 self.assertLogs("c64cast.sid.waveform", level="INFO"),
             ):
                 new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
-                    n, HostEmuBudget()
+                    n, unspendable_budget()
                 )
             self.assertEqual(fp.call_count, WaveformScene._MAX_CYCLE_CANDIDATES)
             # All rejected: SHIFT still changes the song, keeping the bank.
@@ -1477,7 +1480,7 @@ class WaveformSceneTest(unittest.TestCase):
                 self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
             ):
                 new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
-                    4, HostEmuBudget()
+                    4, unspendable_budget()
                 )
             self.assertEqual(new_song, 3, "the prefix-sampled subtune must be passed over")
             self.assertIsNotNone(layout)
@@ -1486,67 +1489,121 @@ class WaveformSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
-    def test_a_pinned_bank_keeps_a_prefix_sampled_subtune(self):
-        # With `_unified_layout` set, nothing is placed from the per-subtune
-        # sample: the bank was pinned over the union at setup(). The skip's own
-        # reason ("a bank chosen from it may be RAM the subtune is live in")
-        # therefore does not apply, and skipping cost a playable subtune per
-        # prefix. The sample's only other consumer, the PLAY $01 bank
-        # intersection, refuses the prefix itself — the safe fallback that
-        # a prefix *write* footprint has always taken.
+    def _pinned_scene(self):
         from c64cast.sid.waveform import WaveformScene
 
-        api = FakeAPI()
-        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
+        scene = WaveformScene(FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0)
         scene.setup()
-        try:
-            scene._unified_layout = (0x0400, 0x2000, 0, 0)
+        self.addCleanup(scene.teardown)
+        scene._unified_layout = (0x0400, 0x2000, 0, 0)
+        return scene
 
-            def per_song(_sid_bytes, song=0, **_kw):
-                return FootprintSample(bytearray(65536), song != 2)
+    @staticmethod
+    def _prefix_for(*songs):
+        def per_song(_sid_bytes, song=0, **_kw):
+            return FootprintSample(bytearray(65536), song not in songs)
 
-            with (
-                patch("c64cast.sid.waveform.ram_play_access_footprint", per_song),
-                quiet_logging(),
-            ):
-                new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
-                    4, HostEmuBudget()
-                )
-            self.assertEqual(new_song, 2, "the pin makes the prefix harmless here")
-            self.assertEqual(layout, scene._unified_layout)
-            assert access_fp is not None
-            self.assertFalse(access_fp.complete, "the sample is handed on with its verdict")
-        finally:
-            scene.teardown()
+        return per_song
+
+    def test_a_pinned_bank_prefers_a_whole_sample_and_holds_the_prefix_back(self):
+        # With `_unified_layout` set, nothing is placed from the per-subtune
+        # sample: the bank was pinned over the union at setup(). So the skip's
+        # own reason ("a bank chosen from it may be RAM the subtune is live
+        # in") does not apply and the prefix candidate is usable — but it is
+        # the last choice, because a whole sample yields a measured PLAY $01
+        # bank and a prefix leaves the address heuristic to guess.
+        scene = self._pinned_scene()
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2)),
+            quiet_logging(),
+        ):
+            new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
+                4, unspendable_budget()
+            )
+        self.assertEqual(new_song, 3, "song 2's prefix is held back, not taken")
+        self.assertEqual(layout, scene._unified_layout)
+        assert access_fp is not None
+        self.assertTrue(access_fp.complete)
+
+    def test_a_held_back_prefix_is_used_when_nothing_better_turns_up(self):
+        # Every candidate a prefix: the held-back one beats the all-rejected
+        # fallback, which would take the first candidate with layout=None and
+        # keep whatever bank is on screen.
+        scene = self._pinned_scene()
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2, 3, 4)),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
+                4, unspendable_budget()
+            )
+        self.assertEqual(new_song, 2, "the first prefix candidate, held back and then used")
+        self.assertEqual(layout, scene._unified_layout, "the pin still applies")
+        assert access_fp is not None
+        self.assertFalse(access_fp.complete, "the sample is handed on with its verdict")
+        self.assertIn("on a partial PLAY footprint", "\n".join(logs.output))
 
     def test_a_prefix_access_footprint_drops_the_play_bank_and_says_which_one(self):
-        # The other half: the candidate is kept, so the $01 bank decision is
-        # the one that has to refuse the prefix. It reported "write footprint"
-        # for both sides before the access side could reach it.
+        # The other half: a held-back candidate that gets used means the $01
+        # bank decision is what has to refuse the prefix. It reported "write
+        # footprint" for both sides before the access side could reach it.
+        scene = self._pinned_scene()
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2, 3, 4)),
+            patch(
+                "c64cast.sid.waveform.ram_write_footprint",
+                return_value=FootprintSample(bytearray(65536), True),
+            ),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            scene.cycle_style(scene.api)
+        self.assertIn("PLAY-access footprint is only a partial sample", "\n".join(logs.output))
+
+    def test_a_failed_cue_does_not_announce_the_tune_it_did_not_reach(self):
+        # The truncation notice fires after the cue commits, not before it:
+        # both `_cycle_cue` and `_cycle_hard_relaunch` can still bail out with
+        # `is_done` set, and a warning about the scope of a subtune the scene
+        # never reaches names the wrong song for a scene that is over.
         from c64cast.sid.waveform import WaveformScene
 
-        api = FakeAPI()
-        scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
-        scene.setup()
-        try:
-            scene._unified_layout = (0x0400, 0x2000, 0, 0)
+        def truncated(_sid_bytes, song=0, **_kwargs):
+            return fake_host_emu(init_truncation="it reached its cycle/step cap")
 
-            def per_song(_sid_bytes, song=0, **_kw):
-                return FootprintSample(bytearray(65536), song != 2)
+        self.mock_host_emu_cls.side_effect = truncated
+        # The constructor loads the file, so song 1's own notice fires there
+        # rather than in setup() — both go inside the silence, and the notice
+        # itself is asserted in WaveformInitTruncationTest.
+        with quiet_logging():
+            scene = WaveformScene(
+                FakeAPI(), audio=None, file=self.sid_path, song=1, duration_s=10.0
+            )
+            scene.setup()
+        self.addCleanup(scene.teardown)
 
-            with (
-                patch("c64cast.sid.waveform.ram_play_access_footprint", per_song),
-                patch(
-                    "c64cast.sid.waveform.ram_write_footprint",
-                    return_value=FootprintSample(bytearray(65536), True),
-                ),
-                self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
-            ):
-                scene.cycle_style(api)
-            joined = "\n".join(logs.output)
-            self.assertIn("PLAY-access footprint is only a partial sample", joined)
-        finally:
-            scene.teardown()
+        def link_down(*_args, **_kwargs):
+            raise RuntimeError("link down")
+
+        with (
+            patch.object(scene.api, "cue_song_reinit", link_down),
+            # WARNING, not ERROR: the notice this test says is absent is a
+            # WARNING, and a capture that starts at ERROR cannot see it — so
+            # the assertion below would hold whether or not the fix is there.
+            self.assertLogs("c64cast.sid.waveform", level="WARNING") as logs,
+        ):
+            self.assertIsNone(scene.cycle_style(scene.api))
+        joined = "\n".join(logs.output)
+        self.assertIn("cue_song_reinit failed", joined)
+        self.assertNotIn("INIT did not run to completion", joined)
+        self.assertTrue(scene.is_done)
+
+    def test_both_footprints_partial_names_both(self):
+        # The ternary this replaced said "write" whenever the write side was a
+        # prefix, so the access side never appeared alongside it.
+        from c64cast.sid.waveform import _partial_footprint_names
+
+        self.assertEqual(_partial_footprint_names(False, True), "write")
+        self.assertEqual(_partial_footprint_names(True, False), "PLAY-access")
+        self.assertEqual(_partial_footprint_names(False, False), "write and PLAY-access")
 
     def test_cycle_keeps_the_default_play_bank_when_the_write_footprint_is_partial(self):
         # cycle_style's own write-footprint run had the same bug as the walk:

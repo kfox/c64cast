@@ -159,7 +159,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   heuristic. A tune left with nothing free aborts its scene and the playlist
   advances, as it already did when no VIC bank was free. The SHIFT-cycle
   candidate walk now skips such a subtune the way it skips an unrenderable
-  one, rather than repointing the display from a prefix mid-show.
+  one, rather than repointing the display from a prefix mid-show — unless the
+  display bank was pinned at startup, in which case nothing is being chosen
+  from that sample and the subtune stays playable, cued only after any
+  candidate whose own sample is whole.
 - **A multispeed tune could peg a CPU core for a whole scene.** The host
   emulator's catch-up batch is bounded by a fraction of one poll period, but a
   tune sets both the PLAY rate that period comes from (a CIA #1 Timer A latch,
