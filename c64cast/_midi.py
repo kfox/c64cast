@@ -127,7 +127,10 @@ def poll_pending(
     :data:`MAX_MSGS_PER_DRAIN` for the count and :data:`MAX_DRAIN_WORK_S` for
     the work. The clock is read between messages, i.e. after the consumer has
     processed the previous one, and never after a ``poll()`` that already took a
-    message off the queue, so releasing the pass drops nothing.
+    message off the queue, so releasing the pass drops nothing. Between
+    messages means after the first, so **a pass never gates the message it
+    opens with**, and a consumer slower than the whole budget still makes
+    progress rather than spinning.
 
     Both bounds accept ``None``, which is not "unbounded": it selects
     :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)
@@ -136,23 +139,27 @@ def poll_pending(
     bound at all passes a large number.
 
     A zero is honored rather than read as absent, but the two bounds do not
-    answer it alike, and only ``limit=0`` hands out nothing. ``budget_s=0``
-    yields exactly one message, because a pass never gates its first — see the
-    paragraph above, and `test_a_pass_always_hands_out_at_least_one_message`.
-    That one message reaches the consumer, which on these two readers is a real
-    SID register write or ASID frame, so a caller wanting a pass that retires
-    nothing wants ``limit=0``.
+    answer it alike, and only ``limit=0`` hands out nothing whatever the port
+    holds. ``budget_s=0`` yields *at most* one message: one whenever anything
+    is waiting, and none on an idle port or an already-set ``stop``, where the
+    ``poll()`` ends the pass before the yield. It is one rather than none
+    because a pass never gates the message it opens with, which the paragraph
+    on the clock above states and
+    `test_a_pass_always_hands_out_at_least_one_message` pins. That one message
+    reaches the consumer, which on these two readers is a real SID register
+    write or ASID frame, so a caller wanting a pass that cannot retire anything
+    wants ``limit=0``.
 
     The ``budget_s`` default is sized for a microsecond-per-message consumer; a
-    caller whose consumer blocks on the link must pass its own or it will retire
-    exactly one message a pass. :data:`MAX_DRAIN_WORK_S` says why the sizing
-    belongs to the caller."""
+    caller whose consumer blocks on the link must pass its own or a pass with
+    traffic waiting will retire just the one message. :data:`MAX_DRAIN_WORK_S`
+    says why the sizing belongs to the caller."""
     # Read here, not bound as the parameters' defaults, so that rebinding
     # either constant is not a silent no-op — this module's one injection idiom
     # is rebinding, as the deadline below does for `_monotonic`. Full rationale
     # in docs/architecture/config.md under `_midi.py`, which also says which
-    # reader a rebind of `MAX_DRAIN_WORK_S` reaches and which lever moves the
-    # other one.
+    # reader a rebind of `MAX_DRAIN_WORK_S` reaches, and why MidiScene's own
+    # copy of it is not the lever it looks like.
     if limit is None:
         limit = MAX_MSGS_PER_DRAIN
     if budget_s is None:

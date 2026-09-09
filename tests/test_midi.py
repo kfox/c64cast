@@ -283,6 +283,35 @@ class DrainWorkBoundTest(unittest.TestCase):
         # invariant: the overrun is the slow link's, not every link's.
         self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), _midi.MAX_DRAIN_WORK_S)
 
+    def test_the_shared_default_is_midi_scenes_floor_not_its_budget(self):
+        # config.md named `midi_scene.MAX_DRAIN_WORK_S` as the lever a test
+        # reaches for once it has learned that rebinding `_midi`'s own copy is
+        # inert for MidiScene. It is a `max()` operand, so it only moves the
+        # answer from above the profile-derived term — and on an Ultimate that
+        # term is 31.332 ms, so rebinding the copy *down* is a second silent
+        # no-op, in the one direction someone wanting a one-message pass would
+        # try. Which operand wins is the fact worth pinning; the numbers the
+        # sibling test above already holds.
+        from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
+        from c64cast.sid import midi_scene
+
+        ultimate_s = midi_scene._drain_budget_s(ULTIMATE_PROFILE)
+        with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 0.0):
+            self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), ultimate_s)
+            # The cheap link is where the constant is the operative term, so
+            # the same rebind does move it — down to that link's derived floor
+            # and not to the zero, which is what makes it a floor and not a
+            # budget.
+            teensy_s = midi_scene._drain_budget_s(TEENSYROM_PROFILE)
+        self.assertLess(teensy_s, _midi.MAX_DRAIN_WORK_S)
+        self.assertGreater(teensy_s, 0.0)
+
+        # From above, both move: the operand that wins is decided per call, not
+        # per profile, so a wide enough rebind is the lever the doc claimed.
+        with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 1.0):
+            self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), 1.0)
+            self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
