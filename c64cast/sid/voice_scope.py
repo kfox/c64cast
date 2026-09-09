@@ -382,7 +382,7 @@ class VoiceScopeRenderer:
         the message is a consequence of the knobs plus `n` and so is identical
         every time, while the reflow is not a one-off — a playlist reuses scene
         instances and re-runs `setup()` each lap, and `WaveformScene` reflows per
-        tune. Repeats go to DEBUG rather than nowhere, so `-vv` still shows each
+        tune. Repeats go to DEBUG rather than nowhere, so `-v` still shows each
         reflow."""
         self._n_windows = max(1, n)
         self._window_slices = _compute_window_slices(self._n_windows)

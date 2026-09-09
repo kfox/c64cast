@@ -334,21 +334,28 @@ class AudioFileSource:
         degrades to non-reactive so the visual keeps running. Plenty else does
         escape, though — a file spec that resolves to nothing openable, a host
         too short of threads to start the decode thread, and whatever the audio
-        bring-up raises: the DAC's `start_for_external_source` uploads the NMI
-        routine and ring over the link, and the sampler's `start` prefills REU.
-        That last one is the case teardown has to survive with a *live* thread,
-        since the sampler ordering starts the decode thread first.
-        `SourceScene.setup` catches all of it, logs, and flips `is_done` so the
-        playlist advances.
+        bring-up raises over the link. `SourceScene.setup` catches all of it,
+        logs, and flips `is_done` so the playlist advances.
 
-        Ordering differs by backend. The 4-bit DAC's `start_for_external_source`
-        just arms its worker (non-blocking), so it starts before the decode
+        Ordering differs by backend, by what each bring-up call *waits* for
+        rather than by whether it touches the link — both do. The 4-bit DAC's
+        `start_for_external_source` uploads the NMI routine and the ring and
+        returns without waiting on a producer, so it goes before the decode
         thread. The sampler's `start()` blocks up to ~2 s collecting a prebuffer
         from `push_samples`, so the decode thread must already be feeding it —
         start decode FIRST, then bring the ring up. `push_samples` accepts data
         before the ring is gated (it enqueues, blocking only when full), so the
         prebuffer fills promptly and playback starts without the empty-prebuffer
-        stall."""
+        stall.
+
+        That sampler ordering is why a `start()` that raises is the awkward one:
+        it leaves the decode thread running with no writer to drain the queue,
+        and `UltimateAudioSampler.push_samples` waits on the *sampler's* stopped
+        flag rather than this source's, so `teardown`'s `_stop` does not release
+        a thread parked on a full queue. Its bounded join spends the whole 2 s
+        and returns with the thread still alive; the `audio stop` step behind it
+        is what actually frees it. Every teardown promise is still kept, which
+        is what the guarded steps are for, but the shutdown pauses."""
         self._pick_and_probe()
         self._stop.clear()
         self._start_features()

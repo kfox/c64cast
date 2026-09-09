@@ -498,16 +498,26 @@ def plan_sid_map_for_addresses(
     )
     if core_plan is None and served_by_socket:
         # A socket claim that boxes the cores in costs more than it buys. The
-        # firmware aligns a split core's base *downward*, so for some target sets
-        # no split level has a window that clears the claimed socket — and since
-        # the same downward alignment is what can pull a base into
-        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, a claimed socket can also
-        # be what leaves every otherwise-legal level reserved. Both exhaust the
-        # levels the same way and both are worth one retry without the socket.
-        # Give the socket up and let the cores answer everything — every chip
-        # audible on emulated cores beats handing the caller None and falling
-        # back to the canonical layout, which ignores the file's own addresses
-        # entirely.
+        # firmware aligns a split core's base *downward*, so for some target
+        # sets every level wide enough to cover them aligns back over the
+        # claimed socket and is rejected as `blocked`. Dropping the claim is
+        # what clears those levels: give the socket up and let the cores answer
+        # everything, because every chip audible on emulated cores beats handing
+        # the caller None and falling back to the canonical layout, which
+        # ignores the file's own addresses entirely.
+        #
+        # `blocked` is the only rejection the claim can cause, so it is the only
+        # one this retry can clear. In particular it cannot rescue a
+        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` exhaustion. Each level's
+        # window holds `cap` instances at `_SPLIT_STRIDE`, which is exactly
+        # `align` wide and `align`-aligned (pinned by
+        # `test_every_split_level_is_exactly_as_wide_as_its_alignment`), so any
+        # target inside a window has ``align_down(t) == base``. A target's
+        # realized base is therefore ``align_down(t)`` whether it opens its own
+        # window or rides in a lower target's, the reserved test walks the same
+        # instances either way, and the retry's wider target list can only add
+        # windows, never move one off reserved I/O. Both directions are pinned
+        # in tests/test_asid_sidmap.py.
         served_by_socket = {}
         core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:
