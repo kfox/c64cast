@@ -445,6 +445,11 @@ class _Asm:
         self.emit(0x8D, 0x00, 0x00)
         self._abs.append((len(self.buf) - 2, label, addend))
 
+    def symbols(self) -> dict[str, int]:
+        """Every label's absolute address. The cost model is derived from the
+        emitted bytes, and a byte range is only findable by its labels."""
+        return dict(self._labels)
+
     def resolve(self) -> bytes:
         for pos, label in self._rel:
             target = self._labels[label]
@@ -460,7 +465,9 @@ class _Asm:
         return bytes(self.buf)
 
 
-def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BASE) -> bytes:
+def build_player_symbols(
+    slot_size: int, tick_divider: int, *, ring_base: int = RING_BASE
+) -> tuple[bytes, dict[str, int]]:
     """Assemble the CIA #1 Timer A IRQ player for a given slot size.
 
     Per IRQ: pull the next slot REU→landing-buffer (reload REU src from the
@@ -474,7 +481,14 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
 
     ``tick_divider`` must be 1..255 — it becomes an ``LDA #N`` immediate, and
     silently masking it to 8 bits is how a divider of 333 became 77 and a
-    multiple of 256 became "chain once every 256 ticks"."""
+    multiple of 256 became "chain once every 256 ticks".
+
+    Returns the blob and its label addresses. The labels are not decoration:
+    PER_OP_CYCLES and its two siblings describe *this* assembly, and nothing
+    could check that while the only output was an opaque byte string — a NOP
+    added to ``oploop`` and a regenerated golden blob left every constant
+    green. ``tests/test_asid_player.py`` walks ``oploop``..``tail`` and
+    ``dloop`` to re-derive them."""
     if not 1 <= tick_divider <= 255:
         raise ValueError(f"tick_divider must be 1..255, got {tick_divider}")
     ring_size = RING_SLOTS * slot_size
@@ -574,7 +588,14 @@ def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BAS
     a.branch(0xD0, "dloop")  # BNE dloop
     a.emit(0x60)  # RTS
 
-    return a.resolve()
+    return a.resolve(), a.symbols()
+
+
+def build_player(slot_size: int, tick_divider: int, *, ring_base: int = RING_BASE) -> bytes:
+    """The assembled player for these parameters. See [build_player_symbols],
+    which is the same assembly plus the label addresses the cost-model guard
+    needs to read it back."""
+    return build_player_symbols(slot_size, tick_divider, ring_base=ring_base)[0]
 
 
 def clamp_frame_rate(frame_rate_hz: float) -> float:

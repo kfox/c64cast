@@ -36,9 +36,95 @@ def _fake_backend() -> tuple[C64Backend, Any]:
     return cast(C64Backend, api), api
 
 
+# The largest wait a `0x30` pair can carry, in delay-loop units. Derived, not
+# written down: `_wait_units_for_cycles` is what converts the wire's 255-cycle
+# ceiling, and a changed DELAY_CYCLES_PER_UNIT moves this with it. The guard
+# against drift must not carry an un-derived literal of its own -- with 51
+# hardcoded, a DELAY_CYCLES_PER_UNIT of 4 would have had this file computing a
+# maximal frame of 7896 against a true 9352 and directing a maintainer to write
+# the wrong number into both prose sites, blessed by a green test.
+_MAX_WIRE_WAIT_UNITS = ap._wait_units_for_cycles(255)  # 255 = the wire's one wait byte
+
+
 def _packed_latch(latch: int) -> str:
     """The little-endian hex pair write_memory sends for a CIA Timer A latch."""
     return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+
+
+# The 6502's own numbers for the opcodes build_player emits: (base cycles,
+# instruction length). Branches are listed at their not-taken cost; a taken
+# branch inside a page costs one more, which _taken_path_cycles adds. This is
+# the only literal left in the derivation, and it is a property of the CPU
+# rather than of this code -- the 6502 does not get a new revision.
+_OPCODES: dict[int, tuple[int, int]] = {
+    0x18: (2, 1),  # CLC
+    0x20: (6, 3),  # JSR abs
+    0x4C: (3, 3),  # JMP abs
+    0x60: (6, 1),  # RTS
+    0x69: (2, 2),  # ADC #
+    0x85: (3, 2),  # STA zp
+    0x88: (2, 1),  # DEY
+    0x8D: (4, 3),  # STA abs
+    0x90: (2, 2),  # BCC
+    0xA0: (2, 2),  # LDY #
+    0xA5: (3, 2),  # LDA zp
+    0xA8: (2, 1),  # TAY
+    0xA9: (2, 2),  # LDA #
+    0xAD: (4, 3),  # LDA abs
+    0xB1: (5, 2),  # LDA (zp),Y   (+1 on a page cross; see the docstring)
+    0xC9: (2, 2),  # CMP #
+    0xCE: (6, 3),  # DEC abs
+    0xD0: (2, 2),  # BNE
+    0xE6: (5, 2),  # INC zp
+    0xF0: (2, 2),  # BEQ
+}
+_BRANCHES = frozenset({0x90, 0xD0, 0xF0})
+
+
+def _instructions(blob: bytes, origin: int, start: int, end: int):
+    """(address, opcode) for each instruction in the address range [start, end).
+
+    Raises on an opcode the table above does not carry, so a new instruction in
+    the player forces the table to grow instead of being silently skipped."""
+    addr = start
+    while addr < end:
+        op = blob[addr - origin]
+        if op not in _OPCODES:
+            raise AssertionError(f"no cycle count for opcode {op:#04x} at {addr:#06x}")
+        yield addr, op
+        addr += _OPCODES[op][1]
+
+
+def _branch_target(blob: bytes, origin: int, addr: int) -> int:
+    disp = blob[addr - origin + 1]
+    return addr + 2 + (disp - 256 if disp > 127 else disp)
+
+
+def _taken_path_cycles(blob: bytes, origin: int, start: int, end: int) -> int:
+    """Cycles the 6510 spends walking [start, end) with every branch taken.
+
+    Taking a branch means the instructions it jumps over never execute, so they
+    are skipped rather than summed. Every branch in the player's inner loop is
+    taken on the ordinary path: the wait is zero, the slot pointer does not
+    carry, and the op counter has not reached zero."""
+    total = 0
+    skip_until = start
+    for addr, op in _instructions(blob, origin, start, end):
+        if addr < skip_until:
+            continue
+        total += _OPCODES[op][0]
+        if op in _BRANCHES:
+            target = _branch_target(blob, origin, addr)
+            if (addr + 2) & 0xFF00 != target & 0xFF00:
+                raise AssertionError(f"branch at {addr:#06x} crosses a page (costs 2 more)")
+            total += 1
+            skip_until = target
+    return total
+
+
+def _straight_cycles(blob: bytes, origin: int, start: int, end: int) -> int:
+    """Cycles of [start, end) executed in order, no branch taken."""
+    return sum(_OPCODES[op][0] for _addr, op in _instructions(blob, origin, start, end))
 
 
 # The assembled IRQ player for build_player(128, 1), byte for byte. Every other
@@ -196,39 +282,99 @@ class SerializeFrameTest(unittest.TestCase):
 
 
 class CostModelConstantsTest(unittest.TestCase):
-    """The three constants of the frame cost model, pinned to the 6502
-    `build_player` emits — literally, by hand-counted opcode cycles.
+    """The three constants of the frame cost model, re-derived from the 6502
+    `build_player` actually emits.
 
-    `test_matches_the_golden_blob` pins the assembly; nothing used to pin the
-    Python numbers *to* that assembly. Every wait-column expectation in this
-    file called `_wait_units_for_cycles`, i.e. compared the conversion to
-    itself, so `DELAY_CYCLES_PER_UNIT = 17` (a 3.4x error) left the whole ASID
-    suite green and `PER_OP_CYCLES = 50` left the whole suite green. Nothing
-    here may compute its expectation from the constant it pins — an assertion
-    derived from `DELAY_CYCLES_PER_UNIT` is the same blindness under a new
-    name. Regenerating the golden blob means re-deriving these numbers off the
-    new `oploop`/`dloop`, not nudging them until this file passes.
+    These used to be hand-counted literals sitting beside a golden blob, with
+    nothing relating the two. That detects a constant being *edited* and not
+    the assembly moving underneath it — which is the direction that produces a
+    6510 lockup, and it was demonstrated: inserting a NOP into `oploop`,
+    regenerating `_GOLDEN_PLAYER_128_1` to match, and leaving
+    `PER_OP_CYCLES = 65` alone left all 195 ASID tests green while every op was
+    under-charged by 2 cycles. The docstring's closing instruction to
+    "re-derive these numbers off the new oploop/dloop" was a request to a
+    human, not a check.
+
+    So the numbers are now walked out of the emitted bytes, between the labels
+    `build_player_symbols` hands back. The only literals left are the 6502's
+    own per-opcode cycle counts in `_OPCODES`, which are a property of the CPU
+    rather than of this code.
     """
 
-    def test_delay_cycles_per_unit_is_the_dey_bne_pair(self):
-        # `dloop`: DEY (2) + BNE taken (3). The last iteration's BNE falls
-        # through at 2, so the real loop costs 5N-1 — the model rounds up,
-        # which errs toward calling a frame too expensive.
-        self.assertEqual(ap.DELAY_CYCLES_PER_UNIT, 5)
+    def setUp(self):
+        self.blob, self.sym = ap.build_player_symbols(128, 1)
+        self.origin = ap.HANDLER_ADDR
 
-    def test_per_op_cycles_is_the_oploop_hand_count(self):
-        # `oploop` with no wait: four LDY #n + LDA ($FB),Y pairs at 7 (2+5)
-        # with three absolute STAs at 4 between them = 40 to unpack the op and
-        # store the value; BEQ skipdelay taken = 3; LDA $FB + CLC + ADC #4 +
-        # STA $FB (3+2+2+3) plus BCC taken (3) = 13 to advance the slot
-        # pointer; DEC nops (6) + BNE oploop (3) = 9. 40+3+13+9.
-        self.assertEqual(ap.PER_OP_CYCLES, 65)
+    def _first(self, opcode: int, start: int, end: int) -> int:
+        """Address of the first `opcode` in [start, end)."""
+        for addr, op in _instructions(self.blob, self.origin, start, end):
+            if op == opcode:
+                return addr
+        raise AssertionError(f"no {opcode:#04x} between {start:#06x} and {end:#06x}")
+
+    def test_delay_cycles_per_unit_is_what_dloop_emits(self):
+        # `dloop`: DEY + BNE taken. The last iteration's BNE falls through one
+        # cycle cheaper, so the real loop costs 5N-1 — the model rounds up,
+        # which errs toward calling a frame too expensive.
+        rts = self._first(0x60, self.sym["delay"], self.origin + len(self.blob))
+        self.assertEqual(
+            _taken_path_cycles(self.blob, self.origin, self.sym["dloop"], rts),
+            ap.DELAY_CYCLES_PER_UNIT,
+        )
+
+    def test_per_op_cycles_is_what_one_pass_of_oploop_emits(self):
+        # One unwaited op: unpack the address and value, store it, skip the
+        # delay call, advance the slot pointer, decrement the op counter and
+        # loop. Every branch on that path is taken, so the walk skips what each
+        # jumps over.
+        self.assertEqual(
+            _taken_path_cycles(self.blob, self.origin, self.sym["oploop"], self.sym["tail"]),
+            ap.PER_OP_CYCLES,
+        )
+
+    def test_per_op_cycles_is_a_best_case_the_budget_fraction_covers(self):
+        # It is the best case, and unlike DELAY_CYCLES_PER_UNIT that was never
+        # written down. Two paths cost more and neither is exotic: each
+        # `LDA ($FB),Y` costs one extra when the slot pointer's low byte plus Y
+        # crosses a page (four per op), and when that low byte wraps the BCC
+        # falls through to an `INC $FC` instead of branching. So the model
+        # under-charges a worst-case op — in the unsafe direction. What makes
+        # that survivable is FRAME_BUDGET_FRACTION, and this pins the margin
+        # rather than asserting it in prose.
+        page_crossings = sum(
+            1
+            for _addr, op in _instructions(
+                self.blob, self.origin, self.sym["oploop"], self.sym["skipdelay"]
+            )
+            if op == 0xB1
+        )
+        bcc = self._first(0x90, self.sym["skipdelay"], self.sym["op_noinc"])
+        wrapped = _straight_cycles(self.blob, self.origin, bcc, self.sym["op_noinc"])
+        worst = ap.PER_OP_CYCLES + page_crossings + (wrapped - (_OPCODES[0x90][0] + 1))
+        self.assertGreater(worst, ap.PER_OP_CYCLES, "the best case is not the only case")
+        self.assertLessEqual(
+            ap.PER_OP_CYCLES * (1.0 / ap.FRAME_BUDGET_FRACTION),
+            worst * (worst / ap.PER_OP_CYCLES) + worst,
+            "the budget fraction must leave room for the under-charge",
+        )
+        self.assertLess(
+            worst / ap.PER_OP_CYCLES,
+            1.0 / ap.FRAME_BUDGET_FRACTION,
+            "a worst-case op must still fit in the headroom FRAME_BUDGET_FRACTION reserves",
+        )
 
     def test_waited_op_extra_cycles_is_the_delay_call_around_the_loop(self):
-        # A nonzero wait falls THROUGH the BEQ (2 — one less than the 3
-        # PER_OP_CYCLES already charged) and pays JSR delay (6) + TAY (2) +
-        # RTS (6). -1 + 14 = 13, on top of DELAY_CYCLES_PER_UNIT per unit.
-        self.assertEqual(ap.WAITED_OP_EXTRA_CYCLES, 13)
+        # A nonzero wait falls THROUGH the BEQ and pays the JSR, the TAY that
+        # loads the counter and the RTS — on top of DELAY_CYCLES_PER_UNIT per
+        # unit, and minus the taken BEQ that PER_OP_CYCLES already charged.
+        beq = self._first(0xF0, self.sym["oploop"], self.sym["skipdelay"])
+        extra = (
+            _straight_cycles(self.blob, self.origin, beq, self.sym["skipdelay"])
+            + _straight_cycles(self.blob, self.origin, self.sym["delay"], self.sym["dloop"])
+            + _OPCODES[0x60][0]
+            - (_OPCODES[0xF0][0] + 1)
+        )
+        self.assertEqual(extra, ap.WAITED_OP_EXTRA_CYCLES)
 
     def test_the_wire_maximum_wait_converts_to_a_literal_unit_count(self):
         # 255 C64 cycles is the largest wait a `0x30` pair can carry; at 5
@@ -249,12 +395,19 @@ class CostModelConstantsTest(unittest.TestCase):
         # NTSC frame (17045 cycles) for ONE chip — the arithmetic
         # FRAME_BUDGET_FRACTION exists for, and the number an under-counted
         # PER_OP_CYCLES would quietly shrink.
-        self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 51)] * 28), 9324)
+        #
+        # The 9324 is the literal and the op count is not: this test and
+        # CostModelProseTest below quote the same figure, and hardcoding `* 28`
+        # here let them disagree — a changed MAX_OPS_PER_CHIP turned the prose
+        # test red while this one stayed green at 9324, its comment now
+        # describing a frame size that no longer existed. Both go red together.
+        frame = [(0xD400, 0x11, _MAX_WIRE_WAIT_UNITS)] * ap.MAX_OPS_PER_CHIP
+        self.assertEqual(ap.frame_cycle_cost(frame), 9324)
 
     def test_an_unwaited_frame_costs_the_op_count_alone(self):
         # No wait, so neither WAITED_OP_EXTRA_CYCLES nor the delay loop is
-        # charged: 28 x 65.
-        self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 0)] * 28), 1820)
+        # charged: MAX_OPS_PER_CHIP x 65.
+        self.assertEqual(ap.frame_cycle_cost([(0xD400, 0x11, 0)] * ap.MAX_OPS_PER_CHIP), 1820)
 
 
 class CostModelProseTest(unittest.TestCase):
@@ -275,18 +428,25 @@ class CostModelProseTest(unittest.TestCase):
 
     def test_both_prose_sites_cite_the_cost_the_model_computes(self):
         root = Path(__file__).resolve().parent.parent
-        cost = ap.frame_cycle_cost([(0xD400, 0x11, 51)] * ap.MAX_OPS_PER_CHIP)
+        frame = [(0xD400, 0x11, _MAX_WIRE_WAIT_UNITS)] * ap.MAX_OPS_PER_CHIP
+        cost = ap.frame_cycle_cost(frame)
 
         for site in self._SITES:
             text = (root / site).read_text(encoding="utf-8")
-            quoted = re.search(r"wait cost ([\d,]+)", text)
-            self.assertIsNotNone(quoted, f"{site} no longer quotes the figure")
-            assert quoted is not None
-            self.assertEqual(
-                int(quoted.group(1).replace(",", "")),
-                cost,
-                f"{site} quotes a maximal-frame cost the model does not compute",
-            )
+            # Every quotation, not the first. `sid.md` is long and already
+            # restates the cost model in more than one place, so a second copy
+            # of the figure added later would drift unguarded — which is the
+            # exact failure this guard was written against. The subTest keeps a
+            # failure on one site from hiding whether the other drifted too.
+            quoted = re.findall(r"wait cost ([\d,]+)", text)
+            self.assertTrue(quoted, f"{site} no longer quotes the figure")
+            for n, raw in enumerate(quoted):
+                with self.subTest(site=str(site), occurrence=n):
+                    self.assertEqual(
+                        int(raw.replace(",", "")),
+                        cost,
+                        f"{site} quotes a maximal-frame cost the model does not compute",
+                    )
 
 
 class FrameBudgetTest(unittest.TestCase):
