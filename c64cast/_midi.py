@@ -135,10 +135,18 @@ def poll_pending(
     The ``stop`` re-check is the one release that does drop, and deliberately:
     it sits *after* the ``poll()``, so a pass ending on ``stop`` discards the
     message it had just taken. That is the teardown path — `PollThread`'s
-    bounded join is what is waiting on it — and losing one frame of register
-    writes to a scene that is going away beats draining a port whose owner has
-    stopped reading. `test_stops_mid_pass_once_the_stop_event_is_set` pins both
-    counts, the polled and the yielded.
+    bounded join is what is waiting on it, and both readers set ``stop`` only
+    from their ``teardown`` — so losing one frame of register writes to a scene
+    that is going away beats draining a port whose owner has stopped reading.
+
+    `test_a_pass_entered_with_stop_already_set_drops_the_message_it_polls` is
+    what pins that drop, and it is the only shape that can: a pass stopped
+    *mid*-drain always dequeues exactly one more message than it hands out, so
+    `test_stops_mid_pass_once_the_stop_event_is_set`'s dequeued count records
+    the relationship rather than proving it — no mutation moves that count
+    without moving the yielded one first. The counts are of messages dequeued,
+    not of ``poll()`` calls: an exhausted port answers ``None`` and takes
+    nothing.
 
     Both bounds accept ``None``, which is not "unbounded": it selects
     :data:`MAX_MSGS_PER_DRAIN` (64) and :data:`MAX_DRAIN_WORK_S` (4.167 ms)

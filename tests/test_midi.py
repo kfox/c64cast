@@ -162,8 +162,9 @@ class PollPendingTest(unittest.TestCase):
         # And the port was never polled. That is the load-bearing half: a poll
         # takes the message off the port's queue, so a count check moved to the
         # far side of one would eat a message while still yielding nothing
-        # here — the same "releasing the pass drops no message" invariant the
-        # deadline path has its own test for.
+        # here — the same "releasing on the budget drops no message" invariant
+        # the deadline path has its own test for. Scoped to the budget on
+        # purpose: the `stop` release does drop, and has its own two tests.
         self.assertEqual(port.served["served"], 0)
 
 
@@ -245,7 +246,7 @@ class DrainWorkBoundTest(unittest.TestCase):
             drained = list(_midi.poll_pending(port, stop))
         self.assertEqual(len(drained), _midi.MAX_MSGS_PER_DRAIN)
 
-    def test_releasing_the_pass_drops_no_message(self):
+    def test_releasing_the_pass_on_the_budget_drops_no_message(self):
         # The deadline is checked *before* `port.poll()`, never after — a poll
         # has already taken the message off the port's queue, so a check on the
         # far side of it would silently eat a frame of SID register writes.
