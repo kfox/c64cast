@@ -49,12 +49,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 
 from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
-from c64cast.scenes.scenes import Scene
+from c64cast.scenes.scenes import Scene, run_teardown_steps
 from c64cast.video.palette import C64_COLORS
 
 from . import asid
@@ -75,7 +76,12 @@ from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
+from .voice_scope import (
+    D018_HIRES_BITMAP,
+    VoiceScopeRenderer,
+    _layout_lr,
+    restore_char_mode_display,
+)
 
 log = logging.getLogger(__name__)
 
@@ -881,9 +887,19 @@ class AsidScene(VoiceScopeRenderer, Scene):
         return True
 
     def teardown(self) -> None:
-        super().teardown()
-        self._reader_poll.stop()
-        # Stop the ring player FIRST: it restores $0314 → the kernal IRQ tail and
+        # Shut the wire off FIRST, before anything restores the machine. The
+        # reader's poll stop is a bounded join that `_pollthread` documents as
+        # abandoning its worker, so a reader blocked in a DMA write survives it
+        # — and its loop calls `_retune_if_due` on every pass, which reprograms
+        # CIA #1 and (pre-arm) re-uploads the handler over $C000. Closing the
+        # port is what stops an abandoned reader reading a further 0x31, so it
+        # has to happen before the restores below rather than after them: a
+        # retune that lands afterward puts the jiffy IRQ back on the wire's rate
+        # and hands the next scene the exact CIA state these steps exist to undo.
+        # It narrows that race rather than closing it: a retune already past its
+        # own gate still lands.
+        #
+        # Then the ring player, which restores $0314 → the kernal IRQ tail and
         # the CIA #1 latch, so the C64 stops popping the ring before we silence
         # the SID(s) and restore the display below.
         #
@@ -894,32 +910,44 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # not merely noisy — every tick it rewrites the whole REU control block
         # ($DF02-$DF08 + a $91 fetch-exec) at up to 960 Hz, and the next scene's
         # audio pump reads $DF03 back as its live write head. Two idempotent DMA
-        # ops buy the guarantee outright.
+        # ops buy the guarantee outright — which is why the restore is a step of
+        # its own, and not a statement sequenced behind a stop() that can raise.
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            ("reader poll stop", self._reader_poll.stop),
+            ("MIDI port close", self._close_midi_port),
+            ("input poll stop", self._stop_input_poll),
+        ]
         if self._player is not None:
-            self._player.stop()
-            restore_kernal_irq(self.api, self._machine_system)
-        if self._midi_port is not None:
-            try:
-                self._midi_port.close()
-            except Exception:
-                log.debug("AsidScene: port close failed", exc_info=True)
-            self._midi_port = None
-        if self._poll is not None:
-            self._poll.stop()
-            self._poll = None
-        # Silence every mapped SID, restore the SID-address config we changed,
-        # then restore VIC bank 0 + the char-mode $D018 for the next scene (the
-        # next scene's mode engage owns $D011; this only puts the matrix pointer
-        # back where a char mode expects it, instead of leaving it on the bitmap
-        # layout the scope used).
-        try:
-            for base in self._chip_addresses:
-                if base != SID.BASE:
-                    self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
-            self.api.silence_sid()
-            self._restore_config()
-            self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
-            self.api.flush()
-        except Exception:
-            log.debug("AsidScene: teardown silence/restore failed", exc_info=True)
+            steps += [
+                ("ring player stop", self._player.stop),
+                (
+                    "kernal IRQ restore",
+                    partial(restore_kernal_irq, self.api, self._machine_system),
+                ),
+            ]
+        steps += [
+            (f"silence SID at ${base:04X}", partial(self._silence_chip, base))
+            for base in self._chip_addresses
+            if base != SID.BASE
+        ]
+        steps += [
+            ("primary SID silence", self.api.silence_sid),
+            ("SID address config restore", self._restore_config),
+            ("char-mode display restore", partial(restore_char_mode_display, self.api)),
+            ("flush", self.api.flush),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _close_midi_port(self) -> None:
+        port, self._midi_port = self._midi_port, None
+        if port is not None:
+            port.close()
+
+    def _stop_input_poll(self) -> None:
+        poll, self._poll = self._poll, None
+        if poll is not None:
+            poll.stop()
+
+    def _silence_chip(self, base: int) -> None:
+        self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))

@@ -98,6 +98,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   worst a legal pass can cost rather than nothing — those were the same value
   before, and the cheap reading won.
 
+- **A failing step in a SID scene's teardown abandoned every restore after
+  it.** `AsidScene`, `MidiScene` and `WaveformScene` each sequenced their whole
+  teardown — the kernal IRQ vector and CIA #1 latch, silencing every mapped
+  chip, the SID-address config restore, and the char-mode `$D018` — inside a
+  single `try`. One transient DMA failure part-way through could therefore hand
+  the next scene a machine still holding a sounding SID, a hooked IRQ, or a VIC
+  left on the bitmap layout the scope had been using. Every guarantee is now its
+  own guarded step: a step that fails is logged with its name and the remaining
+  restores still run. `AsidScene` also closes its MIDI port before the restores
+  rather than after them, so a reader thread abandoned by teardown's bounded
+  join cannot read one more speed message and put CIA #1 back on the stream's
+  rate behind them.
+
 - **MIDI Program Change did nothing in the `midi` scene, though it is on by
   default.** `midi_program_change` defaults to `True` and the scene's dispatch
   has handled Program Change all along — but the reader thread that feeds it

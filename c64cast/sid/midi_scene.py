@@ -39,16 +39,23 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
+from functools import partial
 
 from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
-from c64cast.scenes.scenes import Scene
+from c64cast.scenes.scenes import Scene, run_teardown_steps
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
-from .voice_scope import D018_CHAR_DEFAULT, D018_HIRES_BITMAP, VoiceScopeRenderer, _layout_lr
+from .voice_scope import (
+    D018_HIRES_BITMAP,
+    VoiceScopeRenderer,
+    _layout_lr,
+    restore_char_mode_display,
+)
 
 log = logging.getLogger(__name__)
 
@@ -958,24 +965,25 @@ class MidiScene(VoiceScopeRenderer, Scene):
         return True
 
     def teardown(self) -> None:
-        super().teardown()
-        self._reader_poll.stop()
-        if self._midi_port is not None:
-            try:
-                self._midi_port.close()
-            except Exception:
-                log.debug("MidiScene: port close failed", exc_info=True)
-            self._midi_port = None
-        if self._poll is not None:
-            self._poll.stop()
-            self._poll = None
-        # Silence the SID, then restore VIC bank 0 + the char-mode $D018 so the
-        # next scene's char-mode display renders cleanly (we left VIC in hires
-        # bitmap mode).
-        try:
-            self.api.silence_sid()
-            self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
-            self.api.flush()
-        except Exception:
-            log.debug("MidiScene: teardown silence/restore failed", exc_info=True)
+        # The display restore puts VIC bank 0 and the char-mode $D018 back for
+        # the next scene, which this scene left on its hires bitmap layout.
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            ("reader poll stop", self._reader_poll.stop),
+            ("MIDI port close", self._close_midi_port),
+            ("input poll stop", self._stop_input_poll),
+            ("SID silence", self.api.silence_sid),
+            ("char-mode display restore", partial(restore_char_mode_display, self.api)),
+            ("flush", self.api.flush),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _close_midi_port(self) -> None:
+        port, self._midi_port = self._midi_port, None
+        if port is not None:
+            port.close()
+
+    def _stop_input_poll(self) -> None:
+        poll, self._poll = self._poll, None
+        if poll is not None:
+            poll.stop()

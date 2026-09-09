@@ -29,6 +29,7 @@ import os
 import random
 import threading
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -540,6 +541,24 @@ class Scene:
                 self.display_mode.teardown(self.api)
             except Exception:
                 log.exception("display_mode.teardown failed; continuing")
+
+
+def run_teardown_steps(
+    log: logging.Logger,
+    who: str,
+    steps: Sequence[tuple[str, Callable[[], object]]],
+) -> None:
+    """Run every teardown step, so a failing one cannot starve the rest.
+
+    A scene's teardown steps are independent promises to the next scene, not a
+    transaction: sequencing them inside one `try` means the first raise silently
+    abandons every restore after it, and the scene hands on a machine still
+    holding an IRQ, a sounding SID, or a bitmap-mode VIC."""
+    for what, step in steps:
+        try:
+            step()
+        except Exception:
+            log.exception("%s: teardown step %r failed; continuing", who, what)
 
 
 def _maybe_start_rolling_palette(

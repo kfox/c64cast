@@ -1013,6 +1013,18 @@ class LifecycleTests(_MidiTestCase):
         # SID is silenced on the way out so the next scene starts clean.
         self.assertIn("SILENCE", api.regs)
 
+    def test_a_failing_silence_does_not_starve_the_display_restore(self):
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        scene, api = _make_scene()
+        scene._apply_vic_hires_bank()
+        self.assertEqual(api.memories.get("D018"), "18")
+        api.silence_sid = link_down  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.sid.midi_scene", level="ERROR"):
+            scene.teardown()
+        self.assertEqual(api.memories.get("D018"), "14")
+
     def test_teardown_leaves_d018_on_the_char_mode_default(self):
         # The scope ran in hires ($18). Teardown hands the next scene the
         # char-mode matrix pointer, not the bitmap layout it was using.

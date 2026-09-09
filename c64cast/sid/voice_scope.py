@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.hw.c64 import CIA2, SCREEN, RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from c64cast.scenes.bitmap_text import load_glyphs as _load_glyphs
 from c64cast.video.modes import engage_bitmap_mode
@@ -184,6 +184,16 @@ _PERSISTENCE_RANDOM_CHOICES = ("short", "medium", "long")
 # "_" / PETSCII $5F maps here). Horizontally mirroring it yields a right-arrow
 # (→) — a glyph the C64 charset has no native cell for; see _mirror_glyph_h.
 LEFT_ARROW_SCREEN_CODE = 0x1F
+
+
+def restore_char_mode_display(api: C64Backend) -> None:
+    """Put VIC bank 0 and the char-mode $D018 back for the next scene.
+
+    Every scope scene renders from a bitmap layout. The next scene's mode engage
+    owns $D011 but not the matrix pointer, so a $D018 left on the bitmap layout
+    makes a char-mode scene read its matrix from the wrong offset."""
+    api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
+    api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
 
 
 def _mirror_glyph_h(glyph: bytes) -> bytes:
