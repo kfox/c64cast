@@ -10,7 +10,7 @@ This module is a **pure** decoder — no mido, no hardware, and a decode's resul
 depends on nothing but its bytes — so it's trivially unit-testable: feed a byte
 sequence, assert the resulting register map. (The one piece of module state,
 ``_overlong_recipe_log``, gates *how often* the over-cap warning is logged and
-never what a decode returns; :mod:`c64cast.sid.wire_log` says why it has to
+never what a decode returns; :mod:`c64cast._wire_log` says why it has to
 exist.) The
 :class:`~c64cast.sid.asid_scene.AsidScene` owns the MIDI port, the register shadow,
 the DMA writes, and the oscilloscope.
@@ -48,14 +48,14 @@ import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
-from c64cast.sid.wire_log import LogThrottle
+from c64cast._wire_log import LogThrottle
 
 log = logging.getLogger("c64cast.sid.asid")
 
 # The one warning this decoder can be made to emit is chosen by the sender, so
 # it is throttled rather than logged per message — the smallest message that
 # trips it is 62 bytes. Module-level because the decoder is a free function with
-# no per-stream object to hang the gate off; see :mod:`c64cast.sid.wire_log`.
+# no per-stream object to hang the gate off; see :mod:`c64cast._wire_log`.
 _overlong_recipe_log = LogThrottle(log)
 
 # SysEx manufacturer id chosen by Elektron for ASID (45 = 0x2D).
@@ -248,7 +248,7 @@ def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
 
     Pairs past the cap are dropped with a throttled warning (the sender picks
     how often this fires, so the report is O(1) per stream — see
-    :mod:`c64cast.sid.wire_log`), and a register id repeated in the order keeps
+    :mod:`c64cast._wire_log`), and a register id repeated in the order keeps
     its first position — see :data:`MAX_TIMING_RECIPE_PAIRS` for why both bounds
     have to be enforced here, at the wire boundary."""
     update = AsidUpdate(command=CMD_TIMING)

@@ -2,7 +2,7 @@
 
 This is the per-module reference for the `c64cast/` tree: the design rationale, hardware constraints, and edge-case history behind each module — the *why*, and the dead ends, that the code alone doesn't carry. Read the relevant section before modifying a module, and update it in the same change set when you change that module's behavior.
 
-The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and four private cross-cutting utilities (`_pollthread.py`, `_native_io.py`, `_midi.py`, `_redact.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
+The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and five private cross-cutting utilities (`_pollthread.py`, `_native_io.py`, `_midi.py`, `_redact.py`, `_wire_log.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
 
 For end-user configuration see [the Programmer’s Reference Guide](reference/README.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
 
@@ -29,12 +29,12 @@ the two lists account for every module in the tree.
 | `_native_io.py` | [Config, CLI & ensemble](architecture/config.md#_native_iopy--fd-level-stderr-muting) |
 | `_pollthread.py` | [Config, CLI & ensemble](architecture/config.md#_pollthreadpy--the-background-loop-idiom) |
 | `_redact.py` | [Config, CLI & ensemble](architecture/config.md#_redactpy--keeping-the-console-token-off-the-durable-log-paths) |
+| `_wire_log.py` | [Config, CLI & ensemble](architecture/config.md#_wire_logpy--wire-triggered-logging-is-o1-per-stream) |
 | `hw/api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | `sid/asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `sid/asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
 | `sid/asid_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `sid/asid_sidmap.py` | [SID playback & the oscilloscope](architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy) |
-| `sid/wire_log.py` | [SID playback & the oscilloscope](architecture/sid.md#wire_logpy--wire-triggered-logging-is-o1-per-stream) |
 | `audio/audio.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_rate.py` | [Audio output](architecture/audio.md#audiopy--audiostreamer) |
 | `audio/audio_handlers.py` | [Audio output](architecture/audio.md#audio_handlerspy--the-6502-machine-code-layer) |

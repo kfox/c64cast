@@ -26,6 +26,7 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
+from c64cast._wire_log import LogThrottle
 from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
 from c64cast.control.midi_control import (
@@ -34,7 +35,6 @@ from c64cast.control.midi_control import (
     _parse_mmc_sysex,
 )
 from c64cast.control.transport import TransportEvent
-from c64cast.sid.wire_log import LogThrottle
 
 
 def _fake_playlist(name: str, *, scene_count: int = 16) -> Any:
@@ -591,7 +591,7 @@ class CrashGuardTests(_MidiControlTestCase):
 class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
     """A dispatch failure, a clock-feed failure, and a mapped action failing are
     each per *message*, and the message comes off the wire. `log.exception`
-    renders a full traceback — dearer than the WARNING `sid/wire_log.py` exists
+    renders a full traceback — dearer than the WARNING `_wire_log.py` exists
     to bound, and at ERROR it is not something a level check would have rejected
     — while both readers drain with mido's unbounded `iter_pending()`, on the
     thread a performer's next pad press waits behind. So all three sites report

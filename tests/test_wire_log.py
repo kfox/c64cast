@@ -1,4 +1,4 @@
-"""The shared wire-triggered log throttle (c64cast/sid/wire_log.py).
+"""The shared wire-triggered log throttle (c64cast/_wire_log.py).
 
 The throttle exists because a byte on the ASID wire can otherwise buy an
 unbounded amount of work inside a bounded reader: one WARNING through the
@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 import unittest
 
-from c64cast.sid import wire_log
-from c64cast.sid.wire_log import THROTTLE_INTERVAL_S, LogThrottle
+from c64cast import _wire_log
+from c64cast._wire_log import THROTTLE_INTERVAL_S, LogThrottle
 
 
 class _StepClock:
@@ -171,8 +171,8 @@ class DocstringQuoteTest(unittest.TestCase):
         # between two reports has no upper bound, so a count can span minutes.
         # Prose that quotes an emitted string drifts silently; this is the only
         # thing that notices.
-        doc = wire_log.__doc__ or ""
-        self.assertIn(wire_log._MORE_SUFFIX.strip() % 900, doc)
+        doc = _wire_log.__doc__ or ""
+        self.assertIn(_wire_log._MORE_SUFFIX.strip() % 900, doc)
 
 
 class ThrottleIntervalTest(unittest.TestCase):

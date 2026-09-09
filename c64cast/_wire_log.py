@@ -23,8 +23,13 @@ The rule is about a *wire*, not about ASID, so the gate is not ASID's alone:
 handle — on a dispatch failure, a clock-feed failure, and a mapped action
 failing against one system — inside an unbounded drain on a live-performance
 control surface, and all three take :meth:`LogThrottle.exception` for exactly
-the reason above. This module lives under ``sid/`` because that is where the
-first two sites were; it imports nothing from the package.
+the reason above. So it sits at the package root beside the other cross-cutting
+utilities: it imports nothing from the package, and its consumers are in two
+different subpackages. Under ``sid/`` — where the first two sites put it — the
+``control/`` consumer was the tree's only import from ``control/`` into
+``sid/`` — the same shape ``hw/backend.py`` twice refuses in as many words for
+``hw/``, and it went unremarked here only because a throttle looks like a SID
+detail.
 
 Two design points worth not re-deriving:
 

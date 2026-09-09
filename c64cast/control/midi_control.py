@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
 from c64cast._pollthread import PollThread
-from c64cast.sid.wire_log import LogThrottle
+from c64cast._wire_log import LogThrottle
 
 from . import live_tune
 from .transport import TransportEvent
@@ -541,7 +541,7 @@ class MidiControlListener:
         # off the wire: a controller sending something this build mishandles
         # buys a full traceback per message inside an unbounded `iter_pending()`
         # drain, on the thread a performer's next pad press waits behind. Same
-        # class, same gate as the ASID wire — see `sid/wire_log.py`. One
+        # class, same gate as the ASID wire — see `_wire_log.py`. One
         # throttle per reader, so a jammed dispatch cannot swallow the clock
         # port's first report.
         self._dispatch_errors = LogThrottle(log)
@@ -549,7 +549,7 @@ class MidiControlListener:
         # Same class one level down: `_apply` raising is per *message* too, and
         # a held pad or a swept CC repeats it at the controller's rate. One
         # throttle for the site, not one per (action, system) — a site's report
-        # budget is what `wire_log` bounds, and a second report a second later
+        # budget is what `_wire_log` bounds, and a second report a second later
         # names whichever action is still failing.
         self._action_errors = LogThrottle(log)
         # Per-playlist last-tap time for the osd.position double-tap detection.
