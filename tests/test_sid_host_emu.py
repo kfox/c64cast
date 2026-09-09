@@ -895,6 +895,7 @@ class InitTruncationNoticeTest(unittest.TestCase):
         self.assertIn("INIT did not run to completion", notice)
         self.assertIn("wall-clock deadline", notice)
         self.assertIn("shared analysis budget", notice)
+        self.assertIn("earlier candidates", notice)
         self.assertIn("register state", notice)
         self.assertIn("PLAY rate", notice)
 
@@ -913,7 +914,28 @@ class InitTruncationNoticeTest(unittest.TestCase):
         notice = sid_host_emu.init_truncation_notice(emu)
         assert notice is not None
         self.assertIn("wall-clock deadline", notice)
-        self.assertIn("no shared budget", notice)
+        self.assertIn("not a shared budget", notice)
+        self.assertNotIn("pool walk", notice)
+
+    def test_a_fresh_budget_does_not_blame_a_pool_walk_either(self):
+        # The predicate is which of the two instants `deadline_for` takes the
+        # min of actually fired, not whether a budget was passed at all —
+        # asking the second question gets this case wrong, and it is the common
+        # one. A fresh HostEmuBudget has the whole analysis budget left, so the
+        # per-run cap wins the min and nothing shared was spent.
+        # SidFeatureStream builds exactly this: a private per-tune budget with
+        # no pool walk anywhere on its path, and it surfaces the notice at
+        # WARNING immediately.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        budget = sid_host_emu.HostEmuBudget()
+        self.assertGreater(budget.remaining(), sid_host_emu._INIT_DEADLINE_S)
+        with patch.object(sid_host_emu, "_INIT_DEADLINE_S", 0.0):
+            emu = SidHostEmu(sid, budget=budget)
+        notice = sid_host_emu.init_truncation_notice(emu)
+        assert notice is not None
+        self.assertIn("not a shared budget", notice)
         self.assertNotIn("pool walk", notice)
 
     def test_an_init_out_of_cycles_names_the_cap_instead(self):

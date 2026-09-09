@@ -1576,6 +1576,37 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertNotIn("isn't safe", joined)
         self.assertIn("playable under the pinned bank", joined)
 
+    def test_the_candidate_cap_is_not_reported_as_an_exhausted_pool(self):
+        # _MAX_CYCLE_CANDIDATES caps the walk at 16, so a tune with more
+        # subtunes than that can end the loop with candidates never sampled.
+        # Claiming "no later candidate offered a whole one" there asserts
+        # something about subtunes nothing looked at — the same shape of
+        # overclaim the two commits before this one were fixing.
+        from c64cast.sid.waveform import _held_back_reason
+
+        self.assertEqual(
+            _held_back_reason(False, 16, 20), "the walk stopped after 16 of 19 candidates"
+        )
+        self.assertEqual(_held_back_reason(False, 3, 4), "no later candidate offered a whole one")
+        self.assertEqual(_held_back_reason(True, 1, 4), "the analysis budget ran out first")
+
+    def test_a_capped_walk_says_how_far_it_got(self):
+        scene = self._pinned_scene()
+        with (
+            patch.object(type(scene), "_MAX_CYCLE_CANDIDATES", 2),
+            patch(
+                "c64cast.sid.waveform.ram_play_access_footprint",
+                lambda _b, song=0, **_kw: FootprintSample(bytearray(65536), False),
+            ),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            new_song, _duration, layout, _fp = scene._cycle_pick_candidate(8, unspendable_budget())
+        self.assertEqual(new_song, 2)
+        self.assertEqual(layout, scene._unified_layout)
+        joined = "\n".join(logs.output)
+        self.assertIn("the walk stopped after 2 of 7 candidates", joined)
+        self.assertNotIn("no later candidate", joined)
+
     def test_a_spent_budget_still_uses_the_held_back_candidate(self):
         # The pass most likely to be holding one back, and the one a
         # `for ... else` would have skipped: the budget-expired branch breaks

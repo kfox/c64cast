@@ -217,6 +217,20 @@ def _bank_payload_feasible(
     )
 
 
+def _held_back_reason(exhausted: bool, examined: int, n: int) -> str:
+    """Why the walk fell back to a candidate it had passed over.
+
+    Three endings, not two. `_MAX_CYCLE_CANDIDATES` caps the walk at 16, so on
+    a tune with more subtunes than that the loop can run out of iterations with
+    candidates never looked at — and saying "no later candidate offered a whole
+    one" there asserts something about subtunes nothing sampled."""
+    if exhausted:
+        return "the analysis budget ran out first"
+    if examined < n - 1:
+        return f"the walk stopped after {examined} of {n - 1} candidates"
+    return "no later candidate offered a whole one"
+
+
 def _partial_footprint_names(write_complete: bool, access_complete: bool) -> str:
     """Which footprint(s) came back a prefix, for the log line that says why
     the PLAY `$01` bank fell back to the address heuristic. Both can be, and
@@ -1536,10 +1550,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         exhausted = False
         chose = False
         took_held_back = False
+        # The loop has three endings and the log has to tell them apart: a
+        # spent budget, the candidate cap running out with subtunes left
+        # unexamined, and every candidate actually looked at. Only the third
+        # licenses "no later candidate offered a whole one".
+        examined = 0
         for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
             if budget.expired():
                 exhausted = True
                 break
+            examined += 1
             looked_up: float | None = None
             if self._explicit_duration_s is None and self.songlengths_db is not None:
                 looked_up = self.songlengths_db.lookup(self.sid_bytes, candidate)
@@ -1601,9 +1621,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 "and the pinned display bank does not come from it",
                 new_song,
                 n,
-                "the analysis budget ran out first"
-                if exhausted
-                else "no later candidate offered a whole one",
+                _held_back_reason(exhausted, examined, n),
             )
             took_held_back = True
 

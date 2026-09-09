@@ -688,9 +688,10 @@ class SidHostEmu:
         # that injected a clock was measuring something the shipped code does
         # not do.
         self._now: Callable[[], float] = time.monotonic if budget is None else budget.now
-        # Kept because the deadline alone cannot say where it came from, and
-        # the two provenances are different facts. See _deadline_provenance.
-        self._shared_budget = budget is not None
+        # Kept because a deadline alone cannot say which of the two instants
+        # `deadline_for` took the min of produced it, and only one of them can
+        # have been spent by another tune. See _deadline_provenance.
+        self._budget = budget
         # SID chip bases to shadow. Default: the tune's own header addresses
         # (chip 0 = $D400). A caller (WaveformScene) may override to honor a
         # filename ``_NSID`` hint the header understates. Chip 0 always $D400.
@@ -981,28 +982,37 @@ class SidHostEmu:
                     self._report_capped_routine(
                         f"it ran past its wall-clock deadline at PC=${mpu.pc:04X} "
                         f"({mpu.processorCycles} cycles, {steps} steps) — "
-                        f"{self._deadline_provenance()}"
+                        f"{self._deadline_provenance(deadline)}"
                     )
                 return
 
-    def _deadline_provenance(self) -> str:
-        """Where the wall-clock deadline that just fired came from.
+    def _deadline_provenance(self, deadline: float | None) -> str:
+        """Which of the two instants `HostEmuBudget.deadline_for` takes the min
+        of is the one that just fired.
 
-        Only a *shared* budget can be spent by something other than this tune,
-        and only then is "an earlier candidate did this" a possible reading. An
-        emulator built with no budget — which is what the SHIFT cue path does,
-        deliberately, so a cue is not charged to the walk's budget — gets a
-        deadline of its own from `_INIT_DEADLINE_S` alone, and blaming a pool
-        walk there names a cause that cannot exist on that path."""
-        if self._shared_budget:
+        `None` cannot reach here — a run with no deadline cannot end on one —
+        and it is accepted rather than asserted because the comparison already
+        answers it: no float equals `None`, so it lands on the own-cap arm,
+        which is the safe reading either way.
+
+        Only the budget's own instant can have been spent by something other
+        than this tune, so only then is "an earlier candidate did this" a
+        possible reading. Asking whether a budget was *passed* is not the same
+        question and gets it wrong in the common direction: a fresh
+        `HostEmuBudget()` has ANALYSIS_BUDGET_S left, so the per-run cap is what
+        wins the min, and `SidFeatureStream` builds exactly that — a private
+        per-tune budget with no pool walk anywhere on its path — then surfaces
+        this notice at WARNING. The equality is exact because the value
+        returned is one of the two operands, not a computation over them."""
+        if self._budget is not None and deadline == self._budget.deadline:
             return (
-                "the deadline is its own per-run cap tightened to whatever the "
-                f"{ANALYSIS_BUDGET_S:.0f}s shared analysis budget had left, so a pool "
-                "walk's earlier candidates can be what spent it"
+                "the deadline is what was left of the shared analysis budget, which is "
+                "less than this run's own cap — so a pool walk's earlier candidates can "
+                "be what spent it"
             )
         return (
-            f"the deadline is this run's own {_INIT_DEADLINE_S:.0f}s cap, on an emulator "
-            "built with no shared budget — nothing but this tune spent it"
+            f"the deadline is this run's own {_INIT_DEADLINE_S:.0f}s cap, not a shared "
+            "budget — nothing but this tune spent it"
         )
 
     def _report_capped_routine(self, cause: str) -> None:
