@@ -9,13 +9,19 @@ and the interval read off the *injected* clock rather than the wall clock — pl
 the level rule that keeps a lone recurrence visible.
 
 `assertLogs` is used throughout, so nothing here may nest `quiet_logging()`.
+
+[NoProcessWideThrottleTest] is the other half: the rest of this module pins what
+one throttle does, and that one pins where throttles may live.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pkgutil
 import unittest
 
+import c64cast
 from c64cast import _wire_log
 from c64cast._wire_log import THROTTLE_INTERVAL_S, LogThrottle
 
@@ -87,15 +93,6 @@ class LogThrottleTest(unittest.TestCase):
             for _ in range(6):
                 throttle.warn("every read crosses the window")
         self.assertEqual(len(caught.records), 6)
-
-    def test_reset_makes_the_next_occurrence_report_afresh(self):
-        throttle = self._throttle()
-        with self.assertLogs(self.log, "DEBUG") as caught:
-            throttle.warn("first")
-            throttle.warn("suppressed")
-            throttle.reset()
-            throttle.warn("first again")
-        self.assertEqual([r.getMessage() for r in caught.records], ["first", "first again"])
 
     def test_two_sites_do_not_share_a_budget(self):
         # Why each site owns an instance rather than sharing one: a site the wire
@@ -181,6 +178,61 @@ class ThrottleIntervalTest(unittest.TestCase):
         # and a human tailing a log still sees the condition inside a second.
         self.assertGreaterEqual(THROTTLE_INTERVAL_S, 0.5)
         self.assertLessEqual(THROTTLE_INTERVAL_S, 5.0)
+
+
+class NoProcessWideThrottleTest(unittest.TestCase):
+    """No module reaches import time holding a throttle.
+
+    "O(1) per stream, not per message" is stated in three places and was, until
+    this test, enforced in none: the two regressions it names were both a
+    `LogThrottle` at a module's top level, which is per *process*, and reads
+    identically to a per-stream one until a second stream exists. Both survived
+    review, and the tests that caught them are tests of the two factories — so
+    they close those two instances and not the class. A seventh site can put the
+    same instance back under a new name with the suite green.
+
+    Import scope is the property, so the check is on imported objects rather
+    than on source text: a `LogThrottle` built by a factory, or held inside a
+    module-level list or dict, is the same process-wide instance whatever the
+    call looks like. Every module in the package is imported (all of them
+    import cleanly with the package's hard dependencies installed, so a failure
+    here is a real import failure and not a missing extra), and its globals,
+    one level into module-level containers, and its classes' attributes are all
+    checked — a class attribute is shared by every instance, which is the same
+    scope one name along.
+    """
+
+    def _modules(self):
+        yield c64cast
+        for found in pkgutil.walk_packages(c64cast.__path__, "c64cast."):
+            if found.name.endswith("__main__"):
+                continue  # a three-line entry point that runs the CLI on import
+            yield importlib.import_module(found.name)
+
+    def _throttles_in(self, holder: object, label: str):
+        for name, value in vars(holder).items():
+            where = f"{label}.{name}"
+            if isinstance(value, LogThrottle):
+                yield where
+            elif isinstance(value, (list, tuple, set, frozenset)):
+                yield from (where for item in value if isinstance(item, LogThrottle))
+            elif isinstance(value, dict):
+                yield from (where for item in value.values() if isinstance(item, LogThrottle))
+
+    def test_no_throttle_lives_at_module_or_class_scope(self) -> None:
+        found: list[str] = []
+        for module in self._modules():
+            found.extend(self._throttles_in(module, module.__name__))
+            for name, value in vars(module).items():
+                if isinstance(value, type) and value.__module__ == module.__name__:
+                    found.extend(self._throttles_in(value, f"{module.__name__}.{name}"))
+        self.assertEqual(
+            found,
+            [],
+            "a throttle at import scope is per process, so one stream's flood "
+            "suppresses another stream's first report — build it per stream "
+            "instead (see c64cast/_wire_log.py)",
+        )
 
 
 if __name__ == "__main__":

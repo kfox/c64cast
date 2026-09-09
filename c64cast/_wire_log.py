@@ -167,9 +167,3 @@ class LogThrottle:
             self._log.exception(msg, *args)
             return
         self._log.debug(msg + _MORE_SUFFIX, *args, stands_for - 1, exc_info=True)
-
-    def reset(self) -> None:
-        """Forget the stream so far, so the next occurrence reports afresh."""
-        with self._lock:
-            self._since_report = 0
-            self._reported_at = None
