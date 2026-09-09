@@ -125,10 +125,16 @@ _WALL_CLOCK_CHECK_STEPS = 4096
 # HostEmuBudget and get the smaller of this and what is left of it.
 _INIT_DEADLINE_S = 1.0
 
-# Wall-clock ceiling on a single PLAY pass, applied only on the *analysis*
-# paths (footprint runs, the pre-flight) — the paths that hold a HostEmuBudget.
-# A pass gets the smaller of this and what is left of that budget, so no single
-# indivisible pass can outlast the budget it is charged to.
+# Wall-clock ceiling on a single PLAY pass, applied only on the paths that
+# *sample* one — footprint runs and the pre-flight, both of which already
+# distrust a truncated pass. A pass there gets the smaller of this and what is
+# left of the caller's HostEmuBudget.
+#
+# Holding a budget is not the test, and reading it as one is how the PLAY-rate
+# probe came to be deadlined: it holds a budget too, and prices a pass rather
+# than sampling it, so it deliberately runs its pass to completion — past
+# `budget.deadline` if a nearly-spent budget let one start. Overrunning a
+# budget by one bounded pass is the cheaper error; see [detect_play_rate_hz].
 #
 # The live render path deliberately gets no wall-clock cap. Truncating a PLAY
 # there leaves the $D4xx shadow holding half a frame's writes — a visibly wrong
@@ -768,10 +774,13 @@ class SidHostEmu:
         will never fire in this emulator) so the render thread isn't starved.
 
         `deadline` is an optional absolute instant in this emulator's clock
-        domain (see `_now`). The analysis paths pass one so a single pass
-        cannot outlast the HostEmuBudget it is charged to; the live render
-        path passes none — see _PLAY_DEADLINE_S for why truncating a pass
-        there would be worse than the stall it saves."""
+        domain (see `_now`). The paths that *sample* a pass — footprint runs
+        and the pre-flight — pass one, so no single pass outlasts the
+        HostEmuBudget it is charged to; a truncated sample is one they already
+        distrust. The paths that *price* or *render* a pass pass none: the live
+        render path, because truncating there leaves a visibly wrong scope (see
+        _PLAY_DEADLINE_S), and [detect_play_rate_hz], because a truncated pass
+        priced as a whole one is a censored measurement."""
         # Clear hard-restart flags (all chips) so retriggers() reflects only
         # this tick.
         for gl in self._memory.gate_low_banks:
@@ -1117,12 +1126,16 @@ def detect_play_rate_hz(
     The budget is consulted before each pass but does not bound the pass
     itself, and that is deliberate: the pass here has to cost what the pass on
     the render path will cost, and the render path's ``tick_play()`` gets no
-    deadline. A deadlined probe pass is a *censored* measurement — truncated at
-    ``_PLAY_DEADLINE_S`` it reports 50 ms for a pass that will really spend
-    120 ms, and [sustainable_poll_period_s] then floors the period at less than
-    one pass, which is the back-to-back GIL starvation the floor exists to
-    prevent. [describe_pass_cost] would call that truncation a measurement,
-    which is the whole thing the ``None`` reading was added to stop.
+    deadline. A deadlined probe pass is a *censored* measurement, and censored
+    in the one direction that matters: whatever a pass really costs above
+    ``_PLAY_DEADLINE_S``, it is priced at ``_PLAY_DEADLINE_S`` and no more.
+    [sustainable_poll_period_s] then floors the poll period at a fraction of
+    the truncation while the render path spends the whole pass — the
+    back-to-back GIL starvation the floor exists to prevent, reached through
+    the floor — and [describe_pass_cost] names the truncation as a
+    measurement, which is the whole thing the ``None`` reading was added to
+    stop. No number is put on the overshoot on purpose: it is exactly the part
+    a deadlined probe cannot see.
 
     What bounds one pass is the *step* cap in `_run_routine`, not the cycle cap
     and not a clock: a PLAY that spins on a raster forever measures 7.1 ms
@@ -1187,8 +1200,8 @@ def sustainable_poll_period_s(
     A `pass_cost_s` of ``None`` means the probe never timed a pass — because
     the tune's analysis budget was already gone, or because it was asked for no
     passes at all — so it is charged UNMEASURED_PASS_COST_S, the worst a legal
-    pass can cost, rather than nothing. A measured 0.0 is different and stays free: a pass too quick
-    for the host clock to resolve needs no floor. The two used to be one value,
+    pass can cost, rather than nothing. A measured 0.0 is different and stays
+    free: a pass too quick for the host clock to resolve needs no floor. The two used to be one value,
     and the expensive reading was the one that got lost."""
     if fraction <= 0.0:
         return tick_dt_s
