@@ -312,13 +312,31 @@ class CostModelConstantsTest(unittest.TestCase):
                 return addr
         raise AssertionError(f"no {opcode:#04x} between {start:#06x} and {end:#06x}")
 
+    def _dloop_end(self) -> int:
+        """Address just past the branch that closes `dloop`.
+
+        The loop and the subroutine's return tail must be split here and not at
+        the RTS. There is no label between them, so walking `dloop` up to the
+        RTS charges anything inserted in that gap to the per-*unit* cost — an
+        instruction added before the return costs once per delay CALL, and
+        blaming DELAY_CYCLES_PER_UNIT for it is a red test at the wrong
+        constant."""
+        for addr, op in _instructions(
+            self.blob, self.origin, self.sym["dloop"], self.origin + len(self.blob)
+        ):
+            if (
+                op in _BRANCHES
+                and _branch_target(self.blob, self.origin, addr) == self.sym["dloop"]
+            ):
+                return addr + 2
+        raise AssertionError("dloop does not branch back to itself")
+
     def test_delay_cycles_per_unit_is_what_dloop_emits(self):
         # `dloop`: DEY + BNE taken. The last iteration's BNE falls through one
         # cycle cheaper, so the real loop costs 5N-1 — the model rounds up,
         # which errs toward calling a frame too expensive.
-        rts = self._first(0x60, self.sym["delay"], self.origin + len(self.blob))
         self.assertEqual(
-            _taken_path_cycles(self.blob, self.origin, self.sym["dloop"], rts),
+            _taken_path_cycles(self.blob, self.origin, self.sym["dloop"], self._dloop_end()),
             ap.DELAY_CYCLES_PER_UNIT,
         )
 
@@ -363,15 +381,16 @@ class CostModelConstantsTest(unittest.TestCase):
         # loads the counter and the RTS — on top of DELAY_CYCLES_PER_UNIT per
         # unit, and minus the taken BEQ that PER_OP_CYCLES already charged.
         beq = self._first(0xF0, self.sym["oploop"], self.sym["skipdelay"])
-        # The return is located, not assumed: charging a bare RTS would keep
-        # this green if the subroutine's terminator ever changed, which is the
-        # drift this class exists to catch.
-        end = self.origin + len(self.blob)
-        ret = self._first(0x60, self.sym["delay"], end)
+        # The whole return tail is walked, not a bare RTS charged: everything
+        # after the loop's branch costs once per delay CALL, so a terminator
+        # that changed — or anything inserted ahead of it — has to land here
+        # rather than be assumed away.
         extra = (
             _straight_cycles(self.blob, self.origin, beq, self.sym["skipdelay"])
             + _straight_cycles(self.blob, self.origin, self.sym["delay"], self.sym["dloop"])
-            + _straight_cycles(self.blob, self.origin, ret, end)
+            + _straight_cycles(
+                self.blob, self.origin, self._dloop_end(), self.origin + len(self.blob)
+            )
             - (_OPCODES[0xF0][0] + 1)
         )
         self.assertEqual(extra, ap.WAITED_OP_EXTRA_CYCLES)
