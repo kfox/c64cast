@@ -251,37 +251,66 @@ class AudioSourceTeardownTests(unittest.TestCase):
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
         self.assertIsNone(source._features, "a dead analyzer is still referenced")
 
-    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
-    def test_a_decode_thread_that_never_started_does_not_starve_the_audio_stop(self):
-        """The whole path, not an injected raise.
+    def _file_source(self, audio, **kw) -> AudioFileSource:
+        """An `AudioFileSource` over a throwaway wav, probed for real.
 
-        `setup` publishes the decode thread before starting it, so a `start()`
-        that fails — the OS out of threads — leaves an *unstarted* thread on the
-        source, and `Thread.join` raises `RuntimeError` on one of those. That is
-        reachable rather than theoretical: `SourceScene.setup` catches an audio
-        source that fails to start, logs, and flips `is_done`, so the playlist
-        advances and tears the scene down. On the DAC path
-        `start_for_external_source()` has already run by then, so the starved
-        step was the `audio.stop()` that keeps the next scene from inheriting a
-        live pump.
+        The wav has to outlive construction: `setup()` re-resolves the spec and
+        probes again, so a directory torn down in between fails the pick rather
+        than the thread start this is aiming at.
         """
-        audio = MagicMock()
-        with tempfile.TemporaryDirectory() as tmp:
-            tune = os.path.join(tmp, "tune.wav")
-            with wave.open(tune, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(8000)
-                w.writeframes(b"\x00\x00" * 800)
-            source = AudioFileSource(audio, tune, reactive=False)
-            with patch.object(
-                threading.Thread, "start", side_effect=RuntimeError("can't start new thread")
-            ):
-                with self.assertRaises(RuntimeError):
-                    source.setup()
-        self.assertIsNotNone(source._thread, "setup published the thread it could not start")
+        tune = os.path.join(tempfile.mkdtemp(), "tune.wav")
+        with wave.open(tune, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 800)
+        return AudioFileSource(audio, tune, **kw)
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_a_decode_thread_that_cannot_start_is_never_published(self):
+        """A host out of threads must leave nothing for teardown to join.
+
+        `Thread.join` raises `RuntimeError` on a thread that was never started,
+        so publishing the thread before starting it put an unjoinable object
+        where `teardown` reaches for one. Both backend orderings are pinned
+        because they differ in what is already running when the start fails: on
+        the DAC path `start_for_external_source()` has run, so a raise escaping
+        teardown's first step would strand a live pump.
+        """
+        for is_sampler in (False, True):
+            with self.subTest(sampler=is_sampler):
+                audio = MagicMock(is_sampler=is_sampler)
+                source = self._file_source(audio, reactive=False)
+                with patch.object(
+                    threading.Thread, "start", side_effect=RuntimeError("can't start new thread")
+                ):
+                    with self.assertRaises(RuntimeError):
+                        source.setup()
+                self.assertIsNone(source._thread, "teardown can reach an unstarted thread")
+                source.teardown()  # no ERROR to catch: there is no join to fail
+                self.assertTrue(audio.stop.called)
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_a_scene_whose_audio_source_cannot_start_still_stops_the_pump(self):
+        """The reachability half, driven rather than argued.
+
+        `SourceScene.setup` catches an audio source that fails to start, logs,
+        and flips `is_done` so the playlist advances and tears the scene down —
+        which is the only way a half-set-up file source is ever torn down. The
+        DAC ordering is the one that matters: `start_for_external_source()` runs
+        before the decode thread, so the pump is live by the time the start
+        fails, and stopping it is the scene's promise to whatever plays next.
+        """
+        audio = MagicMock(is_sampler=False)
+        source = self._file_source(audio, reactive=False)
+        scene = SourceScene(MagicMock(), audio, MagicMock(), MagicMock(), source, "tune")
+        with patch.object(
+            threading.Thread, "start", side_effect=RuntimeError("can't start new thread")
+        ):
+            with self.assertLogs(_SCENES_LOG, level="ERROR"):
+                scene.setup()
+        self.assertTrue(scene.is_done, "the playlist never advances, so teardown never runs")
+        self.assertTrue(audio.start_for_external_source.called, "no pump was ever started")
         audio.stop.reset_mock()
-        with self.assertLogs(_SOURCES_LOG, level="ERROR") as caught:
-            source.teardown()
-        self.assertIn("decode thread join", caught.output[0])
+        scene.teardown()
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")

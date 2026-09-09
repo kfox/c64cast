@@ -120,11 +120,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   and the chip silences in one `try`, so a REST hiccup on the vector left every
   SID ringing until something else happened to write `$D418`. The `file` source
   could hand the next scene a streaming pump when its decode thread failed to
-  start at all: the thread is published before it is started, a machine out of
-  threads leaves an unstarted one behind, and joining that raises — after the
-  audio output had already been brought up. The `mic` and `listen` sources are
-  guarded to match, though nothing reaches the raise their analyzer stop can
-  give.
+  start at all — on a machine out of threads, the audio output was already up
+  and the failed thread was already recorded, so stopping the output was
+  abandoned while trying to wait for a thread that had never run. It now
+  records the thread only once it is running, so there is nothing to wait for
+  when one cannot start. The `mic` and `listen` sources are guarded to match,
+  though nothing reaches the raise their analyzer stop can give.
 
 - **MIDI Program Change did nothing in the `midi` scene, though it is on by
   default.** `midi_program_change` defaults to `True` and the scene's dispatch

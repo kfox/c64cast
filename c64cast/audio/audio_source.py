@@ -331,7 +331,10 @@ class AudioFileSource:
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
         the decode→audio thread. Never raises on a decode/analyzer hiccup —
-        degrades to non-reactive so the visual keeps running.
+        degrades to non-reactive so the visual keeps running. What does escape
+        is a file spec that resolves to nothing openable, and a host too short
+        of threads to start the decode thread; `SourceScene.setup` catches both,
+        logs, and flips `is_done` so the playlist advances.
 
         Ordering differs by backend. The 4-bit DAC's `start_for_external_source`
         just arms its worker (non-blocking), so it starts before the decode
@@ -345,19 +348,11 @@ class AudioFileSource:
         self._stop.clear()
         self._start_features()
         if self._is_sampler:
-            thread = threading.Thread(
-                target=self._decode_loop, daemon=True, name="audio-file-decode"
-            )
-            self._thread = thread
-            thread.start()
+            self._start_decode_thread()
             self._audio.start_for_external_source()
         else:
             self._audio.start_for_external_source()
-            thread = threading.Thread(
-                target=self._decode_loop, daemon=True, name="audio-file-decode"
-            )
-            self._thread = thread
-            thread.start()
+            self._start_decode_thread()
         log.info(
             "audio file: %s → %s @ %dHz%s",
             os.path.basename(self._path),
@@ -365,6 +360,19 @@ class AudioFileSource:
             self._audio.sample_rate,
             " (reactive)" if self._features is not None else "",
         )
+
+    def _start_decode_thread(self) -> None:
+        """Start the decode thread, and publish it only once it is running.
+
+        The order matters and matches `PollThread.start`, which says why: a
+        thread published before `start()` is a thread `teardown` can reach
+        before it has ever run, and `Thread.join` raises on one of those.
+        Publishing after means a host out of threads leaves nothing behind for
+        teardown to trip over.
+        """
+        thread = threading.Thread(target=self._decode_loop, daemon=True, name="audio-file-decode")
+        thread.start()
+        self._thread = thread
 
     def _start_features(self) -> None:
         """Install the pre-DSP analyzer at the streamer's DAC rate (what the DAC
@@ -446,10 +454,6 @@ class AudioFileSource:
         features, self._features = self._features, None
         steps: list[tuple[str, Callable[[], object]]] = []
         if thread is not None:
-            # `setup` publishes the thread before starting it, so a `start()`
-            # that fails leaves an unstarted thread here and this join raises
-            # `RuntimeError` — reachable, because `SourceScene.setup` catches
-            # that failure and self-aborts the scene, which tears it down.
             steps.append(("decode thread join", partial(thread.join, 2.0)))
         if features is not None:
             steps.append(("feature stream stop", features.stop))
