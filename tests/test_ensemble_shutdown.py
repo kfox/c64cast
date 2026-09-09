@@ -18,7 +18,7 @@ import unittest
 import unittest.mock
 from unittest.mock import MagicMock
 
-from _fakes import fake_system_stack
+from _fakes import FrozenClock, fake_system_stack
 
 from c64cast.app import session
 from c64cast.app.cli import teardown_stack
@@ -198,13 +198,14 @@ class JoinPlaylistsTest(unittest.TestCase):
         t.start()
         # Fast-forwards join_bounded's deadline past its 5s budget on the very
         # first check, so the thread reads as abandoned without a real wait.
-        clock = iter([0.0])
-
-        def fake_monotonic():
-            return next(clock, 100.0)
+        # The clock is stateful, which is the other half of why it must be
+        # scoped to `session`: patched over the shared stdlib module, whichever
+        # thread read it first would consume the one 0.0 and the deadline would
+        # never fast-forward.
+        clock = FrozenClock(0.0, "monotonic", 100.0)
 
         try:
-            with unittest.mock.patch.object(session.time, "monotonic", side_effect=fake_monotonic):
+            with unittest.mock.patch.object(session, "time", clock):
                 with self.assertLogs("c64cast", level="ERROR") as cm:
                     session.join_playlists([t], stacks, stop_event)
             self.assertTrue(any("playlist-stuck" in m and "5s" in m for m in cm.output))

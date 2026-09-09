@@ -19,9 +19,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from _fakes import quiet_logging
+from _fakes import FakeTime, quiet_logging
 from py65.devices.mpu6502 import MPU
 
+from c64cast.app import cli_commands
 from c64cast.hw import char_rom
 from c64cast.hw.api import (
     CHAR_ROM_DUMP_BYTES,
@@ -605,7 +606,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
 
     def test_dumps_installs_and_resets(self):
         be = _FakeBackend(_synth_charset())
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             rc, out = self._run(be)
         self.assertEqual(rc, 0)
         self.assertEqual(char_rom.installed_path().read_bytes(), _synth_charset())
@@ -617,20 +618,20 @@ class DumpCharRomCliTest(_CharRomTestCase):
         char_rom.install_data(_synth_charset(1))
         fresh = _synth_charset(2)
         be = _FakeBackend(fresh)
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             self.assertEqual(self._run(be)[0], 0)
         self.assertEqual(be.calls, 1, "the flag re-dumps unconditionally")
         self.assertEqual(char_rom.installed_path().read_bytes(), fresh)
 
     def test_capability_error_exits_3(self):
         be = _FakeBackend(error=BackendCapabilityError("dump_char_rom"))
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             self.assertEqual(self._run(be)[0], 3)
         self.assertFalse(char_rom.installed_path().exists())
 
     def test_dump_failure_exits_4_and_still_closes_the_link(self):
         be = _FakeBackend(error=RuntimeError("stub never signaled"))
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             self.assertEqual(self._run(be)[0], 4)
         self.assertEqual(be.closes, 1)
         self.assertFalse(char_rom.installed_path().exists())
@@ -653,7 +654,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
 
     def test_teardown_reset_failure_is_warned_not_swallowed(self):
         be = _ResetFailsOnTeardownBackend(_synth_charset())
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             with self.assertLogs("c64cast", level="WARNING") as cm:
                 rc = self._run_uncaptured(be)
         self.assertEqual(rc, 0, "the dump itself still succeeded")
@@ -661,7 +662,7 @@ class DumpCharRomCliTest(_CharRomTestCase):
 
     def test_close_failure_does_not_override_the_dump_failure_exit_code(self):
         be = _CloseFailsBackend(error=RuntimeError("stub never signaled"))
-        with mock.patch("time.sleep"):
+        with mock.patch.object(cli_commands, "time", FakeTime(sleep=None)):
             with self.assertLogs("c64cast", level="WARNING") as cm:
                 rc = self._run_uncaptured(be)
         self.assertEqual(rc, 4, "close() raising must not replace the dump's own exit code")

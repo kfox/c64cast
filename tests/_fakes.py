@@ -469,15 +469,19 @@ class FakeTime:
 
     Each keyword pins one name. A callable is installed as it is — pass a
     ``MagicMock`` when the test wants to assert on the calls — and anything else
-    is returned as a constant. Every other name delegates to the real module, so
-    code that also calls ``time.monotonic()`` or ``time.sleep()`` while the fake
-    is installed keeps working.
+    is returned as a constant, whatever arguments the caller passes, so
+    ``FakeTime(sleep=None)`` is a working no-op sleep and not a ``TypeError``
+    from inside the code under test. Every other name delegates to the real
+    module, so code that also calls ``time.monotonic()`` or ``time.sleep()``
+    while the fake is installed keeps working.
     """
 
     def __init__(self, **pinned) -> None:
+        def constant(value):
+            return lambda *_args, **_kwargs: value
+
         self._pinned = {
-            name: value if callable(value) else (lambda value=value: value)
-            for name, value in pinned.items()
+            name: value if callable(value) else constant(value) for name, value in pinned.items()
         }
 
     def __getattr__(self, name: str):
@@ -507,6 +511,11 @@ class FrozenClock(FakeTime):
     """
 
     def __init__(self, now: float = 0.0, attr: str = "time", step: float = 0.0, **pinned) -> None:
+        if attr in pinned:
+            raise TypeError(
+                f"{attr!r} is both this clock's pinned name and a keyword pin — "
+                f"pass one or the other, or the keyword silently wins over `now`/`step`"
+            )
         self._now = float(now)
         self._step = float(step)
         super().__init__(**{attr: self._read}, **pinned)

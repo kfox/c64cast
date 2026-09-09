@@ -455,7 +455,7 @@ class BackendTest(unittest.TestCase):
             t.queue_token(TOK_ACK)
             t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
         t.queue_token(TOK_ACK)  # divider write
-        with mock.patch.object(api, "time", FakeTime(sleep=mock.MagicMock())):
+        with mock.patch.object(api, "time", FakeTime(sleep=None)):
             n = b._tune_play_divider()
         self.assertEqual(n, 2)
         # Divider byte patched at player_base + DIVIDER_OFFSET ($C300+59=$C33B).
@@ -518,7 +518,7 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertIn(b"\x64\xfb\x08\x01", sent)  # program body re-DMA'd to $0801
@@ -536,7 +536,7 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already looping
         t.queue_token(TOK_ACK)
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertNotIn(b"RUN\r", sent)
@@ -587,7 +587,7 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         self.assertEqual(bytes(t._stale), b"")  # chatter consumed, not left to desync
         self.assertIn(b"RUN\r", bytes(t.sent))  # ...so the repair actually ran

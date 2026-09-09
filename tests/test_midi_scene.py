@@ -34,7 +34,7 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI  # noqa: E402
+from _fakes import FakeAPI, FrozenClock  # noqa: E402
 
 from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
@@ -170,7 +170,7 @@ class VoiceAllocationTests(_MidiTestCase):
         # clock is the strongest form of that condition: track order with a
         # counter and freezing time changes nothing. The sibling tests cannot see
         # this, since they run on whatever resolution the host happens to have.
-        with mock.patch.object(midi_scene.time, "time", return_value=1234.5):
+        with mock.patch.object(midi_scene, "time", FrozenClock(1234.5)):
             scene, _ = _make_scene()
             for n in (60, 64, 67):
                 scene._note_on(n, 100)
