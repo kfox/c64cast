@@ -146,6 +146,16 @@ def _drain_budget_s(profile: HardwareProfile) -> float:
     Never *tighter* than the shared default — a link whose writes are cheap
     (TeensyROM, 0.287 ms) keeps the default's larger pass — and widened only far
     enough that a full chord of worst-case notes still retires in one pass.
+
+    On an Ultimate that widening lands at 31.332 ms, which is 1.88x
+    `_CONTROL_FLUSH_INTERVAL_S` — so this budget deliberately breaks the
+    "a fraction of the flush period it protects" relationship that
+    `MAX_DRAIN_WORK_S` keeps. What it costs is bounded and is not a halved
+    flush rate: the flush check sits after the drain and is itself
+    rate-limited, so a pass that spends the whole budget delays one wheel/CC
+    flush by the difference and the next pass finds the period already
+    elapsed. Buying that with an arpeggiated chord is the trade this function
+    exists to refuse. Both halves are pinned in tests/test_midi.py.
     """
     note_cost_s = profile.write_cost_s(SID.BYTES_PER_VOICE) * _WRITES_PER_NOTE
     return max(MAX_DRAIN_WORK_S, note_cost_s * _NOTES_PER_DRAIN)

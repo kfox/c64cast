@@ -183,19 +183,45 @@ class DrainWorkBoundTest(unittest.TestCase):
                 seen.extend(_midi.poll_pending(port, stop))
         self.assertEqual(seen, [f"msg{i}" for i in range(1, 21)])
 
-    def test_the_work_budget_is_a_fraction_of_the_flush_period_it_protects(self):
+    def test_the_default_work_budget_is_a_fraction_of_the_flush_period(self):
         # The relationship, against the two scene constants that define the
         # period rather than a literal copy of them: `MAX_DRAIN_WORK_S` exists
         # to keep a pass from eating the flush that follows it, and a pass free
         # to spend the whole period would halve the flush rate rather than
-        # bound it. Either scene retuning its flush past the budget is drift
-        # this must catch — the constants live in three different modules and
-        # nothing but this assertion makes them agree.
+        # bound it. This holds for the *default*, which is AsidScene's budget
+        # — its `_handle_sysex` pokes a shadow and returns. MidiScene passes
+        # its own and does not; the sibling test below is where that lives.
         from c64cast.sid import asid_scene, midi_scene
 
         protected_s = min(asid_scene._FLUSH_INTERVAL_S, midi_scene._CONTROL_FLUSH_INTERVAL_S)
         self.assertGreater(_midi.MAX_DRAIN_WORK_S, 0.0)
         self.assertLess(_midi.MAX_DRAIN_WORK_S, protected_s)
+
+    def test_midi_scenes_own_budget_overruns_that_fraction_on_a_slow_link(self):
+        # The invariant above is the default's, not the system's, and an
+        # assertion that only checked the default read as though it covered
+        # both callers. MidiScene's reader passes `_drain_budget_s`, which
+        # widens until a worst-case chord retires in one pass; on an Ultimate
+        # that is 31.332 ms against a 16.667 ms flush period — 1.88x the
+        # fraction the default is held to.
+        #
+        # That is a deliberate latency trade, not a missing bound: the chord's
+        # notes land together and the wheel/CC flush after that one pass is
+        # late by the difference, because the flush check sits after the drain
+        # and is itself rate-limited. Pinned with the ratio so that retuning
+        # any of the four constants behind it — the flush intervals, the write
+        # cost model, `_WRITES_PER_NOTE`, `_NOTES_PER_DRAIN` — has to come
+        # past this assertion and say so.
+        from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
+        from c64cast.sid import asid_scene, midi_scene
+
+        protected_s = min(asid_scene._FLUSH_INTERVAL_S, midi_scene._CONTROL_FLUSH_INTERVAL_S)
+        ultimate_s = midi_scene._drain_budget_s(ULTIMATE_PROFILE)
+        self.assertAlmostEqual(ultimate_s / protected_s, 1.88, places=2)
+
+        # A link whose writes are cheap keeps the default, and so keeps the
+        # invariant: the overrun is the slow link's, not every link's.
+        self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), _midi.MAX_DRAIN_WORK_S)
 
 
 if __name__ == "__main__":
