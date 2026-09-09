@@ -39,6 +39,8 @@ from c64cast.hw.c64 import SID, cpu_clock
 from c64cast.sid.sid_host_emu import (
     HostEmuBudget,
     SidHostEmu,
+    describe_pass_cost,
+    detect_play_rate_hz,
     run_catchup_passes,
     sustainable_poll_period_s,
 )
@@ -69,9 +71,6 @@ class SidFeatureStream:
     # thread permanently busy. See sid_host_emu.run_catchup_passes.
     _MAX_CATCHUP_TICKS = 120
     _MAX_CATCHUP_PERIOD_FRACTION = 0.5
-    # PLAY passes to probe a tune's multispeed rate (see _detect_play_rate_hz).
-    _RATE_PROBE_TICKS = 64
-
     # Onset envelope time constant (seconds). The per-tick decay factor is
     # exp(-dt/τ); τ≈0.18 s gives a brief, visible pulse that fades over ~3-4
     # frames at 60 Hz.
@@ -165,10 +164,10 @@ class SidFeatureStream:
         )
         if self._poll_period > self._poll_dt:
             log.warning(
-                "music features: one PLAY pass costs %.1f ms, more than this tune's "
+                "music features: %s, more than this tune's "
                 "%.1f Hz PLAY rate allows; polling every %.1f ms instead — reactive "
                 "visuals will lag the audio",
-                pass_cost_s * 1000.0,
+                describe_pass_cost(pass_cost_s),
                 rate,
                 self._poll_period * 1000.0,
             )
@@ -190,36 +189,29 @@ class SidFeatureStream:
 
     # ---- poll thread --------------------------------------------------------
 
-    def _detect_play_rate_hz(self, budget: HostEmuBudget) -> tuple[float, float]:
-        """Return ``(rate_hz, pass_cost_s)`` for this tune. A user override
-        wins the rate; otherwise probe a THROWAWAY emulator (so the real one
-        keeps its song position), since many multispeed players only write
-        CIA #1 Timer A on the first PLAY — reading the rate straight after INIT
-        would mis-detect them as plain vsync and tick the features at half the
-        song's real pace. Mirrors WaveformScene._detect_play_rate_hz.
+    def _detect_play_rate_hz(self, budget: HostEmuBudget) -> tuple[float, float | None]:
+        """Return ``(rate_hz, pass_cost_s)`` for this tune, probed on a
+        THROWAWAY emulator so the real one keeps its song position.
 
-        `pass_cost_s` is what one PLAY pass of this tune measured on this host,
-        or 0.0 when none was timed (a user-pinned rate) — the number the poll
-        period is floored against, so the catch-up bound can bind."""
-        if self._user_reg_poll_hz is not None:
-            return float(self._user_reg_poll_hz), 0.0
-        # _RATE_PROBE_TICKS bounds the pass count, not the seconds it takes;
-        # the caller's budget bounds those, INIT included.
+        Many multispeed players only write CIA #1 Timer A on the first PLAY, so
+        reading the rate straight after INIT would mis-detect them as plain
+        vsync and tick the features at half the song's real pace. A user
+        override wins the RATE, but not the measurement: what a PLAY pass costs
+        belongs to the tune and the host, and it is the number `_prepare` floors
+        the poll period against.
+
+        `pass_cost_s` is ``None`` when no pass was timed — see
+        sid_host_emu.detect_play_rate_hz, which both scenes share."""
         probe = SidHostEmu(self._sid_bytes, song=self._song, budget=budget)
-        rate = probe.play_rate_hz(self._video_hz, self._clock)
-        passes = 0
-        spent = 0.0
-        for _ in range(self._RATE_PROBE_TICKS):
-            if abs(rate - self._video_hz) > 0.5:
-                break  # multispeed Timer A latch seen — rate is known
-            if budget.expired():
-                break  # too expensive to emulate; the vsync default stands
-            started = time.monotonic()
-            probe.tick_play()
-            spent += time.monotonic() - started
-            passes += 1
-            rate = probe.play_rate_hz(self._video_hz, self._clock)
-        return float(rate), (spent / passes if passes else 0.0)
+        rate, pass_cost_s = detect_play_rate_hz(
+            probe,
+            video_hz=self._video_hz,
+            clock_hz=self._clock,
+            budget=budget,
+        )
+        if self._user_reg_poll_hz is not None:
+            return float(self._user_reg_poll_hz), pass_cost_s
+        return rate, pass_cost_s
 
     def _poll_loop(self) -> None:
         """Advance the host emulator to the PLAY-tick count wall-clock says the

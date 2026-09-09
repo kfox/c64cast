@@ -16,6 +16,7 @@ from _fakes import make_psid, quiet_logging
 from c64cast.hw.c64 import SID
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.music_features import HostEmuBudget, SidFeatureStream
+from c64cast.sid.sid_host_emu import UNMEASURED_PASS_COST_S, sustainable_poll_period_s
 
 
 def _regs(*, gate: bool, freq: int = 0x2000, voice: int = 0, sustain: int = 0xF) -> bytes:
@@ -256,17 +257,39 @@ class CatchupBoundTest(unittest.TestCase):
         self.assertEqual(len(logs.output), 1)
 
     def test_rate_probe_stops_when_its_budget_is_spent(self):
-        # The probe runs up to _RATE_PROBE_TICKS passes on a throwaway
-        # emulator; the count is not a time bound, so it runs under the
-        # caller's budget — the same one _prepare charges the persistent
-        # emulator's INIT to.
+        # The probe runs up to RATE_PROBE_TICKS passes on a throwaway emulator;
+        # the count is not a time bound, so it runs under the caller's budget —
+        # the same one _prepare charges the persistent emulator's INIT to.
         s = SidFeatureStream(self.sid, song=0, system="NTSC")
         with patch("c64cast.scenes.music_features.SidHostEmu") as cls:
             cls.return_value.play_rate_hz.return_value = 60.0
             rate, pass_cost_s = s._detect_play_rate_hz(HostEmuBudget(0.0))
         self.assertAlmostEqual(rate, 60.0)
-        self.assertEqual(pass_cost_s, 0.0, "no pass ran, so nothing was measured")
         cls.return_value.tick_play.assert_not_called()
+        # Nothing ran, so nothing was measured — and that must not read as
+        # "measured, and free". A budget already spent on this tune is evidence
+        # the tune is expensive, which is the direction the sizing has to fail
+        # in; see sustainable_poll_period_s.
+        self.assertIsNone(pass_cost_s, "an unmeasured pass is not a free pass")
+        self.assertGreater(
+            sustainable_poll_period_s(1.0 / 400.0, pass_cost_s, 0.5),
+            1.0 / 400.0,
+            "an unmeasured pass must still floor the poll period",
+        )
+
+    def test_a_pass_too_quick_to_time_is_free_but_an_untimed_one_is_not(self):
+        # The two readings that used to be one value. 0.0 back from a pass that
+        # DID run means the host clock could not resolve it, and needs no
+        # floor; None means no pass ran at all, and takes the worst-case charge.
+        tick_dt_s = 1.0 / 400.0
+        self.assertAlmostEqual(
+            sustainable_poll_period_s(tick_dt_s, 0.0, 0.5), tick_dt_s, msg="measured as free"
+        )
+        self.assertAlmostEqual(
+            sustainable_poll_period_s(tick_dt_s, None, 0.5),
+            UNMEASURED_PASS_COST_S / 0.5,
+            msg="never measured",
+        )
 
 
 class StreamLifecycleTest(unittest.TestCase):

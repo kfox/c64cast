@@ -18,7 +18,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from _fakes import FakeAPI, bare_waveform_scene, make_psid, quiet_logging
 
-from c64cast.sid.sid_host_emu import FootprintSample, HostEmuBudget, PlacementFootprints
+from c64cast.sid.sid_host_emu import (
+    RATE_PROBE_TICKS,
+    FootprintSample,
+    HostEmuBudget,
+    PlacementFootprints,
+)
 from c64cast.sid.sidemu import (
     ACCUMULATOR_RANGE,
     WAVE_NOISE,
@@ -772,8 +777,11 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertAlmostEqual(scene._poll_dt, 1.0 / 90.0)
 
     def test_explicit_reg_poll_hz_overrides_auto_rate(self):
-        """An explicit reg_poll_hz pins the rate and skips CIA auto-detection
-        (play_rate_hz isn't consulted)."""
+        """An explicit reg_poll_hz pins the RATE, and only the rate: the probe
+        still runs, because what a PLAY pass costs belongs to the tune and the
+        host rather than to whoever chose the tick rate. Pinning 400 Hz does
+        not make a 10 ms pass affordable, and the poll-period floor is sized
+        against that cost."""
         from c64cast.sid.waveform import WaveformScene
 
         self.mock_host_emu_cls.return_value.play_rate_hz.return_value = 90.0
@@ -786,8 +794,9 @@ class WaveformSceneTest(unittest.TestCase):
             system="NTSC",
             reg_poll_hz=25.0,
         )
-        self.assertAlmostEqual(scene._reg_poll_hz, 25.0)
-        self.mock_host_emu_cls.return_value.play_rate_hz.assert_not_called()
+        self.assertAlmostEqual(scene._reg_poll_hz, 25.0, msg="the pinned rate wins")
+        _rate, pass_cost_s = scene._detect_play_rate_hz()
+        self.assertIsNotNone(pass_cost_s, "a pinned rate must still be priced")
 
     def test_rate_probe_ticks_play_before_reading_rate(self):
         """Regression: a multispeed tune that programs CIA #1 Timer A from its
@@ -828,11 +837,11 @@ class WaveformSceneTest(unittest.TestCase):
         emu.play_rate_hz.return_value = 60.0  # never reports multispeed
         self.assertAlmostEqual(scene._detect_play_rate_hz()[0], 60.0)
         # Probe exhausts its budget looking for a Timer A write that never
-        # comes (bounded by _RATE_PROBE_TICKS).
-        self.assertEqual(emu.tick_play.call_count, WaveformScene._RATE_PROBE_TICKS)
+        # comes (bounded by RATE_PROBE_TICKS).
+        self.assertEqual(emu.tick_play.call_count, RATE_PROBE_TICKS)
 
     def test_rate_probe_stops_when_its_own_budget_is_spent(self):
-        """_RATE_PROBE_TICKS bounds the pass count, not the seconds, and this
+        """RATE_PROBE_TICKS bounds the pass count, not the seconds, and this
         probe runs from __init__, setup() and every SHIFT. A tune whose PLAY is
         too expensive to emulate falls back to the vsync default rather than
         spending 64 passes of the worst case on the render thread."""

@@ -18,6 +18,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from c64cast.hw.c64 import cpu_clock
 from c64cast.sid.sid_host_emu import (
     SidHostEmu,
     TrappedRam,
@@ -90,6 +91,9 @@ _PLAY_WRITES = bytes(
 
 # INIT is a bare RTS — the host emulator JSRs into load_addr to run it.
 _INIT_RTS = bytes([0x60])
+
+# The clock play_rate_hz divides the CIA #1 Timer A latch into.
+_NTSC_CLOCK_HZ = cpu_clock("NTSC")
 
 
 def _init_set_timer_a(latch: int) -> bytes:
@@ -885,13 +889,78 @@ class SustainablePollPeriodTest(unittest.TestCase):
         # Half a period must hold a whole pass, so the period becomes 20 ms.
         self.assertAlmostEqual(sustainable_poll_period_s(0.0025, 0.010, 0.5), 0.020)
 
-    def test_an_unmeasured_pass_changes_nothing(self):
+    def test_a_pass_too_quick_for_the_clock_needs_no_floor(self):
         from c64cast.sid.sid_host_emu import sustainable_poll_period_s
 
-        # A user-pinned rate runs no probe passes, so there is no measurement
-        # to clamp against — and inventing one would slow the poll thread for
-        # a tune nothing was ever measured about.
+        # 0.0 comes back from a pass that DID run and was faster than the host
+        # clock could resolve. Nothing to stretch for.
         self.assertAlmostEqual(sustainable_poll_period_s(0.004, 0.0, 0.5), 0.004)
+
+    def test_a_pass_that_was_never_timed_is_charged_the_worst_legal_one(self):
+        from c64cast.sid.sid_host_emu import (
+            UNMEASURED_PASS_COST_S,
+            sustainable_poll_period_s,
+        )
+
+        # None is not 0.0, and this is the whole reason the two are different
+        # values. The only way to reach None is a budget already spent on this
+        # tune, which is evidence of an expensive tune, not a free one — so it
+        # is charged the worst a legal pass can cost rather than nothing.
+        self.assertAlmostEqual(
+            sustainable_poll_period_s(0.0025, None, 0.5), UNMEASURED_PASS_COST_S / 0.5
+        )
+
+
+class DetectPlayRateTest(unittest.TestCase):
+    """The shared PLAY-rate probe. It prices a pass before it reads the rate,
+    because the tunes whose rate is known earliest are the ones whose cost
+    matters most."""
+
+    def _probe(self, init_code):
+        from c64cast.sid.sid_host_emu import HostEmuBudget, SidHostEmu
+
+        sid = _make_synthetic_sid(init_code=init_code, play_code=_PLAY_WRITES)
+        budget = HostEmuBudget()
+        return SidHostEmu(sid, budget=budget), budget
+
+    def test_a_tune_timed_by_init_is_still_priced(self):
+        """Regression. A tune that programs CIA #1 Timer A from INIT has its
+        rate known the moment INIT returns, so the old loop broke out before
+        timing anything and reported a cost of 0.0 — which the sizing function
+        read as free. The floor was therefore skipped on exactly the tunes it
+        was written for: a 399.3 Hz tune kept its 2.5 ms poll period against a
+        pass nobody had priced."""
+        from c64cast.sid.sid_host_emu import detect_play_rate_hz
+
+        probe, budget = self._probe(_init_set_timer_a(0x0A00))
+        rate, pass_cost_s = detect_play_rate_hz(
+            probe, video_hz=60.0, clock_hz=_NTSC_CLOCK_HZ, budget=budget
+        )
+        self.assertGreater(rate, 300.0, "an INIT-programmed Timer A is multispeed")
+        self.assertIsNotNone(pass_cost_s, "the rate being known early is not a reason to skip")
+
+    def test_a_vsync_tune_runs_every_pass_and_keeps_the_video_rate(self):
+        from c64cast.sid.sid_host_emu import RATE_PROBE_TICKS, detect_play_rate_hz
+
+        probe, budget = self._probe(_INIT_RTS)
+        with patch.object(probe, "tick_play", wraps=probe.tick_play) as ticked:
+            rate, pass_cost_s = detect_play_rate_hz(
+                probe, video_hz=60.0, clock_hz=_NTSC_CLOCK_HZ, budget=budget
+            )
+        self.assertAlmostEqual(rate, 60.0)
+        self.assertEqual(ticked.call_count, RATE_PROBE_TICKS, "no Timer A ever appears")
+        self.assertIsNotNone(pass_cost_s)
+
+    def test_a_spent_budget_times_nothing_and_says_so(self):
+        from c64cast.sid.sid_host_emu import HostEmuBudget, detect_play_rate_hz
+
+        probe, _ = self._probe(_INIT_RTS)
+        with patch.object(probe, "tick_play", wraps=probe.tick_play) as ticked:
+            _rate, pass_cost_s = detect_play_rate_hz(
+                probe, video_hz=60.0, clock_hz=_NTSC_CLOCK_HZ, budget=HostEmuBudget(0.0)
+            )
+        ticked.assert_not_called()
+        self.assertIsNone(pass_cost_s, "nothing ran, so nothing was measured")
 
 
 def _sid_with_extra_addrs(

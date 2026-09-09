@@ -169,6 +169,23 @@ FOOTPRINT_DEADLINE_S = 2.0
 # unified display-bank pin, the later SHIFT candidates — rather than the show.
 ANALYSIS_BUDGET_S = 6.0
 
+# PLAY passes a rate probe may run before it settles for the video rate. A
+# multispeed tune's CIA #1 Timer A latch is often written by the first PLAY
+# rather than by INIT (Galway's Times of Lore does exactly that), so the true
+# rate is unknowable until PLAY has run at least once. 64 passes is ~1 s of
+# song at 60 Hz and a few ms on a throwaway emulator; the count bounds no
+# duration, so the caller's HostEmuBudget bounds the seconds.
+RATE_PROBE_TICKS = 64
+
+# What one PLAY pass is assumed to cost when the probe never got to time one.
+# A pass that stays just inside _PLAY_CYCLE_CAP measured ~16 ms, so this is the
+# worst a *legal* pass can cost. It is a fail-safe default, not an inference: a
+# spent budget says this tune's analysis was expensive (its INIT, its footprint
+# runs), which is only correlated with an expensive PLAY. What decides the
+# direction is that the two errors are not symmetric -- assuming free saturates
+# a core silently, assuming expensive slows the wakeups visibly and says so.
+UNMEASURED_PASS_COST_S = 0.016
+
 
 class HostEmuBudget:
     """One wall-clock budget shared by every host-emulation run a single tune's
@@ -1059,7 +1076,75 @@ def run_catchup_passes(
     return CatchupResult(ticks, overran=False)
 
 
-def sustainable_poll_period_s(tick_dt_s: float, pass_cost_s: float, fraction: float) -> float:
+def detect_play_rate_hz(
+    probe: SidHostEmu,
+    *,
+    video_hz: float,
+    clock_hz: float,
+    budget: HostEmuBudget,
+    ticks: int = RATE_PROBE_TICKS,
+) -> tuple[float, float | None]:
+    """Return ``(rate_hz, pass_cost_s)`` for the tune loaded into `probe`.
+
+    `probe` must be a THROWAWAY emulator, because this runs PLAY passes on it:
+    a caller that handed over its live one would lose the song position its
+    wall-clock catch-up owns. Shared by `WaveformScene` and
+    `SidFeatureStream`, which each carried a line-for-line copy of the loop.
+
+    `pass_cost_s` is what one PLAY pass of this tune measured on this host —
+    the number [sustainable_poll_period_s] floors the poll period against — or
+    ``None`` when no pass was timed at all.
+
+    A pass is timed *before* the rate is consulted, and that order is the whole
+    point. Consulting the rate first meant a tune that programs Timer A from
+    INIT — where the rate is known the moment INIT returns — left the loop
+    having timed nothing and reported a cost of 0.0, which the sizing function
+    read as "no measurement, don't clamp". The floor was therefore skipped on
+    exactly the tunes it exists for: a 399.3 Hz CIA-timed tune measured here
+    kept its 2.50 ms poll period against a pass it had never priced.
+    `run_catchup_passes` runs its pass before consulting its clock for the same
+    reason.
+
+    The budget is still consulted first, so a tune too expensive to emulate
+    costs nothing here. ``None`` means only what it says — no pass was timed —
+    and with the default `ticks` a spent budget is the only way to get there.
+    It is a distinct value rather than another 0.0 because the two readings
+    must not be confused: a pass nobody timed is charged the worst a legal one
+    can cost, while a pass measured at 0.0 really was that quick.
+    """
+    rate = probe.play_rate_hz(video_hz, clock_hz)
+    passes = 0
+    spent = 0.0
+    for _ in range(ticks):
+        if budget.expired():
+            break  # too expensive to emulate; the vsync default stands
+        started = time.monotonic()
+        probe.tick_play()
+        spent += time.monotonic() - started
+        passes += 1
+        rate = probe.play_rate_hz(video_hz, clock_hz)
+        if abs(rate - video_hz) > 0.5:
+            break  # multispeed Timer A latch seen — rate is known
+    return float(rate), (spent / passes if passes else None)
+
+
+def describe_pass_cost(pass_cost_s: float | None) -> str:
+    """How a poll-period warning should name what the period was sized against.
+
+    Both catch-up threads warn in the same shape and must not describe an
+    assumed cost as a measured one — the whole point of the ``None`` reading is
+    that nobody timed anything."""
+    if pass_cost_s is None:
+        return (
+            "no PLAY pass was ever timed for this tune, so it is charged the "
+            f"{UNMEASURED_PASS_COST_S * 1000.0:.1f} ms a legal pass can cost at worst"
+        )
+    return f"one PLAY pass costs {pass_cost_s * 1000.0:.1f} ms"
+
+
+def sustainable_poll_period_s(
+    tick_dt_s: float, pass_cost_s: float | None, fraction: float
+) -> float:
     """The shortest poll period a catch-up thread may use: the tune's own PLAY
     period, floored so one measured PLAY pass fits inside `fraction` of it.
 
@@ -1073,8 +1158,19 @@ def sustainable_poll_period_s(tick_dt_s: float, pass_cost_s: float, fraction: fl
 
     `tick_dt_s` stays the per-PLAY-tick song time the caller advances envelopes
     by; only the wakeup period is stretched. Keeping those two the same number
-    is what conflated "how fast the song advances" with "how often we wake"."""
-    if pass_cost_s <= 0.0 or fraction <= 0.0:
+    is what conflated "how fast the song advances" with "how often we wake".
+
+    A `pass_cost_s` of ``None`` means the probe never timed a pass, which it
+    can only mean because this tune's analysis budget was already gone — so it
+    is charged UNMEASURED_PASS_COST_S, the worst a legal pass can cost, rather
+    than nothing. A measured 0.0 is different and stays free: a pass too quick
+    for the host clock to resolve needs no floor. The two used to be one value,
+    and the expensive reading was the one that got lost."""
+    if fraction <= 0.0:
+        return tick_dt_s
+    if pass_cost_s is None:
+        pass_cost_s = UNMEASURED_PASS_COST_S
+    if pass_cost_s <= 0.0:
         return tick_dt_s
     return max(tick_dt_s, pass_cost_s / fraction)
 

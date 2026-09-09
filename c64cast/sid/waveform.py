@@ -83,6 +83,8 @@ from .sid_host_emu import (
     _play_bank_for_footprints,
     _sid_payload_extent,
     analyze_placement,
+    describe_pass_cost,
+    detect_play_rate_hz,
     detect_sid_addresses,
     parse_sid_header,
     play_preflight_failure,
@@ -371,16 +373,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # than a starved process, and it is logged once.
     _MAX_CATCHUP_TICKS = 120
     _MAX_CATCHUP_PERIOD_FRACTION = 0.5
-
-    # PLAY passes to run when probing a tune's effective PLAY rate (see
-    # _detect_play_rate_hz). Many multispeed players program CIA #1 Timer A
-    # from PLAY, not INIT — Galway's Times of Lore is a ~2x multispeed whose
-    # Timer A latch is only written on the FIRST PLAY pass. play_rate_hz reads
-    # that latch, so the true rate is unknowable until PLAY has run at least
-    # once. The probe stops as soon as a multispeed write appears; a vsync tune
-    # (no Timer A write) runs all passes and falls back to the video rate. 64
-    # passes (~1 s @ 60 Hz) costs only a few ms on a throwaway host emu.
-    _RATE_PROBE_TICKS = 64
 
     def __init__(
         self,
@@ -1694,58 +1686,48 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         else:
             self._paint_metadata_row()
 
-    def _detect_play_rate_hz(self) -> tuple[float, float]:
-        """Return the current subtune's effective PLAY rate in Hz.
+    def _detect_play_rate_hz(self) -> tuple[float, float | None]:
+        """Return ``(rate_hz, pass_cost_s)`` for the current tune.
 
-        A user-pinned reg_poll_hz wins outright. Otherwise probe the rate on a
-        THROWAWAY host emulator: many multispeed players program CIA #1 Timer A
-        from their PLAY routine rather than INIT (Galway's Times of Lore writes
-        it on the first PLAY — a ~2x multispeed), so SidHostEmu.play_rate_hz
-        only reports the true rate once PLAY has run at least once. Reading the
-        rate straight after a fresh INIT (which is exactly what cycle_style and
-        a pool re-pick do) therefore mis-detects such tunes as plain vsync and
-        ticks the scope at HALF the song's real rate — the voices then come in
-        on screen progressively later than you hear them (worst for late
-        entrants), the classic post-cycle "warped + delayed" scope.
+        The rate is probed on a THROWAWAY host emulator: many multispeed
+        players program CIA #1 Timer A from their PLAY routine rather than
+        INIT (Galway's Times of Lore writes it on the first PLAY — a ~2x
+        multispeed), so SidHostEmu.play_rate_hz only reports the true rate
+        once PLAY has run at least once. Reading it straight after a fresh
+        INIT — which is exactly what cycle_style and a pool re-pick do —
+        mis-detects such tunes as plain vsync and ticks the scope at HALF the
+        song's real rate: the voices then come in on screen progressively
+        later than you hear them (worst for late entrants), the classic
+        post-cycle "warped + delayed" scope.
 
         The probe runs on its own emu so the scene's real host emu keeps its
-        exact song position (the wall-clock catch-up in _poll_regs owns that),
-        and it's cheap: one INIT + a few PLAY passes (~a few ms). It stops the
-        instant a multispeed rate appears; a genuine vsync tune writes no
-        Timer A, runs all _RATE_PROBE_TICKS passes, and returns video_hz.
-
+        exact song position (the wall-clock catch-up in _poll_regs owns that).
         On the fresh-launch path the scene's own host emu was already
         PLAY-pre-flighted by _load_sid_file, so it would self-detect — but
         probing unconditionally keeps every entry point (init, setup re-pick,
         SHIFT cycle) on one correct code path.
 
-        Returns ``(rate_hz, pass_cost_s)``. The second is what one PLAY pass of
-        THIS tune measured on THIS host, which is the number the poll period
-        has to be sized against — see sustainable_poll_period_s. It is 0.0 when
-        no pass was timed (a user-pinned rate); callers treat that as "no
-        measurement, don't clamp"."""
-        if self._user_reg_poll_hz is not None:
-            return float(self._user_reg_poll_hz), 0.0
-        # _RATE_PROBE_TICKS bounds the pass COUNT, and the tune sets what a
-        # pass costs — the same gap the footprint runs had. Its own budget,
-        # not the caller's: this probe runs from __init__ as well as from
-        # setup(), and falling back to the video rate is harmless.
+        A pinned reg_poll_hz wins the RATE outright, but does not skip the
+        probe: what a PLAY pass costs is a property of the tune and the host,
+        not of who chose the tick rate, and it is what _resolve_poll_rate
+        floors the poll period against. Pinning 400 Hz does not make a 10 ms
+        pass affordable.
+
+        The probe gets its own budget rather than the caller's: it runs from
+        __init__ as well as from setup(), and falling back to the video rate is
+        harmless. See sid_host_emu.detect_play_rate_hz for the loop and for
+        what `pass_cost_s = None` means."""
         budget = HostEmuBudget()
         probe = SidHostEmu(self.sid_bytes, song=self.song, budget=budget)
-        rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
-        passes = 0
-        spent = 0.0
-        for _ in range(self._RATE_PROBE_TICKS):
-            if abs(rate - self._video_hz) > 0.5:
-                break  # multispeed Timer A latch seen — rate is known
-            if budget.expired():
-                break  # too expensive to emulate; the vsync default stands
-            started = time.monotonic()
-            probe.tick_play()
-            spent += time.monotonic() - started
-            passes += 1
-            rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
-        return float(rate), (spent / passes if passes else 0.0)
+        rate, pass_cost_s = detect_play_rate_hz(
+            probe,
+            video_hz=self._video_hz,
+            clock_hz=self.emulator.clock,
+            budget=budget,
+        )
+        if self._user_reg_poll_hz is not None:
+            return float(self._user_reg_poll_hz), pass_cost_s
+        return rate, pass_cost_s
 
     def _resolve_poll_rate(self) -> None:
         """Set the host-emu PLAY tick rate to the current tune's real rate and
@@ -1757,8 +1739,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         song at the same rate or the scope drifts behind the audio (a late-
         entering voice appears on screen well after you hear it). The rate is
         derived from the host emulator (which has run INIT) via
-        SidHostEmu.play_rate_hz, using the U64's system clock. An explicit
-        user reg_poll_hz pins the rate and skips detection.
+        SidHostEmu.play_rate_hz, using the U64's system clock. A pinned
+        reg_poll_hz wins the rate; it does not skip the probe, which is also
+        what prices a PLAY pass for the period floor below.
 
         Called from __init__ and again whenever the tune changes (setup()'s
         pool re-pick, cycle_style()'s subtune switch) since the new tune may
@@ -1793,13 +1776,13 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         )
         if self._poll_period > self._poll_dt:
             log.warning(
-                "waveform: %s song %d — one PLAY pass costs %.1f ms, more than this "
+                "waveform: %s song %d — %s, more than this "
                 "tune's %.1f Hz PLAY rate allows; waking the host emulator every "
                 "%.1f ms instead so the render thread keeps its share of the CPU. "
                 "The oscilloscope will lag the audio.",
                 os.path.basename(self._sid_file),
                 self.song,
-                pass_cost_s * 1000.0,
+                describe_pass_cost(pass_cost_s),
                 rate,
                 self._poll_period * 1000.0,
             )
