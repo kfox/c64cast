@@ -26,6 +26,7 @@ import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_ABSENT_TEXT = "has no compiled bytecode — nothing here is armed"
 
 
 def _load_script(name: str):
@@ -79,13 +80,21 @@ class HashBasedPycCheckTest(unittest.TestCase):
         pyc = self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
         self.assertEqual(self._unarmed(), [pyc])
 
-    def test_a_pyc_for_another_interpreter_is_ignored(self):
-        # A checkout run under more than one Python minor accumulates these and
-        # no import here will ever read one. Failing on them would make the
-        # check noise, which is how a check gets deleted.
+    def test_a_pyc_for_another_interpreter_is_not_this_interpreters_bytecode(self):
+        # A checkout run under more than one Python minor accumulates these,
+        # and no import here will ever read one — so the *other* file is never
+        # what gets blamed. What is reported is that this interpreter has no
+        # bytecode for the source at all, which is the third of the four
+        # documented lapses (a `uv sync` that moves the Python minor). An
+        # earlier version returned `([], ...)` here, which is precisely the
+        # silence that made that lapse invisible.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
-        pyc.rename(pyc.with_name("mod.cpython-001.pyc"))
-        self.assertEqual(check.scan([str(self.root)]), ([], {str(self.root): 1}))
+        other = pyc.with_name("mod.cpython-001.pyc")
+        pyc.rename(other)
+        unarmed, sources = check.scan([str(self.root)])
+        self.assertEqual(sources, {str(self.root): 1})
+        self.assertEqual(unarmed, [(pyc, check._ABSENT)])
+        self.assertNotIn(other, [path for path, _flags in unarmed])
 
     def test_an_orphaned_pyc_is_ignored(self):
         # Same reasoning, other cause: the source moved or was renamed, so
@@ -108,10 +117,50 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertEqual(Path(importlib.util.cache_from_source(str(self.root / "mod.py"))), pyc)
         self.assertEqual(self._unarmed(), [pyc])
 
-        # An optimization level this interpreter is not running is not ours.
+        # An optimization level this interpreter is not running is not ours, so
+        # it is neither vouched for nor blamed: what is reported is the name
+        # `cache_from_source` gives, which now has no file.
         other = pyc.with_name(f"mod.{sys.implementation.cache_tag}.opt-9.pyc")
         pyc.rename(other)
-        self.assertEqual(self._unarmed(), [])
+        self.assertEqual(self._unarmed(), [pyc])
+        self.assertNotIn(other, self._unarmed())
+
+    def test_a_tree_with_no_bytecode_at_all_is_not_a_pass(self):
+        # The commonest un-armed shape and the one a source-only floor let
+        # through: a fresh worktree, or the state right after `make clean`.
+        # The check exited 0 on it while three documents said it verified
+        # exactly this. Nothing is compiled here — setUp only writes the
+        # source.
+        self.assertFalse(list(self.root.rglob("__pycache__")))
+        code, err = self._stderr_of_main()
+        self.assertEqual(code, 1)
+        self.assertIn("has no compiled bytecode", err)
+        self.assertIn("mutation-ready", err)
+
+    def test_the_absent_sentinel_survives_the_mode_lookup(self):
+        # Same trap as the unreadable one, one value along: `-2 & 0b11` is 2,
+        # so masking before the lookup would report a missing file as
+        # "check_source without hash-based" — a mode, for a file that has none.
+        self.assertEqual(check.describe(check._ABSENT), _ABSENT_TEXT)
+        self.assertNotEqual(check.describe(check._ABSENT), check.describe(0b10))
+
+    def test_a_root_that_is_a_single_python_file_is_scanned(self):
+        # `rglob` on a file yields nothing, so the per-root source floor called
+        # a Python file "no Python sources under ...". It is one source, and
+        # its arming is a real question.
+        src = self.root / "mod.py"
+        self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
+        self.assertEqual(check.scan([str(src)]), ([], {str(src): 1}))
+        self.assertEqual(check.main(["prog", str(src)]), 0)
+
+    def test_a_root_that_is_a_file_but_not_python_reports_no_sources(self):
+        # The safe direction: a root naming something that cannot be a source
+        # is a mistyped root, not a pass.
+        other = self.root / "notes.txt"
+        other.write_text("not python\n", encoding="utf-8")
+        code, err = self._stderr_of_main(str(other))
+        self.assertEqual(code, 1)
+        self.assertIn("no Python sources", err)
 
     def test_a_root_with_no_python_in_it_is_not_a_pass(self):
         # A mistyped or renamed root has no sources, which is a different fact

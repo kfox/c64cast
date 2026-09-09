@@ -39,12 +39,22 @@ first: it reported optimized bytecode that a non-`-O` `compileall` will never
 rewrite, so the check failed permanently while printing a remedy that does
 nothing.
 
-What this cannot tell you is that a module *has* compiled bytecode. Absence is
-the un-armed state's other shape (a wiped `__pycache__`, a fresh worktree), and
-it is indistinguishable from "the module was never imported". What it can tell
-you apart from that is a root that is not there at all: a mistyped or renamed
-root has no sources, which is a different fact from having sources nobody has
-imported, and it used to be a silent pass.
+**Absence of bytecode is itself un-armed, and it is the commonest shape.** An
+earlier version of this file said absence could not be told from "the module was
+never imported" and so declined to report it — which made three of the four
+lapses above silent passes, including the fresh worktree. The claim was simply
+wrong: `compileall` compiles every source under a root whether or not anything
+imports it, so after `make mutation-ready` there is no such thing as a source
+without bytecode (403 of 403 here, measured). A missing `.pyc` therefore means
+the arming has not happened or has lapsed since — and it is the dangerous
+shape, because the first import then writes a *timestamp-mode* file, which is
+exactly what makes a mutate/revert inside one second run stale bytecode.
+
+Two floors, because they answer different questions and each one hid the other
+when it stood alone. Per root, at least one `*.py`: a mistyped or renamed root
+has no sources at all, and a global count hid that behind whichever root did
+have some. Per source, a `.pyc` that is armed: that is the state a proof
+actually rests on.
 """
 
 from __future__ import annotations
@@ -60,9 +70,11 @@ _HASH_BASED = 0b01
 _CHECK_SOURCE = 0b10
 _ARMED = _HASH_BASED | _CHECK_SOURCE
 _UNREADABLE = -1
+_ABSENT = -2
 
 _MODE_NAMES = {
     _UNREADABLE: "could not be read",
+    _ABSENT: "has no compiled bytecode — nothing here is armed",
     0b00: "timestamp-based",
     0b01: "unchecked-hash (hash-based, but never validated)",
     0b10: "check_source without hash-based",
@@ -79,11 +91,25 @@ def _flags(pyc: Path) -> int:
 
 def describe(flags: int) -> str:
     """The invalidation mode, for the failure line. Not masked with `_ARMED`
-    first: the unreadable sentinel is negative, and `-1 & 0b11` is 3, which
-    would look up "armed" and print a raw flags word instead."""
+    first: both sentinels are negative, and masking maps them onto real modes —
+    `-1 & 0b11` is 3, which would look up "armed" and print a raw flags word,
+    and `-2 & 0b11` is 2, which would report a missing file as
+    "check_source without hash-based"."""
     if flags in _MODE_NAMES:
         return _MODE_NAMES[flags]
     return _MODE_NAMES.get(flags & _ARMED, f"flags {flags:#04x}")
+
+
+def _sources(root: str) -> list[Path]:
+    """The Python sources under `root`, or `root` itself when it names one.
+
+    A root that is a single file has no `rglob("*.py")` results, which the
+    per-root floor would report as "no Python sources under
+    scripts/check_hash_based_pycs.py" — wrong about a file that is Python."""
+    path = Path(root)
+    if path.is_file():
+        return [path] if path.suffix == ".py" else []
+    return sorted(path.rglob("*.py"))
 
 
 def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], dict[str, int]]:
@@ -97,10 +123,11 @@ def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], dict[str, int]]:
     sources: dict[str, int] = {}
     for root in roots:
         found = 0
-        for src in sorted(Path(root).rglob("*.py")):
+        for src in _sources(root):
             found += 1
             pyc = Path(importlib.util.cache_from_source(str(src)))
             if not pyc.exists():
+                unarmed.append((pyc, _ABSENT))
                 continue
             try:
                 flags = _flags(pyc)
@@ -133,7 +160,7 @@ def main(argv: list[str]) -> int:
     if not stale:
         return 0
     print(
-        f"{len(stale)} compiled module(s) are not checked-hash, so a same-second "
+        f"{len(stale)} module(s) are not armed for a mutation proof, so a same-second "
         "mutation would run stale bytecode and report a false green. "
         "Run `make mutation-ready`.",
         file=sys.stderr,

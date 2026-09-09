@@ -151,10 +151,12 @@ bytecode from before your edit and reports a green run that means nothing.
 `PYTHONDONTWRITEBYTECODE=1` does not help — it suppresses writing, not reading
 — and neither does `touch`. The target recompiles the tree in PEP 552
 hash-based mode, where the check is over the source's contents instead, and
-then verifies that every compiled module an import here could read really is
-armed. It cannot tell you a module *has* compiled bytecode — absence is
-indistinguishable from "never imported" — so what it rules out is the wrong
-mode, not the missing file.
+then verifies that every module an import here could read really is armed —
+which includes having bytecode at all. Absence is not a gap in what the check
+can see: `compileall` compiles every source under a root whether or not
+anything imports it, so a missing `.pyc` after arming means the arming lapsed,
+and it is the dangerous shape rather than a benign one, because the first
+import then writes a *timestamp-mode* file.
 
 It has to be re-run more often than it looks: `make clean` deletes every
 `__pycache__`, a fresh worktree has none to begin with, and a `uv sync` that
