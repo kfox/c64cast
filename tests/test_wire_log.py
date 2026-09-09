@@ -231,6 +231,10 @@ _PACKAGE = c64cast.__name__
 _PACKAGE_PREFIX = f"{_PACKAGE}."
 
 
+def _in_package_scope(name: str) -> bool:
+    return name == _PACKAGE or name.startswith(_PACKAGE_PREFIX)
+
+
 def _annotations_of(target: object) -> dict[str, str]:
     """`target`'s annotations as the source text, never evaluated.
 
@@ -261,12 +265,22 @@ def _annotated_target(
     out of discovery altogether — the very shape [ThrottleFactoryTest] is for.
     """
     target: Callable[..., object] = value.func if isinstance(value, functools.partial) else value
+    # Both of these can raise, and this helper is called outside any guard, so
+    # an escape here ends the whole check rather than dropping one factory —
+    # the failure mode of the three rounds before this one. `unwrap` raises on
+    # a `__wrapped__` cycle, and `getattr_static` is not fully static against a
+    # metaclass `__getattr__`. Neither shape is in the tree; the guards are
+    # here because "not in the tree today" is what the last three rounds
+    # thought too.
     if unwrap:
-        target = inspect.unwrap(target)
+        with contextlib.suppress(ValueError):
+            target = inspect.unwrap(target)
     if inspect.isroutine(target) or isinstance(target, type):
         return target
-    dunder_call = inspect.getattr_static(type(target), "__call__", None)
-    return dunder_call if inspect.isroutine(dunder_call) else target
+    dunder_call: object = None
+    with contextlib.suppress(Exception):
+        dunder_call = inspect.getattr_static(type(target), "__call__", None)
+    return dunder_call if inspect.isroutine(dunder_call) else target  # type: ignore[return-value]
 
 
 def _is_logger(hint: object) -> bool:
@@ -315,7 +329,12 @@ class NoProcessWideThrottleTest(unittest.TestCase):
     `c64cast.app.cli.log.manager.loggerDict['c64cast.probe.wire'].throttle`
     before the stop — became invisible. So the manager's children are its
     `c64cast`-named loggers and nothing else: this package's import scope, not
-    the interpreter's. It keeps the whole cost win, since those loggers are
+    the interpreter's. A logger outside that scope is narrowed the same way
+    and for the same reason, which is what keeps the *root* logger's handlers
+    out: `<module>.log.parent.handlers[0]` reaches whatever handler anything
+    else in the process installed, and through a Rich one it runs to depth 12
+    and fails the truncation assertion on entirely correct code.
+    It keeps the whole cost win, since those loggers are
     already reachable at depth ≤ 2, and a dependency that nests one more
     object inside a handler no longer fails a test about this package's
     throttles.
@@ -377,16 +396,18 @@ class NoProcessWideThrottleTest(unittest.TestCase):
         scalar needs no case of its own: a `str` has no `__dict__` and no
         `__slots__`, so `_attributes_of` already answers `{}` for it.
 
-        The `logging.Manager` case is the one narrowing rather than a stop —
-        the class docstring says why, and why it is not both.
+        The two `logging` cases narrow rather than stop, by the same name
+        rule — the class docstring says why, and why neither is a stop.
         """
         if isinstance(obj, types.ModuleType):
+            return []
+        if isinstance(obj, logging.Logger) and not _in_package_scope(obj.name):
             return []
         if isinstance(obj, logging.Manager):
             return [
                 (f".loggerDict[{name!r}]", child)
                 for name, child in obj.loggerDict.items()
-                if name == _PACKAGE or name.startswith(_PACKAGE_PREFIX)
+                if _in_package_scope(name)
             ]
         if isinstance(obj, self._CONTAINERS):
             return [(f"[{index}]", item) for index, item in enumerate(obj)]
@@ -626,7 +647,11 @@ class ThrottleFactoryTest(unittest.TestCase):
                 # this 3.14 parameter; the runtime requires 3.14.
                 annotation_format=annotationlib.Format.STRING,  # pyright: ignore[reportCallIssue]
             )
-        except (TypeError, ValueError):
+        except Exception:  # noqa: BLE001 - a signature we cannot read we do not call
+            # Wider than the two documented raises on purpose: a callable whose
+            # `__annotate__` refuses a non-VALUE format raises from inside
+            # `signature` past a narrow guard, and this must skip a factory
+            # rather than end the check.
             return None
         hints = self._hints_of(_annotated_target(factory, unwrap=follow_wrapped))
         positional: list[object] = []
