@@ -919,12 +919,16 @@ class AsidScene(VoiceScopeRenderer, Scene):
         # audio pump reads $DF03 back as its live write head. Two idempotent DMA
         # ops buy the guarantee outright — which is why the restore is a step of
         # its own, and not a statement sequenced behind a stop() that can raise.
+        port, self._midi_port = self._midi_port, None
+        poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
-            ("MIDI port close", self._close_midi_port),
-            ("input poll stop", self._stop_input_poll),
         ]
+        if port is not None:
+            steps.append(("MIDI port close", port.close))
+        if poll is not None:
+            steps.append(("input poll stop", poll.stop))
         if self._player is not None:
             steps += [
                 ("ring player stop", self._player.stop),
@@ -945,16 +949,6 @@ class AsidScene(VoiceScopeRenderer, Scene):
             ("flush", self.api.flush),
         ]
         run_teardown_steps(log, type(self).__name__, steps)
-
-    def _close_midi_port(self) -> None:
-        port, self._midi_port = self._midi_port, None
-        if port is not None:
-            port.close()
-
-    def _stop_input_poll(self) -> None:
-        poll, self._poll = self._poll, None
-        if poll is not None:
-            poll.stop()
 
     def _silence_chip(self, base: int) -> None:
         self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))

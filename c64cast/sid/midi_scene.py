@@ -968,23 +968,19 @@ class MidiScene(VoiceScopeRenderer, Scene):
     def teardown(self) -> None:
         # The display restore puts VIC bank 0 and the char-mode $D018 back for
         # the next scene, which this scene left on its hires bitmap layout.
+        port, self._midi_port = self._midi_port, None
+        poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             ("reader poll stop", self._reader_poll.stop),
-            ("MIDI port close", self._close_midi_port),
-            ("input poll stop", self._stop_input_poll),
+        ]
+        if port is not None:
+            steps.append(("MIDI port close", port.close))
+        if poll is not None:
+            steps.append(("input poll stop", poll.stop))
+        steps += [
             ("SID silence", self.api.silence_sid),
             ("char-mode display restore", partial(restore_char_mode_display, self.api)),
             ("flush", self.api.flush),
         ]
         run_teardown_steps(log, type(self).__name__, steps)
-
-    def _close_midi_port(self) -> None:
-        port, self._midi_port = self._midi_port, None
-        if port is not None:
-            port.close()
-
-    def _stop_input_poll(self) -> None:
-        poll, self._poll = self._poll, None
-        if poll is not None:
-            poll.stop()

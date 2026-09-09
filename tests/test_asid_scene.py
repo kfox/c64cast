@@ -954,10 +954,10 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         order: list[str] = []
         scene, _ = self._make()
         assert scene._player is not None
+        # Recorded on the port itself rather than on a wrapper method, so the
+        # order is asserted against the call teardown actually makes.
+        scene._midi_port = SimpleNamespace(close=lambda: order.append("port close"))
         with (
-            mock.patch.object(
-                scene, "_close_midi_port", side_effect=lambda: order.append("port close")
-            ),
             mock.patch.object(
                 scene._player, "stop", side_effect=lambda: order.append("player stop")
             ),
