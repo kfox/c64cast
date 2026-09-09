@@ -109,7 +109,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   restores still run. `AsidScene` also closes its MIDI port before the restores
   rather than after them, so a reader thread abandoned by teardown's bounded
   join cannot read one more speed message and put CIA #1 back on the stream's
-  rate behind them.
+  rate behind them. The three non-SID scenes with the same shape are guarded
+  too: the `webcam` and generative/video scenes could hand the next scene a
+  still-streaming audio pump or a leaked capture handle when the live
+  `force_palette` worker failed to stop, and the `launcher` scene could leave a
+  `.crt` cartridge active when its input poller failed to join.
 
 - **MIDI Program Change did nothing in the `midi` scene, though it is on by
   default.** `midi_program_change` defaults to `True` and the scene's dispatch

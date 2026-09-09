@@ -1,18 +1,47 @@
-"""`run_teardown_steps` — the guarded step runner the SID scene teardowns use.
+"""`run_teardown_steps` — the guarded step runner every scene teardown uses.
 
 A scene's teardown steps are independent promises to the next scene, not a
 transaction. This module pins the property those scenes rely on: a step that
-raises does not starve the steps after it.
+raises does not starve the steps after it — for the runner itself, and for each
+`scenes.py` teardown built on it whose subject has no test module of its own.
+
+The three SID scenes are covered where they live (`test_asid_scene.py`,
+`test_midi_scene.py`, `test_waveform.py`), because each has other reasons to
+build a scene.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import unittest
+from typing import cast
+from unittest.mock import MagicMock
 
-from c64cast.scenes.scenes import run_teardown_steps
+from c64cast.scenes.scenes import (
+    LauncherScene,
+    SourceScene,
+    WebcamScene,
+    run_teardown_steps,
+)
+from c64cast.video.rolling_palette import RollingForcePalette
 
 log = logging.getLogger("c64cast.tests.teardown_steps")
+
+_SCENES_LOG = "c64cast.scenes.scenes"
+
+
+class _WedgedPalette:
+    """A rolling force_palette whose `stop()` raises, as a real one can: it
+    joins a worker that touches the DMA link."""
+
+    def stop(self) -> None:
+        raise RuntimeError("palette worker wedged")
+
+
+def _wedged_palette() -> RollingForcePalette:
+    return cast(RollingForcePalette, _WedgedPalette())
 
 
 def _boom() -> None:
@@ -64,3 +93,47 @@ class RunTeardownStepsTests(unittest.TestCase):
 
         with self.assertRaises(KeyboardInterrupt):
             run_teardown_steps(log, "Scene", [("interrupted", interrupt)])
+
+
+class SceneTeardownTests(unittest.TestCase):
+    """The three `scenes.py` teardowns that sequenced independent guarantees.
+
+    Each fails the step the old code put *first* and asserts the guarantee
+    behind it still ran — which is the whole difference the runner makes, since
+    `safe_teardown` swallows the raise and the failure is otherwise silent.
+    """
+
+    def test_a_failing_palette_stop_does_not_starve_the_webcam_audio_stop(self):
+        audio = MagicMock()
+        scene = WebcamScene(MagicMock(), audio, MagicMock(), MagicMock(), MagicMock(), "cam")
+        scene._rolling_fp = _wedged_palette()
+        with self.assertLogs(_SCENES_LOG, level="ERROR"):
+            scene.teardown()
+        self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
+        self.assertIsNone(scene._rolling_fp, "a dead worker is still referenced")
+
+    def test_a_failing_palette_stop_does_not_starve_the_source_teardowns(self):
+        source, audio_source = MagicMock(), MagicMock()
+        scene = SourceScene(MagicMock(), MagicMock(), MagicMock(), source, audio_source, "gen")
+        scene._rolling_fp = _wedged_palette()
+        with self.assertLogs(_SCENES_LOG, level="ERROR"):
+            scene.teardown()
+        self.assertTrue(audio_source.teardown.called)
+        self.assertTrue(source.teardown.called, "the capture handle leaks for the rest of the run")
+
+    def test_a_failing_poll_stop_does_not_starve_the_launcher_reset(self):
+        # The reset is mandatory for a `.crt` — `run_crt` leaves it active — and
+        # `PollThread.stop` joins, which `_pollthread` documents as able to raise
+        # RuntimeError on a target that stopped its own poller.
+        with tempfile.TemporaryDirectory() as tmp:
+            prg = os.path.join(tmp, "demo.prg")
+            with open(prg, "wb") as f:
+                f.write(b"\x01\x08")
+            api = MagicMock()
+            scene = LauncherScene(api, prg)
+            scene._poll.stop = MagicMock(  # type: ignore[method-assign]
+                side_effect=RuntimeError("cannot join current thread")
+            )
+            with self.assertLogs(_SCENES_LOG, level="ERROR"):
+                scene.teardown()
+        self.assertTrue(api.reset.called, "a launched .crt stays active into the next scene")

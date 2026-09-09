@@ -678,12 +678,20 @@ class WebcamScene(Scene):
         return True
 
     def teardown(self) -> None:
-        super().teardown()
-        if self._rolling_fp is not None:
-            self._rolling_fp.stop()
-            self._rolling_fp = None
+        # The palette worker and the audio streamer are independent promises to
+        # the next scene: `RollingForcePalette.stop()` joins a worker that
+        # touches the DMA link, and a raise there used to starve `audio.stop()`
+        # — handing the next scene the previous scene's audio still streaming,
+        # silently, because `safe_teardown` swallows it. The handle is cleared
+        # before the call, so a failing stop does not leave a dead worker
+        # referenced either.
+        fp, self._rolling_fp = self._rolling_fp, None
+        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        if fp is not None:
+            steps.append(("rolling palette stop", fp.stop))
         if self.audio:
-            self.audio.stop()
+            steps.append(("audio stop", self.audio.stop))
+        run_teardown_steps(log, type(self).__name__, steps)
 
 
 def _effect_modulation(
@@ -921,14 +929,20 @@ class SourceScene(Scene):
         # Display teardown first (unhook any IRQ), then stop audio + source —
         # mirrors WebcamScene so audio.stop() latency doesn't pile on a still-
         # firing IRQ.
-        super().teardown()
-        if self._rolling_fp is not None:
-            self._rolling_fp.stop()
-            self._rolling_fp = None
-        try:
-            self.audio_source.teardown()
-        finally:
-            self.source.teardown()
+        #
+        # The `try/finally` this replaces protected the source handle from a
+        # failing audio source and nothing else, so the rolling-palette stop
+        # above it could starve both and leak the PyAV/capture handle for the
+        # rest of the run. Each guarantee is its own step instead.
+        fp, self._rolling_fp = self._rolling_fp, None
+        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        if fp is not None:
+            steps.append(("rolling palette stop", fp.stop))
+        steps += [
+            ("audio source teardown", self.audio_source.teardown),
+            ("source teardown", self.source.teardown),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
 
 
 class BlankScene(Scene):
@@ -2047,11 +2061,20 @@ class LauncherScene(MediaFileMixin, Scene):
         return (current_time - last_input) < self.duration_s
 
     def teardown(self) -> None:
-        self._poll.stop()
-        super().teardown()
-        # Clear the program (mandatory for .crt, which run_crt leaves active)
-        # so the next scene paints onto a clean machine.
-        self.api.reset()
+        # The reset is mandatory for a `.crt` (`run_crt` leaves it active), so
+        # the input poll stop must not be able to take it down: `PollThread.stop`
+        # joins, and `_pollthread` documents `Thread.join` raising RuntimeError
+        # on a target that stopped its own poller. Unguarded and first in the
+        # sequence, that raise left a cartridge live into the next scene.
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                ("input poll stop", self._poll.stop),
+                ("base teardown", super().teardown),
+                ("program reset", self.api.reset),
+            ],
+        )
 
     # -- input polling --------------------------------------------------
 
