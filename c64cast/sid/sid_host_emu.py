@@ -1426,11 +1426,22 @@ def analyze_placement(
     where the two runs can stop at different points and the union really does
     carry information neither sample has alone.
 
-    So the trust flag is not what protects the placement in the common case.
-    What does is api._find_free_layout: it excludes the payload extent and
-    prefers the LARGEST free hole, which is the same margin that stands between
-    a finite-but-complete sample and an unreached write pattern. A trusted
-    sample is a sample too. And if the widened bitmaps leave no room at all,
+    So the trust flag is not what protects the placement in the common case,
+    and neither — reliably — is anything else. api._find_free_layout does
+    supply a real margin: it excludes the payload extent and prefers the
+    LARGEST free hole, which is the same margin that stands between a
+    finite-but-complete sample and an unreached write pattern (a trusted sample
+    is a sample too). But it is on the *relocation* path only.
+    api._choose_player_layout tries the fixed historical $C300/$C400 layout
+    first and reaches _find_free_layout only when _layout_fits rejects it — and
+    _layout_fits consults this bitmap and nothing else, with no hole preference
+    of any kind. A tune truncated by a LAX in PLAY whose untraced tail writes
+    $C300-$C3FF therefore gets the default layout accepted and the player MC
+    put exactly where PLAY overwrites it. The display side is the same shape:
+    WaveformScene._choose_display_layout gets the payload extent, not a
+    largest-hole preference.
+
+    And if the widened bitmaps leave no room at all,
     the callers' existing ValueError paths abort the scene and the playlist
     advances — the fail-closed end, reached by the code that already handles
     "no free VIC bank" rather than a second refusal written beside it.

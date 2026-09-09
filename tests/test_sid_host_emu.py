@@ -19,7 +19,7 @@ import unittest
 from typing import cast
 from unittest.mock import patch
 
-from _fakes import FrozenClock
+from _fakes import FrozenClock, quiet_logging
 
 from c64cast.hw.c64 import cpu_clock
 from c64cast.sid.sid_host_emu import (
@@ -835,8 +835,13 @@ class AnalyzePlacementTest(unittest.TestCase):
             ]
         )
         sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=play)
-        write = ram_write_footprint(sid, song=1)
-        access = ram_play_access_footprint(sid, song=1)
+        # Each bare footprint run reports the undocumented opcode at WARNING.
+        # The message is the subject of its own test in
+        # TruncatedRoutineMakesAFootprintIncompleteTest; here it is incidental
+        # setup, and a leaked line buries a real failure.
+        with quiet_logging():
+            write = ram_write_footprint(sid, song=1)
+            access = ram_play_access_footprint(sid, song=1)
         self.assertFalse(write.complete)
         self.assertFalse(access.complete)
         self.assertTrue(write.ram[0x2000], "the write before the opcode is traced")
