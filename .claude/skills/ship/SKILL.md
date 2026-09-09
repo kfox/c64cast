@@ -2,8 +2,9 @@
 name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
-  to merge: branch, implement, commit, run an adversarial review to convergence,
-  open the PR, and watch CI and GHAS until green. Stops before merging — the
+  to merge: branch, implement, commit, review each changeset as it lands, run an
+  adversarial panel over the branch to convergence, open the PR, and watch CI and
+  GHAS until green. Stops before merging — the
   merge is always the user's. Use when asked to implement a non-trivial change,
   or when asked to "ship", "land", or "take this to a PR". Trigger phrases
   include "ship this", "take it to a PR", "full workflow", "branch and review".
@@ -81,11 +82,20 @@ make site-check   # only if you touched docs/
 ```
 
 **Then review the commit you just made, scoped to that commit alone** —
-`/code-review <sha>`, which reviews only that commit's own diff, not
-`<sha>...HEAD` and not the branch — act on what it finds, and record it with
-`~/.claude/hooks/changeset-review.sh record <sha>`. This is not the panel
-in step 4; it is a narrow pass, and it is the one that catches things. A push
-is denied while any commit on the branch has no recorded review.
+`/code-review <sha>`, and tell it to review that commit's own diff, not
+`<sha>...HEAD` and not the branch. Act on what it finds, then record it; the
+report is read from **stdin**, and an empty one is refused:
+
+```bash
+~/.claude/hooks/changeset-review.sh record <sha> <<'REPORT'
+...what you looked at, what you found, what you did about each finding...
+REPORT
+```
+
+This is not the panel in step 4; it is a narrow pass, and it is the one that
+catches things. Both `git push` and `gh pr create` are denied while any commit
+on the branch has no recorded review — so skipping this does not defer the
+cost, it blocks step 5.
 
 Do not batch this to the end. The whole point is that the reviewer sees one
 changeset instead of a branch: a wide scope spends its attention before it
@@ -143,7 +153,10 @@ Three things to pass it that it cannot work out for itself:
 
 Then work the loop:
 
-- Fix the blocking findings. Commit the fixes.
+- Fix the blocking findings. Commit the fixes — and review each of those
+  commits the way step 3 does, as you make it. They are commits on the branch,
+  the gate counts them, and leaving them to the end is the batching step 3
+  forbids, done at the point where the branch is closest to shipping.
 - **Record a decision for every finding, not only the blocking ones —
   including the ones you decline.** The ledger is what stops the next pass
   from re-litigating them, whether the finding was blocking or advisory; a
