@@ -17,6 +17,7 @@ what one throttle does, and [NoProcessWideThrottleTest] plus
 
 from __future__ import annotations
 
+import annotationlib
 import collections
 import contextlib
 import functools
@@ -224,6 +225,49 @@ _UNRESOLVED = object()
 _NAMES_THROTTLE = re.compile(r"\bLogThrottle\b")
 _NAMES_LOGGER = re.compile(r"\bLogger\b")
 
+# This package's own logger names, which is how much of the process-wide
+# logger registry counts as its import scope. See [NoProcessWideThrottleTest].
+_PACKAGE = c64cast.__name__
+_PACKAGE_PREFIX = f"{_PACKAGE}."
+
+
+def _annotations_of(target: object) -> dict[str, str]:
+    """`target`'s annotations as the source text, never evaluated.
+
+    Reading `target.__annotations__` is not safe here, and looked it. Under
+    PEP 649 a module *without* `from __future__ import annotations` — 14 of
+    them in this package — evaluates its annotations on that access, so an
+    unquoted name imported under `if TYPE_CHECKING` raises `NameError` from
+    `__annotate__`, which `getattr`'s default does not catch. That is the
+    parameter deciding the whole function again, one round louder: an error
+    taking the check down at discovery rather than a factory quietly dropped.
+    `Format.STRING` answers with what was written and evaluates nothing — and
+    so does the `annotation_format` that [ThrottleFactoryTest._arguments_for]
+    hands `inspect.signature`, which resolves annotations of its own.
+    """
+    with contextlib.suppress(Exception):
+        return dict(annotationlib.get_annotations(target, format=annotationlib.Format.STRING))
+    return {}
+
+
+def _annotated_target(
+    value: Callable[..., object], *, unwrap: bool = True
+) -> Callable[..., object]:
+    """What carries `value`'s annotations.
+
+    A `functools.partial` carries none of its own, so its `func` does. A
+    callable *object* carries its class's rather than its `__call__`'s, which
+    read as "no return annotation" and dropped a memoizing `__call__` factory
+    out of discovery altogether — the very shape [ThrottleFactoryTest] is for.
+    """
+    target: Callable[..., object] = value.func if isinstance(value, functools.partial) else value
+    if unwrap:
+        target = inspect.unwrap(target)
+    if inspect.isroutine(target) or isinstance(target, type):
+        return target
+    dunder_call = inspect.getattr_static(type(target), "__call__", None)
+    return dunder_call if inspect.isroutine(dunder_call) else target
+
 
 def _is_logger(hint: object) -> bool:
     """Whether `hint` asks for a logger, resolved or as written.
@@ -255,20 +299,26 @@ class NoProcessWideThrottleTest(unittest.TestCase):
     `types.SimpleNamespace`, a `threading.local` or a `deque` — all shapes a
     real author writes — hid a throttle from it.
 
-    Two things stop it. A module, because a module's globals are the next
-    module's roots and following them would be a walk of the whole
-    interpreter. And `logging.Manager`, because every throttle holds a logger
-    and every logger holds the manager, whose `loggerDict` is the *process*
-    registry — so one hop off a c64cast logger lands on every other library's
-    loggers, handlers, formatters and filters. That is not this package's
-    import scope, it is the interpreter's, and it was what the depth budget
-    was being spent on. Measured with it in, the deepest path this check
-    explores is
-    `…log.parent.parent.manager.loggerDict['urllib3.util.retry'].parent.handlers[0].filters`
-    — another library's retry logger — at depth 8 of a bound of 12, with 6
-    paths past depth 8; stopping at the manager takes the deepest to 5. So a
-    dependency that nests one more object inside a handler no longer trips a
-    hard failure in a test about this package's throttles.
+    A module stops it, because a module's globals are the next module's roots
+    and following them would be a walk of the whole interpreter.
+
+    `logging.Manager` is not stopped but is **narrowed**, and the difference
+    matters because getting it wrong cost coverage. Every throttle holds a
+    logger and every logger holds the manager, whose `loggerDict` is the
+    *process* registry, so one hop off a c64cast logger reached every other
+    library's loggers, handlers, formatters and filters — which is where the
+    depth budget was going, at depth 8 of a bound of 12 through `urllib3`'s
+    retry logger. Stopping at the manager outright fixed that and lost
+    something: `loggerDict` holds *this package's own* loggers too, so a
+    throttle parked on a `c64cast.*` logger that no module global holds — the
+    walk found one at
+    `c64cast.app.cli.log.manager.loggerDict['c64cast.probe.wire'].throttle`
+    before the stop — became invisible. So the manager's children are its
+    `c64cast`-named loggers and nothing else: this package's import scope, not
+    the interpreter's. It keeps the whole cost win, since those loggers are
+    already reachable at depth ≤ 2, and a dependency that nests one more
+    object inside a handler no longer fails a test about this package's
+    throttles.
 
     The depth bound is a backstop, not a policy, and the truncation rule is
     what keeps it from becoming one. A truncation is recorded only for an
@@ -292,7 +342,6 @@ class NoProcessWideThrottleTest(unittest.TestCase):
 
     _MAX_DEPTH = 12
     _CONTAINERS = (list, tuple, set, frozenset, collections.deque)
-    _STOPS = (types.ModuleType, logging.Manager)
 
     def _attributes_of(self, obj: object) -> dict[str, object]:
         """`obj`'s own stored attributes — `__dict__` plus every `__slots__`
@@ -327,9 +376,18 @@ class NoProcessWideThrottleTest(unittest.TestCase):
         answer the same way as an object that genuinely holds nothing. A
         scalar needs no case of its own: a `str` has no `__dict__` and no
         `__slots__`, so `_attributes_of` already answers `{}` for it.
+
+        The `logging.Manager` case is the one narrowing rather than a stop —
+        the class docstring says why, and why it is not both.
         """
-        if isinstance(obj, self._STOPS):
+        if isinstance(obj, types.ModuleType):
             return []
+        if isinstance(obj, logging.Manager):
+            return [
+                (f".loggerDict[{name!r}]", child)
+                for name, child in obj.loggerDict.items()
+                if name == _PACKAGE or name.startswith(_PACKAGE_PREFIX)
+            ]
         if isinstance(obj, self._CONTAINERS):
             return [(f"[{index}]", item) for index, item in enumerate(obj)]
         if isinstance(obj, dict):
@@ -351,8 +409,8 @@ class NoProcessWideThrottleTest(unittest.TestCase):
         matter. Correctness: a truncation is only real if *no* path explored
         the object in full, and per-root memos made that answer depend on which
         module happened to be walked first. Cost: the roots share most of their
-        graph, and re-walking it from each of the 6,769 of them was 298,451
-        visits in 0.329 s against 37,318 in 0.041 s with one memo.
+        graph, and re-walking it from each of the 6,769 of them was 505,195
+        visits in 0.533 s against 39,368 in 0.044 s with one memo.
 
         A truncation still cannot be judged the moment it is hit — the
         shallower path may come later in the same walk — so each one is
@@ -455,9 +513,13 @@ class ThrottleFactoryTest(unittest.TestCase):
     What stays out of reach of both checks: a throttle only a call can produce
     where the call cannot be made from here — an instance method, which needs
     an instance this has no way to build; a factory whose arguments were
-    skipped above; or a closure cell. Named here rather than left for the test
-    names to imply. The space of further shapes is unbounded, so this is where
-    the mechanism stops and a reviewer's judgment takes over.
+    skipped above; or a closure cell. One more, and it is a limit of the text
+    fallback rather than of the walk: a return annotation that is an *alias*
+    for `LogThrottle` imported under `if TYPE_CHECKING` (`-> WireThrottle`)
+    resolves to nothing and matches no name, because a regex over source text
+    cannot follow a rename. Named here rather than left for the test names to
+    imply. The space of further shapes is unbounded, so this is where the
+    mechanism stops and a reviewer's judgment takes over.
     """
 
     def _returns(self, value: Callable[..., object]) -> object:
@@ -471,11 +533,8 @@ class ThrottleFactoryTest(unittest.TestCase):
         the fallback would resolve the package's annotations against this test
         module's imports.
         """
-        target: Callable[..., object] = (
-            value.func if isinstance(value, functools.partial) else value
-        )
-        target = inspect.unwrap(target)
-        written = (getattr(target, "__annotations__", None) or {}).get("return")
+        target = _annotated_target(value)
+        written = _annotations_of(target).get("return")
         if written is None:
             return None
 
@@ -486,7 +545,7 @@ class ThrottleFactoryTest(unittest.TestCase):
         try:
             return typing.get_type_hints(proxy, vars(module) if module else {})["return"]
         except Exception:  # noqa: BLE001 - fall back to the text, below
-            return _UNRESOLVED if _NAMES_THROTTLE.search(str(written)) else None
+            return _UNRESOLVED if _NAMES_THROTTLE.search(written) else None
 
     def _is_factory(self, value: Callable[..., object]) -> bool:
         returns = self._returns(value)
@@ -499,7 +558,7 @@ class ThrottleFactoryTest(unittest.TestCase):
         they cannot — see [_is_logger] for the second half."""
         with contextlib.suppress(Exception):
             return dict(typing.get_type_hints(func))
-        return dict(getattr(func, "__annotations__", None) or {})
+        return dict(_annotations_of(func))
 
     def _candidates(self, module):
         """Module-level callables, plus the classmethods and staticmethods of
@@ -553,13 +612,23 @@ class ThrottleFactoryTest(unittest.TestCase):
         skipped every partially-applied factory.
         """
         try:
-            signature = inspect.signature(factory, follow_wrapped=follow_wrapped)
+            # `annotation_format` is not decoration: `inspect.signature`
+            # resolves annotations too, and its default asks for values — so
+            # under PEP 649 reading the signature of a factory in one of the
+            # 14 modules without `from __future__ import annotations` raised
+            # `NameError` for an unquoted `if TYPE_CHECKING` parameter, which
+            # is the same defect as [_annotations_of]'s at a third site. This
+            # only needs names, kinds and defaults.
+            signature = inspect.signature(
+                factory,
+                follow_wrapped=follow_wrapped,
+                # pyright is pinned to 3.11 stubs (pyproject), which predate
+                # this 3.14 parameter; the runtime requires 3.14.
+                annotation_format=annotationlib.Format.STRING,  # pyright: ignore[reportCallIssue]
+            )
         except (TypeError, ValueError):
             return None
-        hinted: Callable[..., object] = (
-            factory.func if isinstance(factory, functools.partial) else factory
-        )
-        hints = self._hints_of(inspect.unwrap(hinted) if follow_wrapped else hinted)
+        hints = self._hints_of(_annotated_target(factory, unwrap=follow_wrapped))
         positional: list[object] = []
         keywords: dict[str, object] = {}
         for parameter in signature.parameters.values():
@@ -600,37 +669,55 @@ class ThrottleFactoryTest(unittest.TestCase):
             "no `-> LogThrottle` factory was discovered, so this test proves "
             "nothing — the discovery is what broke, not the rule",
         )
+        exercised = 0
         for where, factory in factories:
             with self.subTest(factory=where):
+                shapes = self._call_shapes(factory)
+                if not shapes:
+                    self.skipTest(f"{where} asks for arguments this check cannot synthesize")
                 built = None
-                for positional, keywords in self._call_shapes(factory):
+                refused: TypeError | None = None
+                for positional, keywords in shapes:
                     # A factory that logs on construction would put records
                     # between the suite's dots, and a wire-log factory has no
                     # business logging anyway — so the purity is asserted, not
-                    # suppressed. A TypeError means this shape is not how the
-                    # factory is called, which is a fact about the synthesis
-                    # and not about the code under test.
-                    with (
-                        contextlib.suppress(TypeError),
-                        self.assertNoLogs("c64cast", level="DEBUG"),
-                    ):
-                        built = (
-                            factory(*positional, **keywords),
-                            factory(*positional, **keywords),
-                        )
-                    if built is not None:
+                    # suppressed.
+                    try:
+                        with self.assertNoLogs("c64cast", level="DEBUG"):
+                            built = (
+                                factory(*positional, **keywords),
+                                factory(*positional, **keywords),
+                            )
+                    except TypeError as exc:  # noqa: PERF203 - one per shape tried
+                        refused = exc
+                    else:
                         break
                 if built is None:
-                    self.skipTest(f"{where} asks for arguments this check cannot synthesize")
+                    # Said as what happened, not as "cannot synthesize": a
+                    # shape was built and the factory refused it, and reporting
+                    # the two alike sent the reader after the argument
+                    # synthesis for a TypeError raised in a factory's own body.
+                    self.skipTest(f"{where} refused every shape this check built: {refused!r}")
                 first, second = built
                 if first is None and second is None:
                     self.skipTest(f"{where} answered None, so nothing was built to share")
+                exercised += 1
                 self.assertIsNot(
                     first,
                     second,
                     f"{where} answered twice with one object, so every stream "
                     f"that asks shares a report budget",
                 )
+        # The floor under every skip above. Each one is visible as an `s` and
+        # each is a fact about this check rather than about the code — but a
+        # change that makes *every* factory refuse the call, a `LogThrottle`
+        # constructor signature among them, would otherwise turn the whole
+        # guard from red into a quiet pass.
+        self.assertTrue(
+            exercised,
+            f"all {len(factories)} discovered factories were skipped, so this test "
+            "proves nothing — read the skip reasons rather than the green",
+        )
 
 
 if __name__ == "__main__":

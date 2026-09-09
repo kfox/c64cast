@@ -332,6 +332,13 @@ ignore = [
     "SIM117", # nested with: blocks read fine for resource-pair management
 ]
 
+# `annotationlib` is standard library as of 3.14, which is the interpreter this
+# project runs and requires. Ruff classifies imports by `target-version`, still
+# py311 here for pyupgrade's sake, and so files it as third-party and moves it
+# below the first-party block.
+[tool.ruff.lint.isort]
+extra-standard-library = ["annotationlib"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]   # allow late imports inside test methods
 "c64cast/scenes/overlays/__init__.py" = ["E402"]   # late-block re-export of backgrounds
