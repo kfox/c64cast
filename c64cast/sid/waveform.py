@@ -1525,11 +1525,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
         skipped_partial: list[int] = []
+        # Passed over under a pin rather than skipped: still worth naming, or
+        # the walk spends footprint time on candidates the log never mentions.
+        # Every other rejection here logs its own reason.
+        held_partial: list[int] = []
         # A pinned-layout candidate whose sample is a prefix: usable, but only
         # if nothing better turns up. See the docstring.
         held_back: tuple[int, float | None, FootprintSample] | None = None
         candidate = first_candidate
         exhausted = False
+        chose = False
+        took_held_back = False
         for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
             if budget.expired():
                 exhausted = True
@@ -1553,6 +1559,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 if not sample.complete:
                     if held_back is None:
                         held_back = (candidate, looked_up, sample)
+                    held_partial.append(candidate)
                     candidate = (candidate % n) + 1
                     continue
                 layout = self._unified_layout
@@ -1577,18 +1584,28 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             chosen_duration = looked_up
             chosen_layout = layout
             chosen_access_fp = sample
+            chose = True
             break
-        else:
-            if held_back is not None:
-                new_song, chosen_duration, chosen_access_fp = held_back
-                chosen_layout = self._unified_layout
-                log.info(
-                    "waveform: cycle taking song %d/%d on a partial PLAY footprint — no "
-                    "later candidate offered a whole one, and the pinned display bank "
-                    "does not come from it",
-                    new_song,
-                    n,
-                )
+
+        # Not a `for ... else`: the budget-expired `break` above would skip it,
+        # and that is the pass most likely to be holding a candidate back — a
+        # spent budget is itself what truncates a sample into the prefix that
+        # got it held. The held-back subtune beats the all-rejected fallback
+        # below either way: it carries the pinned layout and a real sample,
+        # where the fallback keeps whatever bank is on screen and has none.
+        if not chose and held_back is not None:
+            new_song, chosen_duration, chosen_access_fp = held_back
+            chosen_layout = self._unified_layout
+            log.info(
+                "waveform: cycle taking song %d/%d on a partial PLAY footprint — %s, "
+                "and the pinned display bank does not come from it",
+                new_song,
+                n,
+                "the analysis budget ran out first"
+                if exhausted
+                else "no later candidate offered a whole one",
+            )
+            took_held_back = True
 
         for sn, sl in skipped_short:
             log.info(
@@ -1611,13 +1628,30 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 sn,
                 n,
             )
+        for sn in held_partial:
+            if sn == new_song:
+                continue  # the held-back line above already named it
+            log.info(
+                "waveform: cycle passing over song %d/%d (its PLAY footprint is only a "
+                "partial sample — playable under the pinned bank, but a whole sample "
+                "is preferred)",
+                sn,
+                n,
+            )
         if exhausted:
+            # The two endings differ in what the display does, which is the
+            # part an operator sees: a held-back candidate carries the pinned
+            # layout, so nothing moves; with nothing held back the walk has no
+            # layout at all and the bank already on screen stays.
             log.warning(
                 "waveform: cycle candidate search gave up after %.1fs of host emulation "
-                "— taking song %d/%d and keeping the current display bank",
+                "— taking song %d/%d and %s",
                 ANALYSIS_BUDGET_S,
                 new_song,
                 n,
+                "keeping its pinned display bank"
+                if took_held_back
+                else "keeping the current display bank",
             )
         return new_song, chosen_duration, chosen_layout, chosen_access_fp
 

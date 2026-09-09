@@ -1543,6 +1543,71 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertFalse(access_fp.complete, "the sample is handed on with its verdict")
         self.assertIn("on a partial PLAY footprint", "\n".join(logs.output))
 
+    def test_every_passed_over_prefix_candidate_is_named(self):
+        # Under a pin these were `continue`d with no log line, so an operator
+        # saw footprint time spent on candidates the log never mentioned —
+        # while every other rejection in this walk names itself and its reason.
+        # The one that gets used is named by the held-back line instead.
+        scene = self._pinned_scene()
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2, 3, 4)),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            new_song, _duration, _layout, _fp = scene._cycle_pick_candidate(4, unspendable_budget())
+        self.assertEqual(new_song, 2)
+        joined = "\n".join(logs.output)
+        for passed_over in (3, 4):
+            self.assertIn(f"passing over song {passed_over}/4", joined)
+        self.assertNotIn(
+            "passing over song 2/4", joined, "the one taken is named by the held-back line"
+        )
+
+    def test_a_named_pass_over_does_not_claim_the_bank_was_unsafe(self):
+        # The pinned pass-over and the unpinned skip are different decisions:
+        # the skip's reason is that a bank chosen from a prefix may be RAM the
+        # subtune is live in, which is exactly what does not apply under a pin.
+        scene = self._pinned_scene()
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2, 3, 4)),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            scene._cycle_pick_candidate(4, unspendable_budget())
+        joined = "\n".join(logs.output)
+        self.assertNotIn("isn't safe", joined)
+        self.assertIn("playable under the pinned bank", joined)
+
+    def test_a_spent_budget_still_uses_the_held_back_candidate(self):
+        # The pass most likely to be holding one back, and the one a
+        # `for ... else` would have skipped: the budget-expired branch breaks
+        # out of the loop. A spent budget is itself what truncates a sample
+        # into the prefix that got the candidate held, so this is where
+        # discarding it costs the most — and the alternative is the
+        # all-rejected fallback, which has no layout and no sample at all.
+        from c64cast.sid.sid_host_emu import HostEmuBudget
+
+        scene = self._pinned_scene()
+        # Expires after the first candidate is sampled, so candidate 2 is held
+        # back and candidate 3 is never reached.
+        reads = {"n": 0}
+
+        def clock():
+            reads["n"] += 1
+            return 0.0 if reads["n"] <= 2 else 100.0
+
+        with (
+            patch("c64cast.sid.waveform.ram_play_access_footprint", self._prefix_for(2, 3, 4)),
+            self.assertLogs("c64cast.sid.waveform", level="INFO") as logs,
+        ):
+            new_song, _duration, layout, access_fp = scene._cycle_pick_candidate(
+                4, HostEmuBudget(1.0, clock=clock)
+            )
+        self.assertEqual(new_song, 2)
+        self.assertEqual(layout, scene._unified_layout, "not the layout-less fallback")
+        assert access_fp is not None
+        joined = "\n".join(logs.output)
+        self.assertIn("the analysis budget ran out first", joined)
+        self.assertIn("keeping its pinned display bank", joined)
+
     def test_a_prefix_access_footprint_drops_the_play_bank_and_says_which_one(self):
         # The other half: a held-back candidate that gets used means the $01
         # bank decision is what has to refuse the prefix. It reported "write

@@ -898,6 +898,24 @@ class InitTruncationNoticeTest(unittest.TestCase):
         self.assertIn("register state", notice)
         self.assertIn("PLAY rate", notice)
 
+    def test_a_budget_less_run_does_not_blame_a_pool_walk(self):
+        # The SHIFT cue path builds emulators with no budget on purpose, so a
+        # cue is not charged to the walk's budget — and it surfaces this same
+        # notice through _report_init_truncation. There is no shared budget on
+        # that path and no pool walk, so naming one is a cause that cannot
+        # exist. Narrow to reach (the 2 M-cycle cap normally wins first) and
+        # unconditionally wrong when it does.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        with patch.object(sid_host_emu, "_INIT_DEADLINE_S", 0.0):
+            emu = SidHostEmu(sid)  # no budget=
+        notice = sid_host_emu.init_truncation_notice(emu)
+        assert notice is not None
+        self.assertIn("wall-clock deadline", notice)
+        self.assertIn("no shared budget", notice)
+        self.assertNotIn("pool walk", notice)
+
     def test_an_init_out_of_cycles_names_the_cap_instead(self):
         # The cap patched down rather than a 2 M-cycle INIT emulated for real:
         # which bound the code reports is the subject, and the cap's value is
