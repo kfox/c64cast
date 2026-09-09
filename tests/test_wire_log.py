@@ -17,6 +17,7 @@ one throttle does, and that one pins where throttles may live.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import pkgutil
 import unittest
@@ -191,16 +192,42 @@ class NoProcessWideThrottleTest(unittest.TestCase):
     they close those two instances and not the class. A seventh site can put the
     same instance back under a new name with the suite green.
 
-    Import scope is the property, so the check is on imported objects rather
-    than on source text: a `LogThrottle` built by a factory, or held inside a
-    module-level list or dict, is the same process-wide instance whatever the
-    call looks like. Every module in the package is imported (all of them
-    import cleanly with the package's hard dependencies installed, so a failure
-    here is a real import failure and not a missing extra), and its globals,
-    one level into module-level containers, and its classes' attributes are all
-    checked — a class attribute is shared by every instance, which is the same
-    scope one name along.
+    Two checks, because a throttle can be process-wide in two ways and each one
+    is invisible to the other's method. **Reachable from import scope** is the
+    first: walk what importing the package produced, so a `LogThrottle` is found
+    wherever it is parked — a module global, a container at any depth, a class
+    attribute, a nested class's attribute, or an instance a module built at
+    import time. That is a walk of objects rather than of source text, because
+    the two regressions were `LogThrottle(log)` at a module's top level and the
+    shapes that replace it read nothing like it: a factory call, a dict entry, a
+    singleton's own field. A class attribute counts for the same reason a global
+    does — it is shared by every instance, which is the same scope one name
+    along — and so does that instance's field once the instance itself is a
+    global.
+
+    **A factory that answers with the same object twice** is the second, and no
+    import-scope walk can see it: a memoized factory (`lru_cache`, or a
+    `global` memo) holds nothing until first call and is then per process
+    forever. It is also the shape this rule pushes an author toward, since the
+    two sites it governs are free functions and "don't put it at module level"
+    reads as "wrap it in a function". So every zero-argument callable in the
+    package annotated `-> LogThrottle` is called twice and the two results must
+    be distinct objects. `inspect.signature` follows `__wrapped__`, so a
+    decorated factory is discovered rather than skipped.
+
+    What still evades both: a throttle cached somewhere only a call can reach —
+    on a class from inside a method, or in a closure cell. Neither has occurred
+    and neither has an obvious cheap check, so this docstring says so rather
+    than the test name implying otherwise.
+
+    Every module in the package is imported. All of them import cleanly with the
+    package's hard dependencies alone — which is what CI installs — so a failure
+    here is a real import failure and not a missing extra.
     """
+
+    # Deep enough for a container of containers or a singleton holding one, and
+    # bounded so a cycle or an unexpectedly wide object cannot walk the heap.
+    _MAX_DEPTH = 6
 
     def _modules(self):
         yield c64cast
@@ -209,30 +236,88 @@ class NoProcessWideThrottleTest(unittest.TestCase):
                 continue  # a three-line entry point that runs the CLI on import
             yield importlib.import_module(found.name)
 
-    def _throttles_in(self, holder: object, label: str):
-        for name, value in vars(holder).items():
-            where = f"{label}.{name}"
-            if isinstance(value, LogThrottle):
-                yield where
-            elif isinstance(value, (list, tuple, set, frozenset)):
-                yield from (where for item in value if isinstance(item, LogThrottle))
-            elif isinstance(value, dict):
-                yield from (where for item in value.values() if isinstance(item, LogThrottle))
+    def _throttles_reachable(self, root: object, label: str) -> list[str]:
+        """Every `LogThrottle` reachable from `root` without calling anything.
 
-    def test_no_throttle_lives_at_module_or_class_scope(self) -> None:
+        Recursion stops at anything that is not a container, a class, or an
+        instance of a class this package defines — so an imported module or a
+        stdlib object ends the walk rather than opening the rest of the heap.
+        """
+        found: list[str] = []
+        seen: set[int] = set()
+
+        def walk(obj: object, where: str, depth: int) -> None:
+            if depth > self._MAX_DEPTH or id(obj) in seen:
+                return
+            seen.add(id(obj))
+            if isinstance(obj, LogThrottle):
+                found.append(where)
+                return
+            if isinstance(obj, (list, tuple, set, frozenset)):
+                for index, item in enumerate(obj):
+                    walk(item, f"{where}[{index}]", depth + 1)
+                return
+            if isinstance(obj, dict):
+                for key, item in obj.items():
+                    walk(item, f"{where}[{key!r}]", depth + 1)
+                return
+            owner = obj if isinstance(obj, type) else type(obj)
+            if not getattr(owner, "__module__", "").startswith("c64cast"):
+                return
+            for name, item in getattr(obj, "__dict__", {}).items():
+                walk(item, f"{where}.{name}", depth + 1)
+
+        walk(root, label, 0)
+        return found
+
+    def test_no_throttle_is_reachable_from_import_scope(self) -> None:
         found: list[str] = []
         for module in self._modules():
-            found.extend(self._throttles_in(module, module.__name__))
             for name, value in vars(module).items():
-                if isinstance(value, type) and value.__module__ == module.__name__:
-                    found.extend(self._throttles_in(value, f"{module.__name__}.{name}"))
+                found.extend(self._throttles_reachable(value, f"{module.__name__}.{name}"))
         self.assertEqual(
             found,
             [],
-            "a throttle at import scope is per process, so one stream's flood "
-            "suppresses another stream's first report — build it per stream "
-            "instead (see c64cast/_wire_log.py)",
+            "a throttle importing the package produced is per process, so one "
+            "stream's flood suppresses another stream's first report — build it "
+            "per stream instead (see c64cast/_wire_log.py)",
         )
+
+    def _throttle_factories(self):
+        for module in self._modules():
+            for name, value in vars(module).items():
+                if isinstance(value, type) or not callable(value):
+                    continue
+                if getattr(value, "__module__", None) != module.__name__:
+                    continue
+                try:
+                    signature = inspect.signature(value)
+                except (TypeError, ValueError):
+                    continue
+                annotation = signature.return_annotation
+                if annotation in ("LogThrottle", LogThrottle):
+                    yield f"{module.__name__}.{name}", value, signature
+
+    def test_every_throttle_factory_answers_with_a_new_one(self) -> None:
+        factories = list(self._throttle_factories())
+        self.assertTrue(
+            factories,
+            "no `-> LogThrottle` factory was discovered, so this test proves "
+            "nothing — the discovery is what broke, not the rule",
+        )
+        for where, factory, signature in factories:
+            with self.subTest(factory=where):
+                self.assertFalse(
+                    signature.parameters,
+                    f"{where} takes arguments, so this test cannot call it — give "
+                    f"it a zero-argument form or check its per-stream-ness by hand",
+                )
+                self.assertIsNot(
+                    factory(),
+                    factory(),
+                    f"{where} answered twice with one object, so every stream "
+                    f"that asks shares a report budget",
+                )
 
 
 if __name__ == "__main__":
