@@ -888,15 +888,21 @@ class AsidScene(VoiceScopeRenderer, Scene):
         return True
 
     def teardown(self) -> None:
-        # Shut the wire off FIRST, before anything restores the machine. The
-        # reader's poll stop is a bounded join that `_pollthread` documents as
-        # abandoning its worker, so a reader blocked in a DMA write survives it
-        # — and its loop calls `_retune_if_due` on every pass, which reprograms
-        # CIA #1 and (pre-arm) re-uploads the handler over $C000. Closing the
-        # port is what stops an abandoned reader reading a further 0x31, so it
-        # has to happen before the restores below rather than after them: a
-        # retune that lands afterward puts the jiffy IRQ back on the wire's rate
-        # and hands the next scene the exact CIA state these steps exist to undo.
+        # Shut the wire off before the restores below it. (Not before every
+        # restore: step 0 is the base teardown, whose `display_mode.teardown`
+        # unhooks the staged-REU raster IRQ — a machine restore, and one an
+        # abandoned reader does not reach, since a retune writes the CIA #1
+        # latch and $C000 rather than $0314 or $DD00.)
+        #
+        # The reader's poll stop is a bounded join that `_pollthread` documents
+        # as abandoning its worker, so a reader blocked in a DMA write survives
+        # it — and its loop calls `_retune_if_due` on every pass, which on the
+        # buffered path reprograms CIA #1 through the player and (pre-arm)
+        # re-uploads the handler over $C000. Closing the port is what stops an
+        # abandoned reader reading a further 0x31, so it has to happen before
+        # the restores below rather than after them: a retune that lands
+        # afterward puts the jiffy IRQ back on the wire's rate and hands the
+        # next scene the exact CIA state these steps exist to undo.
         # It narrows that race rather than closing it: a retune already past its
         # own gate still lands.
         #

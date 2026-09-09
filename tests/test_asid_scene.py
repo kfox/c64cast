@@ -941,11 +941,15 @@ class AsidBufferedPlayerTest(unittest.TestCase):
 
         The reader's poll stop is a bounded join that `_pollthread` documents as
         abandoning a worker blocked on the link, and that worker's loop calls
-        `_retune_if_due` on every pass — a CIA #1 latch write, and pre-arm a
-        handler re-upload over $C000. Closing the port is what stops it reading
-        one more `0x31`, so it has to run before the restores and not after
-        them: a retune landing afterward hands the next scene the exact CIA
-        state these steps exist to undo.
+        `_retune_if_due` on every pass — on the buffered path a CIA #1 latch
+        write through the player, and pre-arm a handler re-upload over $C000.
+        (On the coalesced path `_player` is None and `_retune_if_due` reaches no
+        hardware at all, which is also why `kernal IRQ restore` is gated on
+        `_player`.) Closing the port is what stops it reading one more `0x31`,
+        so it has to run before the restores below and not after them: a retune
+        landing afterward hands the next scene the exact CIA state these steps
+        exist to undo. This pins the order against those restores, not against
+        the base teardown that runs ahead of all of them.
         """
         order: list[str] = []
         scene, _ = self._make()
