@@ -10,21 +10,33 @@ the level rule that keeps a lone recurrence visible.
 
 `assertLogs` is used throughout, so nothing here may nest `quiet_logging()`.
 
-[NoProcessWideThrottleTest] is the other half: the rest of this module pins what
-one throttle does, and that one pins where throttles may live.
+The last two classes are a different kind of check: the rest of this module pins
+what one throttle does, and [NoProcessWideThrottleTest] plus
+[ThrottleFactoryTest] pin where a throttle may live and who may hand one out.
 """
 
 from __future__ import annotations
 
+import collections
+import contextlib
+import functools
 import importlib
 import inspect
 import logging
 import pkgutil
+import types
+import typing
 import unittest
+from collections.abc import Callable
 
 import c64cast
 from c64cast import _wire_log
 from c64cast._wire_log import THROTTLE_INTERVAL_S, LogThrottle
+
+# Handed to a factory that asks for one. Named so a record it emits — which
+# `test_every_throttle_factory_answers_with_a_new_one` asserts cannot happen —
+# would say where it came from.
+_FACTORY_LOGGER = logging.getLogger("c64cast.tests.wire_log.factory")
 
 
 class _StepClock:
@@ -181,79 +193,108 @@ class ThrottleIntervalTest(unittest.TestCase):
         self.assertLessEqual(THROTTLE_INTERVAL_S, 5.0)
 
 
+def _package_modules():
+    """Every module in the package, imported.
+
+    All of them import cleanly with the package's hard dependencies alone, so a
+    failure here is a real import failure rather than a missing extra — though
+    no CI leg installs only the hard dependencies (`uv sync --frozen
+    --no-default-groups --group dev --extra web`), so that is a property of the
+    tree and not something the pipeline proves.
+    """
+    yield c64cast
+    for found in pkgutil.walk_packages(c64cast.__path__, "c64cast."):
+        if found.name.endswith("__main__"):
+            continue  # a three-line entry point that runs the CLI on import
+        yield importlib.import_module(found.name)
+
+
+def _is_logger(hint: object) -> bool:
+    return hint is logging.Logger or logging.Logger in typing.get_args(hint)
+
+
 class NoProcessWideThrottleTest(unittest.TestCase):
-    """No module reaches import time holding a throttle.
+    """No throttle is reachable from import scope.
 
-    "O(1) per stream, not per message" is stated in three places and was, until
-    this test, enforced in none: the two regressions it names were both a
-    `LogThrottle` at a module's top level, which is per *process*, and reads
-    identically to a per-stream one until a second stream exists. Both survived
-    review, and the tests that caught them are tests of the two factories — so
-    they close those two instances and not the class. A seventh site can put the
-    same instance back under a new name with the suite green.
+    "O(1) per stream, not per message" was stated in three places and enforced
+    in none. The two regressions it names were both a `LogThrottle` at a
+    module's top level — per *process*, and indistinguishable from a per-stream
+    one until a second stream exists — and both survived review. The tests that
+    caught them are tests of the two factories, so they close those two
+    instances and not the class.
 
-    Two checks, because a throttle can be process-wide in two ways and each one
-    is invisible to the other's method. **Reachable from import scope** is the
-    first: walk what importing the package produced, so a `LogThrottle` is found
-    wherever it is parked — a module global, a container at any depth, a class
-    attribute, a nested class's attribute, or an instance a module built at
-    import time. That is a walk of objects rather than of source text, because
-    the two regressions were `LogThrottle(log)` at a module's top level and the
-    shapes that replace it read nothing like it: a factory call, a dict entry, a
-    singleton's own field. A class attribute counts for the same reason a global
-    does — it is shared by every instance, which is the same scope one name
-    along — and so does that instance's field once the instance itself is a
-    global.
+    So this walks what importing the package produced: every module global,
+    then containers (`deque` included) at any depth, dicts, classes, nested
+    classes, and the `__dict__` *and* `__slots__` of any object a module holds.
+    The walk stops only at a module, because a module's globals are the next
+    module's roots and following them would be a walk of the whole interpreter.
+    It deliberately does not ask who defined a holder's class: an earlier
+    version descended only into classes this package defines, and a
+    `types.SimpleNamespace`, a `threading.local` or a `deque` — all shapes a
+    real author writes — hid a throttle from it.
 
-    **A factory that answers with the same object twice** is the second, and no
-    import-scope walk can see it: a memoized factory (`lru_cache`, or a
-    `global` memo) holds nothing until first call and is then per process
-    forever. It is also the shape this rule pushes an author toward, since the
-    two sites it governs are free functions and "don't put it at module level"
-    reads as "wrap it in a function". So every zero-argument callable in the
-    package annotated `-> LogThrottle` is called twice and the two results must
-    be distinct objects. `inspect.signature` follows `__wrapped__`, so a
-    decorated factory is discovered rather than skipped.
+    The depth bound is a backstop, not a policy. Nothing in the tree reaches
+    even depth 10 today, so a truncation means the graph grew past what this
+    check can see; truncations are collected and asserted empty rather than
+    passing quietly.
 
-    What still evades both: a throttle cached somewhere only a call can reach —
-    on a class from inside a method, or in a closure cell. Neither has occurred
-    and neither has an obvious cheap check, so this docstring says so rather
-    than the test name implying otherwise.
-
-    Every module in the package is imported. All of them import cleanly with the
-    package's hard dependencies alone — which is what CI installs — so a failure
-    here is a real import failure and not a missing extra.
+    [ThrottleFactoryTest] is the other half, and it is a separate check rather
+    than a wider walk because no walk of import scope can reach what it looks
+    for. Between them, what stays out of reach is named there.
     """
 
-    # Deep enough for a container of containers or a singleton holding one, and
-    # bounded so a cycle or an unexpectedly wide object cannot walk the heap.
-    _MAX_DEPTH = 6
+    _MAX_DEPTH = 12
+    _CONTAINERS = (list, tuple, set, frozenset, collections.deque)
 
-    def _modules(self):
-        yield c64cast
-        for found in pkgutil.walk_packages(c64cast.__path__, "c64cast."):
-            if found.name.endswith("__main__"):
-                continue  # a three-line entry point that runs the CLI on import
-            yield importlib.import_module(found.name)
+    def _attributes_of(self, obj: object) -> dict[str, object]:
+        """`obj`'s own stored attributes — `__dict__` plus every `__slots__`
+        member along its MRO.
 
-    def _throttles_reachable(self, root: object, label: str) -> list[str]:
-        """Every `LogThrottle` reachable from `root` without calling anything.
-
-        Recursion stops at anything that is not a container, a class, or an
-        instance of a class this package defines — so an imported module or a
-        stdlib object ends the walk rather than opening the rest of the heap.
+        Both halves are needed and the second was missing: `__dict__` is empty
+        for a `__slots__` instance, so a slotted singleton read as holding
+        nothing, and `__slots__` is already the idiom at five sites in this
+        package. Only slot names are read through `getattr`, never arbitrary
+        attribute names — a slot is plain storage, where a property would run
+        code this check has no business running.
         """
-        found: list[str] = []
-        seen: set[int] = set()
+        try:
+            stored = dict(getattr(obj, "__dict__", None) or {})
+        except Exception:  # noqa: BLE001 - a holder we cannot read shows us nothing
+            stored = {}
+        owner = obj if isinstance(obj, type) else type(obj)
+        for klass in getattr(owner, "__mro__", ()):
+            slots = getattr(klass, "__slots__", ()) or ()
+            for slot in (slots,) if isinstance(slots, str) else slots:
+                if not isinstance(slot, str):
+                    continue
+                with contextlib.suppress(AttributeError):  # declared, never assigned
+                    stored.setdefault(slot, getattr(obj, slot))
+        return stored
+
+    def _reachable(self, root: object, label: str) -> tuple[list[str], list[str]]:
+        """`(throttles, truncated)` reachable from `root` without calling
+        anything.
+
+        `seen` records the *shallowest* depth each object was reached at rather
+        than merely that it was reached: keyed by id alone, an object first
+        found deep enough to be truncated short-circuits the shallower path
+        that would have explored it in full.
+        """
+        throttles: list[str] = []
+        truncated: list[str] = []
+        seen: dict[int, int] = {}
 
         def walk(obj: object, where: str, depth: int) -> None:
-            if depth > self._MAX_DEPTH or id(obj) in seen:
-                return
-            seen.add(id(obj))
             if isinstance(obj, LogThrottle):
-                found.append(where)
+                throttles.append(where)
                 return
-            if isinstance(obj, (list, tuple, set, frozenset)):
+            if depth >= self._MAX_DEPTH:
+                truncated.append(where)
+                return
+            if seen.get(id(obj), self._MAX_DEPTH + 1) <= depth:
+                return
+            seen[id(obj)] = depth
+            if isinstance(obj, self._CONTAINERS):
                 for index, item in enumerate(obj):
                     walk(item, f"{where}[{index}]", depth + 1)
                 return
@@ -261,60 +302,163 @@ class NoProcessWideThrottleTest(unittest.TestCase):
                 for key, item in obj.items():
                     walk(item, f"{where}[{key!r}]", depth + 1)
                 return
-            owner = obj if isinstance(obj, type) else type(obj)
-            if not getattr(owner, "__module__", "").startswith("c64cast"):
+            if isinstance(obj, types.ModuleType):
                 return
-            for name, item in getattr(obj, "__dict__", {}).items():
+            for name, item in self._attributes_of(obj).items():
                 walk(item, f"{where}.{name}", depth + 1)
 
         walk(root, label, 0)
-        return found
+        return throttles, truncated
 
     def test_no_throttle_is_reachable_from_import_scope(self) -> None:
-        found: list[str] = []
-        for module in self._modules():
+        throttles: list[str] = []
+        truncated: list[str] = []
+        for module in _package_modules():
             for name, value in vars(module).items():
-                found.extend(self._throttles_reachable(value, f"{module.__name__}.{name}"))
+                found, cut = self._reachable(value, f"{module.__name__}.{name}")
+                throttles.extend(found)
+                truncated.extend(cut)
         self.assertEqual(
-            found,
+            throttles,
             [],
             "a throttle importing the package produced is per process, so one "
             "stream's flood suppresses another stream's first report — build it "
             "per stream instead (see c64cast/_wire_log.py)",
         )
+        self.assertEqual(
+            truncated[:5],
+            [],
+            f"the object graph now runs deeper than {self._MAX_DEPTH}, so this "
+            f"check stopped short of {len(truncated)} place(s) and cannot say no "
+            f"throttle is parked there — raise _MAX_DEPTH",
+        )
 
-    def _throttle_factories(self):
-        for module in self._modules():
-            for name, value in vars(module).items():
-                if isinstance(value, type) or not callable(value):
+
+class ThrottleFactoryTest(unittest.TestCase):
+    """Every discoverable `-> LogThrottle` factory answers with a new object.
+
+    No walk of import scope can see this one: a memoized factory holds nothing
+    until its first call and is then per process forever. It is also the shape
+    the rule pushes an author toward, since both governed sites are free
+    functions and "don't put it at module level" reads as "wrap it in a
+    function".
+
+    Return types are resolved with `typing.get_type_hints` rather than matched
+    as written, because the package uses `from __future__ import annotations`:
+    `-> _wire_log.LogThrottle` and `-> LogThrottle | None` arrive as source
+    text that no literal comparison catches. Discovery follows `__wrapped__`
+    and `functools.partial`, and covers the classmethods and staticmethods of
+    module-scope classes as well as module-level functions, so a decorated or
+    partially-applied factory is checked rather than skipped.
+
+    **A factory that takes arguments is not a failure.** `LogThrottle(logger)`
+    is the constructor, so `def new_x_log(logger: logging.Logger)` is the most
+    natural per-stream factory there is, and reddening the suite on code that
+    fully complies with the rule is how a guard gets worked around or deleted.
+    A logger parameter is supplied; a required parameter this check cannot
+    synthesize skips that factory by name, which reads as a skip in the run
+    rather than as silence.
+
+    What stays out of reach of both checks: a throttle only a call can produce
+    where the call cannot be made from here — an instance method, which needs
+    an instance this has no way to build; a factory whose arguments were
+    skipped above; or a closure cell. Named here rather than left for the test
+    names to imply. The space of further shapes is unbounded, so this is where
+    the mechanism stops and a reviewer's judgment takes over.
+    """
+
+    def _returns(self, value: Callable[..., object]) -> object:
+        target: Callable[..., object] = (
+            value.func if isinstance(value, functools.partial) else value
+        )
+        try:
+            return typing.get_type_hints(inspect.unwrap(target)).get("return")
+        except Exception:  # noqa: BLE001 - an unresolvable hint names no factory here
+            return None
+
+    def _is_factory(self, value: Callable[..., object]) -> bool:
+        returns = self._returns(value)
+        return returns is LogThrottle or LogThrottle in typing.get_args(returns)
+
+    def _candidates(self, module):
+        """Module-level callables, plus the classmethods and staticmethods of
+        the classes this module defines — the two places a factory can sit and
+        still be callable without building an instance."""
+        for name, value in list(vars(module).items()):
+            where = f"{module.__name__}.{name}"
+            if not isinstance(value, type):
+                yield where, value
+                continue
+            if getattr(value, "__module__", "") != module.__name__:
+                continue
+            for attr, raw in list(vars(value).items()):
+                if isinstance(raw, (classmethod, staticmethod)):
+                    yield f"{where}.{attr}", getattr(value, attr)
+
+    def _factories(self):
+        seen: set[int] = set()
+        for module in _package_modules():
+            for where, candidate in self._candidates(module):
+                if isinstance(candidate, type) or not callable(candidate):
                     continue
-                if getattr(value, "__module__", None) != module.__name__:
+                if not self._is_factory(candidate):
                     continue
-                try:
-                    signature = inspect.signature(value)
-                except (TypeError, ValueError):
+                key = id(inspect.unwrap(candidate))
+                if key in seen:
                     continue
-                annotation = signature.return_annotation
-                if annotation in ("LogThrottle", LogThrottle):
-                    yield f"{module.__name__}.{name}", value, signature
+                seen.add(key)
+                yield where, candidate
+
+    def _arguments_for(self, factory):
+        """`(positional, keywords)` to call `factory` with, or None when it
+        asks for something this check cannot synthesize.
+
+        A parameter with a default is left to it. Python does not allow a
+        required positional to follow a defaulted one, so skipping the
+        defaulted ones cannot misalign what is passed positionally.
+        """
+        try:
+            signature = inspect.signature(factory)
+            hints = typing.get_type_hints(inspect.unwrap(factory))
+        except Exception:  # noqa: BLE001 - a callable we cannot introspect we do not call
+            return None
+        positional: list[object] = []
+        keywords: dict[str, object] = {}
+        for parameter in signature.parameters.values():
+            if parameter.default is not inspect.Parameter.empty:
+                continue
+            if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+                continue
+            if not _is_logger(hints.get(parameter.name)):
+                return None
+            if parameter.kind is parameter.KEYWORD_ONLY:
+                keywords[parameter.name] = _FACTORY_LOGGER
+            else:
+                positional.append(_FACTORY_LOGGER)
+        return positional, keywords
 
     def test_every_throttle_factory_answers_with_a_new_one(self) -> None:
-        factories = list(self._throttle_factories())
+        factories = list(self._factories())
         self.assertTrue(
             factories,
             "no `-> LogThrottle` factory was discovered, so this test proves "
             "nothing — the discovery is what broke, not the rule",
         )
-        for where, factory, signature in factories:
+        for where, factory in factories:
             with self.subTest(factory=where):
-                self.assertFalse(
-                    signature.parameters,
-                    f"{where} takes arguments, so this test cannot call it — give "
-                    f"it a zero-argument form or check its per-stream-ness by hand",
-                )
+                arguments = self._arguments_for(factory)
+                if arguments is None:
+                    self.skipTest(f"{where} asks for arguments this check cannot synthesize")
+                positional, keywords = arguments
+                # A factory that logs on construction would put records between
+                # the suite's dots, and a wire-log factory has no business
+                # logging anyway — so the purity is asserted, not suppressed.
+                with self.assertNoLogs("c64cast", level="DEBUG"):
+                    first = factory(*positional, **keywords)
+                    second = factory(*positional, **keywords)
                 self.assertIsNot(
-                    factory(),
-                    factory(),
+                    first,
+                    second,
                     f"{where} answered twice with one object, so every stream "
                     f"that asks shares a report budget",
                 )
