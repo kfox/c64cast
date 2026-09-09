@@ -1002,10 +1002,10 @@ class FootprintSample(NamedTuple):
     bank from it. A missing late write reads as free RAM, the player MC goes
     there, and PLAY overwrites it — silence plus a crash to BASIC, which is
     the exact regression the footprint was added to prevent. The two
-    consumers that place a whole tune's hardware
-    reach these bitmaps only through [analyze_placement], which applies the
-    trust decision for them; the per-subtune scans in waveform.py handle it
-    themselves because their answer is "skip this subtune", not "widen".
+    consumers that place a whole tune's hardware reach these bitmaps only
+    through [analyze_placement], which applies the trust decision for them;
+    the per-subtune scans in waveform.py handle it themselves because their
+    answer is "skip this subtune", not "widen".
     """
 
     ram: bytearray
@@ -1433,9 +1433,9 @@ def analyze_placement(
     LAX in PLAY can still get the player MC placed in RAM its untraced tail
     writes, which is the exact regression the footprint exists to prevent.
     What the widening genuinely buys is the *nondeterministic* truncation
-    cause — the wall-clock deadline,
-    where the two runs can stop at different points and the union really does
-    carry information neither sample has alone.
+    cause — the wall-clock deadline, where the two runs can stop at different
+    points and the union really does carry information neither sample has
+    alone.
 
     So the trust flag is not what protects the placement in the common case,
     and neither — reliably — is anything else. api._find_free_layout does

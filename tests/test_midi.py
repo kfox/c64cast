@@ -209,13 +209,18 @@ class DrainWorkBoundTest(unittest.TestCase):
         # notes land together and the wheel/CC flush after that one pass is
         # late by the difference, because the flush check sits after the drain
         # and is itself rate-limited. Pinned with the ratio so that retuning
-        # any of the four constants behind it — the flush intervals, the write
+        # any of the four constants behind it — the flush period, the write
         # cost model, `_WRITES_PER_NOTE`, `_NOTES_PER_DRAIN` — has to come
         # past this assertion and say so.
+        #
+        # Against `_CONTROL_FLUSH_INTERVAL_S` alone, not the `min()` the
+        # sibling test takes: this is MidiScene's own overrun of MidiScene's
+        # own flush period, and a `min()` over both scenes' intervals leaves
+        # whichever one is larger unpinned.
         from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
-        from c64cast.sid import asid_scene, midi_scene
+        from c64cast.sid import midi_scene
 
-        protected_s = min(asid_scene._FLUSH_INTERVAL_S, midi_scene._CONTROL_FLUSH_INTERVAL_S)
+        protected_s = midi_scene._CONTROL_FLUSH_INTERVAL_S
         ultimate_s = midi_scene._drain_budget_s(ULTIMATE_PROFILE)
         self.assertAlmostEqual(ultimate_s / protected_s, 1.88, places=2)
 

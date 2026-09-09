@@ -165,32 +165,34 @@ documented way to suppress the UI.
 Instead, `api.run_sid_player()` DMAs the SID payload to its declared
 load address + a small hand-encoded 6502 player (plus a SHIFT-driven
 re-INIT stub), then POSTs a matching `10 SYS <player_base>` BASIC stub
-via `runners:run_prg`. The player and stub are **relocated per-tune** by
-`_choose_player_layout` — the default location is `$C300` (so the BASIC
-stub is `SYS 49920`), and it is taken whenever the bundle clears every
-`_layout_fits` check. In the order the code applies them, per block: the
-`$0820`-`$D000` bounds, audio's `$C000`-`$C2FF` region, the payload extent,
-any byte the supplied footprint marks, and then — once, after both blocks —
-the player/stub mutual overlap. Fail any one and the bundle is relocated to
-free RAM the tune doesn't touch (the waveform scene passes a footprint and
-picks the largest hole the tune never writes; the generic path places the
-bundle just past the payload), with the SYS argument rebuilt to match. Note
-which path is tried first: the largest-hole preference is a real margin
-against a write pattern a footprint sample never reached, but it belongs to
-the relocation path, and the default path taken ahead of it has none — see
+via `runners:run_prg`. The player and stub are **relocated per-tune**
+by `_choose_player_layout` — the default location is `$C300` (so the
+BASIC stub is `SYS 49920`), and it is taken whenever the bundle clears
+every `_layout_fits` check. In the order the code applies them, per
+block: the `$0820`-`$D000` bounds, audio's `$C000`-`$C2FF` region, the
+payload extent, any byte the supplied footprint marks, and then —
+once, after both blocks — the player/stub mutual overlap. Fail any one
+and the bundle is relocated to free RAM the tune doesn't touch (the
+waveform scene passes a footprint and picks the largest hole the tune
+never writes; the generic path tries page-aligned just past the
+payload and then, if that does not fit, page-aligned just below it,
+and raises `ValueError` if neither does), with the SYS argument
+rebuilt to match. Note which path is tried first: the largest-hole
+preference is a real margin against a write pattern a footprint sample
+never reached, but it belongs to the relocation path, and the default
+path taken ahead of it has none — see
 [sid.md](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene).
 
-The real 6510 sets the CPU port (`$01`) bank config around each call (see
-below), calls
-INIT once, installs an IRQ that calls PLAY then chains to kernal
-`$EA31` (so keyboard scan at `$028D` + cursor-blink suppression
-survive), and then spins forever in a tight `JMP *`. The player
-intentionally never returns to BASIC: most SID INIT routines clobber
-zero-page locations BASIC depends on, so an RTS would land back in
-the interpreter with corrupted state and print `?SYNTAX ERROR` on
-screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
-system rate and `$028D` keeps updating for the keyboard poller.
-Audio still comes from the real SID chip.
+The real 6510 sets the CPU port (`$01`) bank config around each call
+(see below), calls INIT once, installs an IRQ that calls PLAY then
+chains to kernal `$EA31` (so keyboard scan at `$028D` + cursor-blink
+suppression survive), and then spins forever in a tight `JMP *`. The
+player intentionally never returns to BASIC: most SID INIT routines
+clobber zero-page locations BASIC depends on, so an RTS would land
+back in the interpreter with corrupted state and print `?SYNTAX ERROR`
+on screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
+system rate and `$028D` keeps updating for the keyboard poller. Audio
+still comes from the real SID chip.
 
 **Pre-blank before the kick (Ultimate only).** `runners:run_prg` soft-resets
 the C64, and like any reset it has a reset-latency window during which the
