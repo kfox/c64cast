@@ -51,6 +51,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **The split scope's forced-fast-path warning is said once, not once per
+  tune.** Configuring `persistence` or `scroll_columns` and then playing a
+  multi-SID tune discards those modes — per-window scroll and echo are not
+  built yet — and the log says so, which it should. But the sentence is fixed
+  by the two knobs plus the chip count, so it is identical every time, while
+  the reflow that triggers it is not a one-off: a playlist re-runs a scene each
+  lap and the scope reflows per tune, so a 2SID-heavy playlist repeated the
+  same warning indefinitely. It now warns the first time and drops to `-vv` for
+  the rest of that scene's life, matching how the multi-SID downmix notice
+  already behaves. A different scene still gets its own warning, since its user
+  has not been told.
+
 - **Saving or clearing a loop slot no longer draws over the audience screen.**
   The transport engine's OSD line goes onto the C64's own output, so what
   belongs on it is transport *state* — `PAUSED`, `PLAY`, `SEEK 1:04`,

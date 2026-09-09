@@ -328,6 +328,30 @@ class SetWindowCountRenderModesTest(unittest.TestCase):
         self.assertEqual(r._voice_render_modes, ["fast"] * 3)
         self.assertTrue(r._fast_path)
 
+    def test_the_forced_fast_path_is_announced_once_per_instance(self):
+        # The reflow is not a one-off: a playlist reuses scene instances and
+        # re-runs setup() each lap, and WaveformScene reflows per tune. The
+        # message says only what the knobs plus n>1 imply, so it is the same
+        # sentence every time — news once, noise afterwards.
+        r = _knobbed_renderer(persistence="medium")
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG") as first:
+            r._set_window_count(2)
+        with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG") as again:
+            r._set_window_count(3)
+        self.assertEqual([rec.levelname for rec in first.records], ["WARNING"])
+        self.assertEqual([rec.levelname for rec in again.records], ["DEBUG"])
+        self.assertEqual(first.output[0].split(":", 2)[2], again.output[0].split(":", 2)[2])
+
+        # The level is all that changes — the repeat still forces the path, or
+        # a second reflow would render scroll/echo into a split scope.
+        self.assertEqual(r._voice_render_modes, ["fast"] * 3)
+        self.assertTrue(r._fast_path)
+
+        # Per instance, not per process: the next scene's user has not been told.
+        other = _knobbed_renderer(persistence="medium")
+        with self.assertLogs("c64cast.sid.voice_scope", level="WARNING"):
+            other._set_window_count(2)
+
     def test_shrinking_back_to_one_window_restores_the_configured_mode(self):
         r = _knobbed_renderer(scroll_columns=[4, 0, 0], persistence="short")
         configured = list(r._voice_render_modes)

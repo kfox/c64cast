@@ -331,10 +331,15 @@ class AudioFileSource:
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
         the decode→audio thread. Never raises on a decode/analyzer hiccup —
-        degrades to non-reactive so the visual keeps running. What does escape
-        is a file spec that resolves to nothing openable, and a host too short
-        of threads to start the decode thread; `SourceScene.setup` catches both,
-        logs, and flips `is_done` so the playlist advances.
+        degrades to non-reactive so the visual keeps running. Plenty else does
+        escape, though — a file spec that resolves to nothing openable, a host
+        too short of threads to start the decode thread, and whatever the audio
+        bring-up raises: the DAC's `start_for_external_source` uploads the NMI
+        routine and ring over the link, and the sampler's `start` prefills REU.
+        That last one is the case teardown has to survive with a *live* thread,
+        since the sampler ordering starts the decode thread first.
+        `SourceScene.setup` catches all of it, logs, and flips `is_done` so the
+        playlist advances.
 
         Ordering differs by backend. The 4-bit DAC's `start_for_external_source`
         just arms its worker (non-blocking), so it starts before the decode
@@ -364,11 +369,18 @@ class AudioFileSource:
     def _start_decode_thread(self) -> None:
         """Start the decode thread, and publish it only once it is running.
 
-        The order matters and matches `PollThread.start`, which says why: a
-        thread published before `start()` is a thread `teardown` can reach
-        before it has ever run, and `Thread.join` raises on one of those.
-        Publishing after means a host out of threads leaves nothing behind for
-        teardown to trip over.
+        A thread published before `start()` is one `teardown` can reach before
+        it has ever run, and `Thread.join` raises on those. Publishing second
+        means a host out of threads leaves nothing behind to trip over.
+
+        `PollThread.start` takes the same order for a neighboring reason, and
+        the difference is worth knowing before this is copied: it is guarding
+        the publish window against a `stop()` arriving from another thread, and
+        it closes that window with an RLock this has no equivalent of. What
+        stands in for the lock here is that `setup` and `teardown` both run on
+        the playlist's worker thread, so nothing can land between the two
+        statements. A caller tearing a source down from anywhere else would
+        need the lock.
         """
         thread = threading.Thread(target=self._decode_loop, daemon=True, name="audio-file-decode")
         thread.start()
