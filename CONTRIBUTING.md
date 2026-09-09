@@ -87,6 +87,7 @@ whether or not the current shell has `.venv` activated:
 | `make web` | rebuild the web console into `c64cast/web/dist` (needs Node — only if you changed `web/`) |
 | `make guide` | render the User's Guide to a typeset PDF (needs `typst`) |
 | `make bench` | the async write-pipeline benchmark |
+| `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
 
 CI runs the same lint, typecheck, and tests on every push and pull request
 across Python 3.11–3.14 — see
@@ -132,6 +133,29 @@ file the test writes under `tempfile.mkdtemp()`, or to run the block from
 *relative* default like `assets/videos/`. `MachineSettingsIsolation` is still
 there for a module that wants a settings/data directory of its own, fresh and
 untouched by anything else.
+
+### Proving a test can fail
+
+"A test covers this" is an argument; a test you watched go red is evidence. The
+cheap way to get the evidence is to break the line under test on purpose, run
+the suite, and check that a *named* assertion failed — then revert and re-run
+green. A fix whose test would have passed either way is a fix nobody can
+maintain.
+
+Run `make mutation-ready` first. CPython validates a compiled module against
+its source's modification time in **whole seconds**, so an edit applied and
+reverted inside one second, with the file's length unchanged, leaves both the
+timestamp and the size where they were: the interpreter reads the cached
+bytecode from before your edit and reports a green run that means nothing.
+`PYTHONDONTWRITEBYTECODE=1` does not help — it suppresses writing, not reading
+— and neither does `touch`. The target recompiles the tree in PEP 552
+hash-based mode, where the check is over the source's contents instead, and
+then verifies that every module an import can reach really is armed.
+
+It has to be re-run more often than it looks: `make clean` deletes every
+`__pycache__`, a fresh worktree has none to begin with, and a `uv sync` that
+moves the Python minor invalidates the lot. The verification step is there so
+that a lapse is a loud failure rather than a quiet false green.
 
 Several tests exist purely to stop documentation from drifting — the JSON schema
 against the config metadata, the annotated example TOML against the dataclass

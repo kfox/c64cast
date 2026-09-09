@@ -158,9 +158,18 @@ fmt:
 # -f is load-bearing: without it compileall SKIPS any file whose timestamp
 # cache is still valid, so on a warm checkout -- which is every real one -- the
 # target runs, prints nothing, converts nothing, and leaves you believing you
-# are protected. Re-run whenever the tree gains a module.
+# are protected.
+#
+# The conversion is real but it is not durable: it arms the pycs that exist
+# when it runs, and a newly written one always lands in timestamp mode. Four
+# routine things un-arm the tree with no output at all -- `make clean` wipes
+# every __pycache__, a fresh worktree starts with none, a uv sync that moves
+# the Python minor changes the magic tag, and `make test PY=python` does the
+# same. So the state is checked rather than assumed; the check's rationale and
+# its "which files can an import actually reach" rule live in the script.
 mutation-ready: $(SYNC)
 	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
 
 # `make test` runs the whole suite in parallel (unittest_parallel forks one
 # process per test module — still stdlib unittest, ~3x faster since the suite
