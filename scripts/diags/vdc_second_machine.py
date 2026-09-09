@@ -439,12 +439,39 @@ def describe(payload: bytes, got: bytes, sentinel: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def stage_identity(p: Probe) -> None:
+def _hexb(v: int | None) -> str:
+    return "--" if v is None else f"${v:02X}"
+
+
+def writes_land(p: Probe) -> bool:
+    """Bounce a pattern off R18/R19 to prove a host register write reaches the chip.
+
+    R18/R19 rather than a scratch register because they are read/write on every
+    revision and hold the update address, which every later operation sets for
+    itself anyway. Two patterns rather than one because a single value could
+    match whatever the pointer already held."""
+    for hi, lo in ((0x5A, 0xA5), (0xA5, 0x5A)):
+        p.port.write_reg(vdc.R.UPDATE_HI, hi)
+        p.port.write_reg(vdc.R.UPDATE_LO, lo)
+        got = (p.port.read_reg(vdc.R.UPDATE_HI), p.port.read_reg(vdc.R.UPDATE_LO))
+        print(
+            f"    R18/R19 loopback          wrote ${hi:02X}/${lo:02X}, "
+            f"read {_hexb(got[0])}/{_hexb(got[1])}"
+        )
+        if got != (hi, lo):
+            return False
+    return True
+
+
+def stage_identity(p: Probe) -> bool:
+    """Identify the chip, and decide whether the rest of the run can mean anything.
+
+    Returns False when host register writes are not reaching the VDC."""
     print("\n[2] identity")
     status = p.port.read_status()
     if status is None:
         print("    $D600 unreadable")
-        return
+        return False
     version = vdc.VDC_VERSIONS.get(status & vdc.STATUS_VERSION_MASK, "unknown")
     print(f"    $D600 status              ${status:02X}")
     print(f"    chip revision             {version}  (bits 0-2 = {status & 7})")
@@ -460,6 +487,13 @@ def stage_identity(p: Probe) -> None:
             continue
         mark = "OK" if got == want else f"MISMATCH (wanted ${want:02X})"
         print(f"    R{reg:<2d} = ${got:02X} ({got:3d})           {mark}")
+    if writes_land(p):
+        return True
+    print("\n    !! host register writes are not reaching the VDC.")
+    print("       Selecting a register means writing $D600 first, so every readback")
+    print("       in stages 4 and 5 would describe some fixed byte pattern rather")
+    print("       than what the blit wrote. They are skipped instead of reported.")
+    print("       Stage 3 below needs no register write and is still measured.")
 
 
 def stage_blanking(p: Probe, samples: int) -> float:
@@ -566,13 +600,23 @@ def stage_vblank_stream(p: Probe, pads: tuple[int, ...]) -> dict[int, list[int]]
 
 
 def summarize(
-    p: Probe, duty: float, xors: list[int], windows: dict[int, list[int]], version: str
+    p: Probe,
+    duty: float,
+    xors: list[int],
+    windows: dict[int, list[int]],
+    version: str,
+    measured: bool,
 ) -> None:
     print("\n" + "=" * 72)
     print("SUMMARY - paste this whole transcript back")
     print("=" * 72)
     print(f"  chip revision            {version}")
     print(f"  blanking duty cycle      {duty:.1f}%  (this rig measured 22-26%)")
+    if not measured:
+        print("  blit + stream            NOT MEASURED - host register writes")
+        print("                           never reached the VDC (see stage 2)")
+        print("=" * 72)
+        return
 
     if not xors:
         counts = "none seen"
@@ -646,11 +690,14 @@ def main() -> int:
             if status is not None
             else "unreadable"
         )
-        stage_identity(p)
+        measured = stage_identity(p)
         duty = stage_blanking(p, args.samples)
-        xors = stage_blit_errors(p, args.rounds)
-        windows = stage_vblank_stream(p, pads)
-        summarize(p, duty, xors, windows, version)
+        xors: list[int] = []
+        windows: dict[int, list[int]] = {}
+        if measured:
+            xors = stage_blit_errors(p, args.rounds)
+            windows = stage_vblank_stream(p, pads)
+        summarize(p, duty, xors, windows, version, measured)
     except (OSError, TRError, TimeoutError) as e:
         print(f"\nABORTED: {e}")
         return 1
