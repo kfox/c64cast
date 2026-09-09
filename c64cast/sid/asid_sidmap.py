@@ -311,6 +311,18 @@ _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
 _ULTISID_BASE_WINDOWS: tuple[tuple[int, int], ...] = ((0xD400, 0xD7E0), (0xDE00, 0xDFE0))
 
 
+def _align_down(target: int, align: int) -> int:
+    """The window base a `target` falls in, for an `align`-wide split level.
+
+    Masking, not division, so `align` has to be a power of two -- and every
+    :data:`_SPLIT_LEVELS` entry is one. A width that was merely equal to its
+    alignment would not be enough: at `(3, 0x60)` the mask lands $D420 on
+    itself rather than on $D400, splitting one window into two realized bases.
+    Pinned by `test_every_target_in_a_split_window_realizes_that_windows_base`.
+    """
+    return target & ~(align - 1) & 0xFFFF
+
+
 def _is_legal_ultisid_base(base: int) -> bool:
     return any(low <= base <= high for low, high in _ULTISID_BASE_WINDOWS)
 
@@ -366,7 +378,7 @@ def _plan_ultisid_cores(
         for t in sorted(set(targets)):
             if t in covered:
                 continue
-            base = t & ~(align - 1) & 0xFFFF
+            base = _align_down(t, align)
             if not _is_legal_ultisid_base(base):
                 realizable = False
                 break
@@ -510,9 +522,10 @@ def plan_sid_map_for_addresses(
         # one this retry can clear. In particular it cannot rescue a
         # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` exhaustion. Each level's
         # window holds `cap` instances at `_SPLIT_STRIDE`, which is exactly
-        # `align` wide and `align`-aligned (pinned by
-        # `test_every_split_level_is_exactly_as_wide_as_its_alignment`), so any
-        # target inside a window has ``align_down(t) == base``. A target's
+        # `align` wide and `align`-aligned, so any target inside a window has
+        # ``_align_down(t, align) == base`` (pinned directly, over every level
+        # and every address the planner can see, by
+        # `test_every_target_in_a_split_window_realizes_that_windows_base`). A target's
         # realized base is therefore ``align_down(t)`` whether it opens its own
         # window or rides in a lower target's, the reserved test walks the same
         # instances either way, and the retry's wider target list can only add

@@ -58,9 +58,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   by the two knobs plus the chip count, so it is identical every time, while
   the reflow that triggers it is not a one-off: a playlist re-runs a scene each
   lap and the scope reflows per tune, so a 2SID-heavy playlist repeated the
-  same warning indefinitely. It now warns the first time and leaves the repeats
-  to `-v` for the rest of that scene's life, matching how the multi-SID downmix notice
-  already behaves. A different scene still gets its own warning, since its user
+  same warning indefinitely. It now warns the first time and leaves the
+  repeats to `-v` for the rest of that scene's life, matching how the multi-SID
+  downmix notice already behaves. A different scene still gets its own warning, since its user
   has not been told.
 
 - **Saving or clearing a loop slot no longer draws over the audience screen.**

@@ -319,18 +319,37 @@ class ReservedIoTest(unittest.TestCase):
         # layout, which is the loud direction to fail in.
         self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60)))
 
-    def test_every_split_level_is_exactly_as_wide_as_its_alignment(self):
+    def test_every_target_in_a_split_window_realizes_that_windows_base(self):
         # The retry comment's proof that dropping a socket claim cannot rescue a
-        # reserved-window exhaustion rests on this and nothing else: a window is
-        # `align`-aligned and `align` wide, so any target inside one has
-        # `align_down(t) == base` and therefore the same realized base — and the
-        # same set of instances for the reserved test to walk — whether it opens
-        # its own window or rides in a lower target's. A level whose capacity and
-        # alignment disagreed would break that silently, leaving a comment that
-        # argues for behavior the code no longer has.
+        # reserved-window exhaustion rests on this and nothing else: every
+        # target inside a window realizes the *same* base, so it walks the same
+        # instances past the reserved check whether it opens its own window or
+        # rides in a lower target's.
+        #
+        # Asserted through `_align_down` itself, over every address the planner
+        # can be handed, rather than through the `cap * stride == align` identity
+        # that used to stand in for it. That identity is necessary and not
+        # sufficient: `_align_down` masks, so it is only alignment for a
+        # power-of-two `align`, and a `(3, 0x60)` level would satisfy the
+        # identity while landing $D420 on itself instead of on $D400 — the
+        # window splits in two, and the comment above the retry becomes an
+        # argument for behavior the code no longer has. The identity is kept as
+        # the second assertion because the comment cites the width too, and a
+        # window narrower than its alignment leaves part of the block uncovered
+        # without any target realizing a different base.
         for split, cap, align in m._SPLIT_LEVELS:
             with self.subTest(split=split):
-                self.assertEqual(cap * m._SPLIT_STRIDE, align)
+                self.assertEqual(cap * m._SPLIT_STRIDE, align, "window is not align wide")
+                for target in range(0xD000, 0x10000):
+                    base = m._align_down(target, align)
+                    window = [base + k * m._SPLIT_STRIDE for k in range(cap)]
+                    for instance in window:
+                        self.assertEqual(
+                            m._align_down(instance, align),
+                            base,
+                            f"${instance:04X} in the window of ${base:04X} realizes "
+                            f"a different base at {split}",
+                        )
 
     def test_giving_the_socket_up_does_not_rescue_a_reserved_window(self):
         # Same targets, one field varied: a socket that carries a chip for
