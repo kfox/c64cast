@@ -1001,7 +1001,8 @@ class FootprintSample(NamedTuple):
     fails an exact-overlap check — and _choose_display_layout picks the VIC
     bank from it. A missing late write reads as free RAM, the player MC goes
     there, and PLAY overwrites it — silence plus a crash to BASIC, which is
-    the exact regression the footprint was added to prevent. The two consumers that place a whole tune's hardware
+    the exact regression the footprint was added to prevent. The two
+    consumers that place a whole tune's hardware
     reach these bitmaps only through [analyze_placement], which applies the
     trust decision for them; the per-subtune scans in waveform.py handle it
     themselves because their answer is "skip this subtune", not "widen".
@@ -1427,10 +1428,12 @@ def analyze_placement(
     for a write PLAY makes on every frame, and the only bytes the two views
     differ at are ``$0821-$0825``: the LDA and the STA that actually executed,
     fetched as reads. What the union contributes on this tune is the traced
-    prefix's own code bytes, and nothing else. A tune with a LAX in PLAY can
-    still get the player MC placed in RAM its untraced tail writes, which is
-    the exact regression the footprint exists to prevent. What the widening genuinely
-    buys is the *nondeterministic* truncation cause — the wall-clock deadline,
+    prefix's own code bytes and nothing else; a PLAY that reads a table would
+    contribute that read too, and still nothing past the cut. A tune with a
+    LAX in PLAY can still get the player MC placed in RAM its untraced tail
+    writes, which is the exact regression the footprint exists to prevent.
+    What the widening genuinely buys is the *nondeterministic* truncation
+    cause — the wall-clock deadline,
     where the two runs can stop at different points and the union really does
     carry information neither sample has alone.
 
