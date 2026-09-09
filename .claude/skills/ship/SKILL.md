@@ -88,9 +88,13 @@ report is read from **stdin**, and an empty one is refused:
 
 ```bash
 ~/.claude/hooks/changeset-review.sh record <sha> <<'REPORT'
-...what you looked at, what you found, what you did about each finding...
+<looked at / found / did>
 REPORT
 ```
+
+The placeholder above is deliberately under the hook's floor: the report has
+to say what you looked at, what you found, and what you did about each
+finding, and a copy of the placeholder is refused rather than recorded.
 
 This is not the panel in step 4; it is a narrow pass, and it is the one that
 catches things. Both `git push` and `gh pr create` are denied while any commit
@@ -156,7 +160,12 @@ Then work the loop:
 - Fix the blocking findings. Commit the fixes — and review each of those
   commits the way step 3 does, as you make it. They are commits on the branch,
   the gate counts them, and leaving them to the end is the batching step 3
-  forbids, done at the point where the branch is closest to shipping.
+  forbids, done at the point where the branch is closest to shipping. This is
+  **not** the loop's own regression pass over the fixes
+  (`references/convergence-loop.md`, Phase 9): that one asks whether a fix
+  broke something or missed the finding, and it records nothing the gate can
+  see. Both are required, and running the loop's pass instead of this one
+  leaves `gh pr create` blocked in step 5.
 - **Record a decision for every finding, not only the blocking ones —
   including the ones you decline.** The ledger is what stops the next pass
   from re-litigating them, whether the finding was blocking or advisory; a
