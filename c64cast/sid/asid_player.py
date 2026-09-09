@@ -413,7 +413,7 @@ def hold_slot(slot_size: int) -> bytes:
 # branches correct. The mnemonics live in comments, so BuildPlayerTest pins the
 # exact output bytes against a committed golden blob: without it, flipping the
 # op loop's `STA $0000` (0x8D) to `STX` (0x8E) — every SID write storing X
-# instead of the value, i.e. total silence — left all 110 ASID tests green.
+# instead of the value, i.e. total silence — left the whole ASID suite green.
 # --------------------------------------------------------------------------
 class _Asm:
     """Minimal 6502 assembler: emit bytes, mark labels, resolve rel/abs refs."""

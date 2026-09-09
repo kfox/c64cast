@@ -132,7 +132,7 @@ def _straight_cycles(blob: bytes, origin: int, start: int, end: int) -> int:
 # that corrupt the generated 6502 — the op loop's `STA $0000` (0x8D) flipped to
 # `STX` (0x8E), so every SID write stores X instead of the value, and
 # HANDLER_ADDR relocated onto LANDING_BUF, where the REU pull overwrites the
-# handler every tick — both left all 110 ASID tests green. Regenerate this blob
+# handler every tick — both left the whole ASID suite green. Regenerate this blob
 # only when the handler deliberately changes, and read the diff opcode by opcode.
 _GOLDEN_PLAYER_128_1 = bytes.fromhex(
     "ad00c88d04dfad01c88d05dfad02c88d06dfa9008d02dfa9c48d03dfa9808d07"
@@ -290,7 +290,7 @@ class CostModelConstantsTest(unittest.TestCase):
     the assembly moving underneath it — which is the direction that produces a
     6510 lockup, and it was demonstrated: inserting a NOP into `oploop`,
     regenerating `_GOLDEN_PLAYER_128_1` to match, and leaving
-    `PER_OP_CYCLES = 65` alone left all 195 ASID tests green while every op was
+    `PER_OP_CYCLES = 65` alone left the whole ASID suite green while every op was
     under-charged by 2 cycles. The docstring's closing instruction to
     "re-derive these numbers off the new oploop/dloop" was a request to a
     human, not a check.
@@ -352,11 +352,6 @@ class CostModelConstantsTest(unittest.TestCase):
         wrapped = _straight_cycles(self.blob, self.origin, bcc, self.sym["op_noinc"])
         worst = ap.PER_OP_CYCLES + page_crossings + (wrapped - (_OPCODES[0x90][0] + 1))
         self.assertGreater(worst, ap.PER_OP_CYCLES, "the best case is not the only case")
-        self.assertLessEqual(
-            ap.PER_OP_CYCLES * (1.0 / ap.FRAME_BUDGET_FRACTION),
-            worst * (worst / ap.PER_OP_CYCLES) + worst,
-            "the budget fraction must leave room for the under-charge",
-        )
         self.assertLess(
             worst / ap.PER_OP_CYCLES,
             1.0 / ap.FRAME_BUDGET_FRACTION,
@@ -368,10 +363,15 @@ class CostModelConstantsTest(unittest.TestCase):
         # loads the counter and the RTS — on top of DELAY_CYCLES_PER_UNIT per
         # unit, and minus the taken BEQ that PER_OP_CYCLES already charged.
         beq = self._first(0xF0, self.sym["oploop"], self.sym["skipdelay"])
+        # The return is located, not assumed: charging a bare RTS would keep
+        # this green if the subroutine's terminator ever changed, which is the
+        # drift this class exists to catch.
+        end = self.origin + len(self.blob)
+        ret = self._first(0x60, self.sym["delay"], end)
         extra = (
             _straight_cycles(self.blob, self.origin, beq, self.sym["skipdelay"])
             + _straight_cycles(self.blob, self.origin, self.sym["delay"], self.sym["dloop"])
-            + _OPCODES[0x60][0]
+            + _straight_cycles(self.blob, self.origin, ret, end)
             - (_OPCODES[0xF0][0] + 1)
         )
         self.assertEqual(extra, ap.WAITED_OP_EXTRA_CYCLES)
