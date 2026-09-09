@@ -894,8 +894,8 @@ class InitTruncationNoticeTest(unittest.TestCase):
         assert notice is not None
         self.assertIn("INIT did not run to completion", notice)
         self.assertIn("wall-clock deadline", notice)
-        self.assertIn("shared analysis budget", notice)
-        self.assertIn("earlier candidates", notice)
+        self.assertIn("what was left of the analysis budget", notice)
+        self.assertIn("an earlier candidate can be what spent it", notice)
         self.assertIn("register state", notice)
         self.assertIn("PLAY rate", notice)
 
@@ -914,8 +914,9 @@ class InitTruncationNoticeTest(unittest.TestCase):
         notice = sid_host_emu.init_truncation_notice(emu)
         assert notice is not None
         self.assertIn("wall-clock deadline", notice)
-        self.assertIn("not a shared budget", notice)
-        self.assertNotIn("pool walk", notice)
+        self.assertIn("this run's own", notice)
+        self.assertIn("nothing but this tune spent it", notice)
+        self.assertNotIn("earlier candidate", notice)
 
     def test_a_fresh_budget_does_not_blame_a_pool_walk_either(self):
         # The predicate is which of the two instants `deadline_for` takes the
@@ -935,8 +936,66 @@ class InitTruncationNoticeTest(unittest.TestCase):
             emu = SidHostEmu(sid, budget=budget)
         notice = sid_host_emu.init_truncation_notice(emu)
         assert notice is not None
-        self.assertIn("not a shared budget", notice)
-        self.assertNotIn("pool walk", notice)
+        self.assertIn("this run's own", notice)
+        self.assertNotIn("earlier candidate", notice)
+
+    def test_neither_arm_claims_a_budget_was_or_was_not_shared(self):
+        # A budget is threaded, never flagged: `analyze_placement` passes one
+        # private budget through two footprint runs, and a candidate walk
+        # passes one through candidates, with nothing to tell them apart. So
+        # the wording says what follows *if* the budget is being shared, and
+        # the other arm says which instant won rather than that no budget
+        # exists — the same overclaim, in the other direction, as the predicate
+        # this replaced.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        budget = sid_host_emu.HostEmuBudget()
+        emu = SidHostEmu(sid, budget=budget)
+        shared = emu._deadline_provenance(budget.deadline, 1.0)
+        own = emu._deadline_provenance(budget.deadline + 1.0, 1.0)
+        self.assertIn("if that budget is being shared", shared)
+        self.assertNotIn("no shared budget", own)
+        self.assertNotIn("not a shared budget", own)
+
+    def test_the_cap_named_is_the_one_the_deadline_came_from(self):
+        # `_run_routine` runs with two per-run caps — 1 s for INIT and 0.05 s
+        # for a PLAY pass — so a message reading `_INIT_DEADLINE_S` quotes a
+        # figure 20x wrong on the PLAY path. Latent only because the cause is
+        # read solely for INIT today.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_WRITES)
+        emu = SidHostEmu(sid)
+        self.assertIn("0.05s cap", emu._deadline_provenance(1.0, sid_host_emu._PLAY_DEADLINE_S))
+        self.assertIn("1s cap", emu._deadline_provenance(1.0, sid_host_emu._INIT_DEADLINE_S))
+
+    def test_a_play_pass_that_ends_on_its_own_cap_quotes_the_play_cap(self):
+        # Through tick_play rather than the helper, because what has to be
+        # right is the cap `tick_play` supplies when a caller names none —
+        # asserting on the helper alone left that default free to be the INIT
+        # one, which is the 20x-wrong figure.
+        sid = _make_synthetic_sid(init_code=_INIT_RTS, play_code=_PLAY_INFINITE_LOOP)
+        emu = SidHostEmu(sid)
+        emu.tick_play(deadline=emu._now() - 1.0)
+        self.assertTrue(emu.last_routine_capped)
+        cause = emu._routine_end_cause
+        assert cause is not None
+        self.assertIn("0.05s cap", cause)
+        self.assertNotIn("1s cap", cause)
+
+    def test_the_cap_is_read_when_the_routine_runs_not_when_the_file_loads(self):
+        # A default argument expression is evaluated at definition time, so
+        # binding the constant there made patching it a silent no-op and the
+        # message quoted whatever the value was at import. That is the same
+        # false green the message itself is about.
+        from c64cast.sid import sid_host_emu
+
+        sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
+        with patch.object(sid_host_emu, "_INIT_DEADLINE_S", 0.25):
+            emu = SidHostEmu(sid)
+        assert emu.init_truncation is not None
+        self.assertIn("0.25s cap", emu.init_truncation)
 
     def test_an_init_out_of_cycles_names_the_cap_instead(self):
         # The cap patched down rather than a 2 M-cycle INIT emulated for real:

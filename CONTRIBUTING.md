@@ -88,6 +88,7 @@ whether or not the current shell has `.venv` activated:
 | `make guide` | render the User's Guide to a typeset PDF (needs `typst`) |
 | `make bench` | the async write-pipeline benchmark |
 | `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
+| `make mutation-check` | verify it is still armed — a clean, a new worktree or a `uv sync` un-arms it silently |
 
 CI runs the same lint, typecheck, and tests on every push and pull request
 across Python 3.11–3.14 — see

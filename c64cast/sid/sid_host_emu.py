@@ -762,6 +762,7 @@ class SidHostEmu:
             self._parsed.init_addr,
             a=(self._parsed.song_to_play - 1) & 0xFF,
             cap=_INIT_CYCLE_CAP,
+            deadline_cap_s=_INIT_DEADLINE_S,
             tag="init",
             deadline=load_deadline,
         )
@@ -785,7 +786,7 @@ class SidHostEmu:
         single-SID tune)."""
         return bytes(self._memory.sid_shadows[bank])
 
-    def tick_play(self, deadline: float | None = None) -> None:
+    def tick_play(self, deadline: float | None = None, deadline_cap_s: float | None = None) -> None:
         """Run one PLAY pass. Re-entrant call into `play_addr`, same
         sentinel-RTS + budget discipline as INIT. The cycle/step caps bound a
         degenerate PLAY (one that spins waiting for a raster or an IRQ that
@@ -804,7 +805,16 @@ class SidHostEmu:
         for gl in self._memory.gate_low_banks:
             gl[:] = bytes(SID.N_VOICES)
         self._run_routine(
-            self._parsed.play_addr, cap=_PLAY_CYCLE_CAP, tag="play", deadline=deadline
+            self._parsed.play_addr,
+            cap=_PLAY_CYCLE_CAP,
+            tag="play",
+            deadline=deadline,
+            # Read here, not bound as the parameter's default: a default
+            # expression is evaluated at definition time, so patching the
+            # module constant in a test would leave the reported cap at
+            # whatever it was when the file was imported — a false green of
+            # exactly the shape this whole message exists to remove.
+            deadline_cap_s=_PLAY_DEADLINE_S if deadline_cap_s is None else deadline_cap_s,
         )
 
     def retriggers(self, bank: int = 0) -> tuple[bool, bool, bool]:
@@ -863,7 +873,14 @@ class SidHostEmu:
     # ---- internals --------------------------------------------------
 
     def _run_routine(
-        self, target: int, *, cap: int, tag: str, a: int = 0, deadline: float | None = None
+        self,
+        target: int,
+        *,
+        cap: int,
+        tag: str,
+        a: int = 0,
+        deadline: float | None = None,
+        deadline_cap_s: float,
     ) -> None:
         """JSR-equivalent: push a sentinel return address, set PC = target,
         step until PC == sentinel or the routine exhausts its budget.
@@ -982,21 +999,38 @@ class SidHostEmu:
                     self._report_capped_routine(
                         f"it ran past its wall-clock deadline at PC=${mpu.pc:04X} "
                         f"({mpu.processorCycles} cycles, {steps} steps) — "
-                        f"{self._deadline_provenance(deadline)}"
+                        f"{self._deadline_provenance(deadline, deadline_cap_s)}"
                     )
                 return
 
-    def _deadline_provenance(self, deadline: float | None) -> str:
+    def _deadline_provenance(self, deadline: float | None, cap_s: float) -> str:
         """Which of the two instants `HostEmuBudget.deadline_for` takes the min
         of is the one that just fired.
+
+        `cap_s` is the per-run cap the deadline was derived from, passed down
+        rather than read from a module constant because `_run_routine` runs with
+        two of them — `_INIT_DEADLINE_S` (1 s) and `_PLAY_DEADLINE_S` (0.05 s).
+        Reading `_INIT_DEADLINE_S` here quoted a 1 s cap for a 0.05 s one, which
+        is latent only because `_routine_end_cause` is read solely by the
+        constructor's INIT today; the first caller to surface a PLAY cause would
+        have inherited the wrong number. `_run_routine` takes it as a required
+        keyword for the same reason it takes `cap`: a default would be one more
+        thing a third caller could silently draw from the wrong routine.
 
         `None` cannot reach here — a run with no deadline cannot end on one —
         and it is accepted rather than asserted because the comparison already
         answers it: no float equals `None`, so it lands on the own-cap arm,
         which is the safe reading either way.
 
+        Neither arm claims a budget is *absent*, only which instant won: a
+        budget is threaded, never flagged, so "a budget was passed" is all the
+        code knows. `analyze_placement` threads one private budget across two
+        footprint runs and a walk threads one across candidates, and nothing
+        distinguishes them — so the shared-budget arm says what follows *if* it
+        is being shared rather than asserting that it is.
+
         Only the budget's own instant can have been spent by something other
-        than this tune, so only then is "an earlier candidate did this" a
+        than this run, so only then is "an earlier candidate did this" even a
         possible reading. Asking whether a budget was *passed* is not the same
         question and gets it wrong in the common direction: a fresh
         `HostEmuBudget()` has ANALYSIS_BUDGET_S left, so the per-run cap is what
@@ -1006,13 +1040,13 @@ class SidHostEmu:
         returned is one of the two operands, not a computation over them."""
         if self._budget is not None and deadline == self._budget.deadline:
             return (
-                "the deadline is what was left of the shared analysis budget, which is "
-                "less than this run's own cap — so a pool walk's earlier candidates can "
-                "be what spent it"
+                "the deadline is what was left of the analysis budget, which was less "
+                "than this run's own cap — so if that budget is being shared down a "
+                "candidate walk, an earlier candidate can be what spent it"
             )
         return (
-            f"the deadline is this run's own {_INIT_DEADLINE_S:.0f}s cap, not a shared "
-            "budget — nothing but this tune spent it"
+            f"the deadline is this run's own {cap_s:g}s cap rather than what was left of "
+            "an analysis budget — nothing but this tune spent it"
         )
 
     def _report_capped_routine(self, cause: str) -> None:

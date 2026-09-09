@@ -29,23 +29,27 @@ both, `unchecked-hash` sets only bit 0 — and that one is hash-based yet skips
 validation entirely, so it misses a mutation the same way with a different
 cause. Both bits are required.
 
-Only the files an import can actually reach are checked: a `.pyc` whose cache
-tag is not this interpreter's is never loaded here, and neither is one whose
-source is gone. A checkout that has been run under more than one Python minor,
-or across a module rename, carries plenty of both — this tree carried 111 when
-the check was written, all orphans — and failing on those would make the check
-noise, which is how a check gets deleted.
+**The scan walks sources, not `__pycache__`.** `importlib.util.cache_from_source`
+is the same function an import uses to pick a file, so asking it settles the
+cache tag, the optimization level and a dotted module name together, and the
+answer is the file this interpreter would actually read. Walking the cache
+directory instead meant reimplementing that name, which got both the tag and the
+`opt-N` suffix wrong in turn — and the second way round was worse than the
+first: it reported optimized bytecode that a non-`-O` `compileall` will never
+rewrite, so the check failed permanently while printing a remedy that does
+nothing.
 
 What this cannot tell you is that a module *has* compiled bytecode. Absence is
 the un-armed state's other shape (a wiped `__pycache__`, a fresh worktree), and
-it is indistinguishable from "the module was never imported". So the scan is
-required to have inspected something: a wrong working directory or a renamed
-root would otherwise be a silent pass, which is the failure mode this file
-exists to remove.
+it is indistinguishable from "the module was never imported". What it can tell
+you apart from that is a root that is not there at all: a mistyped or renamed
+root has no sources, which is a different fact from having sources nobody has
+imported, and it used to be a silent pass.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import struct
 import sys
 from pathlib import Path
@@ -55,9 +59,10 @@ _HEADER_PREFIX = 8
 _HASH_BASED = 0b01
 _CHECK_SOURCE = 0b10
 _ARMED = _HASH_BASED | _CHECK_SOURCE
+_UNREADABLE = -1
 
 _MODE_NAMES = {
-    -1: "could not be read",
+    _UNREADABLE: "could not be read",
     0b00: "timestamp-based",
     0b01: "unchecked-hash (hash-based, but never validated)",
     0b10: "check_source without hash-based",
@@ -72,33 +77,31 @@ def _flags(pyc: Path) -> int:
     return struct.unpack_from("<I", header, _FLAGS_OFFSET)[0]
 
 
-def _loadable_here(pyc: Path) -> bool:
-    """True when importing this module in this interpreter would read `pyc`.
-
-    The name is `<module>.<cache tag>[.opt-N].pyc`, so the tag is the *second*
-    dot-separated part and not everything after the first dot — reading it that
-    way skipped every optimized build, which an import under `-O` does read.
-    """
-    parts = pyc.name.split(".")
-    if len(parts) < 3:
-        return False
-    module, tag = parts[0], parts[1]
-    return tag == sys.implementation.cache_tag and (pyc.parent.parent / f"{module}.py").exists()
+def describe(flags: int) -> str:
+    """The invalidation mode, for the failure line. Not masked with `_ARMED`
+    first: the unreadable sentinel is negative, and `-1 & 0b11` is 3, which
+    would look up "armed" and print a raw flags word instead."""
+    if flags in _MODE_NAMES:
+        return _MODE_NAMES[flags]
+    return _MODE_NAMES.get(flags & _ARMED, f"flags {flags:#04x}")
 
 
-def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], int]:
-    """`(unarmed, inspected)` over the loadable `.pyc` files under `roots`.
+def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], dict[str, int]]:
+    """`(unarmed, sources_per_root)` over the bytecode an import here would read.
 
-    `inspected` is returned rather than inferred from the result, because an
-    empty result and an empty scan are the same value and very different facts.
+    `sources_per_root` is returned rather than a total, because "this root has
+    no Python in it" is a mistyped or renamed root and a global count hides it
+    behind whichever root does have some.
     """
     unarmed: list[tuple[Path, int]] = []
-    inspected = 0
+    sources: dict[str, int] = {}
     for root in roots:
-        for pyc in sorted(Path(root).rglob("__pycache__/*.pyc")):
-            if not _loadable_here(pyc):
+        found = 0
+        for src in sorted(Path(root).rglob("*.py")):
+            found += 1
+            pyc = Path(importlib.util.cache_from_source(str(src)))
+            if not pyc.exists():
                 continue
-            inspected += 1
             try:
                 flags = _flags(pyc)
             except OSError:
@@ -108,34 +111,35 @@ def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], int]:
                 # header is deliberately NOT caught — that is a corrupt `.pyc`
                 # rather than an arming question, and it stops with the path in
                 # the message.
-                unarmed.append((pyc, -1))
+                unarmed.append((pyc, _UNREADABLE))
                 continue
             if flags & _ARMED != _ARMED:
                 unarmed.append((pyc, flags))
-    return unarmed, inspected
+        sources[root] = found
+    return unarmed, sources
 
 
 def main(argv: list[str]) -> int:
     roots = argv[1:] or ["c64cast", "tests", "scripts"]
-    stale, inspected = scan(roots)
-    if not inspected:
+    stale, sources = scan(roots)
+    empty = [root for root, n in sources.items() if not n]
+    if empty:
         print(
-            f"no compiled modules found under {', '.join(roots)} for "
-            f"{sys.implementation.cache_tag} — nothing was checked, so this is not a "
-            "pass. Run `make mutation-ready` from the repository root.",
+            f"no Python sources under {', '.join(empty)} — nothing was checked there, "
+            "so this is not a pass. Run `make mutation-check` from the repository root.",
             file=sys.stderr,
         )
         return 1
     if not stale:
         return 0
     print(
-        f"{len(stale)} of {inspected} compiled module(s) are not checked-hash, so a "
-        "same-second mutation would run stale bytecode and report a false green. "
+        f"{len(stale)} compiled module(s) are not checked-hash, so a same-second "
+        "mutation would run stale bytecode and report a false green. "
         "Run `make mutation-ready`.",
         file=sys.stderr,
     )
     for pyc, flags in stale[:10]:
-        print(f"  {pyc}: {_MODE_NAMES.get(flags & _ARMED, f'flags {flags:#04x}')}", file=sys.stderr)
+        print(f"  {pyc}: {describe(flags)}", file=sys.stderr)
     if len(stale) > 10:
         print(f"  ... and {len(stale) - 10} more", file=sys.stderr)
     return 1

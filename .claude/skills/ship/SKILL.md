@@ -58,7 +58,11 @@ they are enforced by tests that fail late:
   first — CPython validates bytecode against the source mtime in whole seconds,
   so a same-length edit applied and reverted inside one second silently runs
   stale bytecode and reports a false result. `PYTHONDONTWRITEBYTECODE=1` does
-  not fix that, and neither does `touch`.
+  not fix that, and neither does `touch`. Arming does not stay done, and every
+  way it lapses is silent: a fresh worktree has no bytecode at all, `make clean`
+  deletes it, and a `uv sync` that moves the Python minor invalidates it.
+  `make mutation-check` verifies the state — run it before believing a proof
+  whose arming happened earlier in the session or in another directory.
 - **The suite cannot touch files outside the checkout**, and an audit hook
   enforces it. When a test trips the sandbox, point the code under test at a
   temp fixture — never widen the sandbox.

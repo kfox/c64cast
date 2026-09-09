@@ -47,10 +47,16 @@ class HashBasedPycCheckTest(unittest.TestCase):
         (self.root / "mod.py").write_text("X = 1\n", encoding="utf-8")
 
     def _unarmed(self):
-        """Just the paths — the tests that care about the inspected count
-        assert on `scan`'s whole return value instead."""
-        unarmed, _inspected = check.scan([str(self.root)])
+        """Just the paths — the tests that care about the per-root source count
+        or the reported mode assert on `scan`'s whole return value instead."""
+        unarmed, _sources = check.scan([str(self.root)])
         return [pyc for pyc, _flags in unarmed]
+
+    def _stderr_of_main(self, *roots):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = check.main(["prog", *(roots or (str(self.root),))])
+        return code, err.getvalue()
 
     def _compile(self, mode):
         compileall.compile_dir(str(self.root), quiet=2, force=True, invalidation_mode=mode)
@@ -79,35 +85,55 @@ class HashBasedPycCheckTest(unittest.TestCase):
         # check noise, which is how a check gets deleted.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
         pyc.rename(pyc.with_name("mod.cpython-001.pyc"))
-        self.assertEqual(check.scan([str(self.root)]), ([], 0))
+        self.assertEqual(check.scan([str(self.root)]), ([], {str(self.root): 1}))
 
     def test_an_orphaned_pyc_is_ignored(self):
         # Same reasoning, other cause: the source moved or was renamed, so
         # nothing imports this either.
         self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
         (self.root / "mod.py").unlink()
-        self.assertEqual(check.scan([str(self.root)]), ([], 0))
+        self.assertEqual(check.scan([str(self.root)]), ([], {str(self.root): 0}))
 
-    def test_an_optimized_pyc_is_not_mistaken_for_another_interpreters(self):
-        # `mod.cpython-314.opt-1.pyc` is what an import under -O reads, and
-        # taking the cache tag as everything after the FIRST dot yielded
-        # "cpython-314.opt-1", which matches no interpreter — so every
-        # optimized build was skipped as an orphan and an unarmed one passed.
+    def test_the_pyc_checked_is_the_one_an_import_here_would_read(self):
+        # Two wrong answers were tried before this one, in both directions.
+        # Reimplementing the cache filename took the tag as everything after
+        # the first dot, so `mod.<tag>.opt-1.pyc` matched nothing and every
+        # optimized build passed unarmed; accepting any `opt-N` instead
+        # reported files a non-`-O` run will never import AND a non-`-O`
+        # compileall will never rewrite — a permanent failure printing a remedy
+        # that does nothing. `cache_from_source` is the function an import
+        # itself calls, so it answers tag, optimization level and dotted names
+        # at once.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
-        opt = pyc.with_name(f"mod.{sys.implementation.cache_tag}.opt-1.pyc")
-        pyc.rename(opt)
-        self.assertEqual(self._unarmed(), [opt])
+        self.assertEqual(Path(importlib.util.cache_from_source(str(self.root / "mod.py"))), pyc)
+        self.assertEqual(self._unarmed(), [pyc])
+
+        # An optimization level this interpreter is not running is not ours.
+        other = pyc.with_name(f"mod.{sys.implementation.cache_tag}.opt-9.pyc")
+        pyc.rename(other)
+        self.assertEqual(self._unarmed(), [])
+
+    def test_a_root_with_no_python_in_it_is_not_a_pass(self):
+        # A mistyped or renamed root has no sources, which is a different fact
+        # from having sources nobody imported. A global count hid it behind
+        # whichever root did have some: `... c64cast_TYPO tests scripts`
+        # exited 0.
+        self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
+        code, err = self._stderr_of_main(str(self.root), str(self.root / "nope"))
+        self.assertEqual(code, 1)
+        self.assertIn("no Python sources", err)
+        self.assertIn("nope", err)
 
     def test_an_empty_scan_is_not_a_pass(self):
-        # Absence is the un-armed state's other shape — a wiped __pycache__, a
-        # fresh worktree — and it is indistinguishable from "never imported".
-        # A wrong cwd or a renamed root would otherwise exit 0 silently, which
-        # is the failure this whole check exists to remove.
-        self.assertEqual(check.scan([str(self.root / "nope")]), ([], 0))
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(check.main(["prog", str(self.root / "nope")]), 1)
-        self.assertIn("nothing was checked", err.getvalue())
+        # A wrong working directory or a renamed root would otherwise exit 0
+        # silently, which is the failure this whole check exists to remove.
+        # (Absence of *bytecode* is a different matter and deliberately not an
+        # error — it cannot be told from "the module was never imported".)
+        missing = str(self.root / "nope")
+        self.assertEqual(check.scan([missing]), ([], {missing: 0}))
+        code, err = self._stderr_of_main(missing)
+        self.assertEqual(code, 1)
+        self.assertIn("nothing was checked", err)
 
     def test_an_armed_tree_exits_zero(self):
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
@@ -118,11 +144,18 @@ class HashBasedPycCheckTest(unittest.TestCase):
         # sends the reader after mtimes on an unchecked-hash pyc — one of the
         # two cases the both-bits test was added for.
         self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(check.main(["prog", str(self.root)]), 1)
-        self.assertIn("unchecked-hash", err.getvalue())
-        self.assertNotIn("timestamp-based", err.getvalue())
+        code, err = self._stderr_of_main()
+        self.assertEqual(code, 1)
+        self.assertIn("unchecked-hash", err)
+        self.assertNotIn("timestamp-based", err)
+
+    def test_the_unreadable_sentinel_survives_the_mode_lookup(self):
+        # It is negative, and `-1 & 0b11` is 3 — the armed value — so masking
+        # before the lookup made the entry for it unreachable and printed a raw
+        # flags word. That is the wrong-mode-in-the-message defect again, for
+        # the mode added to fix it.
+        self.assertEqual(check.describe(check._UNREADABLE), "could not be read")
+        self.assertEqual(check.describe(0b00), "timestamp-based")
 
     def test_an_unreadable_pyc_fails_closed(self):
         # A file we cannot read is a file we cannot vouch for, and the scan
@@ -133,6 +166,9 @@ class HashBasedPycCheckTest(unittest.TestCase):
         if os.access(pyc, os.R_OK):
             self.skipTest("running as a user that can read a 000 file")
         self.assertEqual(self._unarmed(), [pyc])
+        code, err = self._stderr_of_main()
+        self.assertEqual(code, 1)
+        self.assertIn("could not be read", err)
 
     def test_a_truncated_pyc_raises_rather_than_passing_quietly(self):
         pyc = self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
