@@ -198,11 +198,11 @@ class JoinPlaylistsTest(unittest.TestCase):
         t.start()
         # Fast-forwards join_bounded's deadline past its 5s budget on the very
         # first check, so the thread reads as abandoned without a real wait.
-        # The clock is stateful, which is the other half of why it must be
-        # scoped to `session`: patched over the shared stdlib module, whichever
-        # thread read it first would consume the one 0.0 and the deadline would
-        # never fast-forward.
-        clock = FrozenClock(0.0, "monotonic", 100.0)
+        # The 100 s step is what does it, and it is a step rather than a
+        # second reading on purpose: this test starts a thread of its own, so
+        # any reading may be consumed by something else. Whatever reading n
+        # join_bounded gets, its deadline is n+5 and the next reading is n+100.
+        clock = FrozenClock(0.0, "monotonic", step=100.0)
 
         try:
             with unittest.mock.patch.object(session, "time", clock):

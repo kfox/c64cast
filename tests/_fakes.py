@@ -539,8 +539,10 @@ class FrozenClock(FakeTime):
     def __init__(self, now: float = 0.0, attr: str = "time", step: float = 0.0, **pinned) -> None:
         if attr in pinned:
             raise TypeError(
-                f"{attr!r} is both this clock's pinned name and a keyword pin — "
-                f"pass one or the other, or the keyword silently wins over `now`/`step`"
+                f"{attr!r} is both this clock's pinned name and a keyword pin — pass "
+                f"one or the other. Without this, the same name reaches super() twice "
+                f"and Python raises 'got multiple values for keyword argument', which "
+                f"does not say which name or which of the two spellings to drop."
             )
         self._now = float(now)
         self._step = float(step)

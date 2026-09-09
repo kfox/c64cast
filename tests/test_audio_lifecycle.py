@@ -680,7 +680,10 @@ class NmiArmVerifyTest(unittest.TestCase):
         # It must keep the old behavior exactly — one arm, no retry latency.
         api = FakeAPI()  # read_memory → None for the read pointer
         s = self._streamer(api)
-        with mock.patch.object(audio_mod, "time", FakeTime(sleep=mock.MagicMock())) as faked:
+        # The sleep under test is audio_rate.NmiTimer.start's, not one of
+        # audio.py's — scoping this to audio_mod made the assertion below
+        # vacuous, which the aliased patch it replaced had hidden.
+        with mock.patch.object(audio_rate_mod, "time", FakeTime(sleep=mock.MagicMock())) as faked:
             with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
                 s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 1)
