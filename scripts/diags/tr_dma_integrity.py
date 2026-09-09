@@ -30,6 +30,13 @@ The summary maps each failing bit to its expansion-port pin (D7 is pin 14
 through D0 at pin 21), because a contiguous run of failing pins is a connector
 problem and a lone bit spread across the connector is not.
 
+**Read a clean run with care.** On the rig this was written for, the failing
+condition turned out to be the *transition* rather than the payload: 200 KB of
+$FF written over $FF came back perfect, and the same 200 KB written alternately
+over $00 lost 14 bytes. Soaking one payload can therefore report a faulty link
+as clean. Keep $00 immediately ahead of $FF in --patterns, which the default
+order does, so that every round demands a full-bus low-to-high swing.
+
     scripts/diags/tr_dma_integrity.py                    # autodetect the TR+
     scripts/diags/tr_dma_integrity.py --serial /dev/cu.usbmodemXXXX
     scripts/diags/tr_dma_integrity.py --tcp HOST --rounds 20
@@ -76,9 +83,10 @@ PIN_OF_BIT: Final = {bit: 21 - bit for bit in range(8)}
 
 
 def patterns(n: int) -> dict[str, bytes]:
-    """The payloads. Each one puts a different demand on the bus: a constant
-    asks for no transition at all, the alternating pair asks for one on every
-    line every byte, and the walking patterns isolate a single line."""
+    """The payloads, in the order they are soaked. Each puts a different demand
+    on the bus: the alternating pair asks for a transition on every line every
+    byte, and the walking patterns isolate a single line. $00 leads $FF so that
+    the pair spans the full bus in one step, which is the case that failed."""
     ramp = bytes(i & 0xFF for i in range(n))
     walk1 = bytes(1 << (i % 8) for i in range(n))
     walk0 = bytes((~(1 << (i % 8))) & 0xFF for i in range(n))
