@@ -5,10 +5,10 @@
 //
 // The ranking/highlighting core above is plain data-in-data-out logic with no
 // DOM dependency; the wiring below it is the only part that touches
-// `document`. That split is what lets tests/test_search_js.mjs `require()`
-// this same file under Node (via the `module.exports` guard at the bottom)
-// without a browser or a build step -- `typeof document` is the one signal
-// that tells the two environments apart.
+// `document`. That split is what lets search.test.mjs `require()` this same
+// file under Node (via the `module.exports` guard at the bottom) without a
+// browser or a build step -- `typeof document` is the one signal that tells
+// the two environments apart.
 (function () {
   "use strict";
 
@@ -141,13 +141,19 @@
 
   // The only thing that makes the dropdown's result set stale: hides it,
   // drops the markup `querySelectorAll` would otherwise still find (`hidden`
-  // does not remove elements from the DOM), and clears the keyboard-nav
-  // pointer into it. Escape and an outside click both dismiss through here,
-  // so neither leaves a dismissed result reachable by a bare Enter afterward.
+  // does not remove elements from the DOM), clears the keyboard-nav pointer
+  // into it, and bumps `searchToken` so a fetch already in flight when the
+  // dismissal happens can't land its `render()` afterward and reopen what was
+  // just dismissed -- the same guard a newer search uses against a stale
+  // older one, applied here against a dismiss racing an older search. Escape
+  // and an outside click both dismiss through here, so neither leaves a
+  // dismissed result reachable by a bare Enter afterward, however slow the
+  // fetch behind it turns out to be.
   function closeResults() {
     results.hidden = true;
     results.innerHTML = "";
     active = -1;
+    searchToken++;
   }
 
   function render(matches, terms) {

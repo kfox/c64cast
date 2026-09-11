@@ -87,3 +87,124 @@ test("mark: two non-adjacent matches each get their own span", () => {
     "<mark>overlap</mark> <mark>overlapping</mark>",
   );
 });
+
+// --- the fetch-race guard (search()'s DOM-wiring half) -----------------
+//
+// A minimal fake DOM, just enough for search.js's wiring to run: an element
+// that records its own event listeners so a test can fire them, and a
+// controllable `fetch` so a test can decide exactly when the index "arrives"
+// relative to a later keystroke -- the race the real bug (and the real fix)
+// is about, not something a unit test of score()/mark() in isolation can
+// exercise. Deletes the module from Node's require cache first: the pure-
+// function tests above already required search.js with no `document`
+// global, and CommonJS caches by resolved path, so a second require() here
+// would just return that same cached export unless the cache entry is
+// cleared -- this is the one time in the file that's necessary.
+
+function fakeElement() {
+  const listeners = {};
+  return {
+    dataset: { index: "search-index.json" },
+    hidden: true,
+    innerHTML: "",
+    value: "",
+    addEventListener(type, fn) {
+      (listeners[type] ??= []).push(fn);
+    },
+    fire(type, overrides = {}) {
+      for (const fn of listeners[type] || []) fn({ preventDefault() {}, target: this, ...overrides });
+    },
+    querySelectorAll: () => [],
+    closest: () => null,
+  };
+}
+
+function flush() {
+  // Two hops: one for fetch()'s own promise, one for the .then(r => r.json())
+  // in between it and search()'s .then() that reads searchToken. A single
+  // microtask turn is not enough to guarantee both have run.
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(
+    () => new Promise((resolve) => setTimeout(resolve, 0)),
+  );
+}
+
+function loadWiredSearch() {
+  const require = createRequire(import.meta.url);
+  const resolved = require.resolve("./search.js");
+  delete require.cache[resolved];
+
+  const input = fakeElement();
+  const results = fakeElement();
+  globalThis.document = {
+    baseURI: "https://example.invalid/guide/x.html",
+    getElementById: (id) => (id === "site-search" ? input : id === "search-results" ? results : null),
+    addEventListener() {},
+  };
+
+  let deliver = null;
+  globalThis.fetch = () =>
+    new Promise((resolve) => {
+      deliver = (data) => resolve({ json: () => Promise.resolve(data) });
+    });
+
+  require("./search.js");
+  return {
+    input,
+    results,
+    type(query) {
+      input.value = query;
+      input.fire("input");
+    },
+    escape() {
+      input.fire("keydown", { key: "Escape" });
+    },
+    deliverIndex(data) {
+      deliver(data);
+    },
+    cleanup() {
+      delete globalThis.document;
+      delete globalThis.fetch;
+    },
+  };
+}
+
+test("search(): a fetch that resolves after the query was cleared does not reopen the dropdown", async () => {
+  const page = loadWiredSearch();
+  try {
+    page.type("bus");
+    page.type(""); // cleared before the index ever arrives
+    page.deliverIndex([{ url: "guide/x.html", title: "Bus", text: "bus service info" }]);
+    await flush();
+    assert.equal(page.results.hidden, true);
+    assert.equal(page.results.innerHTML, "");
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("search(): the latest query's results still render once the index resolves", async () => {
+  const page = loadWiredSearch();
+  try {
+    page.type("bus");
+    page.deliverIndex([{ url: "guide/x.html", title: "Bus", text: "bus service info" }]);
+    await flush();
+    assert.equal(page.results.hidden, false);
+    assert.match(page.results.innerHTML, /Bus/);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("search(): a fetch still in flight when Escape dismisses it does not reopen the dropdown once it resolves", async () => {
+  const page = loadWiredSearch();
+  try {
+    page.type("bus"); // starts the fetch; the index has not arrived yet
+    page.escape(); // dismissed before it does
+    page.deliverIndex([{ url: "guide/x.html", title: "Bus", text: "bus service info" }]);
+    await flush();
+    assert.equal(page.results.hidden, true);
+    assert.equal(page.results.innerHTML, "");
+  } finally {
+    page.cleanup();
+  }
+});

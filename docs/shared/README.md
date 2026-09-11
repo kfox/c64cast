@@ -30,9 +30,9 @@ docs/<book>/*.md -----------------+
       |    docs/shared/template.typ ----->+--> typst --> .pdf
       |
       +--> scripts/build_site.py --> docs/_site/<book>/*.html
-      |                                  |
-      |                                  +--> docs/_site/search-index.json (generated)
-      |
+                                          |
+                                          +--> docs/_site/search-index.json (generated)
+
            docs/shared/site.css ------------>+
            docs/shared/search.js ----------->+--> GitHub Pages
 ```
