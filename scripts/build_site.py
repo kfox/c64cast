@@ -547,6 +547,8 @@ def shell(
             hero,
             '<div class="layout">',
             aside,
+            # `_MAIN_RE` in build_search_index() depends on there being exactly
+            # one of these, closed by the *last* `</main>` in the page.
             f'<main class="content">{body}</main>',
             "</div>",
             '<footer class="sitefoot">',

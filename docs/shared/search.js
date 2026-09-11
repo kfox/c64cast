@@ -2,8 +2,100 @@
 // index scripts/build_site.py writes next to this file. Every page loads it
 // and fetches the index relative to itself, so the same script works at any
 // depth (`index.html`, `guide/04-setting-up.html`, ...).
+//
+// The ranking/highlighting core above is plain data-in-data-out logic with no
+// DOM dependency; the wiring below it is the only part that touches
+// `document`. That split is what lets tests/test_search_js.mjs `require()`
+// this same file under Node (via the `module.exports` guard at the bottom)
+// without a browser or a build step -- `typeof document` is the one signal
+// that tells the two environments apart.
 (function () {
   "use strict";
+
+  const TITLE_WEIGHT = 100; // a title hit always outranks any text hit
+  const TEXT_WEIGHT_MAX = 40; // a text hit at position 0
+  const TEXT_WEIGHT_DECAY = 20; // chars per point of falloff after that
+  const TEXT_WEIGHT_FLOOR = 1; // a text hit is still worth more than no hit
+
+  function words(query) {
+    return query.toLowerCase().split(/\s+/).filter(Boolean);
+  }
+
+  // Every query word must appear somewhere (title or text) -- a query is a
+  // refinement, not a bag of optional hints. Title hits outrank text hits,
+  // and an earlier text hit outranks a later one (more likely the lede).
+  function score(entry, terms) {
+    let total = 0;
+    for (const term of terms) {
+      const inTitle = entry.titleLower.includes(term);
+      const at = entry.textLower.indexOf(term);
+      if (!inTitle && at < 0) return -1;
+      total +=
+        (inTitle ? TITLE_WEIGHT : 0) +
+        (at >= 0 ? Math.max(TEXT_WEIGHT_MAX - at / TEXT_WEIGHT_DECAY, TEXT_WEIGHT_FLOOR) : 0);
+    }
+    return total;
+  }
+
+  function snippet(entry, terms) {
+    const text = entry.text;
+    let at = -1;
+    for (const term of terms) {
+      const found = entry.textLower.indexOf(term);
+      if (found >= 0 && (at < 0 || found < at)) at = found;
+    }
+    if (at < 0) return text.slice(0, 140);
+    const start = Math.max(0, at - 60);
+    const prefix = start > 0 ? "…" : "";
+    return prefix + text.slice(start, start + 160);
+  }
+
+  function escapeHtml(text) {
+    return text.replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    );
+  }
+
+  // Finds every term's match ranges against the *plain* text first, merges
+  // the overlapping ones, then escapes and wraps in a single left-to-right
+  // pass -- doing it a term at a time against the growing marked-up string
+  // (the obvious way) lets a later term's regex match literal characters an
+  // earlier one just inserted (e.g. the "ark" in a `<mark>` tag it added).
+  function mark(text, terms) {
+    const lower = text.toLowerCase();
+    const ranges = [];
+    for (const term of terms) {
+      if (!term) continue;
+      let from = 0;
+      let at;
+      while ((at = lower.indexOf(term, from)) !== -1) {
+        ranges.push([at, at + term.length]);
+        from = at + term.length;
+      }
+    }
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const range of ranges) {
+      const last = merged[merged.length - 1];
+      if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+      else merged.push(range);
+    }
+    let out = "";
+    let pos = 0;
+    for (const [start, end] of merged) {
+      out += escapeHtml(text.slice(pos, start));
+      out += "<mark>" + escapeHtml(text.slice(start, end)) + "</mark>";
+      pos = end;
+    }
+    return out + escapeHtml(text.slice(pos));
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { words, score, snippet, mark, escapeHtml };
+  }
+
+  if (typeof document === "undefined") return;
 
   const input = document.getElementById("site-search");
   const results = document.getElementById("search-results");
@@ -47,73 +139,15 @@
     return pending;
   }
 
-  function words(query) {
-    return query.toLowerCase().split(/\s+/).filter(Boolean);
-  }
-
-  // Every query word must appear somewhere (title or text) -- a query is a
-  // refinement, not a bag of optional hints. Title hits outrank text hits,
-  // and an earlier text hit outranks a later one (more likely the lede).
-  function score(entry, terms) {
-    let total = 0;
-    for (const term of terms) {
-      const inTitle = entry.titleLower.includes(term);
-      const at = entry.textLower.indexOf(term);
-      if (!inTitle && at < 0) return -1;
-      total += (inTitle ? 100 : 0) + (at >= 0 ? Math.max(40 - at / 20, 1) : 0);
-    }
-    return total;
-  }
-
-  function snippet(entry, terms) {
-    const text = entry.text;
-    let at = -1;
-    for (const term of terms) {
-      const found = entry.textLower.indexOf(term);
-      if (found >= 0 && (at < 0 || found < at)) at = found;
-    }
-    if (at < 0) return text.slice(0, 140);
-    const start = Math.max(0, at - 60);
-    const prefix = start > 0 ? "…" : "";
-    return prefix + text.slice(start, start + 160);
-  }
-
-  function escapeHtml(text) {
-    return text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-  }
-
-  // Finds every term's match ranges against the *plain* text first, merges
-  // the overlapping ones, then escapes and wraps in a single left-to-right
-  // pass -- doing it a term at a time against the growing marked-up string
-  // (the obvious way) lets a later term's regex match literal characters an
-  // earlier one just inserted (e.g. the "ark" in a `<mark>` tag it added).
-  function mark(text, terms) {
-    const lower = text.toLowerCase();
-    const ranges = [];
-    for (const term of terms) {
-      if (!term) continue;
-      let from = 0;
-      let at;
-      while ((at = lower.indexOf(term, from)) !== -1) {
-        ranges.push([at, at + term.length]);
-        from = at + term.length;
-      }
-    }
-    ranges.sort((a, b) => a[0] - b[0]);
-    const merged = [];
-    for (const range of ranges) {
-      const last = merged[merged.length - 1];
-      if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
-      else merged.push(range);
-    }
-    let out = "";
-    let pos = 0;
-    for (const [start, end] of merged) {
-      out += escapeHtml(text.slice(pos, start));
-      out += "<mark>" + escapeHtml(text.slice(start, end)) + "</mark>";
-      pos = end;
-    }
-    return out + escapeHtml(text.slice(pos));
+  // The only thing that makes the dropdown's result set stale: hides it,
+  // drops the markup `querySelectorAll` would otherwise still find (`hidden`
+  // does not remove elements from the DOM), and clears the keyboard-nav
+  // pointer into it. Escape and an outside click both dismiss through here,
+  // so neither leaves a dismissed result reachable by a bare Enter afterward.
+  function closeResults() {
+    results.hidden = true;
+    results.innerHTML = "";
+    active = -1;
   }
 
   function render(matches, terms) {
@@ -151,8 +185,7 @@
     const token = ++searchToken;
     const terms = words(query);
     if (terms.length === 0) {
-      results.hidden = true;
-      results.innerHTML = "";
+      closeResults();
       return;
     }
     load()
@@ -176,12 +209,11 @@
   input.addEventListener("input", () => search(input.value));
 
   input.addEventListener("keydown", (event) => {
-    const items = results.querySelectorAll("li a");
     if (event.key === "Escape") {
-      results.hidden = true;
-      active = -1;
+      closeResults();
       return;
     }
+    const items = results.querySelectorAll("li a");
     if (event.key === "ArrowDown" && items.length) {
       event.preventDefault();
       active = Math.min(active + 1, items.length - 1);
@@ -205,7 +237,7 @@
   });
 
   document.addEventListener("click", (event) => {
-    if (!event.target.closest(".search")) results.hidden = true;
+    if (!event.target.closest(".search")) closeResults();
   });
 
   document.addEventListener("keydown", (event) => {

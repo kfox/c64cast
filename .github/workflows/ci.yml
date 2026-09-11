@@ -74,13 +74,21 @@ jobs:
           done
       - name: The whole site renders
         run: make site-check PY="uv run --no-project python"
+      # search.js's ranking/highlighting core is plain functions with no DOM
+      # dependency, so it's tested with node:test rather than in a browser.
+      # Zero deps, zero package.json -- the ubuntu-latest runner's own
+      # preinstalled `node` is enough, so this doesn't need actions/setup-node.
+      - name: The search box's ranking/highlighting logic
+        run: node --test docs/shared/
 
   # The web console's bundle is committed under c64cast/web/dist so that
   # installing c64cast never needs Node. That only stays true if the bundle is
   # actually current, so rebuild it here and fail on a diff — the same drift
   # gate the JSON schema and the generated reference appendices already have.
-  # Node is needed by this job alone; nothing else in CI, and nothing a user
-  # runs, touches it.
+  # This job alone needs the *npm* toolchain (actions/setup-node, the web/
+  # devDependencies); the docs job also runs `node`, but only the runner's own
+  # preinstalled binary against a dependency-free node:test file. Nothing a
+  # user runs touches either.
   web:
     name: web console (bundle matches its sources)
     runs-on: ubuntu-latest
