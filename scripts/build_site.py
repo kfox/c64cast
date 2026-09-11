@@ -877,8 +877,6 @@ def build(out: Path, *, write: bool = True) -> int:
         rendered[url] = html_text
         figures += [(s, t, url) for s, t in figs]
 
-    search_index = build_search_index(rendered)
-
     if not write:
         print(f"site source OK ({len(rendered)} pages)")
         return 0
@@ -890,7 +888,7 @@ def build(out: Path, *, write: bool = True) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
 
-    copy_assets(out, figures, search_index)
+    copy_assets(out, figures, build_search_index(rendered))
     print(f"wrote {out} ({len(rendered)} pages)")
     return 0
 

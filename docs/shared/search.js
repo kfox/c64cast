@@ -18,14 +18,31 @@
   let entries = null;
   let pending = null;
   let active = -1;
+  // Bumped on every search() call and captured in its closure, so a fetch
+  // that resolves after a later (or emptied) query no longer wins the race
+  // and reopens the dropdown with an answer to a question nobody is asking.
+  let searchToken = 0;
 
   function load() {
-    if (entries || pending) return pending;
+    if (entries) return Promise.resolve(entries);
+    if (pending) return pending;
     pending = fetch(indexUrl)
       .then((r) => r.json())
       .then((data) => {
-        entries = data;
-        return data;
+        // Lowercased once here rather than by score() on every keystroke --
+        // the index is fetched once and never mutated, so every later
+        // search would otherwise re-lowercase the whole corpus per term.
+        entries = data.map((e) => ({
+          ...e,
+          titleLower: e.title.toLowerCase(),
+          textLower: e.text.toLowerCase(),
+        }));
+        pending = null;
+        return entries;
+      })
+      .catch((err) => {
+        pending = null;
+        throw err;
       });
     return pending;
   }
@@ -38,23 +55,21 @@
   // refinement, not a bag of optional hints. Title hits outrank text hits,
   // and an earlier text hit outranks a later one (more likely the lede).
   function score(entry, terms) {
-    const title = entry.title.toLowerCase();
-    const text = entry.text.toLowerCase();
     let total = 0;
     for (const term of terms) {
-      const inTitle = title.includes(term);
-      const at = text.indexOf(term);
+      const inTitle = entry.titleLower.includes(term);
+      const at = entry.textLower.indexOf(term);
       if (!inTitle && at < 0) return -1;
       total += (inTitle ? 100 : 0) + (at >= 0 ? Math.max(40 - at / 20, 1) : 0);
     }
     return total;
   }
 
-  function snippet(text, terms) {
-    const lower = text.toLowerCase();
+  function snippet(entry, terms) {
+    const text = entry.text;
     let at = -1;
     for (const term of terms) {
-      const found = lower.indexOf(term);
+      const found = entry.textLower.indexOf(term);
       if (found >= 0 && (at < 0 || found < at)) at = found;
     }
     if (at < 0) return text.slice(0, 140);
@@ -63,15 +78,42 @@
     return prefix + text.slice(start, start + 160);
   }
 
+  function escapeHtml(text) {
+    return text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  // Finds every term's match ranges against the *plain* text first, merges
+  // the overlapping ones, then escapes and wraps in a single left-to-right
+  // pass -- doing it a term at a time against the growing marked-up string
+  // (the obvious way) lets a later term's regex match literal characters an
+  // earlier one just inserted (e.g. the "ark" in a `<mark>` tag it added).
   function mark(text, terms) {
-    const esc = text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    let out = esc;
+    const lower = text.toLowerCase();
+    const ranges = [];
     for (const term of terms) {
       if (!term) continue;
-      const re = new RegExp("(" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig");
-      out = out.replace(re, "<mark>$1</mark>");
+      let from = 0;
+      let at;
+      while ((at = lower.indexOf(term, from)) !== -1) {
+        ranges.push([at, at + term.length]);
+        from = at + term.length;
+      }
     }
-    return out;
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const range of ranges) {
+      const last = merged[merged.length - 1];
+      if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+      else merged.push(range);
+    }
+    let out = "";
+    let pos = 0;
+    for (const [start, end] of merged) {
+      out += escapeHtml(text.slice(pos, start));
+      out += "<mark>" + escapeHtml(text.slice(start, end)) + "</mark>";
+      pos = end;
+    }
+    return out + escapeHtml(text.slice(pos));
   }
 
   function render(matches, terms) {
@@ -93,10 +135,10 @@
           mark(entry.title, terms) +
           "</span>" +
           "<span class=\"path\">" +
-          entry.url +
+          escapeHtml(entry.url) +
           "</span>" +
           "<span class=\"snippet\">" +
-          mark(snippet(entry.text, terms), terms) +
+          mark(snippet(entry, terms), terms) +
           "</span>" +
           "</a></li>"
         );
@@ -106,20 +148,28 @@
   }
 
   function search(query) {
+    const token = ++searchToken;
     const terms = words(query);
     if (terms.length === 0) {
       results.hidden = true;
       results.innerHTML = "";
       return;
     }
-    load().then((data) => {
-      const matches = data
-        .map((entry) => ({ entry, s: score(entry, terms) }))
-        .filter((m) => m.s >= 0)
-        .sort((a, b) => b.s - a.s)
-        .map((m) => m.entry);
-      render(matches, terms);
-    });
+    load()
+      .then((data) => {
+        if (token !== searchToken) return;
+        const matches = data
+          .map((entry) => ({ entry, s: score(entry, terms) }))
+          .filter((m) => m.s >= 0)
+          .sort((a, b) => b.s - a.s)
+          .map((m) => m.entry);
+        render(matches, terms);
+      })
+      .catch(() => {
+        if (token !== searchToken) return;
+        results.innerHTML = '<li class="search-empty">Search is unavailable right now</li>';
+        results.hidden = false;
+      });
   }
 
   input.addEventListener("focus", load);
@@ -129,6 +179,7 @@
     const items = results.querySelectorAll("li a");
     if (event.key === "Escape") {
       results.hidden = true;
+      active = -1;
       return;
     }
     if (event.key === "ArrowDown" && items.length) {
@@ -137,9 +188,14 @@
     } else if (event.key === "ArrowUp" && items.length) {
       event.preventDefault();
       active = Math.max(active - 1, 0);
-    } else if (event.key === "Enter" && active >= 0 && items[active]) {
+    } else if (event.key === "Enter") {
+      // No arrow key yet on this query is the common case, not an edge
+      // case -- Enter goes to the top-ranked result then, same as active
+      // being explicitly on it.
+      const target = active >= 0 ? items[active] : items[0];
+      if (!target) return;
       event.preventDefault();
-      window.location.href = items[active].href;
+      window.location.href = target.href;
       return;
     } else {
       return;
