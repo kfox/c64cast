@@ -95,6 +95,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **Audio shutdown completes every hardware and microphone cleanup step after an earlier one fails.** A transient link error no longer leaves SID volume, DAC bias, or the KERNAL NMI vector unrestored, and a microphone stream is still closed when its `stop()` call raises.
+
 - **A CIA-timed SID tune could peg a core for the whole scene, and the guard
   against it was skipped on exactly those tunes.** The oscilloscope and the
   reactive-visuals feature stream size their poll period so one emulated PLAY

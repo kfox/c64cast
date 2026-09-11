@@ -79,6 +79,8 @@ The `device` argument to the `start_*` methods is an `int | str`: an int index, 
 * `start_for_external_source()` — no input thread; the caller (the PyAV demuxer) pushes via `push_samples(int16)`.
 * `start_listen(device, sens, *, sample_rate=None)` — **analysis-only capture**: opens the input, feeds `analysis_sink` from `_listen_callback`, and stops there. No NMI, no worker thread, no DAC/SID writes, so nothing reaches the C64 — the input drives reactive visuals only (the `audio_source = "listen"` VJ case). Because nothing downstream is bound to the DAC rate, it opens at `sample_rate` when given — the listen path passes a higher rate (44.1 kHz) for full-bandwidth analysis (real hi-hat energy above the DAC's 6 kHz Nyquist, cleaner onsets). A `_listen_mode` flag makes `stop()` short-circuit its DAC teardown to a bare stream-close; the other `start_*` methods clear it (the streamer is reused across scenes). See [`audio_features.py`](#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input).
 
+`AudioStreamer.stop()` treats the NMI disable, SID mute, DAC-bias disable, KERNAL NMI-vector restore, microphone stop, and microphone close as independent teardown guarantees. Each runs through `run_teardown_steps`, so a failed DMA write or stream `stop()` is logged at ERROR while the remaining cleanup still runs. The order remains the clean-cutoff order documented below.
+
 ### The worker thread and its pacing
 
 The worker drains the queue at `chunk_size / sample_rate` — the NMI consumption rate — so it can never lap the NMI read pointer and overwrite real audio with neutral padding. Each iteration:
