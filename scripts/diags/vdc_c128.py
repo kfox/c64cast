@@ -23,6 +23,8 @@ Stages
   3. host -> C128 RAM DMA rate (the TeensyROM+ link's bulk path)
   4. RAM -> VRAM blit rate (the resident loop's inner loop)
   5. end-to-end frame time and the frame rate that implies
+ 5b. how much of the porthole's wait is display fetches (R1 = 0)
+ 5c. optional attribute block height sweep (R9) -- needs eyes on the monitor
   6. optional visible pattern: image | animate | palette | none
 
 Stages 3-5 are skippable with --pattern-only, for runs whose point is the
@@ -508,6 +510,155 @@ def stage_end_to_end(client: TRClient) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# register experiments
+# ---------------------------------------------------------------------------
+
+
+def stage_blank_gain(client: TRClient, port: vdc.VdcPorthole, payload: bytes) -> None:
+    """Blit the same payload twice -- display live, then R1 = 0 -- and report how
+    much of the porthole's cost was display fetches.
+
+    A porthole byte costs ~55.5 cycles, of which ~14 are the 8502's own loop (an
+    unpolled blit runs at 14.1) and the rest is the 8502 parked in
+    ``BIT $D600 / BPL`` waiting for the 8563's scheduler to spare it a slot. R1
+    is characters displayed per row, so R1 = 0 fetches no display data at all and
+    leaves the scheduler almost nothing else to serve. The gap between the two
+    rates is the part of the porthole that is contention rather than silicon.
+
+    The verify is not a formality here. R36 is 0 under this register program, so
+    display fetches are the only thing refreshing VRAM; blanking removes them,
+    and a blank blit that comes back fast but wrong says the headroom is not
+    spendable rather than free."""
+    nbytes = len(payload)
+    live_r1 = vdc.BITMAP_640x200_REGS[vdc.R.H_DISPLAYED]
+    print(f"\n[5b] display-fetch contention (R1 = 0 against R1 = {live_r1})")
+
+    def timed_blit(label: str) -> tuple[float, int]:
+        before = issue(
+            client, vdc_rom.CMD_BLIT, dst=vdc.BITMAP_BASE, count=nbytes, src=vdc_rom.FRAMEBUF_ADDR
+        )
+        dt = wait_done(client, before, timeout=30.0)
+        try:
+            bad, _ = _stable_diff(client, vdc.BITMAP_BASE, payload)
+        except TRError:
+            bad = [-1]
+        rate = nbytes / dt
+        verdict = "clean" if not bad else f"{len(bad)} B WRONG"
+        print(
+            f"    {label:9s} {rate:8.0f} B/s   {1e6 / rate:5.1f} us/B "
+            f"(~{1e6 / rate:.0f} cycles at 1 MHz)   {verdict}"
+        )
+        return dt, len(bad)
+
+    live, live_bad = timed_blit("live")
+    try:
+        port.write_reg(vdc.R.H_DISPLAYED, 0)
+        blank, blank_bad = timed_blit("blanked")
+    finally:
+        port.write_reg(vdc.R.H_DISPLAYED, live_r1)
+
+    gain = live / blank if blank else 0.0
+    saved = 1.0 - blank / live if live else 0.0
+    print(f"    -> blanking is {gain:.2f}x; display fetches were {saved * 100:.0f}% of the wait")
+    if blank_bad and not live_bad:
+        print("       but only the blanked blit corrupted: no refresh without display")
+        print("       fetches (R36 = 0), so this headroom is not spendable as-is")
+    elif gain < 1.15:
+        print("       the wait is not the display -- it is the 8563's own floor,")
+        print("       and no host-side scheduling trick will move it")
+
+
+#: Vertical timing per attribute-block height, holding 264 total scanlines and
+#: 200 displayed. R9 is scanlines per character row, and in bitmap mode it sets
+#: the attribute block height with it -- so the dial that gave us 8x2 color runs
+#: the other way to shrink the attribute plane. Rows are 264/(R9+1) total and
+#: 200/(R9+1) displayed; R7 holds sync at the same fraction of the frame
+#: (116/132) it sits at in :data:`vdc.BITMAP_640x200_REGS`.
+ATTR_HEIGHT_TIMING: Final = {
+    # R9: (R4 v_total, R6 v_displayed, R7 v_sync_pos)
+    1: (131, 100, 116),
+    3: (65, 50, 58),
+    7: (32, 25, 29),
+}
+
+
+def _program_attr_height(port: vdc.VdcPorthole, r9: int) -> int:
+    """Apply one row of :data:`ATTR_HEIGHT_TIMING`; returns the attribute row
+    count. Written in ascending register order: every intermediate state is out
+    of sync for the ~200 us the four writes take, which is far inside one frame,
+    so there is no ordering that a monitor can tell apart."""
+    v_total, v_displayed, v_sync = ATTR_HEIGHT_TIMING[r9]
+    port.write_reg(vdc.R.V_TOTAL, v_total)
+    port.write_reg(vdc.R.V_DISPLAYED, v_displayed)
+    port.write_reg(vdc.R.V_SYNC_POS, v_sync)
+    port.write_reg(vdc.R.CHAR_V_TOTAL, r9)
+    return v_displayed
+
+
+def stage_attr_height(client: TRClient, port: vdc.VdcPorthole, hold: float) -> None:
+    """Sweep the attribute block height and show each setting as color bands.
+
+    Needs a person at the RGBI monitor. Whether the VDC really fetches only
+    ``80 x rows`` attribute bytes is a question about what reaches the screen,
+    and there is no capture on that output. Each pass fills the bitmap solid and
+    writes one color per attribute row, so the answer is a band count: 100 bands
+    two pixels tall at R9 = 1, 25 bands eight pixels tall at R9 = 7. A wrong
+    count, a rolling picture, or color that repeats down the screen all say the
+    plane is not the size the arithmetic claims.
+
+    The payoff is not the full-frame rate -- the bitmap is 16000 bytes whatever
+    R9 does, so a full frame can never beat ~1.1 fps through the porthole. It is
+    the delta path: at R9 = 7 the attribute plane is a quarter the size, so
+    attribute deltas cost a quarter as much, which is most of the cost for
+    content whose color moves slower than its detail."""
+    print("\n[5c] attribute block height (R9) -- NEEDS EYES ON THE RGBI MONITOR")
+    solid = bytes([0xFF]) * vdc.BITMAP_BYTES
+    client.write_segment(vdc_rom.FRAMEBUF_ADDR, solid)
+    before = issue(
+        client,
+        vdc_rom.CMD_BLIT,
+        dst=vdc.BITMAP_BASE,
+        count=vdc.BITMAP_BYTES,
+        src=vdc_rom.FRAMEBUF_ADDR,
+    )
+    wait_done(client, before, timeout=30.0)
+
+    try:
+        for r9 in sorted(ATTR_HEIGHT_TIMING):
+            rows = _program_attr_height(port, r9)
+            nbytes = rows * vdc.ATTR_COLS
+            frame = vdc.BITMAP_BYTES + nbytes
+            # Colors 1-15: 0 is black against a solid-foreground bitmap, which
+            # would read as a missing band rather than a band.
+            plane = bytearray()
+            for row in range(rows):
+                plane += bytes([(row % 15) + 1]) * vdc.ATTR_COLS
+            client.write_segment(vdc_rom.FRAMEBUF_ADDR, bytes(plane))
+            before = issue(
+                client,
+                vdc_rom.CMD_BLIT,
+                dst=vdc.ATTR_BASE,
+                count=nbytes,
+                src=vdc_rom.FRAMEBUF_ADDR,
+            )
+            dt = wait_done(client, before, timeout=30.0)
+            print(
+                f"    R9={r9}  8x{r9 + 1} blocks  {rows:3d} rows  "
+                f"{nbytes:5d} B attrs  frame {frame:5d} B  "
+                f"attr blit {dt * 1000:.0f} ms"
+            )
+            print(f"           -> expect {rows} bands of {r9 + 1} px, cycling 15 colors, no black")
+            time.sleep(hold)
+    finally:
+        _program_attr_height(port, vdc.BITMAP_640x200_REGS[vdc.R.CHAR_V_TOTAL])
+
+    base = vdc.FRAME_BYTES
+    for r9 in sorted(ATTR_HEIGHT_TIMING):
+        frame = vdc.BITMAP_BYTES + ATTR_HEIGHT_TIMING[r9][1] * vdc.ATTR_COLS
+        print(f"    R9={r9}: frame {frame} B, {(1 - frame / base) * 100:4.1f}% off 24000")
+
+
 def pattern_image(client: TRClient, image_path: str) -> None:
     import cv2
 
@@ -665,6 +816,20 @@ def main() -> int:
     )
     ap.add_argument("--reset-settle", type=float, default=3.0)
     ap.add_argument("--no-dwell", action="store_true", help="skip the VRAM dwell stage")
+    ap.add_argument(
+        "--no-blank-gain",
+        action="store_true",
+        help="skip the R1 = 0 display-contention stage",
+    )
+    ap.add_argument(
+        "--attr-height",
+        action="store_true",
+        help=(
+            "sweep the attribute block height (R9 = 1, 3, 7) as color bands. "
+            "Scored by counting bands on the RGBI monitor, so only run it "
+            "with someone watching."
+        ),
+    )
     ap.add_argument("--dwell-bytes", type=int, default=6000)
     ap.add_argument(
         "--dwell-secs",
@@ -704,6 +869,10 @@ def main() -> int:
             if not args.no_dwell:
                 stage_vram_dwell(port, min(len(payload), args.dwell_bytes), args.dwell_secs)
             stage_end_to_end(client)
+            if not args.no_blank_gain:
+                stage_blank_gain(client, port, payload)
+        if args.attr_height:
+            stage_attr_height(client, port, args.hold)
 
         if args.pattern == "image":
             pattern_image(client, args.image)
