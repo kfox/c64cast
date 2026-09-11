@@ -1403,14 +1403,9 @@ class ScreenRouteTest(WebApiTestCase):
         pool = self._stream_pool()
 
         parts: list[bytes] = []
-        closed: list[bool] = []
-
         def source():
-            try:
-                for i in range(1000):
-                    yield f"part{i}".encode()
-            finally:
-                closed.append(True)
+            for i in range(1000):
+                yield f"part{i}".encode()
 
         class _Gone:
             def __init__(self) -> None:
@@ -1426,10 +1421,9 @@ class ScreenRouteTest(WebApiTestCase):
                 parts.append(part)
 
         asyncio.run(drive())
-        # Three checks passed, three parts; the fourth check ended it — and the
-        # generator was closed, which is what releases the machine's stream.
+        # Three checks passed and yielded three parts; the fourth detected the
+        # disconnect. The response's ScreenFeed.release task owns the stream.
         self.assertEqual(parts, [b"part0", b"part1", b"part2"])
-        self.assertEqual(closed, [True])
 
     def test_the_adapter_closes_the_generator_even_when_it_runs_out(self):
         import asyncio
