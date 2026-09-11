@@ -51,7 +51,6 @@ log = logging.getLogger("c64cast.audio.sampler")
 # Register spec (Ultimate Audio v0.2). Multi-byte fields are BIG-ENDIAN.
 # --------------------------------------------------------------------------
 SAMPLER_IO_BASE = ULTIMATE_AUDIO.IO_BASE  # channel 0; reads give the IRQ status reg
-SAMPLER_VERSION_REG = 0xDF21  # reads $10 when the sampler is present
 SAMPLER_CHANNEL_STRIDE = 0x20  # each channel occupies 32 consecutive bytes
 SAMPLER_NUM_CHANNELS = 7
 # Nominal sampler reference: the FPGA's voice engine runs at an effective
