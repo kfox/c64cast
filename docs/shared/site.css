@@ -206,6 +206,92 @@ samp {
   font-weight: 600;
 }
 
+.search {
+  position: relative;
+  margin-left: auto;
+  flex: 0 1 16rem;
+}
+
+.search input {
+  width: 100%;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+.search input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  width: 24rem;
+  max-width: 90vw;
+  max-height: 70vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.search-results li + li {
+  border-top: 1px solid var(--rule);
+}
+
+.search-results a {
+  display: block;
+  padding: 0.5rem 0.6rem;
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.search-results li.active a,
+.search-results a:hover {
+  background: var(--accent-wash);
+}
+
+.search-results .result-title {
+  display: block;
+  font-weight: 600;
+}
+
+.search-results .path {
+  display: block;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.search-results .snippet {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.search-results mark {
+  background: var(--accent-pale);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.search-empty {
+  padding: 0.5rem 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .sitefoot {
   border-top: 1px solid var(--rule);
   color: var(--muted);
@@ -784,6 +870,17 @@ a.bookcard .cta::after {
   .pager .next {
     margin-left: 0;
     text-align: left;
+  }
+
+  .search {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .search-results {
+    right: auto;
+    left: 0;
+    width: 100%;
   }
 }
 
