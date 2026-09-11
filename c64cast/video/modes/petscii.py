@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.hw.c64 import SCREEN, VIC, RegionID
 from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
 from c64cast.video.palette import COLOR_MATCH_MODES, apply_color_fit
@@ -83,7 +83,7 @@ class PETSCIIDisplayMode(CharDisplayMode):
         # coming from a bitmap scene, whose screen RAM holds nibble-packed
         # colors that would otherwise render as garbled characters here.
         clear_char_screen(api)
-        api.write_memory("d018", "14")
+        api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         api.write_memory("d016", "08")
         # Each style declares its own border + background; push them now
         # so we don't carry the previous scene's choices into the first
