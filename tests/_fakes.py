@@ -742,3 +742,45 @@ class FrozenClock(FakeTime):
         now = self._now
         self._now += self._step
         return now
+
+
+class SleepDrivenClock:
+    """A time-module stand-in that only the code under test advances.
+
+    The counterpart to [FrozenClock], which the *test* drives. Bind it over a
+    **module's own** ``time`` name, as [FakeTime] describes::
+
+        with mock.patch.object(audio_mod, "time", SleepDrivenClock()):
+            ...           # the worker's deadlines are priced in virtual time
+
+    A loop that paces itself then advances exactly one interval per iteration
+    however loaded the host is, which is what its call sites need: a poll fake
+    answering "not yet" twice raced a real deadline whenever a parallel worker
+    stalled between two of its reads, and ``audio.py``'s drip marks a slot late
+    by comparing its deadline against the clock, so one OS scheduling overshoot
+    cascaded through every remaining slot in the chunk.
+
+    Only the module bound over reads this clock; the test keeps the host's, so a
+    harness timeout still bounds a hang.
+
+    ``time``, ``monotonic`` and ``perf_counter`` read one timeline. The start is
+    nonzero so a reading cannot be mistaken for a ``0.0`` "never happened"
+    sentinel, and a negative ``sleep`` raises ``ValueError`` as the real module
+    does. Unlike [FakeTime] nothing here delegates: an unpinned name raises
+    ``AttributeError`` instead of handing the code under test a host reading on
+    a different timeline.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._now = float(start)
+
+    def monotonic(self) -> float:
+        return self._now
+
+    perf_counter = monotonic
+    time = monotonic
+
+    def sleep(self, seconds: float) -> None:
+        if seconds < 0:
+            raise ValueError("sleep length must be non-negative")
+        self._now += seconds
