@@ -169,7 +169,7 @@
         const href = new URL(entry.url, siteRoot).href;
         return (
           "<li><a href=\"" +
-          href +
+          escapeHtml(href) +
           "\">" +
           "<span class=\"result-title\">" +
           mark(entry.title, terms) +
@@ -211,7 +211,9 @@
       });
   }
 
-  input.addEventListener("focus", load);
+  input.addEventListener("focus", () => {
+    load().catch(() => {});
+  });
   input.addEventListener("input", () => search(input.value));
 
   input.addEventListener("keydown", (event) => {

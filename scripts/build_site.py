@@ -107,6 +107,8 @@ LOGO = REPO_ROOT / "assets" / "logo.png"
 # that is identical on every page.
 _MAIN_RE = re.compile(r'<main class="content">(.*)</main>', re.S)
 _TITLE_RE = re.compile(r"<title>(.*?)</title>", re.S)
+_PAGER_RE = re.compile(r'<nav class="pager">.*?</nav>', re.S)
+_EDITLINK_RE = re.compile(r'<p class="editlink">.*?</p>', re.S)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -426,13 +428,13 @@ class HtmlEmitter(Emitter):
         cls = f' class="{kind}"' if kind else ""
 
         def row(cells: list[str], tag: str) -> str:
-            out = "".join(
+            out = "\n".join(
                 f'<{tag} class="ta-{aligns[i]}">{cell}</{tag}>' for i, cell in enumerate(cells)
             )
-            return f"<tr>{out}</tr>"
+            return f"<tr>\n{out}\n</tr>"
 
         head = row(header, "th")
-        body = "".join(row(r, "td") for r in rows)
+        body = "\n".join(row(r, "td") for r in rows)
         # A reference table is wider than a phone. Scrolling it inside its own
         # box is the only way the page itself does not scroll sideways.
         return (
@@ -460,7 +462,7 @@ class HtmlEmitter(Emitter):
             out.append(f"<li>{item.text}")
         while stack:
             out.append(f"</li></{stack.pop()[1]}>")
-        return "".join(out)
+        return "\n".join(out)
 
     def paragraph(self, body: str) -> str:
         return f"<p>{body}</p>"
@@ -822,7 +824,9 @@ def build_search_index(rendered: dict[str, str]) -> str:
         title_match = _TITLE_RE.search(page)
         title = html.unescape(title_match.group(1)) if title_match else url
         main_match = _MAIN_RE.search(page)
-        text = strip_tags(main_match.group(1)) if main_match else ""
+        main_html = main_match.group(1) if main_match else ""
+        main_html = _EDITLINK_RE.sub("", _PAGER_RE.sub("", main_html))
+        text = strip_tags(main_html)
         entries.append({"url": url, "title": title, "text": re.sub(r"\s+", " ", text).strip()})
     return json.dumps(entries, ensure_ascii=False)
 

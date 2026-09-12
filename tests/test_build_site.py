@@ -408,10 +408,12 @@ class EmitterTest(unittest.TestCase):
 
     def test_a_nested_list_nests(self) -> None:
         out = self.convert("- a\n  - b\n- c\n")
-        self.assertEqual("<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>", out)
+        self.assertEqual("<ul>\n<li>a\n<ul>\n<li>b\n</li></ul>\n</li>\n<li>c\n</li></ul>", out)
 
     def test_an_ordered_list_is_an_ol(self) -> None:
-        self.assertEqual("<ol><li>one</li><li>two</li></ol>", self.convert("1. one\n2. two\n"))
+        self.assertEqual(
+            "<ol>\n<li>one\n</li>\n<li>two\n</li></ol>", self.convert("1. one\n2. two\n")
+        )
 
     def test_a_table_scrolls_inside_its_own_box(self) -> None:
         """Or the reference guide's widest tables scroll the whole page sideways."""
