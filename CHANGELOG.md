@@ -21,6 +21,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **A search box on the documentation site.** Every page at
+  <https://kfox.github.io/c64cast/> now carries a search field in the header
+  that matches against every book chapter and standalone doc, ranking a title
+  hit over a body hit, and jumps straight to the page on Enter or a click.
+  It is client-side against a JSON index `scripts/build_site.py` writes at
+  build time — no server, no third-party search service, no page reload.
+  Press `/` anywhere on the site to focus it.
+
 - **A warning when a tune's INIT does not finish running on the host
   emulator.** The scope and the reactive visuals are both drawn from a
   host-side 6502 running the same tune the SID chip plays, and a tune whose

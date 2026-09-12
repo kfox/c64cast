@@ -29,6 +29,13 @@ Every URL the site emits is relative. GitHub Pages serves this under
 account page rather than the project's -- the same file also has to work from
 `python -m http.server -d docs/_site`.
 
+Search is client-side: `build_search_index()` strips each rendered page's own
+`<main class="content">` back down to plain text after every page exists, and
+`copy_assets()` writes the result as `search-index.json` next to the pages it
+describes. `docs/shared/search.js` is the only thing that reads it -- one
+script, fetched by every page's own search box, no server and no third-party
+index to keep in sync.
+
 Stdlib only, and no import of `c64cast`, for the reason `build_book.py` says.
 """
 
@@ -36,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import posixpath
 import re
 import shutil
@@ -91,7 +99,16 @@ RELEASE_PDF = "releases/latest/download/{output}.pdf"
 # the OFL requires it, not as a courtesy; see docs/shared/fonts/README.md.
 FONT_DIR = DOCS / "shared" / "fonts"
 STYLESHEET = DOCS / "shared" / "site.css"
+SEARCH_JS = DOCS / "shared" / "search.js"
 LOGO = REPO_ROOT / "assets" / "logo.png"
+
+# Pulls a rendered page's own prose back out of its chrome, so the search
+# index holds what a reader is looking for and not the nav/sidebar/footer
+# that is identical on every page.
+_MAIN_RE = re.compile(r'<main class="content">(.*)</main>', re.S)
+_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.S)
+_PAGER_RE = re.compile(r'<nav class="pager">.*?</nav>', re.S)
+_EDITLINK_RE = re.compile(r'<p class="editlink">.*?</p>', re.S)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -411,13 +428,13 @@ class HtmlEmitter(Emitter):
         cls = f' class="{kind}"' if kind else ""
 
         def row(cells: list[str], tag: str) -> str:
-            out = "".join(
+            out = "\n".join(
                 f'<{tag} class="ta-{aligns[i]}">{cell}</{tag}>' for i, cell in enumerate(cells)
             )
-            return f"<tr>{out}</tr>"
+            return f"<tr>\n{out}\n</tr>"
 
         head = row(header, "th")
-        body = "".join(row(r, "td") for r in rows)
+        body = "\n".join(row(r, "td") for r in rows)
         # A reference table is wider than a phone. Scrolling it inside its own
         # box is the only way the page itself does not scroll sideways.
         return (
@@ -445,7 +462,7 @@ class HtmlEmitter(Emitter):
             out.append(f"<li>{item.text}")
         while stack:
             out.append(f"</li></{stack.pop()[1]}>")
-        return "".join(out)
+        return "\n".join(out)
 
     def paragraph(self, body: str) -> str:
         return f"<p>{body}</p>"
@@ -503,6 +520,14 @@ def shell(
         f'<a href="{attr(site.repo)}/releases/latest">v{esc(site.version)}</a>.</div>'
     )
     aside = f'<aside class="sidebar">{sidebar}</aside>' if sidebar else ""
+    search = (
+        '<div class="search">'
+        '<input type="search" id="site-search" placeholder="Search docs…"'
+        ' aria-label="Search documentation" autocomplete="off" spellcheck="false"'
+        f' data-index="{rel("search-index.json")}">'
+        '<ul id="search-results" class="search-results" hidden></ul>'
+        "</div>"
+    )
     return "\n".join(
         [
             "<!doctype html>",
@@ -519,16 +544,20 @@ def shell(
             '<header class="topbar">',
             f'<a class="brand" href="{rel("index.html")}">c64cast</a>',
             f'<nav>{nav}<a class="external" href="{attr(site.repo)}">GitHub</a></nav>',
+            search,
             "</header>",
             hero,
             '<div class="layout">',
             aside,
+            # `_MAIN_RE` in build_search_index() depends on there being exactly
+            # one of these, closed by the *last* `</main>` in the page.
             f'<main class="content">{body}</main>',
             "</div>",
             '<footer class="sitefoot">',
             f'<a href="{attr(site.repo)}/blob/main/LICENSE">MIT</a> · '
             f'<a href="{attr(site.repo)}">source on GitHub</a>',
             "</footer>",
+            f'<script src="{rel("search.js")}" defer></script>',
             "</body>",
             "</html>",
             "",
@@ -781,6 +810,27 @@ def render_landing(site: Site) -> str:
 # ---------------------------------------------------------------------------
 
 
+def build_search_index(rendered: dict[str, str]) -> str:
+    """One JSON array, `{url, title, text}` per page, for `search.js` to fetch.
+
+    Built from the already-rendered HTML rather than threaded through the
+    converter: `<main class="content">` is the one thing every page shape
+    (landing, book index, chapter, standalone) puts in the same place, so
+    reusing it here is cheaper than giving every `render_*` a second return
+    value just for this.
+    """
+    entries = []
+    for url, page in rendered.items():
+        title_match = _TITLE_RE.search(page)
+        title = html.unescape(title_match.group(1)) if title_match else url
+        main_match = _MAIN_RE.search(page)
+        main_html = main_match.group(1) if main_match else ""
+        main_html = _EDITLINK_RE.sub("", _PAGER_RE.sub("", main_html))
+        text = strip_tags(main_html)
+        entries.append({"url": url, "title": title, "text": re.sub(r"\s+", " ", text).strip()})
+    return json.dumps(entries, ensure_ascii=False)
+
+
 def load_book(book: Book) -> None:
     """Read every chapter of a book, for its contents page and its sidebar."""
     paths = discover_chapters(book.dir)
@@ -844,14 +894,16 @@ def build(out: Path, *, write: bool = True) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
 
-    copy_assets(out, figures)
+    copy_assets(out, figures, build_search_index(rendered))
     print(f"wrote {out} ({len(rendered)} pages)")
     return 0
 
 
-def copy_assets(out: Path, figures: list[tuple[str, Path, str]]) -> None:
+def copy_assets(out: Path, figures: list[tuple[str, Path, str]], search_index: str) -> None:
     """Everything the pages point at that is not itself a page."""
     (out / "site.css").write_bytes(STYLESHEET.read_bytes())
+    (out / "search.js").write_bytes(SEARCH_JS.read_bytes())
+    (out / "search-index.json").write_text(search_index, encoding="utf-8")
 
     (out / "assets").mkdir(parents=True, exist_ok=True)
     shutil.copy2(LOGO, out / "assets" / LOGO.name)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import posixpath
 import re
@@ -187,7 +188,7 @@ class SiteBuildTest(unittest.TestCase):
         self.assertEqual([], missing)
 
     def test_the_assets_the_pages_point_at_were_copied(self) -> None:
-        for name in ("site.css", "assets/logo.png"):
+        for name in ("site.css", "search.js", "search-index.json", "assets/logo.png"):
             self.assertTrue((self.root / name).is_file(), name)
         fonts = self.root / "fonts"
         self.assertTrue(sorted(fonts.glob("*.ttf")), "no fonts copied")
@@ -245,6 +246,38 @@ class SiteBuildTest(unittest.TestCase):
                     f"releases/latest/download/{book.meta['output']}.pdf",
                     self.pages[book.index_url],
                 )
+
+
+class SearchIndexTest(unittest.TestCase):
+    """search-index.json, what search.js fetches to answer a query."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = _BuiltSite.get()
+        cls.entries = json.loads((root / "search-index.json").read_text(encoding="utf-8"))
+        cls.by_url = {e["url"]: e for e in cls.entries}
+
+    def test_every_published_page_has_one_entry(self) -> None:
+        books = bs.discover_books()
+        for book in books:
+            bs.load_book(book)
+        expected = set(bs.build_page_map(books).values())
+        self.assertEqual(expected, set(self.by_url))
+
+    def test_an_entry_has_a_real_title_and_body_text(self) -> None:
+        for url, entry in self.by_url.items():
+            with self.subTest(url=url):
+                self.assertTrue(entry["title"].strip(), url)
+                self.assertTrue(entry["text"].strip(), url)
+                # The chrome is identical on every page, so it must not have
+                # leaked in as if it were this page's own content.
+                self.assertNotIn("Search docs", entry["text"])
+                self.assertNotIn("source on GitHub", entry["text"])
+
+    def test_a_known_chapter_is_findable_by_its_own_words(self) -> None:
+        entry = self.by_url["guide/01-quick-start.html"]
+        self.assertIn("Quick Start", entry["title"])
+        self.assertIn("Multi Function", entry["text"])
 
 
 class ReadmeSplitTest(unittest.TestCase):
@@ -375,10 +408,12 @@ class EmitterTest(unittest.TestCase):
 
     def test_a_nested_list_nests(self) -> None:
         out = self.convert("- a\n  - b\n- c\n")
-        self.assertEqual("<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>", out)
+        self.assertEqual("<ul>\n<li>a\n<ul>\n<li>b\n</li></ul>\n</li>\n<li>c\n</li></ul>", out)
 
     def test_an_ordered_list_is_an_ol(self) -> None:
-        self.assertEqual("<ol><li>one</li><li>two</li></ol>", self.convert("1. one\n2. two\n"))
+        self.assertEqual(
+            "<ol>\n<li>one\n</li>\n<li>two\n</li></ol>", self.convert("1. one\n2. two\n")
+        )
 
     def test_a_table_scrolls_inside_its_own_box(self) -> None:
         """Or the reference guide's widest tables scroll the whole page sideways."""
