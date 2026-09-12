@@ -79,7 +79,7 @@ jobs:
       # Zero deps, zero package.json -- the ubuntu-latest runner's own
       # preinstalled `node` is enough, so this doesn't need actions/setup-node.
       - name: The search box's ranking/highlighting logic
-        run: node --test docs/shared/
+        run: node --test docs/shared/search.test.mjs
 
   # The web console's bundle is committed under c64cast/web/dist so that
   # installing c64cast never needs Node. That only stays true if the bundle is

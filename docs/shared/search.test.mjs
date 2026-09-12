@@ -4,7 +4,7 @@
 // require()'ing it here (no `document` global under plain Node) exercises
 // only the half this file is about.
 //
-//   node --test docs/shared/
+//   node --test docs/shared/search.test.mjs
 //
 // This exists because the mark() bug below (an earlier term's regex
 // matching literal characters a previous term had just wrapped in <mark>)
