@@ -1,9 +1,7 @@
 """NMI consumer rate control for the $D418 DAC streamer.
 
-Two collaborators split out of ``AudioStreamer`` (2026-08), each holding a
-back-reference to its streamer (the same pattern as
-``playlist_support``/``video_transport``); bodies moved verbatim, log lines
-and control math unchanged:
+Two collaborators of ``AudioStreamer``, each holding a back-reference to it
+(the same pattern as ``playlist_support``/``video_transport``):
 
 * ``NmiTimer`` — CIA #2 Timer A ownership: the latch math (nominal /
   ceiling / per-mode seed / pitch-compensated), the verified arm sequence,
@@ -14,12 +12,13 @@ and control math unchanged:
   loop that steers the timer, the consumer-stall watchdog, and the
   gap/rate telemetry the health line and stop() summary read.
 
-Threading contract is unchanged from the in-streamer days: every RateServo
-method runs on the audio worker thread (its fields need no lock), except
-``note_disturbance`` (a single monotonic write, safe from any thread).
-``NmiTimer.start`` runs on the worker; ``AudioStreamer.set_nmi_latch_for_
-mode`` mutates timer/servo fields from the playlist thread exactly as it
-always did.
+**Threading contract.** Every RateServo method runs on the audio worker
+thread (its fields need no lock), except ``note_disturbance`` (a single
+monotonic write, safe from any thread). ``NmiTimer.start`` runs on the
+worker; ``AudioStreamer.set_nmi_latch_for_mode`` mutates timer/servo fields
+from the playlist thread.
+
+See docs/architecture/audio.md#audiopy--audiostreamer.
 """
 
 from __future__ import annotations
@@ -64,28 +63,17 @@ class NmiTimer:
 
     def __init__(self, streamer: AudioStreamer) -> None:
         self._st = streamer
-        # The latch the NMI consumer runs at (set by start()); the REU pump's
-        # nominal CIA #1 latch derives from it so the producer/consumer
-        # period ratio stays exact.
+        # Set by start(); the REU pump's nominal CIA #1 latch derives from
+        # this, so the producer/consumer period ratio stays exact.
         self.latch = 0
-        # Host-DMA-servo pitch compensation: a sticky per-display-mode
-        # playback-rate multiplier (>1.0 = faster). set_nmi_latch_for_mode
-        # updates it, and start() applies it when the timer first arms — so a
-        # multiplier set at scene setup (before the worker prebuffers and
-        # starts the timer) survives the timer start instead of being
-        # clobbered back to nominal. `started` gates whether a mid-stream
-        # update writes immediately.
+        # Sticky per-display-mode playback-rate multiplier (>1.0 = faster),
+        # applied by start(); `started` gates a mid-stream update.
         self.pitch_multiplier = 1.0
         self.started = False
-        # How many arms the last bring-up needed (1 = clean, or an
-        # unverifiable backend).
+        # 1 = clean, or an unverifiable backend.
         self.arm_attempts = 0
-        # Current display mode (set by set_nmi_latch_for_mode) + an
-        # in-session cache of each mode's converged latch. The adaptive loop
-        # SEEDS the starting latch from these so playback begins at ~the
-        # right rate (no start-of-playback pitch glide) and re-converges fast
-        # on a mode change. The cache persists across scenes/loops
-        # (deliberately NOT reset by reset_after_stop); per-process only.
+        # Per-mode converged latches the adaptive loop seeds from. In-session
+        # and per-process; NOT cleared by reset_after_stop.
         self.mode: str | None = None
         self.learned_latch: dict[str, int] = {}
 
@@ -111,8 +99,8 @@ class NmiTimer:
         ``AudioStreamer.effective_rate`` (the public read surface) for the
         full timebase rationale."""
         if not self._st.sample_rate:
-            # Callers treat a falsy rate as "no audio clock" (see
-            # position_seconds); nominal_latch would divide by zero.
+            # Callers read a falsy rate as "no audio clock" (position_seconds);
+            # nominal_latch would divide by zero.
             return 0.0
         clock = CLOCK_NTSC if self._st.system == "NTSC" else CLOCK_PAL
         return clock / (self.nominal_latch() + 1)
@@ -153,8 +141,8 @@ class NmiTimer:
         return max(1, adjusted_period - 1)
 
     def write_latch(self, latch: int) -> None:
-        """Record + write a new CIA #2 Timer A latch (the one live retune
-        primitive both the adaptive loop and the static retune use)."""
+        """Record + write a new CIA #2 Timer A latch — the one live retune
+        primitive both the adaptive loop and the static retune use."""
         self.latch = latch
         self._st.api.write_regs(f"{CIA2.TIMER_A_LO:04X}", latch & 0xFF, (latch >> 8) & 0xFF)
 
@@ -180,7 +168,6 @@ class NmiTimer:
             api.read_memory(CIA2.ICR, 1)
         except Exception as e:
             log.debug("ICR flag clear read failed: %s", e)
-        # Arm + start timer A, set NMI source.
         api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_ENABLE_TIMER_A_NMI, CIA2_TIMER_A_CONTINUOUS)
 
     def start(self, *, adaptive: bool) -> None:
@@ -199,8 +186,7 @@ class NmiTimer:
         self.started = True
         before = self._st.read_consumer_ptr()
         if before is None:
-            # No R to check against, so a retry would be indistinguishable from
-            # arming five times for nothing. Fire once and accept the risk.
+            # Unverifiable without R, so retrying would just arm N times blind.
             self.arm_attempts = 1
             self.arm_once(latch)
             return
@@ -210,8 +196,8 @@ class NmiTimer:
             time.sleep(NMI_ARM_VERIFY_DELAY_S)
             after = self._st.read_consumer_ptr()
             if after is None or after != before:
-                # R advanced (or went unreadable, which is not evidence of a dead
-                # consumer) — the arm took.
+                # R advanced, or went unreadable — which is not evidence of a
+                # dead consumer. Either way the arm took.
                 if attempt > 1:
                     log.warning(
                         "audio: NMI arm took %d attempts (a CIA write was dropped)", attempt
@@ -244,36 +230,27 @@ class RateServo:
     def __init__(self, streamer: AudioStreamer, timer: NmiTimer) -> None:
         self._st = streamer
         self._timer = timer
-        # PI integrator state for the host-DMA servo (worker-thread-only, so no
-        # lock needed). Reset to 0 each time the NMI consumer starts.
+        # Host-DMA servo PI integrator; zeroed at each consumer start.
         self.integ = 0.0
-        # Adaptive NMI-rate loop state (worker-thread-only). r_rate_ema = -1.0
-        # is the unseeded sentinel; all reset with `integ` at consumer start.
+        # Adaptive NMI-rate loop state; r_rate_ema = -1.0 is the unseeded
+        # sentinel, and all of it resets with `integ` at consumer start.
         self.r_rate_ema = -1.0
         self.last_r_addr = -1
         self.last_r_time = 0.0
         self.loop_chunk_count = 0
         self.loop_acquiring = True
-        # Warm-up gate deadline (monotonic). While now < this, the loop measures R
-        # into the EMA but holds the latch (see NMI_RATE_LOOP_WARMUP_S). 0.0 = open
-        # (no warm-up pending), so direct update_rate_loop calls act at once.
-        # Armed at consumer start and re-armed by note_disturbance().
+        # Warm-up gate deadline (monotonic); 0.0 = open, so a direct
+        # update_rate_loop call acts at once.
         self.warmup_until = 0.0
-        # Host-DMA servo gap telemetry (write head's lead over R, in bytes),
-        # for non-ears verification via the drift probe / stop() summary. -1 =
-        # no servo sample taken yet this session.
+        # Gap telemetry: the write head's lead over R in bytes, read by the
+        # drift probe and the stop() summary. -1 = no sample yet this session.
         self.gap_min = -1
         self.gap_max = -1
         self.gap_last = -1
-        # Stall watchdog: consecutive-identical-R count so the mid-session
-        # stall warning fires once.
         self.last_r_reading = -1
         self.r_stall_chunks = 0
         self.stall_warned = False
-        # Health-line window state the streamer's _maybe_log_health reads and
-        # resets: the gap's excursion within the window, and the instantaneous
-        # consumer-rate excursion (the EMA alone smooths away exactly the
-        # wander worth seeing).
+        # Per-window excursions, read and reset by _maybe_log_health.
         self.health_gap_min = -1
         self.health_gap_max = -1
         self.r_rate_min = -1.0
@@ -309,13 +286,9 @@ class RateServo:
         self.gap_max = max(self.gap_max, gap)
         self.health_gap_min = gap if self.health_gap_min < 0 else min(self.health_gap_min, gap)
         self.health_gap_max = max(self.health_gap_max, gap)
-        # Slow outer loop: track R's *rate* and retune the NMI latch so the
-        # consumer lands at sample_rate (correct speed/pitch). Reuses the r_addr
-        # already read above — no extra REST traffic. Reads the rate, not the gap
-        # (the gap servo below nulls the gap, so it carries no rate signal).
-        # The rate estimate is taken either way — it is the only view of
-        # content-dependent tick loss, and it costs nothing on top of the read
-        # the gap servo just did. Only the latch *steering* is opt-in.
+        # Slow outer loop, on R's *rate*: the gap servo below nulls the gap,
+        # so the gap carries no rate signal. Measured either way; only the
+        # latch steering is opt-in.
         if st.nmi_rate_adaptive:
             self.update_rate_loop(r_addr)
         else:
@@ -326,11 +299,10 @@ class RateServo:
     def note_r_reading(self, r_addr: int) -> None:
         """Watch for an NMI consumer that stopped after a verified start.
 
-        A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset behind
-        our back) otherwise presents as unexplained silence plus the fast
-        playback the servo produces while chasing a dead reader — the servo has
-        this reading in hand either way, so saying so costs nothing. Warns once
-        per session; the pacing behavior is untouched.
+        A consumer killed mid-session (a stray `#$7F` to `$DD0D`, a reset
+        behind our back) otherwise presents as unexplained silence plus the
+        fast playback the servo produces while chasing a dead reader. Warns
+        once per session; the pacing behavior is untouched.
         """
         if r_addr == self.last_r_reading:
             self.r_stall_chunks += 1
@@ -350,19 +322,9 @@ class RateServo:
         """Track the NMI consumer's byte rate dR/dt, from the R the gap servo
         already read. Observation only — nothing here steers anything.
 
-        Split out of ``update_rate_loop`` because that loop is off by
-        default (steering on R is a closed dead end: R is a biased estimator
-        under bus load, measured biased in *both* directions depending on read
-        method). Gating the measurement on the disabled controller meant the one
-        quantity that shows content-dependent tick loss read zero in every log,
-        which is a diagnostic hole rather than a safety property — the guardrail
-        is against controlling on R, not against looking at it.
-
-        The instantaneous per-chunk rate is kept alongside the EMA: the EMA says
-        where the consumer sits, the spread between successive instantaneous
-        values says how much it is *moving*, and a consumer whose rate wanders
-        drags playback pitch with it through the gap servo, which faithfully
-        follows R by design.
+        Runs whether or not ``update_rate_loop`` steers, and keeps the
+        instantaneous per-chunk rate alongside the EMA. See
+        docs/architecture/audio.md#host-dma-pitch-compensation--why-two-of-the-three-knobs-default-off.
         """
         alpha = NMI_RATE_LOOP_ACQUIRE_ALPHA if self.loop_acquiring else NMI_RATE_LOOP_EMA_ALPHA
         now = time.monotonic()
@@ -374,7 +336,7 @@ class RateServo:
             if dt > 0 and dr < RING_BUFFER_SIZE // 2:
                 inst = dr / dt
                 if self.r_rate_ema < 0:
-                    self.r_rate_ema = inst  # seed (no ramp-from-zero)
+                    self.r_rate_ema = inst
                 else:
                     self.r_rate_ema += alpha * (inst - self.r_rate_ema)
                 self.r_rate_min = inst if self.r_rate_min < 0 else min(self.r_rate_min, inst)
@@ -397,11 +359,8 @@ class RateServo:
         timer = self._timer
         self.observe_r_rate(r_addr)
         acquiring = self.loop_acquiring
-        # Warm-up gate: during the post-start / post-disturbance settle window the
-        # EMA keeps warming (in observe_r_rate) but the latch is held at the seed
-        # — the seed is already near-converged, so this plays at ~the right rate
-        # instead of chasing the unrepresentative spin-up R and gliding back. The
-        # chunk counter is not advanced, so the decide cadence resumes cleanly.
+        # Warm-up gate: the EMA keeps warming in observe_r_rate above, but the
+        # latch holds at the seed and loop_chunk_count is left alone.
         if time.monotonic() < self.warmup_until:
             return
 
@@ -421,16 +380,12 @@ class RateServo:
             timer.latch,
             nominal_latch=timer.nominal_latch(),
             ceiling_latch=timer.ceiling_latch(),
-            # The loop drives the measured consumer rate R toward this. R
-            # physically runs on the latch grid, so targeting the *request*
-            # would walk the latch off nominal by the quantization error.
+            # Not sample_rate: R runs on the latch grid, so targeting the
+            # request would walk the latch off nominal by the quantization error.
             target_rate=timer.effective_rate,
         )
         if new_latch == timer.latch:
-            # No change → within deadband or clamped at the ceiling: converged.
-            # Leave fast acquisition for the gentle fine loop (slow ±1 steps), and
-            # remember this mode's converged latch so the next scene/loop in this
-            # mode seeds dead-on (no start glide).
+            # Within deadband or clamped at the ceiling: converged.
             self.loop_acquiring = False
             if timer.mode is not None:
                 timer.learned_latch[timer.mode] = timer.latch

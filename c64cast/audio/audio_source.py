@@ -1,26 +1,20 @@
 """Pluggable audio sources for composable scenes.
 
-The "audio source" building block, parallel to FrameSource. A `SourceScene`
-pairs a video source with one of these, so the visual and the sound are chosen
-independently.
+The "audio source" building block, parallel to FrameSource: a `SourceScene`
+pairs a video source with one of these, so the visual and the sound are
+chosen independently.
 
-Today's implementations:
-- `NullAudioSource` — silence.
-- `MicAudioSource` — streaming sampled audio from the shared AudioStreamer's
-  live mic path (the same path WebcamScene uses). Reactive by default: it also
-  runs the pre-DSP audio analyzer, so live input drives the visuals. With
-  `listen_only` (audio_source = "listen") it analyzes the input for reactive
-  visuals but plays no C64 audio — the VJ case where the sound is on a PA.
-- `AudioFileSource` — decodes an audio file (mp3/wav/… via PyAV) to the 4-bit
-  DAC AND runs the same pre-DSP analyzer over it, so a generative/test-pattern
-  visual reacts to the track. This is what makes `c64cast tune.mp3` a
-  first-class reactive source (audio_source = "file"). It is the "full-track
-  sampled streaming" implementation the protocol always anticipated.
-- `SidFileAudioSource` — plays a .sid file on the U64's real chip (the audio
-  half of WaveformScene, factored out so it composes with any FrameSource).
-  This is the seam that lets "generative video + SID audio" compose.
-  `wants_audio_lock=True` because it drives the SID, so a SourceScene using it
-  contends for the ensemble audio slot; live/silent sources leave it False.
+* `NullAudioSource` — silence.
+* `MicAudioSource` — the shared AudioStreamer's live mic path, reactive by
+  default. With `listen_only` (`audio_source = "listen"`) it analyzes the
+  input but plays no C64 audio.
+* `AudioFileSource` — decodes an audio file (mp3/wav/… via PyAV) to the DAC
+  or the Ultimate Audio sampler, and runs the same pre-DSP analyzer over it
+  (`audio_source = "file"`).
+* `SidFileAudioSource` — plays a .sid file on the real chip; the audio half
+  of WaveformScene, factored out so it composes with any FrameSource.
+
+See docs/architecture/audio.md#audio_sourcepy--audiofilesource-audio-file-reactive-source.
 """
 
 from __future__ import annotations
@@ -114,8 +108,7 @@ class MicAudioSource:
     cleaner onset/treble detection than the 12 kHz DAC path allows. This is the
     VJ case: the real music comes from a PA, and only the visuals track it."""
 
-    # A live mic is uncorrelated input, not the ensemble's SID spotlight —
-    # it never claims the audio lock (matches WebcamScene's WANTS_AUDIO_LOCK=False).
+    # Uncorrelated input, not the ensemble's SID spotlight (as WebcamScene).
     wants_audio_lock = False
     resets_display = False  # the mic path doesn't touch the VIC
 
@@ -135,7 +128,6 @@ class MicAudioSource:
         self._reactive = reactive
         self._listen_only = listen_only
         self._features_cfg = features_cfg
-        # Built per setup() when reactive; None otherwise.
         self._features: AudioFeatureStream | None = None
 
     def setup(self) -> None:
@@ -143,14 +135,10 @@ class MicAudioSource:
         from c64cast.app.config import AudioFeaturesCfg
 
         fcfg = self._features_cfg or AudioFeaturesCfg()
-        # Listen-only frees the capture from the DAC rate — open (and analyze)
-        # at the higher listen rate. The mic path stays at the streamer's DAC
-        # rate so the analyzer matches what the DAC actually samples.
         analyzer_rate = (
             float(fcfg.listen_sample_rate) if self._listen_only else self._audio.sample_rate
         )
-        # Install the analysis tap BEFORE capture starts, so the first callbacks
-        # already feed the analyzer.
+        # Before capture starts, so the first callbacks already reach it.
         self._start_features(fcfg, analyzer_rate)
         if self._listen_only:
             self._audio.start_listen(
@@ -252,8 +240,7 @@ class AudioFileSource:
     wants_audio_lock = False
     resets_display = False
 
-    # Bounded candidate attempts for a multi-entry (dir/glob) spec, mirroring
-    # SidFileAudioSource: a file that won't open is skipped and the next tried.
+    # Mirrors SidFileAudioSource: a file that won't open is skipped.
     _MAX_PICK_ATTEMPTS = 8
 
     def __init__(
@@ -265,25 +252,21 @@ class AudioFileSource:
         features_cfg: AudioFeaturesCfg | None = None,
     ):
         self._audio = audio
-        # True when routed through the off-bus Ultimate Audio sampler (see the
-        # class docstring); the sampler's start() blocks collecting a prebuffer,
-        # so setup() starts the decode thread FIRST to feed it (below).
+        # The sampler's start() blocks collecting a prebuffer, so setup()
+        # starts the decode thread FIRST to feed it.
         self._is_sampler = bool(getattr(audio, "is_sampler", False))
         self.file_spec = file
         self._reactive = reactive
         self._features_cfg = features_cfg
         self._path: str = ""
-        # Track length in seconds (from the container), used by build_scene to
-        # size the scene. 0.0 when the container reports no duration.
+        # Read by build_scene to size the scene; 0.0 = container said nothing.
         self.duration_s: float = 0.0
         self._features: AudioFeatureStream | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        # Validate + measure the first candidate now, so a misconfigured single
-        # scene raises at build time (parity with SidFileAudioSource.__init__).
+        # At build time, so a misconfigured single scene raises there
+        # (parity with SidFileAudioSource.__init__).
         self._pick_and_probe()
-
-    # ---- file selection / probe --------------------------------------------
 
     def _pick_and_probe(self) -> None:
         """Re-resolve the spec, shuffle, and probe the first file that opens.
@@ -325,8 +308,6 @@ class AudioFileSource:
             f"{len(candidates)} candidate(s) but none could be opened; "
             f"last error: {last_error}"
         )
-
-    # ---- AudioSource protocol ----------------------------------------------
 
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
@@ -440,10 +421,8 @@ class AudioFileSource:
         try:
             import av  # noqa: PLC0415  (optional extra; only reached when PyAV present)
 
-            # Resample to the rate the sink really consumes at, not the one it
-            # was asked for: content then plays at exactly real time and pitch,
-            # and the host-DMA servo starts from zero standing error. (For the
-            # sampler the two already agreed — see UltimateAudioSampler.)
+            # effective_rate, not sample_rate: the rate the sink really
+            # consumes at, so the servo starts from zero standing error.
             rate = int(round(self._audio.effective_rate)) or self._audio.sample_rate
             resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
             a_stream = container.streams.audio[0]
@@ -465,8 +444,8 @@ class AudioFileSource:
             container.close()
 
     def teardown(self) -> None:
-        # Signal the decode thread, unhook the analyzer sink before the streamer
-        # stops (so no callback pushes into a dying tap), then stop everything.
+        # The sink is unhooked before the streamer stops, so no callback can
+        # push into a dying tap.
         self._stop.set()
         self._audio.analysis_sink = None
         thread, self._thread = self._thread, None
@@ -480,8 +459,7 @@ class AudioFileSource:
         run_teardown_steps(log, type(self).__name__, steps)
 
     def position_seconds(self) -> float | None:
-        # The DAC consumer clock — exposed for the protocol; the scene ends on its
-        # duration (sized to the track), not this.
+        # The consumer clock, for the protocol. The scene ends on duration_s.
         return self._audio.position_seconds()
 
     def features(self) -> MusicModulation | None:
@@ -526,15 +504,11 @@ class SidFileAudioSource:
     """
 
     wants_audio_lock = True
-    # run_sid_player kicks the player via the firmware's run_prg, which re-inits
-    # the machine to text mode — so SourceScene must re-assert the display mode
-    # after setup() (a bitmap display would otherwise render its $0400 color
-    # nibbles as PETSCII; see SourceScene.setup).
+    # run_sid_player goes through run_prg, which re-inits the machine to text
+    # mode, so SourceScene.setup must re-assert the display mode afterwards.
     resets_display = True
 
-    # Bounded candidate attempts for a multi-entry file spec, mirroring
-    # WaveformScene._pick_and_load_sid: each rejected SID (payload overlap,
-    # raster-spin preflight) is skipped and the next tried.
+    # Mirrors WaveformScene._pick_and_load_sid: a rejected SID is skipped.
     _MAX_PICK_ATTEMPTS = 8
 
     def __init__(
@@ -556,9 +530,8 @@ class SidFileAudioSource:
         self._song_arg = song
         self.system = system
         self._reactive = reactive
-        # [ultimate64].sid_model, already resolved to a plain string by the
-        # caller (sid_autoconfig.resolve_sid_model_cfg). "auto"/"6581"/
-        # "8580"/"off". See setup()/teardown().
+        # Already resolved to "auto"/"6581"/"8580"/"off" by the caller
+        # (sid_autoconfig.resolve_sid_model_cfg).
         self._sid_model = sid_model
         # [ultimate64].sid_play_rate — see api.run_sid_player.
         self._sid_play_rate = sid_play_rate
@@ -567,30 +540,23 @@ class SidFileAudioSource:
         # [ultimate64].sid_volume — empty/None means "0 dB for a source that
         # would otherwise be inaudible, leave a deliberate level alone".
         self._sid_volume = list(sid_volume or ())
-        # The display is fixed at VIC bank 0; only the bitmap flag matters for
-        # the payload-clearance check (bitmap modes reserve $2000 as well as
-        # $0400). Read once at construction — the mode never changes per scene.
+        # The display is fixed at VIC bank 0, so only the bitmap flag matters
+        # to the payload-clearance check ($2000 as well as $0400).
         self._is_bitmapped = bool(getattr(display_mode, "is_bitmapped", False))
-        # Per-pick state, set by _pick_and_load (in __init__ for early
-        # validation, again at every setup() so a directory pool rotates).
+        # Set by _pick_and_load, again at every setup() so a pool rotates.
         self._sid_file: str = ""
         self.sid_bytes: bytes = b""
         self.song: int = 0
         self.header: SidHeader | None = None
-        # Host-side music-feature stream (built per setup() once the tune is
-        # picked + playing); None when not reactive or before setup.
         self._features: SidFeatureStream | None = None
-        # SID hardware config (model autoconfig + mixer originals) recorded by
-        # setup() so teardown can restore it — see
-        # sid_autoconfig.apply_sid_autoconfig.
+        # Model autoconfig + mixer originals, recorded by setup() so teardown
+        # can restore them (sid_autoconfig.apply_sid_autoconfig).
         from c64cast.sid.sid_hw_config import SidHwSession
 
         self._sid_session = SidHwSession(api)
-        # Validate the spec + first candidate now so a misconfigured single
-        # scene raises at build time (parity with WaveformScene.__init__).
+        # At build time, so a misconfigured single scene raises there
+        # (parity with WaveformScene.__init__).
         self._pick_and_load()
-
-    # ---- SID selection / validation ----------------------------------------
 
     def _validate_candidate(
         self, path: str, budget: HostEmuBudget | None = None
@@ -652,9 +618,9 @@ class SidFileAudioSource:
         )
         pool = list(candidates)
         random.shuffle(pool)
-        # ONE analysis budget for the whole walk. Each candidate costs an INIT
-        # plus a 50-pass pre-flight, both host-emulated and both priced by the
-        # tune, so a per-candidate bound is no bound on the walk at all.
+        # ONE budget for the whole walk: each candidate costs a host-emulated
+        # INIT plus a 50-pass pre-flight, so a per-candidate bound bounds
+        # nothing.
         budget = HostEmuBudget()
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
@@ -681,8 +647,6 @@ class SidFileAudioSource:
             f"last error: {last_error}"
         )
 
-    # ---- AudioSource protocol ----------------------------------------------
-
     def setup(self) -> None:
         """Re-pick from the (re-resolved) pool and start SID playback on the
         chip. Raises ValueError on a hard failure (every candidate rejected, or
@@ -692,16 +656,11 @@ class SidFileAudioSource:
         from c64cast.sid.sid_host_emu import HostEmuBudget, analyze_placement
 
         self._pick_and_load()
-        # The player MC must be relocated into RAM the tune never writes (its
-        # INIT+PLAY *write* footprint) AND clear of the bank-0 display we're
-        # rendering into. The audio DAC ring ($4000-$5FFF, VIC bank 1) is NOT
-        # used by a SID source, so it isn't reserved — the payload may freely
-        # live there.
-        # One budget across both footprint runs (and the INIT each one costs),
-        # so a tune whose PLAY is expensive can't spend a fresh wall-clock
-        # deadline per call. See sid_host_emu.ANALYSIS_BUDGET_S. analyze_placement
-        # owns what a truncated sample may place: nothing reaches a raw bitmap
-        # here without that decision having been made.
+        # The player MC goes in RAM the tune never writes (its INIT+PLAY write
+        # footprint) and clear of the bank-0 display. The DAC ring
+        # ($4000-$5FFF, VIC bank 1) is unused by a SID source, so it is not
+        # reserved. One budget spans both footprint runs and their INITs (see
+        # sid_host_emu.ANALYSIS_BUDGET_S).
         placement = analyze_placement(
             self.sid_bytes,
             song=self.song,
@@ -727,17 +686,15 @@ class SidFileAudioSource:
             "bitmap" if self._is_bitmapped else "char",
             f"${play_bank:02X}" if play_bank is not None else "auto",
         )
-        # Match the tune's requested chip model (PSID header) to the U64's
-        # actual SID hardware BEFORE the player's INIT runs, so INIT's first
-        # writes land on the matched chip. No-op on "off"/TeensyROM/already-
-        # matching. Snapshot restored in teardown.
+        # Before INIT runs, so its first writes land on the matched chip.
+        # No-op on "off"/TeensyROM/already-matching; restored in teardown.
         assert self.header is not None  # set by _pick_and_load, called above
         from c64cast.sid.sid_autoconfig import apply_sid_autoconfig
 
         self._sid_session.fold(apply_sid_autoconfig(self._api, self.header, self._sid_model))
         self._apply_sid_mixer()
-        # May raise (RSID / load<$0820 / under KERNAL) — propagate to
-        # SourceScene.setup, which aborts the scene cleanly.
+        # May raise (RSID / load<$0820 / under KERNAL); SourceScene.setup
+        # aborts the scene cleanly on it.
         self._api.run_sid_player(
             self.sid_bytes,
             song=self.song,
@@ -746,10 +703,8 @@ class SidFileAudioSource:
             play_rate=self._sid_play_rate,
         )
 
-        # Spin up the host-side feature stream for reactive visuals. The tune
-        # already passed run_sid_player (and the host-emu preflight in
-        # _validate_candidate), so this shouldn't fail — but a startup failure
-        # must not take down playback, so degrade to non-reactive on error.
+        # A feature-stream startup failure degrades to non-reactive rather
+        # than taking down playback.
         if self._reactive:
             from c64cast.scenes.music_features import SidFeatureStream
 

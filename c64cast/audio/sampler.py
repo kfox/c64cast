@@ -4,26 +4,17 @@ streaming REU ring that plays arbitrary-length PCM at full fidelity.
 The U64 firmware exposes a 7-channel FPGA PCM sampler ("Ultimate Audio",
 Gideon's register API v0.2, doc in 1541ultimate/doc/ultimate_audio_v0.2.pdf).
 It plays 8- or 16-bit PCM up to 48 kHz **directly out of REU SDRAM** with zero
-SID / ``$D418`` / NMI / CPU / turbo involvement — so it is immune to every
-bus-halt / badline problem the 4-bit ``$D418`` NMI DAC fights, and is vastly
-higher fidelity. On the U64 it is the default video-audio backend; the DAC
-stays for TeensyROM (no sampler) and as an opt-in lo-fi mode.
+SID / ``$D418`` / NMI / CPU / turbo involvement. On the U64 it is the default
+video-audio backend; the DAC stays for TeensyROM and as an opt-in lo-fi mode.
 
-Two halves:
+Two halves: pure register helpers (the channel register map, the rate divider,
+the control byte, the 8/16-bit PCM pack, a byte-layout builder), and
+``UltimateAudioSampler`` — the scene-facing audio object mirroring the subset
+of ``audio.AudioStreamer`` that scenes call, driving a streaming REU ring over
+the sampler's own A↔B repeat loop with a wall-clock-computed (never read back)
+read head.
 
-* **Pure register helpers** (unit-testable, no hardware): the channel register
-  map, the rate divider, the control byte, the 8/16-bit PCM pack, and a
-  byte-layout builder for one channel's registers.
-* **``UltimateAudioSampler``** — the scene-facing audio object that mirrors the
-  subset of ``audio.AudioStreamer`` that scenes call (``sample_rate``,
-  ``position_seconds``, ``stop``, ``push_samples``, ``get_recent_samples``). It
-  runs a **streaming REU ring** built on the sampler's own A↔B repeat loop:
-  program channel 0 to loop a region of REU forever while gated, then a writer
-  thread REUWRITEs decoded PCM *ahead of the computed read head*, wrapping. The
-  FPGA's sample clock is crystal-exact, so the read head is **computed** from
-  wall-clock (``(monotonic - gate_time) * rate``), never read back — the loop is
-  open-loop and drift-free, no servo/governor/NMI needed (much simpler than the
-  ``$D418`` REU pump).
+See docs/architecture/audio.md#samplerpy--ultimateaudiosampler-u64-ultimate-audio-fpga-pcm.
 """
 
 from __future__ import annotations
@@ -47,36 +38,24 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("c64cast.audio.sampler")
 
-# --------------------------------------------------------------------------
 # Register spec (Ultimate Audio v0.2). Multi-byte fields are BIG-ENDIAN.
-# --------------------------------------------------------------------------
 SAMPLER_IO_BASE = ULTIMATE_AUDIO.IO_BASE  # channel 0; reads give the IRQ status reg
 SAMPLER_VERSION_REG = 0xDF21  # reads $10 when the sampler is present
 SAMPLER_CHANNEL_STRIDE = 0x20  # each channel occupies 32 consecutive bytes
 SAMPLER_NUM_CHANNELS = 7
-# Nominal sampler reference: the FPGA's voice engine runs at an effective
-# 50 MHz on every platform (a fractional prescaler normalizes 50/62.5/66.66/100
-# MHz down to it) and produces one sample tick per 8 cycles, so the rate divider
-# is REF/rate with REF = 50 MHz / 8 = 6.25 MHz (per the firmware's sampler2.vhd).
-# This is the DESIGN value — used to derive the divider table and pinned by tests.
-# The real FPGA clock deviates from it (see SAMPLER_REF_CLOCK_DEFAULT).
+# DESIGN value from the firmware's sampler2.vhd (50 MHz effective / 8 cycles
+# per sample tick); the divider table derives from it and tests pin it. The
+# real FPGA clock deviates — see SAMPLER_REF_CLOCK_DEFAULT.
 SAMPLER_REF_CLOCK = 6_250_000  # the rate divider is REF / sample_rate
 
-# Measured effective reference on the shipping U64 firmware. The FPGA's real
-# sampler clock runs ~1.44% SLOW vs the 6.25 MHz design nominal, so at the
-# nominal REF sampler audio plays slow and drifts against the host-clock-paced
-# video over minutes. Crucially this is a FIRMWARE/FPGA-derivation property —
-# identical across U64 units on the same firmware, NOT chip-to-chip variation —
-# so it ships as the DEFAULT ([audio].sampler_clock_hz) rather than a per-unit
-# calibration file. Measured rigorously with scripts/diags/sampler_av_align_calib.py
-# (differential SID-vs-sampler-tone drift over 36 markers/180 s, immune to the
-# Cam Link capture's own rate error because both markers ride one captured
-# stream): a nominal-driven run measured 6.157 MHz, and confirmation runs driven
-# AT the candidate converged to ~6.16 MHz — a run driven at this value showed a
-# residual drift of only -1.3 ms per 5 s (17x better than nominal; ALIGNED).
-# Re-measure and update after any firmware release that changes sampler timing
-# (the diag prints the new value). Units/firmware that clock the sampler
-# correctly can override back to SAMPLER_REF_CLOCK (6.25 MHz).
+# The shipping U64 firmware clocks the sampler ~1.44% SLOW against the 6.25 MHz
+# design nominal. HW-measured 6.157-6.16 MHz with
+# scripts/diags/sampler_av_align_calib.py (36 markers / 180 s, differential
+# SID-vs-sampler drift); a firmware/FPGA-derivation property, identical across
+# units, so it ships as the [audio].sampler_clock_hz default rather than a
+# per-unit calibration. Re-measure after any firmware release that changes
+# sampler timing — the diag prints the new value. See
+# docs/architecture/audio.md#reference-clock-calibration.
 SAMPLER_REF_CLOCK_DEFAULT = 6_160_000
 
 # Channel register offsets (relative to the channel base).
@@ -105,55 +84,36 @@ REU_ADDR_SELECT_BYTE = 0x01
 SAMPLER_VOLUME_MAX = 63
 SAMPLER_PAN_CENTER = 7
 
-# --------------------------------------------------------------------------
-# Streaming-ring defaults.
-# --------------------------------------------------------------------------
-# REU offset of the ring. Sits above the $D418-DAC mic ring ($110000) and well
-# below the REU-staged video region ($E00000), so the sampler ring coexists
-# with REU-staged bitmap video.
+# Above the $D418-DAC mic ring ($110000) and below REU-staged video ($E00000),
+# so the sampler ring coexists with REU-staged bitmap video.
 DEFAULT_RING_BASE = 0x200000
 
-# Ring size. The ring is a jitter buffer, NOT the playback latency — latency is
-# set by the lead/prebuffer target below, independent of ring size. 1 MiB is
-# ~5.9 s of headroom at 16-bit/44.1k while keeping the one-time NEUTRAL prefill
-# (~1.3 s at REUWRITE's ~820 KB/s) short. The whole track streams through it.
+# A jitter buffer, NOT the playback latency (that is the lead below). 1 MiB is
+# ~5.9 s at 16-bit/44.1k, with a one-time NEUTRAL prefill of ~1.3 s at
+# REUWRITE's ~820 KB/s.
 DEFAULT_RING_SIZE = 0x100000  # 1 MiB
 
-# Buffering depth: how far the writer keeps the write head ahead of the read
-# head at runtime. This is *not* A/V latency — the video frame is selected by
-# the read head (position_seconds), so growing the lead only deepens the
-# decode-stall cushion; it doesn't shift sync. Bigger = rides out longer PyAV
-# decode hiccups (a 4K clip's per-frame decode briefly starves the single
-# demux+push thread — HW-measured lead dipping to ~9 KB / below panic at 0.5 s).
-# 1.0 s keeps the lead comfortably above the panic watermark even under 4K
-# decode, at the cost only of REU buffered ahead (well under the ring's ~5.9 s).
+# Runtime write-ahead depth, NOT A/V latency: the video frame tracks the read
+# head, so a deeper lead only cushions PyAV decode stalls. HW-measured, a 4K
+# clip's lead floor doubled from ~9 KB to ~21 KB going 0.5 s → 1.0 s.
 DEFAULT_LEAD_SECONDS = 1.0
 
-# Startup seed: how much real PCM to prebuffer before gating the channel on.
-# Decoupled from (and smaller than) the runtime lead so playback starts
-# promptly — the writer then ramps the lead up to DEFAULT_LEAD_SECONDS as the
-# demuxer (which races ahead of real time at startup) delivers. The read head
-# begins at the first prebuffered sample, so this adds no startup delay.
+# Real PCM seeded before the channel is gated on. Smaller than the runtime
+# lead so playback starts promptly; the writer then ramps up to it. The read
+# head begins at the first prebuffered sample, so this adds no startup delay.
 DEFAULT_PREBUFFER_SECONDS = 0.5
 
 REU_WRITE_SLICE = 32 * 1024  # cap per REUWRITE so a NEUTRAL pad can't burst huge
 SAMPLE_TAP_SIZE = 2048  # most-recent-samples tap for spectrum overlays
 _INT16_FULL_SCALE = 32768.0
 
-# Transport-flush guard (MIDI live-tune Phase 4). flush() cuts the ring over to
-# post-splice audio by NEUTRAL-rewriting the unconsumed lead, but leaves this
-# much margin between the computed read head and the first rewritten byte. It
-# covers (a) open-loop consumed-estimate jitter, (b) REUWRITE latency so the
-# FPGA never fetches a byte mid-write, and (c) the calibrated-ref residual drift
-# (~1.3 ms / 5 s). It is also the audible splice latency: pre-splice content
-# plays at most this long past the splice point before the fresh stream takes
-# over. Raise it if HW shows a splice click (risk #2 / §7 probe).
+# Margin flush() leaves between the computed read head and the first
+# NEUTRAL-rewritten byte, covering consumed-estimate jitter, REUWRITE latency,
+# and the calibrated-ref residual drift (~1.3 ms / 5 s). It is also the audible
+# splice latency; raise it if HW shows a splice click.
 FLUSH_GUARD_S = 0.15
 
 
-# --------------------------------------------------------------------------
-# Pure helpers (no hardware) — directly unit-testable.
-# --------------------------------------------------------------------------
 def divider_for_rate(rate: float, ref_clock: int = SAMPLER_REF_CLOCK) -> int:
     """Sample-rate divider for the sampler reference clock (≥ 1). ``ref_clock``
     defaults to the nominal 6.25 MHz; pass a per-unit calibrated value to
@@ -309,9 +269,6 @@ def gate_off(api: C64Backend, channel: int = 0) -> None:
     api.flush()
 
 
-# --------------------------------------------------------------------------
-# Streaming sampler.
-# --------------------------------------------------------------------------
 class UltimateAudioSampler:
     """Plays arbitrary-length PCM through a streaming REU ring on sampler
     channel 0.
@@ -360,10 +317,8 @@ class UltimateAudioSampler:
         self._volume = volume
         self._pan = pan
 
-        # Per-unit calibration of the sampler reference clock. The divider we
-        # program AND the rate we resample/clock to both derive from this, so
-        # they stay consistent and the audio plays at the speed the FPGA
-        # actually clocks it out (see SAMPLER_REF_CLOCK / [audio].sampler_clock_hz).
+        # Both the programmed divider and the resample target derive from this,
+        # so they stay consistent (see SAMPLER_REF_CLOCK_DEFAULT).
         self._ref_clock = ref_clock_hz
         self.bps = bytes_per_sample(bits)
         self._divider = divider_for_rate(sample_rate, self._ref_clock)
@@ -373,22 +328,20 @@ class UltimateAudioSampler:
         self.sample_rate = int(round(self._actual_rate))
 
         self.ring_base = ring_base
-        # Frame-align the ring (16-bit length must be even; the A↔B loop wraps
-        # exactly at ring_size so it must be a whole number of samples).
+        # 16-bit length must be even, and the A↔B loop wraps exactly at
+        # ring_size, so the ring is a whole number of samples.
         self.ring_size = (ring_size // self.bps) * self.bps
         self._neutral_unit = b"\x00" * self.bps  # signed PCM silence is zero
 
         lead_bytes = int(self._actual_rate * lead_seconds) * self.bps
         # Keep the lead under half the ring so write-ahead can't lap the reader.
         self._lead_target = max(self.bps, min(lead_bytes, self.ring_size // 2))
-        # Startup prebuffer: seed only this much before gating (fast start),
-        # then let the writer ramp up to _lead_target. Clamp to the lead target
-        # so a misconfigured prebuffer can't exceed the runtime depth.
+        # Clamped to the lead target so a misconfigured prebuffer can't exceed
+        # the runtime depth.
         prebuf_bytes = int(self._actual_rate * prebuffer_seconds) * self.bps
         self._prebuffer_target = max(self.bps, min(prebuf_bytes, self._lead_target))
-        # Low watermark: the writer only NEUTRAL-pads (inserts silence) once the
-        # lead drains this low — a genuine producer stall, not a queue that's
-        # briefly empty because the writer is topping up toward the target.
+        # Low watermark: below this the writer NEUTRAL-pads, treating the lead
+        # as a genuine producer stall rather than a briefly-empty queue.
         self._lead_panic = max(self.bps, self._lead_target // 4)
 
         self._q: queue.Queue[bytes] = queue.Queue(maxsize=queue_max_chunks)
@@ -401,32 +354,26 @@ class UltimateAudioSampler:
         self._written = 0  # absolute bytes written to the ring (monotone)
         self._pushed_samples = 0  # total source samples accepted via push_samples
 
-        # Transport resync (MIDI live-tune Phase 4). flush() bumps _flush_epoch
-        # so a chunk the writer thread dequeued just before the splice is
+        # flush() bumps _flush_epoch so a chunk dequeued just before a splice is
         # discarded instead of written past the cut-over; _io_lock serializes the
         # {_write_wrapped, _written} read-modify-write between flush() (playlist
-        # thread) and the writer thread. _output_silenced tracks the pause fast
-        # mute ($DF21 volume 0) so the next flush() restores the channel volume.
+        # thread) and the writer thread. _output_silenced tracks the pause mute
+        # ($DF21 volume 0) so the next flush() restores the channel volume.
         self._flush_epoch = 0
         self._io_lock = threading.Lock()
         self._output_silenced = False
 
-        # Telemetry for the teardown log / de-risk.
         self._underrun_pads = 0
         self._lead_min = -1
         self._lead_max = -1
 
-        # Most-recent-samples tap for spectrum-style overlays.
         self._tap_buf = np.zeros(SAMPLE_TAP_SIZE, dtype=np.float32)
         self._tap_write = 0
         self._tap_lock = threading.Lock()
 
-        # Pre-DSP analysis sink for music-reactive visuals (audio_source =
-        # "file"). Mirrors AudioStreamer.analysis_sink: a reactive source installs
-        # its AnalysisTap.push here and push_samples feeds it the mono floats
-        # BEFORE any DSP, so the same AudioFeatureAnalyzer the DAC path uses
-        # drives the visuals off the sampler-routed track. None (the default) =
-        # non-reactive, one attribute load per push.
+        # Mirrors AudioStreamer.analysis_sink: a reactive source installs its
+        # AnalysisTap.push here, and push_samples feeds it mono floats BEFORE
+        # any DSP. None (the default) = non-reactive.
         self.analysis_sink: Callable[[np.ndarray], None] | None = None
         self._analysis_sink_failed = False
 
@@ -443,7 +390,6 @@ class UltimateAudioSampler:
         """
         return self._actual_rate
 
-    # ---- bring-up ---------------------------------------------------------
     def start(self, prebuffer_timeout: float = 2.0) -> None:
         """Prefill the ring with silence, prebuffer ``_prebuffer_target`` bytes
         of real PCM, then gate the looping channel on.
@@ -478,9 +424,8 @@ class UltimateAudioSampler:
         )
         self._gate_time = time.monotonic()
         self._running = True
-        # The loop's stop signal is self._running (read by the push/pump
-        # guards too), so the PollThread event goes unused — the poll supplies
-        # the daemon-thread start/join lifecycle.
+        # The loop stops on self._running, not the PollThread event; the poll
+        # supplies only the daemon-thread start/join lifecycle.
         self._writer = PollThread(
             lambda stop: self._writer_loop(), name="uaudio-writer", manual=True, join_timeout=1.0
         )
@@ -527,7 +472,6 @@ class UltimateAudioSampler:
             have += len(chunk)
         return b"".join(chunks)
 
-    # ---- streaming --------------------------------------------------------
     def push_samples(self, samples_int16: np.ndarray) -> None:
         """Accept mono int16 from the demuxer; encode + enqueue for the writer.
 
@@ -535,14 +479,13 @@ class UltimateAudioSampler:
         playback rate (same backpressure as the DAC's ``push_samples``)."""
         if self._stopped:
             return
-        # Phase 4 flush epoch: if a transport splice flushes while this call is
-        # blocked on a full queue, drop the (pre-splice) chunk instead of pushing
-        # it past the cut-over. The bounded put timeout lets the check re-run.
+        # If a splice flushes while this call is blocked on a full queue, the
+        # pre-splice chunk is dropped rather than pushed past the cut-over; the
+        # bounded put timeout is what lets the check re-run.
         epoch = self._flush_epoch
         floats = samples_int16.astype(np.float32) / _INT16_FULL_SCALE
         self._tap_push(floats)
-        # Pre-DSP analysis tap (parity with AudioStreamer.push_samples): feed the
-        # reactive analyzer the raw floats before the optional DSP shaping.
+        # Pre-DSP, for parity with AudioStreamer.push_samples.
         self._push_to_analysis(floats)
         if self._dsp is not None and self._dsp.active:
             floats = self._dsp.process(floats)
@@ -558,8 +501,8 @@ class UltimateAudioSampler:
                 continue
         else:
             return
-        # Count only after a successful put — a dropped chunk must not inflate
-        # the EOF clamp (position_seconds's pushed-total ceiling).
+        # After a successful put only: a dropped chunk must not inflate
+        # position_seconds's pushed-total EOF ceiling.
         self._pushed_samples += int(samples_int16.shape[0])
 
     def mark_eof(self) -> None:
@@ -633,17 +576,16 @@ class UltimateAudioSampler:
 
     def _writer_loop(self) -> None:
         while self._running:
-            # Phase 4 flush epoch: captured before the blocking get so a chunk
-            # dequeued just before a splice (below) is discarded rather than
-            # written past flush()'s ring cut-over. NEUTRAL pads are epoch-immune
-            # (silence is valid at any epoch), so only real queue data is checked.
+            # Captured before the blocking get, so a chunk dequeued just before
+            # a splice is discarded rather than written past the ring cut-over.
+            # NEUTRAL pads are epoch-immune.
             epoch = self._flush_epoch
             lead = self._written - self._read_consumed_bytes()
             self._lead_min = lead if self._lead_min < 0 else min(self._lead_min, lead)
             self._lead_max = max(self._lead_max, lead)
             if lead >= self._lead_target:
-                # Far enough ahead — idle briefly. The bounded queue + blocking
-                # push provide producer backpressure, so the lead can't run away.
+                # Far enough ahead. The bounded queue + blocking push give the
+                # producer backpressure, so the lead can't run away.
                 time.sleep(0.002)
                 continue
             try:
@@ -651,21 +593,17 @@ class UltimateAudioSampler:
                 if epoch != self._flush_epoch:
                     continue
             except queue.Empty:
-                # Queue momentarily empty. NEUTRAL-padding is a *last resort* —
-                # it inserts silence into the stream, so only do it when the
-                # lead has actually drained to the low watermark (a real
-                # underrun → without a pad the FPGA would replay stale ring
-                # data, the "echo" the $D418 pump fought). While the lead is
-                # still safe, just wait for the producer rather than glitch.
+                # Queue momentarily empty. A NEUTRAL pad inserts silence, so it
+                # waits for the low watermark — a real underrun, where the
+                # alternative is the FPGA replaying stale ring data.
                 if lead > self._lead_panic:
                     continue
                 pad_frames = max(1, (self._lead_target - lead) // self.bps)
                 pad_frames = min(pad_frames, REU_WRITE_SLICE // self.bps)
                 data = self._neutral_unit * pad_frames
                 self._underrun_pads += 1
-            # Serialize the write+advance against flush()'s ring cut-over
-            # (which also reads _written and rewrites the ring). Lock hold is one
-            # chunk (tens of ms); flush() blocks at most that long.
+            # Serialized against flush()'s ring cut-over, which also reads
+            # _written and rewrites the ring. Held for one chunk (tens of ms).
             with self._io_lock:
                 self._write_wrapped(self._written % self.ring_size, data)
                 self._written += len(data)
@@ -684,7 +622,6 @@ class UltimateAudioSampler:
             if pos >= self.ring_size:
                 pos = 0
 
-    # ---- clock ------------------------------------------------------------
     def position_seconds(self) -> float:
         """Wall-clock seconds since the ring was gated on — the heard playback
         position (same contract as ``AudioStreamer.position_seconds`` in REU-pump
@@ -705,7 +642,6 @@ class UltimateAudioSampler:
         ``start()`` already is that path (prefill + gate + writer thread)."""
         self.start()
 
-    # ---- reactive analysis tap (audio_source = "file") --------------------
     def _push_to_analysis(self, mono_floats: np.ndarray) -> None:
         """Feed the pre-DSP analysis sink, if one is installed. A failing analyzer
         must never take the audio path down, so the first exception is logged and
@@ -722,7 +658,6 @@ class UltimateAudioSampler:
                 log.exception("sampler analysis sink failed — disabling it (playback continues)")
             self.analysis_sink = None
 
-    # ---- sample tap (spectrum overlays) -----------------------------------
     def _tap_push(self, mono_floats: np.ndarray) -> None:
         n = mono_floats.shape[0]
         with self._tap_lock:
@@ -754,7 +689,6 @@ class UltimateAudioSampler:
                 out[tail:] = self._tap_buf[: n - tail]
         return out
 
-    # ---- shutdown ---------------------------------------------------------
     def stop(self) -> None:
         """Gate the channel off and join the writer thread. Firmware-config
         restore (Audio Mixer / I/O map) is separate, in doctor at teardown."""

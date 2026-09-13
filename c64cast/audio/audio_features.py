@@ -1,32 +1,11 @@
 """Audio-input music-feature stream for reactive generative visuals.
 
-The second producer of [MusicModulation](modulation.py), alongside
-[music_features.SidFeatureStream](music_features.py). Where the SID stream reads
-envelope/gate/frequency out of a host-side 6502 emulator running the same tune
-the chip is playing, this one analyzes *actual audio samples* — a live input
-(an iRig, a mixer feed, a mic) or, later, a decoded audio file — so a generative
-scene can react to music c64cast has no symbolic knowledge of.
+An :class:`AnalysisTap` the audio path pushes mono floats into, an
+:class:`AudioFeatureAnalyzer` that turns windows of them into a
+`MusicModulation`, and the :class:`AudioFeatureStream` poll thread between
+them.
 
-Everything downstream of `MusicModulation` is already source-agnostic
-(generators.py, the effects chain, wled_sync.py), so this module is the whole
-feature: an analyzer plus the poll thread that feeds it.
-
-**Why a separate pre-DSP tap.** `AudioStreamer.get_recent_samples()` already
-exposes a 2048-sample mono float ring — the one `overlays/spectrum_petscii.py`
-FFTs. But it is filled inside `_encode_and_enqueue`, *after* `_apply_dsp`, and
-`[dsp].enabled` defaults **True**: AGC + compressor + limiter sit ahead of it on
-the mic path. Those stages exist precisely to flatten dynamics for the 4-bit
-DAC, which is exactly the information an onset detector needs — a compressed
-kick barely moves the spectral flux. So `AudioStreamer.analysis_sink` taps
-earlier (right after the mono downmix, before the gate and the DSP chain) and
-feeds an `AnalysisTap` here. The spectrum overlay's tap is deliberately left
-alone: it wants to visualize what the C64 is actually playing.
-
-Thread model mirrors `SidFeatureStream`: a `PollThread` owns the analyzer and
-updates a snapshot under `_lock`; `features()` reads that snapshot under the
-same lock, so the render thread always sees a consistent set. The *writer* into
-the tap is a realtime sounddevice callback, so `AnalysisTap.push` does nothing
-but a couple of slice assignments under its own short-lived lock.
+See docs/architecture/audio.md#audio_featurespy--audio-input-music-features-reactive-visuals-from-live-input.
 """
 
 from __future__ import annotations
@@ -43,15 +22,9 @@ from c64cast.scenes.modulation import MusicModulation, TempoEstimator
 
 log = logging.getLogger(__name__)
 
-# Default analysis window. 1024 samples is ~85 ms at the 12 kHz DAC rate and
-# ~23 ms at 44.1 kHz — short enough for transient timing, long enough that the
-# lowest log-spaced band still holds a few bins.
 FFT_SIZE = 1024
 N_BANDS = 8
 
-# Hann windows are keyed by size and reused — the analyzer builds one per
-# stream, the spectrum overlay one for the default size, and neither should
-# re-allocate per frame.
 _WINDOWS: dict[int, np.ndarray] = {}
 
 
@@ -65,8 +38,7 @@ def hann_window(fft_size: int) -> np.ndarray:
     return w
 
 
-# The default-size window, kept as a module constant for the spectrum overlay,
-# which has always FFT'd at exactly FFT_SIZE.
+# Imported by overlays/_spectrum.py, which FFTs at exactly FFT_SIZE.
 WINDOW = hann_window(FFT_SIZE)
 
 
@@ -78,7 +50,6 @@ def band_edges(n_bands: int, fft_size: int) -> np.ndarray:
     so there is exactly one band-edge definition — the overlay's bars and the
     analyzer's `bands` describe the same frequency ranges."""
     n_bins = fft_size // 2
-    # log spacing from bin 1 → bin n_bins
     edges = np.logspace(0, np.log10(n_bins), n_bands + 1)
     return np.clip(edges.astype(np.int32), 1, n_bins)
 
@@ -87,9 +58,8 @@ class AnalysisTap:
     """A small lock-protected mono float ring the audio path pushes into and the
     feature thread reads windows out of.
 
-    Same wrap arithmetic as `AudioStreamer._push_to_tap` / `get_recent_samples`,
-    lifted rather than shared because the writer here is a realtime callback on
-    a streamer that may not exist yet (the tap outlives any single `start_mic`).
+    Same wrap arithmetic as `AudioStreamer._push_to_tap` / `get_recent_samples`;
+    the tap outlives any single `start_mic`.
     """
 
     def __init__(self, size: int = FFT_SIZE * 4):
@@ -107,7 +77,6 @@ class AnalysisTap:
         if n == 0:
             return
         if n >= self.size:
-            # Source block is larger than the ring — keep the tail only.
             with self._lock:
                 self._buf[:] = mono[-self.size :]
                 self._write = 0
@@ -140,48 +109,27 @@ class AnalysisTap:
 
 
 class AudioFeatureAnalyzer:
-    """Turn successive sample windows into a `MusicModulation`. Pure numpy — no
-    threads, no hardware, no I/O — so the whole feature math is unit-testable by
-    calling `update()` with synthetic signals.
+    """Turn successive sample windows into a `MusicModulation`.
 
-    Per `update(window, now)`:
+    Pure numpy — no threads, no hardware, no I/O — so the whole feature math is
+    unit-testable by calling `update()` with synthetic signals. Each
+    `update(window, now)` refreshes `level`, `bands`, `onset` and the shared
+    `TempoEstimator`'s `bpm`/`beat_phase`.
 
-    * **level** — block RMS through a one-pole attack/release follower,
-      normalized against a slowly-decaying rolling peak so a quiet source still
-      reaches full scale. Per-*block*, deliberately: `dsp._ar_envelope` is a
-      per-sample Python loop, which is the wrong tool at 60 blocks/sec.
-    * **bands** — Hann → rfft → mean magnitude per log-spaced band → `log1p`
-      compression (the same curve `spectrum_petscii` has always drawn).
-    * **onset** — spectral flux (sum of positive per-band deltas) against an
-      adaptive threshold (median of ~1 s of flux history), latched to 1.0 on a
-      crossing and otherwise decayed on the same τ as the SID path, so a pulse
-      looks identical after 16-color quantization.
-    * **bpm / beat_phase** — the shared `TempoEstimator`, fed by those onsets.
+    See docs/architecture/audio.md#the-analyzer.
     """
 
-    # Onset envelope time constant, matched to SidFeatureStream._ONSET_TAU_S so
-    # both producers pulse identically.
+    # Matched to SidFeatureStream._ONSET_TAU_S so both producers pulse alike.
     _ONSET_TAU_S = 0.18
 
-    # Level follower. Fast attack so a transient is on screen the frame it
-    # happens; slow release so the brightness breathes rather than flickers.
     _ATTACK_S = 0.010
     _RELEASE_S = 0.150
-    # Rolling peak for normalization: decays toward _PEAK_FLOOR so a quiet
-    # source climbs to full scale within a couple of seconds, while true silence
-    # reads as level ≈ 0 rather than being amplified into noise.
     _PEAK_DECAY_S = 2.0
     _PEAK_FLOOR = 0.02
 
-    # Onset detection. The adaptive threshold is the running median of the flux
-    # history times _THRESH_MULT, plus an absolute floor so a silent input can't
-    # trip on numerical dust (median ≈ 0 would otherwise make any flux a
-    # "crossing"). Both are divided by onset_sensitivity: higher ⇒ more onsets.
     _THRESH_MULT = 1.6
     _FLUX_FLOOR = 0.15
     _FLUX_HISTORY_S = 1.0
-    # Below this normalized level nothing counts as an onset at all — the guard
-    # that keeps a silent room from generating a phantom tempo.
     _SILENCE_LEVEL = 0.02
 
     def __init__(
@@ -207,7 +155,6 @@ class AudioFeatureAnalyzer:
         self._edges = band_edges(self.n_bands, self.fft_size)
         self._tempo = TempoEstimator()
 
-        # History length in blocks (~_FLUX_HISTORY_S of flux values).
         self._flux_history_len = max(4, int(round(self._FLUX_HISTORY_S / max(nominal_dt, 1e-3))))
         self.reset()
 
@@ -222,8 +169,6 @@ class AudioFeatureAnalyzer:
         self._last_now: float | None = None
         self._tempo.reset()
 
-    # ---- per-block analysis -------------------------------------------------
-
     def update(self, window: np.ndarray, now: float) -> None:
         """Fold one analysis window (mono float, `fft_size` samples) into the
         feature accumulators. `now` is a monotonic timestamp in seconds; the
@@ -232,8 +177,8 @@ class AudioFeatureAnalyzer:
         if window.size < self.fft_size:
             return
         dt = self._nominal_dt if self._last_now is None else now - self._last_now
-        # Clamp: a scheduler stall must not blow the envelopes away, and a
-        # duplicate timestamp must not divide by zero.
+        # Bounded so a scheduler stall can't flatten the envelopes, nor a
+        # duplicate timestamp divide by zero.
         dt = min(max(dt, 1e-4), 1.0)
         self._last_now = now
 
@@ -248,7 +193,6 @@ class AudioFeatureAnalyzer:
         tau = self._ATTACK_S if rms > self._level_env else self._RELEASE_S
         coef = 1.0 - math.exp(-dt / tau)
         self._level_env += (rms - self._level_env) * coef
-        # Peak follows instantly upward, decays exponentially toward the floor.
         decayed = self._PEAK_FLOOR + (self._peak - self._PEAK_FLOOR) * math.exp(
             -dt / self._PEAK_DECAY_S
         )
@@ -266,9 +210,7 @@ class AudioFeatureAnalyzer:
             if hi <= lo:
                 continue
             mags[i] = spec[lo:hi].mean()
-        # FFT magnitudes scale with the transform size; normalize first, then
-        # log-compress so loud content doesn't dwarf quiet content. Same curve
-        # as spectrum_petscii._band_magnitudes.
+        # Same normalize + log1p curve as _spectrum._SpectrumBands._fft_bands.
         mags = mags / (self.fft_size * 0.5)
         log_mags = np.log1p(mags * 100.0)
         self._bands = np.clip(log_mags, 0.0, 1.0)
@@ -278,8 +220,7 @@ class AudioFeatureAnalyzer:
         """Spectral flux vs an adaptive threshold; latch or decay `onset`."""
         prev = self._prev_log_mags
         self._prev_log_mags = log_mags
-        # Decay first so a fresh onset reads as a clean 1.0 (mirrors
-        # SidFeatureStream._process_tick).
+        # Decay before the latch below, so a fresh onset reads as a clean 1.0.
         self._onset *= math.exp(-dt / self._ONSET_TAU_S)
         if prev is None:
             return
@@ -289,14 +230,12 @@ class AudioFeatureAnalyzer:
         if len(history) > self._flux_history_len:
             del history[0]
         if self.level < self._SILENCE_LEVEL:
-            return  # silence: no threshold is meaningful, and no phantom tempo
+            return
         median = float(np.median(history))
         threshold = (median * self._THRESH_MULT + self._FLUX_FLOOR) / self.onset_sensitivity
         if flux > threshold:
             self._onset = 1.0
             self._tempo.note_onset(now)
-
-    # ---- feature snapshot ---------------------------------------------------
 
     @property
     def level(self) -> float:
@@ -356,8 +295,6 @@ class AudioFeatureStream:
         self._snapshot: MusicModulation | None = None
         self._poll: PollThread | None = None
 
-    # ---- lifecycle ----------------------------------------------------------
-
     def start(self) -> None:
         """Start the poll thread. A second call while running is a no-op."""
         if self._poll is not None and self._poll.is_running():
@@ -376,20 +313,14 @@ class AudioFeatureStream:
             self._poll.stop()
             self._poll = None
 
-    # ---- poll thread --------------------------------------------------------
-
     def _process_tick(self) -> None:
-        """Analyze the most recent window. Split out of the thread body so tests
-        drive it directly with a hand-filled tap (mirrors
-        SidFeatureStream._process_tick). The FFT runs outside the lock; only the
-        snapshot swap takes it."""
+        """Analyze the most recent window. The FFT runs outside the lock; only
+        the snapshot swap takes it."""
         window = self._tap.recent(self._fft_size)
         now = time.monotonic()
         with self._lock:
             self._analyzer.update(window, now)
             self._snapshot = self._analyzer.snapshot()
-
-    # ---- feature snapshot ---------------------------------------------------
 
     def features(self) -> MusicModulation | None:
         """Return the current snapshot, or None before the first tick."""
