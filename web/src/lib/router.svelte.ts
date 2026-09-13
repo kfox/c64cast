@@ -1,12 +1,8 @@
 /**
- * Which screen is showing, kept in the address bar.
- *
- * Small on purpose — two screens and a tail — but real paths rather than a
- * tab variable, because the server already answers any unclaimed path with the
- * app shell (`c64cast/control/web_static.py`). That means `/config/shows/gig.toml`
- * is a link somebody can send, a bookmark, and a page reload that comes back
- * where it was; the back button works because it is the browser's own history
- * rather than something reimplemented on top of it.
+ * Which screen is showing, kept in the address bar as a real path — the server
+ * answers any unclaimed path with the app shell
+ * (`c64cast/control/web_static.py`), so `/config/shows/gig.toml` is a link, a
+ * bookmark and a reload that comes back where it was.
  */
 
 export type Screen = "session" | "config" | "live";
@@ -55,8 +51,6 @@ export class Router {
   go(screen: Screen, tail = ""): void {
     const path = screen === "session" ? "/" : `/${screen}${tail ? `/${encode(tail)}` : ""}`;
     if (path === window.location.pathname) return;
-    // `pushState` rather than `replaceState`: choosing a different config is a
-    // step the reader may want to walk back out of.
     window.history.pushState({}, "", path);
     this.#route = parse(window.location.pathname);
   }

@@ -1,7 +1,5 @@
-/** The status-code-to-sentence mapping every screen needs when a request
- *  fails — pulled out of `Session.svelte` and `Config.svelte`, which each grew
- *  their own copy and drifted (Config's was missing the 422 case, the one
- *  that matters when a start or a save is refused for a bad config). */
+/** The one status-code-to-sentence mapping every screen uses for a failed
+ *  request. */
 
 import { ApiError } from "./api";
 

@@ -21,8 +21,6 @@
   button:hover { background: #444; }
   .segment { border-top: 1px solid #333; padding-top: 0.5em; }
   #presets { border-top: 1px solid #333; margin-top: 1.5em; padding-top: 0.5em; }
-  /* A control the current scene can't act on: dimmed + non-interactive, with a
-     tooltip explaining why (the input itself is also set .disabled). */
   .cap-off { opacity: 0.4; }
   .cap-off label { color: #666; }
 </style>
@@ -59,8 +57,6 @@ async function post(body) {
   });
 }
 
-// Gray out a row + disable its input, with a tooltip, when the current scene
-// can't use that control. Scene/Power/Brightness never pass disabled=true.
 const CAP_OFF_TITLE = 'Not applicable to the current scene';
 function markOff(row, input) {
   row.classList.add('cap-off');
@@ -74,10 +70,9 @@ function selectRow(labelText, options, selectedIdx, onpick, disabled) {
   const l = document.createElement('label');
   l.textContent = labelText;
   const sel = document.createElement('select');
-  // Display alphabetically, but each <option>'s value stays the real index
-  // into `options` (fx = playlist scene index, pal = PALETTE_MODES index —
-  // other code depends on that index directly), so sorting here only changes
-  // display order, never what gets posted back.
+  // Sorted for display only: each option's value stays the real index into
+  // `options` (fx = playlist scene, pal = PALETTE_MODES), which is what the
+  // server maps back.
   const order = options.map((name, idx) => ({name, idx}))
     .sort((a, b) => a.name.localeCompare(b.name));
   order.forEach(({name, idx}) => {
@@ -89,9 +84,8 @@ function selectRow(labelText, options, selectedIdx, onpick, disabled) {
   });
   sel.onchange = () => {
     onpick(parseInt(sel.value, 10));
-    // Drop focus after a pick: refresh() skips while any control is focused (so
-    // it won't yank a slider mid-drag), and a scene <select> stays focused after
-    // selection — which would freeze the capability hints until a manual reload.
+    // A <select> stays focused after a pick, and render() skips while any
+    // control is focused — so blur, or the hints freeze until a reload.
     sel.blur();
   };
   row.appendChild(l);
@@ -112,21 +106,15 @@ function segmentEl(i, seg, effects, palettes) {
   title.textContent = seg.n || ('System ' + (i + 1));
   wrap.appendChild(title);
 
-  // Per-control applicability hints (vendor `c64` key). Absent (older payload)
-  // => assume everything works, so we never over-disable.
+  // Per-control applicability hints (vendor `c64` key); absent in an older
+  // payload, so default to enabled rather than over-disable.
   const caps = seg.c64 || {pal: true, col: true, sx: true, ix: true};
 
-  // Scene is always live; Palette grays out when the mode can't swap it. The
-  // WS push delivers the new scene's state (incl. capability hints) once the
-  // jump lands, so no manual refresh burst is needed.
   wrap.appendChild(selectRow('Scene', effects, seg.fx,
     (v) => post({seg: [{id: i, fx: v}]})));
   wrap.appendChild(selectRow('Palette', palettes, seg.pal,
     (v) => post({seg: [{id: i, pal: v}]}), !caps.pal));
 
-  // Brightness is a single master slider up top (synced with the WLED app's own
-  // brightness), not per-segment. Here: Speed/Intensity, grayed out when the
-  // current scene declares no matching live param.
   [['Speed', 'sx', seg.sx, caps.sx],
    ['Intensity', 'ix', seg.ix, caps.ix]].forEach(([label, key, val, enabled]) => {
     const row = document.createElement('div');
@@ -143,10 +131,8 @@ function segmentEl(i, seg, effects, palettes) {
       body.seg[0][key] = parseInt(slider.value, 10);
       post(body);
     };
-    // A range input keeps focus after the drag ends (mouseup/touchend), which
-    // would freeze render()'s re-renders forever (see the scene <select>'s
-    // own blur() above, and #on/#bri/color picker below) — drop it once the
-    // drag is actually done, not on every oninput tick mid-drag.
+    // A range input keeps focus after the drag ends, which would freeze
+    // render() forever — blur on pointerup, not on every oninput tick.
     slider.onpointerup = () => slider.blur();
     row.appendChild(l);
     row.appendChild(slider);
@@ -167,9 +153,8 @@ function segmentEl(i, seg, effects, palettes) {
                  parseInt(h.slice(5, 7), 16)];
     post({seg: [{id: i, col: [rgb]}]});
   };
-  // 'change' fires once the picker UI closes (unlike 'input', which fires
-  // continuously while dragging inside it) — blur then, same freeze fix as
-  // the sliders above.
+  // 'change' fires once the picker UI closes, unlike 'input' — blur there,
+  // same freeze fix as the sliders above.
   picker.onchange = () => picker.blur();
   colRow.appendChild(colLabel);
   colRow.appendChild(picker);
@@ -178,21 +163,17 @@ function segmentEl(i, seg, effects, palettes) {
   return wrap;
 }
 
-// Live state arrives over WebSocket (/ws) — the same channel real WLED clients
-// use — so scene changes, capability hints, and brightness reflect promptly with
-// no polling. effects/palettes/presets aren't in the WS frame; they come from a
-// one-shot /json + /presets.json fetch on (re)connect and are cached for render.
+// effects/palettes/presets are not in the WS frame; fetchMeta reads them once
+// per (re)connect.
 let effects = [];
 let palettes = [];
 let presets = {};        // {"1": {...}, ...} from /presets.json
 let lastState = null;
-// A preset recall that needs to re-fire once the target scene is live (so its
-// sliders/palette/color land on the new scene, not the outgoing one).
 let pendingRecall = null;
 
 function render() {
-  // Don't rebuild while the user is interacting with a control (would yank a
-  // slider mid-drag or clobber a mid-selection <select>).
+  // Don't rebuild while a control is focused: it would yank a slider mid-drag
+  // or clobber a mid-selection <select>.
   const active = document.activeElement;
   if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
   if (!lastState) return;
@@ -234,10 +215,8 @@ function applyState(state) {
 function maybeReplayRecall(state) {
   if (!pendingRecall) return;
   if (Date.now() > pendingRecall.expires) { pendingRecall = null; return; }
-  // Ready once every targeted segment's fx equals the preset's fx — i.e. the
-  // target scene(s) are live. Then re-fire the preset: fx now matches (no
-  // re-jump), so this simply re-applies sliders + forces palette/color onto the
-  // now-live scene, which is what makes a cross-scene recall land perfectly.
+  // Re-fire once the target scene is live: fx already matches, so the second
+  // post lands only sliders/palette/color, on the new scene.
   const ready = Object.keys(pendingRecall.targetFx).every((id) => {
     const seg = state.seg[parseInt(id, 10)];
     return seg && seg.fx === pendingRecall.targetFx[id];
@@ -271,8 +250,6 @@ function applyPreset() {
   const pid = parseInt(sel.value, 10);
   if (!pid || !presets[pid]) return;
   post({ps: pid});
-  // Arm the cross-scene replay: remember which fx each targeted segment should
-  // reach, so we can re-fire once the scene is live (see maybeReplayRecall).
   const targetFx = {};
   (presets[pid].seg || []).forEach((s) => { targetFx[s.id != null ? s.id : 0] = s.fx; });
   pendingRecall = {pid: pid, targetFx: targetFx, expires: Date.now() + 8000};
@@ -283,14 +260,14 @@ function nextFreeId() { let id = 1; while (presets[id]) id++; return id; }
 async function savePreset() {
   const nameEl = document.getElementById('presetName');
   const id = nextFreeId();
-  // Omit `n` when blank so the server names it from the current scene's stable
-  // WLED label (a random-asset scene gets a pool name, not the loaded tune).
+  // Omit `n` when blank: the server then names it from the scene's stable WLED
+  // label, which for a random-asset scene is the pool, not the loaded tune.
   const body = {psave: id};
   if (nameEl.value) body.n = nameEl.value;
   await post(body);
   nameEl.value = '';
-  // Save is exactly the moment a refresh is most wanted, and a focused
-  // <input> blocks render() from running at all — blur so it actually lands.
+  // A focused <input> blocks render() entirely, and a save is the moment a
+  // refresh is most wanted — so blur.
   nameEl.blur();
   setTimeout(async () => { await fetchPresets(); render(); }, 300);
 }
@@ -304,9 +281,8 @@ async function deletePreset() {
 
 //@include live_socket.js
 
-// While the socket is down, poll /json so the page still works without
-// websockets — and re-read the meta on every (re)connect, since anything that
-// changed while it was down arrived nowhere.
+// onOpen re-reads the meta on every (re)connect: whatever changed while the
+// socket was down arrived nowhere.
 const live = liveSocket({
   path: '/ws',
   onOpen: fetchMeta,
@@ -315,21 +291,18 @@ const live = liveSocket({
   pollMs: 4000,
 });
 
-// Blur after each: all three keep focus past their interaction (a checkbox
-// after click, a range after drag, per the browser), which would otherwise
-// freeze render()'s re-renders forever — same fix as the per-segment
-// controls above.
+// A checkbox after a click and a range after a drag both keep focus, per the
+// browser, which would freeze render() forever — so all three blur.
 document.getElementById('on').onchange = (e) => { post({on: e.target.checked}); e.target.blur(); };
-// Master brightness → top-level `bri`, the same field the WLED app's own
-// brightness slider drives, so the two stay in sync. A real screen dim; 0 =
-// black, never a pause.
+// Top-level `bri` is the field the WLED app's own brightness slider drives, so
+// the two stay in sync. A real screen dim: 0 is black, not a pause.
 document.getElementById('bri').oninput = (e) => post({bri: parseInt(e.target.value, 10)});
 document.getElementById('bri').onpointerup = (e) => e.target.blur();
 document.getElementById('presetApply').onclick = applyPreset;
 document.getElementById('presetSave').onclick = savePreset;
 document.getElementById('presetDelete').onclick = deletePreset;
 
-fetchMeta();  // initial paint even before WS connects
+fetchMeta();
 live.start();
 </script>
 </body>

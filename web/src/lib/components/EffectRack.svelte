@@ -17,9 +17,6 @@
 {:else}
   <div class="space-y-3">
     {#each effects as fx (fx.index)}
-      <!-- Rows are generated from the layer's own `LIVE_PARAMS`, which is the
-           effect registry itself — so the rack cannot list a knob the layer
-           does not have. -->
       <div
         class="rounded-lg border border-[var(--edge)] p-3"
         class:border-dashed={!fx.enabled}

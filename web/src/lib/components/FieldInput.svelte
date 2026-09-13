@@ -5,12 +5,10 @@
 
   interface Props {
     /** Labels the control for a screen reader — the visible name sits in the
-     *  row beside it, which is not a `<label>` because a row can hold help,
-     *  a badge and a clear button as well. */
+     *  row beside it, which is not a `<label>`. */
     label: string;
     /** Every kind the declared type accepts. More than one gets a selector, so
-     *  a `int | str` field offers both halves instead of the one the
-     *  classifier happened to name first. */
+     *  an `int | str` field offers both halves. */
     kinds: FieldKind[];
     /** A non-empty list makes this a picker whatever the declared type says. */
     choices?: string[];
@@ -19,23 +17,23 @@
     vocabulary?: string;
     palette?: Swatch[];
     /** Datalist options offered alongside the text box when `vocabulary ===
-     *  "media"` — media the scene's own type browses. Free text, a glob, a
-     *  comma-separated list and a directory all stay typeable; this is a
-     *  suggestion, not a picker replacing the input. */
+     *  "media"` — media the scene's own type browses. A suggestion, not a
+     *  picker: free text, a glob, a comma-separated list and a directory all
+     *  stay typeable. */
     options?: string[];
     /** Whether `options` stopped short of every match on the host — an HVSC
-     *  tree or a large asset dir hits the walk's own cap before a query
-     *  narrows it. Media fields only; ignored otherwise. */
+     *  tree hits the walk's own cap before a query narrows it. Media fields
+     *  only; ignored otherwise. */
     truncated?: boolean;
     /** Asked with the field's current text on every keystroke, media fields
-     *  only — the parent debounces it and re-fetches `options` against the
-     *  host instead of leaving the field to filter whatever it already has. */
+     *  only — the parent debounces it and re-fetches `options` from the
+     *  host. */
     onsearch?: (q: string) => void;
     value: unknown;
     disabled?: boolean;
     /** The parsed value, or `null` and a reason when what is typed is not one
-     *  yet. Half a number is not an edit — and it is not a reason to throw
-     *  away what was typed either, so the text stays and the save waits. */
+     *  yet: half a number is not an edit, but the text stays and the save
+     *  waits rather than discarding it. */
     onedit: (value: unknown, error: string) => void;
   }
 
@@ -54,15 +52,13 @@
   }: Props = $props();
 
   const listId = $props.id();
-  // Whether searching is even meaningful for this field — decoupled from
-  // `options.length` so a query that (or starts with) zero matches doesn't
-  // permanently stop future keystrokes from searching again.
+  // Decoupled from `options.length`, so a query with zero matches does not
+  // stop the next keystroke from searching.
   const searchable = $derived(vocabulary === "media");
   const media = $derived(searchable && options.length > 0);
 
   /** Which half of a union the value in hand already is, so a field opens on
-   *  the control that can show it rather than on whichever member was declared
-   *  first. */
+   *  the control that can show it. */
   function kindOf(v: unknown): FieldKind | null {
     if (typeof v === "boolean") return "bool";
     if (typeof v === "object" && v !== null) return "complex";
@@ -71,8 +67,8 @@
     return null;
   }
 
-  // Sticky once touched: switching to the number box and typing nothing yet
-  // must not bounce back to the text box on the next render.
+  // Sticky once touched: switching to the number box and typing nothing must
+  // not bounce back to the text box on the next render.
   let chosen = $state<FieldKind | null>(null);
   const fromValue = $derived(kinds.find((k) => k === kindOf(value)) ?? null);
   const kind = $derived(chosen ?? fromValue ?? kinds[0] ?? "str");
@@ -95,23 +91,19 @@
           : KIND_LABELS[k]
       : KIND_LABELS[k];
 
-  /** Switching halves shows an empty control rather than the stored value:
-   *  what is stored is the *other* type, and rendering it here would put
-   *  "light blue" in a number box. Nothing is staged until something is
-   *  entered, so switching back is free. */
+  /** Switching halves shows an empty control rather than the stored value,
+   *  which is the *other* type — "light blue" in a number box. Nothing is
+   *  staged until something is entered, so switching back is free. */
   function switchTo(k: FieldKind): void {
     chosen = k;
     typing = null;
   }
 
-  // The value only belongs to the control currently on screen when it is
-  // already of that kind; otherwise the control starts empty.
   const shown = $derived(fromValue === kind ? value : null);
 
-  // Held only while the field has the caret. The value round-trips through the
+  // Held only while the field has the caret: the value round-trips through the
   // parent and comes back formatted, so binding straight to it would rewrite
-  // "1.50" as "1.5" under the cursor and make the decimal unreachable — the
-  // same rule the performance sliders follow while a finger is on them.
+  // "1.50" as "1.5" under the cursor and put the decimal out of reach.
   let typing = $state<string | null>(null);
 
   const text = $derived(typing ?? asText(shown));
@@ -148,8 +140,6 @@
     if (searchable) onsearch?.(raw);
   }
 
-  // Releasing the caret hands the field back to the value, so what is shown is
-  // what would be saved rather than what happened to be typed.
   const settle = () => (typing = null);
 
   const box = `min-h-11 w-full rounded-lg border border-[var(--edge)] bg-[var(--panel-alt)]
@@ -157,9 +147,6 @@
                focus-visible:outline-2 focus-visible:outline-[var(--accent)]`;
 </script>
 
-<!-- A union offers its halves before the control, because which half you are
-     writing changes what the control below even is. One kind renders nothing
-     here, which is every field but a handful. -->
 {#if kinds.length > 1 && !picker}
   <div class="mb-1 flex gap-1" role="group" aria-label="{label}: how to write it">
     {#each kinds as k (k)}
@@ -209,8 +196,8 @@
     value={asText(value)}
     onchange={(e) => onedit(e.currentTarget.value, "")}
   >
-    <!-- A value the choices don't cover is still the value: showing it as an
-         option is how the picker avoids silently re-selecting something else. -->
+    <!-- A value the choices don't cover is still the value: offering it is
+         what keeps the picker from silently re-selecting something else. -->
     {#if !choices.includes(asText(value))}
       <option value={asText(value)}>{asText(value) || "—"}</option>
     {/if}

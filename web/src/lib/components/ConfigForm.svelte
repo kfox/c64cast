@@ -28,24 +28,19 @@
     /** The config ref this form belongs to — what the save PATCHes. */
     path: string;
     readOnly: boolean;
-    /** Edits typed but not saved, held by the screen so that clicking another
-     *  file to compare against doesn't discard them. Keyed by row. */
+    /** Edits typed but not saved, held by the screen. Keyed by row. */
     pending: Record<string, ConfigEdit>;
     onpending: (next: Record<string, ConfigEdit>) => void;
-    /** `restart` names the sections a reload will *not* pick up, so the screen
-     *  can stop offering a reload as if it were enough. Empty on a save that a
-     *  reload covers in full — which includes every structural change, since
-     *  adding or removing a scene is exactly what a reload is for. */
+    /** `restart` names the sections a reload will *not* pick up. Empty on a
+     *  save a reload covers in full, which includes every structural change. */
     onsaved: (written: ConfigWritten, restart: string[]) => void;
     /** Media kind -> what's browsable there (`Config.svelte` fetches one
-     *  listing per kind any loaded scene type actually uses). Absent kinds
-     *  just render an empty datalist — a picker with nothing to offer is a
-     *  plain text box, which is exactly the fallback. */
+     *  listing per kind any loaded scene type uses). An absent kind renders an
+     *  empty datalist, which is a plain text box. */
     media?: Record<string, MediaIndex>;
     /** A file just landed on the host for this scene type — `Config.svelte`
-     *  drops its cached listing for the kind(s) that type browses and
-     *  re-fetches, so the newly uploaded file shows up in every datalist
-     *  without a page reload. */
+     *  drops and re-fetches its cached listing for the kind(s) that type
+     *  browses. */
     onuploaded?: (sceneType: string) => void;
   }
 
@@ -62,14 +57,10 @@
   }: Props = $props();
 
   /** The datalist options a scene type's `file =` field offers: the union of
-   *  every media kind it browses, deduplicated. Cached per scene index so
-   *  staging an edit elsewhere in the form — which replaces `pending` and
-   *  would otherwise re-run this for every `file =` field — only recomputes
-   *  when `media` or `searchResults` changes. Keyed by scene index rather
-   *  than scene type name, so two scenes sharing a type never share the other's
-   *  datalist. A kind with a live search overlays `media`'s unfiltered
-   *  listing entirely rather than merging with it, so what's shown is exactly
-   *  what the host just answered. */
+   *  every media kind it browses, deduplicated. Cached by scene index — not by
+   *  scene type name, so two scenes sharing a type never share the other's
+   *  datalist. A kind with a live search overlays `media`'s unfiltered listing
+   *  entirely rather than merging with it. */
   const mediaOptions = $derived.by(() => {
     const cache = new Map<number, string[]>();
     return (doc: SceneTypeDoc | undefined, sceneIndex: number): string[] => {
@@ -94,16 +85,12 @@
     );
   }
 
-  // How long a burst of keystrokes waits before it becomes a request — a
-  // search field's own pace, not the network's.
   const SEARCH_DEBOUNCE_MS = 250;
 
-  // A live search's result per scene index + kind, uncached — a query fires
-  // on a debounce and freshness beats a map keyed by every prefix somebody
-  // typed. Keyed by scene index as well as kind, so searching in one scene
-  // never changes the datalist of another scene that shares its type. `null`
-  // means no query is live for that scene+kind, so `mediaOptions` falls back
-  // to the unfiltered `media` prop.
+  // A live search's result per scene index + kind. Keyed by scene index as
+  // well as kind, so searching in one scene never changes the datalist of
+  // another that shares its type. `null` means no query is live for that
+  // scene+kind, so `mediaOptions` falls back to the unfiltered `media` prop.
   let searchResults = $state<Record<string, MediaIndex | null>>({});
 
   function searchKey(sceneIndex: number, kind: string): string {
@@ -111,11 +98,11 @@
   }
 
   // One debounced fetch per scene+kind, so a burst within one field coalesces
-  // without a keystroke in a *different* field clobbering it. `searchGenerations`
-  // pairs with it: each firing bumps its key's generation, and a fetch that
-  // resolves against a since-superseded generation is dropped, so a slower
-  // response to an earlier, broader query can never overwrite a faster
-  // response to a later, narrower one the user is already looking at.
+  // without a keystroke in a *different* field clobbering it.
+  // `searchGenerations` pairs with it: each firing bumps its key's generation,
+  // and a fetch resolving against a superseded generation is dropped, so a
+  // slow answer to a broad query cannot overwrite a fast answer to a narrower
+  // one already on screen.
   const searchDebouncers = new Map<string, (q: string) => void>();
   const searchGenerations = new Map<string, number>();
 
@@ -131,8 +118,7 @@
             searchResults = { ...searchResults, [key]: idx };
           })
           .catch(() => {
-            // A failed search leaves whatever was showing rather than
-            // blanking the datalist over a transient network hiccup.
+            // Leave whatever was showing rather than blank the datalist.
           });
       }, SEARCH_DEBOUNCE_MS);
       searchDebouncers.set(key, debounced);
@@ -142,10 +128,8 @@
 
   /** Search every kind scene `sceneIndex` browses — a `file =` field's
    *  datalist is their union, so its search is too. An empty query clears
-   *  immediately rather than waiting out the debounce, so backspacing to
-   *  nothing snaps straight back to the unfiltered listing; it also bumps the
-   *  generation, so a fetch already in flight for the query just abandoned
-   *  cannot land afterward and repopulate it. */
+   *  immediately rather than waiting out the debounce, and bumps the
+   *  generation so a fetch already in flight cannot land afterward. */
   function searchScene(doc: SceneTypeDoc | undefined, sceneIndex: number, q: string): void {
     for (const kind of kindsForScene(doc)) {
       const key = searchKey(sceneIndex, kind);
@@ -159,37 +143,26 @@
   }
 
   /** Hide every field still sitting at its baseline. On by default: a config
-   *  has 167 settable fields and a show file names a dozen of them, and the
-   *  dozen is the question being asked. */
+   *  has far more settable fields than a show file names. */
   let onlyChanged = $state(true);
   let query = $state("");
   let report = $state<ValidationReport | null>(null);
   let problem = $state("");
   let saved = $state("");
   let busy = $state(false);
-  // Which scene an upload is streaming into, for the progress bar beside its
-  // drop zone, and what it has reported so far — `uploadTotal` starts at the
-  // file's own size so the bar has a real number to show before the first
-  // `progress` event lands.
+  // `uploadTotal` starts at the file's own size, so the bar has a real number
+  // before the first `progress` event lands.
   let uploadingIndex = $state<number | null>(null);
   let uploadingName = $state("");
   let uploadLoaded = $state(0);
   let uploadTotal = $state(0);
   let uploadComputable = $state(true);
-  // `$state` so the Cancel chip can disable itself once the upload it would
-  // abort has already finished.
   let uploadAbort = $state<AbortController | null>(null);
-  // Set by an in-flight upload just before its `structural()` call, so the
-  // "Saved." banner can say what was actually uploaded rather than just that
-  // a save happened.
   let uploadNote = $state("");
 
   // Half-typed values, kept here rather than beside the edits: a number that
-  // isn't one yet is a state of this screen, not something worth carrying to
-  // another file and back.
+  // isn't one yet is not carried to another file and back.
   let invalid = $state<Record<string, string>>({});
-  // Carried out of the last save so a green "Saved" can't stand alone over a
-  // config that names media this host hasn't got.
   let warnings = $state<Warning[]>([]);
 
   const edits = $derived(Object.values(pending));
@@ -206,18 +179,17 @@
   );
   const restart = $derived([...new Set(restartEdits.map((edit) => edit.section as string))]);
 
-  /** A row's identity. The wire shape names a section *or* a scene index, and
-   *  so does this — one string, so a lookup never has to reconstruct which. */
+  /** A row's identity — one string, naming a section *or* a scene index the
+   *  way the wire shape does. */
   const sectionKey = (section: string, field: string) => `s:${section}.${field}`;
   const sceneKey = (index: number, field: string) => `n:${index}.${field}`;
 
   const needle = $derived(query.trim().toLowerCase());
 
   /** Whether *any* field is named like the query. Names are searched first and
-   *  alone, because matching help text on "color" pulls in everything that
-   *  mentions color — but a reader who does not know a setting is called
-   *  `cell_strategy` has no way in at all, so a query that names nothing falls
-   *  through to the descriptions and the form says that is what happened. */
+   *  alone — matching help text on "color" pulls in everything that mentions
+   *  color — and a query that names nothing falls through to the descriptions,
+   *  which the form says it has done. */
   const byName = $derived(
     needle !== "" &&
       [
@@ -228,11 +200,9 @@
 
   function shown(fields: FormField[], key: (f: FormField) => string, help: HelpOf): FormField[] {
     return fields.filter((f) => {
-      // An unsaved edit is never hidden by a filter — losing sight of one is
-      // how it gets saved by accident or lost by surprise.
+      // An unsaved edit is never hidden by a filter.
       if (pending[key(f)]) return true;
-      // Searching is asking for a field, which is the one move the "only what
-      // this file changes" filter would defeat.
+      // A search outranks the "only what this file changes" filter.
       if (needle) return matches(f.name) || (!byName && help(f.name).toLowerCase().includes(needle));
       return !onlyChanged || !f.is_default;
     });
@@ -244,8 +214,6 @@
     return name.toLowerCase().includes(needle);
   }
 
-  // A section with nothing to say disappears rather than leaving an empty
-  // heading — with the filter on, that is most of them.
   const sections = $derived(
     form.sections
       .map((s: FormSection) => ({
@@ -259,8 +227,8 @@
       .filter((row) => row.fields.length > 0),
   );
 
-  // Scenes always show: they are what the file is *for*, and one with every
-  // field at its default is still a scene the playlist will run.
+  // Scenes always show: one with every field at its default is still a scene
+  // the playlist will run.
   const scenes = $derived(
     form.scenes.map((sc: FormScene, i: number) => ({
       scene: sc,
@@ -284,8 +252,7 @@
   }
 
   /** What the row shows: the edit if there is one, else what is on disk. A
-   *  cleared row shows what it will fall back to, which is the whole point of
-   *  clearing it. */
+   *  cleared row shows what it will fall back to. */
   function shownValue(field: FormField, key: string): unknown {
     const edit = pending[key];
     if (!edit) return field.value;
@@ -295,14 +262,14 @@
   function stage(key: string, edit: ConfigEdit, field: FormField, value: unknown, error: string): void {
     invalid = { ...invalid, [key]: error };
     if (error) return;
-    // Typing the stored value back is not an edit. Compared as JSON because a
-    // list or a table is a value here like any other.
+    // Typing the stored value back is not an edit. JSON-compared, since a list
+    // or a table is a value here like any other.
     const same = JSON.stringify(value) === JSON.stringify(field.value);
     onpending(same ? without(key) : { ...pending, [key]: { ...edit, value } });
   }
 
   /** Stop setting the field here. On a row the file never set, that is the
-   *  same as dropping the edit — there is nothing on disk to reset. */
+   *  same as dropping the edit. */
   function clear(key: string, edit: ConfigEdit, field: FormField): void {
     invalid = { ...invalid, [key]: "" };
     onpending(field.is_default ? without(key) : { ...pending, [key]: { ...edit, reset: true } });
@@ -328,9 +295,7 @@
     onpending({});
   }
 
-  /** What it takes to *see* the change that was just saved — which is the
-   *  question actually being asked at the moment of saving, and the one the
-   *  console used to answer with a count and nothing else. */
+  /** What it takes to *see* the change that was just saved. */
   function applies(count: number, held: number, sections: string[]): string {
     const named = sections.map((s) => `[${s}]`).join(", ");
     const verb = sections.length === 1 ? "needs" : "need";
@@ -339,8 +304,8 @@
     return `${named} ${verb} the session restarted; the rest apply on a reload.`;
   }
 
-  /** Which scene type a new blank scene gets. The options come from the host's
-   *  own list rather than a copy kept here. */
+  /** Which scene type a new blank scene gets; the options are the host's
+   *  list. */
   let newType = $state("video");
 
   const chip = `min-h-9 rounded-md border border-[var(--edge)] px-2 text-xs
@@ -352,8 +317,8 @@
    *  unsaved change onto a different scene. */
   const structuralBlocked = $derived(edits.length > 0);
 
-  /** The ↑/↓ chips for a scene at `index`: one shape, so the earlier/later
-   *  pair can't drift apart on a later tweak to the label or disabled rule. */
+  /** The ↑/↓ chips for a scene at `index`, built from one shape so the
+   *  earlier/later pair cannot drift apart. */
   function moveDirections(index: number, sceneCount: number) {
     return [
       { delta: -1, symbol: "↑", label: "Move this scene earlier", atEdge: index === 0 },
@@ -372,7 +337,6 @@
       const note = uploadNote ? `${uploadNote} ` : "";
       saved = `${note}Saved. ${written.backup ? `The previous version is in ${written.backup}.` : ""}`;
       warnings = written.warnings ?? [];
-      // No sections held back: a scene list is exactly what a reload re-reads.
       onsaved(written, []);
     } catch (e) {
       const refused = reportOf(e);
@@ -387,9 +351,9 @@
   }
 
   /** Upload a file dropped or picked for a scene's `fieldName`, then PATCH
-   *  that field to the spec the upload landed at — one `structural()` call,
-   *  so a viewer's busy flag, error/report handling and post-save re-read all
-   *  come from the same place a scene add/remove already uses. */
+   *  that field to the spec the upload landed at — through `structural()`, so
+   *  the busy flag, error handling and post-save re-read are a scene
+   *  add/remove's. */
   async function uploadFile(index: number, fieldName: string, file: File): Promise<void> {
     if (readOnly || busy || structuralBlocked) return;
     uploadingIndex = index;
@@ -408,8 +372,7 @@
           },
           signal: uploadAbort?.signal,
         });
-        // The upload itself is done; abort() from here on would be a no-op
-        // (the XHR is already in state DONE), so stop offering it.
+        // The XHR is in state DONE, so abort() would be a no-op from here.
         uploadAbort = null;
         uploadNote = uploadMessage(uploaded);
         onuploaded?.(form.scenes[index]?.type ?? "");
@@ -423,13 +386,11 @@
   }
 
   /** Abort the upload in flight, if there is one. Its rejection reaches
-   *  `structural`'s own catch like any other failure, so canceling reports
-   *  itself the same way a network error would. */
+   *  `structural`'s own catch like any other failure. */
   function cancelUpload(): void {
     uploadAbort?.abort();
   }
 
-  // Highlighted while a drag hovers a scene card; `null` the rest of the time.
   let dragOverIndex = $state<number | null>(null);
 
   /** Dropping a **file** onto a scene uploads it (see `uploadFile`); dropping
@@ -464,8 +425,8 @@
     saved = "";
     warnings = [];
     busy = true;
-    // Read before the save: `onsaved` re-reads the file, which clears the
-    // staged edits these were derived from.
+    // Read before the save: `onsaved` re-reads the file, clearing the staged
+    // edits these are derived from.
     const needsRestart = restart;
     const count = edits.length;
     const held = restartEdits.length;
@@ -479,9 +440,8 @@
       onsaved(written, needsRestart);
     } catch (e) {
       // A refused save answers 422 with the whole validation report — the same
-      // shape the text editor's Check returns, shown the same way rather than
-      // reduced to one line. The edits stay staged: the file is untouched, so
-      // what is on screen is still what the user meant to write.
+      // shape the text editor's Check returns. The edits stay staged; the file
+      // is untouched.
       const refused = reportOf(e);
       if (refused) report = refused;
       else if (e instanceof ApiError) problem = e.message;
@@ -650,11 +610,9 @@
           {#each row.scene.overlays as overlay, j (j)}
             {@const kind = overlayType(overlay)}
             {@const od = docs.overlay(kind)}
-            <!-- Overlays are shown whole rather than filtered: an overlay only
-                 exists in a config because somebody asked for it, so every key
-                 in one is a deliberate answer. They are also the one part of a
-                 scene the form does not edit — an overlay list is replaced
-                 wholesale or not at all, which is the text editor's job. -->
+            <!-- Shown whole rather than filtered, and never edited here: an
+                 overlay list is replaced wholesale or not at all, which is the
+                 text editor's job. -->
             <div class="mt-3 rounded-md bg-[var(--panel-alt)] p-2">
               <p class="font-mono text-xs">overlay: {kind}</p>
               {#if od?.help}
@@ -671,8 +629,6 @@
     </div>
 
     {#if !readOnly}
-      <!-- "Add another clip to this show" is the most common structural edit
-           there is, and it was the one that still meant opening the source. -->
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <label class="sr-only" for="new-scene-type">Type of scene to add</label>
         <select
@@ -754,8 +710,6 @@
       This console holds a read-only token, so the settings are shown but cannot be written.
     </p>
   {:else}
-    <!-- Sticky: the form is longer than a screen and the save belongs where
-         the hands are, not at the end of a scroll. -->
     <div
       class="sticky bottom-0 -mx-5 mt-2 flex flex-wrap items-center gap-2 border-t
              border-[var(--edge)] bg-[var(--panel)] px-5 py-3"

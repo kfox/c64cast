@@ -1,7 +1,5 @@
-/** Coalesce a burst of calls into one, firing `ms` after the last one — a
- *  search-as-you-type field's own pace, not the network's. Only the final
- *  call's arguments reach `fn`; every earlier one in the burst is dropped
- *  before it fires. */
+/** Coalesce a burst of calls into one, firing `ms` after the last one. Only
+ *  the final call's arguments reach `fn`. */
 export function debounce<A extends unknown[]>(
   fn: (...args: A) => void,
   ms: number,

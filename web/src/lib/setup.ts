@@ -1,10 +1,9 @@
 /**
  * The appliance first-run form's client (`c64cast/control/setup_api.py`).
  *
- * Its own three-call transport rather than `api.ts`'s, because everything in
- * there rides a token this browser does not have yet: while the setup window
- * is open these two endpoints are the only ones on the host that answer
- * without one, and every other route is a 503 from `setup_gate.py`.
+ * Its own transport rather than `api.ts`'s, which rides a token this browser
+ * does not have yet: while the setup window is open `setup_gate.py` answers
+ * `503` to everything but this route, the form's own page and `/assets`.
  */
 
 /** Where the shell puts the form in the address bar. Server-side twin:
@@ -15,18 +14,15 @@ export const SETUP_PAGE_PATH = "/setup";
 const SETUP_PATH = "/api/setup";
 
 /** How often to re-ask whether the host has finished restarting, and how long
- *  to keep asking. A restart is a rebuilt app on an already-warm process, so
- *  it takes well under a second; the timeout only bounds the wait when
- *  something has gone wrong enough that the page should say so. */
+ *  to keep asking. A restart is a rebuilt app on an already-warm process. */
 const RESTART_POLL_MS = 400;
 const RESTART_TIMEOUT_MS = 30_000;
 
 export interface SetupState {
   pending: boolean;
   /** Whether a token typed here would actually take effect. False when the
-   *  host's token is named by its configuration rather than generated — see
-   *  `setup_api.py`, which refuses one in that case rather than accepting a
-   *  replacement that the next restart would silently ignore. */
+   *  host's token is named by its configuration rather than generated;
+   *  `setup_api.py` refuses one in that case. */
   token_settable: boolean;
 }
 
@@ -84,8 +80,8 @@ export async function waitForRestart(
     try {
       if ((await probeSetup()) === null) return true;
     } catch {
-      // The listening socket is down between the two apps. Expected, and the
-      // whole reason this polls rather than navigating straight away.
+      // The listening socket is down between the two apps — expected, and why
+      // this polls rather than navigating straight away.
     }
   }
   return false;

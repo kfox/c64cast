@@ -8,15 +8,13 @@
 
   let { looks, readOnly = false, onlook }: Props = $props();
 
-  /** Matches the `/perf` console's pad count so a look saved from one surface
-   *  is reachable from the other. */
+  /** Matches the `/perf` console's `LOOK_SLOTS`, so a look saved from one
+   *  surface is reachable from the other (`control/perf_console.html`). */
   const SLOTS = 8;
 
-  // A save arms first and fires on the pad, rather than each pad carrying two
-  // buttons: on a phone at a gig the pads have to stay big, and recall is the
-  // move that has to be fast. An *empty* pad has nothing to lose, though, so
-  // it saves on a plain tap without arming SAVE first — only a pad that would
-  // overwrite an existing look needs the arm-then-tap safety.
+  // A save arms first and fires on the pad. An empty pad has nothing to lose,
+  // so it saves on a plain tap; only overwriting an existing look needs the
+  // arm-then-tap.
   let saving = $state(false);
 
   const saved = $derived(new Set(looks));

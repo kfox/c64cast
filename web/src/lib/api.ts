@@ -23,8 +23,7 @@ import type {
 export class ApiError extends Error {
   readonly status: number;
   /** The parsed body, kept whole: a refused config write answers 422 with the
-   *  full validation report, and a screen that only got the message would have
-   *  to ask for it again to show the loader's own diagnostics. */
+   *  full validation report, not just a message. */
   readonly body: unknown;
 
   constructor(status: number, message: string, body: unknown = null) {
@@ -61,10 +60,8 @@ function detailOf(body: unknown, fallback: string): string {
 }
 
 /** Parse a response body (JSON if it is JSON, the raw text otherwise) and
- *  throw `ApiError` for anything not 2xx. The shared tail of two transports
- *  that can't share a `Response` object: `fetch`'s (via `answer`, below) and
- *  `uploadMedia`'s `XMLHttpRequest` (the only API that reports upload
- *  progress), which lands on the same status/statusText/text triple by hand. */
+ *  throw `ApiError` for anything not 2xx. Shared by `fetch` (via `answer`) and
+ *  by `uploadMedia`'s `XMLHttpRequest`, which cannot hand over a `Response`. */
 export function settle<T>(status: number, statusText: string, text: string): T {
   let parsed: unknown = null;
   if (text) {
@@ -88,9 +85,8 @@ async function answer<T>(response: Response): Promise<T> {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  // `same-origin` credentials, and nothing else: the token rides in the
-  // HttpOnly `SameSite=Strict` cookie the login exchange set. The app never
-  // holds the token in JS, so an injected script has nothing to steal.
+  // The token rides in the HttpOnly `SameSite=Strict` cookie the login
+  // exchange set; nothing here ever holds it in JS.
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
@@ -124,21 +120,17 @@ export const api = {
   configs: () => request<ConfigIndex>("GET", "/api/configs"),
   update: () => request<UpdateState>("GET", "/api/update"),
 
-  /** Media a `file =` field could name — a plain GET, so it can be issued
-   *  freely (once per kind a loaded config's scenes actually use, memoized
-   *  for the page's lifetime) without a distinct request shape. */
+  /** Media a `file =` field could name. Memoized per kind by
+   *  `introspect.mediaOfKind`, until `forgetMedia` drops it. */
   media: (kind: string, q = "") =>
     request<MediaIndex>("GET", `/api/media?${new URLSearchParams({ kind, q })}`),
 
   /** Upload a file, streamed straight through as the request body — no JSON
-   *  envelope, so this bypasses `request()`. `XMLHttpRequest` rather than
-   *  `fetch`: it is the only browser API that reports request-body progress,
-   *  which is what `opts.onProgress` rides on, and `opts.signal` wires an
-   *  `AbortController` to `xhr.abort()` so a large upload can be canceled
-   *  mid-flight. Same-origin, so the `SameSite=Strict` token cookie rides
-   *  along with no extra flag needed. The kind and the destination directory
-   *  are the server's call (it reads the extension off `name`); a name
-   *  already taken there comes back renamed rather than overwritten. */
+   *  envelope, so this bypasses `request()`. `XMLHttpRequest` because it is
+   *  the only browser API that reports request-body progress (`opts.onProgress`);
+   *  `opts.signal` wires an `AbortController` to `xhr.abort()`. The kind and
+   *  the destination directory are the server's call (it reads the extension
+   *  off `name`); a name already taken comes back renamed, never overwritten. */
   uploadMedia: (
     name: string,
     file: File,
@@ -173,15 +165,14 @@ export const api = {
     }),
 
   /** Describes the code, not the run, so it cannot change while the host is
-   *  up — see `introspection()` in introspect.ts, which fetches it once. */
+   *  up — `documentation()` in introspect.ts fetches it once. */
   introspect: () => request<Introspection>("GET", "/api/introspect"),
 
   config: (ref: string) => request<ConfigDetail>("GET", `/api/configs/${refPath(ref)}`),
 
-  /** Load `text` as if it were saved, without saving it. The same check a save
-   *  makes, offered separately so the editor can show the reason before the
-   *  file is at stake. With `text` omitted, checks the file as it stands on
-   *  disk instead — a start or switch's pre-flight. */
+  /** Load `text` as if it were saved, without saving it — the same check a
+   *  save makes. With `text` omitted, checks the file as it stands on disk
+   *  instead, which is a start or switch's pre-flight. */
   checkConfig: (ref: string, text?: string) =>
     request<ValidationReport>(
       "POST",
@@ -196,32 +187,29 @@ export const api = {
 
   /** The form's save. `PUT` replaces the file with text this app composed;
    *  `PATCH` names fields and lets the server compose it through the same
-   *  dataclasses the loader uses — so the browser never writes TOML, and two
-   *  consoles editing different fields don't overwrite each other's sections.
-   *  Refused the same way a `PUT` is: 422 with the whole validation report. */
+   *  dataclasses the loader uses, so the browser never writes TOML. Refused
+   *  the same way a `PUT` is: 422 with the whole validation report. */
   patchConfig: (ref: string, edits: ConfigEdit[]) =>
     request<ConfigPatched>("PATCH", `/api/configs/${refPath(ref)}`, { edits }),
 
   /** Add a scene — a blank one of `type`, or a copy of the scene at `copy`.
-   *  Structural rather than a field edit, which is why it is its own route:
-   *  it changes which scenes exist, not what one of them says. Written and
+   *  Structural rather than a field edit, so it is its own route. Written and
    *  validated immediately, like every other save. */
   addScene: (ref: string, body: { type?: string; copy?: number; after?: number }) =>
     request<SceneChanged>("POST", `/api/configs/${refPath(ref)}/scenes`, body),
 
-  /** Its pair — a console that could add and not remove would be a one-way
-   *  door back to the text editor. Refused for the last scene. */
+  /** Remove the scene at `index`. Refused for the last scene. */
   removeScene: (ref: string, index: number) =>
     request<SceneChanged>("DELETE", `/api/configs/${refPath(ref)}/scenes/${index}`),
 
-  /** The order of a show, reachable without the text editor: move the scene
-   *  at `index` to `to`. A no-op move (`index === to`) is accepted. */
+  /** Move the scene at `index` to `to`. A no-op move (`index === to`) is
+   *  accepted. */
   moveScene: (ref: string, index: number, to: number) =>
     request<SceneChanged>("PATCH", `/api/configs/${refPath(ref)}/scenes/${index}`, { to }),
 
   /** A new file at `path`: a copy of `copyOf` (any readable ref, including a
-   *  packaged example — the onboarding path for one), or a minimal starter
-   *  when omitted. Refused if `path` already exists. */
+   *  packaged example), or a minimal starter when omitted. Refused if `path`
+   *  already exists. */
   createConfig: (path: string, copyOf?: string) =>
     request<ConfigWritten>("POST", "/api/configs", { path, copy_of: copyOf }),
 
@@ -240,12 +228,12 @@ export const api = {
   /** Keep the knob changes made since the show started — a `PATCH` of the
    *  running config's `[color]` section under the covers, so it is refused the
    *  same way any other save is, with the file untouched and the changes still
-   *  held. A one-shot run asks this at exit; a daemon has no exit to ask at. */
+   *  held. */
   saveLiveTune: (system: string | null) =>
     request<LiveTuneSaved>("POST", "/api/session/live-tune", { action: "save", system }),
 
-  /** Drop them instead. Nothing on the machine changes — the show keeps the
-   *  values it is playing; only the offer to keep them goes away. */
+  /** Drop them instead. The show keeps the values it is playing; only the
+   *  offer to keep them goes away. */
   discardLiveTune: (system: string | null) =>
     request<{ ok: boolean; discarded: number }>("POST", "/api/session/live-tune", {
       action: "discard",
@@ -255,8 +243,8 @@ export const api = {
   /** The read-only login link to hand somebody, minting the token on the first
    *  ask. A `POST` even though it reads like a read: the gate lets a viewer
    *  token through every `GET`, and a guest must not be able to fetch the link
-   *  that made them one. The host answers with a *path* — it may be bound to
-   *  `0.0.0.0` and have no idea which of its addresses this browser used. */
+   *  that made them one. The host answers with a *path*, since it may be bound
+   *  to `0.0.0.0` and cannot know which address this browser used. */
   viewerLink: () => request<ViewerLink>("POST", "/api/viewer-link"),
 
   /** Which systems can show a picture, and how often the host will encode one.
@@ -264,9 +252,8 @@ export const api = {
    *  opens `/api/screen/stream`, and goes down when it closes. */
   screen: () => request<ScreenAvailability>("GET", "/api/screen"),
 
-  /** Favorites + recently-launched configs — server-side and shared across
-   *  every browser or phone pointed at this host, rather than one browser's
-   *  `localStorage`. */
+  /** Favorites + recently-launched configs — server-side, so every browser or
+   *  phone pointed at this host sees the same list. */
   library: () => request<LibraryState>("GET", "/api/library"),
   favorite: (ref: string, on: boolean) =>
     request<{ favorites: string[] }>("POST", "/api/library/favorites", { ref, on }),

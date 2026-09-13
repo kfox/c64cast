@@ -9,18 +9,17 @@
 
   let { clips, readOnly = false, onpress }: Props = $props();
 
-  // Press and release are sent separately because the launch types need them
-  // to be: `gate` holds the clip only while the pad is down and `toggle` acts
-  // on the release, while `trigger` ignores it — so press+release is safe for
-  // every type and is what the MIDI surface sends too.
+  // Press and release both go: only a gate clip acts on the release
+  // (performance.py `_handle_event`), so this is safe for every launch type
+  // and is what the MIDI surface sends too.
   function press(slot: number, pressed: boolean, event: Event): void {
     event.preventDefault();
     if (readOnly) return;
     onpress(slot, pressed);
   }
 
-  // A keyboard-synthesized click has `detail === 0`, which is how it is told
-  // apart from the click that follows a real pointer release (already handled).
+  // A keyboard-synthesized click reports `detail === 0`, which is what tells
+  // it from the click after a real pointer release (already handled).
   function keyFire(slot: number, event: MouseEvent): void {
     if (event.detail !== 0 || readOnly) return;
     onpress(slot, true);

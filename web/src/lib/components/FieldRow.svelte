@@ -6,16 +6,16 @@
   interface Props {
     name: string;
     value: unknown;
-    /** Left-marked when the file says something other than the default. The
+    /** Left-marked when the file says something other than the default — the
      *  same flag the "only what I've changed" filter runs on. */
     changed?: boolean;
     help?: string;
-    /** The declared type, which decides how the value is rendered — a list or
-     *  a table gets a block of its own rather than being crushed onto a line. */
+    /** The declared type, which decides how the value is rendered: a list or
+     *  a table gets a block of its own. */
     type?: string;
     choices?: string[];
-    /** `FieldDoc.vocabulary` — with the palette, turns a color field into the
-     *  swatches the value means anyway. */
+    /** `FieldDoc.vocabulary` — with `palette`, turns a color field into
+     *  swatches. */
     vocabulary?: string;
     palette?: Swatch[];
     /** Datalist options for a `vocabulary === "media"` field — the media the
@@ -24,14 +24,13 @@
     /** Whether `options` stopped short of every match on the host. */
     truncated?: boolean;
     /** The field's current text, on every keystroke — media fields only. The
-     *  form debounces it into a live search against the host. */
+     *  form debounces it into a live search. */
     onsearch?: (q: string) => void;
-    /** True for a field that takes effect without a restart. Not shown for the
-     *  others: every top-level config field needs a rebuild, so a badge on
-     *  each of them would be 167 badges saying nothing. */
+    /** True for a field that takes effect without a restart. Only such a field
+     *  is badged. */
     live?: boolean;
-    /** A widget instead of a printed value. Off for the rows nothing can edit
-     *  — an overlay's parameters, and every row of a read-only console. */
+    /** A widget instead of a printed value. Off for the rows nothing can edit:
+     *  an overlay's parameters, and every row of a read-only console. */
     editable?: boolean;
     /** Why this row prints rather than edits, when the reason is about the
      *  field and not about the token. Unset rows just print. */
@@ -41,18 +40,17 @@
     baseline?: unknown;
     /** Set while this row carries an edit that hasn't been saved. */
     dirty?: boolean;
-    /** Why what is typed isn't a value yet. Blocks the save, and says so here
-     *  rather than in a summary the row would have to be found from. */
+    /** Why what is typed isn't a value yet. Blocks the save. */
     error?: string;
     onedit?: (value: unknown, error: string) => void;
     /** Put the field back to `baseline` — how a form removes a key, as opposed
-     *  to setting one to the same text. */
+     *  to writing the same text into it. */
     onclear?: () => void;
     /** Drop the unsaved edit and show what is on disk again. */
     onrevert?: () => void;
     /** A file was picked (or dropped) for this field — present only for a
-     *  `vocabulary === "media"` field, which is what shows the button below.
-     *  The row itself doesn't upload anything; it just hands the `File` up. */
+     *  `vocabulary === "media"` field. The row hands the `File` up rather than
+     *  uploading it. */
     onupload?: (file: File) => void;
   }
 
@@ -90,17 +88,12 @@
     if (file) onupload?.(file);
   }
 
-  // Help is a paragraph for some fields and a sentence for others, and the
-  // form shows a hundred rows at once with the filter off. Clamped, and
-  // expanded by asking — which is also where the choices and the declared type
-  // go, so the resting row stays one line.
   let open = $state(false);
   const kinds = $derived(fieldKinds(type));
   // Whether *this* value needs a block of its own, not whether the type could
-  // ever produce one: `force_palette_colors` is `int | list`, and the int is a
-  // number that belongs on the line beside its name.
+  // ever produce one: `force_palette_colors` is `int | list`, and the int
+  // belongs on the line beside its name.
   const complex = $derived(typeof value === "object" && value !== null);
-  // Nothing to clear when the file already says nothing about the field.
   const clearable = $derived(changed || dirty);
 
   const chip = `min-h-9 rounded-md border border-[var(--edge)] px-2 text-xs

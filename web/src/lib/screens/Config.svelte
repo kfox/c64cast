@@ -34,16 +34,12 @@
   let problem = $state("");
   let view = $state<"form" | "text">("form");
 
-  // Edits survive clicking away to another file — and, because the store is the
-  // app's rather than this screen's, away to another *screen* and back. The
-  // alternative — a "you have unsaved changes" dialog on every navigation —
-  // asks the reader to defend an edit they may just be comparing against
-  // something else.
+  // Edits survive clicking away to another file — and, because the store is
+  // the app's rather than this screen's, away to another *screen* and back.
   let draft = $state("");
 
-  // A click through a long list starts several loads; only the newest one is
-  // allowed to land, or the screen settles on whichever file the network
-  // happened to answer last.
+  // A click through a long list starts several loads; only the newest is let
+  // land, or the screen settles on whichever the network answered last.
   let generation = 0;
 
   const selected = $derived(router.tail);
@@ -53,8 +49,8 @@
     (detail !== null && draft !== detail.text) || Object.keys(pending).length > 0,
   );
 
-  /** True when the file on screen is the one the session is running, which is
-   *  what makes "saved" and "in effect" two different things worth saying. */
+  /** True when the file on screen is the one the session is running — what
+   *  makes "saved" and "in effect" two different things. */
   const isRunning = $derived(
     detail !== null &&
       host.session?.state === "running" &&
@@ -69,17 +65,16 @@
       .catch((e: unknown) => (problem = describeError(e)));
   });
 
-  // `untrack` so this reacts to the *ref* only. `load` reads the draft map,
-  // which changes on every keystroke, and a dependency on it would refetch the
-  // file being typed into.
+  // `untrack` so this reacts to the *ref* only: `load` reads the draft map,
+  // which changes on every keystroke, and would refetch the file being typed
+  // into.
   $effect(() => {
     const ref = selected;
     untrack(() => void load(ref));
   });
 
-  // Whichever media kinds the loaded config's scenes actually browse — fetched
-  // once each (mediaOfKind caches per kind, not per config) and merged into
-  // `media`, which ConfigForm reads to build each `file =` field's datalist.
+  // Whichever media kinds the loaded config's scenes browse — `mediaOfKind`
+  // caches per kind, not per config.
   $effect(() => {
     const form = detail?.form;
     const loadedDocs = docs;
@@ -197,10 +192,8 @@
     drafts.setFields(selected, next);
   }
 
-  /** A save changes what the file *is*, so the form beside it is re-read
-   *  rather than left describing the version that was there a moment ago —
-   *  and both editors drop what they had staged for it, since the file now
-   *  says it. */
+  /** A save changes what the file *is*, so the form is re-read and both
+   *  editors drop what they had staged for it. */
   async function reread(): Promise<void> {
     drafts.clear(selected);
     await load(selected);
@@ -208,7 +201,7 @@
   }
 
   /** Sections of the last save that a reload will not pick up. Cleared when
-   *  the selection changes, because it is a fact about one save of one file. */
+   *  the selection changes: it is a fact about one save of one file. */
   let heldBack = $state<string[]>([]);
 
   $effect(() => {
@@ -217,9 +210,8 @@
   });
 
   /** Rebuild the running scenes from the file just saved. Only offered for
-   *  the config that is actually running: a reload is the supervisor's, not
-   *  this file's, and pointing it at a config it isn't running would be a
-   *  button that lies. */
+   *  the config that is actually running — a reload is the supervisor's, not
+   *  this file's. */
   async function reload(): Promise<void> {
     problem = "";
     try {
@@ -230,7 +222,7 @@
     }
   }
 
-  /** Stop and start the session on this config. What a reload cannot do: the
+  /** Stop and start the session on this config — what a reload cannot do: the
    *  connection, the audio threads and the control surfaces are built once,
    *  and the settings that configure them are read exactly then. */
   async function restart(): Promise<void> {
@@ -249,10 +241,9 @@
   }
 
   /** A file just landed on the host for a scene of `sceneType` — drop that
-   *  type's media kind(s) from `mediaOfKind`'s cache and re-fetch them, so the
-   *  new file shows up in every datalist without a page reload. `media` is
-   *  replaced rather than mutated, which is what makes ConfigForm's own
-   *  per-scene-type cache (keyed off this same object) rebuild. */
+   *  type's media kind(s) from `mediaOfKind`'s cache and re-fetch. `media` is
+   *  replaced rather than mutated, which is what rebuilds ConfigForm's own
+   *  cache (keyed off this same object). */
   async function handleUploaded(sceneType: string): Promise<void> {
     const kinds = docs?.sceneType(sceneType)?.media_kinds ?? [];
     for (const kind of kinds) {
@@ -364,10 +355,6 @@
             {/if}
           </div>
           {#if heldBack.length}
-            <!-- A reload re-reads the file and rebuilds the scenes; it does not
-                 rebuild the connection or restart the audio threads. Offering
-                 it alone here would be a button that quietly does nothing for
-                 what was just changed. -->
             <div class="flex flex-wrap items-center gap-3 border-t border-[var(--edge)] pt-2">
               <p class="flex-1 text-sm text-c64-yellow">
                 A reload will not pick up {heldBack.map((s) => `[${s}]`).join(", ")} — those are

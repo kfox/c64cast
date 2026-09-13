@@ -1,5 +1,4 @@
-/** Pure logic behind `ConfigForm`'s upload progress line — pulled out so it
- *  can be unit-tested without mounting Svelte. */
+/** Pure logic behind `ConfigForm`'s upload progress line. */
 
 const UNITS = ["B", "KB", "MB", "GB"];
 

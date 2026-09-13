@@ -9,19 +9,17 @@
      *  it in the address bar. */
     value: string;
     onselect: (ref: string) => void;
-    /** Double-clicking a row starts it. Omitted on a screen (the editor) where
-     *  a double-click should just select, not launch a show. */
+    /** Double-clicking a row starts it. Omitted where a double-click should
+     *  just select, as it is in the editor. */
     onstart?: (ref: string) => void;
     /** Refs marked as favorites, and the toggle for one. Omitted where there
      *  is no room for the star (a small embedded picker). */
     favorites?: readonly string[];
     onfavorite?: (ref: string, on: boolean) => void;
-    /** Refs with unsaved edits, marked so a half-written config is not lost
-     *  behind a click on something else. */
+    /** Refs with unsaved edits, marked in the list. */
     edited?: readonly string[];
-    /** Give the list the height it wants. On the session screen it is one
-     *  panel among several and stays boxed; on the editor it is the navigation
-     *  for everything to its right. */
+    /** Give the list the height it wants, as the editor does. Boxed
+     *  otherwise. */
     tall?: boolean;
   }
 
@@ -38,9 +36,6 @@
 
   let query = $state("");
   let sort = $state<ConfigSort>("name-asc");
-  // Off by default: the list this control replaced was every file under every
-  // root, and the packaged examples are the part of that a working show
-  // rarely wants mixed back in with it.
   let showExamples = $state(false);
 
   const SORTS: { id: ConfigSort; label: string }[] = [
@@ -63,8 +58,8 @@
   }
 
   function toggleFavorite(ref: string, e: MouseEvent): void {
-    // The star sits inside the row's own button; without this the click also
-    // selects (or, worse, starts) the row it was meant to just mark.
+    // The star sits inside the row's own button, which would otherwise also
+    // select or start the row.
     e.stopPropagation();
     onfavorite?.(ref, !favoriteSet.has(ref));
   }
@@ -101,8 +96,8 @@
 >
   {#each rows as row (row.path)}
     <li>
-      <!-- A `div`, not a `button`: the favorite star beside the label is a
-           real button of its own, and a button cannot nest one. -->
+      <!-- A `div`, not a `button`: the favorite star is a real button and a
+           button cannot nest one. -->
       <div
         role="option"
         tabindex="0"
