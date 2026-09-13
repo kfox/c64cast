@@ -103,6 +103,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **Audio-file scenes cannot restart while an old decoder is still alive.** Teardown now stops the sink before joining the decoder, keeps a timed-out thread referenced, and refuses to clear its stop signal or create a second producer until the survivor exits.
+
 - **A CIA-timed SID tune could peg a core for the whole scene, and the guard
   against it was skipped on exactly those tunes.** The oscilloscope and the
   reactive-visuals feature stream size their poll period so one emulated PLAY

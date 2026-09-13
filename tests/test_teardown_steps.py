@@ -314,3 +314,39 @@ class AudioSourceTeardownTests(unittest.TestCase):
         audio.stop.reset_mock()
         scene.teardown()
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_file_audio_stops_the_sink_before_joining_decode(self):
+        order: list[str] = []
+        audio = MagicMock(is_sampler=False)
+        audio.stop.side_effect = lambda: order.append("audio stop")
+        source = self._file_source(audio, reactive=False)
+        thread = MagicMock()
+        thread.join.side_effect = lambda _timeout: order.append("decode join")
+        thread.is_alive.return_value = False
+        source._thread = thread
+
+        source.teardown()
+
+        self.assertEqual(order, ["audio stop", "decode join"])
+        self.assertIsNone(source._thread)
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_a_surviving_decode_thread_blocks_restart(self):
+        audio = MagicMock(is_sampler=False)
+        source = self._file_source(audio, reactive=False)
+        source._stop.clear()
+        thread = MagicMock()
+        thread.is_alive.return_value = True
+        source._thread = thread
+
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            source.teardown()
+        self.assertIs(source._thread, thread)
+        self.assertTrue(source._stop.is_set())
+
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "previous audio-file decode thread"):
+                source.setup()
+        self.assertTrue(source._stop.is_set(), "restart released the surviving decode thread")
+        self.assertFalse(audio.start_for_external_source.called)

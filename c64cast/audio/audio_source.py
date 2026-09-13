@@ -348,14 +348,16 @@ class AudioFileSource:
         prebuffer fills promptly and playback starts without the empty-prebuffer
         stall.
 
-        That sampler ordering is why a `start()` that raises is the awkward one:
-        it leaves the decode thread running with no writer to drain the queue,
-        and `UltimateAudioSampler.push_samples` waits on the *sampler's* stopped
-        flag rather than this source's, so `teardown`'s `_stop` does not release
-        a thread parked on a full queue. Its bounded join spends the whole 2 s
-        and returns with the thread still alive; the `audio stop` step behind it
-        is what actually frees it. Every teardown promise is still kept, which
-        is what the guarded steps are for, but the shutdown pauses."""
+        If a previous decode thread outlives teardown, setup refuses to clear
+        its stop event or start another one. Teardown stops the audio sink before
+        joining, which releases a sampler producer blocked on a full queue; a
+        thread that still survives the bounded join remains referenced so the
+        next setup cannot silently run two decoders into one sink."""
+        if self._thread is not None:
+            if self._thread.is_alive():
+                log.error("audio file: previous decode thread is still running; refusing restart")
+                raise RuntimeError("previous audio-file decode thread is still running")
+            self._thread = None
         self._pick_and_probe()
         self._stop.clear()
         self._start_features()
@@ -469,15 +471,22 @@ class AudioFileSource:
         # stops (so no callback pushes into a dying tap), then stop everything.
         self._stop.set()
         self._audio.analysis_sink = None
-        thread, self._thread = self._thread, None
+        thread = self._thread
         features, self._features = self._features, None
         steps: list[tuple[str, Callable[[], object]]] = []
-        if thread is not None:
-            steps.append(("decode thread join", partial(thread.join, 2.0)))
         if features is not None:
             steps.append(("feature stream stop", features.stop))
         steps.append(("audio stop", self._audio.stop))
+        if thread is not None:
+            steps.append(("decode thread join", partial(self._join_decode_thread, thread)))
         run_teardown_steps(log, type(self).__name__, steps)
+
+    def _join_decode_thread(self, thread: threading.Thread) -> None:
+        thread.join(2.0)
+        if thread.is_alive():
+            log.error("audio file: decode thread did not stop; keeping it fenced from restart")
+        elif self._thread is thread:
+            self._thread = None
 
     def position_seconds(self) -> float | None:
         # The DAC consumer clock — exposed for the protocol; the scene ends on its
