@@ -1,39 +1,22 @@
 """Hardware abstraction layer for the C64 targets c64cast can drive.
 
-c64cast started life talking to exactly one device — an Ultimate 64 over
-its split socket-DMA/REST transport — and every consumer (scenes, modes,
-overlays, the playlist, the audio streamer) was duck-typed on the
-[Ultimate64API](api.py) method surface, injected from a single construction
-site. This module turns that implicit contract into an explicit one so a
-second hardware family (the TeensyROM+) can drop in at the same seam:
-
   * **`C64Backend`** — the ABC every backend implements. The *write path*
     (`write_memory*`, `write_regs`, `write_region`, `flush`, plus the
-    host-side cache/listener/stats bookkeeping) is **mandatory**: it carries
-    100% of rendering and audio programming, so any backend that exists at
-    all must provide it. Everything that needs a *response* from the machine
-    (`read_memory`) or a firmware *runner* (`reset`, `run_*`) or the REU is
-    **capability-gated**: the ABC ships default implementations that raise
-    `BackendCapabilityError`, and callers are expected to check the matching
-    `profile.supports_*` flag first.
-
-  * **`HardwareProfile`** — a declarative description of what a given device
-    *can* do (capability flags) and its operating limits (frame-rate cap,
-    write-rate ceiling, the C64 memory map it assumes). Carried on every
-    backend as `backend.profile`, so a scene asks "can this device read
-    memory / run a PRG / stage through the REU?" instead of branching on
-    `system == "NTSC"` or assuming the Ultimate DMA Service.
-
+    host-side cache/listener/stats bookkeeping) is **mandatory**; everything
+    that needs a *response* from the machine (`read_memory`), a firmware
+    *runner* (`reset`, `run_*`), the REU, or the config API is
+    **capability-gated**, defaulting to a raising implementation the caller
+    is expected to have gated on the matching `profile.supports_*` flag.
+  * **`HardwareProfile`** — what a given device can do (capability flags) and
+    the limits it operates under (frame-rate cap, write-rate ceiling, the link
+    cost model, the C64 memory map it assumes). Carried as `backend.profile`.
+  * **`BufferedWriteBackend`** — the shared host-side write path (register
+    coalescing, the per-region delta cache, listeners, stats) over a single
+    per-backend transport primitive, `_emit`.
   * **`make_backend(cfg)`** — the factory the CLI/doctor call instead of
-    constructing a concrete backend directly. Selects the family from
-    `[hardware].backend`; defaults to the Ultimate backend so every existing
-    config keeps working byte-for-byte.
+    constructing a concrete backend directly.
 
-The REU surface is deliberately NOT part of the mandatory contract: the
-Ultimate exposes it as an optional sub-transport (`reu_write`, forwarded to
-`socket_dma.reuwrite`) gated by `profile.supports_reu`. A backend without an
-REU leaves the default raising implementation in place; the experimental
-`use_reu_*` config paths must check `supports_reu` before reaching it.
+See docs/architecture/hardware-io.md#backendpy--the-c64backend-duck-type-hardware-profiles-and-the-shared-write-path.
 """
 
 from __future__ import annotations
@@ -55,15 +38,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # Callback signature for write listeners (preview / recording / framebuffer
-# shadowing). Canonical definition lives here so every backend shares it;
-# api.py re-exports it for backwards compatibility.
+# shadowing).
 WriteListener = Callable[[int, bytes], None]
 
-# Slab size for write_region's chunked branch (shared by every backend): the
-# dirty range is diffed in slabs this big and only the dirty ones are pushed,
-# so a sparse waveform/spectrum frame doesn't degrade to a full-buffer push.
-# Whether that is worth doing is a per-link cost question and NOT a property of
-# this constant — see HardwareProfile.write_cost_s and write_region.
+# Slab size for write_region's chunked branch: the dirty range is diffed in
+# slabs this big and only the dirty ones are pushed. Whether that is worth
+# doing is a per-link cost question — see HardwareProfile.write_cost_s.
 DELTA_CHUNK_BYTES = 256
 
 
@@ -98,9 +78,7 @@ class HardwareProfile:
     name: str  # human-facing, e.g. "Ultimate 64"
     family: str  # "ultimate" | "tr"
 
-    # ---- capability flags ----------------------------------------------
-    supports_write: bool = True  # the mandatory write path (always True
-    #   for a usable backend; here for symmetry)
+    supports_write: bool = True  # the mandatory write path
     supports_read: bool = True  # read_memory (device round-trip read)
     supports_reset: bool = True  # hard machine reset
     supports_probe: bool = True  # a cheap liveness probe
@@ -111,49 +89,37 @@ class HardwareProfile:
     supports_sid_config: bool = False  # the U64 multi-SID config surface (SID routing,
     #   socket detection, UltiSID model curves — see SID_CONFIG_CATEGORIES).
     #   Narrower than supports_config: the Ultimate II+ has the config API but
-    #   none of these categories (emulated stereo SIDs, no sockets or cores).
+    #   none of these categories.
     supports_emusid_mixer: bool = False  # the U2+ emulated stereo SID surface
     #   (snoop routing + Vol/Pan EmuSid mixer — see EMUSID_MIXER_CATEGORY).
-    #   Mutually exclusive with supports_sid_config in practice: the two
-    #   firmwares register different categories. Granted by
-    #   refine_capabilities from the device's category list, so it stays
-    #   False on an unprobed run (which then behaves exactly as before the
-    #   flag existed).
+    #   Granted by refine_capabilities, so False on an unprobed run.
     supports_system_mode: bool = False  # the Ultimate 64's "System Mode" enum
     #   (PAL / NTSC / PAL-60 / NTSC-50 machine timing — see
-    #   SYSTEM_MODE_CATEGORY). Registered by the U64 firmware only; the
-    #   Ultimate II+ has no such category. Granted by refine_capabilities from
-    #   the device's category list, so it stays False on an unprobed run.
+    #   SYSTEM_MODE_CATEGORY). Granted by refine_capabilities, so False on an
+    #   unprobed run.
     supports_sampler: bool = False  # "Ultimate Audio" FPGA PCM sampler ($DF20)
     supports_video_stream: bool = False  # the machine's own VIC-out UDP stream
-    #   (socket-DMA 0xFF20/0xFF30 — see hw/vic_stream.py). Ultimate 64 only:
-    #   the firmware compiles both commands under `#ifdef U64`, and an Ultimate
-    #   II+ is a cartridge in someone else's C64 with no VIC of its own to tap.
-    #   Optimistic on the Ultimate family and revoked by refine_capabilities
-    #   alongside supports_system_mode, which is the same #ifdef seen from the
-    #   config API — so an unprobed run behaves as it did before the flag.
+    #   (socket-DMA 0xFF20/0xFF30 — see hw/vic_stream.py). Ultimate 64 only;
+    #   revoked by refine_capabilities alongside supports_system_mode.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
 
-    # ---- transport -----------------------------------------------------
     write_transport: str = "socket_dma"  # "socket_dma" | "tr_serial" | "tr_tcp"
 
-    # ---- timing / throughput limits ------------------------------------
     system: str = "NTSC"  # resolved machine timing standard ("NTSC"/"PAL").
     #   Set by make_backend from [ultimate64].system and re-folded by
-    #   cli._resolve_system once the live System Mode has been read. Carried
+    #   hw_provision.resolve_system once the live System Mode has been read.
+    #   Carried
     #   here so anything holding a backend (the SID player's CIA math) can
     #   reach the machine's clock without also holding the Config.
     default_fps: float = 60.0  # resolved system rate (NTSC/PAL)
     max_fps: float | None = None  # per-variant cap on top of default_fps
     max_write_rate_hz: float | None = None  # sustained write ceiling (pacing)
 
-    # ---- link cost model -------------------------------------------------
-    # What one write costs the frame budget, in seconds, as a function of its
-    # payload — see `write_cost_s`. Measured per family with
-    # scripts/diags/link_cost_model.py; the defaults here are the Ultimate's,
-    # so an unmeasured backend inherits the conservative (count-bound) shape.
+    # Link cost model — see `write_cost_s`. Measured per family with
+    # scripts/diags/link_cost_model.py; the defaults are the Ultimate's, so an
+    # unmeasured backend inherits the conservative (count-bound) shape.
     write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
     write_cost_intercept_s: float = 0.8e-3
     write_cost_per_byte_s: float = 1.85e-6
@@ -165,56 +131,39 @@ class HardwareProfile:
         per-write overhead that the payload cannot touch, and above the knee
         where that runs out, a marginal per-byte transfer cost.
 
-        The shape matters more than the constants. On the Ultimate the fixed
-        term is ~5.2 ms and payload is *free* up to ~2.4 KB, so what a frame
-        spends is writes; on the TeensyROM the fixed term is ~0.29 ms and cost
-        is essentially all payload, so what a frame spends is bytes. The
-        marginal slopes are within ~30% of each other (both are the C64 bus at
-        roughly a cycle a byte) — the 18x difference in the fixed term is the
-        link protocol, and it is what makes the same delta strategy right on
-        one backend and wrong on the other.
+        On the Ultimate the fixed term is ~5.2 ms and payload is *free* up to
+        ~2.4 KB, so what a frame spends is writes; on the TeensyROM the fixed
+        term is ~0.29 ms and cost is essentially all payload, so what a frame
+        spends is bytes. That 18x difference in the fixed term is what makes
+        the same delta strategy right on one backend and wrong on the other.
         """
         return max(
             self.write_cost_floor_s,
             self.write_cost_intercept_s + self.write_cost_per_byte_s * nbytes,
         )
 
-    # ---- C64 memory map assumptions ------------------------------------
     audio_ring_addr: int = 0x4000  # base of the audio DAC ring buffer
 
-    # ---- host machine declarations --------------------------------------
-    # The SID model in the C64 being driven — a property of the machine, not
-    # the link, but carried here (resolved by make_backend from
-    # [hardware].host_sid_model) because its consumer, the resolved-audio
-    # verdict, already holds a backend and nothing else machine-scoped.
+    # The SID model in the C64 being driven, from [hardware].host_sid_model.
     # None = unknown / opted out. `assumed` marks the NTSC=6581 / PAL=8580
-    # convention rather than a user declaration, so the verdict can say so.
+    # convention rather than a user declaration, so consumers can say so.
     host_sid_model: str | None = None
     host_sid_model_assumed: bool = False
     # The machine's internal SID chips as ((address, model), ...), from
     # [hardware].host_sid_chips — a dual-SID mod (ARM2SID, SIDFX, DualSID)
-    # carries a second chip that host_sid_model alone can't describe. Pairs
-    # rather than a dict so the profile stays hashable. Empty = undeclared,
-    # which leaves host_sid_model in charge.
+    # carries a second chip host_sid_model alone can't describe. Pairs rather
+    # than a dict so the profile stays hashable. Empty = undeclared, which
+    # leaves host_sid_model in charge.
     host_sid_chips: tuple[tuple[int, str], ...] = ()
-    # [hardware].host_sid_tune_match — "off"/"prefer"/"require". Carried
-    # alongside the declarations it is evaluated against, for the same reason
-    # they are here: its consumer (the waveform pool picker) already holds a
-    # backend and nothing else machine-scoped.
-    host_sid_tune_match: str = "off"
+    host_sid_tune_match: str = "off"  # [hardware].host_sid_tune_match
 
 
 # The three REST config categories that make up the U64 multi-SID surface —
 # address routing, socket enables/detection, UltiSID model curves. A device
-# qualifies for `supports_sid_config` only when it exposes ALL of them; the
-# Ultimate II+ exposes none (its emulated stereo SIDs live under "Audio
-# Output Settings" with a different topology). refine_capabilities checks
-# these against GET /v1/configs — deliberately NOT against the product
-# string from /v1/info: the category list is the actual contract and tracks
-# firmware differences within one product, the product string is
-# presentation. tests/test_backend.py pins these to the canonical constants
-# in c64cast/sid/asid_sidmap.py, which can't be imported from here (hw must
-# not depend on sid).
+# qualifies for `supports_sid_config` only when GET /v1/configs exposes ALL of
+# them; the Ultimate II+ exposes none. tests/test_backend.py pins these to the
+# canonical constants in c64cast/sid/asid_sidmap.py, which can't be imported
+# from here (hw must not depend on sid).
 SID_CONFIG_CATEGORIES = (
     "SID Addressing",
     "SID Sockets Configuration",
@@ -223,27 +172,21 @@ SID_CONFIG_CATEGORIES = (
 
 # The one category carrying the U2+ emulated-stereo-SID surface (snoop
 # topology + Vol/Pan EmuSid mixer). Registered only by the U2/U2+/U2+L
-# firmware (audio_select.cc) — the U64 registers "Audio Mixer" instead — so
-# presence in GET /v1/configs is a clean per-device test, same rationale as
-# SID_CONFIG_CATEGORIES above. tests/test_backend.py pins this to the
-# canonical constant in c64cast/sid/emusid_mixer.py (hw must not import sid).
+# firmware (audio_select.cc) — the U64 registers "Audio Mixer" instead.
+# tests/test_backend.py pins this to the canonical constant in
+# c64cast/sid/emusid_mixer.py (hw must not import sid).
 EMUSID_MIXER_CATEGORY = "Audio Output Settings"
 
 # The category carrying the Ultimate 64's "System Mode" (PAL / NTSC / PAL-60 /
 # NTSC-50 machine timing). Registered by the U64 firmware only — the Ultimate
-# II+ drives a real C64 whose timing is the C64's own — so presence in
-# GET /v1/configs is a clean per-device test, same rationale as
-# SID_CONFIG_CATEGORIES above. What the enum's labels actually select is
-# documented in c64cast/hw/hw_provision.py (SYSTEM_MODE_TIMING); it is not
-# what the names suggest.
+# II+ drives a real C64 whose timing is the C64's own. What the enum's labels
+# actually select is documented in c64cast/hw/hw_provision.py
+# (SYSTEM_MODE_TIMING); it is not what the names suggest.
 SYSTEM_MODE_CATEGORY = "U64 Specific Settings"
 
-# The Ultimate family (Ultimate 64, Ultimate II+). The two are protocol-
-# equivalent for c64cast's purposes, so they share one profile for now;
-# a per-variant `[hardware].variant` selector + distinct profiles (e.g.
-# differing `max_fps`) can be added without touching the factory contract.
-# `default_fps` is a placeholder here — make_backend() overrides it from the
-# configured NTSC/PAL video system, which is orthogonal to the variant.
+# The Ultimate family (Ultimate 64, Ultimate II+), protocol-equivalent for
+# c64cast's purposes and sharing one profile. `default_fps` is a placeholder —
+# make_backend() overrides it from the configured NTSC/PAL video system.
 ULTIMATE_PROFILE = HardwareProfile(
     name="Ultimate",
     family="ultimate",
@@ -255,41 +198,29 @@ ULTIMATE_PROFILE = HardwareProfile(
     supports_run_crt=True,
     supports_reu=True,
     supports_config=True,  # REST config API (/v1/configs) — live SID address map, REU, sampler
-    supports_sid_config=True,  # optimistic: the whole family claims the U64 multi-SID
-    #   surface here, and refine_capabilities revokes it at connect on a device
-    #   without the categories (U2+). Optimistic so an unprobed run (--skip-probe,
-    #   probe failure) behaves exactly as before this flag existed.
+    supports_sid_config=True,  # optimistic: refine_capabilities revokes it at
+    #   connect on a device without the categories (U2+), so an unprobed run
+    #   (--skip-probe, probe failure) keeps the pre-flag behavior.
     supports_sampler=True,  # "Ultimate Audio" FPGA PCM sampler (gated by probe)
-    supports_video_stream=True,  # optimistic like supports_sid_config above;
-    #   revoked on a U2+ by refine_capabilities, which learns from the config
-    #   API which side of the firmware's `#ifdef U64` this device is on.
+    supports_video_stream=True,  # optimistic like supports_sid_config above
     reu_bus_clean=True,  # U64 REUWRITE is an ARM-side memcpy; no bus halt
     writes_are_acked=False,  # socket DMAWRITE is fire-and-forget
     kernal_irq_intact=True,
     write_transport="socket_dma",
     max_fps=None,  # no extra cap beyond the system rate
     max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
-    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py, r2 = 1.0000 in
-    # every cell across two runs: cost is FLAT at 5.22 ms from 8 B to ~2.4 KB,
-    # then rises at 1.85 us/byte. So this link is write-count-bound over the
-    # whole range write_region chooses in — a 1 KB region costs exactly what an
-    # 8-byte one does, and splitting it in two doubles its price.
+    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py: flat at 5.22 ms
+    # from 8 B to ~2.4 KB, then 1.85 us/byte — write-count-bound.
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=0.784e-3,
     write_cost_per_byte_s=1.8454e-6,
     audio_ring_addr=0x4000,
 )
 
-# TeensyROM+ over the token protocol (USB serial or raw TCP). Confirmed
-# capabilities from the firmware source: reset (0x64EE), run_prg-equivalent
-# (PostFile 0x64BB upload + LaunchFile 0x6444), ping/fw-check probe, and (in
-# cycle-clean fw v0.7.2.5+) read-C64-memory (ReadC64Mem 0x64FD), which gates
-# the keyboard poller + launcher idle-detect. `supports_read` is declared True
-# at the protocol level here, but TeensyROMBackend.__init__ *probes* for the
-# token at connect and downgrades it for older firmware that lacks it. No
-# REUWRITE, so the experimental REU-staged paths fall back to the standard
-# write paths. `default_fps` is overridden from the configured NTSC/PAL system
-# by make_backend; the `write_transport` is set per the chosen transport.
+# TeensyROM+ over the token protocol (USB serial or raw TCP). `supports_read`
+# is declared True at the protocol level here; TeensyROMBackend.__init__ probes
+# for ReadC64Mem at connect and downgrades it on firmware that lacks it.
+# `default_fps` and `write_transport` are set by make_backend.
 TEENSYROM_PROFILE = HardwareProfile(
     name="TeensyROM+",
     family="tr",
@@ -308,21 +239,14 @@ TEENSYROM_PROFILE = HardwareProfile(
     kernal_irq_intact=True,
     write_transport="tr_serial",
     max_fps=None,
-    # HW-measured 2026-08-05 with scripts/diags/audio_fm_probe.py: 188 writes/s
-    # of 64 bytes sustained with zero missed slots, so this is a floor rather
-    # than the wall. Acked writes did not turn out to be the limit they looked
-    # like — the TR matched the U64 here.
-    #
-    # Deliberately not raised, though a later run sustained 557 writes/s with
-    # zero underruns. Spending that headroom measures *worse*: the extra writes
-    # raise the DAC noise floor 2-3 dB while the NMI ticks they buy back are
-    # inaudible. See the video-path note in docs/architecture/audio.md.
+    # A measured floor, not a wall (HW-measured 2026-08-05,
+    # scripts/diags/audio_fm_probe.py: 188 writes/s of 64 B with zero missed
+    # slots, and 557/s with zero underruns on a later run). Not raised —
+    # spending that headroom measures worse; see docs/architecture/audio.md.
     max_write_rate_hz=200.0,
-    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py, r2 = 1.0000 in
-    # every cell: cost is linear in payload from 64 B up (0.29 / 0.57 / 1.70 /
-    # 3.18 / 6.11 ms at 64 / 256 / 1024 / 2048 / 4096 B), with the fixed term
-    # only ~0.29 ms. The opposite regime to the Ultimate: here bytes are what a
-    # frame spends, so splitting a sparse region into chunks genuinely pays.
+    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py: linear in
+    # payload from 64 B up, fixed term only ~0.29 ms — byte-bound, the opposite
+    # regime to the Ultimate.
     write_cost_floor_s=0.287e-3,
     write_cost_intercept_s=0.210e-3,
     write_cost_per_byte_s=1.4429e-6,
@@ -330,12 +254,10 @@ TEENSYROM_PROFILE = HardwareProfile(
 )
 
 # The `[hardware].backend` tokens the CLI/config layer offers (`--describe`,
-# schema `choices`). This is NOT a dispatch table — it maps to nothing; the
-# actual dispatch is the `if backend == ... / elif backend == ...` chain in
-# `make_backend` below. `test_backend_choices_match_registry` pins this tuple
-# against the CLI's own choices — so a token added here without a matching
-# `make_backend` branch fails a test instead of surfacing at runtime as
-# `ValueError: unknown [hardware].backend ...` after --help already offered it.
+# schema `choices`). NOT a dispatch table — the actual dispatch is the
+# `if`/`elif` chain in `make_backend` below. `test_backend_choices_match_registry`
+# pins this tuple against the CLI's own choices, so a token added here without a
+# matching `make_backend` branch fails a test rather than surfacing at runtime.
 BACKENDS: tuple[str, ...] = ("ultimate", "teensyrom")
 
 
@@ -352,10 +274,6 @@ class C64Backend(ABC):
     #: Set by every concrete backend in __init__.
     profile: HardwareProfile
 
-    # ==================================================================
-    # MANDATORY — the write path + sync barrier + lifecycle + host-side
-    # bookkeeping. Carries all rendering and audio programming.
-    # ==================================================================
     @abstractmethod
     def write_memory(self, address: str, data_hex: str) -> None: ...
 
@@ -397,10 +315,6 @@ class C64Backend(ABC):
         samples have been recorded yet."""
         ...
 
-    # ==================================================================
-    # CAPABILITY-GATED — default impls raise. Override + flip the matching
-    # profile flag to support. Callers gate on profile.supports_* first.
-    # ==================================================================
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 
@@ -408,9 +322,8 @@ class C64Backend(ABC):
         raise BackendCapabilityError("reset")
 
     def probe(self, timeout: float = 2.0) -> str | None:
-        # Soft default: a backend with no liveness probe simply reports
-        # "unknown" rather than erroring (the write transport's own connect
-        # already validated reachability).
+        # A backend with no liveness probe reports "unknown" rather than
+        # erroring; its write transport's connect already proved reachability.
         return None
 
     def run_basic_clear_loop(self, timeout: float = 5.0) -> None:
@@ -559,11 +472,9 @@ class C64Backend(ABC):
         never raises. Default no-op."""
         return
 
-    # ---- semantic write helpers ---------------------------------------
     # Pure writes presuming the standard C64 memory map + kernal IRQ chain.
-    # Default impls raise here on the ABC; BufferedWriteBackend (which every
-    # real backend extends) implements them via plain writes, so any
-    # write-capable backend gets them for free.
+    # BufferedWriteBackend (which every real backend extends) implements them,
+    # so any write-capable backend gets them for free.
     def silence_sid(self) -> None:
         raise BackendCapabilityError("silence_sid")
 
@@ -590,10 +501,9 @@ class BufferedWriteBackend(C64Backend):
     """
 
     def __init__(self) -> None:
-        # Per region: (raw_bytes, uint8_view). The view is cached alongside
-        # the bytes so write_region's diff doesn't re-wrap a fresh
-        # np.frombuffer on every call. Bytes are immutable so the view stays
-        # valid for the lifetime of the cache entry.
+        # Per region: (raw_bytes, uint8_view). The view is cached alongside the
+        # bytes so write_region's diff doesn't re-wrap a fresh np.frombuffer on
+        # every call; bytes are immutable, so it stays valid.
         self._cache: dict[int, tuple[bytes, np.ndarray]] = {}
         self._stats: dict[str, int] = {
             "writes": 0,
@@ -601,21 +511,12 @@ class BufferedWriteBackend(C64Backend):
             "errors": 0,
             "bytes": 0,
         }
-        # Write listeners (preview, recording, framebuffer shadowing). Each
-        # callback receives (address: int, data: bytes) for every write that
-        # reaches the wire. Synchronous — listeners must not block.
         self._listeners: list[WriteListener] = []
-        # Consecutive transport-write failures, driven by the shared _emit
-        # error ladder (_note_emit_success / _note_emit_failure). Reset to 0
-        # on any success so the ladder only escalates on a sustained outage.
         self._consecutive_errors = 0
-        # Same idea, for _notify's listener-failure ladder — see _notify.
         self._consecutive_listener_errors = 0
 
-    # ---- transport primitive (subclass implements) ------------------------
     # Labels for the shared _emit failure-log ladder. Subclasses override so
-    # their log lines name the right transport (e.g. "U64 dma write" / "U64",
-    # "TR write" / "TR").
+    # their log lines name the right transport (e.g. "U64 dma write" / "U64").
     _EMIT_WRITE_LABEL = "write"
     _EMIT_DEVICE_LABEL = "device"
 
@@ -658,7 +559,6 @@ class BufferedWriteBackend(C64Backend):
                 self._consecutive_errors,
             )
 
-    # ---- listeners --------------------------------------------------------
     def add_write_listener(self, callback: WriteListener) -> None:
         """Register a callback `(address: int, data: bytes) -> None` that
         fires for every memory write reaching the wire. Used by the local
@@ -676,16 +576,14 @@ class BufferedWriteBackend(C64Backend):
                 cb(address, data)
             except Exception:
                 self._consecutive_listener_errors += 1
-                # Same idea as _note_emit_failure's ladder: a listener that
-                # fails on every write (a full disk, a preview widget after
-                # a mode switch) would otherwise get a full traceback per
-                # write, up to ~200/sec — log a few, then go quiet.
+                # _note_emit_failure's ladder, for listeners: one that fails on
+                # every write would otherwise traceback up to ~200 times a
+                # second.
                 if self._consecutive_listener_errors in (1, 10, 50, 200):
                     log.exception("write listener raised; continuing")
                 continue
             self._consecutive_listener_errors = 0
 
-    # ---- write path -------------------------------------------------------
     def write_memory(self, address: str, data_hex: str) -> None:
         """Short hex write."""
         addr = int(address, 16)
@@ -734,23 +632,14 @@ class BufferedWriteBackend(C64Backend):
         same bytes and cost is monotonic in payload), so a full push is just
         the case where everything is dirty and needs no branch of its own.
 
-        **Why this is a cost decision and not a byte-count one.** Chunking
-        trades one big write for k small ones, which is only a win where bytes
-        are what the link charges for. On the TeensyROM they are, and it wins.
-        On the Ultimate a payload under ~2.4 KB is *free* — an 8-byte write and
-        a 2 KB write both cost ~5.2 ms — so k chunks cost k times a single span
-        write, and the old fixed byte-ratio rule took that trade on every
-        firing it made: measured against real video, 19 of 19 firings across
-        three display modes were slower than not chunking, one mhires clip
-        losing 1083 ms over 400 frames, concentrated in 14 frames that each
-        stalled ~77 ms. A byte-ratio rule cannot see that, because the bytes
-        genuinely did go down.
+        Chunking trades one big write for k small ones, which is only a win
+        where bytes are what the link charges for — so it is a cost comparison
+        and not a byte-count one. See
+        docs/architecture/hardware-io.md#the-chunking-decision-is-per-link-because-the-two-links-are-opposites.
         """
         key = region_id if region_id is not None else address
-        # Skip the defensive bytes() copy when the caller already gave us
-        # bytes (the common case — .tobytes() on a numpy array). bytes(b"...")
-        # in CPython returns the same object, but bytes(bytearray) copies,
-        # so the isinstance guard saves the copy only when it'd be wasted.
+        # bytes(b"...") returns the same object in CPython but bytes(bytearray)
+        # copies, so the isinstance guard skips a copy that would be wasted.
         new = data if isinstance(data, bytes) else bytes(data)
         cached = self._cache.get(key)
 
@@ -767,11 +656,8 @@ class BufferedWriteBackend(C64Backend):
             self._stats["skipped"] += 1
             return 0
 
-        # argmax on a bool array returns the index of the first True; doing
-        # the same on the reversed view gives distance-from-end. Two linear
-        # scans, but neither allocates the (variable-length) index array that
-        # np.where would. The chunked branch below builds that array lazily
-        # only when it's actually needed.
+        # argmax on a bool array is the index of the first True; on the
+        # reversed view it is the distance from the end.
         first = int(np.argmax(diff))
         last = len(diff) - int(np.argmax(diff[::-1]))
         span = last - first
@@ -780,11 +666,9 @@ class BufferedWriteBackend(C64Backend):
         cost = self.profile.write_cost_s
         span_cost = cost(span)
 
-        # Chunking can only pay when there is more than one slab to skip
-        # between the dirty ends; below that the span write already is the
-        # chunked write.
+        # Chunking can only pay with more than one slab to skip between the
+        # dirty ends; below that the span write already is the chunked write.
         if span > DELTA_CHUNK_BYTES * 2:
-            # Mark each chunk as dirty if any byte within it differs.
             n_chunks = (n + DELTA_CHUNK_BYTES - 1) // DELTA_CHUNK_BYTES
             chunk_dirty = np.zeros(n_chunks, dtype=bool)
             idx = np.flatnonzero(diff)
@@ -806,7 +690,6 @@ class BufferedWriteBackend(C64Backend):
         self._cache[key] = (new, arr_new)
         return span
 
-    # ---- host-side bookkeeping -------------------------------------------
     def invalidate_cache(self) -> None:
         """Drop the dirty-region cache. Call after anything that changes VIC
         memory layout (mode switches, bank changes, machine reset)."""
@@ -825,13 +708,10 @@ class BufferedWriteBackend(C64Backend):
     def stats(self) -> dict[str, int]:
         return dict(self._stats)
 
-    # ---- semantic write helpers (pure writes; shared by all backends) -----
     def silence_sid(self) -> None:
         """Mute SID output without resetting the machine. Writes 0 to $D418
         (master volume) and 0 to each voice's gate so envelopes release."""
-        # Volume + filter-mode register: low nibble is volume.
         self.write_memory(f"{SID.MODE_VOL:04X}", "00")
-        # Clear the gate bit on each voice so the envelope generator releases.
         for v in range(SID.N_VOICES):
             self.write_memory(f"{SID.voice_base(v) + SID.OFF_CONTROL:04X}", "00")
 
@@ -902,17 +782,12 @@ def make_backend(cfg: Config) -> C64Backend:
     Raises ``ValueError`` for an unknown backend token.
     """
     backend = cfg.hardware.backend
-    # NTSC/PAL is orthogonal to the hardware variant; fold the resolved
-    # system rate into the profile here so the playlist reads one number.
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
     # there is no API until this function returns) — assume NTSC and let
-    # cli._resolve_system re-fold these three fields once the answer is in.
-    # Normalize once: nothing at config load enforces SYSTEM_CHOICES'
-    # canonical spelling, so `system = "ntsc"` reaches here intact, and
-    # every other consumer of this field (resolve_host_sid_model below,
-    # c64.py, hw_provision.py, scene_factory.py, music_features.py)
-    # compares with `.upper()`. An un-normalized bare `== "NTSC"` here would
-    # fold "ntsc" onto the PAL fps with no diagnostic.
+    # hw_provision.resolve_system re-fold these fields once the answer is in.
+    # Normalize once: nothing at config load enforces SYSTEM_CHOICES' canonical
+    # spelling, so `system = "ntsc"` reaches here intact and a bare
+    # `== "NTSC"` would fold it onto the PAL fps with no diagnostic.
     configured_system = cfg.ultimate64.system.upper()
     system = "NTSC" if configured_system == "AUTO" else configured_system
     fps = 60.0 if system == "NTSC" else 50.0
@@ -920,8 +795,7 @@ def make_backend(cfg: Config) -> C64Backend:
     host_chips = resolve_host_sid_chips(cfg.hardware.host_sid_chips)
     if host_chips:
         # An explicit chip list describes the machine outright, so the NTSC/PAL
-        # convention has nothing left to guess at — clear the assumed flag so
-        # the once-per-run "this is a guess" warning stays quiet.
+        # convention has nothing left to guess at.
         host_model_assumed = False
 
     if backend == "ultimate":
@@ -959,20 +833,13 @@ def make_backend(cfg: Config) -> C64Backend:
         if tr.transport == "serial":
             port = tr.serial_port
             if not port:
-                # No explicit device — try to find the TR's USB-serial node
-                # by its USB (VID, PID) across macOS/Linux/Windows.
                 port = autodetect_serial_port()
                 if port:
                     log.info("[teensyrom] auto-detected serial device %s", port)
-                    # Write the resolved device back into the config. Anything
-                    # downstream that identifies the link reads it from there,
-                    # not from the transport — most importantly
-                    # dac_calibration_store.resolve_calibration_key, which only looks
-                    # up the board's USB serial number when serial_port is set.
-                    # Left empty, an auto-detected run silently degrades to the
-                    # generic "tr-serial-auto" key and records an empty port in
-                    # the calibration's provenance, so two different TR+ boards
-                    # on one host collide on a single file.
+                    # dac_calibration_store.resolve_calibration_key only looks
+                    # up the board's USB serial number when serial_port is set;
+                    # left empty, two TR+ boards on one host would collide on
+                    # the generic "tr-serial-auto" calibration file.
                     tr.serial_port = port
             if not port:
                 raise ValueError(

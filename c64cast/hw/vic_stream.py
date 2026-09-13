@@ -1,24 +1,10 @@
 """The Ultimate 64's own VIC stream, received and reassembled into frames.
 
-This is the one path that shows what the machine is *actually painting*, as
-opposed to what c64cast believes it wrote. Everything else in the project is
-open-loop: the render pipeline computes a screen, DMAs it, and never looks
-again; `readmem` can confirm the bytes landed but not that the VIC drew what
-those bytes mean. A character ROM that isn't the one assumed, an MCM bit-3
-surprise, a mode switch caught mid-frame — none of them are visible from the
-write side. Until now the only closed loop was a capture card pointed at the
-HDMI output, which is why `scripts/diags/` has one.
-
-The machine can simply tell us. The Ultimate 64's FPGA taps the VIC's own pixel
-stream and pushes it out of the Ethernet MAC as UDP, with **no C64 involvement
-at all** — no cycles stolen, no bus contention, nothing on the machine that a
-running show could disturb and nothing a show does that can disturb it. Socket
-DMA command `0xFF20` turns it on and names the destination; `0xFF30` stops it.
-
-**Ultimate 64 only.** The firmware compiles both commands under `#ifdef U64`:
-an Ultimate II+ is a cartridge in someone else's C64 and has no VIC of its own
-to tap, and a TeensyROM+ is not in the conversation at all. Callers check
-`HardwareProfile.supports_video_stream` rather than guessing from the family.
+The machine's FPGA taps the VIC's own pixel stream and pushes it out of the
+Ethernet MAC as UDP, with no C64 involvement at all. Socket DMA command
+`0xFF20` turns it on and names the destination; `0xFF30` stops it. **Ultimate
+64 only** — the firmware compiles both commands under `#ifdef U64`, and callers
+check `HardwareProfile.supports_video_stream`.
 
 ## The wire format
 
@@ -35,34 +21,12 @@ UDP, one packet per few scanlines, 12-byte header then packed pixels:
 
 The payload is 4 bits per pixel, two pixels per byte, **low nibble first** —
 so byte 0 is pixels 0 and 1, and each nibble indexes the sixteen C64 colors
-directly. At 384 pixels that is 192 bytes a line.
+directly. At 384 pixels that is 192 bytes a line. Width is read from the
+header and height is counted from how much of a frame arrived (~272 on PAL,
+~240 on NTSC); the last four header bytes are unused here, as they are in the
+firmware's own reference client.
 
-Two things are read from the wire rather than assumed, because they are the two
-that differ between machines and firmwares. **Width** comes from the header.
-**Height** is counted: a frame is however many lines arrived before the packet
-with bit 15 set, which is ~272 on PAL and ~240 on NTSC and is not worth a table
-when the stream says so every frame. The last four header bytes are documented
-but unused here for the same reason the reference client ignores them — nothing
-we need is in them, and reading a field that turns out to mean something else
-is worse than not reading it.
-
-## What this costs, and the watchdog
-
-A PAL frame is 384x272 at half a byte a pixel, so ~52 KB, and the machine sends
-every one: about 2.6 MB/s of UDP, forever, whether or not anyone is listening.
-That shape drives two decisions here. The stream is started only while somebody
-is actually watching, and it is started with the firmware's **own** auto-stop
-timer armed, re-armed periodically for as long as the watching continues. A
-`stop()` in a `finally` handles the ordinary exits; nothing in this process
-handles `SIGKILL`, and the failure that leaves behind — a machine firing
-megabytes a second at a closed port — is exactly the one a watchdog counted
-down by the *machine* is for.
-
-Loss is not handled and does not need to be. UDP on a LAN drops a packet now
-and then; a frame missing one is dropped whole rather than shown with a band of
-the previous frame in it, because this exists to answer "what is on the screen"
-and a stale band is a wrong answer. At 50 frames a second the next one is 20 ms
-away.
+See docs/architecture/hardware-io.md#vic_streampy--the-machines-own-vic-output.
 """
 
 from __future__ import annotations
@@ -127,10 +91,8 @@ PRIME_AFTER_S = 1.5
 #: `line & 0x8000` that would have finished it is never coming.
 _STALE_FRAME_S = 1.0
 
-# Far above one real frame (~52 KB across ~68 packets, per the class
-# docstring). The wire protocol has no auth, so a flood of forged packets
-# that never sets the LAST_PACKET bit must not be allowed to grow the partial
-# buffer without limit while it waits for `_expire_partial`'s timeout.
+# Cap on the partial-frame buffer, far above one real frame (~52 KB across ~68
+# packets): a flood that never sets LAST_PACKET must not grow it without limit.
 _MAX_PARTIAL_BYTES = 1 << 19
 
 
@@ -208,27 +170,20 @@ class VicStreamReceiver:
         self._frames = 0
         self._dropped = 0
 
-    # ---- lifecycle --------------------------------------------------------
-
     def start(self) -> None:
         """Bind, tell the machine where to send, and start reassembling."""
         if self._poll is not None:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # A frame is ~52 KB across ~68 packets and they arrive back to back; the
-        # default receive buffer is smaller than one frame on some systems, so a
-        # scheduling hiccup would tear frames rather than delay them.
+        # One frame is ~52 KB across ~68 back-to-back packets; the default
+        # receive buffer is under that on some systems, which tears frames.
         with _link_trouble:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         sock.settimeout(0.2)
         try:
             # `_bind_host` defaults to "" (all interfaces), not loopback: the
-            # sender is the Ultimate 64 out on the LAN, reaching this host at
-            # whatever address `_reachable_address()` below hands it — a
-            # loopback-only bind would silently discard every frame the
-            # machine sends. Same tradeoff, same waiver as wled_sink.py's
-            # `_bind`; a caller who wants a narrower bind still can via
-            # `bind_host`.
+            # sender is the Ultimate 64 out on the LAN. Same waiver as
+            # wled_sink.py's `_bind`; `bind_host` narrows it.
             # codeql[py/bind-socket-all-network-interfaces]
             sock.bind((self._bind_host, 0))
             port = sock.getsockname()[1]
@@ -262,8 +217,6 @@ class VicStreamReceiver:
             self._parts_bytes = 0
         log.info("vic stream: stopped (%d frames, %d dropped)", self._frames, self._dropped)
 
-    # ---- reading ----------------------------------------------------------
-
     def latest(self) -> VicFrame | None:
         """The most recent complete frame, or None if none has arrived yet."""
         with self._lock:
@@ -273,8 +226,6 @@ class VicStreamReceiver:
     def stats(self) -> dict[str, int]:
         with self._lock:
             return {"frames": self._frames, "dropped": self._dropped}
-
-    # ---- the receive loop -------------------------------------------------
 
     def _run(self, stop: threading.Event) -> None:
         sock = self._sock
@@ -286,7 +237,7 @@ class VicStreamReceiver:
                 self._maybe_rearm()
                 continue
             except OSError:
-                return  # closed under us by stop(); nothing to say about it
+                return  # closed under us by stop()
             if not self._is_from_machine(addr):
                 continue
             self._accept(packet)
@@ -296,9 +247,8 @@ class VicStreamReceiver:
         """True if a datagram's source is the machine we told to stream.
 
         The wire protocol has no authentication, so without this check
-        anyone on the segment who guesses the bound port can inject frames
-        or, worse, a flood of forged partial packets — this is the only
-        thing standing between "the receiver" and "an open UDP relay"."""
+        anyone on the segment who guesses the bound port can inject frames,
+        or a flood of forged partial packets."""
         return addr[0] == self._machine_addr
 
     def _accept(self, packet: bytes) -> None:
@@ -307,17 +257,14 @@ class VicStreamReceiver:
         _, number, line, width = _HEADER.unpack_from(packet, 0)
         self._last_packet_at = time.monotonic()
         if width != self._width:
-            # A width change is a mode change on the machine; the frame in hand
-            # was measured in the old one.
+            # A width change is a mode change on the machine; the frame in
+            # hand was measured in the old one.
             self._parts = []
             self._parts_bytes = 0
             self._width = width
         self._parts.append(packet[HEADER_BYTES:])
         self._parts_bytes += len(packet) - HEADER_BYTES
         if self._parts_bytes > _MAX_PARTIAL_BYTES:
-            # A frame that never sets LAST_PACKET would otherwise grow this
-            # buffer forever — `_expire_partial`'s timeout only fires on
-            # silence, not on a packet flood.
             self._parts = []
             self._parts_bytes = 0
             self._dropped += 1
@@ -355,8 +302,6 @@ class VicStreamReceiver:
         self._rearm_at = now + REARM_EVERY_S
         with _link_trouble:
             self._dma.vicstream_on(self._destination, stop_after_s=WATCHDOG_S)
-
-    # ---- addressing -------------------------------------------------------
 
     def _reachable_address(self) -> str:
         """This host's address *as the machine would reach it*.

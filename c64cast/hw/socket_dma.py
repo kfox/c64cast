@@ -1,27 +1,20 @@
 """Socket DMA client for the Ultimate 64.
 
-The U64 firmware exposes a TCP server on port 64 that accepts a small
-opcode protocol for direct DMA writes into C64 address space. Compared
-to the REST API on port 80, the DMA protocol has two structural
-advantages we exploit:
+The U64 firmware exposes a TCP server on port 64 speaking a small opcode
+protocol — `<HH` opcode + length, then the payload — for direct DMA writes
+into C64 address space, over one persistent connection. The server's
+connection loop strictly serializes commands per connection, which is what
+lets ``flush()`` work: a trailing IDENTIFY round-trip only responds once every
+prior command has been processed.
 
-  * **Persistent socket.** Many commands share one TCP connection; the
-    REST API forces ``Connection: close`` on every response, which means
-    every PUT pays a fresh TCP handshake. Measured cost: 14 ms / 71
-    writes/sec REST vs 5 ms / 200 writes/sec DMA.
-  * **Tight wire format.** Each command is `<HH` opcode + length plus
-    the payload. No HTTP headers, no JSON envelope.
-
-The server's connection loop strictly serializes commands per
-connection — one command read, dispatched, then the next. That FIFO
-ordering is what lets ``flush()`` work: a trailing IDENTIFY round-trip
-will only respond once every prior command has been processed.
+Only the opcodes c64cast's write path needs are covered here (DMAWRITE,
+REUWRITE, IDENTIFY, AUTHENTICATE, plus RESET, KEYB and the VIC stream pair).
 
 Protocol reference: https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc
 
-This module covers only the opcodes needed by c64cast's write path
-(DMAWRITE, IDENTIFY, AUTHENTICATE, plus RESET and KEYB for completeness).
-The full opcode set is documented in [docs/caveats.md](../docs/caveats.md).
+See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient
+and [docs/caveats.md](../docs/caveats.md) for the transport measurements and
+the full opcode set.
 """
 
 from __future__ import annotations
@@ -39,15 +32,13 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 64
 
-# Opcode constants — see socket_dma.cc. We use a fraction of the full set.
 CMD_KEYB = 0xFF03
 CMD_RESET = 0xFF04
 CMD_DMAWRITE = 0xFF06
 CMD_REUWRITE = 0xFF07
 CMD_IDENTIFY = 0xFF0E
 CMD_AUTHENTICATE = 0xFF1F
-# `#ifdef U64` in the firmware: these exist on an Ultimate 64 and not on an
-# Ultimate II+, which has no VIC of its own to stream.
+# `#ifdef U64` in the firmware: Ultimate 64 only (a U2+ has no VIC to stream).
 CMD_VICSTREAM_ON = 0xFF20
 CMD_VICSTREAM_OFF = 0xFF30
 
@@ -104,28 +95,23 @@ class SocketDMAClient:
     ):
         self.host = host
         self.port = port
-        self.password = password or None  # treat "" same as None
+        self.password = password or None
         self.connect_timeout = connect_timeout
         self.io_timeout = io_timeout
 
         self._sock: socket.socket | None = None
         self._lock = threading.Lock()
-        # Per-sendall latency window. 256 samples ≈ 5s at 50 writes/s,
-        # which matches the typical --profile-interval. Held by the same
-        # lock as the socket itself; readers in latency_summary() snapshot
-        # under that lock. t0 is always taken right before the send that
-        # actually goes out, never before a reconnect it might have needed
-        # first, so a reconnect's connect+auth+IDENTIFY cost never lands in
-        # this window.
+        # Per-sendall latency window; 256 samples ≈ 5 s at 50 writes/s, which
+        # matches the typical --profile-interval. Guarded by the socket's own
+        # lock. t0 is taken right before the send that actually goes out, never
+        # before a reconnect, so reconnect cost never lands in this window.
         self._latencies: deque[float] = deque(maxlen=256)
         self.product = "(not yet identified)"
-        # See the class docstring: both make an implicit reconnect (from
-        # dmawrite/flush finding self._sock is None) refuse instead of
-        # redialing. Cleared only by an explicit connect().
+        # Both make an implicit reconnect (from dmawrite/flush finding
+        # self._sock is None) refuse instead of redialing; see the class
+        # docstring. Cleared only by an explicit connect().
         self._auth_rejected = False
         self._closed = False
-
-    # ---- connect / close --------------------------------------------------
 
     def connect(self) -> None:
         """Open the TCP socket and complete the handshake.
@@ -173,22 +159,16 @@ class SocketDMAClient:
         except OSError as e:
             raise SocketDMAError(f"could not connect to {self.host}:{self.port}: {e}") from e
         sock.settimeout(self.io_timeout)
-        # Disable Nagle so 7-byte DMAWRITE commands ship immediately
-        # instead of waiting for the kernel to coalesce — Nagle would
-        # add ~40 ms of accidental latency on every write.
+        # No Nagle: it would add ~40 ms to every 7-byte DMAWRITE.
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock = sock
 
-        # If auth or identify fails after self._sock is assigned, close
-        # and clear the socket so the next reconnect attempt starts from
-        # a clean slate — otherwise we'd leave a half-open socket whose
-        # next sendall might block on the unanswered IDENTIFY in the
-        # server's per-connection FIFO.
+        # A failure after self._sock is assigned must close and clear it: a
+        # half-open socket's next sendall can block on the unanswered IDENTIFY
+        # still in the server's per-connection FIFO.
         try:
             if self.password is not None:
                 self._authenticate_locked()
-            # IDENTIFY both validates the connection and captures the U64
-            # product string for diagnostic logging.
             self.product = self._identify_locked()
         except Exception:
             self._close_locked()
@@ -221,13 +201,9 @@ class SocketDMAClient:
             length = self._recv_exact_locked(1)[0]
             payload = self._recv_exact_locked(length)
         except TimeoutError as e:
-            # TCP accept succeeded but the server never answered IDENTIFY.
-            # Most common cause: the U64's "Command Interface" toggle is OFF
-            # (menu → F2 → Memory Configuration → Command Interface →
-            # Enabled). That toggle gates the DMA command dispatcher even when
-            # the listening socket stays open. Password mismatch usually closes
-            # the socket rather than hanging, but mention it as a secondary
-            # possibility.
+            # A TCP accept with no IDENTIFY reply is usually the U64's
+            # "Command Interface" toggle being OFF: it gates the DMA command
+            # dispatcher even while the listening socket stays open.
             raise SocketDMAError(
                 "no reply to IDENTIFY from the U64 Socket DMA service. "
                 "Check that 'Ultimate DMA Service' (F2 → Network Settings) "
@@ -243,9 +219,8 @@ class SocketDMAClient:
                 "Memory Configuration) are both enabled."
             ) from e
         # The IDENTIFY payload is whatever answers on host:port, up to 255
-        # bytes of it — filter to printable characters and cap the length so
-        # it can't inject forged lines into --log-file output (this string
-        # is logged verbatim below and again by callers).
+        # bytes of it, and is logged verbatim here and by callers — filter to
+        # printable characters and cap it so it can't forge --log-file lines.
         text = payload.decode("utf-8", errors="replace")
         return "".join(c for c in text if c.isprintable())[:64]
 
@@ -261,8 +236,6 @@ class SocketDMAClient:
             with contextlib.suppress(OSError):
                 self._sock.close()
             self._sock = None
-
-    # ---- low-level wire I/O ----------------------------------------------
 
     def _send_cmd_locked(self, opcode: int, payload: bytes) -> None:
         """Write one full command. Caller holds self._lock so commands
@@ -296,9 +269,8 @@ class SocketDMAClient:
                     raise ConnectionError("socket closed mid-read")
                 buf.extend(chunk)
         finally:
-            # Restore the socket's steady-state per-call timeout so the next
-            # command's sendall doesn't inherit whatever sliver of time was
-            # left on this read's cumulative deadline.
+            # Restore the steady-state per-call timeout so the next command's
+            # sendall doesn't inherit this read's remaining deadline.
             self._sock.settimeout(self.io_timeout)
         return bytes(buf)
 
@@ -326,21 +298,17 @@ class SocketDMAClient:
                 self._close_locked()
                 self._reconnect_locked()
                 try:
-                    # Retry the original command exactly once.
                     t0 = time.perf_counter()
                     self._send_cmd_locked(opcode, payload)
                 except OSError as e2:
-                    # Don't leave the retry's partially-sent command on a
-                    # socket we're about to hand back to the caller as
-                    # failed — the next command on it would be misframed.
+                    # A partially-sent command left on the socket would
+                    # misframe the next one.
                     self._close_locked()
                     log.warning(
                         "socket dma: send failed again after reconnect (%s) — giving up", e2
                     )
                     raise
             self._latencies.append(time.perf_counter() - t0)
-
-    # ---- public command surface ------------------------------------------
 
     def dmawrite(self, addr: int, data: bytes) -> None:
         """Write ``data`` to C64 address ``addr`` via hardware DMA.
@@ -411,9 +379,8 @@ class SocketDMAClient:
         command, so the caller checks ``profile.supports_video_stream``."""
         if stop_after_s < 0:
             raise ValueError(f"stop_after_s must be >= 0, got {stop_after_s}")
-        # max(1, ...) so any positive-but-sub-tick request (< 2.5 ms) rounds
-        # up to the shortest bounded stream rather than down onto 0 — which
-        # the firmware reads as unbounded, the exact opposite of the ask.
+        # max(1, ...): a positive sub-tick request must round up, not down onto
+        # 0, which the firmware reads as unbounded.
         ticks = 0 if stop_after_s == 0 else min(0xFFFF, max(1, round(stop_after_s / STREAM_TICK_S)))
         # The firmware NUL-terminates the name itself at the command length, so
         # the destination goes on the wire bare.
@@ -443,21 +410,14 @@ class SocketDMAClient:
                 length = self._recv_exact_locked(1)[0]
                 self._recv_exact_locked(length)
             except OSError:
-                # Don't transparently retry flush(): callers use it as a
-                # sync barrier before a REST runner call; surfacing the
-                # failure lets them decide whether to abort. The caller
-                # owns the log message — duplicating it here would emit
-                # two WARNINGs for the same event. But an unconsumed
-                # IDENTIFY reply may still be in flight on this socket (a
-                # TimeoutError is an OSError subclass), and every other
-                # round-trip in this class treats that as grounds to close:
-                # otherwise the *next* flush()/command reads that stale
-                # reply as its own, permanently one reply behind.
+                # No transparent retry: callers use flush() as a sync barrier
+                # before a REST runner and own the log message. Close, though —
+                # an unconsumed IDENTIFY reply may still be in flight (a
+                # TimeoutError is an OSError), and the next flush()/command
+                # would read it as its own, permanently one reply behind.
                 self._close_locked()
                 raise
             self._latencies.append(time.perf_counter() - t0)
-
-    # ---- diagnostics -----------------------------------------------------
 
     def latency_summary(self) -> tuple[float, float, float, float, int]:
         """``(avg, p50, p95, max, n)`` in seconds over the rolling window.

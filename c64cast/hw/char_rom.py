@@ -1,26 +1,11 @@
 """Character ROM: one resolver, one cache location, and a dump off the
 machine in front of you.
 
-Every C64-native glyph c64cast draws — the bitmap-mode text overlays
-(`scrolling_text` → `TextSurface` → `bitmap_text.load_glyphs`), `big_text`'s
-8×-scaled scroller, the on-C64 menu, the oscilloscope's text rows, and the
-preview/recording renderers — reads its 8×8 cells straight out of the C64
-character ROM. Without one, `framebuffer._builtin_charset()` synthesizes an
-ASCII font with `cv2.putText`: it renders *something*, but it is not the C64
-font and PETSCII graphics codes come out blank. A user report of "the
-scrolling text looks bad" was exactly this, and nothing else.
-
-The three loaders that wanted a charset used to each carry their own
-cwd-relative default (`assets/roms/characters.901225-01.bin`), which resolves
-only when the process happens to be running from a source checkout with a ROM
-already dropped in it. This module is the single answer instead:
-
   * **resolve** — an explicit configured path, else the data dir, else the
-    legacy cwd-relative checkout path (so an existing checkout keeps working),
-    else None → the cv2 fallback.
+    legacy cwd-relative checkout path, else None → the cv2 fallback.
   * **dump** — the ROM is not RAM (`read_memory($D000)` sees I/O), so getting
     it takes a 6502 stub that banks CHAREN out and copies the ROM down into
-    plain RAM the host can read back. See `api.CHAR_ROM_DUMP_STUB` and
+    plain RAM the host can read back. See `api.build_char_rom_dump_stub` and
     `C64Backend.dump_char_rom`.
   * **verify** — prove we got a charset and not I/O registers or blank RAM,
     without assuming a specific national ROM (see :func:`verify`).
@@ -28,6 +13,8 @@ already dropped in it. This module is the single answer instead:
 
 The bytes move from the user's hardware to the user's disk and stop: nothing
 here is shipped, and c64cast never redistributes a ROM.
+
+See docs/architecture/hardware-io.md#char_rompy--reading-the-character-rom-off-the-machine.
 """
 
 from __future__ import annotations
@@ -52,9 +39,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 # One 8×8 glyph is 8 bytes; one charset is 256 glyphs = 2 KB. The physical
-# CHARGEN ROM holds two of them (uppercase/graphics then lowercase/uppercase);
-# c64cast draws from the uppercase set, so consumers take the first 2 KB
-# whichever size was installed.
+# CHARGEN ROM holds two sets (uppercase/graphics then lowercase/uppercase) and
+# c64cast draws from the first, so consumers take the leading 2 KB whichever
+# size was installed.
 GLYPH_BYTES = 8
 GLYPHS_PER_SET = 256
 CHARSET_BYTES = GLYPH_BYTES * GLYPHS_PER_SET  # 2048
@@ -62,16 +49,14 @@ CHARGEN_BYTES = 2 * CHARSET_BYTES  # 4096 — the full ROM
 
 CHARGEN_FILENAME = "chargen.bin"
 
-# Where a source checkout used to keep its dump. Kept in the resolver chain so
-# a checkout that already has one doesn't suddenly lose its glyphs; it is not
-# where anything gets written.
+# Where a source checkout keeps a hand-dropped dump. Read from, never written
+# to.
 LEGACY_CHARGEN_PATH = "assets/roms/characters.901225-01.bin"
 
 # SHA-256 of the stock Commodore 901225-01 CHARGEN — the full 4 KB ROM and its
 # 2 KB uppercase half (a charset extracted from an emulator may be either).
-# Purely informational: a Swedish/Danish machine, a JiffyDOS charset or a
-# replacement font is exactly the charset that user wants us to use, so an
-# unrecognized digest is a note, never a failure.
+# Informational only: a national, JiffyDOS or replacement charset is exactly
+# what that user wants used, so an unrecognized digest must stay a note.
 STOCK_DIGESTS = {
     "fd0d53b8480e86163ac98998976c72cc58d5dd8eb824ed7b829774e74213b420": "901225-01 (stock, 4 KB)",
     "3cf89732b10b1d51a267f74df35f10a154108b444a3a0ec9e51ef7ddefb668a1": (
@@ -79,21 +64,17 @@ STOCK_DIGESTS = {
     ),
 }
 
-# The structural check's tolerance, in mismatching bytes per 2 KB set.
-#
-# Screen codes $80-$FF are the reverse-video twins of $00-$7F, so the second
-# half of a set is the bitwise complement of the first — a property random
-# RAM or a page of I/O registers cannot fake. It is *almost* exact: the stock
-# 901225-01 has exactly one byte that isn't (screen code $80, the reversed
-# `@`, row 5 reads $99 where the complement is $9D), and there is no reason to
-# assume a national variant has zero such quirks either. So allow a handful of
-# bytes out of 1024 — garbage still misses on ~99.6% of them.
+# The structural check's tolerance, in mismatching bytes per 2 KB set. Screen
+# codes $80-$FF are the reverse-video twins of $00-$7F, so a set's second half
+# is the bitwise complement of its first — almost exactly: on the stock
+# 901225-01 the reversed `@` (screen code $80, row 5) reads $99 where the
+# complement is $9D, and a national variant may carry quirks of its own. A
+# handful of bytes out of 1024 still leaves garbage missing on ~99.6% of them.
 REVERSE_HALF_TOLERANCE = 8
 
-# Screen code of a glyph that must be blank in any charset, and one that must
-# not be. `SCREEN.SC_SPACE` covers the first; `A` is the second because every
-# charset worth using has one, including national variants that rearrange the
-# accented letters around it.
+# A glyph that must not be blank in any charset (`SCREEN.SC_SPACE` covers the
+# blank half of the test). `A` survives the national variants that rearrange
+# the accented letters around it.
 SC_LETTER_A = 0x01
 
 
@@ -228,11 +209,6 @@ def _read_verified(path: Path) -> tuple[bytes, VerifyResult] | None:
 def _read_glyphs(configured: str | None) -> bytes:
     path = resolve(configured)
     if configured and path != Path(paths.expand_user(configured)):
-        # resolve() fell through past the configured path (missing, or not a
-        # file) to the data dir / legacy checkout path / nothing — the
-        # substitution is otherwise invisible, which is exactly the "the
-        # scrolling text looks bad" support case this module exists to
-        # eliminate.
         log.warning(
             "char_rom: configured charset_path %s does not exist; falling back to %s",
             configured,
@@ -251,8 +227,7 @@ def _read_glyphs(configured: str | None) -> bytes:
                 path,
                 result.error,
             )
-    # Deferred: framebuffer imports this module for its own glyphs, so a
-    # top-level import here is a cycle.
+    # Deferred: framebuffer imports this module, so a top-level import cycles.
     from c64cast.video.framebuffer import _builtin_charset
 
     return _builtin_charset()
@@ -333,10 +308,8 @@ def ensure_installed(be: C64Backend, cfg: Config) -> bool:
     existing = resolve(cfg.preview.charset_path)
     if existing is not None:
         read = _read_verified(existing)
-        # A resolved-but-unverifiable file (stale, wrong format, a typo'd
-        # charset_path that happens to name a real file) must count as
-        # "nothing installed" — treating it as done here would suppress the
-        # auto-dump forever behind glyphs that already don't render right.
+        # A resolved file that does not verify counts as "nothing installed";
+        # treating it as done would suppress the auto-dump forever.
         if read is not None and read[1].ok:
             return False
     if not (be.profile.supports_read and be.profile.supports_run_prg):

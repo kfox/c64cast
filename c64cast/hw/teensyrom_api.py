@@ -9,36 +9,25 @@ top of the TR token protocol ([teensyrom_dma.py](teensyrom_dma.py)):
   * **reset** maps to ResetC64Token; **run_prg** is synthesized from
     PostFile (upload to SD/USB) + LaunchFile; **probe** uses Ping.
   * **read_memory** rides ReadC64Mem (`0x64FD`), added in the cycle-clean TR+
-    firmware (v0.7.2.5). The protocol-level capability is declared on the
-    profile, but `__init__` *probes* for it at connect (a tiny ROM read) and
-    downgrades `supports_read` if the connected build lacks the token — so an
-    older firmware still degrades gracefully instead of NAK/timeout-ing every
-    keyboard poll. Read support unlocks the `$028D` keyboard poller (physical
-    pause/skip/cycle/menu control), same as the Ultimate.
+    firmware (v0.7.2.5). `__init__` probes for the token at connect and
+    downgrades `supports_read` if the connected build lacks it. That flag is
+    the module-wide proxy for "new enough firmware".
   * **run_sid_player / cue_song_reinit** ride the shared `_SidPlayerMixin`
     orchestration (parse / layout / build / divider auto-tune); only the kick
-    differs. The TR does NOT boot the player via LaunchFile — that resets the
-    C64, and its async boot/fast-LOAD raced the scope bring-up and the keyboard
-    poll. Instead the launch reuses the same pure-DMA mechanism as subtune
-    cycling: with the cycle-clean IRQ-enabled clear-loop already running (stock
-    kernal IRQ chaining through `$0314`), `_launch_sid_player` DMAs the payload +
-    player MC + re-INIT stub, then a `$0314` vector-swap points the next kernal
-    IRQ at the re-INIT stub, which runs INIT and installs the PLAY handler. No
-    reset, no boot, no fast-LOAD window to corrupt. Audio start is deferrable
-    (`defer_audio` / `begin_sid_audio`) so WaveformScene paints the scope first.
-    Requires the IRQ-enabled idle, so it's gated on `supports_read` (cycle-clean
-    fw v0.7.2.5+); older firmware raises `BackendCapabilityError`. See
-    `_launch_sid_player`.
+    differs — a `$0314` vector-swap, not LaunchFile. Audio start is deferrable
+    (`defer_audio` / `begin_sid_audio`) so WaveformScene paints the scope
+    first. Gated on `supports_read`; older firmware raises
+    `BackendCapabilityError`. See `_launch_sid_player`.
   * **dump_char_rom** rides the shared `_StubRunnerBackend` orchestration and
-    the same `$0314` vector-swap kick, for the same reason (no reset, no
-    boot). Also gated on `supports_read`: the older spin-stub idle masks IRQs,
-    so the swap would never fire. See `_kick_char_rom_dump`.
+    the same `$0314` vector-swap kick. See `_kick_char_rom_dump`.
   * **reu_write** is left on the ABC's raising default — there is no REUWRITE
     opcode. Callers gate on `profile.supports_reu`.
 
 The semantic helpers (`silence_sid`, `restore_kernal_irq_vector`,
 `disable_case_switch`) are inherited from `BufferedWriteBackend` — they're pure
 writes on the standard C64 map.
+
+See docs/architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend.
 """
 
 from __future__ import annotations
@@ -74,42 +63,23 @@ _UPLOAD_DIR = "c64cast"
 _SPIN_NAME = "spin.prg"
 _CLEARLOOP_NAME = "clearloop.prg"
 
-# Idle bring-up has two strategies, picked by firmware (see
-# run_basic_clear_loop):
-#
-# (1) IRQ-ENABLED CLEAR-LOOP (default on cycle-clean firmware, fw >= v0.7.2.5).
-#     Launch the same `10 PRINT CHR$(147):20 GOTO 20` BASIC PRG the Ultimate
-#     runs (api.BASIC_CLEAR_LOOP_PRG): CHR$(147) clears the screen, the GOTO
-#     loop keeps the kernal IRQ scanning the keyboard (so $028D stays live for
-#     the keyboard poller) while staying out of the editor's direct-input mode
-#     (cursor blink suppressed for free). Safe now that the TR's WriteC64Mem
-#     DMA is cycle-clean — a running interpreter survives sustained hammering
-#     (HW-verified). Read support is the proxy for "new enough firmware": both
-#     ReadC64Mem and the cycle-clean DMA fix shipped together, so the idle
-#     follows `profile.supports_read`.
-#
-# (2) SPIN-STUB FALLBACK (older firmware, before the DMA was cycle-clean).
-#     C64-side "park the CPU" machine code, DMA'd to $C000 and entered via a
-#     launched BASIC `SYS 49152` stub. On pre-cycle-clean firmware the TR's
-#     WriteC64Mem DMA perturbs the running 6510, so streaming over a running
-#     BASIC program corrupts it within seconds ("?UNDEF'D STATEMENT", "?SYNTAX
-#     ERROR"). This stub instead parks the CPU with IRQs masked, executing only
-#     a NOP sled that loops on itself: SEI, 252×NOP, then JMP back to the top.
-#     A perturbed cycle just lands somewhere in the sled and slides back to the
-#     JMP — there's no interpreter state to corrupt. The trade-off is that the
-#     kernal IRQ (cursor blink / keyboard scan) never runs, so $028D is frozen
-#     and there's no physical-keyboard control on old firmware. The VIC keeps
-#     refreshing the display from screen RAM, which we update by DMA.
+# Spin-stub idle, the fallback for firmware older than the cycle-clean DMA
+# (pre-v0.7.2.5, i.e. `not profile.supports_read`): DMA'd to $C000 and entered
+# by a launched BASIC `SYS 49152` stub. It parks the CPU with IRQs masked in a
+# NOP sled that loops on itself, so a DMA-perturbed cycle lands somewhere in
+# the sled and slides back to the JMP with no interpreter state to corrupt.
+# $028D freezes with it — no physical-keyboard control on old firmware. The
+# cycle-clean path launches api.BASIC_CLEAR_LOOP_PRG instead; see
+# run_basic_clear_loop.
 #   $C000 SEI            ; 78        mask IRQs
 #   $C001 NOP × 252      ; EA…       glitch-tolerant sled
 #   $C0FD JMP $C000      ; 4C 00 C0  loop forever
 _SPIN_STUB_ADDR = 0xC000
 _SPIN_STUB = bytes([0x78]) + bytes([0xEA]) * 252 + bytes([0x4C, 0x00, 0xC0])
 
-# After ResetC64Token the TR reboots its menu + re-inits SD, which takes a
-# few seconds; PostFile is refused (FailToken) until the menu handler is
-# ready. Retry the bring-up with backoff so it's robust to that timing
-# regardless of the caller's fixed post-reset delay.
+# After ResetC64Token the TR reboots its menu + re-inits SD, which takes a few
+# seconds; PostFile is refused (FailToken) until the menu handler is ready, so
+# bring-up retries rather than trusting a fixed post-reset delay.
 _BRINGUP_ATTEMPTS = 6
 _BRINGUP_RETRY_S = 1.0
 
@@ -119,20 +89,17 @@ _BRINGUP_RETRY_S = 1.0
 # ticks at 60 Hz; matches cue_song_reinit's settle.
 _SID_REINIT_SETTLE_S = 0.08
 
-# After LaunchFile the TR loader prints "RUNNING..." on the C64 screen; let it
-# land before we DMA-clear, so the clear isn't immediately overwritten. Waited
-# out by draining rather than sleeping: LaunchFile acks and *then* streams its
-# own console text back over the same link ("Remote Launch: / P: … / F: … /
-# Resetting C64" — it resets the C64, so a BASIC cold start is in there too),
-# and a fixed sleep that guessed short let the next command's reply misalign
-# with that text. Measured on hardware: the first post-launch command came back
-# as the ASCII of "…mote Launch:" instead of an ack. drain_text re-arms on every
-# chunk, so this waits for the stream to actually go quiet.
+# LaunchFile acks and *then* streams its own console text back over the same
+# link ("Remote Launch: / P: … / F: … / Resetting C64"), which a fixed sleep
+# that guessed short let the next command's reply misalign with — on hardware
+# the first post-launch command came back as the ASCII of "…mote Launch:"
+# instead of an ack. drain_text re-arms on every chunk, so this waits for the
+# stream to go quiet, and the loader's on-screen "RUNNING..." lands before the
+# DMA screen-clear.
 _LAUNCH_QUIET_S = 0.6
 
 # Standard C64 screen RAM + dimensions, used to blank the boot banner / loader
-# message the spin stub leaves on screen (the spin MC, unlike the U64's BASIC
-# clear-loop, doesn't PRINT CHR$(147)).
+# message the spin stub leaves on screen (it does not PRINT CHR$(147)).
 _SCREEN_RAM = 0x0400
 _SCREEN_CELLS = 1000
 _SC_SPACE = 0x20
@@ -145,11 +112,9 @@ _BASIC_TXTTAB = 0x0801
 _BASIC_VARTAB = 0x002D
 # CURLIN ($39/$3A) — the line number BASIC is currently executing. Read to tell
 # "at the READY prompt" from "running the clear loop" (see _basic_is_at_ready).
-# Measured on hardware rather than taken from the usual "$FF in the high byte
-# means direct mode" summary: at the READY prompt this machine reads $0000, and
-# running the clear loop it reads $0014 (line 20). Testing the high byte for $FF
-# therefore never matched, which silently disabled the repair below — so treat
-# both $0000 and a $FFxx high byte as "not executing a line".
+# HW-measured, against the usual "$FF in the high byte means direct mode"
+# summary: at READY this machine reads $0000 and in the clear loop $0014 (line
+# 20), so both $0000 and a $FFxx high byte count as "not executing a line".
 _BASIC_CURLIN = 0x0039
 _BASIC_NO_LINE_HI = 0xFF
 _RUN_RETURN = bytes([0x52, 0x55, 0x4E, 0x0D])  # R U N + RETURN
@@ -164,13 +129,11 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self.profile = profile
         self._drive = DRIVE_SD if storage.lower() == "sd" else DRIVE_USB
         self.tr = TRClient(transport)
-        # connect() raises TRError on a bad port / unreachable listener; let
-        # it propagate so the CLI can render a user-actionable message.
+        # connect() raises TRError on a bad port / unreachable listener; the
+        # CLI renders that into a user-actionable message.
         self.tr.connect()
-        # The profile declares read support at the protocol level (ReadC64Mem
-        # exists), but a given device may run pre-v0.7.2.5 firmware that lacks
-        # the token. Probe once and downgrade rather than NAK/timeout-ing every
-        # keyboard poll — version-robust without parsing the ping banner.
+        # The profile declares read support at the protocol level, but a given
+        # device may run pre-v0.7.2.5 firmware lacking the token.
         if self.profile.supports_read and not self._probe_read():
             self.profile = replace(self.profile, supports_read=False)
             log.info(
@@ -188,13 +151,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             return len(data) == 2
         except (OSError, TRError) as e:
             log.debug("TR read-capability probe failed (%s); assuming no read", e)
-            # An unknown token on old firmware may leave trailing bytes; clear
-            # them so the next real command starts on a clean offset.
+            # An unknown token on old firmware can leave trailing bytes that
+            # would desync the next command.
             with contextlib.suppress(OSError, TRError):
                 self.tr._drain_stale(0.2)
             return False
 
-    # ---- write path -------------------------------------------------------
     _EMIT_WRITE_LABEL = "TR write"
     _EMIT_DEVICE_LABEL = "TR"
 
@@ -215,7 +177,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             self._note_emit_failure(addr, e)
 
     def flush(self) -> None:
-        # Writes are acked, so this is a no-op barrier; kept for parity.
+        # Writes are acked, so the barrier is already satisfied.
         self.tr.flush()
 
     def close(self) -> None:
@@ -224,7 +186,6 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def format_write_latency(self) -> str | None:
         return self.tr.format_latency()
 
-    # ---- capability-gated surface (the supported subset) ------------------
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         """Read `length` bytes from C64 `address` via ReadC64Mem, chunked at
         MAX_SEGMENT_BYTES. Returns the bytes, or **None** on any transport /
@@ -447,9 +408,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         stub_prg = _build_basic_sys_stub(_SPIN_STUB_ADDR)
         path = f"{_UPLOAD_DIR}/{_SPIN_NAME}"
         if self._upload_and_launch_retry(stub_prg, path, "spin-stub"):
-            # The CPU is now parked; clear the boot banner / "RUNNING..." the
-            # spin stub left on screen (it doesn't PRINT CHR$(147)). Settle
-            # first so the loader's print lands before we blank it.
+            # The CPU is parked; clear the boot banner / "RUNNING..." left on
+            # screen, after the settle so the loader's print lands first.
             self._settle_after_launch()
             self._clear_screen()
             self.invalidate_cache()
@@ -537,7 +497,6 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._upload(data, dest)
         self.tr.launch_file(dest, self._drive)
 
-    # ---- SID player (shared orchestration via _SidPlayerMixin) -------------
     def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """TeensyROM kick — pure DMA, no LaunchFile/reset/boot.
 
@@ -566,8 +525,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._write_sid_blobs(launch)
         self.flush()
         if launch.defer_audio:
-            # Loaded but silent: the $0314 swap (which starts INIT/PLAY) waits
-            # for begin_sid_audio so the caller can paint the scope first.
+            # Loaded but silent: the $0314 swap that starts INIT/PLAY waits for
+            # begin_sid_audio.
             self._sid_audio_pending = True
         else:
             self._start_sid_audio(launch.layout)
