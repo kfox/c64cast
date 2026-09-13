@@ -93,10 +93,9 @@ class RenderContractTest(unittest.TestCase):
                 self.assertTrue(np.all(colors == 3))
 
     def test_animates_over_time(self):
-        # Every built-in style except 'none' has some time-driven motion. Some
-        # animate glyphs (starfield), others only colors (raster_bars, checker),
-        # and some have a coarse phase period — so compare the t=0 frame against
-        # a spread of later samples and require motion in at least one.
+        # Every built-in style except 'none' has some time-driven motion — some
+        # animate glyphs (starfield), others only colors (raster_bars, checker) —
+        # so compare t=0 against a spread of later samples.
         samples = (0.25, 0.5, 1.0, 1.7, 3.3)
         for name, cls in REGISTRY.items():
             if name == "none":

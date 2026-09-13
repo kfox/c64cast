@@ -61,9 +61,8 @@ class OpenInputPortTest(unittest.TestCase):
                 _midi.open_input_port("nonexistent", label="test")
 
     def test_missing_midi_extra_raises_a_named_runtime_error_not_an_assert(self):
-        # Regression: this used to be a bare `assert mido is not None`, which
-        # `python -O` strips and which otherwise surfaces as an unhelpful
-        # AttributeError on None, naming nothing about the missing extra.
+        # Regression: a bare `assert mido is not None` is stripped by `python -O`
+        # and otherwise surfaces as an AttributeError naming no missing extra.
         with mock.patch.object(_midi, "MIDI_AVAILABLE", False):
             with self.assertRaisesRegex(RuntimeError, "midi.*extra"):
                 _midi.open_input_port(None, label="test")
@@ -76,9 +75,8 @@ class PollPendingTest(unittest.TestCase):
     is what keeps a flooded reader from outliving a bounded teardown join."""
 
     def setUp(self):
-        # These pin the *count* bound, so freeze the clock the *work* bound
-        # reads: a stalled worker on a loaded machine must not be able to
-        # release a pass early and turn a count assertion into a flake.
+        # These pin the *count* bound, so freeze the clock the *work* bound reads:
+        # a stalled worker must not release a pass early and flake the count.
         patcher = mock.patch.object(_midi, "_monotonic", lambda: 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -117,19 +115,16 @@ class PollPendingTest(unittest.TestCase):
         port = self._port(_midi.MAX_MSGS_PER_DRAIN * 10, stop=stop, stop_after=3)
         self.assertEqual(len(list(_midi.poll_pending(port, stop))), 2)
 
-        # Three polled, two handed out: the `stop` re-check sits *after* the
-        # poll, so the message that tripped it is off the port's queue and
-        # never reaches a consumer. That asymmetry is the one release that
-        # drops — the budget check is deliberately before the poll so it
-        # cannot — and asserting only the yield count left it unpinned while
-        # two paragraphs of the docstring said a release drops nothing.
+        # Three polled, two handed out: the `stop` re-check sits *after* the poll,
+        # so the message that tripped it is off the port's queue and never reaches
+        # a consumer. That asymmetry is the one release that drops — the budget
+        # check is before the poll so it cannot.
         self.assertEqual(port.served["served"], 3)
 
     def test_a_pass_entered_with_stop_already_set_drops_the_message_it_polls(self):
-        # The limit case of the above, and the one the zero-bound paragraph
-        # describes: nothing is yielded, but the pass is not a no-op — it polls
-        # once and discards. A caller cannot treat a stopped pass as having left
-        # the queue untouched.
+        # The limit case of the above: nothing is yielded, but the pass is not a
+        # no-op — it polls once and discards, so a caller cannot treat a stopped
+        # pass as having left the queue untouched.
         stop = threading.Event()
         stop.set()
         port = self._port(3)
@@ -143,10 +138,8 @@ class PollPendingTest(unittest.TestCase):
 
     def test_the_count_bound_is_read_when_the_pass_runs_not_when_the_file_loads(self):
         # As a parameter default the constant was bound at definition time, so
-        # rebinding it here was a silent no-op — and this file's other
-        # injection point, `_monotonic`, is rebound exactly this way and does
-        # work. One idiom that does nothing beside one that does is how a test
-        # gets written, passes, and pins nothing.
+        # rebinding it here was a silent no-op — while `_monotonic`, this file's
+        # other injection point, is rebound exactly this way and does work.
         stop = threading.Event()
         port = self._port(50)
         with mock.patch.object(_midi, "MAX_MSGS_PER_DRAIN", 3):
@@ -160,11 +153,9 @@ class PollPendingTest(unittest.TestCase):
         port = self._port(50)
         self.assertEqual(list(_midi.poll_pending(port, stop, limit=0)), [])
         # And the port was never polled. That is the load-bearing half: a poll
-        # takes the message off the port's queue, so a count check moved to the
-        # far side of one would eat a message while still yielding nothing
-        # here — the same "releasing on the budget drops no message" invariant
-        # the deadline path has its own test for. Scoped to the budget on
-        # purpose: the `stop` release does drop, and has its own two tests.
+        # takes the message off the port's queue, so a count check on the far side
+        # of one would eat a message while still yielding nothing here. Scoped to
+        # the budget: the `stop` release does drop, and has its own two tests.
         self.assertEqual(port.served["served"], 0)
 
 
@@ -217,27 +208,23 @@ class DrainWorkBoundTest(unittest.TestCase):
             self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
 
     def test_a_zero_work_budget_releases_after_one_message(self):
-        # The bound is restored from `None`, not from falsiness. The sibling
-        # test above cannot show this: its clock steps a whole second, so a
-        # zero budget and the real default both release after one message. A
-        # clock that does not advance separates them — a real budget then never
-        # expires and the pass runs to the count bound.
+        # The bound is restored from `None`, not from falsiness. The sibling test
+        # above cannot show this: its clock steps a whole second, so a zero budget
+        # and the real default both release after one message.
         stop = threading.Event()
         port = self._port(1000)
         with mock.patch.object(_midi, "_monotonic", lambda: 1000.0):
             self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
 
     def test_the_work_budget_is_read_when_the_pass_runs_not_when_the_file_loads(self):
-        # Widened rather than shrunk, so the assertion cannot pass on the
-        # bound the sibling test above already produces: with the real default
-        # this clock releases the pass after a handful of messages, and only a
-        # budget read at call time lets the count bound be the one that binds.
+        # Widened rather than shrunk, so the assertion cannot pass on the bound the
+        # sibling test already produces: only a budget read at call time lets the
+        # count bound be the one that binds.
         stop = threading.Event()
         port = self._port(1000)
-        # Sized off the real constant before the patch is entered: a
-        # parenthesized `with` evaluates each expression after entering the one
-        # before it, so reading it inside would size the clock off 1000.0 and
-        # release the pass on message three — green, and for the wrong reason.
+        # Sized off the real constant before the patch is entered: a parenthesized
+        # `with` evaluates each expression after entering the one before it, so
+        # reading it inside would size the clock off 1000.0 and release on three.
         step = _midi.MAX_DRAIN_WORK_S / 3
         with (
             mock.patch.object(_midi, "MAX_DRAIN_WORK_S", 1000.0),
@@ -259,13 +246,10 @@ class DrainWorkBoundTest(unittest.TestCase):
         self.assertEqual(seen, [f"msg{i}" for i in range(1, 21)])
 
     def test_the_default_work_budget_is_a_fraction_of_the_flush_period(self):
-        # The relationship, against the two scene constants that define the
-        # period rather than a literal copy of them: `MAX_DRAIN_WORK_S` exists
-        # to keep a pass from eating the flush that follows it, and a pass free
-        # to spend the whole period would halve the flush rate rather than
-        # bound it. This holds for the *default*, which is AsidScene's budget
-        # — its `_handle_sysex` pokes a shadow and returns. MidiScene passes
-        # its own and does not; the sibling test below is where that lives.
+        # The relationship, against the two scene constants that define the period
+        # rather than a literal copy: `MAX_DRAIN_WORK_S` exists to keep a pass from
+        # eating the flush that follows it. This holds for the *default*, which is
+        # AsidScene's budget; MidiScene passes its own — the sibling test below.
         from c64cast.sid import asid_scene, midi_scene
 
         protected_s = min(asid_scene._FLUSH_INTERVAL_S, midi_scene._CONTROL_FLUSH_INTERVAL_S)
@@ -273,25 +257,19 @@ class DrainWorkBoundTest(unittest.TestCase):
         self.assertLess(_midi.MAX_DRAIN_WORK_S, protected_s)
 
     def test_midi_scenes_own_budget_overruns_that_fraction_on_a_slow_link(self):
-        # The invariant above is the default's, not the system's, and an
-        # assertion that only checked the default read as though it covered
-        # both callers. MidiScene's reader passes `_drain_budget_s`, which
-        # widens until a worst-case chord retires in one pass; on an Ultimate
-        # that is 31.332 ms against a 16.667 ms flush period — 1.88x the
-        # fraction the default is held to.
+        # The invariant above is the default's, not the system's. MidiScene's
+        # reader passes `_drain_budget_s`, which widens until a worst-case chord
+        # retires in one pass: on an Ultimate 31.332 ms against a 16.667 ms flush
+        # period, 1.88x the fraction the default is held to.
         #
-        # That is a deliberate latency trade, not a missing bound: the chord's
-        # notes land together and the wheel/CC flush after that one pass is
-        # late by the difference, because the flush check sits after the drain
-        # and is itself rate-limited. Pinned with the ratio so that retuning
-        # any of the four constants behind it — the flush period, the write
-        # cost model, `_WRITES_PER_NOTE`, `_NOTES_PER_DRAIN` — has to come
-        # past this assertion and say so.
+        # A deliberate latency trade, not a missing bound: the chord's notes land
+        # together and the wheel/CC flush after that pass is late by the
+        # difference. Pinned with the ratio so that retuning the flush period, the
+        # write cost model, `_WRITES_PER_NOTE` or `_NOTES_PER_DRAIN` comes past it.
         #
-        # Against `_CONTROL_FLUSH_INTERVAL_S` alone, not the `min()` the
-        # sibling test takes: this is MidiScene's own overrun of MidiScene's
-        # own flush period, and a `min()` over both scenes' intervals leaves
-        # whichever one is larger unpinned.
+        # Against `_CONTROL_FLUSH_INTERVAL_S` alone, not the `min()` the sibling
+        # test takes: a `min()` over both scenes' intervals leaves the larger one
+        # unpinned.
         from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
         from c64cast.sid import midi_scene
 
@@ -304,24 +282,19 @@ class DrainWorkBoundTest(unittest.TestCase):
         self.assertEqual(midi_scene._drain_budget_s(TEENSYROM_PROFILE), _midi.MAX_DRAIN_WORK_S)
 
     def test_the_shared_default_is_midi_scenes_floor_not_its_budget(self):
-        # config.md named `midi_scene.MAX_DRAIN_WORK_S` as the lever a test
-        # reaches for once it has learned that rebinding `_midi`'s own copy is
-        # inert for MidiScene. It is a `max()` operand, so it only moves the
-        # answer from above the profile-derived term — and on an Ultimate that
-        # term is 31.332 ms, so rebinding the copy *down* is a second silent
-        # no-op, in the one direction someone wanting a one-message pass would
-        # try. Which operand wins is the fact worth pinning; the numbers the
-        # sibling test above already holds.
+        # config.md names `midi_scene.MAX_DRAIN_WORK_S` as the lever, once a reader
+        # has learned that rebinding `_midi`'s own copy is inert for MidiScene. It
+        # is a `max()` operand, so it only moves the answer from above the
+        # profile-derived term (31.332 ms on an Ultimate) — rebinding it *down* is
+        # a second silent no-op. Which operand wins is the fact worth pinning.
         from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE
         from c64cast.sid import midi_scene
 
         ultimate_s = midi_scene._drain_budget_s(ULTIMATE_PROFILE)
         with mock.patch.object(midi_scene, "MAX_DRAIN_WORK_S", 0.0):
             self.assertEqual(midi_scene._drain_budget_s(ULTIMATE_PROFILE), ultimate_s)
-            # The cheap link is where the constant is the operative term, so
-            # the same rebind does move it — down to that link's derived floor
-            # and not to the zero, which is what makes it a floor and not a
-            # budget.
+            # The cheap link is where the constant is the operative term, so the
+            # same rebind moves it — down to that link's derived floor, not to zero.
             teensy_s = midi_scene._drain_budget_s(TEENSYROM_PROFILE)
         self.assertLess(teensy_s, _midi.MAX_DRAIN_WORK_S)
         self.assertGreater(teensy_s, 0.0)

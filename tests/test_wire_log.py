@@ -35,9 +35,9 @@ import c64cast
 from c64cast import _wire_log
 from c64cast._wire_log import THROTTLE_INTERVAL_S, LogThrottle
 
-# Handed to a factory that asks for one. Named so a record it emits — which
-# `test_every_throttle_factory_answers_with_a_new_one` asserts cannot happen —
-# would say where it came from.
+# Handed to a factory that asks for one. Named so that a record it emits —
+# which `test_every_throttle_factory_answers_with_a_new_one` asserts cannot
+# happen — says where it came from.
 _FACTORY_LOGGER = logging.getLogger("c64cast.tests.wire_log.factory")
 
 
@@ -91,8 +91,7 @@ class LogThrottleTest(unittest.TestCase):
 
     def test_a_lone_recurrence_after_a_quiet_gap_is_a_warning_again(self):
         # The level says whether the site is *flooding*: a record standing for a
-        # single occurrence is news even when it isn't the first one, so a
-        # second scene activation doesn't have to reset anything to be heard.
+        # single occurrence is news even when it is not the first one.
         throttle = self._throttle(step=THROTTLE_INTERVAL_S * 10)
         with self.assertLogs(self.log, "DEBUG") as caught:
             throttle.warn("lonely")
@@ -179,10 +178,8 @@ class LogThrottleExceptionTest(unittest.TestCase):
 class DocstringQuoteTest(unittest.TestCase):
     def test_the_module_docstring_quotes_the_text_the_code_actually_emits(self):
         # It once quoted "and 900 more in the last second", which the code has
-        # never emitted and which is wrong in kind as well as wording: the gap
-        # between two reports has no upper bound, so a count can span minutes.
-        # Prose that quotes an emitted string drifts silently; this is the only
-        # thing that notices.
+        # never emitted and which is wrong in kind: the gap between two reports
+        # has no upper bound, so a count can span minutes.
         doc = _wire_log.__doc__ or ""
         self.assertIn(_wire_log._MORE_SUFFIX.strip() % 900, doc)
 
@@ -224,14 +221,14 @@ _UNRESOLVED = object()
 _NAMES_THROTTLE = re.compile(r"\bLogThrottle\b")
 _NAMES_LOGGER = re.compile(r"\bLogger\b")
 
-# This package's own logger names, which is how much of the process-wide
-# logger registry counts as its import scope. See [NoProcessWideThrottleTest].
-# `annotationlib` is 3.14, and this project supports 3.11 (`requires-python`).
-# Below 3.14 there is no lazy evaluation to defeat: annotations are evaluated at
-# definition time, so a module holding an unquoted `if TYPE_CHECKING` name would
-# raise on *import* — meaning no module this walk can reach carries one, and
-# reading `__annotations__` directly is safe there. `Format.STRING` is therefore
-# an upgrade for one interpreter, not the only way to read an annotation.
+# This package's own logger names, which is how much of the process-wide logger
+# registry counts as its import scope. See [NoProcessWideThrottleTest].
+# `annotationlib` is 3.14 and this project supports 3.11 (`requires-python`).
+# Below 3.14 annotations are evaluated at definition time, so a module holding an
+# unquoted `if TYPE_CHECKING` name would raise on *import* — none this walk can
+# reach carries one, and reading `__annotations__` directly is safe there.
+# Format.STRING is therefore an upgrade for one interpreter, not the only way to
+# read an annotation.
 _read_annotations: Callable[[object], dict[str, object]] | None = None
 _STRING_SIGNATURE: dict[str, object] = {}
 if sys.version_info >= (3, 14):
@@ -299,13 +296,10 @@ def _annotated_target(
     out of discovery altogether — the very shape [ThrottleFactoryTest] is for.
     """
     target: Callable[..., object] = value.func if isinstance(value, functools.partial) else value
-    # Both of these can raise, and this helper is called outside any guard, so
-    # an escape here ends the whole check rather than dropping one factory —
-    # the failure mode of the three rounds before this one. `unwrap` raises on
-    # a `__wrapped__` cycle, and `getattr_static` is not fully static against a
-    # metaclass `__getattr__`. Neither shape is in the tree; the guards are
-    # here because "not in the tree today" is what the last three rounds
-    # thought too.
+    # Both of these can raise, and this helper is called outside any guard, so an
+    # escape here ends the whole check rather than dropping one factory. `unwrap`
+    # raises on a `__wrapped__` cycle, and `getattr_static` is not fully static
+    # against a metaclass `__getattr__`. Neither shape is in the tree today.
     if unwrap:
         with contextlib.suppress(ValueError):
             target = inspect.unwrap(target)

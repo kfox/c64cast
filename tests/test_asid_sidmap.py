@@ -15,8 +15,6 @@ import unittest
 from c64cast.hw.c64 import RESERVED_IO_WINDOWS
 from c64cast.sid import asid_sidmap as m
 
-# --- firmware address-math oracle (port of u64_config.cc) --------------------
-
 # sid_split enum → split_bits (offset-space bits, i.e. address bits >> 4).
 _SPLIT_BITS = {
     m.SPLIT_OFF: 0x00,
@@ -236,8 +234,7 @@ class RealizationOracleTest(unittest.TestCase):
     def test_a_split_core_never_covers_an_enabled_sockets_address(self):
         # The repro: the firmware aligns a 1/2-split core's base down to $D400,
         # pulling its window back over the socket the planner just enabled, so
-        # chip 0 sounds on the real chip and the core at once — the "detuned
-        # double" the module docstring forbids.
+        # chip 0 sounds on the real chip and the core at once.
         sm = m.plan_sid_map_for_addresses(
             (0xD400, 0xD420, 0xD440, 0xD460),
             socket_models=("6581", None),
@@ -278,20 +275,17 @@ class ReservedIoTest(unittest.TestCase):
     """
 
     def test_the_reserved_windows_are_the_devices_they_name(self):
-        # LITERAL on purpose. Every other assertion in this class asks whether a
-        # plan landed in RESERVED_IO_WINDOWS, so an expectation read out of that
-        # same tuple moves with it: emptying the tuple left the whole class
-        # green while the planner happily based a core on $DF20. $DF00-$DF0A is
-        # the REU's status/command/address/length file; $DF20-$DFFF is the
-        # Ultimate Audio sampler's seven 32-byte channel files, the range the
-        # firmware switch is named after.
+        # LITERAL on purpose: every other assertion in this class asks whether a
+        # plan landed in RESERVED_IO_WINDOWS, so emptying that tuple left the class
+        # green while the planner based a core on $DF20. $DF00-$DF0A is the REU's
+        # status/command/address/length file; $DF20-$DFFF is the Ultimate Audio
+        # sampler's seven 32-byte channel files.
         self.assertEqual(RESERVED_IO_WINDOWS, ((0xDF00, 0xDF0A), (0xDF20, 0xDFFF)))
 
     def test_every_dfxx_base_is_refused_outright(self):
         # Literal inputs, literal expectation, no reference to the tuple under
-        # test: with the REU on $DF00 and the sampler filling the rest of the
-        # page, no $20-granular base in $DFxx can carry a chip, so each one
-        # falls through every split level to the caller's fallback.
+        # test: with the REU on $DF00 and the sampler filling the rest of the page,
+        # no $20-granular base in $DFxx can carry a chip.
         for base in range(0xDF00, 0xE000, 0x20):
             with self.subTest(base=hex(base)):
                 self.assertIsNone(m.plan_sid_map_for_addresses((base,)))
@@ -304,9 +298,9 @@ class ReservedIoTest(unittest.TestCase):
 
     def test_a_window_inside_one_instance_span_is_still_reached(self):
         # An instance answers its whole $20, not the 25 SID registers, so a
-        # reserved window that starts mid-span still has to be caught. Both
-        # windows are $20-aligned today, which makes the span and the base
-        # equivalent — this is what keeps the wider test honest if one moves.
+        # reserved window starting mid-span still has to be caught. Both windows
+        # are $20-aligned today, which makes the span and the base equivalent —
+        # this is what keeps the wider test honest if one moves.
         self.assertTrue(m._reaches_reserved_io(0xDE00, ((0xDE04, 0xDE0A),)))
         self.assertTrue(m._reaches_reserved_io(0xDE00, ((0xDE1F, 0xDE1F),)))
         self.assertFalse(m._reaches_reserved_io(0xDE00, ((0xDE20, 0xDE2A),)))
@@ -314,29 +308,22 @@ class ReservedIoTest(unittest.TestCase):
 
     def test_the_header_pair_that_aligned_a_core_onto_the_reu_is_refused(self):
         # The exploit as run: $D400 + the two declared cartridge bases. No split
-        # level can cover them clear of $DF00, so the planner runs out of levels
-        # and refuses — WaveformScene then warns and falls back to the canonical
-        # layout, which is the loud direction to fail in.
+        # level covers them clear of $DF00, so the planner refuses — WaveformScene
+        # then warns and falls back to the canonical layout.
         self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60)))
 
     def test_every_target_in_a_split_window_realizes_that_windows_base(self):
         # The retry comment's proof that dropping a socket claim cannot rescue a
-        # reserved-window exhaustion rests on this and nothing else: every
-        # target inside a window realizes the *same* base, so it walks the same
-        # instances past the reserved check whether it opens its own window or
-        # rides in a lower target's.
+        # reserved-window exhaustion rests on this: every target inside a window
+        # realizes the *same* base, so it walks the same instances past the
+        # reserved check either way.
         #
-        # Asserted through `_align_down` itself, over every address the planner
-        # can be handed, rather than through the `cap * stride == align` identity
-        # that used to stand in for it. That identity is necessary and not
-        # sufficient: `_align_down` masks, so it is only alignment for a
-        # power-of-two `align`, and a `(3, 0x60)` level would satisfy the
-        # identity while landing $D420 on itself instead of on $D400 — the
-        # window splits in two, and the comment above the retry becomes an
-        # argument for behavior the code no longer has. The identity is kept as
-        # the second assertion because the comment cites the width too, and a
-        # window narrower than its alignment leaves part of the block uncovered
-        # without any target realizing a different base.
+        # Asserted through `_align_down` itself rather than the `cap * stride ==
+        # align` identity, which is necessary and not sufficient: `_align_down`
+        # masks, so it is alignment only for a power-of-two `align`, and a
+        # `(3, 0x60)` level would satisfy the identity while landing $D420 on
+        # itself. The identity is kept as the second assertion because the
+        # comment cites the width too.
         for split, cap, align in m._SPLIT_LEVELS:
             with self.subTest(split=split):
                 self.assertEqual(cap * m._SPLIT_STRIDE, align, "window is not align wide")
@@ -352,15 +339,12 @@ class ReservedIoTest(unittest.TestCase):
                         )
 
     def test_giving_the_socket_up_does_not_rescue_a_reserved_window(self):
-        # Same targets, one field varied: a socket that carries a chip for
-        # $D400. The caller drops the claim and re-plans when the cores run out
-        # of levels, and the comment there used to say a claimed socket could be
-        # what left every level *reserved* — so a reader would expect this to
-        # come back with a plan. It cannot: $DF20's realized base is $DF20 at
-        # the `Off` level and $DF00 at the two wider ones, and all three of
-        # those addresses sit inside RESERVED_IO_WINDOWS ($DF00-$DF0A, the REU;
-        # $DF20-$DFFF, the sampler) whether or not $D400 is claimed. The retry
-        # addresses `blocked` and only `blocked`.
+        # Same targets, one field varied: a socket that carries a chip for $D400.
+        # The caller drops the claim and re-plans when the cores run out of levels,
+        # but that cannot help here: $DF20's realized base is $DF20 at the `Off`
+        # level and $DF00 at the two wider ones, and all three sit inside
+        # RESERVED_IO_WINDOWS whether or not $D400 is claimed. The retry addresses
+        # `blocked` and only `blocked`.
         self.assertIsNone(
             m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60), socket_models=("6581", None))
         )
@@ -536,21 +520,19 @@ class ModelAwareRoutingTest(unittest.TestCase):
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID2_ADDR)], "$D420")
 
     def test_a_claim_that_boxes_the_cores_in_is_given_up_for_the_map(self):
-        # The one thing the socket-give-up retry is for, and it had no test at
-        # all. Socket 1 carries a chip, so it claims $D400, and the other three
-        # addresses then defeat all three levels: `Off` gives one address per
-        # core and there are only two cores, while the two levels wide enough to
-        # cover three ($40- and $80-aligned) both align back onto $D400 and are
-        # rejected as `blocked`. Measured per level, because "blocked at every
-        # level" would be the wrong reason for the first one.
+        # The one thing the socket-give-up retry is for. Socket 1 carries a chip,
+        # so it claims $D400, and the other three addresses defeat all three
+        # levels: `Off` gives one address per core and there are only two cores,
+        # while the $40- and $80-aligned levels both align back onto $D400 and are
+        # rejected as `blocked`. Measured per level, since "blocked at every level"
+        # would be the wrong reason for the first one.
         self.assertIsNone(
             m._plan_ultisid_cores([0xD420, 0xD440, 0xD460], blocked=frozenset({0xD400}))
         )
 
-        # So the claim is dropped rather than the map. Asserted on what the
-        # caller can observe: every chip is answered, by a core rather than the
-        # socket, and the socket is explicitly disabled despite carrying a
-        # 6581 — "every chip audible on emulated cores beats handing back None".
+        # So the claim is dropped rather than the map. Asserted on what the caller
+        # can observe: every chip is answered, by a core rather than the socket,
+        # and the socket is disabled despite carrying a 6581.
         sm = m.plan_sid_map_for_addresses(
             (0xD400, 0xD420, 0xD440, 0xD460), socket_models=("6581", None)
         )
@@ -593,9 +575,8 @@ class SidMapSourcesTest(unittest.TestCase):
             self.assertEqual(len(set(sm.sources)), n, sm.sources)
 
     def test_with_no_socket_in_play_sharing_starts_at_three_chips(self):
-        # Two UltiSID cores are the only sources, so the third chip necessarily
-        # doubles onto a split core and shares its pan. SidMap's docstring used
-        # to promise distinct sources until 5 chips.
+        # Two UltiSID cores are the only sources, so the third chip doubles onto a
+        # split core and shares its pan.
         self.assertEqual(m.plan_sid_map(2).sources, ("ultisid1", "ultisid2"))
         self.assertEqual(m.plan_sid_map(3).sources, ("ultisid1", "ultisid1", "ultisid2"))
 

@@ -23,13 +23,10 @@ except ImportError:
     HAVE_FASTAPI = False
 
 try:
-    # TestClient also needs httpx — fastapi declares it as an optional
-    # extra, so installing a bare `fastapi` can still leave the import
-    # failing at runtime. Catch any ImportError, not just fastapi's.
-    # The import itself warns (starlette wants httpx2); that is a dependency
-    # decision, not something a test run should reprint on every worker. The
-    # filter is category-blind because starlette raises it as a UserWarning
-    # subclass that only it can name — and the block covers one import.
+    # TestClient also needs httpx — fastapi declares it as an optional extra,
+    # so a bare `fastapi` can still leave the import failing at runtime. The
+    # import itself warns (starlette wants httpx2), and the filter is
+    # category-blind because starlette raises a UserWarning subclass only it names.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         from fastapi.testclient import TestClient
@@ -401,9 +398,8 @@ class MultiSystemTest(unittest.TestCase):
         playlists["a"].request_reload.assert_not_called()
 
     def test_reload_for_system_without_loader_surfaces_clean_error(self):
-        # Per-system reload for a system with no config_loader registered
-        # (e.g. defaults-only single-system mode) must yield a friendly
-        # per-system error, not a KeyError → 500.
+        # Per-system reload for a system with no config_loader registered must
+        # yield a friendly per-system error, not a KeyError turned 500.
         from c64cast.control.control_plane import build_app
 
         playlists = {n: _fake_playlist(n) for n in ("with_path", "no_path")}

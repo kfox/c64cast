@@ -84,8 +84,7 @@ class ProseCountsTest(unittest.TestCase):
                 expected = template.format(**words)
                 if template.startswith("## "):
                     expected = template.format(**{k: v.capitalize() for k, v in words.items()})
-                # Not assertIn: its failure message prints the haystack, and
-                # the haystack is an entire chapter.
+                # Not assertIn: its failure message would print an entire chapter.
                 if _normalize(expected) not in haystack:
                     self.fail(
                         f"{rel} does not contain:\n"

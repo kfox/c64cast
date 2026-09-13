@@ -34,27 +34,24 @@ class MarkerSynthesisTest(unittest.TestCase):
         self.assertEqual(len(synthesize_marker_4bit(8000)), n)
 
     def test_marker_4bit_values_in_range(self):
-        # Encoded volume codes must fit in the SID DAC nibble (0-15) or
-        # the upload would corrupt $D418 / split into bytes wrong.
+        # Encoded volume codes must fit the SID DAC nibble (0-15), or the
+        # upload corrupts $D418.
         codes = np.frombuffer(synthesize_marker_4bit(), dtype=np.uint8)
         self.assertGreaterEqual(int(codes.min()), 0)
         self.assertLessEqual(int(codes.max()), 15)
 
     def test_marker_4bit_actually_chirps(self):
-        # Sanity that we synthesized a *sweep* and not a constant: code
-        # values should span most of the [0, 15] range.
+        # A sweep spans most of [0, 15]; a constant would not.
         codes = np.frombuffer(synthesize_marker_4bit(), dtype=np.uint8)
         self.assertGreater(int(codes.max()) - int(codes.min()), 10)
 
     def test_synthesis_deterministic(self):
-        # No RNG in the synthesis path — re-runs must produce identical
-        # bytes, otherwise saved-capture-vs-fresh-reference correlation
-        # breaks subtly.
+        # Any RNG here would desync saved-capture-against-fresh-reference
+        # correlation.
         self.assertEqual(synthesize_marker_4bit(), synthesize_marker_4bit())
 
     def test_capture_reference_upsamples_by_integer_ratio(self):
-        # 48 kHz capture / 8 kHz playback = 6x sample-and-hold. Total
-        # samples in reference = playback_samples * 6.
+        # 48 kHz capture / 8 kHz playback = 6x sample-and-hold.
         ref = synthesize_capture_reference()
         expected = marker_duration_samples(DEFAULT_PLAYBACK_RATE) * (
             DEFAULT_CAPTURE_RATE // DEFAULT_PLAYBACK_RATE
@@ -69,7 +66,6 @@ class FindMarkerTest(unittest.TestCase):
 
     def test_find_clean_embed_at_zero(self):
         ref = synthesize_capture_reference().astype(np.int16)
-        # Pad before + after with silence
         sig = np.zeros(DEFAULT_CAPTURE_RATE * 2, dtype=np.int16)
         sig[5000 : 5000 + len(ref)] = ref
         peak = find_marker_in_capture(sig)
@@ -83,9 +79,8 @@ class FindMarkerTest(unittest.TestCase):
         self.assertEqual(find_marker_in_capture(sig), offset)
 
     def test_find_under_noise(self):
-        # Mix the marker with white noise at ~3x marker amplitude. SNR
-        # under correlation should still resolve the peak cleanly because
-        # noise is uncorrelated with the chirp.
+        # White noise at ~3x marker amplitude: uncorrelated with the chirp,
+        # so the correlation peak should still resolve.
         rng = np.random.default_rng(42)
         ref = synthesize_capture_reference()
         sig = (rng.standard_normal(DEFAULT_CAPTURE_RATE * 2) * float(ref.max()) * 3.0).astype(

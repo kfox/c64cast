@@ -37,12 +37,10 @@ def _fake_backend() -> tuple[C64Backend, Any]:
 
 
 # The largest wait a `0x30` pair can carry, in delay-loop units. Derived, not
-# written down: `_wait_units_for_cycles` is what converts the wire's 255-cycle
-# ceiling, and a changed DELAY_CYCLES_PER_UNIT moves this with it. The guard
-# against drift must not carry an un-derived literal of its own -- with 51
-# hardcoded, a DELAY_CYCLES_PER_UNIT of 4 would have had this file computing a
-# maximal frame of 7896 against a true 9352 and directing a maintainer to write
-# the wrong number into both prose sites, blessed by a green test.
+# written down: `_wait_units_for_cycles` converts the wire's 255-cycle ceiling,
+# so a changed DELAY_CYCLES_PER_UNIT moves this with it. Were it hardcoded at 51,
+# a DELAY_CYCLES_PER_UNIT of 4 would compute a maximal frame of 7896 against a
+# true 9352.
 _MAX_WIRE_WAIT_UNITS = ap._wait_units_for_cycles(255)  # 255 = the wire's one wait byte
 
 
@@ -53,9 +51,7 @@ def _packed_latch(latch: int) -> str:
 
 # The 6502's own numbers for the opcodes build_player emits: (base cycles,
 # instruction length). Branches are listed at their not-taken cost; a taken
-# branch inside a page costs one more, which _taken_path_cycles adds. This is
-# the only literal left in the derivation, and it is a property of the CPU
-# rather than of this code -- the 6502 does not get a new revision.
+# branch inside a page costs one more, which _taken_path_cycles adds.
 _OPCODES: dict[int, tuple[int, int]] = {
     0x18: (2, 1),  # CLC
     0x20: (6, 3),  # JSR abs
@@ -128,12 +124,10 @@ def _straight_cycles(blob: bytes, origin: int, start: int, end: int) -> int:
 
 
 # The assembled IRQ player for build_player(128, 1), byte for byte. Every other
-# assertion in this file is symbolic or structural, which is why two mutations
-# that corrupt the generated 6502 — the op loop's `STA $0000` (0x8D) flipped to
-# `STX` (0x8E), so every SID write stores X instead of the value, and
-# HANDLER_ADDR relocated onto LANDING_BUF, where the REU pull overwrites the
-# handler every tick — both left the whole ASID suite green. Regenerate this blob
-# only when the handler deliberately changes, and read the diff opcode by opcode.
+# assertion here is symbolic or structural, and two mutations that corrupt the
+# generated 6502 — the op loop's `STA $0000` (0x8D) flipped to `STX` (0x8E), and
+# HANDLER_ADDR relocated onto LANDING_BUF — both left the ASID suite green.
+# Regenerate only on a deliberate handler change; read the diff opcode by opcode.
 _GOLDEN_PLAYER_128_1 = bytes.fromhex(
     "ad00c88d04dfad01c88d05dfad02c88d06dfa9008d02dfa9c48d03dfa9808d07"
     "dfa9008d08dfa9008d0adfa9918d01df18ad00c869808d00c8ad01c869008d01"
@@ -188,9 +182,9 @@ class SerializeFrameTest(unittest.TestCase):
         )
 
     def test_recipe_reorders_and_applies_waits(self):
-        # Recipe writes id 1 (offset 0x01) before id 0 (offset 0x00) and assigns
-        # per-op waits. The expected units are literal (10 and 20 cycles at
-        # DELAY_CYCLES_PER_UNIT) — see CostModelConstantsTest for why.
+        # Recipe writes id 1 (offset 0x01) before id 0, and assigns per-op waits.
+        # The expected units are literal — 10 and 20 cycles at
+        # DELAY_CYCLES_PER_UNIT; see CostModelConstantsTest for why.
         ops = ap.serialize_frame({0x00: 0xAA, 0x01: 0xBB}, {}, 0xD400, recipe=[(1, 10), (0, 20)])
         self.assertEqual(
             ops,
@@ -201,9 +195,8 @@ class SerializeFrameTest(unittest.TestCase):
         )
 
     def test_recipe_repeating_an_id_emits_that_write_once(self):
-        # Op count must track the frame's write count, not the recipe's length.
-        # A 28-pair recipe (spec-legal) all naming id 0 used to emit 28 ops for
-        # one register, pushing the slot past MAX_OPS_PER_CHIP.
+        # Op count tracks the frame's write count, not the recipe's length: a
+        # 28-pair recipe all naming id 0 emitted 28 ops for one register.
         ops = ap.serialize_frame({0x00: 0xAA, 0x01: 0xBB}, {}, 0xD400, recipe=[(0, 10)] * 28)
         self.assertEqual(ops[0], (0xD400, 0xAA, 2))
         self.assertEqual(len(ops), 2)  # + the id-1 register the recipe omits
@@ -255,8 +248,8 @@ class SerializeFrameTest(unittest.TestCase):
                     self.assertEqual(written, [0x08, 0x41])
 
     def test_a_recipe_naming_both_control_ids_keeps_both_waits(self):
-        # The pair is positioned as a unit, but each write still takes the wait
-        # the recipe gave its own id — so a well-formed recipe loses nothing.
+        # The pair is positioned as a unit, but each write keeps the wait the
+        # recipe gave its own id.
         ops = ap.serialize_frame({0x04: 0x41}, {0: 0x08}, 0xD400, recipe=[(22, 100), (25, 50)])
         self.assertEqual(
             ops,
@@ -333,32 +326,27 @@ class CostModelConstantsTest(unittest.TestCase):
 
     def test_delay_cycles_per_unit_is_what_dloop_emits(self):
         # `dloop`: DEY + BNE taken. The last iteration's BNE falls through one
-        # cycle cheaper, so the real loop costs 5N-1 — the model rounds up,
-        # which errs toward calling a frame too expensive.
+        # cycle cheaper, so the real loop costs 5N-1; the model rounds up.
         self.assertEqual(
             _taken_path_cycles(self.blob, self.origin, self.sym["dloop"], self._dloop_end()),
             ap.DELAY_CYCLES_PER_UNIT,
         )
 
     def test_per_op_cycles_is_what_one_pass_of_oploop_emits(self):
-        # One unwaited op: unpack the address and value, store it, skip the
-        # delay call, advance the slot pointer, decrement the op counter and
-        # loop. Every branch on that path is taken, so the walk skips what each
-        # jumps over.
+        # One unwaited op: unpack address and value, store it, skip the delay
+        # call, advance the slot pointer, decrement the op counter and loop. Every
+        # branch on that path is taken, so the walk skips what each jumps over.
         self.assertEqual(
             _taken_path_cycles(self.blob, self.origin, self.sym["oploop"], self.sym["tail"]),
             ap.PER_OP_CYCLES,
         )
 
     def test_per_op_cycles_is_a_best_case_the_budget_fraction_covers(self):
-        # It is the best case, and unlike DELAY_CYCLES_PER_UNIT that was never
-        # written down. Two paths cost more and neither is exotic: each
-        # `LDA ($FB),Y` costs one extra when the slot pointer's low byte plus Y
-        # crosses a page (four per op), and when that low byte wraps the BCC
-        # falls through to an `INC $FC` instead of branching. So the model
-        # under-charges a worst-case op — in the unsafe direction. What makes
-        # that survivable is FRAME_BUDGET_FRACTION, and this pins the margin
-        # rather than asserting it in prose.
+        # The best case, and unlike DELAY_CYCLES_PER_UNIT never written down.
+        # Two paths cost more: each `LDA ($FB),Y` costs one extra when the slot
+        # pointer's low byte plus Y crosses a page (four per op), and when that
+        # low byte wraps the BCC falls through to an `INC $FC`. So the model
+        # under-charges a worst-case op; FRAME_BUDGET_FRACTION is the margin.
         page_crossings = sum(
             1
             for _addr, op in _instructions(
@@ -378,13 +366,11 @@ class CostModelConstantsTest(unittest.TestCase):
 
     def test_waited_op_extra_cycles_is_the_delay_call_around_the_loop(self):
         # A nonzero wait falls THROUGH the BEQ and pays the JSR, the TAY that
-        # loads the counter and the RTS — on top of DELAY_CYCLES_PER_UNIT per
-        # unit, and minus the taken BEQ that PER_OP_CYCLES already charged.
+        # loads the counter and the RTS — plus DELAY_CYCLES_PER_UNIT per unit,
+        # minus the taken BEQ PER_OP_CYCLES already charged.
         beq = self._first(0xF0, self.sym["oploop"], self.sym["skipdelay"])
-        # The whole return tail is walked, not a bare RTS charged: everything
-        # after the loop's branch costs once per delay CALL, so a terminator
-        # that changed — or anything inserted ahead of it — has to land here
-        # rather than be assumed away.
+        # The whole return tail is walked: everything after the loop's branch
+        # costs once per delay call, so a changed terminator lands here.
         extra = (
             _straight_cycles(self.blob, self.origin, beq, self.sym["skipdelay"])
             + _straight_cycles(self.blob, self.origin, self.sym["delay"], self.sym["dloop"])
@@ -410,16 +396,11 @@ class CostModelConstantsTest(unittest.TestCase):
 
     def test_a_maximal_chip_frame_costs_a_literal_number_of_cycles(self):
         # MAX_OPS_PER_CHIP ops each carrying the wire maximum: 65 + 13 + 51x5
-        # = 333 cycles an op, 9324 for the frame. That is over half a 60 Hz
-        # NTSC frame (17045 cycles) for ONE chip — the arithmetic
-        # FRAME_BUDGET_FRACTION exists for, and the number an under-counted
-        # PER_OP_CYCLES would quietly shrink.
-        #
-        # The 9324 is the literal and the op count is not: this test and
-        # CostModelProseTest below quote the same figure, and hardcoding `* 28`
-        # here let them disagree — a changed MAX_OPS_PER_CHIP turned the prose
-        # test red while this one stayed green at 9324, its comment now
-        # describing a frame size that no longer existed. Both go red together.
+        # = 333 cycles an op, 9324 for the frame — over half a 60 Hz NTSC frame
+        # (17045 cycles) for ONE chip, the arithmetic FRAME_BUDGET_FRACTION
+        # exists for. The 9324 is the literal and the op count is not: this test
+        # and CostModelProseTest quote the same figure, and hardcoding `* 28`
+        # here let a changed MAX_OPS_PER_CHIP redden one and not the other.
         frame = [(0xD400, 0x11, _MAX_WIRE_WAIT_UNITS)] * ap.MAX_OPS_PER_CHIP
         self.assertEqual(ap.frame_cycle_cost(frame), 9324)
 
@@ -452,11 +433,9 @@ class CostModelProseTest(unittest.TestCase):
 
         for site in self._SITES:
             text = (root / site).read_text(encoding="utf-8")
-            # Every quotation, not the first. `sid.md` is long and already
-            # restates the cost model in more than one place, so a second copy
-            # of the figure added later would drift unguarded — which is the
-            # exact failure this guard was written against. The subTest keeps a
-            # failure on one site from hiding whether the other drifted too.
+            # Every quotation, not the first: `sid.md` restates the cost model
+            # in more than one place, so a later second copy would drift
+            # unguarded. The subTest keeps one site's failure from hiding another.
             quoted = re.findall(r"wait cost ([\d,]+)", text)
             self.assertTrue(quoted, f"{site} no longer quotes the figure")
             for n, raw in enumerate(quoted):
@@ -529,8 +508,7 @@ class FrameBudgetTest(unittest.TestCase):
 
 class PackSlotTest(unittest.TestCase):
     # No setUp resetting a shared throttle: `_pack` builds a fresh one per call
-    # unless the test hands it one. The reset existed because the budget was
-    # module state, i.e. per process rather than per stream.
+    # unless the test hands it one. The budget used to be module state.
 
     @staticmethod
     def _pack(ops, slot_size, truncation_log=None):
@@ -552,8 +530,7 @@ class PackSlotTest(unittest.TestCase):
         self.assertEqual(slot[0], 0)  # n_ops == 0 → hold tick
 
     def test_overfull_ops_truncated_loudly(self):
-        # More ops than the slot can hold are dropped — and said out loud. The
-        # ops past the cut belong to the later chips in a multi-SID slot, so a
+        # Ops past the cut belong to the later chips in a multi-SID slot, so a
         # silent truncation deleted a whole chip's frame.
         many = [(0xD400, 0, 0)] * 100
         with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
@@ -562,18 +539,14 @@ class PackSlotTest(unittest.TestCase):
         self.assertIn("later chips in this slot lose their writes", caught.output[0])
 
     def test_each_call_for_a_stream_budget_answers_with_a_new_one(self):
-        # "Per stream" in one line, the same as asid.new_recipe_log's: a
-        # factory answering with a shared instance is the module-level throttle
-        # again, wearing a function's name.
+        # "Per stream" in one line, as asid.new_recipe_log's: a factory
+        # answering with a shared instance is the module-level throttle again.
         self.assertIsNot(ap.new_truncation_log(), ap.new_truncation_log())
 
     def test_one_streams_flood_does_not_spend_another_streams_budget(self):
-        # The ensemble regression, on the player's side of it: one AsidScene per
-        # system, each packing its own frames, and with a module-level throttle
-        # the first system to truncate took the only report. Built through the
-        # factory inside `frozen_throttles` so the factory stays in the path —
-        # two throttles built directly would be distinct whatever production
-        # does.
+        # The ensemble regression on the player's side: one AsidScene per system,
+        # each packing its own frames, and a module-level throttle gave the first
+        # to truncate the only report. Built through the factory to keep it in the path.
         many = [(0xD400, 0, 0)] * 100
         with frozen_throttles(ap):
             stream_a = ap.new_truncation_log()
@@ -591,12 +564,10 @@ class PackSlotTest(unittest.TestCase):
 
     def test_a_permanent_truncation_reports_once_not_once_per_frame(self):
         # There is a reachable state in which this condition holds for the rest
-        # of the scene, and it is evaluated once per ASID frame — 60 to 960 Hz
-        # on the MIDI reader thread. One record per frame is the whole defect,
-        # so the throttle must be *consulted* here, not merely defined.
+        # of the scene, evaluated once per ASID frame (60-960 Hz on the MIDI
+        # reader thread), so the throttle must be consulted here, not just defined.
         many = [(0xD400, 0, 0)] * 100
-        # One throttle across all 960 frames — one stream, one budget — held by
-        # the test rather than patched into the module.
+        # One throttle across all 960 frames — one stream, one budget.
         throttle = frozen_throttle(ap.log)
         with self.assertLogs("c64cast.sid.asid_player", "DEBUG") as caught:
             for _ in range(960):
@@ -664,7 +635,6 @@ class LatchHelpersTest(unittest.TestCase):
     def test_latch_round_trip(self):
         latch = ap.cia1_latch_for_rate(60.0, "NTSC")
         self.assertEqual(latch, round(CLOCK_NTSC / 60.0) - 1)
-        # actual rate recovers close to the request.
         self.assertAlmostEqual(ap.actual_rate_for_latch(latch, "NTSC"), 60.0, delta=0.01)
 
     def test_latch_clamped_and_rejects_nonpositive(self):
@@ -761,8 +731,8 @@ class RingMathTest(unittest.TestCase):
         # A payload list and the stride it was built for must never disagree
         # half way through a call: re-reading self.slot_size per burst put
         # 912-byte slots at the 128-byte stride, so the 6502 read n_ops from a
-        # mid-op byte and executed the op stream shifted — STA anywhere in the
-        # C64's 64K, from the value bytes of attacker-supplied SID writes.
+        # mid-op byte and executed STA anywhere in the C64's 64K, from the value
+        # bytes of attacker-supplied SID writes.
         p, fake = self._player(n_chips=8)
         slot_size = p.slot_size
         per_burst = ap._MAX_DMA_BURST_BYTES // slot_size
@@ -812,9 +782,8 @@ class ArmGateTest(unittest.TestCase):
         self.assertTrue(p._armed)
         self.assertEqual(p._write_pos, 4)
         self.assertEqual(fake.regs["0314"], (ap.HANDLER_ADDR & 0xFF, (ap.HANDLER_ADDR >> 8) & 0xFF))
-        # One contiguous transfer, not one per slot: the whole arm runs under
-        # the lock set_frame_rate needs on the MIDI reader thread, and a 16x
-        # stream pins the prebuffer at 256 slots.
+        # One contiguous transfer, not one per slot: the whole arm runs under the
+        # lock set_frame_rate needs, and a 16x stream pins the prebuffer at 256 slots.
         self.assertEqual(fake.socket_dma.reuwrites, [(ap.RING_BASE, b"".join(frames))])
 
     def test_does_not_arm_when_stale_slot_sizes_ate_the_prebuffer(self):
@@ -831,11 +800,10 @@ class ArmGateTest(unittest.TestCase):
         self.assertIn("discarded 3 prebuffer slot(s)", caught.output[0])
 
     def test_does_not_arm_once_teardown_has_asked_the_writer_to_stop(self):
-        # _try_arm does several blocking DMA calls before it hooks $0314, which
-        # is exactly how it outlives _teardown_player's bounded join. If it
-        # armed anyway, the C64 would run the ASID IRQ into the next scene
-        # against a ring nobody feeds — and $C000 is where a later scene's
-        # DAC/NMI handler lands.
+        # _try_arm does several blocking DMA calls before it hooks $0314, which is
+        # how it outlives _teardown_player's bounded join. Arming anyway would run
+        # the ASID IRQ into the next scene against a ring nobody feeds — and $C000
+        # is where a later scene's DAC/NMI handler lands.
         p, fake = self._unstarted(4)
         for _ in range(4):
             p.push_frame(ap.hold_slot(p.slot_size))
@@ -856,7 +824,6 @@ class BringUpTeardownTest(unittest.TestCase):
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)
         try:
-            # Handler uploaded at $C000.
             self.assertIn(f"{ap.HANDLER_ADDR:04X}", api.mem_files)
             # Tracker seeded to the ring base (LO/MI/HI).
             self.assertEqual(
@@ -898,10 +865,9 @@ class BringUpTeardownTest(unittest.TestCase):
 
     def test_stop_restores_the_kernal_latch_even_when_it_never_armed(self):
         # start() programs CIA #1 immediately; the $0314 swap waits for a real
-        # frame. A sender controls that absolutely — one 0x31 and no 0x4E at
-        # all — so restoring on _armed left Timer A at the wire's rate for every
-        # scene after: at 960 Hz the machine burns a third of its cycles in
-        # $EA31 and the jiffy clock runs 16x fast until a power cycle.
+        # frame, which a sender controls absolutely (one 0x31, no 0x4E). Restoring
+        # on _armed left Timer A at the wire's rate: at 960 Hz the machine burns a
+        # third of its cycles in $EA31 and the jiffy clock runs 16x fast.
         from c64cast.hw.c64 import KERNAL, kernal_cia1_latch
 
         p, api = self._player()  # real prebuffer, empty queue → never arms
@@ -922,19 +888,16 @@ class BringUpTeardownTest(unittest.TestCase):
 
     def test_a_writer_that_outlives_the_join_cannot_arm_behind_teardown(self):
         # PollThread.stop() is documented to return with the worker still alive
-        # after a timed-out join, and _try_arm blocks in DMA before it hooks
-        # $0314. The abandoned writer used to finish and hook the vector AFTER
-        # the scene had silenced the SID and moved on — leaving an ASID IRQ
-        # handler that rewrites the whole REU control block at up to 960 Hz into
-        # the next scene's audio pump.
+        # after a timed-out join, and _try_arm blocks in DMA before it hooks $0314.
+        # The abandoned writer used to hook the vector after the scene had moved
+        # on, leaving an ASID IRQ rewriting the REU control block at up to 960 Hz.
         from c64cast.hw.c64 import KERNAL
 
         api, fake = _fake_backend()
         p = ap.AsidRingPlayer(api, system="NTSC", n_chips=1, prebuffer_seconds=0.0)
         p.start(60.0)  # empty queue → installed but not armed
-        # Shorten the join rather than sleeping past the real 1 s one; the code
-        # path (join times out with the worker still inside a DMA call) is the
-        # same one, and BLOCK_S below keeps it blocked well past the timeout.
+        # Shorten the join rather than sleeping past the real 1 s one: the code
+        # path is the same, and BLOCK_S keeps it blocked past the timeout.
         join_s, block_s = 0.05, 0.25
         p._writer._join_timeout = join_s
         inside = threading.Event()
@@ -966,12 +929,10 @@ class BringUpTeardownTest(unittest.TestCase):
         self.assertEqual(fake.regs["0314"], kernal, "the abandoned writer hooked $0314")
 
     def test_start_refuses_to_install_over_a_writer_that_outlived_its_join(self):
-        # PollThread.start() declines a duplicate and therefore never clears the
-        # stop event, so the abandoned worker exits on its next check and
-        # nothing spawns a replacement: the player installs, never arms, and the
-        # scene is silent for its whole run — while the stranded worker keeps
-        # REUWRITEing at the old slot size into a ring this install just
-        # re-described.
+        # PollThread.start() declines a duplicate and never clears the stop event,
+        # so the abandoned worker exits on its next check and nothing replaces it:
+        # the player installs, never arms, and the scene is silent — while the
+        # stranded worker REUWRITEs at the old slot size into the new ring.
         p, api = self._player(prebuffer_seconds=0.0)
         with mock.patch.object(p._writer, "is_running", return_value=True):
             with self.assertLogs("c64cast.sid.asid_player", "WARNING") as caught:
@@ -983,10 +944,10 @@ class BringUpTeardownTest(unittest.TestCase):
         self.assertEqual(api.socket_dma.reuwrites, [])
 
     def test_reinit_refuses_to_move_the_layout_under_a_live_writer(self):
-        # _write_slots derives its ring offsets from slot_size, so assigning a
-        # new one while a writer is blocked mid-burst puts the rest of that
-        # burst's old-sized payloads at the new stride. One 0x5F SysEx reaches
-        # reinit, so the precondition is checked rather than assumed.
+        # _write_slots derives its ring offsets from slot_size, so assigning a new
+        # one while a writer is blocked mid-burst puts the rest of that burst's
+        # old-sized payloads at the new stride. One 0x5F SysEx reaches reinit, so
+        # the precondition is checked rather than assumed.
         p, _ = self._player(prebuffer_seconds=0.0)
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)
@@ -1001,10 +962,9 @@ class BringUpTeardownTest(unittest.TestCase):
             p.stop()
 
     def test_reset_returns_a_stopped_player_to_a_fresh_layout(self):
-        # Playlists reuse scene instances. Lap 2 starting on lap 1's chip count
-        # is what lets a later remap SHRINK the ring (reinit's guard only
-        # compares against the count it already holds), and lap 1's queued
-        # frames would otherwise become lap 2's prebuffer.
+        # Playlists reuse scene instances. Lap 2 starting on lap 1's chip count is
+        # what lets a later remap SHRINK the ring (reinit compares only against the
+        # count it holds), and lap 1's queued frames would become lap 2's prebuffer.
         p, _ = self._player(prebuffer_seconds=0.0)
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)
@@ -1020,8 +980,7 @@ class BringUpTeardownTest(unittest.TestCase):
     def test_take_slot_is_the_only_gate_and_it_drops_a_stale_size(self):
         # Two of the three slot consumers filtered and the third did not: the
         # blocking get in the writer's pad branch appended whatever it got. All
-        # three go through _take_slot now, so the check cannot be forgotten at a
-        # fourth site.
+        # three go through _take_slot now.
         p, _ = self._player()
         stale = bytes(ap.slot_size_for_chips(3))
         good = bytes([1]) + bytes(p.slot_size - 1)
@@ -1090,13 +1049,10 @@ class BringUpTeardownTest(unittest.TestCase):
 
     def test_hold_padding_is_paced_not_link_limited(self):
         # A spec-legal 16x stream that then goes quiet leaves the lead negative
-        # forever. Unpaced, the pad branch appended one hold per iteration with
-        # no sleep and ran at the link's maximum rate indefinitely (measured 705
-        # reu_write/s against the ~200/s the U64 DMA socket can carry, taken
-        # from the render path that shares it). Batched + paced, holds cost
-        # `rate / lead_panic` writes per second whatever the rate.
-        # Needs a link slow enough that the read head genuinely outruns it —
-        # that is the whole condition, and an instant fake link hides it.
+        # forever. Unpaced, the pad branch appended one hold per iteration with no
+        # sleep, at the link's maximum rate (705 reu_write/s measured against the
+        # ~200/s the U64 DMA socket carries). Batched + paced, holds cost
+        # `rate / lead_panic` writes per second. Needs a genuinely slow link.
         api, fake = _fake_backend()
         direct = fake.reu_write
 
@@ -1119,9 +1075,8 @@ class BringUpTeardownTest(unittest.TestCase):
         self.assertLess(pad_writes, 30, f"{pad_writes} pad writes in 0.2 s")
 
     def test_reinit_keeps_the_writer_object_so_a_duplicate_is_refused(self):
-        # PollThread's "already running" guard lives on the object: discarding
-        # it let a writer still blocked in reu_write past the join timeout race
-        # a freshly started one over self._write_pos and one REU ring.
+        # PollThread's "already running" guard lives on the object: discarding it
+        # let a writer past the join timeout race a fresh one over _write_pos.
         p, _ = self._player(prebuffer_seconds=0.0)
         p.push_frame(ap.hold_slot(p.slot_size))
         p.start(60.0)

@@ -108,10 +108,10 @@ class RenderTest(unittest.TestCase):
         return s
 
     def test_blank_compose_writes_strip_via_page_flip(self):
-        # Blank mode uses page-flipping: it does NOT mutate buffers["screen"]
-        # (so BlankDisplayMode.push() stays a no-op vs its diff cache) and
-        # instead writes the 8-row strip's bytes directly to the offscreen
-        # page ($0400 or $0C00) via write_memory_file, then flips D018.
+        # Blank mode page-flips: it does NOT mutate buffers["screen"] (so
+        # BlankDisplayMode.push() stays a no-op against its diff cache) and writes
+        # the strip's bytes straight to the offscreen page ($0400 or $0C00) via
+        # write_memory_file, then flips D018.
         api = MagicMock()
         ov = _make_overlay(
             messages=[{"text": "HI", "color": "yellow"}], row="middle", speed_cells_per_s=80.0
@@ -149,10 +149,9 @@ class RenderTest(unittest.TestCase):
             ov.compose(buffers, self._scene(MCMDisplayMode()), t_step)
             lit = buffers["screen"] == 0xFF
             if lit.any():
-                # The whole 8-row strip's color RAM gets the multicolor flag
-                # (so unlit/SC_SPACE cells in the strip stay invisible at
-                # the FG color too — keeps color RAM constant across scroll
-                # frames). Lit cells (SC=$FF) must have bit 3 set.
+                # The whole 8-row strip's color RAM gets the multicolor flag, so
+                # unlit cells stay invisible at the FG color and color RAM stays
+                # constant across scroll frames. Lit cells (SC=$FF) set bit 3.
                 self.assertTrue(
                     (buffers["color"][lit] & 0x08).all(),
                     "MCM lit big-text cells must have color bit 3 set",
@@ -161,11 +160,9 @@ class RenderTest(unittest.TestCase):
         self.fail("text never appeared on screen after several seconds")
 
     def test_animation_advances_over_time(self):
-        # Two well-separated snapshots should produce different page-flip
-        # writes (the strip's screen-RAM bytes differ as text scrolls).
-        # Motion is frame-counted now (one px-per-frame chunk per
-        # compose() call), so we drive enough frames to put the text
-        # into different on-screen positions.
+        # Two well-separated snapshots produce different page-flip writes as the
+        # text scrolls. Motion is frame-counted (one px-per-frame chunk per
+        # compose() call), so drive enough frames to move it on screen.
         api = MagicMock()
         ov = _make_overlay(messages=[{"text": "ABCDE", "color": "white"}], speed_cells_per_s=10.0)
         ov.setup(api=api, scene=self._scene(BlankDisplayMode()))
@@ -223,18 +220,16 @@ class SmoothScrollTest(unittest.TestCase):
                 if args and args[0].lower() == "c100":
                     seen.add(args[1])
                     break
-        # We expect at least 4 distinct X-scroll bytes across the 8 steps.
-        # (Per-frame quantization may produce same byte for consecutive
-        # frames; 4 unique is a conservative floor.)
+        # At least 4 distinct X-scroll bytes across the 8 steps: per-frame
+        # quantization may repeat a byte, so 4 is a conservative floor.
         self.assertGreaterEqual(
             len(seen), 4, f"expected several distinct shadow-D016 writes, got {seen}"
         )
 
     def test_raster_irq_installed_on_setup(self):
-        # setup() must upload the 6502 raster IRQ handler to $C000 and
-        # hook the IRQ vector at $0314/$0315 to it. Without this, the
-        # shadow writes in compose() would have nowhere to be committed
-        # from and $D016/$D018 would never actually change.
+        # setup() uploads the 6502 raster IRQ handler to $C000 and hooks the IRQ
+        # vector at $0314/$0315 to it; without that the shadow writes in compose()
+        # have nothing to commit them and $D016/$D018 never change.
         api = MagicMock()
         ov = _make_overlay()
         ov.setup(api=api, scene=self._scene(BlankDisplayMode()))
@@ -304,17 +299,13 @@ class ColorCycleTest(unittest.TestCase):
         for _ in range(len(COLOR_CYCLE)):
             label = ov.cycle_style(api=MagicMock(), scene=MagicMock())
             seen.append(label)
-        # Visited every label exactly once after a full cycle, ending where
-        # we started.
         self.assertEqual(set(seen), set(COLOR_CYCLE_LABELS))
-        # One more advance returns to "rainbow" (index 1).
         self.assertEqual(ov.cycle_style(api=MagicMock(), scene=MagicMock()), "rainbow")
 
     def test_default_state_uses_per_message_color(self):
         # Before any SHIFT, compose() should use msg._resolved_color as-is.
         ov = _make_overlay(messages=[{"text": "X", "color": "yellow"}])
         ov.setup(api=MagicMock(), scene=MagicMock())
-        # Drive a single compose to advance the message into view.
         buffers = _make_buffers()
         scene = MagicMock()
         scene.display_mode = BlankDisplayMode()
@@ -325,8 +316,7 @@ class ColorCycleTest(unittest.TestCase):
         from c64cast.video.palette import C64_COLORS
 
         yellow = C64_COLORS["yellow"]
-        # The strip starts at the middle row and spans 8 rows × 40 cols.
-        # Just check at least one cell in the strip is yellow.
+        # The strip starts at the middle row and spans 8 rows x 40 cols.
         strip = buffers["color"][8 * 40 : 16 * 40]
         self.assertIn(yellow, strip, "default state must paint the message in its config color")
 
@@ -342,9 +332,8 @@ class ColorCycleTest(unittest.TestCase):
         scene.display_mode = BlankDisplayMode()
         for t in (0.0, 0.05, 0.1, 0.2, 0.5):
             ov.compose(buffers, scene, t)
-        # Rainbow mode fills each column with a different spectrum index,
-        # so the strip's color RAM has more than one unique value (yellow
-        # alone would give exactly one).
+        # Rainbow fills each column with a different spectrum index, so the strip's
+        # color RAM holds more than one unique value (yellow alone gives one).
         strip = buffers["color"][8 * 40 : 16 * 40]
         self.assertGreater(
             len(set(strip.tolist())), 1, "rainbow override should produce multi-color strip"
@@ -354,7 +343,6 @@ class ColorCycleTest(unittest.TestCase):
         from c64cast.scenes.overlays.big_text import COLOR_CYCLE
 
         ov = _make_overlay(messages=[{"text": "X", "color": "yellow"}])
-        # Advance all the way around — last label should be "config" again.
         last = None
         for _ in range(len(COLOR_CYCLE)):
             last = ov.cycle_style(api=MagicMock(), scene=MagicMock())
@@ -389,10 +377,9 @@ class FollowerComposeTest(unittest.TestCase):
         ov._rainbow_spectrum = ov._rainbow_spectrum  # unchanged
 
     def test_follower_uses_published_color_not_local_message_color(self):
-        # Conductor publishes rainbow (color = -1 sentinel). Follower's
-        # own local big_text overlay was configured with color=white
-        # (e.g. the placeholder follower scene in left.toml). After fix,
-        # follower must paint rainbow, not white.
+        # The conductor publishes rainbow (color = -1 sentinel) while the
+        # follower's own big_text overlay was configured color=white; the follower
+        # must paint rainbow.
         from c64cast.scenes.overlays.big_text import _RAINBOW_SENTINEL
 
         ov = _make_overlay(messages=[{"text": "PLACEHOLDER", "color": "white"}])
@@ -411,9 +398,8 @@ class FollowerComposeTest(unittest.TestCase):
         buffers = _make_buffers()
         scene = self._scene(BlankDisplayMode())
         ov.compose(buffers, scene, 0.0)
-        # Rainbow paints each column with a different spectrum color, so
-        # the strip's color RAM should have multiple distinct values.
-        # The strip starts at the middle row and spans 8 rows × 40 cols.
+        # Rainbow paints each column a different spectrum color, so the strip's
+        # color RAM (middle row, 8 rows x 40 cols) holds several distinct values.
         strip = buffers["color"][8 * 40 : 16 * 40]
         self.assertGreater(
             len(set(strip.tolist())),

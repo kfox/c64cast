@@ -108,9 +108,8 @@ class ReleaseTupleTest(unittest.TestCase):
         self.assertEqual(upgrade._release_tuple("0.4.0.dev1"), (0, 4, 0))
 
     def test_uninstalled_sentinel_has_no_pure_numeric_component(self):
-        # "0+unknown" split on "." is just one part; its leading digit alone
-        # is a red herring — is_newer special-cases the sentinel by value
-        # rather than relying on this function to reject it.
+        # "0+unknown" split on "." is one part, and its leading digit is a red
+        # herring: is_newer special-cases the sentinel by value.
         self.assertEqual(upgrade._release_tuple("0+unknown"), (0,))
 
     def test_unparsable_version_is_none(self):
@@ -135,10 +134,9 @@ class IsNewerTest(unittest.TestCase):
         self.assertFalse(upgrade.is_newer("0.4.0rc1", "0.4.0rc1"))
 
     def test_uninstalled_sentinel_cannot_be_compared(self):
-        # Regression: the sentinel's leading "0" used to parse as a real
-        # release segment, which made every published version look "newer"
-        # than "not installed" — a true statement, but not the one
-        # --check-for-updates is meant to make.
+        # Regression: the sentinel's leading "0" used to parse as a real release
+        # segment, making every published version look "newer" than "not
+        # installed" — true, but not what --check-for-updates means.
         from c64cast import UNINSTALLED_VERSION
 
         self.assertIsNone(upgrade.is_newer("0.3.0", UNINSTALLED_VERSION))
@@ -396,8 +394,8 @@ class RunCommandTest(unittest.TestCase):
 
     def test_the_resolved_path_is_what_gets_executed(self):
         # shutil.which's answer used to be discarded and the unqualified name
-        # handed to exec, which re-resolves PATH — so the binary that was
-        # checked was not provably the one that ran.
+        # handed to exec, which re-resolves PATH — so the binary that was checked
+        # was not provably the one that ran.
         process = _fake_process(0)
         with (
             mock.patch.object(upgrade.shutil, "which", return_value="/usr/local/bin/uv"),
@@ -490,9 +488,8 @@ class RunUpgradeTest(unittest.TestCase):
             self.assertEqual(upgrade.run_upgrade(assume_yes=True), 2)
 
     def test_an_install_kind_with_no_upgrade_command_names_itself(self):
-        # A `command is None` test made this branch print "could not tell how
-        # this install was made", which is wrong for a kind someone has just
-        # finished enumerating.
+        # A `command is None` test made this branch print "could not tell how this
+        # install was made", wrong for a kind just enumerated.
         install = upgrade.Install("pipx", Path("/x"), None)
         with (
             mock.patch.object(upgrade, "detect_install", return_value=install),
@@ -548,10 +545,9 @@ class UpgradeCheckoutTest(unittest.TestCase):
             yield root
 
     def test_a_source_tree_with_no_git_repository_says_so(self):
-        # pyproject.toml ships in the sdist, so an unpacked release archive
-        # lands in this branch. `git status` exits 128 there, which read as
-        # "could not be checked (is git on PATH?)" and sent the user off to
-        # fix a PATH that was never the problem.
+        # pyproject.toml ships in the sdist, so an unpacked release archive lands
+        # in this branch. `git status` exits 128 there, which read as "could not be
+        # checked (is git on PATH?)" and sent the user after a PATH problem.
         with self._checkout(with_git=False) as root:
             with (
                 mock.patch.object(upgrade, "_run_command") as run_command,

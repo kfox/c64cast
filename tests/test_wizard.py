@@ -19,8 +19,7 @@ from c64cast.app import config_serialize as ser
 from c64cast.app import wizard
 
 # The round-trip assertions (load(written) == built cfg) must hold independent
-# of any real machine-settings file on the dev's machine (config.load applies
-# that layer). Isolate it for the whole module.
+# of any real machine-settings file, which config.load applies.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -69,9 +68,8 @@ class CompatibleOverlaysTest(unittest.TestCase):
         self.assertEqual(a, b)
 
     def test_spectrum_offered_with_audio_off(self):
-        # The spectrum overlays read the scene's music features first (a SID
-        # scene has those and no AudioStreamer), so they are no longer gated on
-        # [audio] — they only WANT audio, for the FFT fallback.
+        # The spectrum overlays read the scene's music features first, so they
+        # are not gated on [audio] — they only WANT it, for the FFT fallback.
         without = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=False)}
         with_ = {o.name for o in wizard.compatible_overlays("petscii", audio_enabled=True)}
         self.assertIn("spectrum_petscii", with_)
@@ -79,8 +77,7 @@ class CompatibleOverlaysTest(unittest.TestCase):
 
     def test_filter_matches_introspect_gate(self):
         # compatible_overlays must agree with the authority (overlay_mode_ok +
-        # the audio requirement) for every display mode — that's what keeps it
-        # from offering a mode-incompatible overlay.
+        # the audio requirement) for every display mode.
         from c64cast.app import introspect
 
         modes = {m.runtime_name: m for m in introspect.display_modes()}
@@ -354,9 +351,8 @@ class RunInitShellTest(unittest.TestCase):
         from c64cast.app import wizard as wz
 
         # From an empty cwd, with the clip the wizard is told to type actually
-        # present: the file spec is relative, so against the checkout it named
-        # a video in the developer's own assets/videos/ (or nothing at all,
-        # depending on the machine) rather than a fixture this test controls.
+        # present: the file spec is relative, so against the checkout it named a
+        # video in the developer's own assets/videos/ rather than a fixture.
         with tmp_cwd() as d:
             os.makedirs(os.path.join(d, "assets", "videos"))
             with open(os.path.join(d, "assets", "videos", "clip.mp4"), "wb") as f:

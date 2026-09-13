@@ -49,8 +49,7 @@ md = _load_diagrams()
 class PaletteTest(unittest.TestCase):
     def test_the_palette_still_matches_the_template(self):
         # The script cannot import the Typst template, so it holds its own copy
-        # of the four colors the books are set in. A figure drawn in last
-        # season's blue looks fine on its own and wrong on the page.
+        # of the four colors the books are set in.
         typ = _TEMPLATE.read_text(encoding="utf-8")
         for name, color in (
             ("accent", md.ACCENT),

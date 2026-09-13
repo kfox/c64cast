@@ -203,8 +203,7 @@ class ApplyToConfigTest(unittest.TestCase):
         self.assertEqual(cfg.hardware.backend, "teensyrom")
         self.assertEqual(cfg.teensyrom.transport, "serial")
         self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodem1")
-        # Untouched: u64 url is left as-is (not cleared) — only spec.non-None
-        # fields move.
+        # Only the spec's non-None fields move; the u64 url is not cleared.
         self.assertEqual(cfg.ultimate64.url, "http://keep-me.lan")
 
     def test_u64_overlays_url_and_backend(self):

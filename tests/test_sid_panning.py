@@ -107,8 +107,8 @@ class DefaultPanSpreadTest(unittest.TestCase):
 
     def test_more_chips_than_sources_collapses_to_center(self):
         # A 3-SID tune on a machine with no socketed SID has only the 2 UltiSID
-        # cores. Spreading them [-3, 3] would throw two chips hard left against
-        # one hard right; mono is the honest default.
+        # cores; spreading them [-3, 3] throws two chips hard left against one
+        # hard right, so mono is the honest default.
         self.assertEqual(sp.default_pan_spread(2, 3), (0, 0))
 
     def test_one_chip_per_source_still_spreads(self):
@@ -128,8 +128,7 @@ class ResolvePanningTest(unittest.TestCase):
         self.assertEqual(sp.resolve_panning([-1], 3), (-1, 0, 0))
 
     def test_config_still_spreads_when_sources_are_doubled_up(self):
-        # The all-center collapse is a *default*, not a cap on what a user can
-        # ask for.
+        # The all-center collapse is a *default*, not a cap on what a user asks for.
         self.assertEqual(sp.resolve_panning(None, 2, 3), (0, 0))
         self.assertEqual(sp.resolve_panning([-5, 5], 2, 3), (-5, 5))
 
@@ -405,8 +404,7 @@ class LimitedSourceWarningTest(unittest.TestCase):
 
     def test_warning_names_the_no_socket_cause(self):
         # "in use", not "present": model-aware routing skips a populated socket
-        # whose chip is the wrong model, which is how a machine with two 6581s
-        # ends up with only the two cores pannable.
+        # whose chip is the wrong model, so two 6581s leave only the cores pannable.
         with self.assertLogs("c64cast.sid.sid_panning", level="WARNING") as cm:
             sp.apply_panning(self._api(), ("ultisid1", "ultisid1", "ultisid2"), [])
         self.assertTrue(any("no socketed SID in use" in m for m in cm.output), cm.output)

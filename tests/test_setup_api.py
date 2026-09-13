@@ -79,13 +79,12 @@ class WriteHelpersTest(_TmpRootsTestCase):
         self.assertEqual(merged.video.device, "3")
 
     def test_write_connection_keeps_the_secrets_the_file_already_carried(self):
-        # The critical defect this unit closed. `_write_connection` seeds a
-        # Config from the machine layer (secrets included) and rewrites the
-        # same file; `config_serialize.dumps` suppresses every SECRET_FIELDS
-        # value, so the rewrite used to come back without the `dma_password` a
-        # password-protected U64 needs and without the `[web] token` pin
-        # `token_settable` exists to protect — silently, on an appliance whose
-        # POST is unauthenticated while the setup window is open.
+        # The critical defect this unit closed: `_write_connection` seeds a Config
+        # from the machine layer (secrets included) and rewrites the same file,
+        # and `config_serialize.dumps` suppresses every SECRET_FIELDS value — so
+        # the rewrite came back without the `dma_password` a password-protected
+        # U64 needs and without the `[web] token`, on an appliance whose POST is
+        # unauthenticated while the setup window is open.
         from c64cast.app.connect import parse_connection_uri
         from c64cast.control.setup_api import _write_connection
 
@@ -109,10 +108,9 @@ class WriteHelpersTest(_TmpRootsTestCase):
         _write_token("a-chosen-token-value")
         path = paths.web_token_path()
         self.assertEqual(path.read_text().strip(), "a-chosen-token-value")
-        # Windows has no POSIX mode bits — `chmod` there only toggles the
-        # read-only flag, and the file reads back 0o666 — so the same
-        # POSIX-only assertion `test_web_api` makes about `serve`'s generated
-        # token is made here about the one this form writes.
+        # Windows has no POSIX mode bits (`chmod` toggles read-only and the file
+        # reads back 0o666), so the POSIX-only assertion `test_web_api` makes
+        # about `serve`'s generated token is made here about this form's.
         if os.name != "nt":
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
@@ -230,9 +228,8 @@ class RouteTest(_TmpRootsTestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_an_oversized_body_is_refused_before_it_is_buffered(self):
-        # Unauthenticated while the window is open, so `request.json()`'s
-        # unbounded accumulation was a remote memory exhaustion on a box with
-        # 1-2 GB — taking down a process that owns live hardware.
+        # Unauthenticated while the window is open, so `request.json()`'s unbounded
+        # accumulation was a remote memory exhaustion on a box owning live hardware.
         from c64cast.control import auth
 
         client = self._client()
@@ -247,10 +244,9 @@ class RouteTest(_TmpRootsTestCase):
 
     def test_a_whitespace_padded_token_round_trips_to_the_link_it_hands_back(self):
         # `_write_token` persisted what it was given and `serve._generated_token`
-        # reads that file back stripped, so a token pasted with a trailing
-        # space went out in `login_url` with the space and came back after the
-        # restart without it: the one link an appliance admin was handed
-        # answered 401 forever, with no other way to learn the real token.
+        # reads it back stripped, so a token pasted with a trailing space went out
+        # in `login_url` with the space and came back after the restart without
+        # it: the one link an admin was handed answered 401 forever.
         chosen = "z" * MIN_TOKEN_LENGTH
         client = self._client()
         body = client.post(

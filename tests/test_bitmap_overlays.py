@@ -6,9 +6,8 @@ overlays that work on petscii/blank now work on hires/mhires unchanged. A
 synthetic glyph table keeps the assertions ROM-independent (the C64 char ROM
 is gitignored and absent in CI)."""
 
-# FakeAPI is a structural stand-in (not a nominal C64Backend) and the bitmap
-# compose() returns a TypedDict the overlays consume as a plain dict — same
-# fake-at-the-boundary pattern as test_overlays.py.
+# FakeAPI is a structural stand-in and the bitmap compose() returns a TypedDict
+# the overlays consume as a plain dict.
 # pyright: reportArgumentType=false, reportOptionalSubscript=false
 from __future__ import annotations
 
@@ -157,7 +156,6 @@ class MhiresOverlayTest(unittest.TestCase):
         self.assertFalse(
             resolve_use_reu_staged("auto", "mhires", reu_available=True, has_buffer_overlays=True)
         )
-        # explicit true still forces REU even with text overlays
         self.assertTrue(
             resolve_use_reu_staged(True, "mhires", reu_available=True, has_buffer_overlays=True)
         )

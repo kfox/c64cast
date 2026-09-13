@@ -122,9 +122,8 @@ class FeatureMathTest(unittest.TestCase):
         self.assertEqual(feat.bpm, 0.0)
         self.assertEqual(feat.beat_phase, 0.0)
 
-    # Tempo estimation itself now lives in the shared modulation.TempoEstimator
-    # (see tests/test_audio_features.py); these two keep guarding that
-    # SidFeatureStream actually delegates to it and gets the old behavior.
+    # Tempo estimation lives in the shared modulation.TempoEstimator (see
+    # tests/test_audio_features.py); these two guard the delegation.
 
     def test_simultaneous_onset_folds_into_one_beat(self):
         # Two onsets within MIN_IOI must not corrupt the beat reference: the
@@ -197,10 +196,9 @@ class CatchupBoundTest(unittest.TestCase):
         self.assertIn("can't keep up", "\n".join(logs.output))
 
     def test_poll_period_is_stretched_when_one_pass_costs_more_than_the_rate_allows(self):
-        # The wakeup period is floored so one measured PLAY pass fits inside
-        # its allowed fraction; the per-tick song dt (which drives the onset
-        # envelope decay) is not, or the features would track the thread
-        # instead of the song.
+        # The wakeup period is floored so one measured PLAY pass fits inside its
+        # allowed fraction; the per-tick song dt (which drives the onset envelope
+        # decay) is not, or the features would track the thread, not the song.
         s = SidFeatureStream(self.sid, song=0, system="NTSC")
         with (
             patch.object(SidFeatureStream, "_detect_play_rate_hz", return_value=(60.0, 0.05)),
@@ -253,9 +251,8 @@ class CatchupBoundTest(unittest.TestCase):
         self.assertEqual(len(logs.output), 1)
 
     def test_rate_probe_stops_when_its_budget_is_spent(self):
-        # The probe runs up to RATE_PROBE_TICKS passes on a throwaway emulator;
-        # the count is not a time bound, so it runs under the caller's budget —
-        # the same one _prepare charges the persistent emulator's INIT to.
+        # The probe runs up to RATE_PROBE_TICKS passes on a throwaway emulator, a
+        # count and not a time bound, so it runs under the caller's budget.
         s = SidFeatureStream(self.sid, song=0, system="NTSC")
         with patch("c64cast.scenes.music_features.SidHostEmu") as cls:
             cls.return_value.play_rate_hz.return_value = 60.0
@@ -263,9 +260,8 @@ class CatchupBoundTest(unittest.TestCase):
         self.assertAlmostEqual(rate, 60.0)
         cls.return_value.tick_play.assert_not_called()
         # Nothing ran, so nothing was measured — and that must not read as
-        # "measured, and free". A budget already spent on this tune is evidence
-        # the tune is expensive, which is the direction the sizing has to fail
-        # in; see sustainable_poll_period_s.
+        # "measured, and free". A budget already spent is evidence of an expensive
+        # tune, the direction the sizing has to fail in.
         self.assertIsNone(pass_cost_s, "an unmeasured pass is not a free pass")
         self.assertGreater(
             sustainable_poll_period_s(1.0 / 400.0, pass_cost_s, 0.5),
@@ -291,13 +287,11 @@ class CatchupBoundTest(unittest.TestCase):
 class StreamLifecycleTest(unittest.TestCase):
     def test_start_stop_smoke_produces_features(self):
         s = SidFeatureStream(make_psid(), song=0, system="NTSC")
-        # The poll thread warns if a catch-up batch runs out of time; on a
-        # loaded worker that is possible and incidental here. CatchupBoundTest
-        # is where that warning is asserted.
+        # The poll thread warns if a catch-up batch runs out of time, which is
+        # incidental here; CatchupBoundTest asserts that warning.
         self.enterContext(quiet_logging())
         s.start()
         try:
-            # Give the poll thread a moment to run a few PLAY ticks.
             time.sleep(0.1)
             feat = s.features()
             self.assertIsInstance(feat, MusicModulation)

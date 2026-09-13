@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
-# Typed as Any (mirroring midi_scene's own import guard) so pyright doesn't
-# flag mido.Message access when the `midi` extra is absent (e.g. CI without
-# it); HAVE_MIDI gates the tests at runtime.
+# Typed as Any (mirroring midi_scene's own import guard) so pyright does not
+# flag mido.Message access when the `midi` extra is absent; HAVE_MIDI gates the
+# tests at runtime.
 try:
     import mido as _mido
 
@@ -131,13 +131,11 @@ class NoteFreqTests(_MidiTestCase):
     def test_clamps_to_16_bit(self):
         # Very high notes saturate the 16-bit frequency register.
         self.assertEqual(_note_to_sid_freq(127, "NTSC"), 0xFFFF)
-        # And never go negative.
         self.assertGreaterEqual(_note_to_sid_freq(0, "NTSC"), 0)
 
     def test_unrecognized_system_raises_rather_than_silently_picking_one(self):
-        # cpu_clock() used to treat anything that isn't "NTSC" as PAL, so a
-        # typo'd system silently played every note ~3.7% flat with no
-        # diagnostic. It now rejects anything but NTSC/PAL outright.
+        # cpu_clock() used to treat anything that is not "NTSC" as PAL, so a
+        # typo'd system played every note ~3.7% flat with no diagnostic.
         with self.assertRaises(ValueError):
             _note_to_sid_freq(69, "bogus")
 
@@ -164,18 +162,15 @@ class VoiceAllocationTests(_MidiTestCase):
         self.assertEqual(scene._held, [60, 64, 67, 72])
 
     def test_steal_order_survives_a_zero_resolution_clock(self):
-        # Allocation order must not depend on clock resolution — a coarse clock
-        # gives a chord's note-ons one shared value, and `max()` would then break
-        # the tie toward the lowest index and steal the oldest pad voice. A frozen
-        # clock is the strongest form of that condition: track order with a
-        # counter and freezing time changes nothing. The sibling tests cannot see
-        # this, since they run on whatever resolution the host happens to have.
+        # Allocation order must not depend on clock resolution: a coarse clock
+        # gives a chord's note-ons one shared value, and `max()` would break the
+        # tie toward the lowest index and steal the oldest pad voice. A frozen
+        # clock is the strongest form of that condition.
         with mock.patch.object(midi_scene, "time", FrozenClock(1234.5)):
             scene, _ = _make_scene()
             for n in (60, 64, 67):
                 scene._note_on(n, 100)
             scene._note_on(72, 100)
-            # Still the newest voice (v2=67) that goes, not v0.
             self.assertEqual([v.note for v in scene.voices], [60, 64, 72])
             self.assertEqual({v.note for v in scene.voices if v.on}, {60, 64, 72})
 
@@ -203,7 +198,6 @@ class VoiceAllocationTests(_MidiTestCase):
             scene._note_on(67, 100)  # G overlaps F -> steals v2 (F)
             scene._note_off(65)  # F lifts (already suspended)
             scene._note_off(67)  # G lifts -> v2 idle
-            # The pad never moved off v0/v1 and stayed gated the whole time.
             self.assertEqual(scene.voices[0].note, 41)
             self.assertEqual(scene.voices[1].note, 48)
             self.assertTrue(scene.voices[0].on and scene.voices[1].on)
@@ -236,7 +230,6 @@ class VoiceAllocationTests(_MidiTestCase):
         scene, _ = _make_scene()
         scene._note_on(60, 100)
         scene._note_on(60, 110)
-        # Still only voice 0 in use; velocity updated (re-press re-triggers it).
         self.assertEqual(scene.voices[0].note, 60)
         self.assertEqual(scene.voices[0].velocity, 110)
         self.assertFalse(scene.voices[1].on)
@@ -583,9 +576,9 @@ class ProgramChangeTests(_MidiTestCase):
         self.assertEqual(scene.voice_wave_bits, [SID.WAVE_SAWTOOTH] * 3)
 
     def test_a_type_the_dispatch_does_not_handle_is_a_no_op(self):
-        # The reader now sends everything except the two coalesced controller
-        # types to `_handle_msg`, so the types it has no branch for have to
-        # fall through harmlessly rather than raise on the reader thread.
+        # The reader sends everything except the two coalesced controller types
+        # to `_handle_msg`, so an unbranched type must fall through harmlessly
+        # rather than raise on the reader thread.
         scene, api = _make_scene(waveform="pulse")
         self._drive_reader_until(
             scene,
@@ -686,9 +679,8 @@ class PaintTests(_MidiTestCase):
         self.assertIn(_TITLE_BITMAP, api.regions)
         self.assertIn(_TITLE_SCREEN, api.regions)
         self.assertIn(_META_BITMAP, api.regions)
-        # Title = per-voice waveform tags + master volume; controller row =
-        # live CC values (no per-voice note text — the colored/gray strips
-        # convey activity).
+        # Title = per-voice waveform tags + master volume; controller row = live
+        # CC values (the colored/gray strips convey per-voice activity).
         title = scene._build_title_line()
         self.assertIn("1:PUL", title)  # all three voices default to pulse
         self.assertIn("3:PUL", title)
@@ -856,7 +848,6 @@ class ReaderCoalescingTests(_MidiTestCase):
         stop = threading.Event()
         t = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
         t.start()
-        # Wait until the batch has been drained + flushed at least once.
         deadline = time.time() + 1.0
         while time.time() < deadline and not any(
             op[0] == "write_regs" and op[1] == "D402" for op in scene.api.ops
@@ -932,23 +923,20 @@ class ReaderWorkBudgetTests(_MidiTestCase):
     reader actually spending it."""
 
     def test_an_ultimate_write_already_outlasts_the_shared_default_budget(self):
-        # The premise the per-caller budget exists for, against the two
-        # constants that state it. They live in modules that know nothing of
-        # each other, so nothing but this makes them agree: if the default
-        # budget is ever raised past the Ultimate's measured per-write floor,
-        # MidiScene no longer needs a budget of its own and this should say so.
+        # The premise the per-caller budget exists for, against the two constants
+        # that state it: they live in modules that know nothing of each other. If
+        # the default budget ever passes the Ultimate's measured per-write floor,
+        # MidiScene no longer needs a budget of its own.
         self.assertGreater(ULTIMATE_PROFILE.write_cost_floor_s, MAX_DRAIN_WORK_S)
 
     def test_a_cheap_link_keeps_the_shared_default_budget(self):
-        # A TeensyROM write is 0.287 ms, so a whole chord of worst-case notes
-        # fits inside the shared default. Sizing per caller must never hand a
-        # caller a *tighter* pass than the default it opted out of.
+        # A TeensyROM write is 0.287 ms, so a chord of worst-case notes fits the
+        # shared default. Per-caller sizing must never be tighter than that default.
         self.assertEqual(_drain_budget_s(TEENSYROM_PROFILE), MAX_DRAIN_WORK_S)
 
     def test_a_note_flood_retires_a_chord_per_pass_not_one_message(self):
-        # With writes that cost what the profile says, the default budget would
-        # release the pass after message one — every note paying its own 1 ms
-        # poll sleep and its own flush. The scene's budget buys back a chord.
+        # With writes costing what the profile says, the default budget releases
+        # the pass after message one. The scene's budget buys back a chord.
         clock = {"now": 1000.0}
         api = _CostlyAPI(clock)
         scene = MidiScene(api, None)
@@ -981,12 +969,11 @@ class ReaderWorkBudgetTests(_MidiTestCase):
             stop.set()
             reader.join(timeout=1.0)
 
-        # Every message was retired, and the fullest pass carried a chord's
-        # worth of them. One write per note message at 5.2 ms against a 31.2 ms
-        # budget retires 7 (the accumulated clock lands a hair under the
-        # product, so the sixth check has not crossed yet); the band is wide
-        # enough not to depend on that last message and still narrow enough to
-        # fail on 4 (a chord's budget halved) and on 13 (a chord's doubled).
+        # Every message was retired, and the fullest pass carried a chord's worth.
+        # One write per note message at 5.2 ms against a 31.2 ms budget retires 7
+        # (the accumulated clock lands a hair under the product). The band is wide
+        # enough not to depend on that last message, narrow enough to fail on 4
+        # (a chord's budget halved) and on 13 (doubled).
         self.assertEqual(sum(per_pass), len(batch))
         self.assertGreaterEqual(max(per_pass), 5)
         self.assertLessEqual(max(per_pass), 9)
@@ -1002,9 +989,8 @@ class LifecycleTests(_MidiTestCase):
         self.assertLessEqual(fps, 30.0)
 
     def test_teardown_delegates_to_base_exactly_once(self):
-        # Regression for the duplicated super().teardown() call. The base
-        # Scene.teardown is the only thing that touches display_mode, so
-        # counting its teardown invocations proves the chain runs once.
+        # Scene.teardown is the only thing that touches display_mode, so counting
+        # its invocations proves the chain runs once (it was called twice).
         scene, api = _make_scene()
         spy = _SpyMode()
         scene.display_mode = cast(DisplayMode, spy)
@@ -1034,8 +1020,8 @@ class LifecycleTests(_MidiTestCase):
         scene.teardown()
         # The literal is the point: comparing against D018_CHAR_DEFAULT compares
         # teardown's write to the constant it wrote it from, which stayed green
-        # with the constant set to the hires $18. $14 is the char-mode byte every
-        # char-mode engage in the tree writes (matrix at bank+$0400, char gen at
+        # with that constant set to the hires $18. $14 is the char-mode byte every
+        # char-mode engage in the tree writes (matrix at bank+$0400, chargen at
         # +$1000, bitmap bit clear); test_voice_scope pins the constant to it.
         self.assertEqual(api.memories.get("D018"), "14")
 

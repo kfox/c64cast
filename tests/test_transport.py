@@ -225,9 +225,8 @@ class DispatchTests(unittest.TestCase):
 
     def test_duplicate_freeze_events_drained_in_one_tick_toggle_only_once(self):
         # Two consoles open on the same show (or a network retry) both enqueue
-        # "freeze" before either is drained. Both land in the same tick()
-        # drain loop, so the second sees the first's effect and no-ops
-        # instead of toggling the scene back to playing.
+        # "freeze" before either is drained. Both land in the same tick() drain
+        # loop, so the second sees the first's effect and no-ops.
         scene = _StubScene()
         pl = _FakePlaylist(scene)
         session = TransportSession()
@@ -313,9 +312,8 @@ class HoldRampTests(unittest.TestCase):
         _tick(session, pl, 0.1)
         session.enqueue(TransportEvent(action="rw", pressed=False))
         _tick(session, pl, 0.2)
-        # The release event itself causes no seek; no further ramp ticks
-        # follow it in this test, so exactly the one seek from the press
-        # tick is recorded.
+        # The release event itself causes no seek, and no ramp ticks follow it
+        # here, so exactly the press tick's one seek is recorded.
         self.assertEqual(len(scene.seeks), 1)
 
     def test_ramp_accelerates_with_hold_duration(self):
@@ -345,9 +343,8 @@ class HoldRampTests(unittest.TestCase):
         self.assertLessEqual(delta, 30.0 * dt + 1e-6)
 
     def test_held_bookkeeping_survives_no_current_scene(self):
-        # A press recorded while no scene is current must still ramp once a
-        # scene becomes current mid-hold (design: hold state is tracked
-        # regardless of whether a scene is on screen right now).
+        # A press recorded while no scene is current must still ramp once a scene
+        # becomes current mid-hold: hold state is tracked either way.
         pl = _FakePlaylist(None)
         session = TransportSession()
         _tick(session, pl, 0.0)
@@ -459,11 +456,10 @@ class LoopPresetStoreTests(unittest.TestCase):
         self.assertEqual(self.store.load(), {})
 
     def test_a_slot_outside_the_range_is_not_stored(self):
-        # The override used to skip the base class's range check, reasoning
-        # that loop slots are pad numbers with no fixed range — but the web
-        # console's `loop_slot` verb reaches here too, so an unvalidated slot
-        # meant one unbounded new key per event, each save rewriting the whole
-        # grown file on the playlist thread.
+        # The override used to skip the base class's range check, reasoning that
+        # loop slots are pad numbers with no fixed range — but the web console's
+        # `loop_slot` verb reaches here too, so an unvalidated slot meant one
+        # unbounded new key per event, rewriting the whole file on the playlist thread.
         for slot in (0, -1, LoopPresetStore.SLOT_MAX + 1, 10**6):
             with self.subTest(slot=slot):
                 self.store.save(slot, 1.0, 2.0)
@@ -537,7 +533,6 @@ class LoopPresetKeyTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"C64CAST_DATA_DIR": tmp}):
                 store = make_loop_preset_store("clip.mp4")
                 self.assertEqual(store.path, loop_preset_path("clip.mp4"))
-                # The store lands under the redirected data dir.
                 self.assertTrue(str(store.path).startswith(tmp))
 
 

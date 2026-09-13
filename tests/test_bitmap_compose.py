@@ -178,9 +178,8 @@ class BitmapEngageFlashTest(unittest.TestCase):
     def test_voice_scope_clears_bitmap_and_screen_before_flip(self):
         # The waveform/midi oscilloscope's _apply_vic_hires_bank shares the same
         # engage_bitmap_mode primitive but clears via the delta-cached
-        # write_region path (it relocates the VIC bank). This is the path that
-        # used to clear AFTER the $D011 flip — the bug this unification fixes.
-        # MidiScene is the simplest host (fixed bank 0, no SID payload / threads).
+        # write_region path (it relocates the VIC bank), and used to clear AFTER
+        # the $D011 flip. MidiScene is the simplest host (bank 0, no threads).
         from c64cast.sid.midi_scene import MidiScene
 
         api = FakeAPI()
@@ -191,9 +190,7 @@ class BitmapEngageFlashTest(unittest.TestCase):
     def test_engage_primitive_configures_pointers_before_flip(self):
         # The unified primitive must write the sub-bank pointers ($D018/$D016)
         # BEFORE the $D011 flip, so bitmap mode reveals an already-configured
-        # field (a flip-first order would fetch the bitmap from a stale $D018
-        # for one frame). Guards the clear-then-flip ordering the modes + scope
-        # both now rely on.
+        # field; flip-first fetches the bitmap from a stale $D018 for one frame.
         from c64cast.video.modes import engage_bitmap_mode
 
         api = FakeAPI()
@@ -291,8 +288,8 @@ class PercellFillerSafetyTest(unittest.TestCase):
 
     def test_no_color_outside_present_set(self):
         # Mostly black (index 0) with a few accent pixels from a 4-color cast
-        # {0,4,6,14} — every other cell is all-black, the case that produced
-        # garbage fillers. Spread the accents across distinct cells.
+        # {0,4,6,14}: every other cell is all-black, the case that produced garbage
+        # fillers. The accents are spread across distinct cells.
         targets = np.zeros(32000, dtype=np.int64)
         targets[10] = 4  # purple
         targets[8000] = 6  # blue
@@ -312,8 +309,8 @@ class PercellFillerSafetyTest(unittest.TestCase):
 
     def test_all_bg0_cell_is_solid(self):
         # A wholly-black frame: every cell must collapse to solid bg0 in both
-        # screen nibbles and color RAM (this is the letterboxed-edge case that
-        # flashed as a "border"). Pre-fix the fillers were random indices.
+        # screen nibbles and color RAM (the letterboxed-edge case that flashed as
+        # a "border"; pre-fix the fillers were random indices).
         _bitmap, screen, color, bg0, _b = self._compose_from_targets(
             np.zeros(32000, dtype=np.int64)
         )
@@ -345,12 +342,10 @@ class PercellBg0HysteresisTest(unittest.TestCase):
 
     def test_slight_majority_does_not_flip_bg0(self):
         mode = MultiHiresDisplayMode("percell")
-        # Establish bg0 = black.
         self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)
         # Blue (6) now holds a slight, sustained majority (17000 vs 15000):
-        # 17000/15000 ≈ 1.13 < 1 + BG0_HYSTERESIS_MARGIN (1.25), so bg0 must
-        # stay black on every frame even after the EMA tips blue ahead, rather
-        # than strobing $D021 the instant blue edges past.
+        # 17000/15000 ~ 1.13 < 1 + BG0_HYSTERESIS_MARGIN (1.25), so bg0 must stay
+        # black rather than strobe $D021 the instant blue edges past.
         slight = self._split(15000, 6)
         for _ in range(15):
             self.assertEqual(self._bg0(mode, slight), 0)
@@ -358,8 +353,8 @@ class PercellBg0HysteresisTest(unittest.TestCase):
     def test_sustained_dominant_change_flips_bg0(self):
         mode = MultiHiresDisplayMode("percell")
         self.assertEqual(self._bg0(mode, np.zeros(32000, dtype=np.int64)), 0)
-        # An overwhelming, sustained color change MUST still move bg0 (we damp
-        # jitter, not real cuts): a few all-blue frames clear the margin.
+        # An overwhelming, sustained color change must still move bg0: this damps
+        # jitter, not real cuts.
         all_blue = np.full(32000, 6, dtype=np.int64)
         seen = [self._bg0(mode, all_blue) for _ in range(6)]
         self.assertEqual(seen[-1], 6, f"bg0 never tracked the sustained change: {seen}")
@@ -425,7 +420,6 @@ class BitmapHostDmaDoubleBufferTest(unittest.TestCase):
         self.assertEqual(len(api.regions[VIC_BANK_2.SCREEN]), 1000)
         self.assertEqual(len(api.regions[COLOR_ADDR]), 1000)  # shared $D800
         self.assertNotIn(VIC_BANK_0.BITMAP, api.regions)
-        # No REU on this path.
         self.assertEqual(dict(api.socket_dma.reuwrites), {})
         # 3-byte tracker armed (ready = 1); displayed bank toggled to bank 2.
         tracker = api.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]

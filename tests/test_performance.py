@@ -206,9 +206,8 @@ class LaunchSemanticsTest(unittest.TestCase):
 
     def test_reconcile_relinquishes_when_current_torn_down(self):
         # pause/reload/broadcast tear down pl.current out from under an active
-        # clip; the next service() must relinquish ownership (not think it still
-        # owns a torn-down scene, which would strand the run loop on `current is
-        # None`).
+        # clip; the next service() must relinquish ownership rather than think it
+        # still owns a torn-down scene and strand the run loop on `current is None`.
         s, pl = self._session([{"slot": 1, "type": "generative", "quantize": "off"}])
         s.enqueue(ClipEvent(slot=1, pressed=True))
         self.assertTrue(_pump(s, pl))
@@ -378,7 +377,7 @@ class MidiClipLaunchTest(unittest.TestCase):
         lis._dispatch(mido.Message("note_on", note=48, velocity=100))
         ev = pl.performance._queue.get_nowait()
         self.assertEqual((ev.slot, ev.pressed), (3, True))
-        # Release is delivered too (gate/toggle need it).
+        # Release is delivered too (a gate clip needs it).
         lis._dispatch(mido.Message("note_on", note=48, velocity=0))
         ev = pl.performance._queue.get_nowait()
         self.assertEqual((ev.slot, ev.pressed), (3, False))
@@ -395,8 +394,6 @@ class MidiClipLaunchTest(unittest.TestCase):
         # A clip's own pad and an explicit cc_map entry collide on note 64;
         # the explicit entry (slot 9) must win.
         pl = _fake_playlist_with_perf("a", [{"slot": 5, "type": "generative", "pad": 64}])
-        # The listener parses the explicit cc_map (note 64 -> slot 9) at
-        # construction; the auto-mapper must not overwrite it.
         cc_map = [{"type": "note", "number": 64, "action": "clip_launch", "slot": 9}]
         lis = self._listener([pl], cc_map)
         lis._add_clip_pad_mappings()
@@ -530,9 +527,8 @@ class LookSessionTest(unittest.TestCase):
             pl.current = _FakeScene("live", effects=[eff])
             session.enqueue_look(7, save=False)
             session.service(pl)  # must not raise
-            # A missing look must leave the live chain and the deck alone —
-            # a recall that wiped every effect would sail past a bare
-            # "does not raise".
+            # A missing look must leave the live chain and the deck alone; a
+            # recall that wiped every effect would sail past a bare "does not raise".
             self.assertAlmostEqual(eff.decay, 0.8)
             self.assertTrue(eff.enabled)
             self.assertEqual(pl.swaps, [])

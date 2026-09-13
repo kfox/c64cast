@@ -266,10 +266,9 @@ class TestReleaseWorkflow(unittest.TestCase):
             self.assertNotIn(f"unrecognized arguments: {flag}", err.getvalue())
 
     def test_the_wheel_smoke_test_accepts_what_version_actually_prints(self) -> None:
-        # `c64cast --version` prints "c64cast <ver> (<install path>)" -- the
-        # path was added after this check was written, and an exact-equality
-        # match against "c64cast <ver>" fails every release build. Only a tag
-        # runs the smoke test, so nothing else catches a drift here.
+        # `c64cast --version` prints "c64cast <ver> (<install path>)"; the path
+        # was added after this check was written, and an exact match against
+        # "c64cast <ver>" fails every release build. Only a tag runs the smoke test.
         from fnmatch import fnmatch
         from unittest import mock
 
@@ -309,8 +308,7 @@ class TestReleaseWorkflow(unittest.TestCase):
 
     def test_the_smoke_test_imports_modules_that_exist(self) -> None:
         # The smoke test runs against an installed wheel from outside the
-        # checkout, so nothing but a release exercises these imports -- a module
-        # that moves in a refactor fails at the tag, after the merge.
+        # checkout, so a module that moves in a refactor fails at the tag.
         self._smoke_test_imports()
 
     def test_the_smoke_test_calls_functions_that_exist(self) -> None:
@@ -342,9 +340,8 @@ class TestReleaseWorkflow(unittest.TestCase):
 
     def test_the_release_body_links_every_book_and_the_package(self) -> None:
         self.assertIn("releases/download/v$VERSION", self.code)
-        # Rendering and uploading are wildcarded over docs/*/, so a book that
-        # nobody linked would ship as an asset nobody can find. The notes are
-        # hand-written, so this is the one place a new book has to be named.
+        # Rendering and uploading are wildcarded over docs/*/, so a book nobody
+        # linked ships as an asset nobody can find. The notes are hand-written.
         for output in _book_outputs():
             self.assertIn(f"{output}-$VERSION.pdf", self.code, f"{output} is not linked")
         # Versioned filenames, so a "latest" download URL cannot serve them.
@@ -353,8 +350,7 @@ class TestReleaseWorkflow(unittest.TestCase):
 
     def test_the_body_leads_with_how_to_install_and_upgrade(self) -> None:
         # A page that opens with a list of files teaches that upgrading means
-        # downloading files, which is the one thing that cannot upgrade an
-        # install. The order is the point, so it is the thing asserted.
+        # downloading files, which cannot upgrade an install. The order is asserted.
         for needle in ("### Install or upgrade", "uv tool upgrade c64cast"):
             self.assertIn(needle, self.code, f"the release body no longer says {needle!r}")
         self.assertLess(
@@ -396,10 +392,9 @@ class TestReleaseWorkflow(unittest.TestCase):
             self.assertIn(f"{output}-", self.code)
 
     def test_every_book_also_ships_unversioned(self) -> None:
-        # The README links each book as
-        # releases/latest/download/<output>.pdf, which only resolves while an
-        # asset is named exactly that. Drop the second copy and three published
-        # links 404 at the next release, silently.
+        # The README links each book as releases/latest/download/<output>.pdf,
+        # which resolves only while an asset is named exactly that. Drop the second
+        # copy and three published links 404 at the next release, silently.
         self.assertIn('cp "$pdf" "dist/$name.pdf"', self.code)
         readme = _read("README.md")
         for output in _book_outputs():

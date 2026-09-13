@@ -66,10 +66,10 @@ GIG_TOML = (
     '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
     '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
 )
-# Two scenes of a type that accepts `palette_mode` — a knob whose config home is
-# the scene's own block, so a save-back has to reach one of these and not the
-# other. (A `blank` scene has no display mode to tune, and the store refuses a
-# field the scene's type doesn't declare.)
+# Two scenes of a type that accepts `palette_mode` — a knob whose config home
+# is the scene's own block, so a save-back has to reach one and not the other.
+# (A `blank` scene has no display mode, and the store refuses a field its type
+# does not declare.)
 PAIR_TOML = (
     "[audio]\nenabled = false\n\n"
     '[[scenes]]\ntype = "generative"\nsource = "plasma"\ndisplay = "mhires"\nduration_s = 5.0\n\n'
@@ -91,9 +91,8 @@ BAD_TOML = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
 # A config carrying exactly what `config_serialize.SECRET_FIELDS` names, which
 # `ConfigStore.read` hands back verbatim in `text` — the payload behind the
 # viewer-token escalation `api_config_read`'s `require_full` closes. CLAUDE.md
-# names `./c64cast.toml` as the documented home of `dma_password`, and
-# `config_roots` defaults to the host's launch directory, so this is not a
-# contrived file.
+# names `./c64cast.toml` as the home of `dma_password` and `config_roots`
+# defaults to the launch directory, so this is not a contrived file.
 SECRET_TOML = (
     "[audio]\nenabled = false\n\n"
     f'[ultimate64]\ndma_password = "hunter2"\n\n[web]\ntoken = "{TOKEN}"\n\n'
@@ -116,9 +115,6 @@ def setUpModule() -> None:
 
 def tearDownModule() -> None:
     _iso.stop()
-
-
-# --- fakes -----------------------------------------------------------------
 
 
 class _FakeTempo:
@@ -315,19 +311,16 @@ class WebApiTestCase(unittest.TestCase):
         self.root.mkdir()
         (self.root / "gig.toml").write_text(GIG_TOML, encoding="utf-8")
         # `include_examples=False`: this fixture is about the routes over one
-        # configured root. `ExamplesRouteTest` below builds its own store with
-        # the packaged examples root left in.
+        # configured root. `ExamplesRouteTest` builds its own store with the
+        # packaged examples root left in.
         self.store = config_store.ConfigStore([str(self.root)], include_examples=False)
         self.library = console_library.ConsoleLibrary(Path(tmp.name) / "console.json")
         # An explicit write table rather than the default four asset dirs:
-        # several tests in this module `chdir` to a directory with no
-        # `assets/` in it (on purpose — see SceneStructureRouteTest), and an
-        # unset kind would otherwise fall back to a default resolved against
-        # whatever the process cwd happens to be. `video` writes (and
-        # browses) `self.root`, matching what `MediaBrowserTest` already
-        # expects to find there; the rest are turned off outright so a test
-        # picking another extension exercises the "not configured" refusal
-        # rather than quietly finding a real directory.
+        # several tests here `chdir` to a directory with no `assets/` in it (see
+        # SceneStructureRouteTest), and an unset kind would fall back to a
+        # default resolved against the process cwd. `video` writes and browses
+        # `self.root`, as `MediaBrowserTest` expects; the rest are off so another
+        # extension exercises the "not configured" refusal.
         self.media = media_store.MediaStore(
             read_write={"video": str(self.root), "sid": "", "picture": "", "program": ""}
         )
@@ -393,9 +386,8 @@ class SessionLifecycleTest(WebApiTestCase):
         self.assertEqual(self.build.calls, 0)
 
     def test_a_config_that_does_not_validate_names_the_reason_in_the_422(self):
-        # SessionConfigError's detail is the same diagnostic validate_configs
-        # already logged — carried here instead of the caller having to go
-        # read the log for it.
+        # SessionConfigError's detail is the diagnostic validate_configs already
+        # logged, carried here rather than left in the log.
         self.factory.error = session.SessionConfigError(3, "scene outro: no such file")
         with self.client() as c:
             r = c.post("/api/session/start", headers=AUTH)
@@ -699,10 +691,9 @@ class StateFeedTest(WebApiTestCase):
         self.assertEqual(self.manager.state, SessionState.RUNNING)
 
     def test_a_frame_that_is_not_json_does_not_take_the_feed_down(self):
-        # The decode happens before the read-only check, so one stray frame
-        # from a console build sending a ping, a stale bundle, or a `wscat`
-        # probe used to close the console's only channel for session state and
-        # log lines — with nothing above debug in the log.
+        # The decode happens before the read-only check, so one stray frame — a
+        # console build sending a ping, a stale bundle, a `wscat` probe — used to
+        # close the console's only channel for session state and log lines.
         with self.client() as c:
             with c.websocket_connect("/api/ws", headers=AUTH) as ws:
                 ws.receive_json()
@@ -717,11 +708,10 @@ class StateFeedTest(WebApiTestCase):
                 self.assertIn("session", ws.receive_json())
 
     def test_a_command_frame_is_not_lost_to_the_push_cadence(self):
-        # `wait_for(receive_json(), timeout=…)` cancelled the receive every
-        # cycle, and a frame delivered in the same event-loop turn as the
-        # timeout was popped off the queue and then thrown CancelledError —
-        # consumed and never acted on, with `except TimeoutError: continue`
-        # making the loss silent. Sent repeatedly to land inside that window.
+        # `wait_for(receive_json(), timeout=…)` cancelled the receive every cycle,
+        # and a frame delivered in the same event-loop turn as the timeout was
+        # popped off the queue and then thrown CancelledError — consumed and never
+        # acted on. Sent repeatedly to land inside that window.
         with self.client() as c:
             c.post("/api/session/start", headers=AUTH)
             self.assertReaches(SessionState.RUNNING)
@@ -812,10 +802,9 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_a_viewer_cannot_read_a_configs_raw_text(self):
-        # The escalation this route's `require_full` closes. `store.read`
-        # returns the file verbatim, so a read-only link handed to a guest
-        # could read `[web] token` out of any config under a root and come
-        # back as the host's administrator.
+        # The escalation this route's `require_full` closes: `store.read` returns
+        # the file verbatim, so a read-only link handed to a guest could read
+        # `[web] token` out of any config under a root and come back as the host.
         (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
         with self.client() as c:
             r = c.get("/api/configs/shows/secrets.toml", headers=VIEWER_AUTH)
@@ -844,9 +833,9 @@ class ConfigBrowserTest(WebApiTestCase):
         self.assertNotIn("hunter2", r.text)
 
     def test_an_oversized_body_is_refused_by_the_transport_not_the_store(self):
-        # `ConfigStore.MAX_BYTES` protects the *file*; it only ever saw a body
-        # the host had already buffered whole, so the 413 in `_STORE_STATUS`
-        # was the only line of defense and it was behind the exposure.
+        # `ConfigStore.MAX_BYTES` protects the *file*; it only ever saw a body the
+        # host had already buffered whole, so the 413 in `_STORE_STATUS` was the
+        # only line of defense and it sat behind the exposure.
         from c64cast.control import auth
 
         with mock.patch.object(auth, "MAX_BODY_BYTES", 64):
@@ -876,10 +865,9 @@ class MediaBrowserTest(WebApiTestCase):
         with self.client() as c:
             body = c.get("/api/media", headers=AUTH, params={"kind": "video"}).json()
         self.assertEqual(body["kind"], "video")
-        # The root here is configured by its absolute path (same as `self.store`
-        # above), so a listed spec is that absolute path too — media_store.py's
-        # specs are built from the root exactly as configured, with the
-        # relative part always joined by "/" regardless of platform (unlike
+        # The root here is configured by its absolute path, so a listed spec is
+        # that absolute path too — media_store.py builds specs from the root as
+        # configured, joining the relative part with "/" on every platform (unlike
         # `str(self.root / "clip.mp4")`, which normalizes to native separators).
         self.assertIn(f"{self.root}/clip.mp4", [e["spec"] for e in body["entries"]])
 
@@ -950,10 +938,9 @@ class MediaUploadTest(WebApiTestCase):
         self.assertFalse((self.root / "big.mp4").exists())
 
     def test_a_body_that_ends_early_leaves_no_part_file_and_no_target(self):
-        # The client side of a cancel: `request.stream()` raising is what
-        # drives `MediaStore.receive`'s own `except BaseException` branch
-        # (covered at the store level in tests/test_media_store.py), so this
-        # is the route's half — nothing lands on disk either way.
+        # The client side of a cancel: `request.stream()` raising drives
+        # `MediaStore.receive`'s own `except BaseException` branch (covered in
+        # tests/test_media_store.py). Nothing lands on disk either way.
         def cut_short():
             yield b"partial"
             raise RuntimeError("client vanished mid-upload")
@@ -1080,10 +1067,9 @@ class ConfigCreateDeleteRouteTest(WebApiTestCase):
         self.assertTrue((self.root / "gig.toml").exists())
 
     def test_deleting_a_stopped_configs_former_config_is_allowed(self):
-        # status().config_path deliberately keeps naming the last-started
-        # config after a stop (so the browser has something to preselect at
-        # idle) — the delete route must not mistake that leftover pointer for
-        # an active session and refuse a config nothing is using anymore.
+        # status().config_path keeps naming the last-started config after a stop,
+        # so the browser has something to preselect at idle; the delete route must
+        # not read that leftover pointer as an active session.
         with self.client() as c:
             c.post("/api/session/start", headers=AUTH, json={"config": "shows/gig.toml"})
             self.assertReaches(SessionState.RUNNING)
@@ -1141,11 +1127,9 @@ class ExamplesRouteTest(WebApiTestCase):
         self.assertEqual(r.status_code, 403)
 
     def test_creating_a_config_by_copying_an_example_works(self):
-        # Some packaged examples need [audio].enabled for their own feature
-        # (mic capture, a soundtrack) regardless of whether this host happens
-        # to have the optional `mic` extra installed — irrelevant to a
-        # verbatim copy, so stand in for it rather than picking an example
-        # that avoids it.
+        # Some packaged examples need [audio].enabled for their own feature (mic
+        # capture, a soundtrack) whether or not this host has the `mic` extra —
+        # irrelevant to a verbatim copy, so stand in for it.
         with mock.patch("c64cast.app.session.AUDIO_AVAILABLE", True):
             with self.client() as c:
                 ref = self._example_ref(c)
@@ -1358,8 +1342,7 @@ class ScreenRouteTest(WebApiTestCase):
 
     def test_a_viewer_may_watch(self):
         # The point of a read-only link is seeing the show. A GET with a side
-        # effect on the machine is the accepted trade — it changes nothing
-        # about what the C64 is doing.
+        # effect is the accepted trade: it changes nothing about what the C64 does.
         with self.client() as c:
             self._running(c)
             r = c.get("/api/screen.png", headers=VIEWER_AUTH)
@@ -1376,10 +1359,9 @@ class ScreenRouteTest(WebApiTestCase):
         self.assertIn("turned off", r.json()["detail"])
 
     def test_the_stream_route_refuses_before_it_opens_anything(self):
-        # The 501 checks above go through the same helper the stream route
-        # uses, and this is the one that proves the *stream* route consults it
-        # rather than answering 200 and then failing inside the body — where a
-        # browser would see a broken image and no reason.
+        # The 501 checks above go through the same helper the stream route uses;
+        # this proves the *stream* route consults it rather than answering 200 and
+        # failing inside the body, where a browser sees a broken image and no reason.
         with self.client() as c:
             r = c.get("/api/screen/stream", headers=AUTH)
         self.assertEqual(r.status_code, 501)
@@ -1568,7 +1550,6 @@ class LiveTuneSaveBackTest(WebApiTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["saved"], ["mode.dither_strength"])
         self.assertIn("dither_strength = 0.8", (self.root / "gig.toml").read_text(encoding="utf-8"))
-        # …and the offer is withdrawn, because it has been taken.
         self.assertFalse(pl.live_tracker.has_changes())
 
     def test_the_rest_of_the_file_survives_the_save(self):
@@ -1840,9 +1821,8 @@ class EveryApiRouteIsProtectedTest(WebApiTestCase):
                     self.assertEqual(r.status_code, 401, f"{method} {path} was not gated")
 
     def test_the_console_itself_is_gated(self):
-        # The app shell and its assets sit behind the same token as the API
-        # they talk to. A browser reaches them through /api/login, which is why
-        # nothing here is in PUBLIC_PATHS.
+        # The app shell and its assets sit behind the same token as the API they
+        # talk to; a browser reaches them through /api/login, hence not PUBLIC_PATHS.
         with TestClient(self.app()) as c:
             for path in ("/", "/assets/app.js", "/some/client/route"):
                 with self.subTest(path=path):
@@ -1929,8 +1909,8 @@ class RouteRoleContractTest(WebApiTestCase):
         )
 
     def test_every_full_only_read_actually_refuses_a_viewer(self):
-        # The classification is only worth having if it is enforced, so each
-        # entry is exercised rather than asserted about.
+        # Each entry is exercised rather than asserted about: the classification
+        # is only worth having if it is enforced.
         (self.root / "secrets.toml").write_text(SECRET_TOML, encoding="utf-8")
         with self.client() as c:
             for path in sorted(FULL_ONLY_READS):

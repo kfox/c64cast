@@ -137,8 +137,8 @@ class PaletteAccuracyTest(PaletteSwapTestCase):
         return cv2.cvtColor(u8, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
 
     def test_the_right_table_reconstructs_better(self):
-        # A coarse sweep of the sRGB cube rather than one image, so the result
-        # isn't a statement about one photograph's color distribution.
+        # A coarse sweep of the sRGB cube, not one image, so the result is not a
+        # statement about one photograph's color distribution.
         axis = np.arange(0, 256, 16, dtype=np.float32)
         b, g, r = np.meshgrid(axis, axis, axis, indexing="ij")
         px = np.stack([b.ravel(), g.ravel(), r.ravel()], axis=1).astype(np.float32)
@@ -150,9 +150,8 @@ class PaletteAccuracyTest(PaletteSwapTestCase):
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
         right_idx = palette.quantize_flat_for(px, perceptual=True)
 
-        # Both index sets are DISPLAYED in the colors the machine emits — that
-        # is what makes this a fair comparison rather than each table grading
-        # its own homework.
+        # Both index sets are scored as DISPLAYED in the colors the machine
+        # emits, so neither table grades its own homework.
         wrong_err = np.linalg.norm(self._lab(emitted[wrong_idx]) - source, axis=1).mean()
         right_err = np.linalg.norm(self._lab(emitted[right_idx]) - source, axis=1).mean()
         self.assertLess(right_err, wrong_err)

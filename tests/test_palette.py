@@ -1,8 +1,8 @@
 """Tests for the C64 palette quantizer + the colorfulness helpers
 (boost_saturation, make_gray_penalty, pick_diverse_top_n)."""
 
-# FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
-# argument-type complaints in the grayscale MHires test.
+# FakeAPI is a duck-typed stub of Ultimate64API; this silences pyright's
+# argument-type complaint in the grayscale MHires test.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -114,8 +114,8 @@ class ResolveColorTest(unittest.TestCase):
 
 class QuantizeTest(unittest.TestCase):
     def test_palette_entry_quantizes_to_itself(self):
-        # Every palette color should be its own nearest neighbor (zero
-        # distance to itself, > 0 to everything else).
+        # Every palette color is its own nearest neighbor: zero to itself,
+        # > 0 to everything else.
         for i, bgr in enumerate(C64_PALETTE_BGR):
             idx = quantize_flat(bgr.reshape(1, 3).astype(np.float32))[0]
             self.assertEqual(int(idx), i, f"palette entry {i} did not self-map")
@@ -151,10 +151,9 @@ class QuantizeLabTest(unittest.TestCase):
         )
 
     def test_metrics_diverge_on_some_pixels(self):
-        # The two metrics genuinely disagree on a meaningful fraction of colors
-        # (otherwise perceptual matching would be pointless). A purple-leaning
-        # mid-tone is the classic case: weighted-BGR sends it to gray, Lab to
-        # purple.
+        # The two metrics genuinely disagree on a meaningful fraction of colors.
+        # A purple-leaning mid-tone is the classic case: weighted-BGR sends it to
+        # gray, Lab to purple.
         rng = np.random.default_rng(1)
         px = rng.integers(0, 256, (5000, 3)).astype(np.float32)
         rgb = quantize_flat_for(px, perceptual=False)
@@ -199,11 +198,9 @@ class GrayPenaltyTest(unittest.TestCase):
             self.assertEqual(p[i], 0.0)
 
     def test_penalty_flips_borderline_pixel_from_gray_to_chromatic(self):
-        # A near-gray but slightly-blue-leaning pixel — pick one where
-        # default-quantization picks gray. Use a large penalty (10× the
-        # default) to guarantee the bias flips it to a chromatic neighbor
-        # regardless of where the chosen pixel sits in the BGR space —
-        # we're testing the *mechanism*, not the default tuning.
+        # A near-gray but slightly-blue-leaning pixel, chosen where default
+        # quantization picks gray. The penalty is 10x the default so the bias
+        # flips it to a chromatic neighbor wherever the pixel sits in BGR space.
         px = np.array([[140.0, 120.0, 120.0]], dtype=np.float32)  # slight blue
         unbiased = int(quantize_flat(px)[0])
         big_penalty = make_gray_penalty(gray_strength=50000.0, pale_strength=0.0)
@@ -250,10 +247,9 @@ class DiverseTopNTest(unittest.TestCase):
         self.assertEqual(len(set(picks)), 3)  # all unique
 
     def test_skips_near_hue_neighbor_in_favor_of_distant_hue(self):
-        # Construct counts where slots 2 (red) and 10 (light red) are most
-        # populated but very close in hue. Slot 5 (green) is less populated
-        # but far in hue. We expect: red → green → light red — green jumps
-        # ahead of light red because of the diversity rule.
+        # Slots 2 (red) and 10 (light red) are most populated but close in hue;
+        # slot 5 (green) is less populated but far. Expect red → green → light
+        # red: green jumps ahead of light red under the diversity rule.
         counts = np.zeros(16, dtype=np.int64)
         counts[2] = 1000  # red
         counts[10] = 900  # light red (similar hue to red)
@@ -264,9 +260,8 @@ class DiverseTopNTest(unittest.TestCase):
         self.assertEqual(picks[2], 10)
 
     def test_fallback_when_no_diverse_candidate_exists(self):
-        # Only red has counts. Diversity rule can't be satisfied, so the
-        # picker must fall back to frequency order rather than returning
-        # fewer than n slots.
+        # Only red has counts, so the diversity rule cannot be satisfied and the
+        # picker must fall back to frequency order rather than return fewer slots.
         counts = np.zeros(16, dtype=np.int64)
         counts[2] = 1000
         picks = pick_diverse_top_n(counts, 4)
@@ -659,20 +654,15 @@ class DisplayModePaletteTest(unittest.TestCase):
             parse_channel_boost([1.0, 0.0, 1.0])  # non-positive
 
     def test_mhires_percell_writes_nonconstant_screen_and_color_ram(self):
-        # The global modes uploaded one repeated byte to $0400 and $D800.
-        # percell uses both as per-cell c1/c2/c3 carriers, so the 1000-byte
-        # writes must contain more than one distinct value on a frame with
-        # varied per-cell content.
+        # The global modes uploaded one repeated byte to $0400 and $D800. percell
+        # uses both as per-cell c1/c2/c3 carriers, so the 1000-byte writes must
+        # carry more than one distinct value on a varied frame.
         #
-        # NOTE: the shared _fake_frame's 80-px-wide solid color bands leave
-        # every 4×8 cell single-colored, so the per-cell histogram has only
-        # one nonzero bin (and zero nonzero bins inside the bg0 band).
-        # np.argpartition then fills the top-3 from tied-at-zero indices,
-        # whose order is implementation-defined — on some numpy builds every
-        # cell picks the same arbitrary trio and color RAM collapses to one
-        # byte. Use a smooth BGR gradient instead so each cell has multiple
-        # distinct palette indices and the top-3 picks are driven by real
-        # signal rather than argpartition tiebreaks.
+        # The shared _fake_frame's 80-px solid bands leave every 4x8 cell single-
+        # colored, so the per-cell histogram has one nonzero bin and np.argpartition
+        # fills the top-3 from tied-at-zero indices in an implementation-defined
+        # order — on some numpy builds color RAM collapses to one byte. A smooth
+        # BGR gradient gives each cell real signal to rank instead.
         from _fakes import FakeAPI
 
         from c64cast.video.modes import MultiHiresDisplayMode
@@ -722,9 +712,8 @@ class DisplayModePaletteTest(unittest.TestCase):
 
     def test_perceptual_compose_produces_valid_output(self):
         # A perceptual-mode render must produce well-formed 1000-byte screen +
-        # color RAM and an 8000-byte bitmap, and differ from the RGB render on
-        # a chromatic frame (the metric + dropped channel_boost/gray_penalty
-        # change the picks).
+        # color RAM and an 8000-byte bitmap, and differ from the RGB render on a
+        # chromatic frame (metric + dropped channel_boost/gray_penalty).
         from _fakes import FakeAPI
 
         from c64cast.video.modes import MultiHiresDisplayMode
@@ -751,11 +740,9 @@ class DisplayModePaletteTest(unittest.TestCase):
         self.assertNotEqual(outs[False], outs[True], "perceptual should change the bitmap")
 
     def test_mhires_percell_is_stable_on_identical_frames(self):
-        # Per-cell EMA on the top-3 picks means rendering the same frame
-        # twice in a row must produce byte-identical screen + color + bitmap
-        # output from frame 2 onwards (once the EMA state is seeded), so a
-        # static webcam scene doesn't flicker. The old unsmoothed path
-        # could flip the 3rd top-3 slot on borderline-tied cells every frame.
+        # Per-cell EMA on the top-3 picks means the same frame rendered twice must
+        # produce byte-identical output from frame 2 on, so a static webcam scene
+        # does not flicker. Unsmoothed, the 3rd slot flipped on near-tied cells.
         from _fakes import FakeAPI
 
         from c64cast.video.modes import MultiHiresDisplayMode
@@ -776,12 +763,9 @@ class DisplayModePaletteTest(unittest.TestCase):
 
     def test_mhires_percell_hysteresis_suppresses_noisy_pixel_flicker(self):
         # Per-pixel bitmap-code hysteresis: pixels at a near-tied chromatic
-        # boundary used to flip code every frame as sensor noise nudged
-        # them across. With hysteresis, the previous code "sticks" unless
-        # an alternative is meaningfully better. Build a frame whose first
-        # render quantizes to a stable {bg0, c1, c2, c3} set, then perturb
-        # a handful of pixels by a tiny BGR delta — the bitmap output
-        # should be byte-identical, demonstrating the sticky behavior.
+        # boundary used to flip code every frame as sensor noise nudged them
+        # across. Render a frame to a stable {bg0, c1, c2, c3} set, then perturb a
+        # few pixels by a tiny BGR delta; the bitmap must be byte-identical.
         from _fakes import FakeAPI
 
         from c64cast.video.modes import MultiHiresDisplayMode
@@ -797,9 +781,8 @@ class DisplayModePaletteTest(unittest.TestCase):
         m.render(api, frame)
         bitmap0 = bytes(api.regions[0x2000])
 
-        # Perturb a small number of pixels by ±1 in each BGR channel — the
-        # kind of noise a webcam sensor adds. Without hysteresis this would
-        # flip the bitmap code for any pixel sitting on a palette boundary.
+        # Perturb a few pixels by ±1 per BGR channel, the noise a webcam sensor
+        # adds. Without hysteresis this flips the code for any boundary pixel.
         noisy = frame.copy()
         mask = rng.random(noisy.shape[:2]) < 0.02
         noise = rng.integers(-1, 2, size=(*noisy.shape[:2], 3), dtype=np.int16)
@@ -822,12 +805,9 @@ class DisplayModePaletteTest(unittest.TestCase):
         # Per-cell slot rules:
         #   * a cell with >=3 distinct non-bg0 colors fills c1/c2/c3 with REAL
         #     colors (bg0 is free via the %00 code, so it never displaces one);
-        #   * a cell with FEWER present non-bg0 colors pads the leftover slots
-        #     with bg0 — NEVER an absent ("garbage") palette index. The old
-        #     padding grabbed arbitrary zero-count indices, which leaked an
-        #     out-of-palette color (e.g. green) that tore into view on a slow
-        #     transport. So screen/color RAM only ever carries bg0 or a color
-        #     genuinely present in that cell.
+        #   * a cell with FEWER pads the leftover slots with bg0, NEVER an absent
+        #     palette index. The old padding grabbed arbitrary zero-count indices
+        #     and leaked an out-of-palette color that tore into view.
         from c64cast.video.modes import MultiHiresDisplayMode
 
         m = MultiHiresDisplayMode(palette_mode="percell")
@@ -878,9 +858,8 @@ class DisplayModePaletteTest(unittest.TestCase):
         self.assertEqual(out["bg"].shape, (3,))
 
     def test_mcm_vivid_picks_more_diverse_bgs_than_cheap(self):
-        # On a 4-region frame with gray + 3 chromatic, the vivid picker
-        # should reach for the chromatic entries instead of letting any
-        # remaining gray-axis variants take 2 of the 3 bg slots.
+        # On a 4-region frame with gray + 3 chromatic, the vivid picker must reach
+        # for the chromatic entries rather than let gray variants take 2 of 3 bgs.
         from c64cast.video.modes import MCMDisplayMode
 
         cheap = MCMDisplayMode(palette_mode="cheap").compose(self._fake_frame())
@@ -955,14 +934,12 @@ class CycleStyleTest(unittest.TestCase):
 
         api = FakeAPI()
         m = MCMDisplayMode(palette_mode="cheap")
-        # Cycle through every mode + back to the start.
         seen = [m.palette_mode]
         for _ in range(len(PALETTE_MODES)):
             label = m.cycle_style(api)
             self.assertIsNotNone(label)
             self.assertIn(m.palette_mode, label)
             seen.append(m.palette_mode)
-        # Visited each palette mode at least once, returned to start.
         self.assertEqual(set(seen), set(PALETTE_MODES))
         self.assertEqual(seen[0], seen[-1])
         # Cache invalidated on each cycle so the next push fully repaints.
