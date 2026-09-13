@@ -28,11 +28,9 @@ from c64cast.wled.wled_device import (
 )
 
 try:
-    # The WLED JSON API tests drive the real FastAPI app via TestClient, which
-    # also needs httpx (fastapi declares it optional). CI runs without the
-    # `wled`/`control` extra, so guard the API class like test_control_plane
-    # does; the bridge + parser tests below need none of this. The import's
-    # httpx2 deprecation warning is silenced for the same reason it is there.
+    # The WLED JSON API tests drive the real FastAPI app via TestClient, which also
+    # needs httpx (fastapi declares it optional) — CI runs without the wled/control
+    # extra, so guard the class. The import's httpx2 deprecation warning is silenced.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         from fastapi.testclient import TestClient  # noqa: F401
@@ -40,8 +38,6 @@ try:
     HAVE_TESTCLIENT = True
 except (ImportError, RuntimeError):
     HAVE_TESTCLIENT = False
-
-# --- fakes ------------------------------------------------------------------
 
 
 class _FakeSource:
@@ -130,8 +126,8 @@ class _FakePlaylist:
         self.osd_posts: list[str] = []
 
     def post_osd(self, text: str, duration_s: float = 2.5) -> None:
-        # Mirrors Playlist.post_osd (live-tune feedback); a live-param slider
-        # write routes its "name value" message here.
+        # Mirrors Playlist.post_osd: a live-param slider write routes "name value"
+        # here.
         self.osd_posts.append(text)
 
     def request_jump(self, index: int, *, skip_interstitial: bool = True) -> None:
@@ -148,9 +144,6 @@ def _bridge(
     )
     systems = cast("list[tuple[str, Playlist]]", [("main", pl)])
     return WledBridge(systems, "c64cast"), pl
-
-
-# --- endpoint parser --------------------------------------------------------
 
 
 class EndpointParserTests(unittest.TestCase):
@@ -195,9 +188,6 @@ class EndpointParserTests(unittest.TestCase):
         cfg.wled.listen = "enabled"
         self.assertEqual(scene_factory.resolve_wled_broadcast(cfg), (True, "239.0.0.1", 11988))
         self.assertEqual(scene_factory.resolve_wled_listen(cfg), (True, "0.0.0.0", 8080))
-
-
-# --- bridge reads -----------------------------------------------------------
 
 
 class BridgeReadTests(unittest.TestCase):
@@ -260,16 +250,12 @@ class BridgeReadTests(unittest.TestCase):
         self.assertEqual(vid, bridge.info_dict()["vid"])
 
     def test_vid_changes_when_effect_list_changes(self):
-        # The WLED app caches the effect/palette lists keyed on (vid, palcount);
-        # a different scene playlist must report a different vid so the app drops
-        # the cache and re-fetches (the "stale scene dropdown" fix).
+        # The WLED app caches the effect/palette lists keyed on (vid, palcount), so a
+        # different scene playlist must report a different vid or the dropdown sticks.
         b1, _ = _bridge()  # scenes: Waveform / Plasma / Tunnel
         pl2 = _FakePlaylist("main", ["Waveform", "Plasma", "Tunnel", "Fire"])
         b2 = WledBridge(cast("list[tuple[str, Playlist]]", [("main", pl2)]), "c64cast")
         self.assertNotEqual(b1.info_dict()["vid"], b2.info_dict()["vid"])
-
-
-# --- bridge writes (apply) --------------------------------------------------
 
 
 class BridgeApplyTests(unittest.TestCase):
@@ -279,10 +265,9 @@ class BridgeApplyTests(unittest.TestCase):
         self.assertTrue(pl.pause_event.is_set())
 
     def test_bri_zero_dims_to_black_without_pausing(self):
-        # Brightness is decoupled from transport: bri=0 dims fully to black
-        # (user_dim=0) but must NOT pause — pausing is the Power (`on`) toggle's
-        # job. (Regression: bri=0 used to pause, resetting the machine to BASIC
-        # mid-drag — the "flashing cursor" HW bug.)
+        # Brightness is decoupled from transport: bri=0 dims fully to black but must
+        # not pause — that is the Power (`on`) toggle's job. Pausing here reset the
+        # machine to BASIC mid-drag (the "flashing cursor" HW bug).
         bridge, pl = _bridge()
         bridge.apply({"bri": 0})
         self.assertFalse(pl.pause_event.is_set())
@@ -305,8 +290,8 @@ class BridgeApplyTests(unittest.TestCase):
         self.assertEqual(pl.jumps, [])
 
     def test_seg_fx_to_current_scene_no_jump(self):
-        # Selecting the already-current scene must not re-jump (it would restart
-        # it) — matters for redundant re-selects and same-scene preset recall.
+        # Re-selecting the already-current scene must not re-jump — it would restart
+        # it, which matters for redundant re-selects and same-scene preset recall.
         bridge, pl = _bridge()  # index 0
         bridge.apply({"seg": [{"id": 0, "fx": 0}]})
         self.assertEqual(pl.jumps, [])
@@ -341,8 +326,8 @@ class BridgeApplyTests(unittest.TestCase):
         self.assertAlmostEqual(scene.gain, 0.25)
 
     def test_scene_prefix_resolves_via_set_live_param(self):
-        # Direct check of the resolver's `scene.` case, mirroring
-        # midi_control._apply_param's verbatim twin.
+        # Direct check of the resolver's `scene.` case, mirroring the verbatim twin
+        # in midi_control._apply_param.
         from c64cast.wled.wled_device import _set_live_param
 
         pl = _FakePlaylist("main", ["Waveform"])
@@ -358,9 +343,6 @@ class BridgeApplyTests(unittest.TestCase):
         seg = bridge.state_dict()["seg"][0]
         self.assertEqual(seg["bri"], 77)
         self.assertEqual(seg["pal"], 3)
-
-
-# --- brightness -> real output dim ------------------------------------------
 
 
 class BridgeBrightnessDimTests(unittest.TestCase):
@@ -386,8 +368,8 @@ class BridgeBrightnessDimTests(unittest.TestCase):
         self.assertAlmostEqual(mode.user_dim, 128 / 255, places=3)
 
     def test_bri_zero_dims_black_and_does_not_pause(self):
-        # bri=0 is a full dim to black (user_dim=0), decoupled from transport —
-        # it must not pause. Power (`on`) is the only pause/resume control.
+        # bri=0 is a full dim to black (user_dim=0), decoupled from transport; Power
+        # (`on`) is the only pause/resume control.
         mode = _FakeMode()
         bridge, pl = _bridge(display_mode=mode)
         bridge.apply({"bri": 200})  # establish a dim
@@ -418,9 +400,6 @@ class BridgeBrightnessDimTests(unittest.TestCase):
         bridge.apply({"bri": 64})
         self.assertAlmostEqual(plA.user_dim, 64 / 255, places=3)
         self.assertAlmostEqual(plB.user_dim, 64 / 255, places=3)
-
-
-# --- palette / color live controls ------------------------------------------
 
 
 class BridgePaletteColorTests(unittest.TestCase):
@@ -471,9 +450,8 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertIn(0, mode.color_map.indices)  # black contrast partner
 
     def test_unchanged_col_does_not_clobber_palette_pick(self):
-        # The WLED app re-POSTs the full segment (pal AND col) on every change.
-        # A palette pick carrying the *same* col we already echoed must not let
-        # that col re-apply its force and undo the palette. (Regression: HW.)
+        # The WLED app re-POSTs the full segment (pal AND col) on every change, so a
+        # palette pick echoing an unchanged col must not re-apply that col's force.
         mode = _FakeMode()
         bridge, _ = _bridge(display_mode=mode)
         # Establish a color force first.
@@ -481,9 +459,7 @@ class BridgePaletteColorTests(unittest.TestCase):
         forced_calls = len(mode.palette_calls)
         # Now the app changes only the palette, but echoes the unchanged col.
         bridge.apply({"seg": [{"id": 0, "pal": 2, "col": [[255, 160, 0], [0, 255, 255]]}]})
-        # The palette change applied (vivid, force cleared)...
         self.assertEqual(mode.palette_mode, "vivid")
-        # ...and the unchanged col did NOT re-trigger a force call after it.
         self.assertEqual(mode.palette_calls[forced_calls:], [("vivid", False)])
 
     def test_unchanged_pal_does_not_reapply(self):
@@ -499,8 +475,8 @@ class BridgePaletteColorTests(unittest.TestCase):
         self.assertEqual(bridge.state_dict()["seg"][0]["n"], "c64cast")
 
     def test_pal_and_col_noop_on_mode_without_setters(self):
-        # A mode with no set_palette_mode/set_color_map (hires/petscii/blank):
-        # both must be silent no-ops that still echo.
+        # A mode with neither setter (hires/petscii/blank): both must be silent
+        # no-ops that still echo.
         class _BareMode:
             name = "hires"
 
@@ -509,9 +485,6 @@ class BridgePaletteColorTests(unittest.TestCase):
         seg = bridge.state_dict()["seg"][0]
         self.assertEqual(seg["pal"], 1)
         self.assertEqual(seg["col"], [[10, 20, 30]])
-
-
-# --- per-control capability hints (seg `c64` vendor key) --------------------
 
 
 class SegCapsTests(unittest.TestCase):
@@ -610,9 +583,6 @@ class SharedCapabilityPredicateTests(unittest.TestCase):
         self.assertTrue(_can_force_colors(mode, object()))
 
 
-# --- preset storage ---------------------------------------------------------
-
-
 class PresetStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -670,9 +640,6 @@ class PresetStoreTests(unittest.TestCase):
         self.assertEqual(self.store.all(), {})
 
 
-# --- bridge presets (save / recall / delete) --------------------------------
-
-
 class BridgePresetTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -697,7 +664,6 @@ class BridgePresetTests(unittest.TestCase):
         self.assertEqual(seg["fx"], 2)
         self.assertEqual(seg["sx"], 200)
         self.assertEqual(seg["ix"], 50)
-        # state.ps reflects the just-saved preset.
         self.assertEqual(self.bridge.state_dict()["ps"], 1)
 
     def test_psave_auto_picks_id_when_zero(self):
@@ -792,9 +758,6 @@ class BridgePresetTests(unittest.TestCase):
         self.assertEqual(self.bridge.state_dict()["ps"], -1)
 
 
-# --- HTTP + WS API ----------------------------------------------------------
-
-
 @unittest.skipUnless(HAVE_TESTCLIENT, "fastapi.testclient (httpx) not installed")
 class WledApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -813,8 +776,7 @@ class WledApiTests(unittest.TestCase):
         r = self.client.get("/json")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(set(r.json()), {"state", "info", "effects", "palettes"})
-        # The `c64` capability-hint vendor key rides each seg (load-bearing: real
-        # WLED clients ignore unknown seg keys, but the payload must still parse).
+        # Real WLED clients ignore unknown seg keys, but the payload must still parse.
         seg = r.json()["state"]["seg"][0]
         self.assertEqual(set(seg["c64"]), {"pal", "col", "sx", "ix"})
 
@@ -842,9 +804,8 @@ class WledApiTests(unittest.TestCase):
         self.assertIn("text/html", r.headers["content-type"])
         self.assertIn("c64cast", r.text)
         self.assertIn("/json/state", r.text)
-        # A single master Brightness slider (id=bri) drives top-level `bri` —
-        # the same field the WLED app's own brightness slider uses, so they sync;
-        # it's a real screen dim, not the old per-segment power-duplicate.
+        # One master Brightness slider (id=bri) drives top-level `bri`, the same field
+        # the WLED app's own slider uses, so the two stay in sync — a real screen dim.
         self.assertIn("Brightness", r.text)
         self.assertIn('id="bri"', r.text)
         self.assertIn("post({bri:", r.text)
@@ -858,15 +819,14 @@ class WledApiTests(unittest.TestCase):
         # A scene pick blurs the <select> so the hints don't freeze behind the
         # focused-select render guard.
         self.assertIn("sel.blur()", r.text)
-        # Every other control that keeps focus past its interaction (slider
-        # drag end, checkbox click, color picker close, preset-name save) also
-        # blurs, for the same reason — see the wled_device.py PR fixing the
-        # served page's permanent-freeze-after-one-drag bug.
+        # Every other control that keeps focus past its interaction (slider drag end,
+        # checkbox click, picker close, preset-name save) blurs for the same reason —
+        # otherwise the served page freezes permanently after one drag.
         self.assertIn("slider.onpointerup = () => slider.blur()", r.text)
         self.assertIn("picker.onchange = () => picker.blur()", r.text)
         self.assertIn("e.target.blur()", r.text)
         self.assertIn("nameEl.blur()", r.text)
-        # Live state now arrives over WebSocket (/ws), with a poll fallback.
+        # Live state arrives over WebSocket (/ws), with a poll fallback.
         self.assertIn("new WebSocket(", r.text)
         self.assertIn("/ws", r.text)
         # Presets section: select + Apply / Save / Delete, wired to ps/psave/pdel.
@@ -937,8 +897,7 @@ class WledApiTests(unittest.TestCase):
             hello = ws.receive_json()
             self.assertIn("state", hello)
             self.assertIn("info", hello)
-            # The proactive WS push carries the caps key too (refreshes on
-            # auto-advance for free).
+            # The proactive WS push carries the caps key too.
             self.assertIn("c64", hello["state"]["seg"][0])
             ws.send_json({"seg": [{"id": 0, "fx": 2}]})
             update = ws.receive_json()
@@ -946,11 +905,9 @@ class WledApiTests(unittest.TestCase):
         self.assertEqual(self.pl.jumps, [2])
 
     def test_ws_rejects_cross_origin_before_accept(self):
-        # The socket applies commands, so it is a write surface — and a
-        # WebSocket handshake is exempt from CORS, so there is no preflight for
-        # the browser to fail. Only POST /json used to be guarded, which left
-        # the bigger hole open: a page the operator visits could drive the show
-        # over ws://, loopback bind included.
+        # The socket applies commands, so it is a write surface — and a WebSocket
+        # handshake is exempt from CORS, so there is no preflight to fail. Guarding
+        # only POST /json let a page the operator visits drive the show over ws://.
         from starlette.websockets import WebSocketDisconnect
 
         # assertLogs outside assertRaises, or the refusal record goes

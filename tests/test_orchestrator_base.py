@@ -45,9 +45,8 @@ class _StubSpan(Orchestrator):
 
 class RegistryTest(unittest.TestCase):
     def setUp(self):
-        # Snapshot + clear the registry so subclasses defined elsewhere
-        # don't leak into these tests, and our test-only registrations
-        # don't leak out.
+        # Snapshot + clear the registry so subclasses defined elsewhere don't leak
+        # into these tests, and our test-only registrations don't leak out.
         self._saved = orch_mod._REGISTRY[:]
         orch_mod._REGISTRY.clear()
 
@@ -84,8 +83,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("ambiguous", str(cm.exception))
 
     def test_register_decorator_returns_class(self):
-        # @register_orchestrator must be transparent — class identity
-        # preserved so callers can still reference it normally.
+        # @register_orchestrator must be transparent — class identity preserved.
         @register_orchestrator
         class _T(Orchestrator):
             @classmethod
@@ -120,7 +118,6 @@ class BeginEndProtocolTest(unittest.TestCase):
         self.assertTrue(orch.begin(cfg))
         # Second begin without an intervening end is refused.
         self.assertFalse(orch.begin(cfg))
-        # State unchanged.
         self.assertTrue(orch.is_active())
 
     def test_end_clears_active_and_fires_resume(self):
@@ -141,8 +138,7 @@ class BeginEndProtocolTest(unittest.TestCase):
         self.assertFalse(orch.resume_event("left").is_set())
 
     def test_conductor_has_no_self_events(self):
-        # The conductor itself isn't a follower; no interrupt/resume
-        # event is allocated for it. KeyError if someone tries.
+        # The conductor isn't a follower; no interrupt/resume event exists for it.
         orch = self._orch(conductor="right")
         with self.assertRaises(KeyError):
             orch.interrupt_event("right")
@@ -152,8 +148,8 @@ class BeginEndProtocolTest(unittest.TestCase):
 
 class FollowerSceneResolutionTest(unittest.TestCase):
     def test_follower_with_matching_name_uses_local_cfg(self):
-        # The follower has its own scene named "broadcast" — orchestrator
-        # should return that one so per-system visual overrides apply.
+        # The follower has its own scene named "broadcast", so the orchestrator
+        # returns that one and per-system visual overrides apply.
         local = SceneCfg(type="blank", name="broadcast", border=5, background=7)
         ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")
@@ -170,9 +166,8 @@ class FollowerSceneResolutionTest(unittest.TestCase):
         self.assertIs(orch.follower_scene_cfg_for("left"), conductor_cfg)
 
     def test_follower_with_own_orchestrate_true_is_skipped(self):
-        # If a follower happens to also have orchestrate=true on a scene
-        # with the same name, that scene is NOT picked as the override —
-        # we don't want two conductors. Fall back to the broadcast cfg.
+        # A follower with orchestrate=true on a same-named scene is NOT picked as
+        # the override — we don't want two conductors. Fall back to the broadcast cfg.
         local = SceneCfg(type="blank", name="broadcast", orchestrate=True)
         ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")
@@ -181,9 +176,8 @@ class FollowerSceneResolutionTest(unittest.TestCase):
         self.assertIs(orch.follower_scene_cfg_for("left"), conductor_cfg)
 
     def test_follower_only_marked_scene_is_picked_as_override(self):
-        # The recommended pattern: the follower's local "broadcast" cfg
-        # is marked follower_only=true so it stays out of the regular
-        # rotation, but follower_scene_cfg_for still finds it by name.
+        # The recommended pattern: the local "broadcast" cfg is marked follower_only
+        # so it stays out of the rotation, but follower_scene_cfg_for finds it by name.
         local = SceneCfg(type="blank", name="broadcast", border=5, follower_only=True)
         ens = _ensemble("left", "right", stacks_overrides={"left": [local]})
         orch = _StubSpan(ens, "right")

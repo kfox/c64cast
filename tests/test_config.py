@@ -19,10 +19,9 @@ from c64cast.app import scene_factory
 from c64cast.hw.backend import C64Backend
 from c64cast.video.modes import BlankDisplayMode
 
-# Tests here assert config defaults / precedence; isolate the module from any
-# real ~/.config/c64cast/settings.toml on the dev machine (config.load applies
-# the machine-settings layer). Tests that need their own settings file override
-# $C64CAST_SETTINGS locally, which nests cleanly under this.
+# config.load applies the machine-settings layer, so isolate the module from any
+# real ~/.config/c64cast/settings.toml. A test needing its own settings file
+# overrides $C64CAST_SETTINGS locally, which nests cleanly under this.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -162,10 +161,8 @@ hue_hi_deg = 195
         self.assertEqual(cfg.color.hue_corrections[1]["hue_lo_deg"], 170)
 
     def test_color_unknown_scalar_key_is_dropped(self):
-        # Unknown scalar keys under [color] go through _apply_section, which
-        # warns and drops them (same as other sections) rather than raising.
-        # assertLogs both verifies the warning fires and keeps it off the
-        # console (an expected message, not a real failure).
+        # Unknown scalar keys under [color] go through _apply_section, which warns
+        # and drops them; assertLogs verifies that and keeps it off the console.
         with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfg = self._load("[color]\nbogus_key = 7\n")
         self.assertFalse(hasattr(cfg.color, "bogus_key"))
@@ -216,17 +213,15 @@ hue_hi_deg = 195
         self.assertIn("chartreuse", str(ctx.exception))
 
     def test_force_palette_indices_now_unknown_key(self):
-        # The old field was removed; a config still using it should warn (and be
-        # dropped) rather than silently take effect.
+        # A config still using the removed field must warn, not silently take effect.
         with self.assertLogs("c64cast.app.config", level="WARNING") as cm:
             cfg = self._load("[color]\nforce_palette_indices = [0, 2]\n")
         self.assertFalse(hasattr(cfg.color, "force_palette_indices"))
         self.assertTrue(any("force_palette_indices" in m for m in cm.output))
 
     def test_scene_border_background_accept_names(self):
-        # border/background take a fuzzy color name or an index; the name is
-        # preserved in the SceneCfg and resolved to an index when the display
-        # mode is built.
+        # border/background take a fuzzy color name or an index; the name is kept in
+        # the SceneCfg and resolved when the display mode is built.
         cfg = self._load(
             '[[scenes]]\ntype = "blank"\ndisplay = "blank"\n'
             'border = "light blue"\nbackground = "blk"\n'
@@ -290,10 +285,9 @@ class SidPanningConfigTest(unittest.TestCase):
         self.assertIn("Middle", str(ctx.exception))
 
     def test_a_scalar_zero_is_refused_like_any_other_scalar(self):
-        # 0 is a legal pan value (Center), so a truthiness guard let
-        # `sid_panning = 0` past the list check while `sid_panning = -3` was
-        # correctly rejected — and resolve_panning's own falsy test then
-        # auto-spreads to [-3, +3], the opposite of centered.
+        # 0 is a legal pan value (Center), so a truthiness guard let `sid_panning = 0`
+        # past the list check that rejected -3, and resolve_panning's own falsy test
+        # then auto-spread to [-3, +3] — the opposite of centered.
         with self.assertRaises(ValueError) as ctx:
             self._load("[ultimate64]\nsid_panning = 0\n")
         self.assertIn("must be a list", str(ctx.exception))
@@ -404,8 +398,7 @@ class HostSidChipsConfigTest(unittest.TestCase):
             self.assertEqual(cfg.hardware.host_sid_tune_match, mode)
 
     def test_tune_match_typo_raises(self):
-        # A typo would otherwise read as "off" and do nothing, which is
-        # indistinguishable from the feature not working.
+        # A typo would otherwise read as "off" — indistinguishable from a dead feature.
         with self.assertRaises(ValueError) as ctx:
             self._load('[hardware]\nhost_sid_tune_match = "preferred"\n')
         self.assertIn("host_sid_tune_match", str(ctx.exception))
@@ -444,10 +437,9 @@ class DoubleBufferTest(unittest.TestCase):
 
     def test_auto_enables_for_text_overlay_on_reu_backend(self):
         r = scene_factory.resolve_double_buffer
-        # U64 (has REU) + a buffer-painting text overlay: resolve_use_reu_staged
-        # turned the REU path off (shimmer), leaving single-buffer host-DMA that
-        # tears on cuts. auto picks the host-DMA double-buffer (tear-free + crisp
-        # text) instead.
+        # U64 + a buffer-painting text overlay: resolve_use_reu_staged turns the REU
+        # path off (shimmer), leaving single-buffer host-DMA that tears on cuts, so
+        # auto picks the host-DMA double-buffer.
         self.assertTrue(
             r(
                 "auto",
@@ -481,8 +473,7 @@ class DoubleBufferTest(unittest.TestCase):
     def test_reu_mic_pump_gates_double_buffer_off(self):
         r = scene_factory.resolve_double_buffer
         # The host-DMA swap and the REU mic pump both own $0314 with no merged
-        # dispatcher for the pair — gate double-buffer off so they can't collide.
-        # Applies even to the text-overlay auto case and to an explicit `true`.
+        # dispatcher for the pair, so double-buffer is gated off even on explicit true.
         self.assertFalse(
             r(
                 "auto",
@@ -582,7 +573,7 @@ class ConfigErrorTest(unittest.TestCase):
         self.assertIn(".toml", str(ctx.exception))
 
     def test_toml_syntax_error_message_shows_line_and_caret(self):
-        # `audio = tru` — typo for `true`. Same shape as the example the
+        # `device = tru` — typo for `true`. Same shape as the example the
         # user reported.
         toml = "[audio]\nenabled = true\n[video]\ndevice = tru\n"
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
@@ -597,10 +588,8 @@ class ConfigErrorTest(unittest.TestCase):
         # No raw traceback / parser internals.
         self.assertNotIn("tomllib", msg)
         self.assertNotIn("Traceback", msg)
-        # Points at the right file + the right line.
         self.assertIn(path, msg)
         self.assertIn("line 4", msg)
-        # Includes the offending source line and a caret marker.
         self.assertIn("device = tru", msg)
         self.assertIn("^", msg)
 
@@ -695,8 +684,8 @@ class UltimateUrlTest(unittest.TestCase):
         self.assertEqual(self._load(ser.dumps(cfg)).ultimate64.url, "http://10.0.0.5")
 
     def test_machine_settings_are_normalized_too(self):
-        # Both layers go through _apply_toml_sections, which is the point of
-        # putting the rewrite there rather than in load().
+        # Both layers go through _apply_toml_sections, which is why the rewrite lives
+        # there rather than in load().
         cfg = cfgmod.Config()
         cfgmod._apply_toml_sections(
             cfg, {"ultimate64": {"url": "u64://10.0.0.5"}}, source="settings.toml"
@@ -704,11 +693,9 @@ class UltimateUrlTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.url, "http://10.0.0.5")
 
     def test_a_bare_host_cannot_smuggle_credentials_past_the_parser(self):
-        # The scheme-less fast path used to prefix http:// and return without
-        # ever calling connect.parse_connection_uri, so the refusal this field
-        # documents applied to "http://user:pass@host" and not to
-        # "user:pass@host" — and --save-settings writes [ultimate64].url to
-        # disk and echoes it to stdout.
+        # The scheme-less fast path used to prefix http:// and return without calling
+        # connect.parse_connection_uri, so "user:pass@host" slipped the refusal that
+        # "http://user:pass@host" got — and --save-settings writes url to disk.
         with self.assertRaises(cfgmod.ConfigError) as ctx:
             self._url("admin:hunter2@10.0.0.5")
         self.assertIn("username/password", str(ctx.exception))
@@ -785,10 +772,9 @@ class FormatTomlErrorTest(unittest.TestCase):
         self.assertIn("cfg.toml", out)
 
     def test_a_credential_bearing_offending_line_is_redacted(self):
-        # cli.py logs a ConfigError at error level and --log-file mirrors it to
-        # disk, so echoing the offending source line copied the credential
-        # there — and a TOML typo is exactly the error whose log gets pasted
-        # into an issue. The position still carries the diagnostic value.
+        # cli.py logs a ConfigError at error level and --log-file mirrors it to disk,
+        # so echoing the offending source line copied the credential there — and a
+        # TOML typo is exactly the error whose log gets pasted into an issue.
         err = type(
             "E",
             (),
@@ -914,8 +900,7 @@ class AutodetectSonglengthsTest(unittest.TestCase):
             os.makedirs(docs)
             open(os.path.join(docs, "Songlengths.md5"), "w", encoding="utf-8").close()
             first = scene_factory._autodetect_songlengths_path(tmp)
-            # A second call with a different (nonexistent) root still
-            # returns the memoized first result — proves it isn't re-probed.
+            # A different (nonexistent) root still returns the memoized first result.
             second = scene_factory._autodetect_songlengths_path(os.path.join(tmp, "nope"))
             self.assertEqual(first, second)
 
@@ -934,9 +919,8 @@ class MergeCLITest(unittest.TestCase):
         self.assertEqual(merged.ultimate64.system, "PAL")
 
     def test_cli_value_overrides_config_value(self):
-        # Connection fields (url/backend/etc.) are NOT in CLI_TO_CFG — they come
-        # from the scheme-aware -u target (see connect.py / test_connect.py).
-        # merge_cli still overlays the remaining mapped fields like system/audio.
+        # Connection fields are not in CLI_TO_CFG — they come from the scheme-aware
+        # -u target (connect.py). merge_cli overlays the rest, like system/audio.
         cfg = cfgmod.Config()
         cfg.ultimate64.system = "NTSC"
         cfg.audio.enabled = False
@@ -982,7 +966,6 @@ class MachineSettingsTest(unittest.TestCase):
         return p
 
     def test_missing_file_is_noop(self):
-        # No file at the pointed path → machine settings are empty.
         with self._env():
             self.assertEqual(cfgmod.load_machine_settings(), {})
             cfg = cfgmod.load(None)
@@ -1008,10 +991,8 @@ class MachineSettingsTest(unittest.TestCase):
         self.assertEqual(cfg.ultimate64.system, "PAL")  # machine-only field kept
 
     def test_hue_corrections_are_replaced_by_the_layer_above_not_appended(self):
-        # Appending made the two layers concatenate, so the project file could
-        # not override, reorder or remove a band the machine layer set —
-        # against "every layer above the defaults overrides the ones below it",
-        # and against scene_color()'s replace semantics for the same field.
+        # Appending made the two layers concatenate, so the project file could not
+        # override, reorder or remove a band the machine layer set.
         self._write_settings(
             '[color]\n[[color.hue_corrections]]\nname = "machine"\nhue_lo_deg = 10\n'
         )
@@ -1156,8 +1137,7 @@ class UnknownKeyCollectionTest(unittest.TestCase):
         self.assertTrue(any("bogus_key" in m for m in cm.output))
 
     def test_valid_key_in_wrong_section_names_the_right_one(self):
-        # The case within-section difflib can never catch: spelled perfectly,
-        # just in the wrong table. This is the whole reason the index exists.
+        # Spelled perfectly, just in the wrong table — what difflib can never catch.
         loaded = self._master('[color]\npalette_mode = "grayscale"\n')
         hint = loaded.unknown_keys[0].hint or ""
         self.assertIn("[[scenes]]", hint)
@@ -1482,9 +1462,8 @@ class UnknownTableTest(unittest.TestCase):
 
 class BuildersTableTest(unittest.TestCase):
     def test_every_scene_type_has_a_builder(self):
-        # A new entry in SCENE_TYPES must land in _BUILDERS the day it's
-        # added — a missing one would otherwise surface as a KeyError deep
-        # in build_scene instead of a failing test.
+        # A missing _BUILDERS entry would otherwise surface as a KeyError deep inside
+        # build_scene instead of a failing test.
         self.assertEqual(set(scene_factory._BUILDERS), set(cfgmod.SCENE_TYPES))
 
 
@@ -1516,9 +1495,8 @@ class ValidateSceneCfgTest(unittest.TestCase):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_video_scene_falls_back_to_default_dir(self):
-        # No `file =` set → resolve from assets/videos/. Tests must run
-        # from a tmp cwd so the dev's real assets/videos doesn't satisfy
-        # the fallback silently.
+        # No `file =` set → resolve from assets/videos/. Run from a tmp cwd so the
+        # dev's real assets/videos can't satisfy the fallback silently.
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "assets", "videos"))
@@ -1545,16 +1523,14 @@ class ValidateSceneCfgTest(unittest.TestCase):
                 os.chdir(cwd)
 
     def test_video_scene_rejects_duration_s(self):
-        # Video lifetime is video-driven; a finite duration_s would
-        # either be a silent no-op or truncate the file. Loader must reject
-        # it at config time rather than letting the inconsistency lurk.
+        # Video lifetime is video-driven; a finite duration_s would be a silent no-op
+        # or truncate the file, so the loader rejects it at config time.
         s = cfgmod.SceneCfg(type="video", file="video.mp4", duration_s=30.0)
         with self.assertRaisesRegex(ValueError, "does not accept .*duration_s"):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_video_scene_without_duration_s_passes(self):
-        # The default (None) means "no duration_s declared" and must pass
-        # validation cleanly — that's the supported config shape.
+        # The default None means "no duration_s declared" and must validate cleanly.
         s = cfgmod.SceneCfg(type="video", file="video.mp4")
         scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
@@ -1568,8 +1544,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_start_s_rejected_on_non_video(self):
-        # start_s is a video-only seek; setting it elsewhere is a no-op the
-        # loader rejects rather than silently ignores.
+        # start_s is a video-only seek; elsewhere it is a no-op the loader rejects.
         s = cfgmod.SceneCfg(type="slideshow", file="pic.jpg", start_s=10.0)
         with self.assertRaisesRegex(ValueError, "start_s is only supported on video"):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
@@ -1588,8 +1563,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_direct_media_url_does_not_require_extra(self):
-        # A direct media URL plays via PyAV without yt-dlp — no extra needed
-        # even when it's absent.
+        # A direct media URL plays via PyAV, so no yt-dlp extra is needed.
         s = cfgmod.SceneCfg(type="video", file="http://host/clip.mp4")
         with mock.patch("c64cast.app.quickcast._ytdlp_available", return_value=False):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
@@ -1665,9 +1639,8 @@ class ValidateSceneCfgTest(unittest.TestCase):
             self.assertIn(picked, scene_factory.SLIDESHOW_RANDOM_DISPLAYS)
 
     def test_slideshow_display_hires_edges_substituted_with_mhires(self):
-        # The SceneCfg global default ("hires_edges") is tuned for live
-        # webcam Canny edges; slideshow swaps it for mhires (best color
-        # for stills).
+        # The SceneCfg default "hires_edges" is tuned for live webcam Canny edges;
+        # slideshow swaps it for mhires, the best color for stills.
         self.assertEqual(scene_factory._resolve_slideshow_display("hires_edges"), "mhires")
         # Other explicit choices pass through.
         for name in ("hires", "mhires", "mcm", "petscii"):
@@ -1717,8 +1690,8 @@ class ValidateSceneCfgTest(unittest.TestCase):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_text_overlay_accepted_on_mhires(self):
-        # `clock` is a text overlay (REQUIRES_PETSCII + SUPPORTS_BITMAP_TEXT):
-        # it folds its glyphs into the bitmap, so mhires is valid now.
+        # `clock` is a text overlay (REQUIRES_PETSCII + SUPPORTS_BITMAP_TEXT) that
+        # folds its glyphs into the bitmap, so mhires is valid.
         s = cfgmod.SceneCfg(type="webcam", display="mhires", overlays=[{"type": "clock"}])
         scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)  # no raise
 
@@ -1729,9 +1702,8 @@ class ValidateSceneCfgTest(unittest.TestCase):
             scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_overlay_requires_audio_gate(self):
-        # No shipped overlay sets REQUIRES_AUDIO (the spectrum overlays only
-        # WANT audio — they read the scene's music features first), but the
-        # gate is a live framework facility, so cover it with a stub.
+        # No shipped overlay sets REQUIRES_AUDIO, so the gate needs a stub to cover
+        # it — the spectrum overlays only want audio, via the scene's music features.
         from c64cast.scenes import overlays as overlays_mod
 
         class _NeedsAudio(overlays_mod.Overlay):
@@ -1750,8 +1722,7 @@ class ValidateSceneCfgTest(unittest.TestCase):
                 scene_factory.validate_scene_cfg(s, self._cfg(), audio_enabled=False)
 
     def test_spectrum_overlay_valid_without_audio(self):
-        # It falls back to the scene's music features / paints nothing, rather
-        # than refusing to build.
+        # It falls back to the scene's music features rather than refusing to build.
         s = cfgmod.SceneCfg(
             type="webcam", display="petscii", overlays=[{"type": "spectrum_petscii"}]
         )
@@ -1869,8 +1840,7 @@ class ResolveFileSpecTest(unittest.TestCase):
                 scene_factory.resolve_file_spec(tmp, self.EXTS, label="waveform")
 
     def test_default_waveform_dir_recurses(self):
-        # The waveform scene's default directory (assets/sids) is the one
-        # exception to the shallow-directory-listing rule: it's walked
+        # assets/sids is the one exception to the shallow-listing rule: it is walked
         # recursively so an unpacked HVSC tree works with no `file =` set.
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1897,9 +1867,7 @@ class ResolveFileSpecTest(unittest.TestCase):
                 os.chdir(cwd)
 
     def test_other_directories_stay_shallow_even_for_waveform(self):
-        # Only the exact default dir gets the recursive treatment — any
-        # other directory (e.g. a subdir of it, or an unrelated one) keeps
-        # the ordinary shallow listing.
+        # Only the exact default dir recurses; a subdir of it stays shallow.
         with tempfile.TemporaryDirectory() as tmp:
             sub = os.path.join(tmp, "sub")
             os.makedirs(sub)
@@ -1911,10 +1879,8 @@ class ResolveFileSpecTest(unittest.TestCase):
             self.assertEqual([os.path.basename(p) for p in got], ["top.sid"])
 
     def test_default_waveform_dir_stays_shallow_unless_the_caller_asks(self):
-        # The recursion is an explicit keyword, not a sniff at `label` (which
-        # is message text) — so a caller that does not ask for it keeps the
-        # ordinary shallow listing even on the default SID directory. The SID
-        # scenes all ask; anything else spelling "assets/sids" does not.
+        # Recursion is an explicit keyword, not a sniff at `label` (message text), so
+        # a caller that doesn't ask stays shallow even on the default SID directory.
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             sids_dir = os.path.join(tmp, scene_factory.DEFAULT_WAVEFORM_DIR)
@@ -1931,9 +1897,8 @@ class ResolveFileSpecTest(unittest.TestCase):
                 os.chdir(cwd)
 
     def test_tilde_is_expanded(self):
-        # A TOML file has no shell to expand `~/…`, and glob/os.path treat a
-        # leading `~` as a literal directory name — so without expansion here
-        # every `file = "~/Music/…"` in a config fails to match anything.
+        # A TOML file has no shell to expand `~/…`, and glob/os.path treat a leading
+        # `~` as a literal directory, so without expansion every such spec misses.
         with tempfile.TemporaryDirectory() as tmp:
             music = os.path.join(tmp, "Music")
             os.makedirs(music)
@@ -1949,19 +1914,16 @@ class ResolveFileSpecTest(unittest.TestCase):
                 for spec in ("~/Music", "~/Music/tune.sid", "~/Music/*.sid"):
                     with self.subTest(spec=spec):
                         got = scene_factory.resolve_file_spec(spec, self.EXTS, label="waveform")
-                        # normpath because the claim under test is "the same
-                        # files", not "the same spelling": expansion keeps the
-                        # separators the spec was written with, so on Windows a
-                        # `~/Music/…` spec yields a working but mixed-separator
-                        # path that os.path.join would have spelled with `\`.
+                        # normpath because the claim is "the same files", not the
+                        # same spelling: expansion keeps the spec's separators, so on
+                        # Windows `~/Music/…` yields a mixed-separator path.
                         self.assertEqual(
                             [os.path.normpath(p) for p in got],
                             [os.path.normpath(p) for p in expected],
                         )
 
     def test_urls_are_not_treated_as_paths(self):
-        # A URL passes through untouched — it must not be globbed, expanded,
-        # or existence-checked.
+        # A URL passes through untouched: not globbed, expanded, or existence-checked.
         url = "https://example.com/clip.mp4"
         self.assertEqual(scene_factory.resolve_file_spec(url, (".mp4",), label="video"), [url])
 
@@ -1996,8 +1958,7 @@ class ResolveFileSpecTest(unittest.TestCase):
             )
 
     def test_nonrecursive_glob_unaffected(self):
-        # A plain `*` glob still matches only its own level (no `**`) — the
-        # recursive=True flag is backward-compatible.
+        # A plain `*` glob still matches only its own level, even with recursive=True.
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "sub"))
             self._make_files(tmp, ["top.sid"])
@@ -2035,7 +1996,6 @@ class ResolveFileSpecTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self._make_files(tmp, ["a.mp4", "b.mp4"])
             s = cfgmod.SceneCfg(type="video", file=os.path.join(tmp, "*.mp4"))
-            # Should NOT raise.
             scene_factory.validate_scene_cfg(s, cfgmod.Config(), audio_enabled=False)
 
     def test_video_scene_rejects_dir_with_no_videos(self):
@@ -2068,21 +2028,17 @@ class SceneAudioAttachmentTest(unittest.TestCase):
         from _fakes import FakeAPI
 
         self.api = cast(Ultimate64API, FakeAPI())
-        # AudioStreamer's only role in build_scene is to be stored on the
-        # Scene; a sentinel object is enough to verify the wiring.
+        # AudioStreamer is only stored on the Scene, so a sentinel verifies the wiring.
         self.audio_sentinel = cast(AudioStreamer, object())
-        # WebcamSource is similarly only stored on the scene; the webcam
-        # branch checks `source is None`, anything truthy passes.
+        # The webcam branch only checks `source is None`, so anything truthy passes.
         from c64cast.video.video import WebcamSource
 
         self.source = cast(WebcamSource, object())
         self.cfg = cfgmod.Config()
 
     def test_webcam_picks_up_global_audio_by_default(self):
-        # [audio].enabled (on by default) constructs an AudioStreamer at
-        # startup. A webcam scene with no per-scene override must attach
-        # it automatically — otherwise audio is silently a no-op, which is
-        # what the user reported.
+        # [audio].enabled (on by default) builds an AudioStreamer at startup; without
+        # auto-attach on a webcam scene, audio is silently a no-op — the reported bug.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
         scene = scene_factory.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)
         self.assertIs(scene.audio, self.audio_sentinel)
@@ -2215,9 +2171,8 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
         self.assertEqual(names, ["idle"])
 
     def test_a_scenes_cfg_index_is_its_place_in_the_file(self):
-        # The live-tune save-back writes a per-scene knob by index into a config
-        # it re-reads, so the stamp has to count [[scenes]] blocks — including
-        # the follower-only one, which is in the file and not in the rotation.
+        # The live-tune save-back addresses a per-scene knob by index into a config it
+        # re-reads, so the stamp counts [[scenes]] blocks, follower-only ones included.
         self.cfg.scenes = [
             cfgmod.SceneCfg(type="blank", name="idle"),
             cfgmod.SceneCfg(type="blank", name="hello", follower_only=True),
@@ -2227,8 +2182,8 @@ class FollowerOnlyRotationFilterTest(unittest.TestCase):
         self.assertEqual([(s.name, s.cfg_index) for s in built], [("idle", 0), ("outro", 2)])
 
     def test_a_scene_no_block_named_carries_no_index(self):
-        # The no-scenes fallback is built here and is in no config, so there is
-        # nothing for a save-back to address — and None says so.
+        # The no-scenes fallback is in no config, so a save-back has nothing to
+        # address — and None says so.
         from c64cast.video.video import WebcamSource
 
         source = cast(WebcamSource, object())

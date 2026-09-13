@@ -48,9 +48,6 @@ def _img(fill=100, shape=(4, 6, 3)):
     return np.full(shape, fill, np.uint8)
 
 
-# --------------------------------------------------------------------------- #
-# New effects
-# --------------------------------------------------------------------------- #
 class StrobeTest(unittest.TestCase):
     def test_identity_without_modulation(self):
         # No beat grid to read → identity (byte-stable), like pulse/rgb_shift.
@@ -163,9 +160,6 @@ class PosterizeTest(unittest.TestCase):
         np.testing.assert_array_equal(eff.apply(frame, 0.0), frame)
 
 
-# --------------------------------------------------------------------------- #
-# Base FrameEffect knobs
-# --------------------------------------------------------------------------- #
 class EffectBaseKnobsTest(unittest.TestCase):
     def test_enabled_and_mod_source_defaults(self):
         for name in ("trails", "strobe", "invert", "mirror", "posterize"):
@@ -174,9 +168,6 @@ class EffectBaseKnobsTest(unittest.TestCase):
             self.assertEqual(eff.mod_source, "audio", name)
 
 
-# --------------------------------------------------------------------------- #
-# Render loop: chain order, bypass, mod_source, failure isolation
-# --------------------------------------------------------------------------- #
 class _Tagger(FrameEffect):
     """Adds a fixed constant to the frame so ordering/skipping is observable."""
 
@@ -269,9 +260,6 @@ class ChainRenderTest(unittest.TestCase):
         self.assertIsNone(eff.seen)
 
 
-# --------------------------------------------------------------------------- #
-# Scene.effect back-compat property
-# --------------------------------------------------------------------------- #
 class EffectPropertyTest(unittest.TestCase):
     def test_property_reads_first_layer(self):
         scene = Scene.__new__(Scene)
@@ -291,9 +279,6 @@ class EffectPropertyTest(unittest.TestCase):
         self.assertEqual(scene.effects, [])
 
 
-# --------------------------------------------------------------------------- #
-# Config build + validation
-# --------------------------------------------------------------------------- #
 class _DummyAPI:
     profile = HardwareProfile(name="Dummy", family="fake")
 
@@ -343,9 +328,6 @@ class ConfigEffectChainTest(unittest.TestCase):
             validate_scene_cfg(s, self.cfg, audio_enabled=True)
 
 
-# --------------------------------------------------------------------------- #
-# midi_control: fx<N> grammar + fx_toggle
-# --------------------------------------------------------------------------- #
 class ParamHolderGrammarTest(unittest.TestCase):
     def test_config_holder_validator(self):
         for good in ("effect", "source", "scene", "mode", "fx0", "fx12", "effect[3]"):

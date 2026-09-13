@@ -107,8 +107,7 @@ class ResolveUseReuStagedTest(unittest.TestCase):
             self.assertFalse(self._resolve("auto", d, False), d)
 
     def test_auto_char_modes_stay_off_even_with_reu(self):
-        # Char modes regress under staging — auto must leave them host-DMA
-        # regardless of REU availability.
+        # Char modes regress under staging, so auto leaves them on host DMA.
         for d in ("petscii", "blank", "mcm"):
             self.assertFalse(self._resolve("auto", d, True), d)
 
@@ -163,7 +162,6 @@ class ReuPetsciiPushTest(unittest.TestCase):
     def test_default_path_uses_dmawrite_region(self):
         mode = PETSCIIDisplayMode(use_reu_staged=False)
         fake = self._push(mode, bytes(1000), bytes(1000))
-        # Screen RAM ($0400) hit via write_region, NOT via REUWRITE.
         self.assertIn(SCREEN.RAM, fake.regions)
         self.assertEqual(fake.socket_dma.reuwrites, [])
 
@@ -172,7 +170,6 @@ class ReuPetsciiPushTest(unittest.TestCase):
         screen = bytes(range(256)) * 4  # 1024 bytes; first 1000 form screen
         screen = screen[:1000]
         fake = self._push(mode, screen, bytes(1000))
-        # Exactly one REUWRITE for the 1000-byte screen.
         self.assertEqual(len(fake.socket_dma.reuwrites), 1)
         off, data = fake.socket_dma.reuwrites[0]
         self.assertEqual(off, REU_VIDEO_SCREEN_BASE)
@@ -180,9 +177,8 @@ class ReuPetsciiPushTest(unittest.TestCase):
         self.assertEqual(len(data), REU_VIDEO_SCREEN_LEN)
 
     def test_reu_path_sets_destination_to_screen_ram(self):
-        # REU.C64_ADDR_LO/HI written as a packed two-byte payload pointing
-        # at $0400 (low=$00, high=$04). write_regs stores this under the
-        # base key as a tuple of byte values.
+        # write_regs stores the packed two-byte payload under the base key as a
+        # tuple of byte values.
         mode = PETSCIIDisplayMode(use_reu_staged=True)
         fake = self._push(mode, bytes(1000), bytes(1000))
         key = f"{REU.C64_ADDR_LO:04X}"
@@ -214,9 +210,8 @@ class ReuPetsciiPushTest(unittest.TestCase):
         )
 
     def test_reu_path_triggers_dma_with_fetch_exec(self):
-        # The trigger byte at $DF01 must be $91 (exec + FF00-off + REU→C64).
-        # A wrong value here either runs the wrong direction or fails to
-        # execute, leaving the screen unchanged with no error indication.
+        # The trigger byte at $DF01 must be $91: exec + FF00-off + REU→C64. A wrong
+        # value silently runs the wrong direction, or not at all.
         mode = PETSCIIDisplayMode(use_reu_staged=True)
         fake = self._push(mode, bytes(1000), bytes(1000))
         key = f"{REU.COMMAND:04X}"
@@ -224,9 +219,8 @@ class ReuPetsciiPushTest(unittest.TestCase):
         self.assertEqual(fake.memories[key], f"{REU.CMD_FETCH_EXEC:02X}")
 
     def test_reu_path_still_writes_color_via_dmawrite(self):
-        # Color RAM at $D800 isn't VIC-banked, so it doesn't benefit from
-        # REU staging. It must continue to flow through write_region's
-        # delta cache regardless of the REU video flag.
+        # Color RAM at $D800 isn't VIC-banked, so it stays on write_region's
+        # delta cache whatever the REU video flag says.
         mode = PETSCIIDisplayMode(use_reu_staged=True)
         color = bytes([5] * 1000)
         fake = self._push(mode, bytes(1000), color)
@@ -234,10 +228,7 @@ class ReuPetsciiPushTest(unittest.TestCase):
         self.assertEqual(fake.regions[SCREEN.COLOR_RAM], color)
 
     def test_reu_path_does_not_write_screen_via_region(self):
-        # The whole point of REU staging is that screen RAM goes through
-        # the REU pipe instead of the host DMAWRITE region cache. If we
-        # accidentally do both, we double-write the screen and waste a
-        # frame's worth of bus halt time.
+        # Doing both double-writes the screen and wastes a frame of bus-halt time.
         mode = PETSCIIDisplayMode(use_reu_staged=True)
         fake = self._push(mode, bytes(1000), bytes(1000))
         self.assertNotIn(SCREEN.RAM, fake.regions, "REU staged path must not also DMAWRITE $0400")
@@ -258,7 +249,6 @@ class ReuBlankPushTest(unittest.TestCase):
         off, data = fake.socket_dma.reuwrites[0]
         self.assertEqual(off, REU_VIDEO_SCREEN_BASE)
         self.assertTrue(all(b == SCREEN.SC_SPACE for b in data))
-        # Trigger byte present.
         self.assertIn(f"{REU.COMMAND:04X}", fake.memories)
 
 
@@ -290,9 +280,7 @@ class ReuCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_video_petscii_is_ok(self):
-        # Char-mode REU video is host-triggered single-buffer (no $0314
-        # hook), so the merged-dispatcher branch isn't even taken — but
-        # the combination must still build cleanly.
+        # Char-mode REU video is host-triggered single-buffer, so no $0314 hook.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -303,9 +291,6 @@ class ReuCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_both_on_video_mhires_is_ok(self):
-        # The interesting case the merge enables: REU audio + REU bank-
-        # swap video on the same video scene. Before the merge this
-        # raised ValueError; after, it builds.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -347,16 +332,12 @@ class ReuBuildDisplayModeTest(unittest.TestCase):
         self.assertTrue(m.use_reu_staged)
 
     def test_hires_edges_receives_flag(self):
-        # The "hires_edges" alias must thread the flag the same way as
-        # "hires" — both pick HiresDisplayMode under the hood.
         m = _build_display_mode("hires_edges", use_reu_staged=True)
         assert isinstance(m, HiresDisplayMode)
         self.assertTrue(m.use_reu_staged)
 
     def test_hires_default_off(self):
-        # Default constructor must leave the bank-swap pipeline disarmed;
-        # silently promoting existing configs onto the experimental path
-        # would change every hires user's behavior.
+        # Never silently promote an existing hires config onto the experimental path.
         m = _build_display_mode("hires")
         assert isinstance(m, HiresDisplayMode)
         self.assertFalse(m.use_reu_staged)
@@ -372,11 +353,6 @@ class ReuBuildDisplayModeTest(unittest.TestCase):
         self.assertFalse(m.use_reu_staged)
 
 
-# ============================================================================
-# Hires (double-buffer, bank-swap) tests
-# ============================================================================
-
-
 class ReuHiresHandlerIntegrityTest(unittest.TestCase):
     """The bank-swap IRQ handler is hand-encoded 6502. The four branches
     (2× forward BEQ to JMP $EA31, 2× backward BPL for the reg-copy loops)
@@ -390,8 +366,6 @@ class ReuHiresHandlerIntegrityTest(unittest.TestCase):
         self.assertEqual(len(BANK_SWAP_IRQ_HANDLER), 61)
 
     def test_handler_pinned_bytes(self):
-        # Recompute every branch offset (not just the assert) if the
-        # design changes — don't paper over a divergence.
         expected = bytes(
             [
                 0xAD,
@@ -460,10 +434,8 @@ class ReuHiresHandlerIntegrityTest(unittest.TestCase):
         self.assertEqual(BANK_SWAP_IRQ_HANDLER, expected)
 
     def test_tracker_offsets_match_handler(self):
-        # The handler's hardcoded $C700/$C707/$C70E/$C70F offsets must
-        # match the TRACKER_OFF_* constants the host uses to lay out
-        # the tracker payload. Drift here would mean the host writes
-        # bank value to the byte the handler reads as ready flag, etc.
+        # The handler's hardcoded $C700/$C707/$C70E/$C70F must match the host's
+        # TRACKER_OFF_* layout, or it reads the bank value as the ready flag.
         self.assertEqual(TRACKER_OFF_BITMAP_REGS, 0)
         self.assertEqual(TRACKER_OFF_SCREEN_REGS, 7)
         self.assertEqual(TRACKER_OFF_BANK_VALUE, 14)
@@ -490,9 +462,8 @@ class ReuHiresSetupTest(unittest.TestCase):
         self.assertEqual(fake.mem_files[key], BANK_SWAP_IRQ_HANDLER)
 
     def test_setup_zeroes_both_banks(self):
-        # First-frame swap brings up the off-screen bank; if we left it
-        # full of post-reset garbage the user would see one frame of
-        # noise before the first render's REU→main DMA lands.
+        # The first swap brings up the off-screen bank, so post-reset garbage there
+        # shows as a frame of noise before the first REU→main DMA lands.
         fake, _ = self._setup()
         for addr in (VIC_BANK_0.BITMAP, VIC_BANK_2.BITMAP):
             key = f"{addr:04X}"
@@ -505,9 +476,8 @@ class ReuHiresSetupTest(unittest.TestCase):
             self.assertEqual(len(fake.mem_files[key]), REU_VIDEO_BITMAP_SCREEN_LEN)
 
     def test_setup_zeroes_frame_tracker(self):
-        # Ready flag in the tracker must start at 0 so the first raster
-        # IRQ after install skips the DMA path until the host stages a
-        # real frame. Whole 16-byte tracker zeroed for hygiene.
+        # The ready flag must start at 0 so the first raster IRQ after install skips
+        # the DMA path until the host stages a real frame.
         fake, _ = self._setup()
         key = f"{FRAME_TRACKER_ADDR:04X}"
         self.assertIn(key, fake.mem_files)
@@ -527,9 +497,8 @@ class ReuHiresSetupTest(unittest.TestCase):
         )
 
     def test_setup_programs_raster_line(self):
-        # Raster compare at line 248 ($F8) puts the IRQ inside vblank
-        # on both PAL and NTSC — VIC isn't rendering so $DD00 swap is
-        # tear-free.
+        # Raster compare at line 248 ($F8) is inside vblank on both PAL and NTSC, so
+        # the $DD00 swap is tear-free.
         fake, _ = self._setup()
         self.assertEqual(fake.memories["D012"], "F8")
 
@@ -539,14 +508,12 @@ class ReuHiresSetupTest(unittest.TestCase):
         self.assertEqual(fake.memories["D01A"], "01")
 
     def test_setup_displayed_bank_tracker_initialized(self):
-        # Internal tracker drives target_bank alternation in render();
-        # must start at 0 so the first frame paints bank 2.
+        # _displayed_bank drives target_bank alternation in render(); 0 means the
+        # first frame paints bank 2.
         _, mode = self._setup()
         self.assertEqual(mode._displayed_bank, 0)
 
     def test_setup_off_path_does_not_install_irq(self):
-        # use_reu_staged=False must not touch $0314 / $D012 / $D01A —
-        # the IRQ install is the experimental opt-in.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         mode = HiresDisplayMode(use_reu_staged=False)
@@ -572,9 +539,8 @@ class ReuHiresTeardownTest(unittest.TestCase):
 
     def test_teardown_restores_irq_vector_to_kernal(self):
         fake = self._setup_then_teardown()
-        # write_regs("0314", ...) records the LAST write under that key —
-        # so we need the kernal value to win, meaning teardown ran AFTER
-        # setup's hook.
+        # FakeAPI.regs records the LAST write under a key, so the kernal value
+        # winning is what proves teardown ran after setup's hook.
         self.assertEqual(
             fake.regs[f"{VECTORS.IRQ:04X}"],
             (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF),
@@ -582,27 +548,20 @@ class ReuHiresTeardownTest(unittest.TestCase):
 
     def test_teardown_restores_dd00_to_bank0(self):
         fake = self._setup_then_teardown()
-        # Whether mode was bank 0 or bank 2 at teardown time, the next
-        # scene's setup expects $DD00 = bank 0 (kernal default). Mode
-        # is fresh here so the post-setup value is already bank 0, but
-        # the teardown write is explicit and idempotent.
+        # The next scene's setup expects $DD00 = bank 0. The mode is fresh here, so
+        # the post-setup value is already bank 0 and the teardown write is idempotent.
         self.assertEqual(fake.memories[f"{CIA2.PORT_A:04X}"], f"{CIA2.PORT_A_BANK_0:02X}")
 
     def test_teardown_disables_vic_raster_irq(self):
         fake = self._setup_then_teardown()
-        # Setup wrote $D01A = $01; teardown must write $00 LAST so the
-        # next scene sees raster IRQs masked.
+        # Setup wrote $D01A = $01; teardown must write $00 last.
         self.assertEqual(fake.memories["D01A"], "00")
 
     def test_teardown_off_path_is_noop(self):
-        # No raster IRQ to tear down; teardown must not write anything
-        # related to the IRQ surface.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         mode = HiresDisplayMode(use_reu_staged=False)
-        # No setup call (so we're not testing teardown-without-setup
-        # which isn't a supported sequence). Just verify the default
-        # teardown is genuinely a no-op for non-REU mode.
+        # No setup() call — this is the non-REU teardown, not teardown-without-setup.
         prior_regs = dict(fake.regs)
         prior_mem = dict(fake.memories)
         mode.teardown(api)
@@ -623,8 +582,7 @@ class ReuHiresPushTest(unittest.TestCase):
         return fake
 
     def _frame(self):
-        # Solid-color frame; render quantizes but the byte values aren't
-        # what we're testing here.
+        # Solid-color frame; render quantizes, but the byte values aren't under test.
         return np.zeros((200, 320, 3), dtype=np.uint8)
 
     def _tracker(self, fake):
@@ -652,8 +610,7 @@ class ReuHiresPushTest(unittest.TestCase):
         self.assertEqual(mode._displayed_bank, 1)
 
     def test_second_frame_targets_bank0(self):
-        # After one render, the tracker is at bank 2; next render should
-        # paint into bank 0 and cue a swap back.
+        # _displayed_bank = 1 means bank 2 is showing; the next render paints bank 0.
         mode = HiresDisplayMode(use_reu_staged=True)
         mode._displayed_bank = 1
         fake = self._render(mode, self._frame())
@@ -665,11 +622,8 @@ class ReuHiresPushTest(unittest.TestCase):
         self.assertEqual(mode._displayed_bank, 0)
 
     def test_tracker_carries_reu_src_and_length_for_both_dmas(self):
-        # The IRQ handler copies bitmap regs to $DF02-$DF08 then triggers,
-        # then copies screen regs and triggers. The tracker must carry
-        # complete REU source addresses and lengths for both — wrong
-        # values and the DMA writes to the wrong place on the C64 or
-        # reads from the wrong REU offset.
+        # The IRQ handler copies bitmap regs to $DF02-$DF08 and triggers, then the
+        # screen regs and triggers, so the tracker carries src + length for both.
         mode = HiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
@@ -693,12 +647,9 @@ class ReuHiresPushTest(unittest.TestCase):
         )
 
     def test_tracker_ready_flag_is_last_byte(self):
-        # Ready flag MUST be the last byte of the DMAWRITE payload — the
-        # whole 16-byte blob lands atomically on the C64 side via the
-        # socket FIFO, so the IRQ either sees all-new regs+ready=1 or
-        # all-old. If we ever switch to splitting the write or
-        # rearrange the layout, the IRQ could see ready=1 with stale
-        # regs and DMA to the wrong destination.
+        # The ready flag must be the LAST byte: the whole 16-byte blob lands
+        # atomically via the socket FIFO, so the IRQ sees all-new regs+ready=1 or
+        # all-old, never ready=1 with stale regs.
         mode = HiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
@@ -711,7 +662,6 @@ class ReuHiresPushTest(unittest.TestCase):
         offs = {off for off, _ in fake.socket_dma.reuwrites}
         self.assertIn(REU_VIDEO_BITMAP_BASE, offs)
         self.assertIn(REU_VIDEO_BITMAP_SCREEN_BASE, offs)
-        # Sizes match the constants.
         for off, data in fake.socket_dma.reuwrites:
             if off == REU_VIDEO_BITMAP_BASE:
                 self.assertEqual(len(data), REU_VIDEO_BITMAP_LEN)
@@ -719,11 +669,8 @@ class ReuHiresPushTest(unittest.TestCase):
                 self.assertEqual(len(data), REU_VIDEO_BITMAP_SCREEN_LEN)
 
     def test_render_does_not_host_trigger_reu_dma(self):
-        # The v2 architecture moved the REU→main triggers into the C64
-        # IRQ handler. The host MUST NOT write $DF01 (trigger) or
-        # $DF02-$DF08 (regs) directly per frame — that would race the
-        # C64 IRQ and add Python-paced jitter that defeats the
-        # deterministic-vblank perceptual win.
+        # A host-side $DF01 / $DF02-$DF08 write would race the C64 IRQ and add
+        # Python-paced jitter, defeating the deterministic-vblank win.
         mode = HiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         self.assertNotIn(
@@ -734,25 +681,18 @@ class ReuHiresPushTest(unittest.TestCase):
         )
 
     def test_render_does_not_dmawrite_displayed_bank(self):
-        # The whole point of bank-swap is that the bitmap/screen
-        # writes go to the OFF-SCREEN bank via REU. If we accidentally
-        # also wrote $2000 / $0400 via write_region, we'd tear the
-        # currently-displayed frame.
+        # A write_region to $2000 / $0400 would tear the displayed frame.
         mode = HiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         self.assertNotIn(0x2000, fake.regions, "REU-staged hires must not DMAWRITE bank 0 bitmap")
         self.assertNotIn(0x0400, fake.regions, "REU-staged hires must not DMAWRITE bank 0 screen")
 
     def test_off_path_still_dmawrites_directly(self):
-        # No regression: with use_reu_staged=False, render() must continue
-        # the existing bitmap+screen via write_region into bank 0.
         mode = HiresDisplayMode(use_reu_staged=False)
         fake = self._render(mode, self._frame())
         self.assertIn(0x2000, fake.regions)
         self.assertIn(0x0400, fake.regions)
-        # And no REUWRITEs.
         self.assertEqual(fake.socket_dma.reuwrites, [])
-        # And no frame tracker write.
         self.assertNotIn(f"{FRAME_TRACKER_ADDR:04X}", fake.mem_files)
 
 
@@ -785,7 +725,6 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
 
     def test_webcam_petscii_both_on_ok(self):
         # Char modes don't install a raster IRQ — single-buffer REU only.
-        # Coexisted with mic REU before the merge too; still should.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -796,9 +735,8 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         validate_scene_cfg(sc, cfg, audio_enabled=True)
 
     def test_blank_hires_edges_both_on_ok(self):
-        # Quirk preserved: blank scenes accept display = "hires_edges"
-        # but the blank branch always builds BlankDisplayMode (single-
-        # buffer REU, no IRQ install). No $0314 collision either way.
+        # Blank scenes accept display = "hires_edges" but always build
+        # BlankDisplayMode (single-buffer REU, no IRQ install), so no $0314 clash.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 
@@ -837,11 +775,6 @@ class ReuHiresWebcamCoexistenceTest(unittest.TestCase):
         cfg.audio.use_reu_pump = False
         sc = SceneCfg(type="webcam", display="mhires")
         validate_scene_cfg(sc, cfg, audio_enabled=True)
-
-
-# ============================================================================
-# MultiHires (double-buffer, bank-swap, +color RAM, +bg0) tests
-# ============================================================================
 
 
 class ReuMHiresHandlerIntegrityTest(unittest.TestCase):
@@ -972,11 +905,9 @@ class ReuMHiresSetupTest(unittest.TestCase):
         return fake, mode
 
     def test_setup_uploads_mhires_irq_handler(self):
-        # Must install the 83-byte mhires handler, NOT the 61-byte hires one.
-        # The two share the same address ($C500) but different bytes — a
-        # mix-up would either skip color DMA + bg0 (hires bytes in mhires
-        # mode → no color update) or run off the end into garbage (mhires
-        # bytes in hires mode reading uninitialized tracker bytes).
+        # The 83-byte mhires handler and the 61-byte hires one share $C500. A mix-up
+        # either skips the color DMA + bg0, or runs off the end of the shorter
+        # handler into uninitialized tracker bytes.
         fake, _ = self._setup()
         key = f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"
         self.assertIn(key, fake.mem_files)
@@ -996,9 +927,8 @@ class ReuMHiresSetupTest(unittest.TestCase):
             self.assertEqual(len(fake.mem_files[key]), REU_VIDEO_BITMAP_SCREEN_LEN)
 
     def test_setup_zeroes_24_byte_frame_tracker(self):
-        # MHires tracker is longer (24 bytes vs hires's 16). Length must
-        # match MHIRES_FRAME_TRACKER_LEN; ready flag (last byte) zero so
-        # the first IRQ skips until the host stages a real frame.
+        # The mhires tracker is 24 bytes to hires's 16, and its ready flag must start
+        # at 0 so the first IRQ skips until the host stages a real frame.
         fake, _ = self._setup()
         key = f"{FRAME_TRACKER_ADDR:04X}"
         self.assertIn(key, fake.mem_files)
@@ -1030,7 +960,6 @@ class ReuMHiresSetupTest(unittest.TestCase):
         self.assertEqual(mode._displayed_bank, 0)
 
     def test_setup_off_path_does_not_install_irq(self):
-        # use_reu_staged=False must leave the IRQ + tracker untouched.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         mode = MultiHiresDisplayMode(use_reu_staged=False)
@@ -1122,9 +1051,8 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertEqual(mode._displayed_bank, 0)
 
     def test_color_regs_target_d800_regardless_of_bank(self):
-        # $D800 isn't VIC-banked — both bank-0 and bank-2 destinations must
-        # hit the same shared color RAM. A mistake here (e.g. pointing at
-        # $D800 only when bank==0) would leave c3 stale for half of frames.
+        # $D800 isn't VIC-banked, so both bank destinations hit the same color RAM;
+        # getting it wrong leaves c3 stale on every other frame.
         mode = MultiHiresDisplayMode(use_reu_staged=True)
         # Frame 1: target_bank=1, color dest must still be $D800.
         mode._displayed_bank = 0
@@ -1143,7 +1071,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         mode = MultiHiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
-        # bitmap
         self.assertEqual(blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 2], REU_VIDEO_BITMAP_BASE & 0xFF)
         self.assertEqual(
             blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 3], (REU_VIDEO_BITMAP_BASE >> 8) & 0xFF
@@ -1155,7 +1082,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertEqual(
             blob[MHIRES_TRACKER_OFF_BITMAP_REGS + 6], (REU_VIDEO_BITMAP_LEN >> 8) & 0xFF
         )
-        # screen
         self.assertEqual(
             blob[MHIRES_TRACKER_OFF_SCREEN_REGS + 2], REU_VIDEO_BITMAP_SCREEN_BASE & 0xFF
         )
@@ -1171,7 +1097,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertEqual(
             blob[MHIRES_TRACKER_OFF_SCREEN_REGS + 6], (REU_VIDEO_BITMAP_SCREEN_LEN >> 8) & 0xFF
         )
-        # color
         self.assertEqual(
             blob[MHIRES_TRACKER_OFF_COLOR_REGS + 2], REU_VIDEO_BITMAP_COLOR_BASE & 0xFF
         )
@@ -1187,10 +1112,8 @@ class ReuMHiresPushTest(unittest.TestCase):
         )
 
     def test_tracker_carries_bg0_byte(self):
-        # bg0 is a palette index 0..15. The handler writes the tracker byte
-        # to $D021 unconditionally each frame. The value comes from the
-        # rendered frame; we can't predict it exactly without re-running
-        # quantization, but it must fit in the palette index range.
+        # bg0 is a palette index 0..15 that the handler writes to $D021 each frame.
+        # Predicting its exact value means re-running quantization, so pin the range.
         mode = MultiHiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         blob = self._tracker(fake)
@@ -1217,8 +1140,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertEqual(sizes[REU_VIDEO_BITMAP_COLOR_BASE], REU_VIDEO_BITMAP_COLOR_LEN)
 
     def test_render_does_not_host_trigger_reu_dma(self):
-        # Same as hires: host must NOT drive $DF01 or $DF02-$DF08 directly.
-        # The C64 IRQ does it from the tracker.
         mode = MultiHiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         self.assertNotIn(
@@ -1229,8 +1150,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         )
 
     def test_render_does_not_dmawrite_displayed_bank(self):
-        # The whole point: no host-side bitmap/screen/color writes. Even
-        # bg0 ($D021) must NOT be host-written; the IRQ handler does it.
         mode = MultiHiresDisplayMode(use_reu_staged=True)
         fake = self._render(mode, self._frame())
         self.assertNotIn(0x2000, fake.regions, "REU-staged mhires must not DMAWRITE bank 0 bitmap")
@@ -1244,9 +1163,6 @@ class ReuMHiresPushTest(unittest.TestCase):
         )
 
     def test_off_path_still_dmawrites_directly(self):
-        # use_reu_staged=False: render() keeps the existing direct-write
-        # path (bitmap, screen, color, bg0 all via host). Required for no
-        # regression to existing mhires configs.
         mode = MultiHiresDisplayMode(use_reu_staged=False)
         fake = self._render(mode, self._frame())
         self.assertIn(0x2000, fake.regions)
@@ -1256,17 +1172,14 @@ class ReuMHiresPushTest(unittest.TestCase):
         self.assertNotIn(f"{FRAME_TRACKER_ADDR:04X}", fake.mem_files)
 
     def test_global_palette_mode_also_uses_reu(self):
-        # _render_global and _render_percell are separate code paths; both
-        # must honor use_reu_staged. Default palette_mode is "percell"
-        # (covered above); test "cheap" (global path) explicitly.
+        # palette_mode "cheap" takes _render_global, a separate code path from the
+        # default "percell" _render_percell; both must honor use_reu_staged.
         mode = MultiHiresDisplayMode(palette_mode="cheap", use_reu_staged=True)
         fake = self._render(mode, self._frame())
-        # All three REUWRITEs fire on the global path too.
         offs = {off for off, _ in fake.socket_dma.reuwrites}
         self.assertIn(REU_VIDEO_BITMAP_BASE, offs)
         self.assertIn(REU_VIDEO_BITMAP_SCREEN_BASE, offs)
         self.assertIn(REU_VIDEO_BITMAP_COLOR_BASE, offs)
-        # And the tracker is staged.
         self.assertIn(f"{FRAME_TRACKER_ADDR:04X}", fake.mem_files)
 
 
@@ -1276,11 +1189,6 @@ class ReuMHiresFlagDefaultTest(unittest.TestCase):
 
     def test_mhires_default(self):
         self.assertFalse(MultiHiresDisplayMode().use_reu_staged)
-
-
-# ============================================================================
-# Merged dispatcher (REU video bank-swap + REU audio pump on $0314)
-# ============================================================================
 
 
 class MergedDispatcherIntegrityTest(unittest.TestCase):
@@ -1362,9 +1270,8 @@ class MergedDispatcherIntegrityTest(unittest.TestCase):
         self.assertEqual(merged[len(base) - 3 :], self.EXTENSION)
 
     def test_audio_handler_install_addr_matches_jmp_target(self):
-        # Doc-style: the merged dispatcher hardcodes $C100; if audio.py
-        # ever relocates its handler, both must move together. Pin the
-        # invariant here.
+        # The merged dispatcher hardcodes $C100; if audio.py relocates its handler,
+        # both must move together.
         self.assertEqual(AUDIO_HANDLER_INSTALL_ADDR, 0xC100)
         # And the stub is a JMP $EA31 (the kernal IRQ chain target).
         self.assertEqual(AUDIO_HANDLER_STUB, bytes([0x4C, 0x31, 0xEA]))
@@ -1386,11 +1293,9 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(handler, BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER)
 
     def test_mhires_uses_chunked_merged_handler_when_audio_active(self):
-        # 2026-05-27: mhires + REU audio defaults to the CHUNKED merged
-        # variant (146 B). The monolithic merged variant (86 B) is kept in
-        # modes_irq.py for documentation / A/B testing but is no longer used
-        # at runtime — chunked is the only way to keep NMI alive across
-        # the bitmap's 8 ms REC DMA.
+        # mhires + REU audio uses the CHUNKED merged variant (176 B). The monolithic
+        # merged variant (86 B) stays in modes_irq.py for A/B testing: only chunked
+        # keeps NMI alive across the bitmap's 8 ms REC DMA.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
@@ -1405,7 +1310,6 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         m.setup(api)
         handler = fake.mem_files[f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}"]
         self.assertEqual(handler, BANK_SWAP_IRQ_HANDLER)
-        # And the audio stub is NOT pre-uploaded when no audio pump.
         self.assertNotIn(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", fake.mem_files)
 
     def test_mhires_uses_plain_handler_when_audio_inactive(self):
@@ -1434,18 +1338,14 @@ class MergedDispatcherSetupTest(unittest.TestCase):
         self.assertEqual(stub, AUDIO_HANDLER_STUB)
 
     def test_audio_stub_uploaded_before_irq_vector_hook(self):
-        # Sequencing: the IRQ vector at $0314 must not be patched until
-        # the stub is in place at $C100. Verify the operation order on
-        # FakeAPI.ops (which records every write_memory_file and
-        # write_regs call in sequence).
+        # $0314 must not be patched until the stub is in place at $C100. FakeAPI.ops
+        # records every write_memory_file / write_regs call in sequence.
         fake = FakeAPI()
         api = cast(Ultimate64API, fake)
         m = HiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
         m.setup(api)
         stub_addr = f"{AUDIO_HANDLER_INSTALL_ADDR:04X}".lower()
         vec_addr = f"{VECTORS.IRQ:04X}".lower()
-        # Find the first op that uploads the stub and the first op that
-        # writes the IRQ vector. Stub must come first.
         stub_idx = next(
             i
             for i, op in enumerate(fake.ops)
@@ -1480,8 +1380,7 @@ class MergedDispatcherFlagWiringTest(unittest.TestCase):
         self.assertTrue(m.audio_reu_pump_active)
 
     def test_audio_flag_default_off(self):
-        # Don't silently promote existing configs onto the merged
-        # dispatcher path.
+        # Don't silently promote existing configs onto the merged dispatcher path.
         m = _build_display_mode("hires", use_reu_staged=True)
         assert isinstance(m, HiresDisplayMode)
         self.assertFalse(m.audio_reu_pump_active)

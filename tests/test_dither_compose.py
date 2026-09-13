@@ -8,9 +8,7 @@ relative to "none" on a smooth gradient (where dithering has visible work to
 do).
 """
 
-# FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
-# argument-type complaints across the file (same pattern as
-# test_bitmap_compose.py / test_mcm_mode.py).
+# FakeAPI is a duck-typed stub of Ultimate64API.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 

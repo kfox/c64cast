@@ -82,12 +82,8 @@ class SidHostEmuHelpersTest(unittest.TestCase):
         self.assertIn("spins on a raster/IRQ", refusal)
 
     def test_preflight_says_so_when_the_budget_ran_out_first(self):
-        # The two refusals are different facts and the caller's message has to
-        # tell them apart: "this tune spins" is a verdict about the tune,
-        # "we ran out of analysis budget" is a verdict about us. Reporting the
-        # second as the first is a message this gate has already been wrong
-        # about once, and it sends a maintainer looking for a raster spin that
-        # is not there.
+        # The two refusals are different facts: "this tune spins" is a verdict
+        # about the tune, "we ran out of analysis budget" is a verdict about us.
         from c64cast.sid.sid_host_emu import HostEmuBudget
 
         sid = make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60))
@@ -138,8 +134,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
 
     def test_bitmap_display_rejects_overlapping_payload(self):
         path = self._write(make_psid(load=0x1000, payload=(0x60,) * 0x1500))
-        # The single-candidate skip logs a WARNING before the hard raise;
-        # assertLogs captures it so the console stays clean.
+        # The single-candidate skip logs a WARNING before the hard raise.
         with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
             with self.assertRaisesRegex(ValueError, "hires bitmap"):
                 self._src(path, is_bitmapped=True)
@@ -160,13 +155,11 @@ class SidFileAudioSourceTest(unittest.TestCase):
         assert avoid is not None
         self.assertEqual(len(avoid), 0x10000)
         self.assertTrue(all(avoid[0x0400 : 0x0400 + 1000]))
-        # Char display doesn't reserve the bitmap — leave $2000 free for the
-        # player MC if it wants it.
+        # Char display doesn't reserve the bitmap — $2000 stays free for the player MC.
         self.assertFalse(any(avoid[0x2000 : 0x2000 + 8000]))
 
     def test_setup_bitmap_reserves_bitmap_region(self):
-        # High-load SID so the bitmap display accepts it; then avoid must
-        # reserve both $0400 and $2000.
+        # High-load SID so the bitmap display accepts it; avoid reserves $0400 and $2000.
         path = self._write(make_psid(load=0x4000, init=0x4000, play=0x4001, payload=(0x60, 0x60)))
         api = FakeAPI()
         src = SidFileAudioSource(
@@ -182,8 +175,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
     def test_teardown_silences_in_order(self):
         path = self._write(make_psid())
         api = FakeAPI()
-        # Record call order: vector restore MUST precede silence (so a PLAY
-        # tick can't rewrite the SID between the volume-clear and gate-clears).
+        # Vector restore MUST precede silence, or a PLAY tick rewrites the SID between
+        # the volume-clear and the gate-clears.
         order: list[str] = []
         for name in ("restore_kernal_irq_vector", "silence_sid"):
             orig = getattr(api, name)
@@ -205,11 +198,9 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertEqual(order, ["restore_kernal_irq_vector", "silence_sid"])
 
     def test_teardown_zero_fills_extra_chips_before_config_restore(self):
-        # A 2SID tune on the U2+ emulated-stereo-SID surface: the chip at
-        # $D420 must be zeroed BEFORE the config restore re-points that side
-        # at its home base — a side moved home mid-note keeps ringing where
-        # no write can ever reach it, and a machine reset does not clear the
-        # emulation's voice state (HW-verified).
+        # A 2SID tune on the U2+ emulated-stereo-SID surface: $D420 must be zeroed
+        # BEFORE the config restore re-points that side at its home base — a side moved
+        # home mid-note keeps ringing, and a reset does not clear voice state (HW-verified).
         path = self._write(make_psid(second_sid_addr=0xD420))
         api = FakeAPI.u2plus()
         api.config_store["Audio Output Settings"] = {
@@ -234,8 +225,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
             path,
             display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
         )
-        # setup warns that $D420 is undeclared on this machine (covered in
-        # test_sid_resolved) — assertLogs keeps it off the console.
+        # setup warns that $D420 is undeclared here (asserted in test_sid_resolved).
         with self.assertLogs("c64cast.sid.sid_resolved", level="WARNING"):
             src.setup()
         api.ops.clear()  # only the teardown ordering is under test
@@ -253,11 +243,9 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertLess(zero_fill, restore)
 
     def test_a_failing_vector_restore_does_not_starve_the_silence(self):
-        # The IRQ-vector restore is a REST call, and the silences behind it are
-        # this source's promise to the next scene. One `try` around both meant
-        # a link error on the vector left every chip ringing until something
-        # else happened to write $D418 — and `SourceScene`'s teardown swallows
-        # the raise, so the tune just kept playing with no failure in sight.
+        # The IRQ-vector restore is a REST call. One `try` around both meant a link
+        # error on the vector left every chip ringing, and SourceScene's teardown
+        # swallows the raise, so the tune kept playing with no failure in sight.
         path = self._write(make_psid(second_sid_addr=0xD420))
         api = FakeAPI()
         silenced: list[str] = []
@@ -281,9 +269,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertEqual(silenced, ["silence_sid"], "the primary chip keeps ringing")
 
     def test_emusid_sides_are_set_to_the_requested_model(self):
-        # sid_model on the U2+ reaches the emulated SIDs: the side snooping the
-        # tune's chip is told which chip to be, and teardown puts the user's
-        # model back.
+        # sid_model on the U2+ reaches the emulated SIDs: the side snooping the tune's
+        # chip is told which chip to be, and teardown puts the user's model back.
         path = self._write(make_psid())
         api = FakeAPI.u2plus()
         api.config_store["Audio Output Settings"] = {
@@ -313,9 +300,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
         )
 
     def test_pool_retry_skips_bad_candidate(self):
-        # A directory with one spinning SID + one healthy SID: the source must
-        # skip the bad one and pick the good one. Stub the shuffle to an
-        # in-place sort so "bad.sid" (sorts first) is tried first deterministically.
+        # One spinning SID + one healthy SID. Shuffle is stubbed to an in-place sort
+        # so "bad.sid" (sorts first) is tried first deterministically.
         from unittest.mock import patch
 
         d = tempfile.mkdtemp()
@@ -324,8 +310,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
             f.write(make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x4C, 0x01, 0x10)))
         with open(os.path.join(d, "good.sid"), "wb") as f:
             f.write(make_psid(init=0x1000, play=0x1001, payload=(0x60, 0x60)))
-        # The skip logs a warning — assertLogs both verifies the skip AND keeps
-        # the console clean.
+        # The skip logs a warning; assertLogs verifies it and keeps the console clean.
         with patch("c64cast.audio.audio_source.random.shuffle", lambda x: x.sort()):
             with self.assertLogs("c64cast.audio.audio_source", level="WARNING"):
                 src = self._src(d + "/*.sid", is_bitmapped=False)
@@ -341,10 +326,9 @@ class SidFileAudioSourceTest(unittest.TestCase):
             self._src(path, is_bitmapped=False)
 
     def test_the_pool_walk_shares_one_analysis_budget(self):
-        # Each candidate costs an INIT plus a 50-pass PLAY pre-flight, both
-        # priced by the tune, so a per-candidate bound is no bound on the walk.
-        # The budget object handed to the pre-flight must be the same one for
-        # every candidate — that identity IS the bound.
+        # Each candidate costs an INIT plus a 50-pass PLAY pre-flight, both priced by
+        # the tune, so a per-candidate bound is no bound on the walk. One budget object
+        # shared by every candidate — that identity IS the bound.
         from unittest.mock import patch
 
         from c64cast.sid import sid_host_emu
@@ -379,10 +363,8 @@ class SidFileAudioSourceTest(unittest.TestCase):
 
         path = self._write(make_psid())
         src = self._src(path, reactive=True)
-        # A real poll thread runs here. It warns when a catch-up batch uses up
-        # its whole time bound, which on a loaded worker is possible and is
-        # incidental to what this test asserts; music_features.CatchupBoundTest
-        # is where that warning is asserted.
+        # The poll thread warns when a catch-up batch uses its whole time bound;
+        # incidental here, and asserted in music_features.CatchupBoundTest.
         self.enterContext(quiet_logging())
         src.setup()
         self.addCleanup(src.teardown)
@@ -398,8 +380,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
         self.assertIsNone(src.features())  # no stream built when reactive=False
 
     def test_feature_stream_failure_degrades_to_non_reactive(self):
-        # A feature-stream startup failure must not crash setup — playback
-        # continues, features() just returns None.
+        # A feature-stream startup failure must not crash setup; features() returns None.
         from unittest.mock import patch
 
         path = self._write(make_psid())
@@ -492,8 +473,8 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertEqual(scene.target_fps, 12.0)
 
     def test_ensemble_does_not_suppress_sid_source(self):
-        # A SID source legitimately holds the audio spotlight; ensemble mode
-        # must not null it out (wants_audio_lock gates the slot instead).
+        # A SID source legitimately holds the audio spotlight (wants_audio_lock gates
+        # the slot instead).
         scene = self._build(display="petscii")  # is_ensemble defaults False
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import build_scene
@@ -519,8 +500,7 @@ class ConfigSidGenerativeTest(unittest.TestCase):
         self.assertFalse(scene.audio_source._reactive)
 
     def test_validate_load_time_rejects_bitmap_overlap(self):
-        # A typical $1000-load tune with a real-sized payload overlaps $2000 —
-        # rejected at validate_scene_cfg time on a bitmap display.
+        # A typical $1000-load tune with a real-sized payload overlaps $2000.
         from c64cast.app.config import SceneCfg
         from c64cast.app.scene_factory import validate_scene_cfg
 

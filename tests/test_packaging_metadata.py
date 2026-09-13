@@ -52,9 +52,8 @@ class TestExtrasUnion(unittest.TestCase):
         union = {req for name, reqs in extras.items() if name != "all" for req in reqs}
         got = set(extras["all"])
 
-        # Report both directions — "which feature did `all` stop installing"
-        # and "what did it pick up that no real extra asks for" are different
-        # mistakes with different fixes.
+        # Report both directions — "which feature did `all` stop installing" and
+        # "what did it pick up that no real extra asks for" are different mistakes.
         self.assertEqual(
             got,
             union,

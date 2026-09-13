@@ -112,9 +112,8 @@ class SaveSettingsTest(unittest.TestCase):
 
     def test_bad_url_exits_2_not_a_traceback(self):
         # ConnectionURIError (a ValueError) used to escape main() here as an
-        # uncaught traceback instead of the exit-2 usage error connect.py's
-        # docstring promises — --save-settings is dispatched before
-        # _resolve_configs' try/except, and had no guard of its own.
+        # uncaught traceback instead of the exit-2 usage error connect.py's docstring
+        # promises: --save-settings dispatches before _resolve_configs' try/except.
         rc, _ = self._main(["-u", "not-a-connection-target", "--save-settings"])
         self.assertEqual(rc, 2)
         self.assertFalse(os.path.exists(self._settings))

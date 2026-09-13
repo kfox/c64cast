@@ -34,10 +34,6 @@ from c64cast.hw.api import (
 from c64cast.hw.backend import BackendCapabilityError
 from c64cast.hw.c64 import CPU, KERNAL, VECTORS
 
-# --------------------------------------------------------------------------
-# Fixtures
-# --------------------------------------------------------------------------
-
 
 def _synth_charset(n_sets: int = 2) -> bytes:
     """A structurally valid charset: distinctive glyphs for screen codes
@@ -133,11 +129,6 @@ class _CharRomTestCase(unittest.TestCase):
         return p
 
 
-# --------------------------------------------------------------------------
-# verify
-# --------------------------------------------------------------------------
-
-
 class VerifyTest(unittest.TestCase):
     def test_accepts_a_synthesized_charset(self):
         for n_sets in (1, 2):
@@ -153,9 +144,8 @@ class VerifyTest(unittest.TestCase):
         self.assertIn("too short", r.error)
 
     def test_rejects_io_or_ram_garbage(self):
-        # The failure this exists to catch: the $01 bank never took, so the
-        # copy read I/O registers / live RAM. Structurally that is *not* two
-        # complementary halves, however plausible the bytes look.
+        # The failure this catches: the $01 bank never took, so the copy read I/O
+        # registers or live RAM — structurally *not* two complementary halves.
         garbage = bytes((i * 37 + 11) & 0xFF for i in range(4096))
         r = char_rom.verify(garbage)
         self.assertFalse(r.ok)
@@ -184,9 +174,8 @@ class VerifyTest(unittest.TestCase):
         self.assertIn("$20", r.error)
 
     def test_tolerates_the_stock_reverse_at_glyph_anomaly(self):
-        # The stock 901225-01's reverse `@` ($80) is NOT the exact complement
-        # of `@` ($00) — one byte differs. A verifier demanding exactness would
-        # reject the very ROM it is meant to accept.
+        # The stock 901225-01's reverse `@` ($80) is NOT the exact complement of `@`
+        # ($00) — one byte differs. Demanding exactness rejects the real ROM.
         data = bytearray(_synth_charset(1))
         data[(0x80) * 8 + 5] ^= 0x04
         self.assertTrue(char_rom.verify(bytes(data)).ok)
@@ -204,11 +193,6 @@ class VerifyTest(unittest.TestCase):
             char_rom.STOCK_DIGESTS, {char_rom.verify(data).sha256: "the stock one"}
         ):
             self.assertEqual(char_rom.verify(data).note, "the stock one")
-
-
-# --------------------------------------------------------------------------
-# resolve / load_glyphs
-# --------------------------------------------------------------------------
 
 
 class ResolveTest(_CharRomTestCase):
@@ -253,11 +237,9 @@ class LoadGlyphsTest(_CharRomTestCase):
             self.assertEqual(char_rom.load_glyphs(), _builtin_charset())
 
     def test_explicit_paths_are_not_served_from_the_shared_cache(self):
-        # The cache is keyed by nothing (one shared charset is the point), so
-        # an explicit path must bypass it or the second caller gets the first
-        # caller's glyphs. Two independently-valid-but-distinct sets (not a
-        # byte-reversed charset, which fails the complement check and falls
-        # back to the builtin font instead of proving this).
+        # The cache is keyed by nothing (one shared charset is the point), so an
+        # explicit path must bypass it. Two distinct valid sets — not a byte-reversed
+        # charset, which fails the complement check and falls back to the builtin font.
         both_sets = _synth_charset(2)
         a = self.write_file("a.bin", both_sets[:2048])
         b = self.write_file("b.bin", both_sets[2048:])
@@ -275,10 +257,8 @@ class LoadGlyphsTest(_CharRomTestCase):
         self.assertEqual(glyphs, _builtin_charset())
 
     def test_a_resolvable_but_garbage_file_falls_back_with_a_warning(self):
-        # Two definitions of "a usable charset" used to live in this module:
-        # install_data() ran verify(), but the load path only length-checked,
-        # so any 2 KB file at a resolved path rendered garbage glyphs with no
-        # diagnostic at all.
+        # install_data() ran verify(), but the load path only length-checked, so any
+        # 2 KB file at a resolved path rendered garbage glyphs with no diagnostic.
         from c64cast.video.framebuffer import _builtin_charset
 
         garbage = self.write_file("garbage.bin", bytes((i * 37 + 11) & 0xFF for i in range(2048)))
@@ -305,11 +285,6 @@ class LoadGlyphsTest(_CharRomTestCase):
             self.assertEqual(char_rom.load_glyphs(), data[:2048])
 
 
-# --------------------------------------------------------------------------
-# install
-# --------------------------------------------------------------------------
-
-
 class InstallTest(_CharRomTestCase):
     def test_round_trip(self):
         src = self.write_file("src.bin", _synth_charset())
@@ -326,11 +301,6 @@ class InstallTest(_CharRomTestCase):
     def test_missing_file_raises_oserror(self):
         with self.assertRaises(OSError):
             char_rom.install("/nonexistent/chargen.bin")
-
-
-# --------------------------------------------------------------------------
-# The 6502 dump stub
-# --------------------------------------------------------------------------
 
 
 class DumpStubTest(unittest.TestCase):
@@ -435,11 +405,6 @@ class DumpStubTest(unittest.TestCase):
         self.assertEqual(mem[char_rom_flag_addr(stub, base)], 0xFF)
 
 
-# --------------------------------------------------------------------------
-# dump / ensure_installed orchestration
-# --------------------------------------------------------------------------
-
-
 class DumpTest(_CharRomTestCase):
     def test_dump_returns_verified_bytes(self):
         data = _synth_charset()
@@ -494,9 +459,8 @@ class EnsureInstalledTest(_CharRomTestCase):
         self.assertEqual(be.calls, 0)
 
     def test_a_garbage_configured_file_does_not_suppress_the_dump(self):
-        # A resolved-but-unverifiable file used to count as "already have a
-        # charset", permanently skipping the auto-dump behind glyphs that
-        # never rendered right in the first place.
+        # A resolved-but-unverifiable file used to count as "already have a charset",
+        # permanently skipping the auto-dump behind glyphs that never rendered right.
         configured = self.write_file("mine.bin", bytes((i * 37 + 11) & 0xFF for i in range(2048)))
         be = _FakeBackend(_synth_charset())
         self.assertTrue(char_rom.ensure_installed(be, self._cfg(charset_path=str(configured))))
@@ -541,11 +505,6 @@ class EnsureInstalledTest(_CharRomTestCase):
             self.assertFalse(char_rom.ensure_installed(_FakeBackend(garbage), self._cfg()))
         self.assertFalse(char_rom.installed_path().exists())
         self.assertEqual(char_rom.load_glyphs(), _builtin_charset())
-
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
 
 
 class InstallCharRomCliTest(_CharRomTestCase):
@@ -637,11 +596,9 @@ class DumpCharRomCliTest(_CharRomTestCase):
         self.assertFalse(char_rom.installed_path().exists())
 
     def _run_uncaptured(self, be) -> int:
-        # Bypasses cli.main() (and its configure_logging() call) so
-        # assertLogs can capture without a real terminal handler also firing
-        # — see test_save_settings.py's identical note. Still redirects
-        # stdout: run_dump_char_rom prints on success, same as cli.main()'s
-        # own callers redirect.
+        # Bypasses cli.main() (and its configure_logging() call) so assertLogs can
+        # capture without a real terminal handler also firing. Still redirects stdout:
+        # run_dump_char_rom prints on success.
         import io
         from contextlib import redirect_stdout
 

@@ -75,9 +75,6 @@ from c64cast.hw.socket_dma import SocketDMAError
 
 class DmaLatencyTest(unittest.TestCase):
     def setUp(self):
-        # Patch connect() so the constructor doesn't try to open a real
-        # TCP socket. dmawrite/flush are also stubbed on the instance
-        # below for tests that need to drive latency samples directly.
         patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
         self.addCleanup(patcher.stop)
         patcher.start()
@@ -93,7 +90,6 @@ class DmaLatencyTest(unittest.TestCase):
         self.assertIsNone(self.api.format_write_latency())
 
     def test_format_string(self):
-        # Seed the window directly so we don't depend on a real socket.
         for _ in range(3):
             self.api.socket_dma._latencies.append(0.010)  # 10 ms
         line = self.api.format_write_latency()
@@ -111,7 +107,6 @@ class DmaLatencyTest(unittest.TestCase):
             self.assertIn(token, line)
 
     def test_summary_percentiles(self):
-        # 100 samples 1..100 ms — easy nearest-rank percentiles to verify.
         for i in range(1, 101):
             self.api.socket_dma._latencies.append(i / 1000.0)
         avg, p50, p95, mx, n = self.api.socket_dma.latency_summary()
@@ -147,10 +142,8 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
         self.assertEqual(self.api.stats["writes"], 0)
 
     def test_socketdmaerror_from_reconnect_is_absorbed(self):
-        # The production crash: send times out, transparent reconnect
-        # attempt's IDENTIFY also times out and is re-raised as
-        # SocketDMAError. _emit must NOT propagate it — the playlist
-        # would otherwise tear down the current scene and advance.
+        # Regression: the reconnect's IDENTIFY also times out and re-raises as
+        # SocketDMAError; propagating it would tear down the scene and advance.
         with patch.object(
             self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("no reply to IDENTIFY")
         ):
@@ -159,9 +152,8 @@ class DmaWriteErrorHandlingTest(unittest.TestCase):
         self.assertEqual(self.api.stats["writes"], 0)
 
     def test_consecutive_errors_reset_on_success(self):
-        # Drive a couple of failures then a success — the consecutive
-        # counter feeds the escalating warning ladder, so a recovery
-        # must reset it or the user sees stale "200 consecutive" alerts.
+        # The counter feeds the escalating warning ladder — a stale count means
+        # stale "200 consecutive" alerts.
         with patch.object(self.api.socket_dma, "dmawrite", side_effect=SocketDMAError("boom")):
             self.api._emit(0xD020, b"\x0e")
             self.api._emit(0xD020, b"\x0e")
@@ -189,13 +181,8 @@ class RunSidPlayerTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
-        # Stub the wire-level write + flush + REST POST so the test runs
-        # against in-process state only.
-        # dma_writes tracks the SID-upload contract this class tests (payload
-        # / player MC / re-INIT stub); the pre-flight blank_display() write to
-        # $D011 (see _launch_sid_player) is recorded separately since it's
-        # orthogonal to that contract and would otherwise shift every
-        # index-based assertion below.
+        # $D011 blank_display() writes are recorded apart from the SID-upload writes
+        # this class tests, or they would shift every index-based assertion below.
         self.dma_writes: list[tuple[int, bytes]] = []
         self.blank_writes: list[tuple[int, bytes]] = []
 
@@ -220,9 +207,6 @@ class RunSidPlayerTest(unittest.TestCase):
             return _R()
 
         patch.object(self.api.session, "post", side_effect=_fake_post).start()
-        # _tune_play_divider sleeps + REST-reads CIA #1 after run_sid_player.
-        # No-op it here so the per-tune tests stay fast and don't accidentally
-        # hit the (fake) network.
         patch.object(self.api, "_tune_play_divider", return_value=1).start()
 
     def tearDown(self):
@@ -230,8 +214,6 @@ class RunSidPlayerTest(unittest.TestCase):
         with patch.object(self.api.socket_dma, "close"):
             self.api.close()
 
-    # ---- header construction helper (this file's defaults over the
-    # shared PSID builder) ----------------------------------------------
     @staticmethod
     def _make_sid(
         *,
@@ -253,7 +235,6 @@ class RunSidPlayerTest(unittest.TestCase):
             payload=bytes(payload_len),
         )
 
-    # ---- validation --------------------------------------------------
     def test_rejects_rsid(self):
         with self.assertRaisesRegex(ValueError, "RSID"):
             self.api.run_sid_player(self._make_sid(magic=b"RSID"))
@@ -270,19 +251,14 @@ class RunSidPlayerTest(unittest.TestCase):
             self.api.run_sid_player(self._make_sid(load=0x081F))
 
     def test_accepts_load_addr_just_past_stub(self):
-        # $0820 is the first acceptable load address.
         self.api.run_sid_player(self._make_sid(load=0x0820))
         # 3 DMA writes (payload + main MC + re-INIT stub) + 1 POST.
         self.assertEqual(len(self.dma_writes), 3)
         self.assertEqual(len(self.posts), 1)
 
     def test_mc_restores_master_volume_after_init(self):
-        # The player MC must write $D418=$0F right after JSR init returns,
-        # so the SID is audible regardless of whether an earlier
-        # audio.stop() zeroed $D418 (clean cutoff for videos) or
-        # whether INIT itself touched $D418. Verify the literal bytes
-        # land at the documented offsets — a regression here would
-        # silently mute the SID.
+        # $D418=$0F right after JSR init returns, so the SID is audible whether or
+        # not an earlier audio.stop() zeroed it or INIT itself touched it.
         self.api.run_sid_player(self._make_sid(load=0x0820))
         _, mc = self.dma_writes[1]
         # After JSR init the player restores the resting bank (LDA #$37 /
@@ -306,7 +282,6 @@ class RunSidPlayerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "KERNAL ROM"):
             self.api.run_sid_player(self._make_sid(load=0xE000, init=0xE000, play=0xE003))
 
-    # ---- U2+ emulated-SID snoop window -------------------------------
     def _u2plus(self):
         """Re-profile the API as a U2+ (emulated stereo SIDs, no U64 multi-SID
         surface) without rebuilding the whole fixture."""
@@ -315,11 +290,9 @@ class RunSidPlayerTest(unittest.TestCase):
         self.api.profile = replace(self.api.profile, supports_emusid_mixer=True)
 
     def test_payload_in_the_snoop_window_warns_but_still_plays(self):
-        # The U2+ takes SID writes off the cartridge port, which can't
-        # distinguish them from writes to the RAM underneath — so a tune living
-        # there is heard as register writes on the Ultimate's audio output.
-        # A warning, never a refusal: the tune plays correctly, and the C64's
-        # own output is unaffected.
+        # The U2+ takes SID writes off the cartridge port and cannot tell them from
+        # writes to the RAM underneath, so a tune living there is heard as register
+        # writes on the Ultimate's audio output. The C64's own output is unaffected.
         self._u2plus()
         with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
             self.api.run_sid_player(self._make_sid(load=0xD400, init=0xD400, play=0xD403))
@@ -332,12 +305,10 @@ class RunSidPlayerTest(unittest.TestCase):
             self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
 
     def test_no_warning_on_a_backend_without_emulated_sids(self):
-        # A U64 (or TeensyROM) has no snooping emulation, so the same tune is
-        # unremarkable there.
+        # A U64 (or TeensyROM) has no snooping emulation, so the same tune is fine.
         with self.assertNoLogs("c64cast.hw.api", level="WARNING"):
             self.api.run_sid_player(self._make_sid(load=0xD400, init=0xD400, play=0xD403))
 
-    # ---- CPU-port (memory bank) selection ----------------------------
     def test_bank_for_addr_hi_rule(self):
         # getBank rule mirrored from the U64 firmware (sidcommon.asm).
         self.assertEqual(_bank_for_addr_hi(0x10), CPU.PORT_DEFAULT)  # low RAM
@@ -349,14 +320,11 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(_bank_for_addr_hi(0xE0), CPU.PORT_KERNAL_OUT)  # KERNAL ROM
 
     def test_init_play_bank_default_for_normal_tune(self):
-        # A tune in ordinary low RAM keeps the default $37 for both banks.
         parsed = parse_psid_for_player(self._make_sid(load=0x1000, init=0x1003, play=0x1006))
         self.assertEqual(_init_bank_for(parsed), CPU.PORT_DEFAULT)
         self.assertEqual(_play_bank_for(parsed), CPU.PORT_DEFAULT)
 
     def test_init_bank_keys_on_load_end_not_load_start(self):
-        # A tune loading from low RAM whose payload extends under BASIC ROM
-        # gets $36 for init (load-end page), keyed on the END not the start.
         parsed = parse_psid_for_player(
             self._make_sid(load=0x9F00, init=0xC000, play=0xC003, payload_len=0x2000)
         )  # ends ~$BF00
@@ -364,9 +332,7 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(_play_bank_for(parsed), CPU.PORT_BASIC_OUT)  # play $C0
 
     def test_under_basic_rom_tune_patches_both_bank_bytes(self):
-        # Hyperion-2-like: init/play under BASIC ROM. Player MC carries $36
-        # for BOTH the init-bank and play-bank slots; re-INIT stub carries
-        # $36 for its init-bank slot.
+        # Hyperion-2-like: init/play under BASIC ROM.
         self.api.run_sid_player(self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
         _, mc = self.dma_writes[1]
         _, stub = self.dma_writes[2]
@@ -378,9 +344,8 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(mc[_SID_PATCH_PLAYBANK + 1 : _SID_PATCH_PLAYBANK + 3], bytes([0x85, 0x01]))
 
     def test_player_rests_at_default_bank_between_calls(self):
-        # The resting bank is $37: restored right after JSR init and after
-        # JSR play (LDA #$37 / STA $01 in both spots), even for an under-ROM
-        # tune. This is what keeps tunes like Election from crashing.
+        # $37 is restored right after JSR init and after JSR play, even for an
+        # under-ROM tune — this is what keeps tunes like Election from crashing.
         self.api.run_sid_player(self._make_sid(load=0xAE2A, init=0xAE2A, play=0xAE32))
         _, mc = self.dma_writes[1]
         # After JSR init (operand at _SID_PATCH_INIT_LO/_HI), bytes are
@@ -391,11 +356,9 @@ class RunSidPlayerTest(unittest.TestCase):
         after_play = _SID_PATCH_PLAY_HI + 1
         self.assertEqual(mc[after_play : after_play + 4], bytes([0xA9, 0x37, 0x85, 0x01]))
 
-    # ---- MC patching -------------------------------------------------
     def test_mc_template_byte_offsets_round_trip(self):
-        # Sanity: the named patch offsets land on the expected opcodes
-        # (the address-bearing bytes themselves are 0x00 placeholders in
-        # the template; they're filled per-tune by _build_player_mc).
+        # The address-bearing bytes are 0x00 placeholders in the template, filled
+        # per-tune by _build_player_mc; check the opcodes that precede them.
         t = SID_PLAYER_MC_TEMPLATE
         # Leads with SEI then LDA #<initBank> / STA $01 (the CPU-port set).
         self.assertEqual(t[0], 0x78)  # SEI
@@ -423,18 +386,14 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(t[_SID_PATCH_DIVIDER - 1], 0xA9)  # LDA #N
         # Divider seed = 1 (chain-every-tick until host measures rate).
         self.assertEqual(t[_SID_PATCH_DIVIDER], 0x01)
-        # Address-bearing offsets must derive from the chosen
-        # player_base + these stable offset constants. _SID_PATCH_IRQ_*
-        # points at LDA #imm operands, so the byte AT the offset is the
-        # immediate value (= base + IRQ_HANDLER_OFFSET) once patched.
+        # _SID_PATCH_IRQ_* points at LDA #imm operands, so the byte AT the offset is
+        # the immediate value (= player_base + IRQ_HANDLER_OFFSET) once patched.
         self.assertEqual(SID_PLAYER_IRQ_HANDLER_OFFSET, 42)
         self.assertEqual(SID_PLAYER_SPIN_OFFSET, 39)
         self.assertEqual(SID_PLAYER_COUNTER_OFFSET, 72)
         self.assertEqual(SID_PLAYER_DIVIDER_OFFSET, 59)
-        # Counter byte at the COUNTER_OFFSET position is seeded to 1.
         self.assertEqual(t[SID_PLAYER_COUNTER_OFFSET], 0x01)
-        # Template length sanity — drift here usually means an offset
-        # constant is stale.
+        # Drift here usually means an offset constant is stale.
         self.assertEqual(len(t), SID_PLAYER_COUNTER_OFFSET + 1)
         # Lean exit at offset 66: LDA $DC0D / JMP $EA81. Without the
         # $DC0D read the CIA #1 IRQ flag never clears and the IRQ
@@ -465,9 +424,8 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(mc[_SID_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         self.assertEqual(mc[_SID_PATCH_SPIN_LO], expected_spin & 0xFF)
         self.assertEqual(mc[_SID_PATCH_SPIN_HI], (expected_spin >> 8) & 0xFF)
-        # All three counter-address operands must point at the same byte
-        # (the live counter at counter_addr); a desync would crash the
-        # IRQ handler since DEC/STA would touch unrelated memory.
+        # All three counter-address operands must point at the same byte; a desync
+        # crashes the IRQ handler, since DEC/STA would touch unrelated memory.
         for lo, hi in [
             (_SID_PATCH_CTR_INIT_LO, _SID_PATCH_CTR_INIT_HI),
             (_SID_PATCH_CTR_DEC_LO, _SID_PATCH_CTR_DEC_HI),
@@ -485,9 +443,6 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(mc[_SID_PATCH_SONG], 3 - 1)
 
     def test_basic_stub_posted_targets_player_base(self):
-        # After run_sid_player, the POSTed BASIC PRG's SYS argument must
-        # be the same decimal address the player MC was uploaded to. If
-        # they drift apart, BASIC would SYS into garbage.
         self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         self.assertEqual(len(self.posts), 1)
         _, prg = self.posts[0]
@@ -503,9 +458,6 @@ class RunSidPlayerTest(unittest.TestCase):
         )
 
     def test_build_basic_sys_stub_round_trip(self):
-        # The builder must produce a valid one-line `10 SYS <decimal>`
-        # PRG for arbitrary addresses (the relocated-player path picks
-        # non-default values).
         prg = _build_basic_sys_stub(0xC500)
         # Load address $0801.
         self.assertEqual(prg[:2], b"\x01\x08")
@@ -517,12 +469,9 @@ class RunSidPlayerTest(unittest.TestCase):
         # SYS token + space + "50432" + EOL + end-of-program.
         self.assertEqual(prg[6:], b"\x9e\x2050432\x00\x00\x00")
 
-    # ---- re-INIT stub (cue_song_reinit) ------------------------------
     def test_reinit_stub_uploaded_after_player_mc(self):
-        # run_sid_player uploads the re-INIT stub as the 3rd DMA write
-        # (after payload + main MC). cue_song_reinit later assumes it's
-        # already in place — patching a non-existent stub would crash
-        # the C64 on the next IRQ.
+        # The stub is the 3rd DMA write, after payload + main MC. cue_song_reinit
+        # assumes it is in place; patching one that isn't crashes the next IRQ.
         self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         self.assertEqual(len(self.dma_writes), 3)
         addr, stub = self.dma_writes[2]
@@ -530,8 +479,7 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(len(stub), len(REINIT_STUB_TEMPLATE))
 
     def test_reinit_stub_template_offsets(self):
-        # Sanity: the named patch offsets land on the expected opcodes
-        # (the address-bearing bytes are 0x00 placeholders in the template).
+        # The address-bearing bytes are 0x00 placeholders in the template.
         t = REINIT_STUB_TEMPLATE
         # Leads with LDA #<bank> / STA $01 (no SEI — already in IRQ ctx).
         self.assertEqual(t[_REINIT_PATCH_BANK - 1], 0xA9)  # LDA #<bank>
@@ -550,15 +498,13 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(
             t[_REINIT_PATCH_IRQ_HI + 1 : _REINIT_PATCH_IRQ_HI + 4], bytes([0x8D, 0x15, 0x03])
         )
-        # Tail must chain to the kernal IRQ at $EA31 — otherwise the
-        # CPU would never return to the spin loop after re-INIT.
+        # Without the chain to $EA31 the CPU never returns to the spin loop.
         self.assertEqual(t[-3:], bytes([0x4C, 0x31, 0xEA]), "stub must end with JMP $EA31")
 
     def test_reinit_stub_uploaded_restores_play_handler_vector(self):
-        # The uploaded (patched) stub must re-install $0314/$0315 →
-        # player_base + SID_PLAYER_IRQ_HANDLER_OFFSET so subsequent IRQ
-        # ticks resume calling PLAY. If the embedded addr drifts from
-        # the main player's IRQ entry, subsequent IRQs JMP into garbage.
+        # The patched stub re-installs $0314/$0315 → player_base +
+        # SID_PLAYER_IRQ_HANDLER_OFFSET, so later IRQ ticks resume calling PLAY
+        # instead of jumping into garbage.
         self.api.run_sid_player(self._make_sid(load=0x2000, init=0x2003, play=0x2006))
         _, stub = self.dma_writes[2]
         expected_irq = SID_PLAYER_MC_ADDR + SID_PLAYER_IRQ_HANDLER_OFFSET
@@ -566,9 +512,8 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(stub[_REINIT_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
 
     def test_reinit_stub_restores_master_volume(self):
-        # The stub writes $D418=$0F after JSR init. Without this, a
-        # PSID INIT that zeroes $D418 (some do) would leave the SID
-        # silent until the user cycles again.
+        # $D418=$0F after JSR init: some PSID INITs zero the master volume, which
+        # would otherwise leave the SID silent until the user cycles.
         t = REINIT_STUB_TEMPLATE
         # After JSR init the stub restores the resting bank ($37) at 13-16,
         # then the master volume. Bytes 17-21: LDA #$0F ; STA $D418.
@@ -582,22 +527,17 @@ class RunSidPlayerTest(unittest.TestCase):
             song=5,
         )
         _, stub = self.dma_writes[2]
-        # Pre-seeded with the starting song so an immediate cue without
-        # a song change replays the same INIT.
+        # Pre-seeded with the starting song, so a cue with no song change replays
+        # the same INIT.
         self.assertEqual(stub[_REINIT_PATCH_SONG], 5 - 1)
-        # init_addr matches the main player so cue_song_reinit only
-        # needs to re-patch the song byte.
+        # init_addr matches the main player, so a cue only re-patches the song byte.
         self.assertEqual(stub[_REINIT_PATCH_INIT_LO], 0x03)
         self.assertEqual(stub[_REINIT_PATCH_INIT_HI], 0x20)
 
     def test_cue_song_reinit_patches_song_and_swaps_vector(self):
-        # Bring the stub up via run_sid_player first (cue assumes it's
-        # already in place at REINIT_STUB_ADDR).
         self.api.run_sid_player(
             self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1)
         )
-        # The 3 upload writes are already in self.dma_writes — index past
-        # them so we only assert against the cue's writes.
         n_setup_writes = len(self.dma_writes)
         self.api.cue_song_reinit(7)
 
@@ -607,12 +547,10 @@ class RunSidPlayerTest(unittest.TestCase):
             3,
             "cue must do 3 DMA writes: song patch + playBank restore + vector swap",
         )
-        # First: 1-byte patch of REINIT_STUB_ADDR + _REINIT_PATCH_SONG.
         addr1, payload1 = cue_writes[0]
         self.assertEqual(addr1, REINIT_STUB_ADDR + _REINIT_PATCH_SONG)
         self.assertEqual(payload1, bytes([7 - 1]))
-        # Second: 1-byte playBank restore to the tune's heuristic default
-        # (no override passed → $37 for this $20xx-page tune).
+        # No override passed → the heuristic default $37 for this $20xx-page tune.
         addr2, payload2 = cue_writes[1]
         self.assertEqual(addr2, SID_PLAYER_MC_ADDR + _SID_PATCH_PLAYBANK)
         self.assertEqual(payload2, bytes([CPU.PORT_DEFAULT]))
@@ -622,9 +560,8 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(payload3, bytes([REINIT_STUB_ADDR & 0xFF, (REINIT_STUB_ADDR >> 8) & 0xFF]))
 
     def test_cue_song_reinit_play_bank_override_patches_player_mc(self):
-        # A subtune that reads RAM under BASIC ROM needs $36; the override
-        # must land on the player MC's playBank operand so PLAY of the new
-        # subtune banks BASIC out (Times of Lore 2-11).
+        # A subtune reading RAM under BASIC ROM needs $36 on the player MC's playBank
+        # operand, so PLAY of the new subtune banks BASIC out (Times of Lore 2-11).
         self.api.run_sid_player(
             self._make_sid(load=0x2000, init=0x2003, play=0x2006, num_songs=8, start_song=1)
         )
@@ -636,17 +573,14 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(bank_payload, bytes([CPU.PORT_BASIC_OUT]))
 
     def test_cue_song_reinit_before_run_sid_player_raises(self):
-        # Without a prior run_sid_player, there's no uploaded stub to
-        # patch — calling cue would silently DMA into wherever a stale
-        # default was, corrupting RAM. Must raise so the bug surfaces.
+        # With no uploaded stub, a cue would DMA into wherever a stale default was
+        # and corrupt RAM, so it must raise.
         with self.assertRaisesRegex(RuntimeError, "before run_sid_player"):
             self.api.cue_song_reinit(2)
 
     def test_cue_song_reinit_out_of_range_song_raises(self):
-        # song<=0 used to reach ParsedPsid.song_is_vsync's bit = song - 1,
-        # then `speed >> bit` with a negative bit — a ValueError from the
-        # shift, not a clear "out of range" message. Same class of bug for
-        # song > num_songs. Caught before any DMA write goes out.
+        # song<=0 reached song_is_vsync's `speed >> (song - 1)` with a negative
+        # shift — an opaque ValueError. song > num_songs is the same class.
         self.api.run_sid_player(self._make_sid(num_songs=4))
         n_setup = len(self.dma_writes)
         with self.assertRaisesRegex(ValueError, "out of range"):
@@ -655,17 +589,12 @@ class RunSidPlayerTest(unittest.TestCase):
             self.api.cue_song_reinit(5)
         self.assertEqual(len(self.dma_writes), n_setup, "no partial DMA writes on rejection")
 
-    # ---- relocation -------------------------------------------------
     def test_relocates_player_when_payload_overlaps_default(self):
-        # A SID that loads at $C200 and runs 0x800 bytes covers
-        # $C200-$C9FF — overlapping the default player ($C300-$C322)
-        # AND the default stub ($C400-$C419). The picker must relocate
-        # both past the payload (page-aligned).
+        # $C200 + 0x800 covers $C200-$C9FF, overlapping both the default player
+        # ($C300-$C322) and the default stub ($C400-$C419).
         sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203, payload_len=0x800)
         self.api.run_sid_player(sid)
 
-        # Default layout no longer used: the player + stub writes land at
-        # non-default addresses.
         _, _ = self.dma_writes[0]  # SID payload
         player_addr, mc = self.dma_writes[1]
         stub_addr, stub = self.dma_writes[2]
@@ -675,22 +604,18 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertNotEqual(
             stub_addr, REINIT_STUB_ADDR, "stub must relocate off $C400 when payload overlaps"
         )
-        # Both must land past the payload (or anywhere non-overlapping).
         payload_hi = 0xC200 + 0x800
         self.assertGreaterEqual(player_addr, payload_hi)
         self.assertGreaterEqual(stub_addr, payload_hi)
         # Both still below the I/O area at $D000.
         self.assertLess(player_addr + len(mc), 0xD000)
         self.assertLess(stub_addr + len(stub), 0xD000)
-        # The MC's internal IRQ / spin patches must reflect the relocated
-        # player_base, not the default $C300.
         expected_irq = player_addr + SID_PLAYER_IRQ_HANDLER_OFFSET
         self.assertEqual(mc[_SID_PATCH_IRQ_LO], expected_irq & 0xFF)
         self.assertEqual(mc[_SID_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         expected_spin = player_addr + SID_PLAYER_SPIN_OFFSET
         self.assertEqual(mc[_SID_PATCH_SPIN_LO], expected_spin & 0xFF)
         self.assertEqual(mc[_SID_PATCH_SPIN_HI], (expected_spin >> 8) & 0xFF)
-        # The re-INIT stub references the relocated player's IRQ handler too.
         self.assertEqual(stub[_REINIT_PATCH_IRQ_LO], expected_irq & 0xFF)
         self.assertEqual(stub[_REINIT_PATCH_IRQ_HI], (expected_irq >> 8) & 0xFF)
         # The BASIC SYS stub targets the relocated player_base.
@@ -701,9 +626,7 @@ class RunSidPlayerTest(unittest.TestCase):
         self.assertEqual(int(digits), player_addr)
 
     def test_relocated_cue_song_reinit_uses_relocated_stub_addr(self):
-        # After relocation, cue_song_reinit must patch the *relocated*
-        # stub address and point $0314/$0315 there — not the default
-        # $C400 (which would dispatch into stale/garbage bytes).
+        # Pointing $0314/$0315 at the default $C400 would dispatch into stale bytes.
         sid = self._make_sid(load=0xC200, init=0xC200, play=0xC203, payload_len=0x800)
         self.api.run_sid_player(sid)
         relocated_player = self.dma_writes[1][0]
@@ -717,15 +640,13 @@ class RunSidPlayerTest(unittest.TestCase):
         addr2, _ = cue_writes[1]
         addr3, payload3 = cue_writes[2]
         self.assertEqual(addr1, relocated_stub + _REINIT_PATCH_SONG)
-        # playBank restore lands on the relocated player MC, not $C300.
         self.assertEqual(addr2, relocated_player + _SID_PATCH_PLAYBANK)
         self.assertEqual(addr3, VECTORS.IRQ)
         self.assertEqual(payload3, bytes([relocated_stub & 0xFF, (relocated_stub >> 8) & 0xFF]))
 
     def test_flush_failure_aborts_before_the_run_prg_post(self):
-        # _launch_sid_player must not fire run_prg past a flush it can't
-        # confirm landed — the player MC / re-INIT stub it depends on may
-        # not actually be in place yet.
+        # Past a flush it cannot confirm, the player MC / re-INIT stub may not be
+        # in place, so the irreversible run_prg reset must not fire.
         self.api._last_flush_failed = True
         with self.assertRaises(RuntimeError):
             self.api.run_sid_player(self._make_sid())
@@ -763,19 +684,16 @@ class FootprintLayoutTest(unittest.TestCase):
         return a
 
     def test_default_fast_path_when_clean(self):
-        # Small tune at $1000, nothing near $C300 → keep the default layout.
         parsed = self._parsed(load=0x1000, size=0x100)
         layout = _choose_player_layout(parsed, self._avoid())
         self.assertEqual(layout.player_base, SID_PLAYER_MC_ADDR)
         self.assertEqual(layout.stub_base, REINIT_STUB_ADDR)
 
     def test_relocates_when_footprint_covers_default(self):
-        # Tune footprint marks the default $C300 region as used → relocate.
         parsed = self._parsed(load=0x1000, size=0x100)
         avoid = self._avoid((0xC300, 0xC350))
         layout = _choose_player_layout(parsed, avoid)
         self.assertNotEqual(layout.player_base, SID_PLAYER_MC_ADDR)
-        # Chosen region must be footprint-clean.
         end = layout.stub_base + len(REINIT_STUB_TEMPLATE)
         self.assertFalse(any(avoid[layout.player_base : end]))
 
@@ -792,8 +710,8 @@ class FootprintLayoutTest(unittest.TestCase):
             (0xCBFA, 0xCC55),
         )  # scratch
         layout = _choose_player_layout(parsed, avoid)
-        # Largest free hole below the payload is $6000-$9FFF (16 KB) — bigger
-        # than $0820-$1FFF (after bitmap/ring reserved). Expect $6000.
+        # Largest free hole below the payload is $6000-$9FFF (16 KB), bigger than
+        # $0820-$1FFF (after the bitmap/ring reserved regions).
         self.assertEqual(layout.player_base, 0x6000)
         self.assertEqual(layout.stub_base, 0x6000 + _RELOCATED_STUB_OFFSET)
 
@@ -842,11 +760,9 @@ class TunePlayDividerTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
-        # Make the test fast: no settle sleep, no real CIA reads. The sleep is
-        # patched over the module's own `time` name and stopped on cleanup — a
-        # bare patch of `c64cast.hw.api.time.sleep` reaches the one shared
-        # stdlib module, and a .start() with no stop() leaves it that way for
-        # every later test in this worker process.
+        # Patch the module's own `time` name, never `c64cast.hw.api.time.sleep`,
+        # which reaches the one shared stdlib module — and a .start() with no stop()
+        # leaves it patched for every later test in this worker process.
         sleepless = patch.object(api, "time", FakeTime(sleep=MagicMock()))
         self.addCleanup(sleepless.stop)
         sleepless.start()
@@ -876,8 +792,8 @@ class TunePlayDividerTest(unittest.TestCase):
         self.assertEqual(self.divider_writes, [])
 
     def test_default_50hz_latch_divides_to_1(self):
-        # Kernal-default PAL latch ~$4292 = 50 Hz PLAY → divider 1
-        # (50 / 30 = 1, kernal chain every tick — no change from legacy).
+        # Kernal-default latch ~$4292 → ~59 Hz PLAY → divider 1 (59 / 30 = 1,
+        # kernal chain on every tick).
         from c64cast.hw.api import _PlayerLayout
 
         self.api._sid_player_layout = _PlayerLayout(
@@ -940,7 +856,6 @@ class LaunchProgramTest(unittest.TestCase):
         patcher.start()
         self.api = Ultimate64API("http://example.invalid")
         self.addCleanup(patch.stopall)
-        # flush()/invalidate_cache() touch the DMA socket; stub them.
         patch.object(self.api, "flush").start()
         patch.object(self.api, "invalidate_cache").start()
         self.post = patch.object(self.api.session, "post").start()
@@ -993,8 +908,8 @@ class LaunchProgramTest(unittest.TestCase):
     def test_flush_failure_aborts_before_posting(self):
         import tempfile
 
-        # A launch that can't confirm its pending DMA writes landed must
-        # not fire the (irreversible) run_prg reset anyway.
+        # run_prg resets the C64; it must not fire past a flush that could not
+        # confirm the pending DMA writes landed.
         self.api._last_flush_failed = True
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(RuntimeError):
@@ -1020,7 +935,6 @@ class PutConfigItemTest(unittest.TestCase):
         self.put.assert_called_once()
         args, kwargs = self.put.call_args
         url = args[0] if args else kwargs["url"]
-        # Spaces percent-encoded in BOTH path segments; value is a query param.
         self.assertEqual(
             url,
             "http://example.invalid/v1/configs/"
@@ -1060,8 +974,8 @@ class ReadSideTest(unittest.TestCase):
         self.assertEqual(kwargs["params"], {"address": "028D", "length": "1"})
 
     def test_read_memory_returns_none_on_transport_failure(self):
-        # The pollers (keyboard, launcher) call this at 10 Hz; a dropped
-        # read must come back as "couldn't tell", never an exception.
+        # The keyboard/launcher pollers call this at 10 Hz; a dropped read is
+        # "couldn't tell", never an exception.
         import requests
 
         self.get.side_effect = requests.ConnectionError("down")
@@ -1095,8 +1009,7 @@ class ReadSideTest(unittest.TestCase):
         self.assertEqual(self.api.get_config_category("Audio Mixer"), {})
 
     def test_get_config_category_propagates_http_error(self):
-        # Config reads aren't fire-and-forget: AsidScene decides its socket
-        # policy on the answer, so it must SEE the failure.
+        # AsidScene decides its socket policy on the answer, so it must see failure.
         import requests
 
         self.get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
@@ -1110,9 +1023,8 @@ class ReadSideTest(unittest.TestCase):
         self.assertEqual(args[0], "http://example.invalid/v1/info")
 
     def test_describe_device_names_the_unit_and_its_firmware(self):
-        # `product` is the only thing over this API that tells a U64 from a
-        # U2+, and the two expose different config categories — so the
-        # connect-time line has to carry it.
+        # `product` is the only field over this API that tells a U64 from a U2+,
+        # and the two expose different config categories.
         self.get.return_value.json.return_value = {
             "product": "Ultimate II+",
             "unique_id": "5D327C",
@@ -1184,16 +1096,13 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.assertIn("no multi-SID config surface", info_lines[0].getMessage())
 
     def test_u2plus_category_list_grants_the_emusid_surface(self):
-        # The one line also points at the surface that IS available, so the
-        # downgrade doesn't read as "no mixer control at all".
         with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
             self._refine_with(_U2PLUS_CATEGORIES)
         self.assertTrue(self.api.profile.supports_emusid_mixer)
         self.assertIn("emulated stereo-SID", cm.records[0].getMessage())
 
     def test_no_surface_at_all_keeps_the_old_message(self):
-        # A device with neither surface (no known hardware, but the probe
-        # must not imply a mixer that isn't there).
+        # Neither surface — no known hardware, but the probe must not imply a mixer.
         with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
             self._refine_with(["C64 and Cartridge Settings"])
         self.assertFalse(self.api.profile.supports_sid_config)
@@ -1201,8 +1110,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.assertIn("mixer control are unavailable", cm.records[0].getMessage())
 
     def test_partial_surface_is_revoked(self):
-        # All three categories make the surface; asid_sidmap's planners
-        # write to each of them, so two out of three is still unusable.
+        # asid_sidmap's planners write to all three categories, so two of three
+        # is still unusable.
         self._refine_with(["SID Addressing", "C64 and Cartridge Settings"])
         self.assertFalse(self.api.profile.supports_sid_config)
 
@@ -1218,9 +1127,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.assertTrue(self.api.profile.supports_sid_config)
 
     def test_already_revoked_still_probes_for_the_emusid_surface(self):
-        # The old contract skipped the REST call on an already-revoked
-        # profile; the emusid grant is evidence-based, so the read always
-        # happens now — and a second refine is idempotent, no re-log.
+        # The emusid grant is evidence-based, so the read happens even on an
+        # already-revoked profile, and a second refine is idempotent.
         self.api.profile = replace(self.api.profile, supports_sid_config=False)
         self._refine_with(_U2PLUS_CATEGORIES)
         self.assertFalse(self.api.profile.supports_sid_config)
@@ -1251,8 +1159,6 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.run_basic_clear_loop()  # best-effort — must not raise
 
     def test_reset_puts_even_when_pre_blank_fails(self):
-        # The pre-reset display blank is best-effort; a dead DMA socket on
-        # shutdown must not stop the REST reset from firing.
         patch.object(self.api, "blank_display", side_effect=OSError("dead socket")).start()
         put = patch.object(self.api.session, "put").start()
         self.api.reset()
@@ -1329,11 +1235,8 @@ class DumpCharRomTest(unittest.TestCase):
             return self.rom
 
         patch.object(self.api, "read_memory", side_effect=_fake_read).start()
-        # `dump_char_rom` walks a wall-clock deadline, so hand the module a
-        # clock the test owns: three flag reads plus two poll sleeps is pure
-        # arithmetic on it, and the full production budget costs no wall time.
-        # Bound over the module's own `time` name, never over an attribute of
-        # the stdlib module — see _fakes.FrozenClock for why.
+        # Bind over the module's own `time` name, never an attribute of the stdlib
+        # module — see _fakes.FrozenClock. The whole deadline costs no wall time.
         patch("c64cast.hw.api.time", _VirtualClock()).start()
 
     def tearDown(self):
@@ -1385,8 +1288,8 @@ class DumpCharRomTest(unittest.TestCase):
             self.api.dump_char_rom()
 
     def test_flush_failure_aborts_before_the_run_prg_post(self):
-        # A flush() that fails to confirm the stub upload landed must not
-        # let the kick proceed into a run_prg reset anyway.
+        # run_prg resets the C64; it must not fire past a flush that could not
+        # confirm the stub upload landed.
         self.api._last_flush_failed = True
         with self.assertRaises(RuntimeError):
             self.api.dump_char_rom()
@@ -1435,10 +1338,8 @@ class ParsePsidEdgeCaseTest(unittest.TestCase):
     ValueError rather than crash on."""
 
     def test_load_addr_zero_with_no_room_for_the_inline_header_raises(self):
-        # load_addr=0 tells the parser the real load address lives in the
-        # payload's first 2 bytes (PSID v1+ convention). A data_offset that
-        # leaves fewer than 2 payload bytes used to raise a bare
-        # IndexError instead of a clear ValueError.
+        # load_addr=0 means the real load address is the payload's first 2 bytes
+        # (PSID v1+). Fewer than 2 payload bytes used to raise a bare IndexError.
         sid = bytearray(make_psid(load=0x1000))
         sid[8:10] = (0).to_bytes(2, "big")  # load_addr = 0
         data_offset = int.from_bytes(sid[6:8], "big")
@@ -1575,7 +1476,6 @@ class SidPlayRateTest(unittest.TestCase):
         self.assertEqual(self.writes, [])
 
     def test_an_explicit_rate_pins_every_vsync_tune(self):
-        # This is how you keep hearing PAL tunes at NTSC speed on purpose.
         self._load(clock="PAL", play_rate=59.826)
         rate = self.api._apply_play_rate(self._kernal_sample())
         assert rate is not None

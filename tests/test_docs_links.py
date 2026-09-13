@@ -57,9 +57,8 @@ class RetiredDocsTest(unittest.TestCase):
         surrounding one used to be. Point it at `docs/reference/` instead.
         """
         needle = "usage.md"
-        # Two files have to say the name: this one, which searches for it, and
-        # the changelog, which records the removal and would be useless if it
-        # could not name what was removed.
+        # Two files have to say the name: this one, and the changelog, which records
+        # the removal and would be useless if it could not name what was removed.
         allowed = {Path(__file__).resolve(), _REPO_ROOT / "CHANGELOG.md"}
         offenders = [
             str(path.relative_to(_REPO_ROOT))

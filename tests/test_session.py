@@ -26,9 +26,8 @@ from c64cast.app import session
 
 
 def _loaded(names: list[str], *, is_ensemble: bool = False) -> cfgmod.LoadResult:
-    # Audio off by default: validate_configs rejects an audio-enabled config
-    # outright when sounddevice is missing, which would otherwise make every
-    # assertion below depend on whether the 'mic' extra is installed.
+    # Audio off by default: validate_configs rejects an audio-enabled config when
+    # sounddevice is missing, which would tie every assertion to the 'mic' extra.
     cfgs = [cfgmod.Config() for _ in names]
     for cfg in cfgs:
         cfg.audio.enabled = False
@@ -128,9 +127,8 @@ class ValidateConfigsTest(unittest.TestCase):
         self.assertEqual(cm.exception.detail, "bad dither")
 
     def test_an_open_control_plane_on_a_network_host_is_exit_5(self):
-        # The gate has to be here, not at bind time: start_services runs after
-        # the hardware is up, so a warning there arrives with a show already
-        # on screen.
+        # The gate has to be here, not at bind time: start_services runs after the
+        # hardware is up, so a warning there arrives with a show already on screen.
         loaded = _loaded(["a"])
         loaded.master_control.enabled = True
         loaded.master_control.host = "0.0.0.0"
@@ -146,8 +144,8 @@ class ValidateConfigsTest(unittest.TestCase):
 
     def test_a_bad_scene_is_exit_3_before_any_hardware_is_opened(self):
         # Exit 3 is what build_stack returns for the same error once
-        # scenes_from_config reaches it, so moving the check earlier keeps the
-        # CLI's answer to a bad scene identical.
+        # scenes_from_config reaches it, so checking earlier keeps the CLI's answer
+        # the same.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", duration_s=5.0)]
         # From an empty cwd: a video scene with no `file` resolves against
@@ -179,10 +177,9 @@ class ValidateConfigsTest(unittest.TestCase):
                 session.validate_configs(loaded, loaded.cfgs)
 
     def test_a_bad_scene_force_palette_override_is_exit_5_not_an_unhandled_error(self):
-        # force_palette_colors is range-checked by scene_color(), which raises
-        # a plain ValueError — it must surface as SessionConfigError (caught
-        # by cli.py's ConfigError-only handler around validate_configs), not
-        # escape as an unhandled exception.
+        # force_palette_colors is range-checked by scene_color(), which raises a
+        # plain ValueError; it must surface as SessionConfigError (cli.py's handler
+        # around validate_configs catches only ConfigError), not escape unhandled.
         loaded = _loaded(["a"])
         loaded.cfgs[0].scenes = [cfgmod.SceneCfg(type="video", color={"force_palette_colors": 999})]
         with self.assertLogs("c64cast", level="ERROR") as logged:
@@ -192,9 +189,9 @@ class ValidateConfigsTest(unittest.TestCase):
         self.assertIn("force_palette_colors", logged.output[0])
 
     def test_transport_coercion_runs_before_any_stack_is_built(self):
-        # [audio].use_reu_pump has no seek/splice support, so a transport.*
-        # MIDI mapping must force it off — and it has to happen here, because
-        # build_stack bakes the flag into the AudioStreamer constructor.
+        # [audio].use_reu_pump has no seek/splice support, so a transport.* MIDI
+        # mapping must force it off here — build_stack bakes the flag into the
+        # AudioStreamer constructor.
         loaded = _loaded(["a"])
         loaded.cfgs[0].audio.use_reu_pump = True
         loaded.master_midi_control.enabled = True
@@ -234,10 +231,8 @@ class PerSystemValidatorsTest(unittest.TestCase):
 
 class BuildSessionTest(unittest.TestCase):
     def setUp(self):
-        # build_session installs the profiler process-wide via set_profiler
-        # and never puts back what was there. Harmless while [debug].profile
-        # is off (one NullProfiler swaps for another), but the global
-        # outlives the test either way.
+        # build_session installs the profiler process-wide via set_profiler and never
+        # puts back what was there; the global outlives the test either way.
         self.addCleanup(profiler_mod.set_profiler, profiler_mod.get_profiler())
 
     def test_builds_one_stack_per_system(self):
@@ -335,10 +330,9 @@ class BuildStackCameraTest(unittest.TestCase):
 
 class BuildPreviewAndRecordingTest(unittest.TestCase):
     def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
-        # The write listener costs a shadow-memory update on every DMA write
-        # for the rest of the run, and nothing else in the tree reads the
-        # framebuffer — so preview off plus a bad fourcc (the routine case)
-        # must leave nothing registered.
+        # The write listener costs a shadow-memory update on every DMA write for the
+        # rest of the run, and nothing else in the tree reads the framebuffer — so
+        # preview off plus a bad fourcc must leave nothing registered.
         cfg = cfgmod.Config()
         cfg.preview.enabled = False
         cfg.recording.enabled = True
@@ -399,10 +393,9 @@ class TeardownSessionTest(unittest.TestCase):
         self.assertEqual(order, ["midi", "wled", "control", "stack-b", "stack-a"])
 
     def test_the_playlists_are_stopped_and_drained_before_the_stacks(self):
-        # teardown_stack closes audio, resets and closes the API. Running
-        # that underneath a worker still issuing DMA writes is the mid-DMA
-        # cut this module's own rationale says wedges the machine into
-        # needing a power cycle — and "safe to call from a finally:" has to
+        # teardown_stack closes audio, resets and closes the API. Running that
+        # underneath a worker still issuing DMA writes is the mid-DMA cut that wedges
+        # the machine into needing a power cycle, and "safe from a finally:" has to
         # cover the escapes where the caller never got to drain them.
         sess = _session("a")
         order: list[str] = []

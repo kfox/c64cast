@@ -185,8 +185,7 @@ class EffectiveColorsValidationTest(unittest.TestCase):
             scene_factory.validate_dither_cfg(cfg)
 
     def test_a_scene_with_no_override_is_not_revalidated(self):
-        # Only scenes carrying an override are checked separately; a plain
-        # scene is covered by the global check alone.
+        # Only scenes carrying an override are checked separately.
         cfg = cfgmod.Config()
         cfg.scenes.append(cfgmod.SceneCfg(type="video"))
         scene_factory.validate_dither_cfg(cfg)  # does not raise
@@ -211,9 +210,8 @@ class EffectiveColorsValidationTest(unittest.TestCase):
 
     def test_bad_scene_force_palette_override_raises_config_error(self):
         # scene_color()/_validate_force_palette raise a plain ValueError, not
-        # ConfigError — effective_colors must translate it, or this escapes
-        # the ConfigError-only handlers in session.validate_configs and
-        # doctor's per-aspect probes as an unhandled exception.
+        # ConfigError — effective_colors must translate it, or this escapes the
+        # ConfigError-only handlers in session.validate_configs and doctor's probes.
         cfg = cfgmod.Config()
         cfg.scenes.append(cfgmod.SceneCfg(type="video", color={"force_palette_colors": 999}))
         with self.assertRaisesRegex(

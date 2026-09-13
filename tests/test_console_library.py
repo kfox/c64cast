@@ -43,10 +43,9 @@ class ToleranceTest(LibraryTestCase):
         self.assertEqual(self.library.as_dict(), {"favorites": [], "recents": []})
 
     def test_a_null_favorites_value_reads_as_empty_rather_than_raising(self):
-        # `dict.get(key, default)`'s default only applies when `key` is
-        # absent, so `{"favorites": null}` used to reach the list
-        # comprehension unguarded and raise TypeError straight out of
-        # as_dict — this is the regression test for that.
+        # `dict.get(key, default)`'s default only applies when `key` is absent, so
+        # `{"favorites": null}` used to reach the list comprehension unguarded and
+        # raise TypeError straight out of as_dict.
         self.path.write_text('{"favorites": null, "recents": []}', encoding="utf-8")
         self.assertEqual(self.library.as_dict(), {"favorites": [], "recents": []})
 
@@ -55,9 +54,8 @@ class ToleranceTest(LibraryTestCase):
         self.assertEqual(self.library.as_dict(), {"favorites": [], "recents": []})
 
     def test_a_string_favorites_value_does_not_load_as_its_own_characters(self):
-        # A `str` is iterable, so an unguarded `for f in raw.get(...)` would
-        # accept "hello" as five one-character favorites instead of refusing
-        # the wrong-shaped value.
+        # A `str` is iterable, so an unguarded `for f in raw.get(...)` would accept
+        # "hello" as five one-character favorites instead of refusing the value.
         self.path.write_text('{"favorites": "hello", "recents": []}', encoding="utf-8")
         self.assertEqual(self.library.as_dict()["favorites"], [])
 

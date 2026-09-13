@@ -74,20 +74,15 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertEqual(self._unarmed(), [pyc])
 
     def test_unchecked_hash_is_reported_too(self):
-        # It is hash-based but skips validation entirely, so it never notices a
-        # mutation either — the same silent green with a different cause. Bit 0
-        # alone would call this armed.
+        # Hash-based but skips validation entirely, so it never notices a mutation
+        # either. Bit 0 alone would call this armed.
         pyc = self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
         self.assertEqual(self._unarmed(), [pyc])
 
     def test_a_pyc_for_another_interpreter_is_not_this_interpreters_bytecode(self):
-        # A checkout run under more than one Python minor accumulates these,
-        # and no import here will ever read one — so the *other* file is never
-        # what gets blamed. What is reported is that this interpreter has no
-        # bytecode for the source at all, which is the third of the four
-        # documented lapses (a `uv sync` that moves the Python minor). An
-        # earlier version returned `([], ...)` here, which is precisely the
-        # silence that made that lapse invisible.
+        # A checkout run under more than one Python minor accumulates these, and no
+        # import here reads one — so the *other* file is never what gets blamed.
+        # What is reported is that this interpreter has no bytecode for the source.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
         other = pyc.with_name("mod.cpython-001.pyc")
         pyc.rename(other)
@@ -104,33 +99,24 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertEqual(check.scan([str(self.root)]), ([], {str(self.root): 0}))
 
     def test_the_pyc_checked_is_the_one_an_import_here_would_read(self):
-        # Two wrong answers were tried before this one, in both directions.
-        # Reimplementing the cache filename took the tag as everything after
-        # the first dot, so `mod.<tag>.opt-1.pyc` matched nothing and every
-        # optimized build passed unarmed; accepting any `opt-N` instead
-        # reported files a non-`-O` run will never import AND a non-`-O`
-        # compileall will never rewrite — a permanent failure printing a remedy
-        # that does nothing. `cache_from_source` is the function an import
-        # itself calls, so it answers tag, optimization level and dotted names
-        # at once.
+        # The tag is not everything after the first dot (`mod.<tag>.opt-1.pyc` would
+        # match nothing), and accepting any `opt-N` reports files a non-`-O` run will
+        # never import nor rewrite. `cache_from_source` is what an import itself
+        # calls: tag, optimization level and dotted names at once.
         pyc = self._compile(py_compile.PycInvalidationMode.TIMESTAMP)
         self.assertEqual(Path(importlib.util.cache_from_source(str(self.root / "mod.py"))), pyc)
         self.assertEqual(self._unarmed(), [pyc])
 
-        # An optimization level this interpreter is not running is not ours, so
-        # it is neither vouched for nor blamed: what is reported is the name
-        # `cache_from_source` gives, which now has no file.
+        # An optimization level this interpreter is not running is neither vouched
+        # for nor blamed: the name reported is the one `cache_from_source` gives.
         other = pyc.with_name(f"mod.{sys.implementation.cache_tag}.opt-9.pyc")
         pyc.rename(other)
         self.assertEqual(self._unarmed(), [pyc])
         self.assertNotIn(other, self._unarmed())
 
     def test_a_tree_with_no_bytecode_at_all_is_not_a_pass(self):
-        # The commonest un-armed shape and the one a source-only floor let
-        # through: a fresh worktree, or the state right after `make clean`.
-        # The check exited 0 on it while three documents said it verified
-        # exactly this. Nothing is compiled here — setUp only writes the
-        # source.
+        # A fresh worktree, or the state right after `make clean`: nothing is
+        # compiled here — setUp only writes the source.
         self.assertFalse(list(self.root.rglob("__pycache__")))
         code, err = self._stderr_of_main()
         self.assertEqual(code, 1)
@@ -145,9 +131,8 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertNotEqual(check.describe(check._ABSENT), check.describe(0b10))
 
     def test_a_root_that_is_a_single_python_file_is_scanned(self):
-        # `rglob` on a file yields nothing, so the per-root source floor called
-        # a Python file "no Python sources under ...". It is one source, and
-        # its arming is a real question.
+        # `rglob` on a file yields nothing, so a per-root source floor calls a
+        # Python file "no Python sources under ...". It is one source.
         src = self.root / "mod.py"
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
         self.assertEqual(check.scan([str(src)]), ([], {str(src): 1}))
@@ -163,10 +148,8 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertIn("no Python sources", err)
 
     def test_a_root_with_no_python_in_it_is_not_a_pass(self):
-        # A mistyped or renamed root has no sources, which is a different fact
-        # from having sources nobody imported. A global count hid it behind
-        # whichever root did have some: `... c64cast_TYPO tests scripts`
-        # exited 0.
+        # A mistyped or renamed root has no sources, a different fact from having
+        # sources nobody imported; a global count hides it behind a root that has some.
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
         code, err = self._stderr_of_main(str(self.root), str(self.root / "nope"))
         self.assertEqual(code, 1)
@@ -174,15 +157,9 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertIn("nope", err)
 
     def test_an_empty_scan_is_not_a_pass(self):
-        # A wrong working directory or a renamed root would otherwise exit 0
-        # silently, which is the failure this whole check exists to remove.
-        # This is the *source* floor specifically: absence of bytecode is a
-        # different fact, and it has its own floor and its own tests. It used
-        # to say here that absence was deliberately not an error because it
-        # could not be told from "the module was never imported" — which is
-        # false (compileall compiles every source whether imported or not),
-        # and that sentence, in this repository, is what licensed deleting the
-        # bytecode floor once already.
+        # This is the *source* floor specifically: absence of bytecode is a different
+        # fact with its own floor and its own tests (compileall compiles every
+        # source, imported or not).
         missing = str(self.root / "nope")
         self.assertEqual(check.scan([missing]), ([], {missing: 0}))
         code, err = self._stderr_of_main(missing)
@@ -190,11 +167,8 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertIn("nothing was checked", err)
 
     def test_both_floors_report_in_one_pass(self):
-        # They are independent facts, both known when the scan returns, and a
-        # mistyped root on a freshly cleaned tree hits both. Returning on the
-        # first showed the operator a typo and hid the unarmed tree underneath
-        # it until they had fixed the typo and run again — two round trips for
-        # two problems already in hand.
+        # Independent facts, both known when the scan returns, and a mistyped root on
+        # a freshly cleaned tree hits both; returning on the first hid the second.
         code, err = self._stderr_of_main(str(self.root), str(self.root / "nope"))
         self.assertEqual(code, 1)
         self.assertIn("no Python sources", err)
@@ -205,9 +179,8 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertEqual(check.main(["prog", str(self.root)]), 0)
 
     def test_the_failure_names_the_mode_it_found(self):
-        # The message said "still timestamp-based" for every failure, which
-        # sends the reader after mtimes on an unchecked-hash pyc — one of the
-        # two cases the both-bits test was added for.
+        # The message said "still timestamp-based" for every failure, which sends the
+        # reader after mtimes on an unchecked-hash pyc.
         self._compile(py_compile.PycInvalidationMode.UNCHECKED_HASH)
         code, err = self._stderr_of_main()
         self.assertEqual(code, 1)
@@ -215,10 +188,8 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertNotIn("timestamp-based", err)
 
     def test_the_unreadable_sentinel_survives_the_mode_lookup(self):
-        # It is negative, and `-1 & 0b11` is 3 — the armed value — so masking
-        # before the lookup made the entry for it unreachable and printed a raw
-        # flags word. That is the wrong-mode-in-the-message defect again, for
-        # the mode added to fix it.
+        # It is negative, and `-1 & 0b11` is 3 — the armed value — so masking before
+        # the lookup made its entry unreachable and printed a raw flags word.
         self.assertEqual(check.describe(check._UNREADABLE), "could not be read")
         self.assertEqual(check.describe(0b00), "timestamp-based")
 
@@ -242,10 +213,9 @@ class HashBasedPycCheckTest(unittest.TestCase):
             check.scan([str(self.root)])
 
     def test_the_flags_word_is_read_where_pep_552_puts_it(self):
-        # The offset and endianness are the whole check, and getting either
-        # wrong reads a byte of the magic number as the mode. Assert against a
-        # hand-built header rather than against compileall's own output, which
-        # would agree with any consistent misreading.
+        # The offset and endianness are the whole check, and getting either wrong
+        # reads a byte of the magic number as the mode. Assert against a hand-built
+        # header, not compileall's output, which would agree with any misreading.
         pyc = self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
         raw = bytearray(pyc.read_bytes())
         self.assertEqual(struct.unpack_from("<I", raw, 4)[0], 0b11)

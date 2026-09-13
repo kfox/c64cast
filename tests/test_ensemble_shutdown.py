@@ -47,8 +47,7 @@ class RunForegroundTest(unittest.TestCase):
     def test_starts_one_thread_per_stack_and_joins(self):
         stop_event = threading.Event()
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
-        # playlist.run() returns immediately (no infinite loop here);
-        # each thread exits and join() completes.
+        # playlist.run() returns immediately, so each thread exits and join() completes.
         for st in stacks:
             st.playlist.run.return_value = None
         sess = _session(stacks, stop_event)
@@ -56,19 +55,15 @@ class RunForegroundTest(unittest.TestCase):
         self.assertEqual(len(sess.threads), 2)
         for st in stacks:
             st.playlist.run.assert_called_once()
-        # Sanity: no thread is left dangling.
         for t in threading.enumerate():
             self.assertFalse(t.name.startswith("playlist-"), f"playlist thread leaked: {t.name}")
 
     def test_stop_event_unblocks_blocking_playlists(self):
-        # Playlists that block until stop_event is set should also join
-        # cleanly when the event fires from outside.
         stop_event = threading.Event()
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
         for st in stacks:
             st.playlist.run.side_effect = lambda: stop_event.wait()
-        # Kick stop_event after a short delay so the main "join" loop
-        # has a chance to enter join() on the first thread before exit.
+        # Kick stop_event after a delay so the join loop reaches the first thread first.
         timer = threading.Timer(0.05, stop_event.set)
         timer.start()
         try:
@@ -80,13 +75,10 @@ class RunForegroundTest(unittest.TestCase):
             st.playlist.run.assert_called_once()
 
     def test_headless_join_polls_so_signals_can_be_delivered(self):
-        # CPython 3.14 parks Thread.join() in _PyParkingLot_Park, which no
-        # signal interrupts: the main thread never returns to the interpreter,
-        # so Python never runs a signal handler. Measured on a hung run — two
-        # SIGINTs produced no shutdown, no teardown and no final reset, and
-        # SIGTERM was just as stuck. Only the preview path escaped it, because
-        # pumping a window polls is_alive() anyway, which is exactly why Ctrl+C
-        # looked intermittent. So the headless path must join with a timeout.
+        # CPython 3.14 parks Thread.join() in _PyParkingLot_Park, which no signal
+        # interrupts, so Python never runs a signal handler. Measured on a hung run:
+        # two SIGINTs produced no shutdown, teardown or final reset. Only the preview
+        # path escaped, since pumping a window polls is_alive() — headless must poll.
         stop_event = threading.Event()
         stacks = [fake_system_stack("a")]
         stacks[0].playlist.run.side_effect = lambda: stop_event.wait()
@@ -108,11 +100,9 @@ class RunForegroundTest(unittest.TestCase):
         self.assertNotIn(None, timeouts, "join blocked with no timeout; signals cannot be handled")
 
     def test_a_failed_start_still_leaves_the_started_threads_reachable(self):
-        # If the k-th start() raises (RuntimeError("can't start new thread"),
-        # MemoryError), the k-1 workers already DMAing must still be in
-        # sess.threads: that list is teardown's only handle on them, and
-        # tearing the hardware down underneath a live worker is the mid-DMA
-        # cut that wedges the machine into needing a power cycle.
+        # If the k-th start() raises, the k-1 workers already DMAing must still be in
+        # sess.threads: that list is teardown's only handle on them, and tearing the
+        # hardware down under a live worker is the mid-DMA cut that wedges the machine.
         stop_event = threading.Event()
         stacks = [fake_system_stack("a"), fake_system_stack("b")]
         for st in stacks:
@@ -196,12 +186,9 @@ class JoinPlaylistsTest(unittest.TestCase):
         stop_event = threading.Event()
         t = threading.Thread(target=stop_event.wait, name="playlist-stuck")
         t.start()
-        # Fast-forwards join_bounded's deadline past its 5s budget on the very
-        # first check, so the thread reads as abandoned without a real wait.
-        # The 100 s step is what does it, and it is a step rather than a
-        # second reading on purpose: this test starts a thread of its own, so
-        # any reading may be consumed by something else. Whatever reading n
-        # join_bounded gets, its deadline is n+5 and the next reading is n+100.
+        # Fast-forwards join_bounded's deadline past its 5 s budget on the first
+        # check. The 100 s step is what does it, and it is a step rather than a second
+        # reading because this test starts a thread that may consume a reading.
         clock = FrozenClock(0.0, "monotonic", step=100.0)
 
         try:

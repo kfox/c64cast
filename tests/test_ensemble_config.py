@@ -19,8 +19,7 @@ from _fakes import MachineSettingsIsolation
 from c64cast.app import config as cfgmod
 
 # Every load_master()/resolve_recording_path() call reads the machine-settings
-# file, so the module points $C64CAST_SETTINGS at a missing path; the tests that
-# want a machine layer write their own and re-patch over this.
+# file; tests wanting a machine layer write their own and re-patch over this.
 _iso = MachineSettingsIsolation()
 
 
@@ -129,8 +128,7 @@ class LoadMasterRoutingTest(unittest.TestCase):
 
     def test_master_control_carries_from_master_toml(self):
         # The control plane is wired from the master TOML in ensemble mode;
-        # per-system [control] sections are ignored. master_control surfaces
-        # whatever the master set.
+        # per-system [control] sections are ignored.
         master = """
             [ensemble]
             systems = [ { name = "only", config = "only.toml" } ]
@@ -204,8 +202,7 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         self.assertEqual(sys_cfg.recording.path, cfgmod.RecordingCfg().path)
 
     def test_control_section_does_not_cascade(self):
-        # [control] is wired from the master directly (one control plane
-        # for the whole ensemble); per-system [control] would be confusing.
+        # [control] is wired from the master directly — one control plane per ensemble.
         defaults = cfgmod.Config()
         defaults.control.enabled = True
         defaults.control.port = 9999
@@ -215,8 +212,7 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         self.assertEqual(sys_cfg.control.port, cfgmod.ControlPlaneCfg().port)
 
     def test_cascade_through_load_master(self):
-        # End-to-end through load_master: master sets interstitial duration,
-        # per-system file doesn't, per-system Config picks it up.
+        # End-to-end: master sets interstitial duration, the per-system file doesn't.
         master = """
             [ensemble]
             systems = [ { name = "only", config = "only.toml" } ]
@@ -257,9 +253,8 @@ class ApplyMasterDefaultsTest(unittest.TestCase):
         self.assertEqual(result.cfgs[0].interstitial.duration_s, 2.5)
 
     def test_a_cascaded_mutable_value_is_not_shared_between_systems(self):
-        # A bare setattr handed every inheriting system the same list object as
-        # the master and as each other, so one system mutating it in place
-        # mutated every system's — invisibly at the config layer.
+        # A bare setattr handed every inheriting system the same list object, so one
+        # system mutating it in place mutated every system's, invisibly.
         defaults = cfgmod.Config()
         defaults.ultimate64.sid_panning = [-3, 3]
         left, right = cfgmod.Config(), cfgmod.Config()
@@ -299,8 +294,7 @@ class SectionClassificationTest(unittest.TestCase):
         self.assertTrue(set(cfgmod._NEVER_CASCADE_SECTIONS) >= cfgmod._MASTER_PROCESS_WIDE_SECTIONS)
 
     def test_every_cascading_section_is_reachable_from_a_master_toml(self):
-        # The check that would have caught the drift: a section listed as
-        # cascading has to actually receive the master file's values.
+        # A section listed as cascading has to actually receive the master's values.
         for name, skips in cfgmod._CASCADE_SECTIONS:
             cascadable = [
                 f
@@ -349,8 +343,8 @@ class MasterSectionCoverageTest(unittest.TestCase):
                 return cfgmod.load_master(master_path)
 
     def test_master_hardware_backend_reaches_every_system(self):
-        # The load-bearing case: [hardware] is in _CASCADE_SECTIONS, so the
-        # cascade dutifully ran — over a defaults.hardware nothing populated.
+        # [hardware] is in _CASCADE_SECTIONS, so the cascade dutifully ran — over a
+        # defaults.hardware nothing populated.
         result = self._load('[hardware]\nbackend = "teensyrom"\n')
         self.assertEqual(result.cfgs[0].hardware.backend, "teensyrom")
 
@@ -392,9 +386,8 @@ class MasterSectionCoverageTest(unittest.TestCase):
         self.assertTrue(any("[video]" in m for m in logs.output))
 
     def test_the_master_meets_the_full_validator_battery(self):
-        # [ultimate64] cascades with only `url` skipped, so an unvalidated
-        # master pan list was copied into every system and failed mid-run when
-        # the mixer was configured — which _validate_sid_panning exists to stop.
+        # [ultimate64] cascades with only `url` skipped, so an unvalidated master pan
+        # list reached every system and failed mid-run once the mixer was configured.
         with self.assertRaises(ValueError) as ctx:
             self._load("[ultimate64]\nsid_panning = [99]\n")
         self.assertIn("sid_panning", str(ctx.exception))
@@ -508,7 +501,6 @@ class EnsembleMachineSettingsTest(unittest.TestCase):
         self.assertEqual(result.cfgs[0].interstitial.duration_s, 11.0)
 
     def test_per_system_overrides_master_and_machine(self):
-        # per-system wins over both master and machine.
         result = self._run(
             settings="[interstitial]\nduration_s = 3.0\n",
             master=self._MASTER_ONLY + "\n[interstitial]\nduration_s = 11.0\n",
@@ -714,12 +706,9 @@ class ResolveRecordingPathTest(unittest.TestCase):
         )
 
     def test_a_machine_settings_path_still_counts_as_unset(self):
-        # "Explicit" is measured against the machine-overlaid baseline, the
-        # same reference apply_master_defaults uses. Measuring against the
-        # dataclass default made a settings.toml `path` look explicit for
-        # every system, skip the per-system stem and point N cv2.VideoWriters
-        # at one file — through the one layer every other layering decision in
-        # the module treats as unset.
+        # "Explicit" is measured against the machine-overlaid baseline, the same
+        # reference apply_master_defaults uses. Against the dataclass default, a
+        # settings.toml `path` looked explicit and aimed N VideoWriters at one file.
         with tempfile.TemporaryDirectory() as tmp:
             settings = os.path.join(tmp, "settings.toml")
             _write(settings, '[recording]\nenabled = true\npath = "show.mp4"\n')

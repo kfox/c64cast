@@ -2,8 +2,7 @@
 plan_sid_model_config decision matrix, the resolver, and the live-config
 apply/short-circuit paths (FakeAPI — no real hardware)."""
 
-# FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
-# file-wide (same convention as test_dac_calibration.py / test_waveform.py).
+# FakeAPI duck-types C64Backend rather than subclassing it.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 

@@ -81,20 +81,18 @@ class AsidSceneTest(unittest.TestCase):
         from c64cast.sid.asid_scene import AsidScene
 
         api = FakeAPI()
-        # These tests exercise the coalesced flush path specifically; the FakeAPI
-        # reports supports_reu, so the "auto" default would otherwise engage the
-        # buffered ring player. The buffered path has its own class below.
+        # FakeAPI reports supports_reu, so the "auto" default would engage the
+        # buffered ring player; these tests want the coalesced flush path, which
+        # the buffered class below covers separately.
         kwargs.setdefault("buffered_player", "off")
         scene = AsidScene(api, None, **kwargs)
         return scene, api
 
     def test_two_scenes_do_not_share_their_wire_report_budgets(self):
-        # The production half of the per-stream rule: one AsidScene is one MIDI
-        # input port, so two of them in a process — an ensemble, one per system
-        # — must not share a report budget, or the first system to be flooded
-        # takes the only report and the second never reports its own first
-        # occurrence. The decoder and the packer are free functions, so the
-        # scene is what owns the two budgets; see c64cast/_wire_log.py.
+        # One AsidScene is one MIDI input port, so two in a process (an ensemble,
+        # one per system) must not share a report budget — the first system flooded
+        # would take the only report. The decoder and packer are free functions, so
+        # the scene owns the two budgets; see c64cast/_wire_log.py.
         a, _ = self._make(port="A")
         b, _ = self._make(port="B")
         self.assertIsNot(a._recipe_log, b._recipe_log)
@@ -105,7 +103,6 @@ class AsidSceneTest(unittest.TestCase):
         scene._apply_vic_hires_bank()
         scene._alloc_scope_buffers()
 
-    # ---- register shadow + block write --------------------------------------
     def test_frame_folds_into_shadow_and_block_write(self):
         scene, api = self._make()
         # Voice 1 freq lo/hi + control (single write) + master volume.
@@ -150,7 +147,6 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(len(cm.output), 1)  # warned once, not twice
         self.assertFalse(scene._pending_flush)
 
-    # ---- stream metadata ----------------------------------------------------
     def test_character_display_sets_meta_row(self):
         scene, _ = self._make()
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_CHARS, *map(ord, "NOW PLAYING")))
@@ -173,7 +169,6 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(scene.system, "PAL")
         self.assertEqual(scene.emulator.clock, CLOCK_PAL)
 
-    # ---- config validation + lifecycle --------------------------------------
     def test_validate_asid_returns_bitmap_mode(self):
         from c64cast.app.config import Config, SceneCfg
         from c64cast.app.scene_factory import _validate_asid
@@ -219,13 +214,11 @@ class AsidSceneTest(unittest.TestCase):
         self.assertEqual(api.memories["D018"], "18")
         scene.teardown()
         # The literal is the point: comparing against D018_CHAR_DEFAULT compares
-        # teardown's write to the constant it wrote it from, which stayed green
-        # with the constant set to the hires $18. $14 is the char-mode byte every
-        # char-mode engage in the tree writes (matrix at bank+$0400, char gen at
-        # +$1000, bitmap bit clear); test_voice_scope pins the constant to it.
+        # teardown's write to the constant it wrote it from, and stayed green with
+        # that constant set to the hires $18. $14 = matrix at bank+$0400, char gen
+        # at +$1000, bitmap bit clear; test_voice_scope pins the constant to it.
         self.assertEqual(api.memories["D018"], "14")
 
-    # ---- multi-SID ----------------------------------------------------------
     def _make_multi(self, sockets=None, **kwargs):
         """A scene on a config-capable (Ultimate-like) backend. `sockets` seeds
         the detected-socket category, e.g. {"SID Detected Socket 1": "6581"}."""
@@ -268,7 +261,6 @@ class AsidSceneTest(unittest.TestCase):
         scene.process_frame(0.0)
         self.assertEqual(scene._active_chips, 2)
         self.assertEqual(scene._n_windows, 2)
-        # The U64 address map was configured live.
         self.assertTrue(any(cat == "SID Addressing" for cat, _, _ in api.config_puts))
         # Chip 1 flushes to its own (non-$D400) address.
         scene._flush_to_sid()
@@ -301,7 +293,6 @@ class AsidSceneTest(unittest.TestCase):
             scene._reconfigure_chips(3)
         api.config_puts.clear()
         scene.teardown()
-        # The snapshotted split value is restored.
         self.assertIn((CAT_ADDRESSING, "UltiSID Range Split", "Off"), api.config_puts)
 
     def test_addressing_baseline_survives_the_setup_mixer_fold(self):
@@ -476,7 +467,6 @@ class AsidSceneTest(unittest.TestCase):
         finally:
             scene.teardown()
 
-    # ---- reader drain --------------------------------------------------------
     def test_reader_drain_is_bounded_so_the_flush_is_always_reached(self):
         """A backlog arriving faster than it is retired must not starve the
         coalesced flush (the SID would hold its last state and keep sounding)
@@ -669,7 +659,6 @@ class AsidBufferedPlayerTest(unittest.TestCase):
             scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01, 0x01, 0x00, 0x00))
         self.assertIn("outside the", cm.output[0])
         self.assertEqual(rates, [MAX_FRAME_RATE_HZ])
-        # The scene's own accounting agrees with what the player was given.
         self.assertEqual(scene._frame_rate_hz, MAX_FRAME_RATE_HZ)
 
     def test_speed_at_the_band_edge_is_forwarded_unclamped(self):
@@ -699,9 +688,9 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         for _ in range(5):
             scene._handle_sysex(msg)
         self.assertEqual(len(rates), 1)
-        # A genuinely different request gets through too — but when the retune
-        # window opens, not the instant it arrives. Deduplicating the argument
-        # was the whole throttle once, and alternating two rates defeated it.
+        # A different request gets through too, but when the retune window opens,
+        # not the instant it arrives: deduplicating the argument was the whole
+        # throttle once, and alternating two rates defeated it.
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, (1 << 1) | 0x01))
         self.assertEqual(len(rates), 1)
         clock.advance(_SPEED_RETUNE_INTERVAL_S)
@@ -916,10 +905,8 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         self.assertEqual(scene._recipe, [(1, 0), (0, 0)])
 
     def test_a_failing_player_stop_does_not_starve_the_kernal_irq_restore(self):
-        # teardown's own comment argues the scene must not delegate the
-        # quiescence promise to the player's bookkeeping. A stop() that raises
-        # is that argument's other half: the restore has to be a step of its
-        # own, not a statement sequenced behind the stop that can fail.
+        # A stop() that raises must not swallow the kernal IRQ restore: the restore
+        # has to be a step of its own, not a statement sequenced behind the stop.
         from c64cast.hw.c64 import KERNAL
 
         def wedged() -> None:
@@ -955,10 +942,9 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         order: list[str] = []
         scene, _ = self._make()
         assert scene._player is not None
-        # The docstring's "every restore there is" rests on this: give the scene
-        # a display mode and `Scene.teardown` becomes a real machine restore
-        # running ahead of the port close, which narrows the invariant without
-        # touching this test's own steps.
+        # The docstring's "every restore there is" rests on this: give the scene a
+        # display mode and Scene.teardown becomes a real machine restore running
+        # ahead of the port close.
         self.assertIsNone(
             scene.display_mode, "the base teardown step would restore the machine first"
         )
@@ -1037,9 +1023,8 @@ class AsidBufferedPlayerTest(unittest.TestCase):
         # reinit guard only compares against the count the player already holds.
         scene, _ = self._make()
         assert scene._player is not None
-        # Set the layout directly, so the precondition holds whatever reset()
-        # does — seeding it through the method under test would let a reset()
-        # that does nothing at all pass this vacuously.
+        # Set the layout directly: seeding it through the method under test would
+        # let a reset() that does nothing at all pass this vacuously.
         scene._player._set_layout(4)  # what a multi-SID lap 1 leaves behind
         with _stub_port(scene):
             scene.setup()

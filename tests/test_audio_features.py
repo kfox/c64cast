@@ -322,10 +322,8 @@ class StreamTest(unittest.TestCase):
         self.assertIsNotNone(stream.features())
         stream.start()
         try:
-            # start() resets the snapshot to None, then the poll thread
-            # repopulates it on its first tick (run_first=True). Poll for it
-            # rather than asserting immediately — the thread's first tick races
-            # this line and loses on a loaded CI runner.
+            # start() resets the snapshot to None; poll for the thread's first tick
+            # rather than asserting immediately, which races it on a loaded runner.
             for _ in range(200):
                 if stream.features() is not None:
                     break

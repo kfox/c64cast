@@ -111,8 +111,7 @@ class FrameProfilerTest(unittest.TestCase):
             self.assertFalse(p.emit_if_due(now=105.0, log=log))
             # Past the interval: one summary per scene, returns True.
             self.assertTrue(p.emit_if_due(now=111.0, log=log))
-            # Force at least one log record so assertLogs doesn't raise on
-            # the no-emit path (it requires >=1 record).
+            # assertLogs requires >=1 record, so force one on the no-emit path.
             log.info("sentinel")
         emitted = [r for r in cap.output if "profile['s']" in r]
         self.assertEqual(len(emitted), 1)
@@ -150,10 +149,9 @@ class FrameProfilerTest(unittest.TestCase):
             self.assertIn(token, line)
 
     def test_an_idle_scene_is_skipped_and_then_dropped(self):
-        # A scene's ring keeps its last 64 frames forever, so re-printing a
-        # finished scene reports minutes-old numbers under a fresh timestamp
-        # — and _stats would grow one permanent bucket per scene name, which
-        # is per-file on a directory-spec playlist.
+        # A scene's ring keeps its last 64 frames forever, so re-printing a finished
+        # scene reports minutes-old numbers under a fresh timestamp — and _stats would
+        # grow one permanent bucket per scene name, per-file on a directory spec.
         p = FrameProfiler(interval=10.0)
         log = logging.getLogger("test_profile_idle")
         with p.frame("gone"):
@@ -189,10 +187,8 @@ class FrameProfilerTest(unittest.TestCase):
         self.assertTrue(any("profile['live']" in r for r in cap.output))
 
     def test_an_unknown_stage_is_printed_rather_than_dropped(self):
-        # stage() accepts any name and _bucket stores it, so a name missing
-        # from the column order must still reach the line — a measured
-        # sample silently absent from the one instrument used to answer "why
-        # is the frame slow" is the worst possible failure for it.
+        # stage() accepts any name and _bucket stores it, so a name missing from the
+        # column order must still reach the line rather than vanishing from the report.
         p = FrameProfiler(interval=10.0)
         log = logging.getLogger("test_profile_stage")
         with p.frame("s"):
