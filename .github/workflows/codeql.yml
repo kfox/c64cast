@@ -6,14 +6,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Weekly scan catches new CodeQL query-pack rules against unchanged code
-    # (push/PR only scans diffs' relevant paths). Off-peak, low-traffic slot.
     - cron: "24 3 * * 1"
 
 permissions:
   contents: read
 
-# Cancel a superseded run when new commits land on the same ref, matching ci.yml.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -34,13 +31,8 @@ jobs:
         with:
           languages: python
           queries: security-extended
-          # Emits SARIF `suppressions` for in-code `# codeql[query-id]` waivers
-          # (e.g. the WLED sink binding 0.0.0.0 by design). Not in any default
-          # suite, so it must be added explicitly.
           packs: codeql/python-queries:AlertSuppression.ql
 
-      # Python is interpretation-only (no build step needed for CodeQL);
-      # the autobuild action is for compiled languages and would no-op here.
       - name: Perform CodeQL analysis
         id: analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
@@ -48,11 +40,6 @@ jobs:
           category: "/language:python"
           output: sarif-results
 
-      # Code scanning uploads SARIF suppressions but never acts on them, and a
-      # manual dismissal dies whenever a refactor moves the flagged line (each
-      # move mints a new alert — see alerts #1-#3, all the same wled_sink bind).
-      # This step closes suppressed alerts via the alerts API instead. Main
-      # only: dismissal is a repo-global alert property, not per-branch.
       - name: Dismiss suppressed alerts
         if: github.ref == 'refs/heads/main'
         uses: advanced-security/dismiss-alerts@a18f986bdb40edba0dd7a74382c15d4a3d50a1c8 # v2.0.3

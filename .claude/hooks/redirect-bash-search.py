@@ -1,35 +1,13 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) hook — nudge file searches/dumps away from dumping unbounded
+"""PreToolUse(Bash) hook — deny file searches and dumps that can spill unbounded
 text into the context window.
 
-The waste this targets is *unbounded output landing in context*, not the choice
-of command. Two patterns dominate:
-
-  * an **unbounded recursive grep** (`grep -r …`, or ripgrep/ag/ack which recurse
-    by default) with no `-l`/`-c`/`-m` bound — can spill hundreds of matching
-    lines into context; and
-  * a whole-file **`cat <file>`** — the Read tool gives the same content with
-    line numbers, `offset`/`limit`, and harness file-tracking for later edits.
-
-It deliberately does NOT blanket-block grep. In many Claude Code sessions the
-structured Grep *tool* isn't even exposed (bash grep is the sanctioned search
-path), so denying every grep would remove the only mechanism available. A
-non-recursive grep, or any grep already bounded with `-l`/`-c`/`-m`, passes
-untouched — as does anything in a pipe (`… | grep`, `… | head`), a heredoc, a
-command substitution, a redirect, or a compound beyond `cd … && cmd`.
-
-Every deny offers an alternative that is always possible: add a bound, pipe to
-`head`, narrow the path, use Read for a file — and use the Grep tool *if this
-session has one*.
-
-Wire-up (.claude/settings.json):
-
-    {"hooks": {"PreToolUse": [
-      {"matcher": "Bash", "hooks": [
-        {"type": "command",
-         "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-bash-search.py\""}
-      ]}
-    ]}}
+Trips on an unbounded recursive grep (`grep -r …`, or ripgrep/ag/ack, which
+recurse by default) with no `-l`/`-c`/`-m` bound, and on a whole-file
+`cat <file>`. A non-recursive grep, an already-bounded one, a pipe, a heredoc, a
+command substitution, a redirect, and any compound beyond `cd … && cmd` pass
+untouched. Every deny offers an alternative: add a bound, pipe to `head`, narrow
+the path, use Read for a file, or use the Grep tool if this session has one.
 """
 
 from __future__ import annotations
@@ -39,12 +17,8 @@ import shlex
 import sys
 
 SEARCH = {"grep", "egrep", "fgrep", "rg", "ack", "ag"}
-# These recurse by default with no explicit -r, so a bare `rg foo` already
-# walks the whole tree; plain grep/egrep/fgrep only recurse with -r/-R.
 RECURSIVE_BY_DEFAULT = {"rg", "ack", "ag"}
-# Flags that bound the output enough that we leave the command alone.
 BOUND_LONG = {"-l", "--files-with-matches", "-L", "--files-without-match", "-c", "--count"}
-# Bail out (allow) if any of these appear — too complex / legitimately shell-only.
 BAILOUT = ("|", "<<", "$(", "`", ">", "<", ";", "\n")
 
 
@@ -58,7 +32,6 @@ def leading_argv(cmd: str) -> list[str] | None:
         return None
     if not toks:
         return None
-    # Split on `&&` (survives shlex as a literal token); keep first segment.
     segs: list[list[str]] = []
     cur: list[str] = []
     for t in toks:
@@ -72,15 +45,11 @@ def leading_argv(cmd: str) -> list[str] | None:
     segs = [s for s in segs if s]
     if not segs:
         return None
-    # Drop a leading `cd <dir>` so the search itself is what gets judged. This
-    # shape is on its way out — require-resolvable-search-target.py denies a
-    # `cd` paired with a relative search target — but it still has to parse.
     if len(segs) >= 2 and segs[0][0] == "cd":
         segs = segs[1:]
     if len(segs) != 1:
-        return None  # compound beyond `cd && cmd` → leave alone
+        return None
     argv = segs[0]
-    # Strip leading VAR=value env assignments (e.g. CI=1 grep ...).
     while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
         argv = argv[1:]
     return argv or None
@@ -104,18 +73,14 @@ def _is_bounded(args: list[str]) -> bool:
     if any(a.startswith("-m") or a.startswith("--max-count") for a in args):
         return True
     bundles = _short_bundles(args)
-    return ("l" in bundles) or ("c" in bundles)  # -l files, -c counts
+    return ("l" in bundles) or ("c" in bundles)
 
 
 def verdict(argv: list[str]) -> str | None:
     cmd, args = argv[0], argv[1:]
     if cmd in SEARCH:
-        # Need an actual search operand — `grep --version`/`rg --help` have none.
         if not [a for a in args if not a.startswith("-")]:
             return None
-        # Only nudge the genuinely-wasteful shape: a recursive search with no
-        # output bound. A non-recursive grep on explicit files, or any already
-        # bounded with -l/-c/-m, is fine and passes through.
         if _is_recursive(cmd, args) and not _is_bounded(args):
             return (
                 f"This recursive `{cmd}` has no output bound and can dump hundreds "

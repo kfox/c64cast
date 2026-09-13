@@ -1,31 +1,3 @@
-# Pre-commit hooks. Install with:
-#   uv tool install pre-commit
-#   pre-commit install
-#
-# Run manually against all files with:
-#   pre-commit run --all-files
-#
-# These same hooks are enforced in CI (.github/workflows/ci.yml, "pre-commit"
-# job — which runs the hooks through `uvx pre-commit` and skips the
-# pyright/unittest ones, since the lint-and-test job already runs those across
-# the OS × Python matrix).
-#
-# NOTE: the ruff-pre-commit rev below pins the SAME ruff version as uv.lock
-# (and therefore `make lint` / `make fmt`). Keep the two in sync — bump this
-# rev whenever you `uv lock --upgrade-package ruff`, or formatting will differ
-# between local `make fmt` and the pre-commit/CI check.
-
-# Two trees these hooks must not touch, for the same underlying reason: they
-# are byte-for-byte copies of something produced elsewhere, so "fixing" them
-# makes them differ from their source.
-#
-# docs/shared/fonts/ holds third-party OFL fonts and their license texts,
-# vendored from upstream — a license file is not ours to reformat. Its README
-# is ours, so that one stays in.
-#
-# c64cast/web/dist/ is the web console compiled by Vite. A whitespace fixer
-# rewriting minified output would make every commit disagree with a fresh
-# `make web`, and CI's drift check would then fail permanently.
 exclude: '^(docs/shared/fonts/(?!README\.md)|c64cast/web/dist/)'
 
 repos:
@@ -39,11 +11,6 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=512"]
         exclude: '^docs/(guide/img|shared/fonts)/'
-      # The guide's figures are print-resolution captures off a C64's HDMI
-      # output. The signal carries enough sampling noise that a nominally
-      # 16-color screen arrives with thousands of distinct values, so they
-      # neither palettize nor compress anywhere near the general limit. They
-      # still get a ceiling, just a realistic one.
       - id: check-added-large-files
         name: check for added large files (guide figures)
         args: ["--maxkb=2048"]
@@ -53,6 +20,7 @@ repos:
         args: ["--fix=lf"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep on the same version as uv.lock's ruff; bump both together.
     rev: v0.15.17
     hooks:
       - id: ruff

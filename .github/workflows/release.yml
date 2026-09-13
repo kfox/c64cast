@@ -1,9 +1,5 @@
 name: Release
 
-# Triggered by a `v*` tag on main. See RELEASING.md.
-#
-# `workflow_dispatch` with `publish` off builds and verifies without publishing.
-
 on:
   push:
     tags: ["v*"]
@@ -58,16 +54,12 @@ jobs:
       - name: Check the tree is consistent with the tag
         run: uv run --no-project python scripts/bump_version.py --check "${{ steps.version.outputs.version }}"
 
-      # No OS matrix: the wheel is py3-none-any, so one runner produces the
-      # artifact every platform installs. Platform coverage is ci.yml's job.
       - name: Build sdist + wheel
         run: uv build
 
       - name: Check the built metadata
         run: uvx twine check --strict dist/*
 
-      # Run from outside the checkout, where an `import c64cast` cannot reach
-      # the source tree.
       - name: Smoke-test the wheel
         run: |
           set -euo pipefail
@@ -77,9 +69,6 @@ jobs:
 
           got="$(uv run --no-project --with "$wheel" c64cast --version)"
           echo "c64cast --version -> $got"
-          # `--version` is "c64cast <ver> (<install path>)": the path answers
-          # "which environment is this running from", so match the prefix, not
-          # the whole line.
           case "$got" in
             "c64cast $expected ("*")") ;;
             *)
@@ -103,20 +92,9 @@ jobs:
         uses: typst-community/setup-typst@9107b8dd77d7a7fd6c5faebbb507cac28069042e # v5.3
 
       - name: Render the books
-        # build_book.py is stdlib-only, so PY skips the project sync. The
-        # generated appendices are committed for exactly this reason: nothing
-        # here may need to import c64cast.
         run: make books PY="uv run --no-project python"
 
       - name: Name the books for release
-        # Every rendered PDF, whatever it is called: a new book under docs/
-        # ships the release it lands in, without editing this step.
-        #
-        # Each book ships twice. The version-stamped copy is what someone who
-        # downloads three releases' worth wants on disk; the unversioned one
-        # exists so `releases/latest/download/<book>.pdf` resolves, which is the
-        # only spelling of "the current PDF" that survives a release. Both are
-        # the same bytes, and the version is on the cover either way.
         run: |
           set -euo pipefail
           for pdf in docs/*/c64cast-*.pdf; do
@@ -141,8 +119,6 @@ jobs:
             release-notes.md
           if-no-files-found: error
 
-  # Before github-release: a PyPI version can only be yanked, never replaced,
-  # while a GitHub release can be deleted and recreated.
   publish-pypi:
     name: publish to PyPI
     needs: build
@@ -157,13 +133,8 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          # Off, unlike the build job: `uv publish` installs nothing, so the
-          # post-run cache save finds no cache directory and fails the job.
           enable-cache: false
           python-version: "3.14"
-          # This job never checks out the repo -- it only downloads artifacts
-          # and runs `uv publish` -- so setup-uv starts in an empty directory
-          # and warns about it. Nothing here reads a pyproject.toml.
           ignore-empty-workdir: "true"
 
       - name: Download the built artifacts
@@ -177,12 +148,6 @@ jobs:
           rm -f dist/*.pdf release-notes.md
           ls -l dist/
 
-      # The PyPA publish action is not an option here: it is a Docker action
-      # that resolves its image by the action ref, so it cannot be digest-pinned
-      # the way every action in this repo is. uv does the same OIDC upload, with
-      # attestations, and no container.
-      #
-      # `always`, not `automatic`: automatic falls back to looking for a token.
       - name: Publish
         run: |
           uv publish \
@@ -203,16 +168,6 @@ jobs:
         with:
           name: release-artifacts
 
-      # Assets are behind a collapsed control, so the notes link them directly.
-      # Version-stamped URLs, not the `releases/latest/download/…` ones the
-      # README uses: these notes are the record of one release and still name
-      # its files after the next one lands.
-      #
-      # The install commands lead, and the distributions are labeled for the
-      # installer rather than the reader. A page whose first move is a list of
-      # files to download teaches that upgrading means downloading files, and
-      # the one thing that cannot upgrade an install is unpacking an archive
-      # next to it -- so the notes say so where the archives are.
       - name: Compose the release notes
         env:
           VERSION: ${{ needs.build.outputs.version }}

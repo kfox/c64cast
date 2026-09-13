@@ -1,17 +1,13 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 *.egg-info/
-# Anchored: `build/` and `dist/` unanchored would also swallow the committed
-# web-console bundle at c64cast/web/dist/, and a re-include cannot resurrect a
-# path whose parent directory is itself excluded.
+# Anchored: an unanchored `build/`/`dist/` would also swallow the committed c64cast/web/dist/.
 /build/
 /dist/
 .eggs/
 
-# Coverage / test artifacts
 .coverage
 .coverage.*
 coverage.xml
@@ -21,83 +17,47 @@ test-results/
 .tox/
 .ruff_cache/
 
-# Virtualenvs / package managers
 .venv/
 venv/
 env/
 .envrc
 .python-version
 
-# Editor / IDE
 .idea/
 .vscode/
 *.swp
 *~
 
-# Project-specific
-# user-generated top-level config tomls (quick tests, scratch scene configs).
-# Only real project files are tracked; put reusable configs under config/.
 /*.toml
 !/mise.toml
 !/pyproject.toml
 config/*.toml
-# `.bak` sibling a console config save leaves behind (config_store._rewrite),
-# anywhere in the tree — never source.
 *.toml.bak
 .*.toml.bak
-# diag tool captures/fixtures; the tools are tracked
 scripts/diags/out/
-# per-system DAC calibration tables (captured from real hardware via
-# --calibrate-dac; machine-specific, not source). Canonical location is the
-# user data dir (~/.local/share/c64cast/calibration/dac/); this guard only
-# keeps captures out of git if a dev points $C64CAST_DATA_DIR at the checkout.
 calibration/
-# WLED / look / loop presets — machine/taste-specific captured data, not
-# source. Canonical location is the user data dir (~/.local/share/c64cast/
-# presets/); this guard only keeps them out of git if a dev points
-# $C64CAST_DATA_DIR at the checkout.
 presets/
-# legacy: local stream recordings outside assets/
 recordings/
 *.mp4
 *.mkv
 *.mov
-# video production planning, demo configs, and footage
 videos/
-# The web console's build tooling. `web/` (the sources) and c64cast/web/dist/
-# (the committed bundle) are both tracked — that bundle is what lets a `uv
-# sync` install serve the console with no Node anywhere.
 web/node_modules/
 web/.vite/
 
-# Assets — only the directory READMEs are tracked. Drop your own files
-# under assets/<subdir>/ and they will be ignored (most have unclear
-# licensing or are personal/local).
 assets/*/*
 !assets/*/README.md
 
-# Claude — local state stays out; project skills, the shared permission
-# allowlist, and the PreToolUse guardrail hooks are shared.
-# Note: `.claude/*` (not `.claude/`) so git still descends into the dir;
-# a re-include cannot resurrect a file whose parent dir is itself excluded.
+# `.claude/*`, not `.claude/`: a re-include cannot resurrect a file whose parent directory is excluded.
 .claude/*
 !.claude/skills/
 !.claude/settings.json
 !.claude/hooks/
 
-# OS
 .DS_Store
 Thumbs.db
 
-# Book build artifacts. The Markdown, the shared Typst template, the figures
-# and the OFL fonts under docs/shared/fonts/ are all tracked — the fonts are
-# committed so a PDF renders identically from a fresh checkout anywhere. Only
-# the generated .typ and the rendered PDF are ignored, and both are named for
-# the book (`output` in its book.toml), never `template.typ`.
 docs/*/c64cast-*.typ
 docs/*/c64cast-*.pdf
 
-# The documentation site, rendered from those same sources by `make site`.
-# Published by .github/workflows/pages.yml as a Pages artifact rather than
-# committed to a branch, so nothing generated is ever tracked.
 docs/_site/
