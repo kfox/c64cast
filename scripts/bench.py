@@ -8,12 +8,10 @@ write endpoints, points an ``Ultimate64API`` at it, and measures:
   * latency p50 / p95 / max
   * delta-cache effectiveness (skip ratio)
 
-This is the regression harness for the API layer — when you change
-``write_region``'s diff strategy or the async queue, run this and
-compare against the previous numbers. The fake server adds an optional
-artificial per-request latency so you can simulate a slow LAN.
-
-Run via ``make bench`` or ``python scripts/bench.py [--latency-ms N]``.
+Run via ``make bench`` or ``python scripts/bench.py [--latency-ms N]``
+after changing ``write_region``'s diff strategy or the async queue, and
+compare against the previous numbers. ``--latency-ms`` makes the fake
+server pause before responding, to simulate a slow LAN.
 """
 
 from __future__ import annotations
@@ -54,7 +52,6 @@ class _Handler(BaseHTTPRequestHandler):
             _Handler.bytes_received += len(body)
             _Handler.latencies_ms.append(dt_ms)
 
-    # The U64 API uses PUT / POST / GET on a few endpoints. Accept them all.
     def do_PUT(self):  # noqa: N802
         self._ack()
 
@@ -91,14 +88,16 @@ def _print_section(title: str):
 
 
 def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 8000) -> None:
-    """Replay a few realistic write patterns against the local fake U64.
+    """Replay four realistic write patterns against the local fake U64.
 
     * **full_writes** — every frame pushes a brand-new 8 KB region (worst
-      case; simulates a fresh bitmap mode with no temporal coherence).
-    * **delta_writes** — same region but only a small slice changes per
-      frame (typical of a waveform/spectrum overlay over static text).
-    * **mixed** — alternates: most frames are deltas, every ~30th is a
-      full reset (simulates scene transitions).
+      case; a fresh bitmap mode with no temporal coherence).
+    * **localized_delta** — one contiguous window moves through the region,
+      as a marquee/clock/scrolling-text overlay does.
+    * **chunked_delta** — eight scattered 8-byte bands change, as a spectrum
+      analyzer does; exercises the chunked-diff path.
+    * **no_op** — the same region pushed every frame, which must skip every
+      send.
     """
     _Handler.latency_ms = latency_ms
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
@@ -113,13 +112,11 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     rng = np.random.default_rng(0)
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
 
-    # ---- full_writes ------------------------------------------------------
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()
     _reset_stats()
     t0 = time.perf_counter()
     for _ in range(frames):
-        # Fresh content every frame — region is completely different.
         region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
         api.write_region(0x2000, region.tobytes(), region_id=99)
     api.flush(timeout=30.0)
@@ -128,9 +125,6 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     _print_section("full_writes (fresh region every frame)")
     _report(api, dt, frames, region_bytes)
 
-    # ---- localized_delta --------------------------------------------------
-    # A contiguous window changes each frame — mimics a marquee/clock/
-    # scrolling-text overlay where only a few neighboring cells differ.
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
@@ -148,9 +142,6 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     _print_section(f"localized_delta ({window}-byte window per frame)")
     _report(api, dt, frames, region_bytes)
 
-    # ---- chunked_delta ----------------------------------------------------
-    # Sparse scattered changes — what a spectrum analyzer looks like (8
-    # bars updating across the row). Tests the chunked-diff path.
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)
@@ -158,7 +149,6 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     _reset_stats()
     t0 = time.perf_counter()
     for _ in range(frames):
-        # 8 bands × 8 bytes each, spread across the region.
         for b in range(8):
             base = b * (region_bytes // 8)
             region[base : base + 8] = rng.integers(0, 256, size=8, dtype=np.uint8)
@@ -169,8 +159,6 @@ def run_bench(latency_ms: float = 0.0, frames: int = 600, region_bytes: int = 80
     _print_section("chunked_delta (8 scattered 8-byte bands per frame)")
     _report(api, dt, frames, region_bytes)
 
-    # ---- no_op ------------------------------------------------------------
-    # Region pushed unchanged every frame — must skip every send.
     api = Ultimate64API(base_url, async_writes=True, queue_depth=32)
     api.invalidate_cache()
     region = rng.integers(0, 256, size=region_bytes, dtype=np.uint8)

@@ -45,8 +45,8 @@ SCALE = 4
 FRAME_W, FRAME_H = 384 * SCALE, 272 * SCALE
 BORDER_X, BORDER_Y = 32 * SCALE, 36 * SCALE
 
-# Written into the bottom-left of every generated placeholder. Its presence is
-# how the script tells "still a placeholder" from "a real capture landed here".
+# Drawn into the bottom-left of every generated placeholder, so an unfinished
+# figure is obvious in the PDF.
 PLACEHOLDER_MARK = "PLACEHOLDER"
 
 
@@ -58,9 +58,9 @@ def c64(index: int) -> tuple[int, int, int]:
 
 # figure path -> (border color, background color, headline, capture recipe)
 #
-# The recipe is the command a real capture should be taken from. It is printed
-# into the placeholder AND into docs/guide/img/README.md, so the shot list
-# can't drift from the figures.
+# The recipe is the command a real capture should be taken from; it is printed
+# into the placeholder and into docs/guide/img/README.md, which this script
+# regenerates.
 SHOT_LIST: dict[str, tuple[int, int, str, str]] = {
     "fig-qs-1-hello.png": (
         0,
@@ -157,7 +157,6 @@ def draw_placeholder(border: int, background: int, headline: str, recipe: str) -
     dim = c64(15)  # light gray
     accent = c64(3)  # cyan
 
-    # A dashed inner rule, so the placeholder reads as deliberately unfinished.
     step = 16 * SCALE
     x0, y0 = BORDER_X + 6 * SCALE, BORDER_Y + 6 * SCALE
     x1, y1 = FRAME_W - BORDER_X - 6 * SCALE, FRAME_H - BORDER_Y - 6 * SCALE
@@ -173,7 +172,6 @@ def draw_placeholder(border: int, background: int, headline: str, recipe: str) -
     _put(img, headline, (cx - _text_width(headline, hs) // 2, FRAME_H // 2 - 8 * SCALE), hs, light)
 
     rs = 0.62 * SCALE / 4
-    # The recipe can be long; wrap it on whitespace to fit the active area.
     avail = (FRAME_W - 2 * BORDER_X) - 12 * SCALE
     words, line, lines = recipe.split(" "), "", []
     for word in words:

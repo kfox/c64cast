@@ -15,11 +15,8 @@ anything a figure needs must already be a PNG in the tree. `make
 reference-figures` regenerates them.
 
 Drawn with Pillow and the vendored faces in docs/shared/fonts/, so a diagram
-sits in the same type as the page around it. make_guide_figures.py's
-cv2.putText path was the wrong model here -- a Hershey stroke font next to
-Jost reads as a screenshot of a different document -- and
-capture_guide_figure.py's PIL path reads a user-installed font, which makes
-the output depend on the machine that drew it.
+sits in the same type as the page around it and does not depend on a font
+installed on the machine that drew it.
 
 Everything is laid out in a 1500-wide design space and drawn at SS times that,
 then downsampled: Pillow has no antialiasing of its own, and the isometric
@@ -64,12 +61,8 @@ PAPER = (0xFF, 0xFF, 0xFF)
 MUTED = (0x6B, 0x6B, 0x6B)
 
 
-# ---------------------------------------------------------------------------
-# Drawing vocabulary
-#
 # Every helper takes design-space coordinates and scales them by SS on the way
 # to Pillow, so the figures below read at the size they will be printed at.
-# ---------------------------------------------------------------------------
 
 
 _FONTS: dict[tuple[str, int, str], ImageFont.FreeTypeFont] = {}
@@ -265,13 +258,9 @@ def c64(index: int) -> tuple[int, int, int]:
     return (int(r), int(g), int(b))
 
 
-# ---------------------------------------------------------------------------
-# Figure 1-1 — the precedence ladder
-# ---------------------------------------------------------------------------
-
-# Bottom rung first. The ensemble's master cascade has no number because it is
-# not one of the five: it is an extra rung, and only on an ensemble run. The
-# last field says whether the right-hand column is something you could type.
+# Bottom rung first. The master cascade has no number because it is an extra
+# rung, on an ensemble run only. The last field says whether the right-hand
+# column is something you could type.
 _LADDER = [
     ("1", "The built-in default", "what Appendix A prints", False),
     ("2", "Machine settings", "~/.config/c64cast/settings.toml", True),
@@ -318,13 +307,9 @@ def fig_ladder() -> Image.Image:
     return finish(img)
 
 
-# ---------------------------------------------------------------------------
-# Figure 3-1 — one cell per display mode
+# fig_cells is the only figure drawn in C64 colors rather than the book's: what
+# it is about is which palette entry each attribute byte holds.
 #
-# The only figure drawn in C64 colors rather than the book's: what it is about
-# is which palette entry each attribute byte holds.
-# ---------------------------------------------------------------------------
-
 # A hires cell is 8x8 one-bit pixels; the multicolor modes halve that to 4x8
 # two-bit pixels. Both are spelled as rows of digits, one character per pixel.
 _GLYPH_A = [
@@ -451,10 +436,6 @@ def fig_cells() -> Image.Image:
     return finish(img)
 
 
-# ---------------------------------------------------------------------------
-# Figure 3-2 — from frame to screen
-# ---------------------------------------------------------------------------
-
 # step -> (what happens, what enters there, is it something you could type)
 _PIPELINE = [
     ("The source produces a frame", "", True),
@@ -515,13 +496,8 @@ def fig_pipeline() -> Image.Image:
     return finish(img)
 
 
-# ---------------------------------------------------------------------------
-# Figure 3-3 — blending colors the VIC cannot draw
-#
-# Red and purple, "verymild" on the scored table -- one of the mildest pairs
-# "clean" admits, so it fuses convincingly rather than merely fusing.
-# ---------------------------------------------------------------------------
-
+# Red and purple: "verymild" on the scored table, one of the mildest pairs
+# "clean" admits.
 _FLICKER_PAIR = (2, 4)
 
 
@@ -596,10 +572,6 @@ def fig_flicker() -> Image.Image:
 
     return finish(img)
 
-
-# ---------------------------------------------------------------------------
-# Figure 4-1 — the two ways out
-# ---------------------------------------------------------------------------
 
 # Each step is (address or nothing, the rest of the line).
 _DAC_PATH = [
@@ -679,15 +651,9 @@ def fig_audio() -> Image.Image:
     return finish(img)
 
 
-# ---------------------------------------------------------------------------
-# Figure 5-1 — what lands in memory
-#
-# Isometric because the VIC's banks genuinely are parallel 16 KB windows over
-# one address space, and a flat map cannot say that: it has to draw either the
-# address space or the banks, and the thing worth showing is that color RAM
-# sits in neither.
-# ---------------------------------------------------------------------------
-
+# fig_memory is isometric because the VIC's banks are parallel 16 KB windows
+# over one address space: a flat map has to draw one or the other, and what is
+# worth showing is that color RAM sits in neither.
 BANK_BYTES = 0x4000
 SLAB_LEN = 460.0  # a whole 16 KB bank, along the address axis
 SLAB_DEPTH = 120.0
@@ -748,12 +714,10 @@ def _slab_segment(
         _iso(u0, depth, SLAB_H, origin),
     ]
     front = [_iso(u0, 0, 0, origin), _iso(u1, 0, 0, origin), top[1], top[0]]
-    # The end caps are laid down before the front and the top, not after. In
-    # this projection the far cap's parallelogram rides up over the top face
-    # rather than meeting it at an edge, so drawing it last folded a darker
-    # wedge across the top-right corner of every slab whose regions did not
-    # already cover it. Painted first, the front and the top cover that
-    # overlap and leave only the true sliver of end grain showing.
+    # The end caps go down before the front and the top: in this projection
+    # the far cap's parallelogram rides up over the top face rather than
+    # meeting it at an edge, and painting it first leaves only the true sliver
+    # of end grain showing.
     if u0 <= 0:  # the left end cap, visible only on the first segment
         cap = [_iso(0, 0, 0, origin), _iso(0, depth, 0, origin), top[3], top[0]]
         _face(d, cap, _shade(color, 0.86))
@@ -798,11 +762,10 @@ _SOUND = (0x3E, 0x46, 0x50)
 
 # bank -> (label, its base address, [(start, end, color, name, address, label y
 # relative to the plate's own origin, leader aim along the region's diagonal)]).
-# The label heights are set by hand: a pair is spaced ~140px from the next so
-# the gap between two pairs plainly beats the gap within one. Where two regions
-# a kilobyte apart share a corner (bank 0's screen/BASIC, bank 3's two), the
-# aim sends one leader to the near end and the other to the far end so the
-# straight lines stay apart.
+# The label heights are set by hand: a pair is spaced ~140px from the next, so
+# the gap between two pairs beats the gap within one. Where two regions a
+# kilobyte apart share a corner (bank 0's screen/BASIC, bank 3's two), the aim
+# sends one leader to the near end and the other to the far end.
 _Region = tuple[int, int, tuple[int, int, int], str, str, float, float]
 _MEMORY: list[tuple[str, str, list[_Region]]] = [
     (
@@ -855,12 +818,10 @@ def fig_memory() -> Image.Image:
     name_f = font("body", 40)
     note_f = font("body", 36)
 
-    # Leaders are drawn last, over every slab: a region painted after the one a
-    # leader points at used to bury part of it, and the pale edge color the
-    # leaders were drawn in vanished over the wash and the spare-bank blues.
-    # Each is one straight segment from the label pair's vertical center to the
-    # middle of its region -- the label heights in _MEMORY are picked so none
-    # of them has to bend to miss a neighbor.
+    # Leaders are drawn last, over every slab, so a later region cannot bury
+    # one. Each is a single straight segment from the label pair's vertical
+    # center to the middle of its region -- the label heights in _MEMORY are
+    # picked so none of them has to bend to miss a neighbor.
     leaders: list[tuple[tuple[float, float], tuple[float, float]]] = []
 
     for i, (bank, bank_addr, regions) in enumerate(_MEMORY):
@@ -886,10 +847,9 @@ def fig_memory() -> Image.Image:
     for center, anchor in leaders:
         line(d, [center, anchor], ACCENT, 1.8)
 
-    # Color RAM is drawn as a region with no plate under it, because that is
-    # the fact worth drawing: there is one of it, it belongs to no bank, and
-    # the VIC reads it whichever bank is displayed. Leader lines to the two
-    # screen RAMs were tried and had to cross the label column to get there.
+    # Color RAM is drawn as a region with no plate under it: there is one of
+    # it, it belongs to no bank, and the VIC reads it whichever bank is
+    # displayed.
     cr = (330.0, height - 40.0)
     _slab_segment(d, cr, 0, 200, _PICTURE, length=200, depth=SLAB_DEPTH)
     _slab_outline(d, cr, length=200, depth=SLAB_DEPTH)
@@ -906,10 +866,6 @@ def fig_memory() -> Image.Image:
 
     return finish(img)
 
-
-# ---------------------------------------------------------------------------
-# The shot list
-# ---------------------------------------------------------------------------
 
 # name -> (drawing function, which chapter it belongs to, what it shows)
 FIGURES = {

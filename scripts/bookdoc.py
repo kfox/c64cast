@@ -33,12 +33,8 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 CALLOUT_KINDS = ("NOTE", "TIP", "WARNING", "IMPORTANT", "CAUTION")
 
 # What each layout takes from `book.toml`, in the order the Typst template
-# declares the parameters. A key is required if it is listed: a book that forgot
-# its cover logo should fail here rather than render a coverless PDF.
-#
-# `output` (the artifact basename) and `layout` itself are consumed by the
-# builder and never passed on; `version` is not book metadata somebody edits, so
-# it is appended by the build rather than read from the file.
+# declares the parameters. A listed key is required. `output` and `layout` are
+# consumed by the builder and never passed on; `version` comes from the build.
 LAYOUT_KEYS = {
     "guide": ("title", "volume", "subtitle", "tagline", "logo", "pdf_title"),
     "card": ("title", "subtitle", "pdf_title"),
@@ -68,11 +64,6 @@ def root_relative(target: Path) -> str:
         raise BookError(f"{target} is outside the repository") from None
 
 
-# ---------------------------------------------------------------------------
-# Front matter
-# ---------------------------------------------------------------------------
-
-
 def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]:
     """Split leading `---` YAML front matter from the body.
 
@@ -98,9 +89,8 @@ def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]
         key, _, value = line.partition(":")
         fields[key.strip()] = value.strip().strip("\"'")
 
-    # `generated` marks a chapter written by scripts/gen_reference_appendices.py.
-    # The converter does nothing with it: it is there so the drift check can
-    # discover its own outputs, and so a human editing one has been warned.
+    # `generated` marks a chapter written by scripts/gen_reference_appendices.py,
+    # which is how its drift check finds the files it owns. Unused here.
     allowed = {"number", "generated"}
     for key in fields:
         if key not in allowed:
@@ -108,13 +98,8 @@ def parse_front_matter(text: str, path: Path) -> tuple[dict[str, str], str, int]
     return fields, "\n".join(lines[end + 1 :]), end + 2
 
 
-# ---------------------------------------------------------------------------
-# Anchors
-# ---------------------------------------------------------------------------
-
-# A Markdown link at a section: `04-display-pipeline.md#anchor`, or bare
-# `#anchor` for one in the same file. Anything else -- an absolute URL, a link
-# at a whole file -- is left to the ordinary link branch.
+# A link at a section: `04-display-pipeline.md#anchor`, or bare `#anchor` for
+# one in the same file. Anything else is left to the ordinary link branch.
 _SECTION_HREF_RE = re.compile(r"^(?P<file>\d+-[\w.-]+\.md)?#(?P<slug>[\w-]+)$")
 
 
@@ -176,8 +161,7 @@ def file_section_slugs(text: str) -> list[str]:
             continue
         m = _HEADING_RE.match(line)
         if fenced or not m or len(m.group("hashes")) not in (2, 3):
-            # A `#` comment in a fenced TOML listing is not a section, and the
-            # converter would not emit a label for one either.
+            # A `#` comment in a fenced TOML listing is not a section.
             continue
         slug = heading_slug(m.group("text"))
         count = seen.get(slug, 0)
@@ -211,11 +195,6 @@ def resolve_section_href(
     return ref
 
 
-# ---------------------------------------------------------------------------
-# The emitter interface
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class ListItem:
     """One line of a list block, with the indentation that gave it its depth."""
@@ -236,7 +215,6 @@ class Emitter(Protocol):
     what it looks like.
     """
 
-    # -- inline -------------------------------------------------------------
     def text(self, literal: str) -> str: ...
     def code(self, body: str) -> str: ...
     def kbd(self, body: str) -> str: ...
@@ -247,7 +225,6 @@ class Emitter(Protocol):
     def xref(self, text: str, number: str) -> str: ...
     def mark(self, char: str) -> str: ...
 
-    # -- blocks -------------------------------------------------------------
     def heading(self, level: int, body: str, label: SectionRef | None) -> str: ...
     def figure(self, src: str, target: Path, caption: str) -> str: ...
     def code_block(self, body: str, lang: str) -> str: ...
@@ -263,15 +240,10 @@ class Emitter(Protocol):
     def list_block(self, items: list[ListItem]) -> str: ...
     def paragraph(self, body: str) -> str: ...
 
-    # -- checks -------------------------------------------------------------
     def check_prose(self, literal: str, path: Path, lineno: int) -> None:
         """Reject prose this output would silently rewrite. May be a no-op."""
         ...
 
-
-# ---------------------------------------------------------------------------
-# Inline conversion
-# ---------------------------------------------------------------------------
 
 # Ordered: the first pattern to match at a position wins. Code spans come first
 # so that markup inside them is never interpreted.
@@ -323,10 +295,9 @@ def convert_inline(
         out.append(emitter.text(literal))
 
         if m.group("esc") is not None:
-            # A CommonMark backslash escape. This alternative is FIRST in the
-            # pattern so that `Jost\*` yields a literal asterisk instead of
-            # leaving a stray backslash and opening an emphasis run that eats
-            # prose until the next `*` several sentences later.
+            # A CommonMark backslash escape, FIRST in the pattern so that
+            # `Jost\*` yields a literal asterisk rather than a stray backslash
+            # and an emphasis run to the next `*`.
             out.append(emitter.text(m.group("esc")))
         elif m.group("code") is not None:
             out.append(emitter.code(m.group("code_body")))
@@ -352,8 +323,7 @@ def convert_inline(
             number = m.group("xref_num")
             if not chapters:
                 # Not a book chapter -- a standalone document, or the README on
-                # the site. There is no chapter namespace to resolve against, so
-                # "Appendix A" is three words rather than a link into nowhere.
+                # the site. No chapter namespace to resolve against.
                 out.append(emitter.text(m.group("xref")))
                 pos = m.end()
                 continue
@@ -374,10 +344,6 @@ def convert_inline(
     out.append(emitter.text(tail))
     return "".join(out)
 
-
-# ---------------------------------------------------------------------------
-# Block conversion
-# ---------------------------------------------------------------------------
 
 _FIGURE_RE = re.compile(r"^!\[(?P<caption>[^\]]*)\]\((?P<src>[^)]+)\)$")
 _HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<text>.*)$")
@@ -459,10 +425,10 @@ class Converter:
 
             directive = _DIRECTIVE_RE.match(line.strip())
             if directive:
-                # An HTML comment, so github.com renders nothing where it sits.
-                # Both say the table below is a list of settings rather than a
-                # grid of values, and should be set to the width every other
-                # such table uses; see _TABLE_DIRECTIVES.
+                # An HTML comment, so github.com renders nothing where it
+                # sits. Both mark the table below as a settings list rather
+                # than a grid of values; build_book.py's docstring has the
+                # dialect.
                 name = directive.group("name")
                 if name not in _TABLE_DIRECTIVES:
                     fail(self.path, self.lineno(i), f"unknown directive {name!r}")
@@ -517,13 +483,11 @@ class Converter:
         if level > 4:
             fail(self.path, lineno, f"heading level {level} is deeper than the design supports")
         inline = self.inline(text, index)
-        # Level 3 too: a scene type, `### Companding — `dac_curve`` and
-        # `### `sid_panning`` are all `###`, and that is the granularity a
-        # reader looks things up at.
+        # Level 3 too: that is the granularity a reader looks things up at.
         ref = SectionRef(self.path.stem, self._slug(text)) if level in (2, 3) else None
         if level == 2 and ref is not None:
             # Converted, not raw: the opener page lists these, and a section
-            # called `[hardware]` was reaching it with its backticks still on.
+            # called `[hardware]` would otherwise reach it with its backticks on.
             self.sections.append((ref, inline))
         out.append(self.emitter.heading(level, inline, ref))
 
@@ -700,11 +664,6 @@ class Converter:
             i += 1
         out.append(self.emitter.paragraph(self.inline(" ".join(buf), start)))
         return i
-
-
-# ---------------------------------------------------------------------------
-# Book discovery
-# ---------------------------------------------------------------------------
 
 
 def chapter_numbers(paths: list[Path]) -> frozenset[str]:
