@@ -31,9 +31,9 @@ from _fakes import MachineSettingsIsolation, tmp_cwd
 from c64cast.app import config as cfgmod
 from c64cast.app import config_store, paths
 
-# Every read and every patch measures against the machine-settings layer, so a
-# real settings file on the developer's machine would change what `is_default`
-# says and what a save writes. `MachineBaselineTest` supplies its own file.
+# Every read and patch measures against the machine-settings layer, so
+# a real settings file on the developer's machine would change what
+# `is_default` says. `MachineBaselineTest` supplies its own.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -46,20 +46,18 @@ def tearDownModule() -> None:
 
 
 # `[audio].enabled` defaults on and `validate_configs` refuses it when
-# sounddevice is absent, which is the CI job's environment — a fixture that
-# validates only on a developer's machine tests nothing.
+# sounddevice is absent, which is the CI job's environment.
 GOOD = (
     '[audio]\nenabled = false\n\n[color]\ndither = "atkinson"\n\n'
     '[[scenes]]\ntype = "blank"\nduration_s = 5.0\n'
 )
 BROKEN = '[color]\ndither = "atkinson"\n\n[[scenes\n'
-# Trips `scene_factory.validate_dither_cfg`, i.e. the branch that logs a
-# diagnostic and raises an exit code rather than failing to parse. Audio off
-# for the same reason `GOOD` has it off — the audio check runs first, and a
-# fixture that fails for a different reason on CI proves nothing.
+# Trips `scene_factory.validate_dither_cfg`, the branch that logs a
+# diagnostic and raises rather than failing to parse. Audio is off for
+# the same reason `GOOD` has it off: the audio check runs first.
 INVALID = '[audio]\nenabled = false\n\n[color]\ndither = "nonsense"\n'
-# Valid on its own, and silent about `dither` — so a machine setting for it is
-# the last word, which is what makes this the fixture for the layer-blame tests.
+# Valid on its own and silent about `dither`, so a machine setting for
+# it is the last word — which is what the layer-blame tests need.
 SILENT_ON_DITHER = '[audio]\nenabled = false\n\n[[scenes]]\ntype = "blank"\nduration_s = 1.0\n'
 MASTER = """
 [ensemble]
@@ -74,17 +72,15 @@ class StoreTestCase(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        # Resolved because macOS hands out /var/folders/... symlinks for the
-        # temp dir, and every path this module returns is real.
+        # macOS hands out /var/folders symlinks for the temp dir, and every
+        # path this module returns is real.
         self.tmp = Path(tmp.name).resolve()
         self.shows = self.tmp / "shows"
         self.shows.mkdir()
         (self.shows / "gig.toml").write_text(GOOD, encoding="utf-8")
-        # `include_examples=False`: this fixture is about the *configured*
-        # root, and coupling it to whatever ships in `c64cast/examples/` would
-        # make an unrelated packaging change break tests having nothing to do
-        # with examples. `ExamplesRootTest` below covers the examples root on
-        # its own.
+        # `include_examples=False`: this fixture is about the configured root,
+        # and coupling it to whatever ships in `c64cast/examples/` would let a
+        # packaging change break it. `ExamplesRootTest` covers that root.
         self.store = config_store.ConfigStore([str(self.shows)], include_examples=False)
 
 
@@ -144,10 +140,9 @@ class RootJailTest(StoreTestCase):
         self.assertRejected("shows/id_rsa")
 
     def test_a_non_config_manifest_is_not_addressable(self):
-        # NON_CONFIG_NAMES used to be a listing-only filter — a ref could
-        # still name (and `resolve` would still hand back) a file the
-        # listing hides, which is a read/write primitive for `pyproject.toml`
-        # and its like on the cwd-fallback root.
+        # A ref that names a file the listing hides is a read/write primitive
+        # for `pyproject.toml` and its like on the cwd-fallback root, so
+        # NON_CONFIG_NAMES cannot be a listing-only filter.
         (self.shows / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
         self.assertRejected("shows/pyproject.toml")
 
@@ -166,8 +161,8 @@ class RootJailTest(StoreTestCase):
         self.assertRejected("shows/docs/fig.toml")
 
     def test_a_root_named_docs_is_still_addressable(self):
-        # The rule refuses a *subdirectory* named `docs`/`scripts`, never a
-        # root the operator pointed at.
+        # The rule refuses a subdirectory named `docs`/`scripts`, never a root
+        # the operator pointed at.
         docs_root = self.tmp / "docs"
         docs_root.mkdir()
         (docs_root / "gig.toml").write_text(GOOD, encoding="utf-8")
@@ -281,8 +276,8 @@ class ReadTest(StoreTestCase):
         self.assertNotIn("token", [f["name"] for f in web["fields"]])
         self.assertNotIn("viewer_token", [f["name"] for f in web["fields"]])
         self.assertNotIn("token", [f["name"] for f in control["fields"]])
-        # The raw text is the file, though — see the module docstring on
-        # `read` for why gating that is out of this store's scope.
+        # The raw text is the file: see the module docstring on `read` for why
+        # gating that is out of this store's scope.
         self.assertIn("watchme", out["text"])
 
     def test_a_broken_config_returns_its_text_and_the_parse_error(self):
@@ -318,9 +313,9 @@ class ReadTest(StoreTestCase):
                 self.store.read("shows/big.toml")
 
     def test_an_ensemble_pointing_outside_the_roots_is_refused(self):
-        # load_master follows an absolute systems[].config verbatim — a read
-        # primitive for anything on the host if this store didn't refuse it
-        # before ever handing the text to the loader.
+        # load_master follows an absolute systems[].config verbatim, so a
+        # store that did not refuse it first would be a read primitive for
+        # anything on the host.
         outside = self.tmp / "outside.toml"
         outside.write_text("SUPER-SECRET-CONTENTS\n", encoding="utf-8")
         text = f'[ensemble]\nsystems = [{{ name = "x", config = "{outside.as_posix()}" }}]\n'
@@ -356,9 +351,9 @@ class ValidateTest(StoreTestCase):
         self.assertEqual(leftovers, [])
 
     def test_a_scratch_write_failure_is_refused_and_leaves_no_leftover(self):
-        # The mkstemp + write pair used to straddle the try/finally that
-        # unlinks: a write failure (ENOSPC, a remount to read-only) escaped
-        # as a bare OSError with the half-written scratch file left behind.
+        # A write failure (ENOSPC, a read-only remount) must be refused like a
+        # denied mkstemp, not escape as a bare OSError leaving the half-written
+        # scratch file behind.
         def _raise(fd: int, *a: object, **kw: object) -> None:
             os.close(fd)
             raise OSError("disk full")
@@ -394,9 +389,9 @@ class ValidateTest(StoreTestCase):
         self.assertEqual(report["systems"], ["left", "right"])
 
 
-# Two scenes that each name no media, on a host with no assets/videos to
-# default to — the exact state a video scene is in the instant the console
-# adds it. validate_configs (fail-fast) stops at the first; the doctor's
+# Two scenes that each name no media, on a host with no assets/videos
+# to default to — the state a video scene is in the instant the
+# console adds it. validate_configs stops at the first; the doctor's
 # collect-all pass names both.
 TWO_UNRESOLVED_SCENES = (
     "[audio]\nenabled = false\n\n"
@@ -411,9 +406,8 @@ class ValidateRefTest(StoreTestCase):
     collect-all diagnostics on top."""
 
     def test_a_good_config_validates_and_carries_diagnostics(self):
-        # validate_ref runs with probe_environment=False (it's about this
-        # config, not this machine's install), so only per-scene diagnostics
-        # are expected here.
+        # validate_ref runs with probe_environment=False (it is about this
+        # config, not this machine's install).
         report = self.store.validate_ref("shows/gig.toml")
         self.assertTrue(report["ok"])
         scene_diagnostics = [d for d in report["diagnostics"] if d["category"] == "scene"]
@@ -504,9 +498,9 @@ class PatchTest(StoreTestCase):
         )
 
     def test_a_scenes_type_is_not_a_field_edit(self):
-        # Changing it would reinterpret every other field in the block, and the
-        # re-serialize would then drop the ones the new type has no use for —
-        # a save that quietly loses what the scene said. Text editor's job.
+        # Changing it would reinterpret every other field in the block, and
+        # the re-serialize would drop the ones the new type has no use for: a
+        # save that quietly loses what the scene said.
         with self.assertRaises(config_store.EditRejected) as caught:
             self.store.patch("shows/gig.toml", [{"scene": 0, "field": "type", "value": "video"}])
         self.assertIn("as text", str(caught.exception))
@@ -904,7 +898,6 @@ class MediaWarningTest(StoreTestCase):
         self.assertEqual(report["warnings"], [])
 
     def test_a_save_carries_the_warning_too(self):
-        # The moment somebody stops looking at the check is the moment they save.
         out = self.store.write("shows/gig.toml", self._video("/nope/missing.mp4"))
         self.assertEqual(len(out["warnings"]), 1)
 
@@ -943,9 +936,9 @@ class DescribeTest(unittest.TestCase):
         json.dumps(config_store.describe(cfg))
 
     def test_every_field_carries_what_it_falls_back_to(self):
-        # The form shows this before offering a `reset`, and it can't be read
-        # off the introspection document — that carries the dataclass default,
-        # which is a different thing on a machine with settings.
+        # The form shows this before offering a `reset`, and it cannot be read
+        # off the introspection document, which carries the dataclass default
+        # — a different thing on a machine with settings.
         baseline = cfgmod.Config()
         baseline.video.device = 3
         form = config_store.describe(cfgmod.Config(), baseline)
@@ -1100,11 +1093,9 @@ class MachineLayerBlameTest(StoreTestCase):
         self.assertEqual(note["path"], str(self.settings))
 
     def test_a_secret_machine_setting_is_never_blamed(self):
-        # `_machine_layer_notes` is the one place in the module that used to
-        # have no `SECRET_FIELDS` filter at all. Exercised directly (rather
-        # than through `validate_text`) with a blame string that mentions the
-        # key and section by name — the shape a real failure would have to
-        # take for the old, unfiltered loop to have echoed it.
+        # `_machine_layer_notes` is exercised directly, rather than through
+        # `validate_text`, with a blame string that names the key and section
+        # — the shape a real failure would need to echo a secret.
         self.settings.write_text('[ultimate64]\ndma_password = "hunter2"\n', encoding="utf-8")
         notes = config_store._machine_layer_notes(GOOD, "[ultimate64] dma_password looks wrong")
         self.assertEqual(notes, [])
@@ -1192,11 +1183,10 @@ class ExamplesRootTest(unittest.TestCase):
         self.assertNotIn("examples", {r.label for r in store.roots})
 
     def test_a_root_that_contains_the_packaged_examples_does_not_relist_them(self):
-        # A `--serve` started from a source checkout has its cwd root at the
-        # repo, whose walk reaches `c64cast/examples/`. Those files belong to
-        # the trailing read-only `examples` root; they must not also appear as
-        # writable files under the configured root, where the console's
-        # "Examples" toggle (which keys on `readonly`) could not hide them.
+        # A `--serve` from a source checkout has its cwd root at the repo,
+        # whose walk reaches `c64cast/examples/`. Those files belong to the
+        # trailing read-only `examples` root; as writable files under the
+        # configured root the console's "Examples" toggle could not hide them.
         pkg_dir = paths.examples_dir().parent
         store = config_store.ConfigStore([str(pkg_dir)], cwd=pkg_dir)
         files = store.index()["files"]
@@ -1213,13 +1203,10 @@ class ReadOnlyContainmentTest(unittest.TestCase):
     happens to be addressed through."""
 
     def test_the_examples_root_cannot_be_written_via_an_overlapping_writable_root(self):
-        # A `--serve` from a source checkout has its cwd root at the repo,
-        # which physically contains `c64cast/examples/` underneath it — the
-        # same files the trailing read-only `examples` root also carries
-        # (pruned from the cwd root's own *listing*, but still on disk under
-        # it). Addressing one of them through the writable root's label used
-        # to look up that root — not the examples root — and skip the
-        # readonly refusal entirely.
+        # The cwd root physically contains `c64cast/examples/` (pruned from
+        # its listing, still on disk under it), and addressing one of those
+        # files through the writable root's label looked up that root instead
+        # of the examples root, skipping the readonly refusal.
         pkg_dir = paths.examples_dir().parent
         store = config_store.ConfigStore([str(pkg_dir)], cwd=pkg_dir)
         writable_label = next(r.label for r in store.roots if not r.readonly)
@@ -1268,7 +1255,7 @@ class NonConfigNoiseTest(unittest.TestCase):
         self.assertNotIn("scripts/diags/out/capture.toml", rels)
 
     def test_a_root_named_scripts_is_not_skipped_itself(self):
-        # The rule skips a *subdirectory* named `scripts`, never a root the
+        # The rule skips a subdirectory named `scripts`, never a root the
         # operator pointed at.
         store = config_store.ConfigStore(
             [str(self.root / "scripts" / "diags" / "out")], include_examples=False
@@ -1321,9 +1308,8 @@ class CreateFromExampleTest(unittest.TestCase):
     def test_duplicating_an_example_copies_it_verbatim(self):
         example_ref = self._example_ref()
         # Some packaged examples need [audio].enabled for their own feature
-        # (mic capture, a soundtrack) regardless of whether this host happens
-        # to have the optional `mic` extra installed — irrelevant to a verbatim
-        # copy, so stand in for it rather than picking an example that avoids it.
+        # whether or not this host has the optional `mic` extra, which is
+        # irrelevant to a verbatim copy.
         with mock.patch("c64cast.app.session.AUDIO_AVAILABLE", True):
             self.store.create("shows/from_example.toml", copy_of=example_ref)
         got = (self.shows / "from_example.toml").read_text(encoding="utf-8")

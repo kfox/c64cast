@@ -127,7 +127,6 @@ class FakeSocketDMA:
     REUWRITE calls so tests can verify REU pump preload behavior."""
 
     def __init__(self):
-        # List of (reu_offset, bytes) tuples in call order.
         self.reuwrites: list[tuple[int, bytes]] = []
 
     def reuwrite(self, reu_offset: int, data: bytes) -> None:
@@ -141,35 +140,23 @@ class FakeAPI:
         self.mem_files: dict[str, bytes] = {}
         self.memories: dict[str, str] = {}
         self.writes: list[tuple[str, bytes]] = []
-        # Unified sequential op log. Each entry = (op_name, *args). Used
-        # by tests that need to assert relative ORDER across different
-        # write surfaces (e.g. "stub upload happened BEFORE IRQ vector
-        # hook"). `writes` / `mem_files` / `memories` / `regs` are still
-        # the right things to use for last-write-wins lookups.
+        # Sequential (op_name, *args) log for cross-surface ORDER assertions;
+        # the per-surface attributes below are last-write-wins.
         self.ops: list[tuple] = []
         self.cache_invalidations = 0
         self.region_invalidations: list[int] = []
         self.sid_played: tuple[bytes, int] | None = None
-        # Tracks each cue_song_reinit(song) call in order. Tests inspect
-        # this to verify the SHIFT cycle path uses the fast in-place
-        # re-INIT instead of going back through run_sid_player.
         self.cue_song_reinits: list[int] = []
         self.cue_song_reinit_play_banks: list[int | None] = []
         self.canned_regs: bytes = bytes(25)
         self.socket_dma = FakeSocketDMA()
-        # Device config API (Ultimate REST) surface for multi-SID tests. Tests
-        # opt in via `api.profile = HardwareProfile(..., supports_config=True)`
-        # and seed `config_store` to model detected sockets / current values.
+        # Ultimate REST config surface: tests opt in with a
+        # `supports_config=True` profile and seed `config_store`.
         self.config_puts: list[tuple[str, str, str]] = []
         self.config_store: dict[str, dict[str, str]] = {}
-        # GET /v1/info surface for dac_calibration key resolution tests. None
-        # (default) mirrors a backend/firmware with no /v1/info (raises).
         self.device_info: dict[str, str] | None = None
-        # Hardware capability profile — mirrors the real backends' `profile`.
-        # Defaults (supports_reu=True) make build_scene resolve the no-REU
-        # double_buffer "auto" path OFF, so existing tests see no change; tests
-        # that want the TR's no-REU behavior set `api.profile = HardwareProfile(
-        # supports_reu=False)` or override the field.
+        # Mirrors the real backends' `profile`; `supports_reu=False` models
+        # the TeensyROM.
         self.profile = HardwareProfile(name="Fake", family="fake")
 
     @classmethod
@@ -228,8 +215,6 @@ class FakeAPI:
         return len(b)
 
     def reu_write(self, reu_offset, data):
-        # Mirror Ultimate64API.reu_write, which forwards to socket_dma so
-        # existing assertions on socket_dma.reuwrites keep working.
         self.socket_dma.reuwrite(reu_offset, data)
 
     def invalidate_cache(self):
@@ -259,8 +244,7 @@ class FakeAPI:
         self.sid_played_play_rate = play_rate
         self.sid_played_play_bank = play_bank
         self.sid_deferred = defer_audio
-        # Mirror the real backends: when not deferred, audio starts now; when
-        # deferred, the start time is recorded at begin_sid_audio().
+        # Mirrors the real backends: deferred audio starts at begin_sid_audio().
         if not defer_audio:
             self._sid_audio_start = time.time()
 
@@ -281,14 +265,10 @@ class FakeAPI:
         self.config_store.setdefault(category, {})[item] = value
 
     def get_config_category(self, category, *, timeout=3.0):
-        # Tests seed `config_store[category] = {item: value}` to model detected
-        # sockets / current addressing; default is an empty category.
         return dict(self.config_store.get(category, {}))
 
     def get_device_info(self, *, timeout=3.0):
-        # Tests seed `device_info` (dict) to model GET /v1/info; leaving it
-        # None mirrors a backend/firmware with no /v1/info (raises, like the
-        # real BackendCapabilityError default).
+        # `device_info` None mirrors firmware with no GET /v1/info (raises).
         if self.device_info is None:
             raise RuntimeError("no device info (fake)")
         return dict(self.device_info)
@@ -303,8 +283,7 @@ class FakeAPI:
         self.regs["RESTORE_PLAY_RATE"] = ()
 
     def sid_vsync_play_rate_hz(self):
-        # The kernal jiffy rate — ~60 Hz on both standards (see
-        # c64.kernal_cia1_latch); a fake never retunes it.
+        # Kernal jiffy rate, ~60 Hz on both standards; a fake never retunes it.
         return actual_rate_for_latch(kernal_cia1_latch(self.profile.system), self.profile.system)
 
     def close(self):
@@ -351,8 +330,8 @@ def make_psid(
     if second_sid_addr:
         header[4:6] = (3).to_bytes(2, "big")  # secondSIDAddress is v3+
         header[0x7A] = (second_sid_addr >> 4) & 0xFF
-    # v2+ flags at $76-$77 (big-endian): sidModel1 is bits 4-5 and sidModel2
-    # bits 6-7, both in the low byte $77. 1 = 6581, 2 = 8580.
+    # v2+ flags $76-$77 (big-endian): sidModel1 = bits 4-5, sidModel2 = bits
+    # 6-7 of low byte $77; 1 = 6581, 2 = 8580.
     bits = {"6581": 1, "8580": 2}
     # clock is bits 2-3 of the same low byte: 1 = PAL, 2 = NTSC, 3 = both.
     clock_bits = {"PAL": 1, "NTSC": 2, "PAL+NTSC": 3}
@@ -574,8 +553,6 @@ class FakeTime:
         }
 
     def __getattr__(self, name: str):
-        # Only reached for names not on the instance, so the attributes set in
-        # __init__ never route back through here.
         pinned = self.__dict__.get("_pinned", {})
         if name in pinned:
             return pinned[name]

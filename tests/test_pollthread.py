@@ -50,8 +50,7 @@ class PeriodicModeTest(unittest.TestCase):
     def test_run_first_false_never_calls_before_a_period_elapses(self):
         # Deterministic negative: with run_first=False the target only runs
         # after stop.wait(period) returns False, which a 60 s period cannot
-        # do inside this test — no sleep needed, any scheduling outcome
-        # gives calls == 0.
+        # do inside this test, so any scheduling outcome gives calls == 0.
         calls: list[int] = []
         poll = PollThread(lambda: calls.append(1), name="t", period=60.0, run_first=False)
         poll.start()
@@ -162,18 +161,16 @@ class LifecycleTest(unittest.TestCase):
         poll.stop()
 
         poll.start()
-        # The restart must present a CLEAR stop event to the new worker —
-        # a stale set event from the previous stop() would make every
-        # restarted loop exit on its first wait. start() clears it
-        # synchronously before spawning, so no race in this read.
+        # A stale set stop event would make every restarted loop exit on its
+        # first wait; start() clears it synchronously before spawning, so
+        # this read cannot race.
         self.assertFalse(poll.stop_event.is_set())
         self.assertTrue(run_started.acquire(timeout=2.0), "second start must run the worker again")
         poll.stop()
 
     def test_stop_returns_after_join_timeout_when_worker_hangs(self):
         # A worker that ignores its stop event must not hang teardown: stop()
-        # gives up after join_timeout. It must not pretend the thread is gone,
-        # though — see test_start_after_a_timed_out_stop_refuses_a_duplicate.
+        # gives up after join_timeout, without pretending the thread is gone.
         hang = threading.Event()
         started = threading.Event()
 
@@ -194,12 +191,10 @@ class LifecycleTest(unittest.TestCase):
         )
 
     def test_start_after_a_timed_out_stop_refuses_a_duplicate(self):
-        # The sharp edge behind the module's top adverse-review finding: a
-        # stop() that gives up on a hung worker used to clear self._thread,
+        # A stop() that gave up on a hung worker used to clear self._thread,
         # so a later start() saw is_running() == False, called
-        # self._stop.clear() — un-stopping the still-running abandoned
-        # worker, which reads the same Event dynamically — and spawned a
-        # second thread on top of it. start() must refuse instead.
+        # self._stop.clear() — un-stopping the still-running abandoned worker,
+        # which reads the same Event — and spawned a second thread on top.
         hang = threading.Event()
         started = threading.Event()
         calls = 0
@@ -286,10 +281,10 @@ class ConcurrentLifecycleTest(unittest.TestCase):
     of twelve, since it needs the two calls to interleave."""
 
     def test_a_stop_racing_a_start_does_not_join_an_unstarted_thread(self):
-        # The window was between publishing the thread object and starting it:
-        # a `stop()` arriving there found a non-None `_thread` that had never
-        # run, and `Thread.join` rejects that outright. Held open here rather
-        # than hunted for, so the test fails deterministically without the fix.
+        # The window is between publishing the thread object and starting it:
+        # a `stop()` arriving there finds a non-None `_thread` that has never
+        # run, and `Thread.join` rejects that outright. Held open so the test
+        # fails deterministically without the fix.
         inside_start = threading.Event()
         release = threading.Event()
         original = threading.Thread.start
@@ -341,15 +336,14 @@ class ConcurrentLifecycleTest(unittest.TestCase):
             threading.Thread(target=churn, args=(poll.start,)),
             threading.Thread(target=churn, args=(poll.stop,)),
         ]
-        # A stop() landing on a scheduling hiccup could, in principle, outlive
-        # its 0.05 s join and log a warning — incidental to what this test
-        # asserts (no exception escapes the hammering), unlike the two tests
-        # above that assert that exact message on purpose.
+        # A stop() landing on a scheduling hiccup could outlive its 0.05 s
+        # join and log a warning, incidental to what this test asserts; the
+        # two tests above assert that message on purpose.
         with quiet_logging():
             for t in threads:
                 t.start()
-            # Bounded by iterations rather than by a clock: enough interleavings
-            # to have caught the original bug, and no wall-time in the suite.
+            # Bounded by iterations, not by a clock: enough interleavings to have
+            # caught the original bug, and no wall-time in the suite.
             for _ in range(2000):
                 poll.is_running()
             done.set()

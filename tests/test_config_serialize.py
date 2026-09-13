@@ -22,9 +22,8 @@ from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
 from c64cast.app import introspect, paths
 
-# The round-trip contract load(dumps(cfg)) == cfg must hold independent of any
-# real machine-settings file on the dev's machine (config.load applies that
-# layer). Isolate it for the whole module.
+# load(dumps(cfg)) == cfg has to hold whatever machine-settings file
+# the dev's machine has, and config.load applies that layer.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -71,12 +70,10 @@ class RoundTripCorpusTest(unittest.TestCase):
         for path in examples:
             with self.subTest(example=paths.example_name(path)):
                 original = cfgmod.load(str(path))
-                # Skip ensemble masters (not serializable; the packaged
-                # `ensemble/` demo is one).
+                # Ensemble masters are not serializable (the packaged demo is one).
                 if original.ensemble is not None:
                     continue
                 self.assertEqual(_reload(original), original)
-                # ...and in non-minimal / unannotated modes too.
                 self.assertEqual(_reload(original, minimal=False), original)
                 self.assertEqual(_reload(original, annotate=False), original)
 
@@ -147,14 +144,12 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         ]
         reloaded = _reload(cfg)
         self.assertEqual(reloaded, cfg)
-        # The global section is untouched by the scene's override.
         self.assertEqual(reloaded.color.dither, "blue_noise")
 
     def test_scene_color_override_with_empty_hue_corrections(self):
-        # `color` is the scene's sparse dict, so `{"hue_corrections": []}`
-        # is an authored key distinct from "no override" and has to survive
-        # as such, not collapse to `{}` the way a bare `[scenes.color]`
-        # header with nothing under it would reload.
+        # The scene's `color` is a sparse dict, so `{"hue_corrections": []}`
+        # is an authored key distinct from "no override" and must not
+        # collapse to `{}` the way a bare `[scenes.color]` header reloads.
         cfg = cfgmod.Config()
         cfg.scenes = [cfgmod.SceneCfg(type="video", file="clip.mp4", color={"hue_corrections": []})]
         reloaded = _reload(cfg)
@@ -162,11 +157,9 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         self.assertEqual(reloaded.scenes[0].color, {"hue_corrections": []})
 
     def test_scene_field_not_applicable_to_current_type_still_round_trips(self):
-        # `applies_to` is enforced only by introspect's rendering (schema,
-        # describe, and dumps' own per-type field list) — never by the
-        # loader — so a value set while the scene was a different type (or
-        # by a structured edit) has to survive a re-serialize even though
-        # the current `type` doesn't claim the field.
+        # `applies_to` is enforced by introspect's rendering, never by the
+        # loader, so a value set while the scene was a different type has
+        # to survive a re-serialize.
         cfg = cfgmod.Config()
         cfg.scenes = [cfgmod.SceneCfg(type="video", file="clip.mp4", image_duration_s=3.0)]
         reloaded = _reload(cfg)
@@ -174,10 +167,9 @@ class RoundTripTrickyFieldsTest(unittest.TestCase):
         self.assertEqual(reloaded.scenes[0].image_duration_s, 3.0)
 
     def test_scene_color_override_back_to_the_dataclass_default(self):
-        # The case the sparse-dict design exists for: a scene override equal
-        # to ColorCfg()'s default, while the global section differs from it —
-        # both keys must round-trip, or "minimal" would drop the override as
-        # if it were unauthored.
+        # A scene override equal to ColorCfg()'s default while the global
+        # section differs: both keys must round-trip, or "minimal" drops
+        # the override as if it were unauthored.
         cfg = cfgmod.Config()
         cfg.color.force_palette = True
         cfg.scenes = [
@@ -225,8 +217,8 @@ class BehaviorTest(unittest.TestCase):
         self.assertNotIn("dma_password", text)
 
     def test_web_and_control_tokens_never_emitted(self):
-        # Each grants remote control of the host the same way the DMA
-        # password does — see SECRET_FIELDS's docstring.
+        # Each grants remote control of the host the way the DMA password
+        # does — see SECRET_FIELDS's docstring.
         cfg = cfgmod.Config()
         cfg.web.token = "watchme"
         cfg.web.viewer_token = "peekaboo"
@@ -254,7 +246,6 @@ class BehaviorTest(unittest.TestCase):
     def test_minimal_omits_defaults(self):
         cfg = cfgmod.Config()
         text = ser.dumps(cfg)  # minimal=True default
-        # Pure defaults → no section bodies at all (just the directive).
         self.assertNotIn("[audio]", text)
         self.assertNotIn("enabled = false", text)
 
@@ -270,7 +261,6 @@ class BehaviorTest(unittest.TestCase):
         with_comments = ser.dumps(cfg, annotate=True)
         without = ser.dumps(cfg, annotate=False)
         self.assertIn("#", with_comments)
-        # The bare form still parses and only carries the directive comment.
         self.assertIn("enabled = false", without)
 
     def test_type_always_emitted_even_when_default(self):
@@ -321,8 +311,8 @@ class BaselineTest(unittest.TestCase):
         self.assertNotIn("device", ser.dumps(cfg, baseline=baseline))
 
     def test_the_same_value_is_written_without_a_baseline(self):
-        # The bug the baseline fixes, kept as a test: measured against the
-        # dataclass defaults, a machine setting lands in the file.
+        # Measured against the dataclass defaults, a machine setting lands
+        # in the file.
         cfg = self._machine(device=3)
         self.assertIn("device = 3", ser.dumps(cfg))
 
@@ -333,8 +323,8 @@ class BaselineTest(unittest.TestCase):
         self.assertIn("device = 5", ser.dumps(cfg, baseline=baseline))
 
     def test_a_value_back_at_the_dataclass_default_is_written(self):
-        # Overriding a machine setting *with* the shipped default is a real
-        # answer, and the only way to record it is to write it out.
+        # Overriding a machine setting with the shipped default is a real
+        # answer, and writing it out is the only way to record it.
         baseline = self._machine(device=3)
         cfg = self._machine(device=3)
         cfg.video.device = cfgmod.VideoCfg().device
@@ -364,8 +354,8 @@ class BaselineTest(unittest.TestCase):
         self.assertEqual(text.count("[[color.hue_corrections]]"), 2)
 
     def test_round_trip_holds_over_a_baseline(self):
-        # The contract survives the change *because* the loader re-applies the
-        # same layer: what the file omits, the baseline puts back.
+        # The loader re-applies the same layer: what the file omits, the
+        # baseline puts back.
         baseline = self._machine(device=3)
         cfg = self._machine(device=3)
         cfg.audio.enabled = False
@@ -397,10 +387,9 @@ class MachineBaselineTest(unittest.TestCase):
 
 class SchemaDirectiveTest(unittest.TestCase):
     def test_points_at_the_packaged_schema(self):
-        # Whatever form it takes, the directive must resolve to the real file
-        # from the output config's own directory — that is the whole contract,
-        # and it is what makes the line survive an upgrade: the file it names is
-        # the one the next version rewrites.
+        # The directive has to resolve to the real file from the output
+        # config's own directory, so the next version rewrites the file it
+        # names.
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "c64cast.toml")
             directive = ser.schema_directive_for(out)
@@ -412,14 +401,14 @@ class SchemaDirectiveTest(unittest.TestCase):
 
     def test_relative_when_the_schema_is_inside_the_output_tree(self):
         # A source checkout (config at the repo root) or a project-local
-        # .venv — the relative form survives moving the tree.
+        # .venv: the relative form survives moving the tree.
         pkg_parent = str(paths.packaged_schema_path().parent.parent.parent)
         directive = ser.schema_directive_for(os.path.join(pkg_parent, "c64cast.toml"))
         self.assertEqual(directive, os.path.join(".", "c64cast", "data", "c64cast.schema.json"))
 
     def test_absolute_as_soon_as_it_would_need_to_climb(self):
-        # A user-level install: the relative form is an unreadable climb out to
-        # site-packages and breaks when the config moves, so go absolute.
+        # A user-level install: the relative form is an unreadable climb
+        # out to site-packages and breaks when the config moves.
         with tempfile.TemporaryDirectory() as d:
             directive = ser.schema_directive_for(os.path.join(d, "c64cast.toml"))
             self.assertEqual(directive, str(paths.packaged_schema_path()))
@@ -429,18 +418,17 @@ class SchemaDirectiveTest(unittest.TestCase):
             self.assertEqual(ser.schema_directive_for("x.toml"), ser.DEFAULT_SCHEMA_PATH)
 
     def test_never_a_moving_ref(self):
-        # The URL fallback is pinned on purpose: a schema newer than the program
-        # stops flagging real mistakes and starts offering keys this install
-        # rejects. Only an unreleased version may point at a branch.
+        # A schema newer than the program stops flagging real mistakes and
+        # offers keys this install rejects, so only an unreleased version
+        # may point at a branch.
         self.assertIn("/v1.2.3/", ser._published_schema_url("1.2.3"))
         self.assertIn("/main/", ser._published_schema_url("unreleased"))
 
 
 class PinnedUrlVersionTest(unittest.TestCase):
     def test_a_published_url_reads_back(self):
-        # Pins the regex to the template it has to match — they are spelled
-        # separately for readability, so nothing but this catches a change to
-        # one and not the other.
+        # The regex and the template are spelled separately, so nothing but
+        # this catches a change to one and not the other.
         for version in ("0.1.0", "1.2.3", "2.0.0rc1"):
             self.assertEqual(ser.pinned_url_version(ser._published_schema_url(version)), version)
 
@@ -454,7 +442,7 @@ class PinnedUrlVersionTest(unittest.TestCase):
 
     def test_somebody_elses_url_is_not_a_pin(self):
         # A fork or a mirror carries no promise about which c64cast it
-        # describes, so it must not be read as one of our version pins.
+        # describes.
         self.assertIsNone(
             ser.pinned_url_version(
                 "https://raw.githubusercontent.com/someone/c64cast-fork/v9.9.9"

@@ -120,8 +120,7 @@ def _cfg(toml: str) -> cfgmod.Config:
     return _load(toml).cfgs[0]
 
 
-# A config that hard-requires the REU (use_reu_pump), with auto_reu defaulting
-# on — the common provisioning trigger.
+# A config that hard-requires the REU, the common provisioning trigger.
 _PUMP_TOML = """
     [ultimate64]
     url = "http://fake"
@@ -424,8 +423,8 @@ class ProvisionVideoOutputTest(unittest.TestCase):
         self.assertEqual(restore, {"System Mode": "NTSC"})
 
     def test_auto_does_not_touch_a_machine_it_did_not_retime(self):
-        # Already PAL-timed: nothing to fix, so SD stays SD even though this
-        # machine would capture better at HD. We only clean up our own change.
+        # Already PAL-timed, so nothing to fix: SD stays SD even though this
+        # machine would capture better at HD. Only our own change is undone.
         api = _FakeVideoApi(system_mode="PAL", scan_resolution="SD (480p/576p)")
         self.assertIsNone(
             hw_provision.provision_video_output(api, _video_cfg("PAL", sid_video_mode="auto"))
@@ -461,9 +460,8 @@ class ProvisionVideoOutputTest(unittest.TestCase):
 
     def test_a_locked_hybrid_retimes_to_the_plain_standard_mode(self):
         # Every /L mode is a hybrid, so retiming one always lands on the OTHER
-        # standard's plain mode — which has no locked form. A composite user
-        # who chose /L for its subcarrier accuracy loses it until teardown;
-        # pinned here because it looks like an oversight and isn't.
+        # standard's plain mode, which has no locked form: a composite user who
+        # chose /L for its subcarrier accuracy loses it until teardown.
         api = _FakeVideoApi(system_mode="NTSC-50/L", scan_resolution=None)
         hw_provision.provision_video_output(api, _video_cfg("NTSC", sid_video_mode="auto"))
         self.assertEqual(api.put_calls, [(_CAT, "System Mode", "NTSC")])
@@ -585,10 +583,9 @@ class ResolveSystemTest(unittest.TestCase):
         self.assertEqual(api.profile.system, "PAL")
 
     def test_a_lowercase_explicit_value_is_normalized_not_treated_as_a_mismatch(self):
-        # Nothing at config load enforces SYSTEM_CHOICES' canonical
-        # spelling; a bare (non-.upper()) comparison here used to warn
-        # about a mismatch against the live machine that doesn't exist,
-        # and fold the profile's fps for the wrong standard.
+        # Nothing at config load enforces SYSTEM_CHOICES' canonical spelling;
+        # a bare (non-.upper()) comparison warned about a mismatch that does
+        # not exist and folded the profile's fps for the wrong standard.
         api = self._api(system_mode="PAL")
         cfg = _video_cfg("pal")
         hw_provision.resolve_system(cfg, api)
@@ -618,8 +615,8 @@ class ResolvePaletteTest(unittest.TestCase):
     def setUp(self):
         from c64cast.video import palette as pal
 
-        # The active palette is process-wide, so every case here has to put it
-        # back or it leaks into whatever test runs next.
+        # The active palette is process-wide, so every case has to put it back
+        # or it leaks into whatever test runs next.
         before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
         self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
         hw_provision._palette_resolved = False

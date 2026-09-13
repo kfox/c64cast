@@ -30,10 +30,6 @@ from c64cast.scenes.scenes import BlankScene, Scene, VideoScene, WebcamScene
 sys.path.insert(0, os.path.dirname(__file__))
 from _fakes import FakeAPI, fake_system_stack  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Layer 1: Ensemble.try_claim_audio / release_audio
-# ---------------------------------------------------------------------------
-
 
 class EnsembleAudioLockTest(unittest.TestCase):
     def _ensemble(self, names):
@@ -51,8 +47,8 @@ class EnsembleAudioLockTest(unittest.TestCase):
         self.assertEqual(ens.audio_holder, "a")
 
     def test_reclaim_by_same_holder_succeeds(self):
-        # Repeat setup() calls (single-scene loop, follower restore) must
-        # not deadlock on a slot we already own.
+        # A repeat setup() (single-scene loop, follower restore) must not
+        # deadlock on a slot we already own.
         ens = self._ensemble(["a"])
         ens.try_claim_audio("a")
         self.assertTrue(ens.try_claim_audio("a"))
@@ -66,8 +62,8 @@ class EnsembleAudioLockTest(unittest.TestCase):
         self.assertTrue(ens.try_claim_audio("b"))
 
     def test_release_by_non_holder_is_noop(self):
-        # Teardown paths must tolerate a stale release — never raise,
-        # never clobber the real holder.
+        # Teardown paths must tolerate a stale release: never raise, never
+        # clobber the real holder.
         ens = self._ensemble(["a", "b"])
         ens.try_claim_audio("a")
         ens.release_audio("b")  # doesn't hold the slot
@@ -79,7 +75,6 @@ class EnsembleAudioLockTest(unittest.TestCase):
         self.assertIsNone(ens.audio_holder)
 
     def test_concurrent_claims_only_one_wins(self):
-        # 32 threads race to claim; exactly one should see True.
         ens = self._ensemble(["a"] * 32)
         wins: list[bool] = []
         ready = threading.Barrier(32)
@@ -94,11 +89,6 @@ class EnsembleAudioLockTest(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertEqual(sum(1 for w in wins if w), 1)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2: build_scene(..., is_ensemble=True) live-scene suppression
-# ---------------------------------------------------------------------------
 
 
 class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
@@ -127,9 +117,8 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
         self.assertIsNone(scene.audio)
 
     def test_webcam_explicit_audio_true_is_logged_when_suppressed(self):
-        # If the user typed `audio = true` on a live scene, surface that
-        # we silently overrode it — debug-find-later silence would be
-        # confusing.
+        # A user who typed `audio = true` on a live scene has to be told it
+        # was overridden.
         s = cfgmod.SceneCfg(type="webcam", display="petscii", audio=True)
         with self.assertLogs("c64cast.app.scene_factory", level="INFO") as cap:
             scene = scene_factory.build_scene(
@@ -139,15 +128,9 @@ class EnsembleLiveSceneSuppressionTest(unittest.TestCase):
         self.assertTrue(any("audio suppressed in ensemble" in line for line in cap.output))
 
     def test_single_system_mode_unaffected(self):
-        # is_ensemble defaults False; behavior matches the existing tests.
         s = cfgmod.SceneCfg(type="webcam", display="petscii")
         scene = scene_factory.build_scene(s, self.cfg, self.api, self.audio_sentinel, self.source)
         self.assertIs(scene.audio, self.audio_sentinel)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2b: WANTS_AUDIO_LOCK flags on the right scene classes
-# ---------------------------------------------------------------------------
 
 
 class WantsAudioLockFlagTest(unittest.TestCase):
@@ -167,8 +150,8 @@ class WantsAudioLockFlagTest(unittest.TestCase):
         self.assertTrue(VideoScene.WANTS_AUDIO_LOCK)
 
     def test_waveform_scene_claims(self):
-        # Local import — waveform pulls in songlengths which is heavier
-        # than the live scenes.
+        # Local import: waveform pulls in songlengths, heavier than the
+        # live scenes.
         from c64cast.sid.waveform import WaveformScene
 
         self.assertTrue(WaveformScene.WANTS_AUDIO_LOCK)
@@ -177,11 +160,6 @@ class WantsAudioLockFlagTest(unittest.TestCase):
         from c64cast.sid.midi_scene import MidiScene
 
         self.assertTrue(MidiScene.WANTS_AUDIO_LOCK)
-
-
-# ---------------------------------------------------------------------------
-# Layer 2c: competes_for_audio_lock() — instance-level contention
-# ---------------------------------------------------------------------------
 
 
 class CompetesForAudioLockTest(unittest.TestCase):
@@ -208,8 +186,8 @@ class CompetesForAudioLockTest(unittest.TestCase):
         self.assertFalse(comm.competes_for_audio_lock())
 
     def test_waveform_competes_even_without_streamer(self):
-        # WaveformScene drives the SID directly, so it contends whether
-        # or not an AudioStreamer was wired in (global [audio] off).
+        # WaveformScene drives the SID directly, so it contends whether or
+        # not an AudioStreamer was wired in.
         from c64cast.sid.waveform import WaveformScene
 
         wf = WaveformScene.__new__(WaveformScene)
@@ -222,11 +200,6 @@ class CompetesForAudioLockTest(unittest.TestCase):
         midi = MidiScene.__new__(MidiScene)
         midi.audio = None
         self.assertTrue(midi.competes_for_audio_lock())
-
-
-# ---------------------------------------------------------------------------
-# Layer 3: Playlist gating + lock release
-# ---------------------------------------------------------------------------
 
 
 class FakePlaylistScene:
@@ -283,9 +256,8 @@ def _build_playlist(scenes, name="sys"):
 
 class ResolveNextIndexTest(unittest.TestCase):
     def test_no_ensemble_returns_self_index(self):
-        # The gate is a no-op outside ensemble mode — single-system runs
-        # never instantiate an Ensemble, so the helper must not try to
-        # touch one.
+        # Single-system runs never instantiate an Ensemble, so the helper
+        # must not try to touch one.
         pl = _build_playlist([FakePlaylistScene("a"), FakePlaylistScene("b")])
         pl.index = 1
         self.assertEqual(pl.ensemble_coord.resolve_next_index(), 1)
@@ -306,8 +278,6 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertTrue(scene.__dict__["_audio_lock_held"])
 
     def test_audio_scene_skipped_when_lock_held_elsewhere(self):
-        # Two scenes: a held-elsewhere video then a live scene.
-        # Helper must skip past slot 0 and land on slot 1.
         comm = FakePlaylistScene("video", wants_audio=True)
         live = FakePlaylistScene("live", wants_audio=False)
         pl = _build_playlist([comm, live])
@@ -321,9 +291,8 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertTrue(any("skipping audio-bearing" in line for line in cap.output))
 
     def test_muted_audio_scene_passes_through_when_lock_held(self):
-        # An audio-capable scene with audio disabled (audio=None) does
-        # not contend — even with the slot held elsewhere it's returned
-        # directly and never claims the lock.
+        # An audio-capable scene with audio disabled does not contend: it
+        # is returned directly and never claims the lock.
         muted = FakePlaylistScene("muted-video", wants_audio=True, audio=None)
         pl = _build_playlist([muted])
         pl.ensemble = Ensemble(
@@ -335,8 +304,6 @@ class ResolveNextIndexTest(unittest.TestCase):
         self.assertNotIn("_audio_lock_held", muted.__dict__)
 
     def test_all_gated_waits_then_returns_when_freed(self):
-        # Single audio-bearing scene, lock held elsewhere. Free it from
-        # another thread after a short delay; helper should pick it up.
         scene = FakePlaylistScene("video", wants_audio=True)
         pl = _build_playlist([scene])
         pl.ensemble = Ensemble(
@@ -365,7 +332,6 @@ class ResolveNextIndexTest(unittest.TestCase):
             stacks=[fake_system_stack("sys"), fake_system_stack("other")], stop_event=pl.stop_event
         )
         pl.ensemble.try_claim_audio("other")
-        # Fire stop_event almost immediately.
         threading.Timer(0.05, pl.stop_event.set).start()
         with self.assertLogs("c64cast.app.playlist", level="INFO"):
             idx = pl.ensemble_coord.resolve_next_index()
@@ -393,7 +359,6 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         pl.ensemble.try_claim_audio("other")
         # scene didn't claim — _audio_lock_held is not set on it.
         pl.safe_teardown(scene)
-        # Other system's claim is untouched.
         self.assertEqual(pl.ensemble.audio_holder, "other")
 
     def test_teardown_releases_even_when_scene_teardown_raises(self):
@@ -407,15 +372,9 @@ class SafeTeardownReleasesLockTest(unittest.TestCase):
         pl.ensemble.try_claim_audio("sys")
         scene.__dict__["_audio_lock_held"] = True
 
-        # Should swallow the teardown exception AND still release.
         with self.assertLogs("c64cast.app.playlist", level="ERROR"):
             pl.safe_teardown(scene)
         self.assertIsNone(pl.ensemble.audio_holder)
-
-
-# ---------------------------------------------------------------------------
-# Layer 4: load-time warning for audio-only ensemble playlists
-# ---------------------------------------------------------------------------
 
 
 class AudioOnlyEnsembleWarningTest(unittest.TestCase):

@@ -250,7 +250,7 @@ class NormalizationGainTest(unittest.TestCase):
         self.assertEqual(gain, NORMALIZATION_MAX_GAIN)
 
     def test_max_gain_at_exact_threshold(self):
-        # Sanity check: gain just under the cap doesn't trip the cap.
+        # A gain just under the cap does not trip the cap.
         threshold_peak = int((NORMALIZATION_TARGET_PEAK * 32767) / NORMALIZATION_MAX_GAIN) + 1
         gain = _compute_normalization_gain(threshold_peak)
         self.assertLess(gain, NORMALIZATION_MAX_GAIN)
@@ -268,9 +268,8 @@ class AVFileSourceEOFTest(unittest.TestCase):
     entirely so `finished` can flip on the next check."""
 
     def test_kept_frame_persists_before_eof(self):
-        # Pre-EOF, the stall-protection IS the right behavior: consuming a
-        # frame leaves it in the buffer in case the audio clock stalls and
-        # we need to re-emit it (avoids black-framing the display).
+        # Pre-EOF the stall protection is right: a consumed frame stays in the
+        # buffer to re-emit if the audio clock stalls, rather than black-framing.
         a = np.zeros((4, 4, 3), dtype=np.uint8)
         b = np.ones((4, 4, 3), dtype=np.uint8) * 100
         src = _make_av_source_stub([(0.0, a), (1.0, b)], eof=False)
@@ -301,9 +300,8 @@ class AVFileSourceEOFTest(unittest.TestCase):
         self.assertTrue(src.finished, "EOF + drained buffer = done")
 
     def test_partial_consume_at_eof_keeps_unconsumed_frames(self):
-        # EOF was set but the audio clock is still behind some frames. The
-        # unconsumed frames must NOT be dropped — only the consumed-through
-        # range (including the chosen one, since EOF means no more coming).
+        # EOF is set but the audio clock is still behind, so only the
+        # consumed-through range may be dropped, the chosen frame included.
         frames = [
             (t, np.full((2, 2, 3), int(t * 10), dtype=np.uint8)) for t in (0.0, 1.0, 2.0, 3.0)
         ]
@@ -313,10 +311,9 @@ class AVFileSourceEOFTest(unittest.TestCase):
         chosen = src.current_frame(audio_position_s=1.5)
         assert chosen is not None
         self.assertEqual(chosen[0, 0, 0], 10)
-        # Pre-fix: kept index 1 ([10, 20, 30]). With the EOF-aware drain,
-        # the kept frame at index 1 only triggers full-drain when it's also
-        # the LAST in the buffer; here it isn't, so normal trim applies and
-        # the chosen frame stays as stall protection.
+        # With the EOF-aware drain the kept frame at index 1 triggers a full
+        # drain only when it is also the LAST in the buffer; here it is not,
+        # so normal trim applies and it stays as stall protection.
         remaining = [f[1][0, 0, 0] for f in src._video_buf]
         self.assertEqual(
             remaining,
@@ -502,13 +499,11 @@ class TransportSeekTest(unittest.TestCase):
         self.assertEqual(src._pending_seek, 0.0)
 
     def test_pending_seek_rebases_pts_to_target_not_zero(self):
-        # The very first packet fetched is whatever was "in flight" when the
-        # seek was requested (stale, pre-seek) — the real demux loop always
-        # discards it and re-fetches from the container's new position (see
-        # _apply_pending_seek's docstring). Model that here with a throwaway
-        # first packet, then the real post-seek keyframes (~50s onward):
-        # their rebased PTS must land AT the seek target (30s), not at 0
-        # like an ordinary start_s seek would.
+        # The first packet fetched is whatever was in flight when the seek was
+        # requested, and the real demux loop discards it and re-fetches from
+        # the container's new position (see _apply_pending_seek). Modeled with
+        # a throwaway packet, so the post-seek keyframes' rebased PTS must
+        # land AT the seek target, not at 0 like an ordinary start_s seek.
         src = self._make_src([], pending_seek=30.0)
         stale = _FakePacket([_FakeFrame(999)])
         real = [_FakePacket([_FakeFrame(p)]) for p in (50, 51, 52)]
@@ -554,11 +549,10 @@ class _StubSource:
         self.last_frame_pts = 0.0
         self.seeks: list[float] = []
         self.muted_calls: list[bool] = []
-        # Phase 4 resync surface: a non-None a_stream marks the source as
-        # audio-bearing (VideoScene._touch_transport requires it to resolve the
-        # resync path); seek_pending mirrors AVFileSource.seek_pending. `events`
-        # (when supplied) records the ordered request_seek/set_muted calls so a
-        # test can pin the resume splice-then-unmute ordering.
+        # A non-None a_stream marks the source audio-bearing, which
+        # VideoScene._touch_transport requires to resolve the resync path;
+        # `events` records ordered request_seek/set_muted calls so a test can
+        # pin the resume splice-then-unmute ordering.
         self.a_stream = a_stream
         self.seek_pending = False
         self._events = events
@@ -890,8 +884,8 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(source.seeks, [0.0])
 
     def test_tempo_scale_anchor_and_wrap(self):
-        # The §3 hotspot: internal clock is scaled (s×content), the transport
-        # surface is content seconds. s=0.88.
+        # The internal clock is scaled (s × content); the transport surface is
+        # content seconds. s=0.88.
         scene, source, audio = self._resync_scene(position=0.0, tempo_scale=0.88)
         scene.transport_seek(100.0)
         self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 88.0)  # 100 × 0.88
@@ -1416,8 +1410,8 @@ class AtempoTempoCompensationTest(unittest.TestCase):
         self.assertGreater(post_flush, pre_flush)
 
     def test_gain_applied_on_compensated_path(self):
-        # _emit_audio must still apply normalization gain when routing through
-        # the graph (the refactor moved gain/gate into the shared helper).
+        # _emit_audio must still apply normalization gain when routing
+        # through the graph.
         sink: list[np.ndarray] = []
         src = self._stub(0.88, sink)
         src.audio_gain = 2.0

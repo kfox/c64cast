@@ -92,7 +92,6 @@ class ProfileAndRegistryTest(unittest.TestCase):
         # The U64 DMAWRITE is fire-and-forget, not acked.
         self.assertFalse(p.writes_are_acked)
         self.assertEqual(p.write_transport, "socket_dma")
-        # No per-variant fps cap on the Ultimate.
         self.assertIsNone(p.max_fps)
 
     def test_profile_is_frozen(self):
@@ -106,9 +105,6 @@ class AbstractContractTest(unittest.TestCase):
             C64Backend()  # type: ignore[abstract]
 
     def test_minimal_backend_gates_unsupported_capabilities(self):
-        # A backend that implements only the mandatory write surface should
-        # construct fine, and every capability-gated method raises until
-        # overridden.
         class MinimalBackend(C64Backend):
             profile = replace(
                 ULTIMATE_PROFILE,
@@ -140,7 +136,6 @@ class AbstractContractTest(unittest.TestCase):
                 return {}
 
         b = MinimalBackend()
-        # probe is a soft default (returns None, doesn't raise).
         self.assertIsNone(b.probe())
         for call in (
             lambda: b.read_memory(0x028D, 1),
@@ -171,9 +166,6 @@ class MakeBackendTest(unittest.TestCase):
             make_backend(self._cfg(backend="nope"))
 
     def test_ultimate_backend_constructed_with_profile(self):
-        # Patch the socket connect so no hardware is needed; assert the
-        # factory builds an Ultimate64API carrying a profile whose
-        # default_fps was resolved from the configured video system.
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             from c64cast.hw.api import Ultimate64API
 
@@ -187,10 +179,8 @@ class MakeBackendTest(unittest.TestCase):
             self.assertEqual(api_pal.profile.default_fps, 50.0)
 
     def test_system_fold_is_case_insensitive(self):
-        # Nothing at config load enforces SYSTEM_CHOICES' canonical
-        # spelling, and every other consumer of this field normalizes with
-        # .upper() — a bare comparison here used to fold "ntsc" onto the
-        # PAL fps with no diagnostic.
+        # Nothing at config load enforces SYSTEM_CHOICES' canonical spelling;
+        # a bare comparison here folded "ntsc" onto the PAL fps silently.
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             api = make_backend(self._cfg(system="ntsc"))
             self.assertEqual(api.profile.default_fps, 60.0)
@@ -218,8 +208,8 @@ class MakeBackendTest(unittest.TestCase):
             self.assertEqual(api.profile.host_sid_chips, ((0xD400, "6581"), (0xD420, "8580")))
 
     def test_declared_chips_clear_the_ntsc_pal_assumption(self):
-        # The machine is described outright, so there is nothing left to guess
-        # at — and the once-per-run "this is a guess" warning must stay quiet.
+        # Nothing is left to guess at, so the once-per-run guess warning
+        # must stay quiet.
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             cfg = self._cfg(system="NTSC")  # host_sid_model defaults to "auto"
             cfg.hardware.host_sid_chips = {"d400": "6581"}
@@ -241,8 +231,7 @@ class MakeBackendTest(unittest.TestCase):
             self.assertIs(api.profile, ULTIMATE_PROFILE)
 
     def test_ultimate_supports_reu_via_backend_surface(self):
-        # reu_write is the backend-agnostic REU entry point; on the Ultimate
-        # it forwards to the socket client's reuwrite.
+        # The backend-agnostic REU entry point forwards to socket reuwrite.
         with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect"):
             from c64cast.hw.api import Ultimate64API
 
@@ -258,7 +247,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def _b(self, profile=ULTIMATE_PROFILE):
         return _RecordingBackend(profile)
 
-    # ---- basic writes + coalescing ---------------------------------------
     def test_write_memory_hex(self):
         b = self._b()
         b.write_memory("d020", "0e")
@@ -271,9 +259,8 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b.stats["bytes"], 3)
 
     def test_write_memory_counts_bytes_too(self):
-        # write_memory used to be the one write path that didn't touch
-        # stats["bytes"] — every write_regs call (VIC/$D418 registers, the
-        # per-frame traffic) was invisible in the byte counter as a result.
+        # write_memory once skipped stats["bytes"], which made every
+        # write_regs call (the per-frame VIC/$D418 traffic) invisible in it.
         b = self._b()
         b.write_memory("d020", "0e")
         self.assertEqual(b.stats["bytes"], 1)
@@ -283,7 +270,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
     def test_write_regs_coalesces_into_one_emit(self):
         b = self._b()
         b.write_regs("d020", 0x0E, 0x06, 0x01, 0x02)
-        # Four register values become a single contiguous transport write.
         self.assertEqual(b.emits, [(0xD020, b"\x0e\x06\x01\x02")])
 
     def test_write_regs_masks_to_byte(self):
@@ -291,12 +277,10 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.write_regs("d020", 0x1FF)  # overflow masked to 0xFF
         self.assertEqual(b.emits, [(0xD020, b"\xff")])
 
-    # ---- write_region delta cache ----------------------------------------
     def test_region_full_upload_then_skip_unchanged(self):
         b = self._b()
         data = bytes([0]) * 100
         self.assertEqual(b.write_region(0x0400, data, region_id=1), 100)
-        # Identical second push → nothing emitted, skip counted.
         self.assertEqual(b.write_region(0x0400, data, region_id=1), 0)
         self.assertEqual(len(b.emits), 1)
         self.assertEqual(b.stats["skipped"], 1)
@@ -309,7 +293,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         base[10] = 0xAA
         base[11] = 0xBB
         span = b.write_region(0x0400, bytes(base), region_id=1)
-        # Only the changed sub-range is pushed, at the offset of the first diff.
         self.assertEqual(span, 2)
         self.assertEqual(b.emits, [(0x0400 + 10, b"\xaa\xbb")])
 
@@ -323,8 +306,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
 
     def test_region_chunked_diff_for_sparse_wide_range_on_byte_bound_link(self):
         # Two distant single-byte changes span nearly the whole region while
-        # only two chunks differ. On a byte-bound link (TeensyROM) the chunked
-        # path is genuinely cheaper, so it uploads just those chunks.
+        # only two chunks differ; on a byte-bound link the chunks are cheaper.
         b = self._b(TEENSYROM_PROFILE)
         n = DELTA_CHUNK_BYTES * 8
         base = bytearray(n)
@@ -333,15 +315,13 @@ class BufferedWriteBackendTest(unittest.TestCase):
         base[5] = 1  # chunk 0
         base[n - 5] = 1  # last chunk
         uploaded = b.write_region(0x4000, bytes(base), region_id=2)
-        # Two dirty chunks of DELTA_CHUNK_BYTES each — far less than n.
         self.assertEqual(uploaded, DELTA_CHUNK_BYTES * 2)
         self.assertEqual(len(b.emits), 2)
         self.assertLess(uploaded, n)
 
     def test_region_same_sparse_range_stays_one_write_on_count_bound_link(self):
-        # The identical dirty pattern on the Ultimate, where a payload this
-        # size is free and a second write is not: chunking would move 512 bytes
-        # instead of 2038 and still cost twice as much, so it must not fire.
+        # The same dirty pattern on the Ultimate, where a payload this size is
+        # free and a second write is not: 512 chunked bytes cost twice 2038.
         b = self._b(ULTIMATE_PROFILE)
         n = DELTA_CHUNK_BYTES * 8
         base = bytearray(n)
@@ -354,9 +334,8 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b.emits[0][0], 0x4000 + 5)
 
     def test_region_chunking_never_costs_more_than_one_span_write(self):
-        # The guarantee the cost model buys: whatever the dirty pattern and
-        # whichever profile, the strategy chosen is never more expensive than
-        # simply writing the whole dirty span.
+        # Whatever the dirty pattern and profile, the strategy chosen is never
+        # dearer than writing the whole dirty span.
         rng = np.random.default_rng(20260812)
         for profile in (ULTIMATE_PROFILE, TEENSYROM_PROFILE):
             for density in (0.001, 0.01, 0.1, 0.5):
@@ -382,8 +361,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
                 )
 
     def test_region_all_dirty_is_a_single_full_push(self):
-        # Every byte dirty → the span is the whole region → one write, and it
-        # covers the region exactly.
         b = self._b()
         n = DELTA_CHUNK_BYTES * 4
         b.write_region(0x4000, bytes(n), region_id=3)
@@ -395,8 +372,8 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b.emits[0], (0x4000, changed))
 
     def test_region_below_the_knee_is_never_split(self):
-        # A region smaller than the Ultimate's ~2.4 KB knee costs the same
-        # whole as it does in pieces, so no dirty pattern may split it.
+        # Below the Ultimate's ~2.4 KB payload knee a write costs the same whole
+        # as it does in pieces, so no dirty pattern may split it.
         b = self._b(ULTIMATE_PROFILE)
         n = 1000  # screen / color RAM
         base = bytearray(n)
@@ -417,7 +394,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.write_region(0x0400, data, region_id=1)
         b.invalidate_cache()
         b.emits.clear()
-        # Cache dropped → identical data re-uploads in full instead of skipping.
         self.assertEqual(b.write_region(0x0400, data, region_id=1), 40)
         self.assertEqual(len(b.emits), 1)
 
@@ -425,7 +401,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b = self._b()
         self.assertEqual(b.write_region(0x0400, bytearray(b"\x01\x02"), region_id=1), 2)
 
-    # ---- listeners -------------------------------------------------------
     def test_listeners_receive_writes_and_can_be_removed(self):
         b = self._b()
         seen: list[tuple[int, bytes]] = []
@@ -436,7 +411,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(seen, [(0xD020, b"\x0e"), (0x0400, b"\x01")])
         b.remove_write_listener(cb)
         b.write_memory("d021", "06")
-        self.assertEqual(len(seen), 2)  # no new notifications
+        self.assertEqual(len(seen), 2)
         # Removing an unregistered callback is a no-op (suppressed ValueError).
         b.remove_write_listener(cb)
 
@@ -448,9 +423,9 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b.emits, [(0xD020, b"\x0e")])
 
     def test_persistently_failing_listener_is_throttled_not_logged_every_write(self):
-        # A listener that fails on every write (a full disk, a preview
-        # widget after a mode switch) used to log a full traceback per
-        # write — up to ~200/sec. Only the 1st/10th/50th/200th should log.
+        # A listener that fails on every write (a full disk, a preview widget
+        # after a mode switch) logged a traceback per write, up to ~200/sec;
+        # only the 1st/10th/50th/200th should log.
         b = self._b()
         b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
         with self.assertLogs("c64cast.hw.backend", level="ERROR") as cap:
@@ -459,9 +434,8 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(len(cap.records), 2)  # failures #1 and #10 only
 
     def test_listener_failure_ladder_resets_on_a_working_listener(self):
-        # Order matters for this ladder (it isn't per-listener): a failing
-        # listener followed by one that succeeds ends the write with the
-        # counter cleared, same as _consecutive_errors in the emit ladder.
+        # The ladder is not per-listener: a failing listener followed by a
+        # succeeding one ends the write with the counter cleared.
         b = self._b()
         calls: list[tuple[int, bytes]] = []
         b.add_write_listener(lambda a, d: (_ for _ in ()).throw(RuntimeError()))
@@ -471,7 +445,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b._consecutive_listener_errors, 0)
         self.assertEqual(calls, [(0xD020, b"\x0e")])
 
-    # ---- failure ladder --------------------------------------------------
     def test_emit_failure_ladder_logs_and_counts(self):
         b = self._b()
         b.fail = True
@@ -489,7 +462,6 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.write_memory("d020", "00")  # success clears the counter
         self.assertEqual(b._consecutive_errors, 0)
 
-    # ---- semantic write helpers ------------------------------------------
     def test_silence_sid_clears_volume_and_gates(self):
         b = self._b()
         b.silence_sid()
@@ -528,8 +500,8 @@ class SidConfigCapabilityTest(unittest.TestCase):
         self.assertEqual(set(SID_CONFIG_CATEGORIES), {CAT_ADDRESSING, CAT_SOCKETS, CAT_ULTISID})
 
     def test_ultimate_claims_the_surface_optimistically(self):
-        # Optimistic so an unprobed run (--skip-probe, probe failure) behaves
-        # exactly as before the flag existed; refine_capabilities revokes it.
+        # Optimistic, so an unprobed run keeps working; refine_capabilities
+        # revokes it.
         self.assertTrue(ULTIMATE_PROFILE.supports_sid_config)
 
     def test_teensyrom_never_claims_the_surface(self):
@@ -544,16 +516,15 @@ class SidConfigCapabilityTest(unittest.TestCase):
         self.assertEqual(EMUSID_MIXER_CATEGORY, CAT_EMUSID)
 
     def test_no_profile_claims_the_emusid_surface_statically(self):
-        # Evidence-based, not optimistic: only refine_capabilities grants it,
-        # so an unprobed run keeps the pre-flag behavior on every backend.
+        # Evidence-based: only refine_capabilities grants it.
         from c64cast.hw.backend import TEENSYROM_PROFILE
 
         self.assertFalse(ULTIMATE_PROFILE.supports_emusid_mixer)
         self.assertFalse(TEENSYROM_PROFILE.supports_emusid_mixer)
 
     def test_default_no_op_refine_exists_on_the_abc(self):
-        # cli/doctor call it on every backend after a successful probe; a
-        # backend with nothing to refine must accept the call.
+        # cli/doctor call it on every backend after a probe, so a backend with
+        # nothing to refine must accept it.
         _RecordingBackend().refine_capabilities()
 
 
@@ -607,8 +578,8 @@ class MakeBackendTeensyromValidationTest(unittest.TestCase):
         return cfg
 
     def test_serial_requires_port(self):
-        # No explicit port AND nothing auto-detected -> clear error. Patch
-        # auto-detect to None so it's deterministic on a Mac with a TR attached.
+        # Auto-detect is patched to None so a machine with a TR attached
+        # still reaches the no-port error.
         cfg = self._cfg(transport="serial", serial_port="")
         with (
             mock.patch("c64cast.hw.teensyrom_dma.autodetect_serial_port", return_value=None),

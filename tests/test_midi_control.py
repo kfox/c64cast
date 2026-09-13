@@ -372,8 +372,8 @@ class TransportDispatchTests(_MidiControlTestCase):
         )
 
     def test_record_note_release_enqueues_pressed_false(self):
-        # Phase 3: record is hold-aware too (the loop_slot pad chords need
-        # its release), same as rw/ff.
+        # record is hold-aware too, like rw/ff: the loop_slot pad chords need
+        # its release.
         listener, pl = self._listener(
             [{"type": "note", "number": 44, "action": "transport.record"}]
         )
@@ -412,8 +412,8 @@ class TransportDispatchTests(_MidiControlTestCase):
         )
 
     def test_loop_slot_release_is_discarded(self):
-        # loop_slot itself isn't hold-aware (only record/stop are) — a pad
-        # release carries no meaning.
+        # loop_slot is not hold-aware (only record/stop are), so a pad release
+        # carries no meaning.
         listener, pl = self._listener(
             [{"type": "note", "number": 60, "action": "loop_slot", "slot": 3}]
         )
@@ -485,8 +485,8 @@ class ParamActionTests(_MidiControlTestCase):
             {"system": pl},
             [{"type": "cc", "number": 13, "action": "param", "target": "effect.decay"}],
         )
-        # Must not raise — and must not post the "param applied" OSD
-        # feedback for a change that never landed.
+        # Must not raise, and must not post the "param applied" OSD feedback
+        # for a change that never landed.
         listener._dispatch(mido.Message("control_change", control=13, value=64))
         pl.post_osd.assert_not_called()
 
@@ -501,9 +501,9 @@ class ParamActionTests(_MidiControlTestCase):
         pl.post_osd.assert_not_called()
 
     def test_scene_prefix_targets_the_scene_itself(self):
-        # `scene.<name>` resolves the holder to the scene, not a source/effect
-        # attribute — the scope-scene seam (VoiceScopeRenderer.gain). Mirrors
-        # wled_device._set_live_param's `scene.` case verbatim.
+        # `scene.<name>` resolves the holder to the scene, not a source or
+        # effect attribute — the scope-scene seam (VoiceScopeRenderer.gain),
+        # mirroring wled_device._set_live_param's `scene.` case.
         pl = _fake_playlist("system")
         scene = mock.MagicMock()
         type(scene).LIVE_PARAMS = {"gain": (0.25, 3.0)}
@@ -637,8 +637,8 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         self.assertIsNotNone(cm.records[0].exc_info)
 
     def test_a_repeating_action_failure_reports_once_not_once_per_message(self):
-        # The third site of the same shape, one level down: `_apply` raising is
-        # per message too, and a held pad repeats it at the controller's rate.
+        # `_apply` raising is per message too, and a held pad repeats it at
+        # the controller's rate.
         pl = _fake_playlist("system")
         pl.skip_event = mock.MagicMock()
         pl.skip_event.set.side_effect = RuntimeError("boom")
@@ -743,7 +743,6 @@ class BuildListenerTests(unittest.TestCase):
                 midi_control.build_midi_control_listener({"system": pl}, fake_cfg)
 
 
-# ----------------------------------------------------- LED feedback (Phase 4) ---
 class _FakeOutPort:
     """mido-output stand-in: records every sent Message, closes cleanly."""
 

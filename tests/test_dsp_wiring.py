@@ -46,13 +46,12 @@ class EncodePathTest(unittest.TestCase):
     def test_disabled_dsp_is_identity_vs_raw_encode(self):
         s = _streamer(DSPParams(enabled=False))
         x = _quiet_sine(-6.0)
-        # _apply_dsp short-circuits; encoded bytes equal the raw encoder.
         processed = s._apply_dsp(x)
         np.testing.assert_array_equal(processed, x)
         self.assertFalse(s._dsp_active())
 
     def test_enabled_dsp_lifts_quiet_signal_in_encode(self):
-        # A quiet source should occupy MORE of the 4-bit DAC range after the
+        # A quiet source must occupy more of the 4-bit DAC range after the
         # compressor + makeup than the raw linear encode does.
         x = _quiet_sine(-20.0)
         raw = encode_floats_to_dac(x, dither=False)
@@ -83,16 +82,15 @@ class EncodePathTest(unittest.TestCase):
 
 class MicChainTest(unittest.TestCase):
     def test_mic_chain_enables_agc(self):
-        # The mic chain (is_mic=True) activates AGC; the line chain does not.
-        # pre_emphasis=0.0 isolates AGC (the source-aware default would
-        # otherwise add a PreEmphasis stage to the line chain too).
+        # AGC is mic-only; pre_emphasis=0.0 isolates it, since the
+        # source-aware default would add a PreEmphasis stage to both chains.
         params = DSPParams(
             enabled=True, agc=True, compress=False, expander=False, limiter=False, pre_emphasis=0.0
         )
         s = _streamer(params)  # __init__ builds the line chain (no AGC)
         line_active_only = s._dsp.active
-        # start_mic rebuilds with is_mic=True; emulate that rebuild directly
-        # (avoids opening a real sound device).
+        # start_mic rebuilds with is_mic=True; rebuilding directly avoids
+        # opening a real sound device.
         s._dsp = AudioDSP(s._dsp_params, sample_rate=SR, is_mic=True)
         x = _quiet_sine(-36.0, secs=2.0)
         boosted = s._apply_dsp(x)
@@ -139,14 +137,12 @@ class SourceAwarePreEmphasisTest(unittest.TestCase):
 class SetPreEmphasisTest(unittest.TestCase):
     def test_set_pre_emphasis_rebuilds_line_chain(self):
         s = _streamer(DSPParams(enabled=True, pre_emphasis=None))
-        # Default line chain uses the line default.
         self.assertEqual(_pre_emphasis_amount(s._dsp), PRE_EMPHASIS_LINE_DEFAULT)
         s.set_pre_emphasis(0.2)
         self.assertEqual(s._dsp_params.pre_emphasis, 0.2)
         amt = _pre_emphasis_amount(s._dsp)
         assert amt is not None
         self.assertAlmostEqual(amt, 0.2)
-        # Back to auto.
         s.set_pre_emphasis(None)
         self.assertIsNone(s._dsp_params.pre_emphasis)
         self.assertEqual(_pre_emphasis_amount(s._dsp), PRE_EMPHASIS_LINE_DEFAULT)

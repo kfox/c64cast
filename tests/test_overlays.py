@@ -10,10 +10,6 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-
-# ---------------------------------------------------------------------------
-# Stubs
-# ---------------------------------------------------------------------------
 from _fakes import FakeAPI
 
 from c64cast.hw.backend import C64Backend
@@ -145,11 +141,6 @@ class FakeBitmapMode:
     name = "fake_bitmap"
 
 
-# ---------------------------------------------------------------------------
-# Registry + validation
-# ---------------------------------------------------------------------------
-
-
 class RegistryTest(unittest.TestCase):
     def test_known_overlays(self):
         names = known_overlays()
@@ -183,8 +174,8 @@ class RegistryTest(unittest.TestCase):
         self.assertIs(ov.audio, audio)
 
     def test_validate_for_scene_accepts_bitmap_text_overlay(self):
-        # Text overlays (clock/marquee/…) now fold glyphs into the bitmap, so
-        # they attach to a bitmap-text-compatible mode (hires/mhires).
+        # Text overlays (clock/marquee/…) fold glyphs into the bitmap, so they
+        # attach to a bitmap-text-compatible mode (hires/mhires).
         ov = build_overlay({"type": "clock"}, audio=None)
         validate_for_scene(ov, FakeBitmapMode())  # no raise
 
@@ -213,11 +204,6 @@ class RegistryTest(unittest.TestCase):
         validate_for_scene(ov, FakePetsciiMode())  # no raise
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 class ScreenCodeTest(unittest.TestCase):
     def test_uppercase_letters_map_to_low_screen_codes(self):
         # 'A' = ASCII 0x41 → screen code 0x01; 'Z' = 0x5A → 0x1A
@@ -228,11 +214,6 @@ class ScreenCodeTest(unittest.TestCase):
 
     def test_space(self):
         self.assertEqual(ascii_to_screen(" "), bytes([0x20]))
-
-
-# ---------------------------------------------------------------------------
-# Scrolling text
-# ---------------------------------------------------------------------------
 
 
 class ScrollingTextTest(unittest.TestCase):
@@ -259,7 +240,6 @@ class ScrollingTextTest(unittest.TestCase):
         row = bytes(buffers["screen"][base : base + 40])
         # "HI" should appear somewhere in the row (centered for static).
         self.assertIn(bytes([0x08, 0x09]), row)  # 'H'(=0x08), 'I'(=0x09)
-        # Color row got written too (40 cells).
         self.assertEqual(len(buffers["color"][base : base + 40]), 40)
 
     def test_empty_messages_raises(self):
@@ -273,11 +253,6 @@ class ScrollingTextTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             ScrollingTextOverlay(messages=[{"text": "x"}], row=99)
-
-
-# ---------------------------------------------------------------------------
-# Spectrum (PETSCII)
-# ---------------------------------------------------------------------------
 
 
 class SpectrumPetsciiTest(unittest.TestCase):
@@ -313,8 +288,8 @@ class SpectrumPetsciiTest(unittest.TestCase):
         )
 
     def test_scene_features_drive_bars_without_any_streamer(self):
-        # The retrofit's headline case: a scene reporting `bands` paints bars
-        # with no AudioStreamer in sight (a SID/waveform scene has none).
+        # A scene reporting `bands` paints bars with no AudioStreamer in sight
+        # (a SID/waveform scene has none).
         from c64cast.scenes.modulation import MusicModulation
         from c64cast.scenes.overlays import SC_FULL, SC_SPACE
         from c64cast.scenes.overlays.spectrum_petscii import COLS_PER_BAND, PetsciiSpectrumOverlay
@@ -412,7 +387,6 @@ class SpectrumBandsSourceTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[0]), 0.0)
         self.assertAlmostEqual(float(out[-1]), 1.0)
         self.assertTrue(np.all(np.diff(out) > 0))
-        # Matching counts are an identity copy.
         same = rebin((0.1, 0.2, 0.3), 3)
         np.testing.assert_allclose(same, [0.1, 0.2, 0.3], rtol=1e-6)
 
@@ -436,11 +410,6 @@ class SpectrumBandsSourceTest(unittest.TestCase):
         self.assertTrue((out == 0).all())
 
 
-# ---------------------------------------------------------------------------
-# Clock
-# ---------------------------------------------------------------------------
-
-
 class ClockTest(unittest.TestCase):
     def test_renders_time_string_to_top_right(self):
         from c64cast.scenes.overlays.clock import ClockOverlay
@@ -455,11 +424,6 @@ class ClockTest(unittest.TestCase):
         self.assertEqual(bytes(buffers["screen"][35:40]), bytes([0x31, 0x32, 0x3A, 0x33, 0x34]))
 
 
-# ---------------------------------------------------------------------------
-# Weather (stubbed)
-# ---------------------------------------------------------------------------
-
-
 class WeatherTest(unittest.TestCase):
     def test_uses_cache_when_fetch_fails(self):
         from c64cast.scenes.overlays.weather import WeatherOverlay
@@ -469,10 +433,9 @@ class WeatherTest(unittest.TestCase):
         ):
             ov = WeatherOverlay(provider="open-meteo", lat=0.0, lon=0.0, refresh_minutes=10)
             api = _fake_api()
-            # The unexpected-exception path calls log.exception — capture it
-            # so the traceback doesn't spam stderr, and verify it fired.
-            # Teardown is inside assertLogs so the bg-thread join guarantees
-            # the fetch (and its log) completed before the context exits.
+            # The unexpected-exception path calls log.exception; capture it so the
+            # traceback stays off stderr, and verify it fired. Teardown is inside
+            # assertLogs so the bg-thread join guarantees the fetch logged first.
             with self.assertLogs("c64cast.scenes.overlays.weather", level="ERROR") as cap:
                 ov.setup(api, scene=MagicMock())
                 buffers = _make_buffers()
@@ -498,7 +461,6 @@ class WeatherTest(unittest.TestCase):
             ov.compose(buffers, scene=MagicMock(), t=0.0)
             ov.teardown(api, scene=MagicMock())
         self.assertEqual(ov._cached, "72F CLEAR")
-        # Some color cells got painted (non-zero in the buffer).
         self.assertTrue((buffers["color"] != 0).any())
 
     def test_bad_provider_raises(self):
@@ -512,11 +474,6 @@ class WeatherTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             WeatherOverlay(provider="open-meteo")
-
-
-# ---------------------------------------------------------------------------
-# Callsign / countdown / network — corner-text family
-# ---------------------------------------------------------------------------
 
 
 class CallsignTest(unittest.TestCase):
@@ -597,11 +554,6 @@ class NetworkTest(unittest.TestCase):
         self.assertEqual(result, ["..."])
 
 
-# ---------------------------------------------------------------------------
-# Marquee + RSS
-# ---------------------------------------------------------------------------
-
-
 class MarqueeTest(unittest.TestCase):
     def test_scrolls_text_across_row(self):
         from c64cast.scenes.overlays.marquee import MarqueeOverlay
@@ -645,11 +597,6 @@ class RssTitleExtractionTest(unittest.TestCase):
         <entry><title>Atom-2</title></entry>
         </feed>"""
         self.assertEqual(_extract_titles(xml, 5), ["Atom-1", "Atom-2"])
-
-
-# ---------------------------------------------------------------------------
-# Logo
-# ---------------------------------------------------------------------------
 
 
 class LogoTest(unittest.TestCase):
@@ -704,11 +651,6 @@ class LogoTest(unittest.TestCase):
                 LogoOverlay(file=path)  # neither corner nor row+col
         finally:
             os.unlink(path)
-
-
-# ---------------------------------------------------------------------------
-# Network — _collect dispatch + error fallback + setup URL parsing
-# ---------------------------------------------------------------------------
 
 
 class NetworkCollectTest(unittest.TestCase):

@@ -41,9 +41,8 @@ class WalkDirsDepthTest(unittest.TestCase):
         self.assertEqual(visited, {".", "level0", "level0/level1"})
 
     def test_a_file_at_the_depth_cap_itself_is_still_yielded(self):
-        # The cap prunes *descent* past a directory at MAX_DEPTH; that
-        # directory's own filenames are still yielded — only its children
-        # are cut off.
+        # MAX_DEPTH prunes descent: the directory's own filenames are still
+        # yielded, only its children are cut off.
         with mock.patch.object(fs_walk, "MAX_DEPTH", 1):
             sub = self.root / "level0"
             sub.mkdir()

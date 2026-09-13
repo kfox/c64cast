@@ -26,7 +26,6 @@ PAGES = (
     ("wled device", index_page_html, "c64cast.wled", "wled_index.html"),
 )
 
-# Every hand-written source that could open a socket of its own.
 SOCKET_SOURCES = (
     ("c64cast.control", "live_socket.js"),
     ("c64cast.control", "perf_console.html"),
@@ -65,17 +64,12 @@ class SpliceTest(unittest.TestCase):
                 self.assertNotIn(page_assets.LIVE_SOCKET_MARKER, page)
 
     def test_a_page_without_the_marker_is_refused(self):
-        # Rather than serving a page whose liveSocket is undefined: it would
-        # render, every control would look live, and only the state pushes
-        # would be missing — the hardest failure to spot from a phone.
+        # A page whose liveSocket is undefined still renders with every
+        # control looking live; only the state pushes go missing.
         with self.assertRaises(ValueError):
             page_assets.with_live_socket("<!doctype html><html></html>")
 
     def test_only_the_shared_client_opens_a_socket(self):
-        # The property, not the two identifier names the deleted copies
-        # happened to use: those exist nowhere now, so asserting their absence
-        # could only ever catch a reintroduction spelled exactly the old way.
-        # A third page, or a copy named `connectWS`, fails this one.
         for package, filename in SOCKET_SOURCES:
             with self.subTest(source=filename):
                 body = page_assets.package_text(package, filename)

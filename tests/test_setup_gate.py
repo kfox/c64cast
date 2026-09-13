@@ -102,8 +102,8 @@ class MiddlewareUnitTest(unittest.TestCase):
         self.assertEqual(sent[0]["status"], 200)
 
     def test_the_shells_own_route_for_the_form_passes_through(self):
-        # A client route: no server route claims the segment, so it reaches the
-        # shell's catch-all and the form comes back after a reload.
+        # A client route: no server route claims the segment, so it reaches
+        # the shell's catch-all.
         inner = _RecordingApp()
         mw = SetupGateMiddleware(inner, reserved=frozenset({"api", "perf", "status"}))
         sent, _ = _run(_collect(mw, _http_scope(SETUP_PAGE_PATH)))
@@ -167,8 +167,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_an_unregistered_path_is_not_blocked_by_the_gate(self):
-        # No route claims "/whatever", so the gate lets it through — whatever
-        # answers next (here, FastAPI's own 404) is a separate concern.
+        # The gate passes it through; the 404 is FastAPI's own.
         client = TestClient(self._app())
         resp = client.get("/whatever")
         self.assertEqual(resp.status_code, 404)

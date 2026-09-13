@@ -110,9 +110,9 @@ class RunTeardownStepsTests(unittest.TestCase):
         self.assertIn("RuntimeError", caught.output[0])  # exc_info is attached
 
     def test_an_interrupt_is_not_swallowed(self):
-        # Teardown runs on the shutdown path. Catching Exception (not
-        # BaseException) is what keeps a KeyboardInterrupt from being logged as
-        # a failed step and then discarded, which would hang the shutdown.
+        # Teardown runs on the shutdown path, so catching Exception rather than
+        # BaseException is what keeps a KeyboardInterrupt from being logged as
+        # a failed step and discarded, hanging the shutdown.
         def interrupt() -> None:
             raise KeyboardInterrupt
 
@@ -147,9 +147,9 @@ class SceneTeardownTests(unittest.TestCase):
         self.assertTrue(source.teardown.called, "the capture handle leaks for the rest of the run")
 
     def test_a_failing_poll_stop_does_not_starve_the_launcher_reset(self):
-        # The reset is mandatory for a `.crt` — `run_crt` leaves it active — and
-        # `PollThread.stop` joins, which `_pollthread` documents as able to raise
-        # RuntimeError on a target that stopped its own poller.
+        # The reset is mandatory for a `.crt` (`run_crt` leaves it active), and
+        # `PollThread.stop` joins, which `_pollthread` documents as able to
+        # raise RuntimeError on a target that stopped its own poller.
         with tempfile.TemporaryDirectory() as tmp:
             prg = os.path.join(tmp, "demo.prg")
             with open(prg, "wb") as f:
@@ -164,9 +164,9 @@ class SceneTeardownTests(unittest.TestCase):
         self.assertTrue(api.reset.called, "a launched .crt stays active into the next scene")
 
     def test_a_failing_border_restore_does_not_starve_the_video_guarantees(self):
-        # The most-used scene type, and the first thing after the self-guarding
-        # base teardown is a $D020 write over the link -- so it fails like any
-        # other DMA op, and used to take the three guarantees behind it down.
+        # The most-used scene type: the first thing after the self-guarding
+        # base teardown is a $D020 write over the link, so it fails like any
+        # other DMA op and took the three guarantees behind it down.
         with tempfile.TemporaryDirectory() as tmp:
             clip = os.path.join(tmp, "clip.mp4")
             with open(clip, "wb") as f:
@@ -216,9 +216,8 @@ class SceneTeardownTests(unittest.TestCase):
             with self.assertLogs(_SCENES_LOG, level="INFO") as caught:
                 scene.teardown()
         # Match the emitted prefix, not the step label: the runner's own
-        # failure line is `teardown step 'A/V lag summary' failed`, so a filter
-        # on the label alone stays green when the summary raises and the gauge
-        # is gone entirely.
+        # failure line is `teardown step 'A/V lag summary' failed`, so a label
+        # filter stays green when the summary raises and the gauge is gone.
         summaries = [line for line in caught.output if "video A/V lag summary:" in line]
         self.assertEqual(len(summaries), 1, caught.output)
         gauge = re.search(r"clock/wall=([0-9.]+)", summaries[0])
@@ -238,11 +237,8 @@ class AudioSourceTeardownTests(unittest.TestCase):
     def test_a_failing_feature_stop_does_not_starve_the_mic_audio_stop(self):
         # The raise is injected, not reproduced: `AudioFeatureStream.stop` is a
         # `PollThread.stop`, which raises only the join-current-thread
-        # `RuntimeError` that `_pollthread` makes its lifecycle lock reentrant
-        # to produce — and nothing tears a mic source down from inside the
-        # analyzer's own tick. So this pins the runner's property at this site
-        # rather than a live defect; the file and SID sources next to it are
-        # reproductions.
+        # `RuntimeError`, and nothing tears a mic source down from inside the
+        # analyzer's own tick.
         audio = MagicMock()
         source = MicAudioSource(audio, MagicMock())
         source._features = _wedged_features()

@@ -5,9 +5,7 @@ screen + color buffers. Tests cover registration, shape correctness,
 SHIFT-driven cycling, and the "random" sentinel resolution.
 """
 
-# FakeAPI is a duck-typed stub of Ultimate64API — silence the per-call
-# pyright complaints across the file rather than spraying ignores on every
-# cycle_style call.
+# FakeAPI is a duck-typed stub of Ultimate64API.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -47,7 +45,6 @@ class StyleRegistryTest(unittest.TestCase):
         ps.validate_style(ps.RANDOM_STYLE)  # sentinel accepted
 
     def test_random_sentinel_resolves_to_a_concrete_style(self):
-        # Just verify the resolver returns something in STYLE_NAMES.
         chosen = ps.pick_random_style_name()
         self.assertIn(chosen, ps.STYLE_NAMES)
 
@@ -75,7 +72,6 @@ class StyleComposeShapeTest(unittest.TestCase):
 
 class IndividualStyleBehaviorTest(unittest.TestCase):
     def test_default_uses_default_char_ramp(self):
-        # Pure black frame → every cell uses the lowest char in the ramp.
         img = np.zeros((25, 40, 3), dtype=np.uint8)
         screen, _ = ps.DefaultStyle().compose(img, _BOOST, _HUE)
         # First entry of the ramp is SC_SPACE (0x20).
@@ -93,7 +89,6 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
         self.assertLessEqual(
             unique, {0x20, 0xA0}, f"inverse_pop screen has unexpected codes {unique}"
         )
-        # FG colors are restricted to the 4-entry pop palette.
         pop = {int(v) for v in ps.InversePopStyle.POP_PALETTE_INDICES}
         for c in np.unique(color):
             self.assertIn(int(c), pop, f"inverse_pop produced non-pop FG {int(c)}")
@@ -108,7 +103,6 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
     def test_random_glyph_is_stable_per_cell(self):
         style = ps.RandomGlyphStyle()
         s1, _ = style.compose(_frame(), _BOOST, _HUE)
-        # Different image, but the glyph-per-cell mapping must not change.
         img2 = np.full((25, 40, 3), 200, dtype=np.uint8)
         s2, _ = style.compose(img2, _BOOST, _HUE)
         np.testing.assert_array_equal(
@@ -123,10 +117,9 @@ class IndividualStyleBehaviorTest(unittest.TestCase):
         )
 
     def test_hue_corrections_reach_styles_and_rescue_purple(self):
-        # A dark blue-leaning violet (BGR) like the TRON arena glyphs — it
+        # A dark blue-leaning violet (BGR) like the TRON arena glyphs: it
         # quantizes to gray/blue without the purple-rescue hue band and to
-        # C64 purple (index 4) with it. Proves the global [color] shaping is
-        # actually threaded into the per-style color pick.
+        # C64 purple (index 4) with it.
         violet = np.full((25, 40, 3), (114, 57, 74), dtype=np.uint8)
         _, plain = ps.ColorOnlyStyle().compose(violet, _BOOST, ())
         _, rescued = ps.ColorOnlyStyle().compose(violet, _BOOST, _HUE)
@@ -169,15 +162,13 @@ class CyclingTest(unittest.TestCase):
             PETSCIIDisplayMode(style="bogus")
 
     def test_cycle_updates_border_and_background_registers(self):
-        # When a style cycle lands on inverse_pop, the mode should push
-        # both border + background to $D020/$D021 in one coalesced PUT.
+        # inverse_pop pushes border + background to $D020/$D021 in one PUT.
         from _fakes import FakeAPI
 
         api = FakeAPI()
         m = PETSCIIDisplayMode(style="default")
         while m.style != "inverse_pop":
             m.cycle_style(api)
-        # The most recent write to $D020 should reflect inverse_pop's values.
         regs = api.regs.get("d020") or api.regs.get("D020")
         self.assertIsNotNone(regs, "expected a write to D020/D021 on cycle")
         assert regs is not None

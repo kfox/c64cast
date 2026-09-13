@@ -108,7 +108,7 @@ class SchemaValidatesExamplesTest(unittest.TestCase):
                     self.fail(f"{path} failed schema validation:\n{msg}")
 
     def test_typo_is_rejected(self):
-        # A bogus top-level key should fail (additionalProperties: false).
+        # Rejected by the schema's additionalProperties: false.
         bad = {"audio": {"enabledd": True}}
         self.assertTrue(list(self.validator.iter_errors(bad)))
 

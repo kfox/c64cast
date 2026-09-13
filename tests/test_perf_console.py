@@ -185,9 +185,9 @@ class _FakePlaylist:
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
-        # The real tracker: it is a pure in-memory recorder with no hardware
-        # behind it, and the save-back block the console renders is exactly
-        # what it reports — a fake would only be able to agree with itself.
+        # The real tracker: a pure in-memory recorder with no hardware behind
+        # it, and the save-back block the console renders is exactly what it
+        # reports, so a fake could only agree with itself.
         self.live_tracker = LiveTuneTracker()
         self.config_path = config_path
         self.osd: list[str] = []
@@ -195,8 +195,7 @@ class _FakePlaylist:
         self.performance_calls: list[bool] = []
         self.jumps: list[tuple[int, bool]] = []
         # A real TransportSession would getattr-probe the scene and touch a
-        # frame; the bridge only ever enqueues onto it, so a plain recorder is
-        # enough to assert what was queued without a playlist thread to drain it.
+        # frame; the bridge only enqueues onto it, so a recorder is enough.
         self.transport = _FakeTransport()
 
     def post_osd(self, text: str) -> None:
@@ -267,7 +266,6 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertEqual(sys["current_scene"], "demo")
         self.assertEqual(sys["tempo"]["bpm"], 128.0)
         self.assertEqual(sys["tempo"]["beat_phase"], 5.5)
-        # Clip carries a rendered state.
         self.assertEqual(sys["clips"][0]["state"], "loaded")
         # Effect rack generated from the layer's own LIVE_PARAMS.
         fx = sys["effects"][0]
@@ -277,7 +275,7 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertAlmostEqual(fx["params"][0]["value"], 0.48, places=4)
         # norm = 0.48 / 0.96 = 0.5
         self.assertAlmostEqual(fx["params"][0]["norm"], 0.5, places=3)
-        # Saved-look slots surface for the console's look pads (Phase 6).
+        # Saved-look slots surface for the console's look pads.
         self.assertEqual(sys["looks"], [])
 
     def test_saved_looks_surface_in_state(self):
@@ -366,9 +364,9 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertFalse(bridge.apply({"action": "bogus"}))
 
     def test_live_panel_lists_only_what_the_scene_declares(self):
-        # `source.scale` is a declared live target (introspect.live_targets);
-        # the scene here has a source that declares it, and declares nothing
-        # else — so exactly one row comes back, generated rather than listed.
+        # `source.scale` is a declared live target (introspect.live_targets)
+        # and the scene's source declares nothing else, so exactly one row
+        # comes back, generated rather than listed.
         bridge, pl = _bridge(source=_FakeSource())
         rows = {r["target"]: r for r in bridge.state()["systems"][0]["live"]}
         self.assertEqual(list(rows), ["source.scale"])
@@ -407,18 +405,18 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertEqual(pl.performance_calls, [True, False])
 
     def test_perf_carries_an_explicit_state_not_a_toggle(self):
-        # Two consoles open on one show, or a retried request, would otherwise
-        # race their stale reads into a double-toggle that cancels out — the
-        # same reason `freeze`/`unfreeze` are two verbs rather than one.
+        # Two consoles open on one show, or a retried request, would race
+        # stale reads into a double-toggle that cancels out — the reason
+        # `freeze`/`unfreeze` are two verbs.
         bridge, pl = _bridge()
         bridge.apply({"action": "perf", "on": True})
         bridge.apply({"action": "perf", "on": True})
         self.assertEqual(pl.performance_calls, [True, True])
 
     def test_perf_without_the_flag_is_malformed_not_an_implicit_on(self):
-        # Defaulting an absent field to the state-changing value is exactly the
-        # toggle-shaped behavior the explicit-target design avoids: a truncated
-        # or hand-rolled frame would silently blank the OSD mid-set.
+        # Defaulting an absent field to the state-changing value is the
+        # toggle-shaped behavior the explicit-target design avoids: a
+        # truncated frame would silently blank the OSD mid-set.
         bridge, pl = _bridge()
         with self.assertLogs("c64cast.control.perf_console", "DEBUG"):
             self.assertFalse(bridge.apply({"action": "perf"}))
@@ -455,19 +453,18 @@ class PerfBridgeTest(unittest.TestCase):
         self.assertFalse(pl.pause_event.is_set())
 
     def test_freeze_and_unfreeze_enqueue_their_own_verb(self):
-        # The idempotency check against transport_is_paused now happens on
-        # the playlist thread, inside TransportSession._dispatch (see
-        # tests/test_transport.py) — not here at enqueue time, so that two
-        # requests racing ahead of a single drain can't both read the same
-        # stale state and cancel each other out.
+        # The idempotency check against transport_is_paused happens on the
+        # playlist thread inside TransportSession._dispatch (see
+        # tests/test_transport.py), not at enqueue time, so two requests
+        # racing one drain cannot read the same stale state.
         bridge, pl = _bridge(scene=_FakeTransportScene())
         self.assertTrue(bridge.transport(None, "freeze"))
         self.assertTrue(bridge.transport(None, "unfreeze"))
         self.assertEqual([e.action for e in pl.transport.events], ["freeze", "unfreeze"])
 
     def test_freeze_on_a_scene_with_no_transport_surface_still_enqueues(self):
-        # _dispatch's own missing-surface check (duck-typed getattr) makes
-        # this a no-op once drained — see
+        # _dispatch's own duck-typed missing-surface check makes this a no-op
+        # once drained — see
         # test_transport.test_unknown_scene_type_missing_surface_is_noop.
         bridge, pl = _bridge()
         self.assertTrue(bridge.transport(None, "freeze"))
@@ -645,10 +642,9 @@ class MalformedCommandTest(unittest.TestCase):
                 self.assertFalse(bridge.apply(cmd))
 
     def test_a_non_finite_number_is_refused(self):
-        # `json.loads` accepts the bare literals `1e400`, `Infinity` and `NaN`,
-        # and `int(float("inf"))` raises OverflowError — an ArithmeticError, so
-        # not in the (KeyError, TypeError, ValueError) tuple a fix would reach
-        # for first.
+        # `json.loads` accepts the bare literals `1e400`, `Infinity` and
+        # `NaN`, and `int(float("inf"))` raises OverflowError — an
+        # ArithmeticError, outside the (KeyError, TypeError, ValueError) tuple.
         bridge, _pl = _bridge(clips=[{"slot": 1, "name": "A"}])
         for value in (float("inf"), float("-inf"), float("nan")):
             with self.subTest(value=value):
@@ -664,9 +660,9 @@ class MalformedCommandTest(unittest.TestCase):
         self.assertEqual(pl.performance.events, [])
 
     def test_an_absurdly_long_target_is_refused(self):
-        # `live_tune.resolve_holder` parses the `fx<n>` prefix with `int()`, and
-        # CPython refuses an integer literal past 4300 digits — so a crafted
-        # target raised ValueError from a place no reader would guard.
+        # `live_tune.resolve_holder` parses the `fx<n>` prefix with `int()`,
+        # and CPython refuses an integer literal past 4300 digits, so a
+        # crafted target raised ValueError from an unguarded place.
         bridge, _pl = _bridge(effects=[TrailsEffect()])
         target = "fx" + "9" * (MAX_TARGET_CHARS * 2) + ".amount"
         self.assertFalse(bridge.apply({"action": "live", "target": target, "norm": 0.5}))
@@ -715,8 +711,8 @@ class TransportDispatchTest(unittest.TestCase):
         self.assertEqual(pl.transport.events, [])
 
     def test_a_loop_slot_outside_the_pad_range_is_refused(self):
-        # The one verb here that writes and deletes persisted state on disk.
-        # Unbounded, a caller could loop an incrementing slot and grow
+        # The one verb here that writes and deletes persisted state on disk:
+        # unbounded, a caller could loop an incrementing slot and grow
         # `loop-*.json` without limit, each save rewriting the whole file on
         # the playlist thread that drives the hardware.
         bridge, pl = _bridge(scene=_FakeTransportScene())
@@ -731,8 +727,8 @@ class StateFrameCoherenceTest(unittest.TestCase):
     def test_one_state_frame_describes_one_scene(self):
         pl = _AdvancingPlaylist()
         state = _system_state("c64cast", pl)
-        # Scene A has an effect chain and no source; scene B has a source and
-        # no chain. A frame built from more than one read of `pl.current`
+        # Scene A has an effect chain and no source, scene B a source and no
+        # chain, so a frame built from more than one read of `pl.current`
         # renders A's name over B's rack.
         self.assertEqual(state["current_scene"], "A")
         self.assertEqual(len(state["effects"]), 1)
@@ -813,8 +809,8 @@ class TunedBlockTest(unittest.TestCase):
 
     def test_a_runtime_only_knob_is_listed_but_not_counted(self):
         # A generator knob has no config home, and a palette mode turned on a
-        # scene the config never named has no block to go in. Both end with the
-        # show; listing them is the point, since silence would read as "saved".
+        # scene the config never named has no block to go in; listing them is
+        # the point, since silence would read as "saved".
         bridge, pl = _bridge(config_path="/shows/demo.toml")
         pl.live_tracker.record("source.scale", 1.0, 2.0)
         pl.live_tracker.record("mode.palette_mode", "auto", "vivid", scene=None)
@@ -913,9 +909,9 @@ class PerfPageControlsTest(unittest.TestCase):
         return set(re.findall(r"action: '(\w+)'", perf_page_html()))
 
     def test_the_page_reaches_every_action_the_bridge_dispatches(self):
-        # Read off `PerfBridge.apply`'s own dispatch rather than a list here: a
-        # bridge action with no control on the page is exactly the gap this
-        # closes, and a second copy of the list would hide the next one.
+        # Read off `PerfBridge.apply`'s own dispatch rather than a list here:
+        # a bridge action with no control on the page is the gap this closes,
+        # and a second copy of the list would hide the next one.
         dispatched = set(re.findall(r'action == "(\w+)"', inspect.getsource(PerfBridge.apply)))
         self.assertEqual(self._page_actions(), dispatched)
 
@@ -926,33 +922,30 @@ class PerfPageControlsTest(unittest.TestCase):
 
     def test_the_gesture_controls_blur_so_the_panels_keep_re_rendering(self):
         # renderFx and renderTune skip a rebuild while something inside them
-        # has focus, and a range keeps focus after a drag and a <select> after
-        # a change (per the browser) — so without a blur the first drag froze
-        # that panel for the rest of the session: a bypass flipped from a MIDI
-        # pad stopped showing, and after a scene advance the tune panel kept
-        # offering the previous scene's knobs. wled_device.py's page carries
-        # the same fix, and its comment is the record of the failure mode.
+        # has focus, and a range keeps focus after a drag and a <select>
+        # after a change, so without a blur the first drag freezes that panel
+        # for the rest of the session. wled_device.py's page carries the
+        # same fix.
         self.assertGreaterEqual(perf_page_html().count("blur()"), 3)
 
     def test_the_reconnect_backs_off_rather_than_retrying_forever(self):
         # Every open phone retrying a downed host at a fixed interval is the
-        # load `MAX_CONSOLE_SOCKETS` exists to bound. The loop itself is the
-        # shared client now (see test_page_assets); what this asserts is that
-        # this page gets it, wired to its own socket and poll endpoint.
+        # load `MAX_CONSOLE_SOCKETS` bounds. The loop is the shared client
+        # (see test_page_assets); this asserts the page gets it, wired to its
+        # own socket and poll endpoint.
         page = perf_page_html()
         self.assertIn("WS_RETRY_MAX_MS", page)
         self.assertIn("function liveSocket(", page)
         self.assertIn("path: '/perf/ws'", page)
 
     def test_the_idle_branch_clears_the_tempo_readout(self):
-        # `animate()` renders clock.bpm unconditionally, so leaving the anchor
-        # alone showed the last show's BPM — or a confident 120 from the
-        # initializer — above "No session running."
+        # `animate()` renders clock.bpm unconditionally, so leaving the
+        # anchor alone showed the last show's BPM above "No session running."
         self.assertIn("bpm: 0", perf_page_html())
 
     def test_the_screen_is_re_pointed_when_the_system_tab_changes(self):
-        # The src bakes `?system=` in and was only ever rebuilt by the WATCH
-        # tap, so on an ensemble run a tab tap moved every control to the new
+        # The src bakes `?system=` in and was rebuilt only by the WATCH tap,
+        # so on an ensemble run a tab tap moved every control to the new
         # machine and left the old machine's picture streaming underneath.
         self.assertIn("screenSys", perf_page_html())
         self.assertIn("!== screenSys", perf_page_html())
@@ -991,10 +984,9 @@ class PerfEndpointsTest(unittest.TestCase):
             self.assertIn(f'id="{panel}"', text)
 
     def test_the_screen_is_an_img_against_the_stream_route(self):
-        # Not a bridge action — an /api route this page reaches without a
-        # decoder or a second socket, which is what makes it sayable on a page
-        # with no build step. The route only exists on a --serve host, so the
-        # page has to handle its absence (test below).
+        # Not a bridge action but an /api route this page reaches without a
+        # decoder or a second socket. The route only exists on a --serve
+        # host, so the page has to handle its absence (test below).
         client, _pl = self._client()
         text = client.get("/perf").text
         self.assertIn('id="screen"', text)
@@ -1009,9 +1001,9 @@ class PerfEndpointsTest(unittest.TestCase):
         self.assertIn("screenOn = false", text)
 
     def test_the_page_names_both_reasons_there_might_be_no_picture(self):
-        # An <img> error cannot tell "this run has no /api" from "this machine
-        # has no VIC", and the page is served by the control plane, which a
-        # plain CLI run has without any of /api.
+        # An <img> error cannot tell "this run has no /api" from "this
+        # machine has no VIC", and the page is served by the control plane,
+        # which a plain CLI run has without any of /api.
         client, _pl = self._client()
         text = client.get("/perf").text
         self.assertIn("serves no screen", text)
@@ -1054,9 +1046,9 @@ class PerfEndpointsTest(unittest.TestCase):
             self.assertEqual(msg["systems"][0]["name"], "c64cast")
 
     def test_a_malformed_command_frame_leaves_the_feed_alive(self):
-        # The whole point of the dispatch guard: this used to raise KeyError
-        # inside the push loop, land on `except Exception`, and close the
-        # console's only channel — with a full traceback per frame.
+        # The dispatch guard: this raised KeyError inside the push loop,
+        # landed on `except Exception`, and closed the console's only
+        # channel, with a full traceback per frame.
         client, pl = self._client()
         with client.websocket_connect("/perf/ws") as ws:
             ws.receive_json()
@@ -1083,8 +1075,8 @@ class PerfEndpointsTest(unittest.TestCase):
         self.assertEqual(headers["x-content-type-options"], "nosniff")
 
     def test_a_command_body_bigger_than_the_cap_is_refused(self):
-        # `await request.json()` buffered every chunk with nothing bounding it
-        # — the hazard `auth.read_body` was written for, on the one POST in the
+        # `await request.json()` buffered every chunk with nothing bounding
+        # it — the hazard `auth.read_body` exists for, on the one POST in the
         # package that skipped it.
         client, _pl = self._client()
         r = client.post(
@@ -1107,8 +1099,8 @@ class PerfEndpointsTest(unittest.TestCase):
 
     def test_a_text_plain_post_cannot_reach_the_dispatcher(self):
         # `Request.json()` never looks at Content-Type, so a cross-site
-        # `<form enctype="text/plain">` whose field name and value sandwich the
-        # JSON is a CORS-simple POST with no preflight to refuse.
+        # `<form enctype="text/plain">` whose field name and value sandwich
+        # the JSON is a CORS-simple POST with no preflight to refuse.
         client, pl = self._client()
         r = client.post(
             "/perf/command",
@@ -1147,9 +1139,8 @@ class PerfOriginTest(unittest.TestCase):
             self.assertIn("systems", ws.receive_json())
 
     def test_a_handshake_with_no_origin_is_served(self):
-        # No Origin is a non-browser caller (`curl`, `wscat`, a script), which
-        # is exactly the "whoever already has a shell here" the open mode is
-        # justified by — so it stays served.
+        # No Origin is a non-browser caller (`curl`, `wscat`, a script), the
+        # "whoever already has a shell here" the open mode is justified by.
         client, _pl = self._client()
         with client.websocket_connect("/perf/ws") as ws:
             self.assertIn("systems", ws.receive_json())
@@ -1282,9 +1273,9 @@ class SocketReaderTest(unittest.TestCase):
         self.assertEqual(self._drive(socket, 2), [(True, {"action": "tap"}), (False, None)])
 
     def test_a_timeout_leaves_the_receive_pending_rather_than_cancelling_it(self):
-        # The whole point: cancelling a receive that has already popped a
-        # message off uvicorn's queue consumes the frame and never returns it.
-        # One `receive_json` call across many polls is what proves the task
+        # Cancelling a receive that has already popped a message off
+        # uvicorn's queue consumes the frame and never returns it, so one
+        # `receive_json` call across many polls is what proves the task
         # survives a timeout.
         socket = self._Socket([])
         self.assertEqual(self._drive(socket, 4), [(False, None)] * 4)

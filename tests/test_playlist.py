@@ -10,9 +10,6 @@ Run:    python -m unittest discover tests
    or:  python -m unittest tests.test_playlist
 """
 
-# FakeScene + FakeApi are intentional duck-typed stubs of Scene/Ultimate64API;
-# silence pyright's argument-type / attribute-access complaints across the file
-# rather than spraying per-call ignores on every Playlist(...) construction.
 # pyright: reportArgumentType=false, reportAttributeAccessIssue=false
 from __future__ import annotations
 
@@ -27,10 +24,6 @@ import unittest
 from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import OsdState
-
-# ---------------------------------------------------------------------------
-# Stubs
-# ---------------------------------------------------------------------------
 
 
 class FakeScene:
@@ -155,11 +148,6 @@ def _drive(stop, *steps, timeout=5.0):
     return result
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 class PlaylistTest(unittest.TestCase):
     def _run_until(self, scenes, *conditions, loop=True):
         """Build a playlist over `scenes`, run it on this thread, and stop
@@ -183,12 +171,8 @@ class PlaylistTest(unittest.TestCase):
         self.assertTrue(driven["ok"], "watcher timed out awaiting the run conditions")
         return counter
 
-    # --- core state machine -----------------------------------------------
-
     def test_two_scene_loops_with_transitions(self):
-        # Two scenes cycle A → interstitial → B → interstitial → A …
-        # Single-scene mode (1 scene only) is exercised separately below;
-        # this test keeps the multi-scene transition path covered.
+        # Two scenes cycle A → interstitial → B → interstitial → A.
         a = FakeScene("A", frames_until_done=2)
         b = FakeScene("B", frames_until_done=2)
         # Both scenes re-setting-up implies ≥3 interstitials in between, so
@@ -243,13 +227,10 @@ class PlaylistTest(unittest.TestCase):
         )
         self.assertNotIn("B-spec", captured, "the stale pre-prepare name must never reach the card")
 
-    # --- single-scene mode ------------------------------------------------
-
     def test_single_scene_skips_interstitial(self):
-        # 1 scene → Playlist.single_scene = True → interstitial_factory
-        # must never be called. Running until the scene has looped once
-        # makes this a strong negative: the loop provably cycled, and the
-        # factory count is still zero.
+        # One scene sets Playlist.single_scene, so interstitial_factory must
+        # never be called; running until the scene loops makes that a strong
+        # negative.
         s = FakeScene("A", frames_until_done=2)
         counter = self._run_until([s], lambda: s.setup_count >= 2)
         self.assertEqual(counter["n"], 0, "interstitial factory must not run in single-scene mode")
@@ -265,11 +246,9 @@ class PlaylistTest(unittest.TestCase):
         self.assertGreater(s.teardown_count, 1, "scene should tear down on each loop iteration")
 
     def test_single_scene_ignores_skip_event(self):
-        # Firing skip_event in single-scene mode must NOT cause rapid-fire
-        # teardown churn and must NOT invoke the interstitial factory. Each
-        # skip is fired only after the previous one was consumed (the run
-        # loop clears the event), so all five provably went through the
-        # skip branch — which lets the teardown assertion be exact.
+        # Each skip is fired only after the previous one was consumed (the run
+        # loop clears the event), so all five provably went through the skip
+        # branch and the teardown assertion can be exact.
         s = FakeScene("A", frames_until_done=10_000_000)
         api = FakeApi()
         stop = threading.Event()
@@ -307,8 +286,6 @@ class PlaylistTest(unittest.TestCase):
         for s in scenes:
             self.assertGreater(s.setup_count, 0, f"{s.name} never ran in rotation")
 
-    # --- loop = False -----------------------------------------------------
-
     def test_single_scene_loop_false_exits_after_one_play(self):
         # loop=False + 1 scene: the scene plays once, marks is_done, and the
         # playlist sets stop_event + tears down instead of re-setting-up.
@@ -325,8 +302,7 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
             loop=False,
         )
-        # Safety timer in case loop=False is broken and we'd otherwise spin
-        # forever (matches the pre-fix video scene behavior).
+        # Safety timer in case loop=False is broken and this would spin.
         threading.Timer(2.0, stop.set).start()
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
@@ -372,9 +348,7 @@ class PlaylistTest(unittest.TestCase):
         )
 
     def test_loop_true_is_default(self):
-        # Don't pass loop= — the default must preserve the previous looping
-        # behavior, so this would otherwise duplicate the single-scene-loop
-        # test. Quick sanity check that the constructor default is True.
+        # Not passing loop= at all: the constructor default must be True.
         s = FakeScene("A", frames_until_done=2)
         pl = Playlist(
             [s],
@@ -384,8 +358,6 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=_transition_factory()[0],
         )
         self.assertTrue(pl.loop)
-
-    # --- exception handling -----------------------------------------------
 
     def test_scene_exception_advances_playlist(self):
         bad = FakeScene("BAD", frames_until_done=100, raise_on_frame=2)
@@ -434,8 +406,6 @@ class PlaylistTest(unittest.TestCase):
             f"expected advance-failure log, got: {cap.output!r}",
         )
 
-    # --- shutdown ---------------------------------------------------------
-
     def test_stop_event_halts_loop_promptly(self):
         s = FakeScene("A", frames_until_done=10_000_000)
         stop = threading.Event()
@@ -479,8 +449,6 @@ class PlaylistTest(unittest.TestCase):
             s.teardown_count, 0, "KeyboardInterrupt must still teardown the current scene"
         )
 
-    # --- heartbeat --------------------------------------------------------
-
     def test_heartbeat_emits_when_interval_set(self):
         s = FakeScene("A", frames_until_done=10_000)
         api = FakeApi()
@@ -495,8 +463,8 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
         # assertLogs' handler appends to cap.records live, so the watcher can
-        # stop the run the moment the first heartbeat actually lands rather
-        # than gambling on a wall-clock window.
+        # stop the run when the first heartbeat lands rather than gambling on
+        # a wall-clock window.
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             driven = _drive(
                 stop, lambda: any("writes=" in r.getMessage() for r in list(cap.records))
@@ -524,8 +492,7 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        # Strong negative: run until the loop has provably rendered several
-        # frames, then check no heartbeat line appeared.
+        # Run until the loop has provably rendered several frames.
         driven = _drive(stop, lambda: s.frame_count >= 5)
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             # Inject one log so assertLogs doesn't error on "no logs captured".
@@ -538,12 +505,9 @@ class PlaylistTest(unittest.TestCase):
         heartbeat_lines = [line for line in cap.output if "writes=" in line]
         self.assertEqual(heartbeat_lines, [], "no heartbeat lines expected when interval=0")
 
-    # --- skip_event -------------------------------------------------------
-
     def test_skip_event_advances_current_scene(self):
-        # A scene that would run for a long time. Setting skip_event after
-        # the first frame should force is_done = True so the playlist
-        # advances to an interstitial → the next scene.
+        # skip_event after the first frame must force is_done, so the playlist
+        # advances to an interstitial and then the next scene.
         s = FakeScene("A", frames_until_done=10_000_000)
         api = FakeApi()
         stop = threading.Event()
@@ -568,8 +532,6 @@ class PlaylistTest(unittest.TestCase):
         self.assertTrue(driven["ok"], "skip never advanced to a new interstitial")
         self.assertGreaterEqual(s.teardown_count, 1, "skip should tear down the current scene")
         self.assertGreater(counter["n"], 1, "skip should land on a new interstitial")
-
-    # --- request_jump -------------------------------------------------------
 
     def test_request_jump_single_scene_is_noop(self):
         pl = Playlist(
@@ -610,9 +572,8 @@ class PlaylistTest(unittest.TestCase):
         self.assertEqual(pl._jump_target, 2)
 
     def test_request_jump_lands_on_target_index(self):
-        # A long-running scene at index 0; jump straight to index 2 (C) —
-        # the walk-forward index+1 path must never land there on its own
-        # within the short run window.
+        # A long-running scene at index 0: the walk-forward index+1 path must
+        # never reach index 2 on its own within this window.
         scenes = [
             FakeScene("A", frames_until_done=10_000_000),
             FakeScene("B", frames_until_done=1),
@@ -630,11 +591,9 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        # Wait past the playlist's own startup interstitial before firing
-        # (same rationale as the bypass test below): a jump that lands
-        # while the first "UP NEXT" card is still transitioning is
-        # consumed as a plain skip into scene A and the target is never
-        # taken — the race a coverage-instrumented CI runner actually hit.
+        # Wait past the playlist's own startup interstitial before firing: a
+        # jump landing while the first "UP NEXT" card is still transitioning
+        # is consumed as a plain skip into scene A.
         driven = _drive(
             stop,
             lambda: scenes[0].setup_count >= 1,
@@ -648,10 +607,9 @@ class PlaylistTest(unittest.TestCase):
         self.assertEqual(scenes[1].setup_count, 0, "jump must skip scene B entirely")
 
     def test_request_jump_skip_interstitial_bypasses_the_card(self):
-        # Both scenes run "forever" (target_fps=200 over a 0.25s window
-        # can't reach 10M frames) so the only scene transition possible in
-        # this window is the jump itself — a stray natural completion of B
-        # can't sneak in an unrelated interstitial and confound the count.
+        # Both scenes run "forever" (target_fps=200 over 0.25 s cannot reach
+        # 10M frames), so the jump is the only scene transition possible and
+        # no natural completion can add an unrelated interstitial.
         scenes = [
             FakeScene("A", frames_until_done=10_000_000),
             FakeScene("B", frames_until_done=10_000_000),
@@ -670,11 +628,9 @@ class PlaylistTest(unittest.TestCase):
 
         result: dict[str, int | None] = {"baseline": None}
 
-        # Wait past the playlist's own startup interstitial (every playlist
-        # enters scene 0 via one "UP NEXT" card) so the baseline reflects a
-        # settled, running scene A — otherwise a race against that first
-        # card would make the baseline nondeterministic. Assertions run in
-        # the main thread after pl.run() returns.
+        # Wait past the startup interstitial — every playlist enters scene 0
+        # via one "UP NEXT" card — so the baseline reflects a settled scene A.
+        # Assertions run in the main thread after pl.run() returns.
         driven = _drive(
             stop,
             lambda: scenes[0].setup_count >= 1,
@@ -727,12 +683,10 @@ class PlaylistTest(unittest.TestCase):
         self.assertGreaterEqual(scenes[1].setup_count, 1, "must still land on the target scene")
 
     def test_jump_to_audio_gated_scene_waits_on_the_same_gate_as_looping(self):
-        # A jump target that competes for the ensemble audio lock must
-        # block via _wait_for_audio_claim (the same gate single-scene
-        # looping uses) rather than silently falling through to
-        # _resolve_next_index's skip-past-gated-scenes behavior. Proven
-        # here by pre-setting stop_event so the wait exits immediately
-        # with current=None, instead of landing on the gated scene.
+        # A jump target competing for the ensemble audio lock must block via
+        # _wait_for_audio_claim rather than fall through to
+        # _resolve_next_index's skip-past-gated-scenes behavior. stop_event is
+        # pre-set so the wait exits with current=None instead.
         from _fakes import fake_system_stack as _stack
 
         from c64cast.app.ensemble import Ensemble
@@ -762,12 +716,9 @@ class PlaylistTest(unittest.TestCase):
         pl._advance()
         self.assertIsNone(pl.current)
 
-    # --- busy-deferral (overlay.is_busy() defers scene teardown) ---------
-
     def test_busy_overlay_defers_scene_teardown(self):
-        # Scene finishes after 1 frame but a busy overlay should keep the
-        # scene running until is_busy() flips False. Once it does, the
-        # scene tears down on the next frame.
+        # The scene finishes after 1 frame, but a busy overlay keeps it
+        # running until is_busy() flips False.
         scene = FakeScene("A", frames_until_done=1)
 
         class FakeOverlay:
@@ -811,17 +762,13 @@ class PlaylistTest(unittest.TestCase):
         pl.run()
         driven["thread"].join(timeout=10.0)
         self.assertTrue(driven["ok"], "busy overlay never unblocked into a teardown")
-        # The overlay's process_frame should have been called more than
-        # the scene's frames_until_done (1) — busy deferral let it keep
-        # running for at least a few extra frames before teardown.
         self.assertGreater(overlay.frame_count, 1, "busy overlay should have deferred teardown")
         self.assertGreater(
             overlay.teardown_count, 0, "overlay should still tear down once unblocked"
         )
 
     def test_ctrl_skip_overrides_busy_overlay(self):
-        # When an overlay reports busy AND skip_event is set, CTRL must
-        # win — the scene tears down regardless of busy state.
+        # Busy plus skip_event: CTRL wins and the scene tears down.
         scene = FakeScene("A", frames_until_done=10_000_000)
 
         class StuckOverlay:
@@ -863,16 +810,11 @@ class PlaylistTest(unittest.TestCase):
         pl.run()
         driven["thread"].join(timeout=10.0)
         self.assertTrue(driven["ok"], "CTRL skip never cut through the busy overlay")
-        # CTRL should cut through the busy guard — scene torn down and
-        # we landed on a new interstitial.
         self.assertGreaterEqual(scene.teardown_count, 1, "CTRL skip should override busy overlay")
         self.assertGreater(counter["n"], 1, "CTRL skip should advance to a new interstitial")
 
-    # --- cycle_event ------------------------------------------------------
-
     def test_cycle_event_calls_display_mode_cycle_style(self):
-        # SHIFT press → playlist calls display_mode.cycle_style(api) on
-        # the current scene and logs the returned style name. Verify both.
+        # SHIFT calls display_mode.cycle_style(api) and logs the style name.
         class FakeMode:
             name = "fake"
             calls = 0
@@ -933,9 +875,8 @@ class PlaylistTest(unittest.TestCase):
         api = FakeApi()
         stop = threading.Event()
 
-        # Custom factory: returns a long-lived interstitial (and records it,
-        # so the watcher can wait until the card is provably on screen
-        # before firing the cycle it expects to be dropped).
+        # A long-lived interstitial, recorded so the watcher can wait until
+        # the card is provably on screen before firing the cycle.
         built: list[FakeScene] = []
 
         def factory(name):
@@ -952,9 +893,8 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
         )
 
-        # Fire cycle only while the interstitial is rendering; the run loop
-        # clears the event even when it drops it, so "consumed" is the
-        # observable that makes this negative sound.
+        # The run loop clears the event even when it drops it, so "consumed"
+        # is the observable that makes this negative sound.
         driven = _drive(
             stop,
             lambda: bool(built) and built[0].frame_count >= 1,
@@ -1138,8 +1078,7 @@ class PlaylistTest(unittest.TestCase):
         )
 
     def test_cycle_event_scene_exception_does_not_crash_loop(self):
-        # A scene-level cycle_style raising must be caught — same contract
-        # as display_mode.cycle_style.
+        # A scene-level cycle_style raising must be caught too.
         class BadScene(FakeScene):
             def __init__(self, name):
                 super().__init__(name, frames_until_done=10_000_000)
@@ -1195,7 +1134,6 @@ class PlaylistTest(unittest.TestCase):
         pl.run()
         driven["thread"].join(timeout=10.0)
         self.assertTrue(driven["ok"], "skip event was never consumed")
-        # Event should have been auto-cleared by the run loop.
         self.assertFalse(pl.skip_event.is_set())
 
 
@@ -1379,11 +1317,9 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
 
 class PauseResumeTest(unittest.TestCase):
     def test_resume_wait_is_cut_short_by_a_stop(self):
-        # The wait between reset() and run_basic_clear_loop() used to be a
-        # bare time.sleep(1) -- unconditional, unlike the pause loop right
-        # above it which spins on stop_event.wait() precisely "so SIGTERM can
-        # shortcut the pause". stop_event.wait(1.0) should return as soon as
-        # stop fires instead of sleeping out the full second.
+        # As a bare time.sleep(1) this wait was unconditional, unlike the
+        # pause loop above it that spins on stop_event.wait() so SIGTERM can
+        # shortcut the pause.
         api = FakeApi()
         api.pause_idle = lambda: None
         api.reset = lambda: None
@@ -1432,9 +1368,9 @@ class PerformanceModeTest(unittest.TestCase):
         self.assertFalse(self._playlist([self._scene("A")]).performance_mode)
 
     def test_it_survives_a_scene_advance(self):
-        # The whole point: an OsdState is per-scene, so a hide written to the
-        # live scene alone came back on the next auto-advance. The `osd.position`
-        # pad's double-tap routes through here for exactly that reason.
+        # An OsdState is per-scene, so a hide written to the live scene alone
+        # came back on the next auto-advance; the `osd.position` pad's
+        # double-tap routes through here for that reason.
         a, b = self._scene("A"), self._scene("B")
         pl = self._playlist([a, b])
         pl.safe_setup(a)
@@ -1446,9 +1382,9 @@ class PerformanceModeTest(unittest.TestCase):
 
     def test_a_pad_hide_does_not_strand_the_scene_it_was_pressed_on(self):
         # `suppressed` is per-scene but the mode is per-run, and the mode is
-        # turned back off from whichever scene is live *then* — never the one it
-        # was turned on from. So the pressed-on scene kept a set flag nothing
-        # cleared, and on a looping playlist its OSD was dead for good.
+        # turned back off from whichever scene is live then, so the
+        # pressed-on scene kept a set flag nothing cleared and its OSD was
+        # dead for good on a looping playlist.
         a, b = self._scene("A"), self._scene("B")
         pl = self._playlist([a, b])
 
@@ -1472,8 +1408,7 @@ class PerformanceModeTest(unittest.TestCase):
 
     def test_the_pad_reopens_a_scene_the_run_gate_left_shut(self):
         # The re-show branch clears `suppressed` on the scene rather than
-        # inferring it from `performance_mode`, which is already off here — the
-        # docstring's "opens whichever one is shut".
+        # inferring it from `performance_mode`, which is already off here.
         a = self._scene("A")
         pl = self._playlist([a])
         pl.current = a
@@ -1492,9 +1427,8 @@ class PerformanceModeTest(unittest.TestCase):
         self.assertIsNone(a.osd.current())
 
     def test_off_restores_the_config_baseline_rather_than_assuming_on(self):
-        # `[midi_control].osd = "off"` is a setting, and performance mode must
-        # not overwrite it — which is why `suppressed` is a second flag and not
-        # a write to `enabled`.
+        # `[midi_control].osd = "off"` is a setting performance mode must not
+        # overwrite, which is why `suppressed` is a second flag.
         a = self._scene("A")
         a.osd.enabled = False
         pl = self._playlist([a])

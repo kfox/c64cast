@@ -9,9 +9,6 @@ bare instance plus exactly the attributes a method reads is the intended
 harness (mirrors ScopeGainTest in test_waveform.py).
 """
 
-# FakeAPI duck-types C64Backend (the mixin's contract type), so silence
-# pyright's attribute-access complaints file-wide — same convention as
-# test_waveform.py / test_playlist.py.
 # pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
@@ -219,9 +216,8 @@ class VoiceTimeWindowTest(unittest.TestCase):
     with silent voices falling back to wallclock."""
 
     def _renderer(self, *, time_base, voice=None, auto_cycles=4):
-        # Real Voice objects, not stand-ins: the silence rule lives on Voice
-        # (Voice.is_silent), so a namespace carrying only the raw fields would
-        # stop exercising the predicate this method delegates to.
+        # Real Voice objects, not stand-ins: the silence rule lives on
+        # Voice.is_silent, which raw fields in a namespace would not exercise.
         emu = SimpleNamespace(
             voices=[voice if voice is not None else Voice()],
             clock=1_000_000,
@@ -294,8 +290,8 @@ class WindowChipOrderTest(unittest.TestCase):
         r.set_window_chip_order([1, 0, 2])
         with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG"):
             r.set_window_chip_order([1, 0])  # stale order from a 2-chip layout
-        # The rejected order leaves the previous one in place (the caller's
-        # _set_window_count is what resets to identity).
+        # A rejected order leaves the previous one in place; the caller's
+        # _set_window_count is what resets to identity.
         self.assertEqual([e.name for e in r._scope_emulators()], [1, 0, 2])
 
     def test_non_permutation_order_is_ignored(self):
@@ -329,10 +325,9 @@ class SetWindowCountRenderModesTest(unittest.TestCase):
         self.assertTrue(r._fast_path)
 
     def test_the_forced_fast_path_is_announced_once_per_instance(self):
-        # The reflow is not a one-off: a playlist reuses scene instances and
-        # re-runs setup() each lap, and WaveformScene reflows per tune. The
-        # message says only what the knobs plus n>1 imply, so it is the same
-        # sentence every time — news once, noise afterwards.
+        # A playlist reuses scene instances and re-runs setup() each lap, and
+        # WaveformScene reflows per tune, so the message — which says only
+        # what the knobs plus n>1 imply — is news once and noise afterwards.
         r = _knobbed_renderer(persistence="medium")
         with self.assertLogs("c64cast.sid.voice_scope", level="DEBUG") as first:
             r._set_window_count(2)
@@ -361,7 +356,6 @@ class SetWindowCountRenderModesTest(unittest.TestCase):
         r._set_window_count(1)
         self.assertEqual(r._voice_render_modes, configured)
         self.assertFalse(r._fast_path)
-        # And the buffers the restored modes need are allocated again.
         r._alloc_scope_buffers()
         assert r._strips is not None
         self.assertIsNotNone(r._strips[0])
@@ -451,8 +445,8 @@ class D018CharDefaultTest(unittest.TestCase):
         self.assertEqual(api.memories["D018"], f"{D018_CHAR_DEFAULT:02X}")
 
     def test_is_not_the_scope_s_own_bitmap_layout(self):
-        # The teardown these constants serve exists precisely to move the matrix
-        # pointer OFF the scope's layout, so equal values would make it a no-op.
+        # The teardown these constants serve moves the matrix pointer off the
+        # scope's layout, so equal values would make it a no-op.
         self.assertNotEqual(D018_CHAR_DEFAULT, D018_HIRES_BITMAP)
         # $D018 bit 3 selects the bitmap at bank+$2000; a char mode has it clear.
         self.assertEqual(D018_CHAR_DEFAULT & 0x08, 0)

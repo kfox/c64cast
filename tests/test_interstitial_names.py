@@ -44,8 +44,7 @@ class VideoPrepareNextTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        # Two empty-but-correctly-extensioned files; resolve_file_spec only
-        # checks extensions, not container validity.
+        # resolve_file_spec checks extensions, not container validity.
         for n in ("alpha.mp4", "beta.mp4"):
             open(os.path.join(self.tmp.name, n), "wb").close()
 
@@ -72,7 +71,6 @@ class VideoPrepareNextTest(unittest.TestCase):
 
     def test_pick_filepath_failure_returns_false(self):
         scene = self._scene()
-        # Empty the pool out from under the scene.
         for n in os.listdir(self.tmp.name):
             os.remove(os.path.join(self.tmp.name, n))
         # Both _pick_filepath and prepare_next log the expected resolve
@@ -144,7 +142,6 @@ class SlideshowPrepareNextTest(unittest.TestCase):
         scene.prepare_next()
         prepared_name = scene.name
         scene.setup()
-        # Flag cleared, the prepared slide kept (not re-rolled), scene live.
         self.assertFalse(scene._prepared)
         self.assertEqual(scene.name, prepared_name)
         self.assertIsNotNone(scene._current_img)
@@ -197,7 +194,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
         scene = self._bare_scene()
         scene.prepare_next()
         self.assertEqual(scene.load_calls, 1)
-        # Drive only the branch we changed (skip the heavy rest of setup()).
+        # Drive only this branch; the rest of setup() is heavy.
         if scene._prepared:
             scene._prepared = False
         elif len(scene._candidates) > 1:
@@ -205,7 +202,7 @@ class WaveformPrepareNextTest(unittest.TestCase):
         # The prepared pick was consumed — no second SID load.
         self.assertEqual(scene.load_calls, 1)
         self.assertFalse(scene._prepared)
-        # Sanity: the base hook is a no-op so non-randomized scenes are inert.
+        # The base hook is a no-op, so non-randomized scenes are inert.
         self.assertIsNone(Scene.prepare_next(scene))
 
 

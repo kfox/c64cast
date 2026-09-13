@@ -23,7 +23,6 @@ class FramebufferTest(unittest.TestCase):
         fb = Framebuffer()
         # Set hires mode: $D011 bit 5 = 1.
         fb.on_write(0xD011, b"\x3b")
-        # Fill bitmap with alternating bytes.
         fb.on_write(0x2000, b"\xaa" * 8000)
         # Set screen RAM colors: FG=white(1), BG=black(0).
         fb.on_write(0x0400, b"\x10" * 1000)
@@ -83,10 +82,9 @@ class FramebufferTest(unittest.TestCase):
         self.assertEqual(bytes(fb.ram), before)
 
     def test_render_text_solid_block_glyph(self):
-        # Default post-reset mode is standard text. SC_FULL_BLOCK ($A0) is the
-        # reverse-space glyph — solid in the real character ROM and in the
-        # builtin fallback alike, so this pins render behavior rather than
-        # whichever charset happens to resolve on the machine running the test.
+        # SC_FULL_BLOCK ($A0) is the reverse-space glyph, solid in the real
+        # character ROM and in the builtin fallback alike, so this pins
+        # render behavior rather than whichever charset resolves here.
         from c64cast.hw.c64 import SCREEN
         from c64cast.video.framebuffer import Framebuffer
         from c64cast.video.palette import C64_PALETTE_BGR
@@ -125,8 +123,7 @@ class FramebufferTest(unittest.TestCase):
         fb.on_write(0x0400, bytes([SCREEN.SC_FULL_BLOCK]))  # all bit-pairs = 11
         fb.on_write(0xD800, b"\x0d")  # bit3 set + low3 = 5 (green)
         img = fb.render()
-        # Multicolor halves horizontal resolution (doubled pixels); the cell
-        # should be entirely color index 5.
+        # Multicolor halves horizontal resolution (doubled pixels).
         self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[5]).all())
 
     def test_render_mhires_cell(self):
@@ -144,11 +141,9 @@ class FramebufferTest(unittest.TestCase):
         self.assertTrue((img[0:8, 0:8] == C64_PALETTE_BGR[5]).all())
 
     def test_charset_path_loaded(self):
-        # A supplied 2KB char-ROM dump is used verbatim instead of the
-        # builtin — but only once char_rom.verify() accepts it as a real
-        # charset (not just 2 KB of arbitrary bytes), so this one is built to
-        # pass: reverse-video half complements the normal half, $20 blank,
-        # $01 not.
+        # char_rom.verify() only accepts a real charset, not 2 KB of
+        # arbitrary bytes, so this dump is built to pass: reverse-video
+        # half complements the normal half, $20 blank, $01 not.
         from c64cast.video.framebuffer import Framebuffer
 
         normal = bytearray()
@@ -165,9 +160,8 @@ class FramebufferTest(unittest.TestCase):
             os.unlink(path)
 
     def test_short_charset_falls_back_with_warning(self):
-        # A truncated file is not usable as glyphs — zero-padding it would show
-        # 1900 blank cells and look like a render bug. Fall back to the builtin
-        # font instead, loudly.
+        # Zero-padding a truncated file would show 1900 blank cells and
+        # look like a render bug, so fall back to the builtin font loudly.
         from c64cast.hw import char_rom
         from c64cast.video.framebuffer import Framebuffer, _builtin_charset
 
@@ -184,10 +178,10 @@ class FramebufferTest(unittest.TestCase):
             os.unlink(path)
 
     def test_missing_charset_path_warns_and_falls_back(self):
-        # A configured-but-missing path used to raise FileNotFoundError out of
-        # __init__ and kill the run; the preview is a mirror, it degrades.
-        # The warning now comes from char_rom itself (the single resolver
-        # every glyph consumer goes through), not a framebuffer-local check.
+        # A configured-but-missing path once raised FileNotFoundError out
+        # of __init__ and killed the run; the preview is a mirror, so it
+        # degrades. char_rom, the single resolver every glyph consumer
+        # goes through, is what warns.
         from c64cast.hw import char_rom
         from c64cast.video.framebuffer import Framebuffer
 

@@ -29,8 +29,7 @@ class _FakeSD:
         return self._devices[idx]
 
 
-# A representative macOS enumeration: default mic, an Elgato Cam Link 4K input,
-# and an output-only device that must never match.
+# A representative macOS enumeration; the output-only device must never match.
 DEVICES = [
     {"name": "MacBook Pro Microphone", "max_input_channels": 1},
     {"name": "Cam Link 4K", "max_input_channels": 2},

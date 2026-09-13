@@ -73,8 +73,7 @@ def _fake_module(zeroconf_cls=_FakeZeroconf):
 
 class LoopbackTest(unittest.TestCase):
     def test_a_loopback_host_never_imports_zeroconf(self):
-        # sys.modules["zeroconf"] = None makes the import raise ImportError,
-        # so anything short of a true early-return here would blow up.
+        # sys.modules["zeroconf"] = None makes the import raise ImportError.
         with mock.patch.dict(sys.modules, {"zeroconf": None}):
             advertiser = console_mdns.ConsoleMdnsAdvertiser("127.0.0.1", 8123, pending=False)
             advertiser.start()
@@ -207,8 +206,7 @@ class RegistrationFailureTest(_AdvertiserTestCase):
 
     def test_a_registration_failure_closes_the_instance_it_opened(self):
         # `stop()` cannot reach an instance `start()` never stored, so a
-        # failure that merely drops the reference leaks its multicast socket
-        # and engine threads — once per `run_daemon` restart, at that.
+        # dropped reference leaks a multicast socket and engine threads.
         with self.assertLogs("c64cast.control.console_mdns", level="ERROR"):
             _, made = self.advertise(zeroconf_cls=_RaisingZeroconf)
 

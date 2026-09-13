@@ -36,7 +36,6 @@ class FitToAspectTest(unittest.TestCase):
     def test_wide_source_pads_top_bottom(self):
         out = _fit_to_aspect(_solid(100, 320))  # ar 3.2 > 1.6 → letterbox
         self.assertEqual(out.shape[:2], (200, 320))
-        # No source pixels lost: full source width preserved.
         self.assertAlmostEqual(out.shape[1] / out.shape[0], _C64_ASPECT, places=2)
 
     def test_tall_source_pads_left_right(self):
@@ -45,8 +44,7 @@ class FitToAspectTest(unittest.TestCase):
         self.assertAlmostEqual(out.shape[1] / out.shape[0], _C64_ASPECT, places=2)
 
     def test_pad_bars_are_black(self):
-        out = _fit_to_aspect(_solid(100, 320, value=255))  # bright content
-        # Top row is pad → black; a center row is content → bright.
+        out = _fit_to_aspect(_solid(100, 320, value=255))
         self.assertTrue((out[0] == 0).all())
         self.assertTrue((out[out.shape[0] // 2] == 255).all())
 
