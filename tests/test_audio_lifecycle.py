@@ -36,7 +36,7 @@ from c64cast.audio.audio_handlers import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA2, SID
+from c64cast.hw.c64 import CIA2, SID, VECTORS
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -1503,13 +1503,22 @@ class LifecycleTest(unittest.TestCase):
 
     def test_stop_swallows_teardown_write_errors(self):
         s = _make()
+        api = cast(Any, s.api)
+        write_regs = api.write_regs
+        calls = 0
 
         def boom(*a: Any, **k: Any) -> None:
-            raise RuntimeError("teardown write failed")
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("teardown write failed")
+            write_regs(*a, **k)
 
-        cast(Any, s).api.write_regs = boom
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
+        api.write_regs = boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
             s.stop()  # must not raise
+        self.assertEqual(api.memories["D418"], "00")
+        self.assertIn(f"{VECTORS.NMI:04X}", api.regs)
 
     def test_stop_drains_leftover_queue(self):
         s = _make()
@@ -1523,15 +1532,20 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
 
         class _BadStream:
+            def __init__(self) -> None:
+                self.closed = False
+
             def stop(self):
                 raise RuntimeError("mic stop failed")
 
             def close(self):
-                raise RuntimeError("mic close failed")
+                self.closed = True
 
-        s.mic_stream = cast(Any, _BadStream())
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
+        stream = _BadStream()
+        s.mic_stream = cast(Any, stream)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
             s.stop()  # must not raise
+        self.assertTrue(stream.closed)
         self.assertIsNone(s.mic_stream)
 
     def test_disarm_reu_pump_swallows_errors(self):

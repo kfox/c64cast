@@ -53,6 +53,7 @@ from typing import Any
 
 import numpy as np
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -2201,6 +2202,15 @@ class AudioStreamer:
             self.api.write_memory_file(f"{addr:04X}", neutral * ln)
 
     # ---- shutdown ------------------------------------------------------------
+    def _close_mic_stream(self) -> None:
+        stream, self.mic_stream = self.mic_stream, None
+        if stream is not None:
+            run_teardown_steps(
+                log,
+                type(self).__name__,
+                [("mic stop", stream.stop), ("mic close", stream.close)],
+            )
+
     def stop(self) -> None:
         # Listen-only sessions never touched the NMI/DAC/SID, so skip all of
         # that teardown (writing $D418/NMI vectors would be spurious U64 traffic)
@@ -2208,13 +2218,7 @@ class AudioStreamer:
         if self._listen_mode:
             self.running = False
             self._listen_mode = False
-            if self.mic_stream:
-                try:
-                    self.mic_stream.stop()
-                    self.mic_stream.close()
-                except Exception as e:
-                    log.debug("listen close: %s", e)
-                self.mic_stream = None
+            self._close_mic_stream()
             return
         # Order matters for clean audio cutoff:
         #  - REU pump (if armed): restore IRQ vector + CIA #1 latch FIRST
@@ -2231,27 +2235,33 @@ class AudioStreamer:
         # The governor lives entirely in the C64-side handler, so disarming the
         # IRQ vector stops it — no host thread to join.
         self._disarm_reu_pump()
-        try:
-            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
-            self.api.write_memory("D418", "00")
-            if self.digi_boost:
-                self._disable_digi_boost()
-            elif self._dac_curve is not None:
-                self._disable_mahoney_env()
-            self.api.write_regs(
-                f"{VECTORS.NMI:04X}", KERNAL.DEFAULT_NMI & 0xFF, (KERNAL.DEFAULT_NMI >> 8) & 0xFF
+        steps: list[tuple[str, Callable[[], object]]] = [
+            (
+                "NMI source disable",
+                lambda: self.api.write_regs(
+                    f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP
+                ),
+            ),
+            ("SID volume mute", lambda: self.api.write_memory("D418", "00")),
+        ]
+        if self.digi_boost:
+            steps.append(("digi-boost disable", self._disable_digi_boost))
+        elif self._dac_curve is not None:
+            steps.append(("Mahoney envelope disable", self._disable_mahoney_env))
+        steps.append(
+            (
+                "KERNAL NMI vector restore",
+                lambda: self.api.write_regs(
+                    f"{VECTORS.NMI:04X}",
+                    KERNAL.DEFAULT_NMI & 0xFF,
+                    (KERNAL.DEFAULT_NMI >> 8) & 0xFF,
+                ),
             )
-        except Exception as e:
-            log.debug("teardown write failed: %s", e)
+        )
+        run_teardown_steps(log, type(self).__name__, steps)
         # NMI is already silenced; let the worker / mic threads tear down
         # at their own pace.
-        if self.mic_stream:
-            try:
-                self.mic_stream.stop()
-                self.mic_stream.close()
-            except Exception as e:
-                log.debug("mic close: %s", e)
-            self.mic_stream = None
+        self._close_mic_stream()
         if self._worker_thread:
             # A plain bounded join, not session.join_bounded: this is a daemon
             # thread joined off the main thread (so nothing is waiting to run a
