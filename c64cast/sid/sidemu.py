@@ -1,29 +1,15 @@
 """Minimal SID emulator for waveform *visualization*.
 
-Not a full emulator — no filter, no master volume mixing, no per-cycle
-6502 timing. The real SID chip plays the file (driven by the C64-side
-player PRG that ``api.run_sid_player`` uploads) and produces the actual
-audio; this module mirrors the per-voice waveform shape + ADSR envelope
-based on a periodic snapshot of the SID's 25 registers ($D400-$D418)
-that the WaveformScene polls from the U64.
+Not a full emulator — no filter, no master volume mixing, no per-cycle 6502
+timing. The real SID chip plays the file and produces the audio; this module
+mirrors the per-voice waveform shape + ADSR envelope from a periodic snapshot of
+the SID's 25 registers ($D400-$D418).
 
-Per-voice we track:
-  * 24-bit phase accumulator (advanced internally — does not need to
-    match the real chip's phase; the visualization just wants to draw
-    a smoothly-advancing wave at the right frequency).
-  * Waveform select bits + pulse width.
-  * Envelope state machine driven by the gate bit (control bit 0).
+Per-voice state: a 24-bit phase accumulator (advanced internally — it does not
+need to match the real chip's phase), the waveform select bits + pulse width,
+and an envelope state machine driven by the gate bit (control bit 0).
 
-For combined waveforms (multiple bits set in the upper nibble of the
-control byte) the real SID wires the selected waveforms' 12-bit
-oscillator outputs onto a shared bus, effectively bitwise-ANDing them.
-``voice_samples`` approximates that: it ANDs each selected waveform's
-unsigned 12-bit form and maps the result back to [-1, 1]. That's
-faithful in character (the sparse, mostly-low "metallic" shape; noise
-combined with a tone darkens toward silence) but not chip-exact — an
-accurate model needs reSID-style per-chip sampled tables. ``primary_waveform``
-(priority noise > pulse > sawtooth > triangle) is still used to pick a
-single waveform for *coloring* (per_waveform mode) and the silent check.
+See docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene.
 """
 
 from __future__ import annotations
@@ -35,9 +21,7 @@ import numpy as np
 
 from c64cast.hw.c64 import SID, cpu_clock
 
-# Re-export the wave-select bit constants under their historical names so
-# existing imports (`from c64cast.sid.sidemu import WAVE_NOISE, ...`) keep
-# working. Authoritative definitions live in c64.SID.
+# Re-exported under their historical names; c64.SID holds the definitions.
 WAVE_TRIANGLE = SID.WAVE_TRIANGLE
 WAVE_SAWTOOTH = SID.WAVE_SAWTOOTH
 WAVE_PULSE = SID.WAVE_PULSE
@@ -70,13 +54,13 @@ ATTACK_TIMES_S = [
 ]
 DECAY_TIMES_S = [t * 3.0 for t in ATTACK_TIMES_S]
 
-NIBBLE_MASK = 0x0F  # mask off the low 4 bits of an AD/SR byte
-NIBBLE_MAX = 15  # full-scale value of a 4-bit field
+NIBBLE_MASK = 0x0F
+NIBBLE_MAX = 15
 SID_REG_COUNT = 25  # $D400-$D418 (3 voices × 7 + 4 global)
-ACCUMULATOR_BITS = 24  # SID phase accumulator width
+ACCUMULATOR_BITS = 24
 ACCUMULATOR_RANGE = 1 << ACCUMULATOR_BITS
 PULSE_WIDTH_RANGE = 4096  # 12-bit pulse-width register max + 1
-NOISE_SEED_STRIDE = 1337  # arbitrary stride per voice; prime, stable
+NOISE_SEED_STRIDE = 1337  # arbitrary, but stable across runs
 NOISE_SEED_OFFSET = 7
 
 
@@ -119,12 +103,8 @@ class Voice:
         waveform selected, a zero frequency (the phase accumulator never
         advances, so every sample freezes on one phase), or a dead envelope.
 
-        Owned here, next to the fields it reads, because the rule had been
-        rewritten independently in every consumer and the copies disagreed:
-        `voice_samples` omitted the frequency test and drew a DC-offset flat
-        line pinned near the top of the strip for a rest written as freq 0
-        with the waveform bits still set, while `VoiceScopeRenderer` already
-        counted that case as silent when choosing the time base."""
+        Owned here, next to the fields it reads, so `voice_samples` and
+        `VoiceScopeRenderer` cannot spell it differently."""
         return primary_waveform(self.control) == 0 or self.freq == 0 or self.envelope_level <= 0.0
 
 
@@ -149,27 +129,15 @@ class SIDEmulator:
     reading the chip is the whole reason `SidHostEmu` exists.
     """
 
-    # Fallback visualization rate used only when a caller of
-    # voice_samples() doesn't pass time_window_s. The scope callers always
-    # pass one: VoiceScopeRenderer._voice_time_window_s supplies either one
-    # display frame of audio time (`time_base = "wallclock"`, which locks the
-    # displayed waveform phase to wall-clock so pitch changes you hear line up
-    # with wave-shape changes you see) or `auto_cycles` periods of the voice's
-    # own frequency (`time_base = "auto"`, which instead holds the displayed
-    # cycle count fixed as pitch moves), scaled by the column batch in scroll
-    # mode.
+    # Fallback visualization rate, used only when a caller of voice_samples()
+    # passes no time_window_s. Every scope caller passes one, from
+    # VoiceScopeRenderer._voice_time_window_s.
     SAMPLE_RATE = 22050
 
     def __init__(self, system: str = "NTSC"):
-        # Normalize here rather than at each of the four construction sites
-        # (WaveformScene, MidiScene, AsidScene, MusicFeatures): `system` comes
-        # from `[ultimate64].system`, which config.py validates
-        # case-insensitively and documents as accepting `"ntsc"`. A bare
-        # `system == "NTSC"` here quietly gave those spellings the PAL clock —
-        # 3.7% low, which also propagates into `_detect_play_rate_hz` and
-        # drifts the scope ~6.7 s behind the audio over a three-minute tune.
-        # cpu_clock raises on anything but NTSC/PAL, matching every other
-        # derived timing constant in the tree.
+        # cpu_clock, not a bare `system == "NTSC"`: config.py validates
+        # `[ultimate64].system` case-insensitively, so a lowercase "ntsc" would
+        # take the PAL clock — 3.7% low, and it propagates into the poll rate.
         self.clock = cpu_clock(system)
         self.voices: list[Voice] = [Voice() for _ in range(SID.N_VOICES)]
         # Per-voice deterministic noise sequences so the visualization
@@ -177,8 +145,6 @@ class SIDEmulator:
         self._noise_rng = [
             random.Random(i * NOISE_SEED_STRIDE + NOISE_SEED_OFFSET) for i in range(SID.N_VOICES)
         ]
-
-    # ---- register snapshot --------------------------------------------------
 
     def update_registers(self, regs: bytes, retrigger: tuple[bool, ...] | None = None):
         """Snapshot the SID's register state. Triggers gate-edge transitions
@@ -208,14 +174,12 @@ class SIDEmulator:
             elif was_gated and not now_gated:
                 v.envelope_state = "release"
             if retrigger is not None and retrigger[v_idx]:
-                # Hard restart: re-attack from zero (gate pulsed off→on
-                # within the tick; the edge logic above couldn't see it).
+                # Gate pulsed off→on within the tick; the edge logic above
+                # cannot see it, so re-attack from zero here.
                 v.envelope_state = "attack"
                 v.envelope_level = 0.0
             v.ad = regs[base + SID.OFF_AD]
             v.sr = regs[base + SID.OFF_SR]
-
-    # ---- envelope time-stepping --------------------------------------------
 
     def advance_envelopes(self, dt_s: float):
         """Step each voice's ADSR envelope forward by `dt_s` seconds."""
@@ -249,8 +213,6 @@ class SIDEmulator:
             if v.envelope_level <= 0.0:
                 v.envelope_level = 0.0
 
-    # ---- waveform generation -----------------------------------------------
-
     def voice_samples(
         self, voice_idx: int, n: int, time_window_s: float | None = None
     ) -> np.ndarray:
@@ -266,27 +228,21 @@ class SIDEmulator:
         see SAMPLE_RATE."""
         v = self.voices[voice_idx]
         if v.is_silent():
-            # Silent — return the resting zero line.
             return np.zeros(n, dtype=np.float32)
         wave = primary_waveform(v.control)
 
-        # Per-sample CPU-clock advance: total clocks across the window
-        # (clock * time_window_s) divided across n samples, then scaled
-        # by the SID's freq register (accumulator += freq per CPU cycle).
+        # The accumulator advances by freq per CPU cycle, so a sample covers
+        # the window's clocks (clock * time_window_s) divided across n.
         if time_window_s is None:
             time_window_s = n / self.SAMPLE_RATE
         step_per_sample = v.freq * self.clock * time_window_s / n
-        # Build phase trajectory as float (modulo 2^24).
         idx = np.arange(n, dtype=np.float64)
         accs = (v.accumulator + idx * step_per_sample) % ACCUMULATOR_RANGE
-        # Update stored accumulator past the last sample.
         v.accumulator = float((v.accumulator + n * step_per_sample) % ACCUMULATOR_RANGE)
 
         phases = accs / float(ACCUMULATOR_RANGE)  # in [0, 1)
 
-        # Single waveform: the clean bipolar shape (output byte-identical to the
-        # pre-combined-waveform code, so single-waveform WaveformScene/MidiScene
-        # traces don't move).
+        # Single waveform: the clean bipolar shape.
         if (v.control & WAVE_MASK) in (
             WAVE_TRIANGLE,
             WAVE_SAWTOOTH,
@@ -296,12 +252,8 @@ class SIDEmulator:
             out = self._waveform_unit(wave, phases, voice_idx) * 2.0 - 1.0
         else:
             # Combined waveform: the SID wires the selected waveforms' 12-bit
-            # oscillator outputs onto a shared bus, bitwise-ANDing them. We
-            # approximate that by ANDing each selected waveform's unsigned
-            # 12-bit form, then mapping back to [-1, 1]. Faithful in character
-            # (the sparse, mostly-low "metallic" shape) but not chip-exact — an
-            # accurate model needs reSID-style per-chip sampled tables. Noise
-            # combined with a tone correctly darkens toward silence.
+            # oscillator outputs onto a shared bus, bitwise-ANDing them.
+            # Faithful in character, not chip-exact.
             combined = np.full(n, 0x0FFF, dtype=np.uint16)
             for bit in (WAVE_TRIANGLE, WAVE_SAWTOOTH, WAVE_PULSE, WAVE_NOISE):
                 if v.control & bit:

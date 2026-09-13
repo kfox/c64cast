@@ -1,37 +1,23 @@
 """MIDI → SID scene. Drives the C64's SID directly from incoming MIDI, and
 visualizes the three voices as a full-screen hires oscilloscope.
 
-A live MIDI input port (any source — keyboard, DAW, looper) becomes a
-real-time control surface for the SID's three voices. Note on/off
-events are mapped to voice frequency + gate; pitch-bend and a few CC
-numbers map to common SID parameters (filter cutoff, pulse width,
-master volume).
+A live MIDI input port (keyboard, DAW, looper) becomes a real-time control
+surface for the SID's three voices: note on/off map to voice frequency + gate,
+pitch-bend and a few CC numbers to common SID parameters. The SID's native
+voices generate the sound — the audio NMI loop is not used, and the only
+register the two contend over is the $D418 volume nibble (last writer wins).
 
-This is the "play the C64 like a $2 synth" path. The audio NMI loop is
-NOT used — the SID's native voices generate the sound. If the playlist
-has [audio] enabled, this scene leaves it alone; the audio loop touches
-only the $D418 volume nibble and the MIDI scene reserves writes to
-that register for its own master-volume CC. (If you have both, the
-last writer wins.)
+Visualization is the shared
+:class:`~c64cast.sid.voice_scope.VoiceScopeRenderer` oscilloscope. Unlike
+WaveformScene, MidiScene *is* the writer — it computes every SID byte it sends —
+so it keeps a 25-byte $D400-$D418 register shadow and feeds the host-side
+:class:`~c64cast.sid.sidemu.SIDEmulator` directly, with no parallel py65 6502.
 
-Visualization is the shared :class:`~c64cast.sid.voice_scope.VoiceScopeRenderer`
-oscilloscope (the same one WaveformScene uses): three stacked voice strips
-in a 320×200 hires bitmap, with the per-voice waveforms + master volume on
-one bottom text row and the live controller state (pulse width / filter /
-ADSR) on the other. Each voice can run its own (optionally combined)
-waveform — set per voice in config, cycled by SHIFT, or selected live by
-MIDI Program Change; MIDI channels can also be routed to fixed voices
-(multitimbral mode). See the c64cast README's MidiScene section. Unlike WaveformScene — which mirrors a write-only SID via a
-parallel py65 6502 — MidiScene *is* the writer: it keeps a 25-byte $D400-$D418
-register shadow updated alongside every SID write and feeds the host-side
-:class:`~c64cast.sid.sidemu.SIDEmulator` directly. A light background poll thread
-advances the ADSR envelopes at the video rate so attack/decay/release tails
-evolve on screen between MIDI events.
-
-Display is bitmap-only, so PETSCII overlays don't apply (overlay-compat
-rejects them against the hires mode `_validate_midi` reports).
+Display is bitmap-only, so PETSCII overlays don't apply.
 
 Requires the `midi` extra (``uv tool install --force 'c64cast[all]'``).
+
+See docs/architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope.
 """
 
 from __future__ import annotations
@@ -68,13 +54,12 @@ _WAVEFORM_BITS = {
     "noise": SID.WAVE_NOISE,
 }
 
-# Canonical token order for (combined) waveform names, so a parsed spec always
-# round-trips to one string regardless of input order ("triangle+pulse" →
-# "pulse+triangle") and matches _WAVEFORM_CYCLE entries.
+# Canonical token order, so a parsed spec round-trips to one string regardless
+# of input order ("triangle+pulse" → "pulse+triangle") and matches
+# _WAVEFORM_CYCLE entries.
 _WAVEFORM_CANONICAL_ORDER = ("pulse", "sawtooth", "triangle", "noise")
 _WAVEFORM_ABBREV = {"triangle": "TRI", "sawtooth": "SAW", "pulse": "PUL", "noise": "NOI"}
-# Single waveform-select bit → name (inverse of _WAVEFORM_BITS), used to find a
-# combined voice's dominant single waveform for the SHIFT cycle.
+# Inverse of _WAVEFORM_BITS: a combined voice's dominant single waveform.
 _BIT_TO_NAME = {v: k for k, v in _WAVEFORM_BITS.items()}
 
 
@@ -111,29 +96,25 @@ def _abbrev_waveform(name: str) -> str:
     return "+".join(t[0].upper() for t in tokens)
 
 
-# Mod-wheel (CC1) → pulse-width window. A pulse wave collapses to silent DC
-# at both 0% and 100% duty, so the wheel is mapped into an audible window
-# rather than the raw 0..4095 register range — wheel-to-zero used to mute
-# the voices. Mid-wheel lands near 50% (a square wave).
+# Mod-wheel (CC1) → pulse-width window. A pulse wave collapses to silent DC at
+# both 0% and 100% duty, so the wheel maps into an audible window rather than
+# the raw 0..4095 register range. Mid-wheel lands near 50% (a square wave).
 _PW_MIN_AUDIBLE = 128  # ~3% duty
 _PW_MAX_AUDIBLE = 3968  # ~97% duty
 
-# Max rate at which coalesced continuous controllers (pitch bend, mod wheel,
-# filter cutoff, volume) are flushed to the SID. 60 Hz is smooth to the ear
-# and keeps wheel sweeps from bursting the DMA socket. See _reader().
+# Max flush rate for coalesced continuous controllers (pitch bend, mod wheel,
+# filter cutoff, volume): smooth to the ear, and slow enough that a wheel sweep
+# cannot burst the DMA socket.
 _CONTROL_FLUSH_INTERVAL_S = 1.0 / 60.0
 
 # Blocking link writes one note message can cost `_program_voice`: the gate-off
 # byte that forces the envelope's 0->1 edge on a re-press, plus the seven-
-# register voice block. Both are `api.write_*` calls, i.e. both are paid on the
-# reader thread inside the drain.
+# register voice block. Both are paid on the reader thread inside the drain.
 _WRITES_PER_NOTE = 2
 
-# Notes one drain pass must be able to retire whatever they cost. A chord
-# arrives as one message per voice; splitting it across passes spreads its
-# attacks by the reader's 1 ms poll sleep apiece (an audible arpeggio on a
-# chord meant to land together) and multiplies the coalescing flushes a
-# concurrent wheel sweep contends with.
+# Notes one drain pass must retire whatever they cost. A chord arrives as one
+# message per voice, and splitting it across passes spreads its attacks by the
+# reader's 1 ms poll sleep apiece — an audible arpeggio.
 _NOTES_PER_DRAIN = SID.N_VOICES
 
 
@@ -142,42 +123,28 @@ def _drain_budget_s(profile: HardwareProfile) -> float:
 
     `_midi.MAX_DRAIN_WORK_S` is sized for a consumer whose per-message cost is
     microseconds, which is true of `AsidScene._handle_sysex` and false here:
-    `_handle_msg` reaches `_program_voice`, which blocks on the link. On an
-    Ultimate one write costs 5.222 ms against a 4.167 ms default budget, so the
-    deadline is already past after message one and the pass retires exactly one
-    note — for a scene that never sees 160 notes/s, that trades throughput and
-    a 1 ms sleep per note for flush and stop checks nobody needed that often.
+    `_handle_msg` reaches `_program_voice`, which blocks on the link, and on an
+    Ultimate one write costs 5.222 ms against a 4.167 ms default budget.
 
-    So the caller supplies the budget, because the caller is what knows its own
-    per-message cost. `_midi` cannot: importing a hardware profile there would
-    invert the layering, and the other caller's cost is a different number.
     Never *tighter* than the shared default — a link whose writes are cheap
     (TeensyROM, 0.287 ms) keeps the default's larger pass — and widened only far
-    enough that a full chord of worst-case notes still retires in one pass.
-
-    On an Ultimate that widening lands at 31.332 ms, which is 1.88x
-    `_CONTROL_FLUSH_INTERVAL_S` — so this budget deliberately breaks the
-    "a fraction of the flush period it protects" relationship that
-    `MAX_DRAIN_WORK_S` keeps. What it costs is bounded and is not a halved
-    flush rate: the flush check sits after the drain and is itself
-    rate-limited, so a pass that spends the whole budget delays one wheel/CC
-    flush by the difference and the next pass finds the period already
-    elapsed. Buying that with an arpeggiated chord is the trade this function
-    exists to refuse. Both halves are pinned in tests/test_midi.py.
+    enough that a full chord of worst-case notes still retires in one pass. On an
+    Ultimate that lands at 31.332 ms, 1.88x `_CONTROL_FLUSH_INTERVAL_S`, so this
+    budget deliberately breaks the "a fraction of the flush period it protects"
+    relationship `MAX_DRAIN_WORK_S` keeps: a pass that spends the whole budget
+    delays one wheel/CC flush by the difference. Both halves are pinned in
+    tests/test_midi.py.
     """
     note_cost_s = profile.write_cost_s(SID.BYTES_PER_VOICE) * _WRITES_PER_NOTE
     return max(MAX_DRAIN_WORK_S, note_cost_s * _NOTES_PER_DRAIN)
 
 
-# SHIFT advances each voice one step through these, in order. The four single
-# waveforms come first (so a uniform default cycles exactly as it always has),
+# SHIFT advances each voice one step through these: the four single waveforms,
 # then the combined waveforms that actually SOUND on a real SID. Only
-# pulse+triangle qualifies: on a 6581 the waveform-select outputs share a bus
+# pulse+triangle qualifies — on a 6581 the waveform-select outputs share a bus
 # and AND together, and any combination containing sawtooth ANDs down to
-# near-silence (the scope trace would move but the chip is effectively mute) —
-# so saw/noise combos are deliberately kept out of the interactive rotation.
-# Other combos remain reachable via explicit midi_voice_waveforms. Entries must
-# be canonical (parse_waveform_spec).
+# near-silence, with the scope trace moving while the chip is mute. Other combos
+# stay reachable via midi_voice_waveforms. Entries must be canonical.
 _WAVEFORM_CYCLE = (
     "pulse",
     "sawtooth",
@@ -192,10 +159,8 @@ _WAVEFORM_CYCLE = (
 # mirrors this (asserted by tests/test_introspect.py ChoiceVocabSyncTest).
 VOICE_MODES = ("shared", "multitimbral")
 
-# MIDI Program Change number → waveform spec (indexed modulo the table length).
-# Covers the four singles then pulse+triangle — the only combined waveform that
-# reliably sounds on a real SID (see _WAVEFORM_CYCLE for why saw combos aren't
-# here).
+# MIDI Program Change number → waveform spec, indexed modulo the table length.
+# Only pulse+triangle among the combos, for the reason _WAVEFORM_CYCLE gives.
 _PC_WAVEFORMS = (
     "triangle",
     "sawtooth",
@@ -204,9 +169,9 @@ _PC_WAVEFORMS = (
     "pulse+triangle",
 )
 
-# Control-change (CC) numbers → SID parameters. General-MIDI-ish where it maps
-# cleanly (CC73/72/75 = attack/release/decay sound controllers; CC71 = harmonic
-# content → resonance; CC74 = brightness → filter cutoff). See _control_change.
+# Control-change (CC) numbers → SID parameters, General-MIDI-ish where it maps
+# cleanly: CC73/72/75 are the attack/release/decay sound controllers, CC71
+# harmonic content → resonance, CC74 brightness → filter cutoff.
 _CC_MODWHEEL = 1  # pulse width sweep
 _CC_VOLUME = 7  # master volume
 _CC_RESONANCE = 71  # filter resonance
@@ -215,11 +180,10 @@ _CC_ATTACK = 73  # envelope attack
 _CC_CUTOFF = 74  # filter cutoff
 _CC_DECAY = 75  # envelope decay
 
-# Idle voice strips are drawn in this gray (a released voice's flat trace reads
-# as "off"); a sounding voice repaints in its configured/per-waveform color.
+# Idle voice strips are drawn in this gray, so a released voice's flat trace
+# reads as "off"; a sounding voice repaints in its own color.
 _IDLE_GRAY = "gray"
-# Envelope level below which a voice counts as silent/idle (drives the
-# colored-vs-gray strip). Matches WaveformScene's silence epsilon.
+# Envelope level below which a voice counts as idle. Matches WaveformScene's.
 _ENV_SILENCE_EPS = 1e-3
 
 
@@ -242,12 +206,10 @@ class _VoiceState:
     def __init__(self) -> None:
         self.note: int | None = None
         self.on: bool = False
-        # Assignment order, as a counter rather than a timestamp. Voice stealing
-        # asks which voice was assigned *most recently* — pure ordering, and it
-        # must be exact: `max()` breaks a tie toward the lowest index, which
-        # would steal the oldest pad voice instead of the newest. A clock cannot
-        # promise distinct values (its resolution is a platform detail, and a
-        # chord's note-ons can share one tick); a counter cannot tie.
+        # A counter, not a timestamp: `max()` breaks a tie toward the lowest
+        # index, which would steal the oldest pad voice instead of the newest,
+        # and a clock coarse enough to give a chord's note-ons one shared value
+        # cannot promise the distinct values voice stealing needs.
         self.seq: int = 0
         self.velocity: int = 0
 
@@ -322,10 +284,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # voices in shared mode, and what the title label/back-compat track.
         self.waveform = waveform
         self.waveform_bits = _WAVEFORM_BITS[waveform]
-        # Per-voice waveforms (authoritative for what each voice plays). Empty
-        # config → every voice uses the global default (legacy uniform). A
-        # provided list is parsed (combos allowed) and padded to 3 voices by
-        # repeating the last entry.
+        # Authoritative for what each voice plays. An empty config gives every
+        # voice the global default; a provided list is parsed (combos allowed)
+        # and padded to 3 voices by repeating the last entry.
         if voice_waveforms:
             parsed = [parse_waveform_spec(w) for w in voice_waveforms]
             parsed = (parsed + [parsed[-1]] * SID.N_VOICES)[: SID.N_VOICES]
@@ -343,9 +304,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._chan_to_voice: dict[int, int] = {
             (ch - 1): vi for vi, ch in enumerate(chans[: SID.N_VOICES])
         }
-        # Mutable so the ADSR CCs (CC73/72/75) can update attack/decay/release
-        # live. Sustain (index 2) is the base/fallback; per-note velocity
-        # overrides it in _program_voice (velocity → loudness).
+        # Mutable so the ADSR CCs can update attack/decay/release live. Sustain
+        # (index 2) is the fallback; per-note velocity overrides it.
         self.adsr = list(adsr)
         self.pulse_width = int(pulse_width)
         self.filter_cutoff = int(filter_cutoff)
@@ -354,26 +314,20 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self.master_volume = int(master_volume)
         self.system = system
 
-        # Voice trace colors. Pad the configured names to 3 with C64-friendly
-        # defaults; the scope mixin (via _init_scope_knobs) resolves these to
-        # palette indices and requires at least 3.
+        # The scope mixin resolves these to palette indices and requires 3.
         default_colors = ["light green", "cyan", "yellow"]
         names = list(voice_colors) if voice_colors else list(default_colors)
         if len(names) < SID.N_VOICES:
             names = (names + default_colors[len(names) :])[: SID.N_VOICES]
 
-        # Bitmap display: fixed VIC bank 0 ($0400 screen / $2000 bitmap). No
-        # relocation — MidiScene uploads no SID payload and leaves the audio
-        # ring idle, so bank 0's display regions are always free.
+        # Fixed VIC bank 0: MidiScene uploads no SID payload and leaves the
+        # audio ring idle, so bank 0's display regions are always free.
         self._screen_base = VIC_BANK_0.SCREEN
         self._bitmap_base = VIC_BANK_0.BITMAP
         self._dd00 = CIA2.PORT_A_BANK_0
         self._d018 = D018_HIRES_BITMAP
 
-        # Host-side SID model driving the oscilloscope. We feed it from our own
-        # $D400-$D418 register shadow (below) rather than a py65 host emulator —
-        # MidiScene computes every SID byte it sends, so no parallel 6502 is
-        # needed. The poll thread advances the ADSR envelopes at the video rate.
+        # Fed from the register shadow below rather than a py65 host emulator.
         self.emulator = SIDEmulator(system=system)
         self._reg_lock = threading.Lock()
         self._sid_shadow = bytearray(SID_REG_COUNT)  # mirrors $D400-$D418
@@ -381,20 +335,13 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._poll_dt = 1.0 / self._video_hz
         self._poll: PollThread | None = None
 
-        # Default to HALF the system video rate (30 NTSC / 25 PAL), matching
-        # WaveformScene: an oscilloscope reads fine at half-rate and it halves
-        # the per-frame bitmap DMA volume. The text rows are change-detected
-        # (repainted only on note/CC events), so they add little. An explicit
-        # target_fps (CLI/TOML) still wins. The envelope poll rate is
-        # independent (self._video_hz) and stays at the full video rate.
+        # Half the system video rate (30 NTSC / 25 PAL), matching WaveformScene:
+        # a scope reads fine at half-rate and it halves the bitmap DMA volume.
+        # The envelope poll rate is independent and stays at the full rate.
         if target_fps is None:
             target_fps = self._video_hz / 2.0
         self.target_fps = float(target_fps)
 
-        # Scope visualization knobs (validates color_mode/time_base/
-        # auto_cycles/persistence/scroll_columns; sets the render modes +
-        # buffers + frame_time_s). One displayed column-window = one display
-        # frame of audio time.
         self._init_scope_knobs(
             color_mode=color_mode,
             voice_colors=names,
@@ -405,10 +352,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
             scroll_columns=scroll_columns,
             frame_time_s=1.0 / self.target_fps,
         )
-        # Per-voice display state, change-detected in process_frame so the
-        # strip color is repainted only on a transition: _voice_sounding =
-        # gated-or-decaying (drives colored-vs-gray); _last_voice_wave = the
-        # current waveform (drives per_waveform recoloring).
+        # Change-detected in process_frame so a strip's color is repainted only
+        # on a transition: gated-or-decaying, and the current waveform.
         self._voice_sounding: list[bool] = [False, False, False]
         self._last_voice_wave: list[int] = [-1, -1, -1]
 
@@ -417,9 +362,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # + their press velocities; the top SID.N_VOICES sound.
         self._held: list[int] = []
         self._held_vel: dict[int, int] = {}
-        # Multitimbral mode: a per-voice held-note stack (note → velocity), so
-        # each routed channel is monophonic with last-note priority + LIFO
-        # resurrection scoped to its own voice. Unused in shared mode.
+        # Multitimbral mode: a per-voice held-note stack, so each routed channel
+        # is monophonic with last-note priority + LIFO resurrection scoped to its
+        # own voice. Unused in shared mode.
         self._mt_held: list[list[int]] = [[] for _ in range(SID.N_VOICES)]
         self._mt_held_vel: list[dict[int, int]] = [{} for _ in range(SID.N_VOICES)]
         self._allocation_lock = threading.Lock()
@@ -431,7 +376,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         )
         self._dirty = True  # force first text-row paint
 
-    # ---- MIDI plumbing -------------------------------------------------------
     def _open_port(self):
         self._midi_port, _ = open_input_port(self.port_name, label="MidiScene")
 
@@ -439,25 +383,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         port = self._midi_port
         if port is None:
             return
-        # Continuous controllers (pitch bend, mod/expression wheels) stream
-        # dozens-to-hundreds of messages per second while a wheel moves, and
-        # each pitch-bend fans out to one SID write per gated voice. Applying
-        # every message in a tight drain loop bursts the DMA socket faster
-        # than the U64 accepts it, which closes the connection (a "broken
-        # pipe" that the socket layer then has to reconnect through). Guard
-        # against it: drain all pending messages each pass, coalesce each
-        # continuous controller down to its newest value, and flush those at
-        # a bounded rate. Notes stay discrete and are applied immediately so
-        # attack latency isn't affected.
+        # A moving wheel streams hundreds of messages a second, each pitch-bend
+        # fanning out to one SID write per gated voice — enough to burst the DMA
+        # socket faster than the U64 accepts it, which closes the connection. So
+        # each continuous controller is coalesced to its newest value and flushed
+        # at a bounded rate, while notes stay discrete and immediate.
         #
-        # The drain itself is bounded by `poll_pending` rather than mido's
-        # `iter_pending`, which only ends when the port queue is momentarily
-        # empty: a controller sending faster than `_handle_msg`'s DMA writes
-        # retire it would otherwise never reach the coalescing flush below or
-        # the `stop` check that lets teardown's bounded join finish. Same
-        # reasoning, same helper, as AsidScene's reader — but not the same work
-        # budget, because those DMA writes are what a note message costs here
-        # and AsidScene's shadow poke costs microseconds. See `_drain_budget_s`.
+        # The drain is bounded by `poll_pending`, not mido's `iter_pending`,
+        # which ends only when the port queue is momentarily empty: a controller
+        # outrunning `_handle_msg`'s DMA writes would never reach the flush below
+        # or the `stop` check teardown's bounded join needs.
         budget_s = _drain_budget_s(self.api.profile)
         pending_pitch: int | None = None
         pending_cc: dict[int, int] = {}
@@ -507,15 +442,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         elif msg.type == "pitchwheel":
             self._pitchwheel(msg.pitch)
 
-    # ---- voice allocation: mono-melody priority over a sustain pad ----------
-    # Held notes keep their voice (a stable polyphonic pad); when all three
-    # voices are sounding and a new note arrives, it steals the **most-recently
-    # -started** voice (`max` seq) rather than the oldest. So the first
-    # notes you hold form a sticky pad and a later overlapping line (melody /
-    # arp) cycles on the top voice, stealing itself instead of the pad. When a
-    # voice frees, the most-recent still-held *suspended* note resurfaces into
-    # it (LIFO) so nothing held stays silent. `self._held` is the stack of all
-    # currently-held notes (most-recent last) + `_held_vel` their velocities.
     def _voice_for_note(self, midi_note: int) -> int | None:
         for i, v in enumerate(self.voices):
             if v.on and v.note == midi_note:
@@ -535,8 +461,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if idx is None:
                 idx = self._free_voice()
             if idx is None:
-                # All voices sounding: steal the most-recently-started one so
-                # the older/held pad voices survive.
+                # Steal the most-recently-started voice, so the pad survives.
                 idx = max(range(SID.N_VOICES), key=lambda i: self.voices[i].seq)
             self._assign_voice(idx, midi_note, velocity)
         self._dirty = True
@@ -551,8 +476,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
             if idx is None:
                 self._dirty = True  # a suspended (silent) note was lifted
                 return
-            # Gate the voice off, then resurrect the most-recent still-held
-            # note that isn't already sounding (a suspended pad/melody note).
+            # Gate off, then resurrect the most-recent still-held note that
+            # isn't already sounding.
             v = self.voices[idx]
             v.on = False
             self._program_voice(idx, midi_note, gate=False)
@@ -566,19 +491,12 @@ class MidiScene(VoiceScopeRenderer, Scene):
         v = self.voices[idx]
         v.note = note
         v.on = True
-        # Every caller holds `_allocation_lock`, so the bump needs no lock of
-        # its own. See `_VoiceState.seq` for why this is a counter and not a
-        # timestamp.
+        # Every caller holds `_allocation_lock`, so the bump needs no lock.
         self._assign_seq += 1
         v.seq = self._assign_seq
         v.velocity = velocity
         self._program_voice(idx, note, gate=True, velocity=velocity)
 
-    # ---- multitimbral allocation: MIDI channel → fixed voice -----------------
-    # Each mapped channel drives one voice monophonically with last-note
-    # priority + LIFO resurrection scoped to that voice (its own held stack).
-    # Notes on unmapped channels are ignored. Per-voice ADSR / pulse width /
-    # filter are not yet split out — those stay global (deferred follow-up).
     def _note_on_mt(self, channel: int, midi_note: int, velocity: int) -> None:
         idx = self._chan_to_voice.get(channel)
         if idx is None:
@@ -619,12 +537,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
         """Map a MIDI continuous controller to a SID parameter. `value` is
         0..127. Unmapped CCs are ignored. The bottom controller row shows the
         live state (see _build_meta_line)."""
-        if cc == _CC_VOLUME:  # master volume nibble
+        if cc == _CC_VOLUME:
             self.master_volume = value >> 3
             self._write_mode_vol()
-        elif cc == _CC_MODWHEEL:  # pulse width sweep
-            # Map the wheel into an audible window so wheel-to-zero (or full)
-            # doesn't drive the pulse to a silent 0% / 100% duty.
+        elif cc == _CC_MODWHEEL:
             span = _PW_MAX_AUDIBLE - _PW_MIN_AUDIBLE
             self.pulse_width = _PW_MIN_AUDIBLE + (value * span) // 127
             self._write_pulse_width()
@@ -634,13 +550,13 @@ class MidiScene(VoiceScopeRenderer, Scene):
         elif cc == _CC_RESONANCE:  # filter resonance (4-bit)
             self.filter_resonance = value >> 3
             self._write_filter()
-        elif cc == _CC_ATTACK:  # envelope attack
+        elif cc == _CC_ATTACK:
             self.adsr[0] = value >> 3
             self._write_envelope_regs()
-        elif cc == _CC_DECAY:  # envelope decay
+        elif cc == _CC_DECAY:
             self.adsr[1] = value >> 3
             self._write_envelope_regs()
-        elif cc == _CC_RELEASE:  # envelope release
+        elif cc == _CC_RELEASE:
             self.adsr[3] = value >> 3
             self._write_envelope_regs()
         else:
@@ -667,7 +583,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         if touched:
             self._feed_emulator()
 
-    # ---- SID writes + register shadow ---------------------------------------
     def _poke_shadow(self, addr: int, value: int) -> None:
         """Mirror one $D400-$D418 register write into the 25-byte shadow."""
         self._sid_shadow[addr - SID.BASE] = value & 0xFF
@@ -695,8 +610,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
 
     def _res_filt_byte(self) -> int:
         # $D417: high nibble = resonance, low 3 bits route voices 1-3 to the
-        # filter. We route all three so the cutoff/resonance CCs are audible
-        # (with no routing the filter does nothing — the old default).
+        # filter. All three are routed, or the cutoff/resonance CCs sweep a
+        # filter no voice passes through.
         return ((self.filter_resonance & 0xF) << 4) | 0x07
 
     def _write_mode_vol(self) -> None:
@@ -742,8 +657,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
     ) -> None:
         base = SID.voice_base(voice_idx)
         freq = _note_to_sid_freq(midi_note, self.system)
-        # Coalesce freq + pulse-width + control + ADSR (7 contiguous bytes)
-        # into a single PUT — minimizes socket overhead per note event.
+        # freq + pulse-width + control + ADSR are 7 contiguous bytes: one PUT.
         wave_bits = self.voice_wave_bits[voice_idx]
         ctrl = wave_bits | (SID.GATE if gate else 0)
         a, d, _, r = self.adsr
@@ -761,12 +675,10 @@ class MidiScene(VoiceScopeRenderer, Scene):
         )
         off = voice_idx * SID.BYTES_PER_VOICE
         prev_ctrl = self._sid_shadow[off + SID.OFF_CONTROL]
-        # Hard re-trigger: the real SID's envelope only attacks on a gate 0→1
-        # edge. Re-gating a voice that's already gated (re-press, voice steal,
-        # a trill cycling one voice) writes gate=1 with no edge, so the chip
-        # changes pitch but never re-attacks — the note is silent (only the
-        # host emulator, fed the retrigger flag below, re-attacks → "waveform
-        # moves but no sound"). Force the edge by clearing the gate first.
+        # The real SID's envelope only attacks on a gate 0→1 edge. Re-gating an
+        # already-gated voice (re-press, voice steal, a trill) writes gate=1 with
+        # no edge, so the chip changes pitch but never re-attacks and the note is
+        # silent. Clearing the gate first forces the edge.
         hard_restart = gate and bool(prev_ctrl & SID.GATE)
         if hard_restart:
             self.api.write_memory(
@@ -774,9 +686,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
             )  # gate off
         self.api.write_regs(f"{base:04X}", *regs)
 
-        # Mirror into the shadow + feed the emulator. The same hard-restart
-        # case is invisible to update_registers' gate-edge detection (the
-        # shadow's previous control byte was gated), so flag it explicitly.
+        # The hard restart is invisible to update_registers' gate-edge detection
+        # (the shadow's previous control byte was gated), so flag it explicitly.
         self._sid_shadow[off : off + SID.BYTES_PER_VOICE] = bytes(regs)
         retrigger: tuple[bool, ...] | None = None
         if hard_restart:
@@ -786,9 +697,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._feed_emulator(retrigger=retrigger)
 
     def _program_global_sid(self) -> None:
-        # Route all three voices through the filter (so the cutoff/resonance
-        # CCs are audible) + set the filter mode and master volume. Cutoff
-        # defaults open, so a lowpass patch is neutral until CC74 sweeps it.
+        # Cutoff defaults open, so a lowpass patch is neutral until CC74 sweeps.
         self._write_filter()
         self._write_mode_vol()
 
@@ -816,7 +725,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
             self._sid_shadow[off + SID.OFF_SR] = ((s & 0xF) << 4) | (r & 0xF)
         self._feed_emulator()
 
-    # ---- info text rows ------------------------------------------------------
     def _build_title_line(self) -> str:
         """Per-voice waveforms (left), master volume (right). Each voice shows a
         short waveform tag (TRI/SAW/PUL/NOI; a combo joins first letters, e.g.
@@ -837,7 +745,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         line = f"PW{pw_pct:3d}% CUT {cut} RES {self.filter_resonance:2d} A{a:X} D{d:X} R{r:X}"
         return line[:40].ljust(40)
 
-    # ---- per-voice waveform changes (SHIFT + Program Change) -----------------
     def _set_voice_waveform(self, idx: int, bits: int, name: str) -> None:
         """Set voice `idx`'s waveform and re-emit it: a sounding voice is
         re-programmed (hard restart keeps the gate + velocity sustain), an idle
@@ -879,7 +786,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
                 self._set_voice_waveform(idx, bits, name)
         self._dirty = True
 
-    # ---- SHIFT: advance every voice through the waveform cycle ---------------
     def cycle_style(self, api) -> str:
         """SHIFT handler: advance every voice one step through `_WAVEFORM_CYCLE`
         (the four single waveforms, then combined waveforms), keeping per-voice
@@ -893,10 +799,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
                 if name in _WAVEFORM_CYCLE:
                     i = _WAVEFORM_CYCLE.index(name)
                 else:
-                    # An off-cycle combo (a noise combo, a 3-way, …): advance
-                    # from its dominant single waveform's slot rather than
-                    # resetting every such voice to index 0, which would
-                    # collapse distinct voices onto the same waveform.
+                    # An off-cycle combo advances from its dominant single
+                    # waveform's slot; resetting to index 0 would collapse
+                    # distinct voices onto the same waveform.
                     dom = _BIT_TO_NAME[primary_waveform(self.voice_wave_bits[idx])]
                     i = _WAVEFORM_CYCLE.index(dom)
                 bits, cname = parse_waveform_spec(_WAVEFORM_CYCLE[(i + 1) % len(_WAVEFORM_CYCLE)])
@@ -907,20 +812,16 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._dirty = True
         return self._waveform_label()
 
-    # ---- Scene lifecycle -----------------------------------------------------
     def setup(self) -> None:
         super().setup()
         self._program_global_sid()
         self._preprogram_voices()
-        # Bitmap bring-up: clear + colors + charset, then the two info rows,
-        # then allocate the per-voice render buffers. invalidate_cache first so
-        # the delta cache gets a clean baseline (the previous scene may have
-        # used $0400/$2000 for char-mode content).
+        # invalidate_cache first, so the delta cache gets a clean baseline: the
+        # previous scene may have used $0400/$2000 for char-mode content.
         self.api.invalidate_cache()
         self._apply_vic_hires_bank()
-        # Start every voice strip gray (idle): _apply_vic_hires_bank painted
-        # them in their sounding colors, but nothing is playing yet. They flip
-        # to color on note-on (see process_frame).
+        # _apply_vic_hires_bank painted the strips in their sounding colors, but
+        # nothing is playing yet; process_frame flips them on note-on.
         self._voice_sounding = [False, False, False]
         self._last_voice_wave = [-1, -1, -1]
         for idx in range(SID.N_VOICES):
@@ -929,8 +830,8 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._alloc_scope_buffers()
         self._open_port()
         self._reader_poll.start()
-        # Envelope ticker: advances each voice's ADSR at the video rate so
-        # attack/decay/release tails evolve on screen between MIDI events.
+        # Advances each voice's ADSR at the video rate, so attack/decay/release
+        # tails evolve on screen between MIDI events.
         self._poll = PollThread(self._tick_envelopes, period=self._poll_dt, name="midi-env")
         self._poll.start()
         self._dirty = True
@@ -940,10 +841,9 @@ class MidiScene(VoiceScopeRenderer, Scene):
             self.emulator.advance_envelopes(self._poll_dt)
 
     def process_frame(self, current_time: float) -> bool:
-        # Activity coloring: a sounding voice (gated, or still decaying) draws
-        # in its color; an idle voice fades to gray. Change-detected so the
-        # screen-RAM color write only fires on a transition (sounding flip, or
-        # — in per_waveform mode — a waveform change while sounding).
+        # A sounding voice (gated, or still decaying) draws in its color, an
+        # idle one in gray. Change-detected, so the screen-RAM color write fires
+        # only on a transition.
         with self._reg_lock:
             states = [
                 (v.gated() or v.envelope_level > _ENV_SILENCE_EPS, primary_waveform(v.control))
@@ -966,8 +866,6 @@ class MidiScene(VoiceScopeRenderer, Scene):
         return True
 
     def teardown(self) -> None:
-        # The display restore puts VIC bank 0 and the char-mode $D018 back for
-        # the next scene, which this scene left on its hires bitmap layout.
         port, self._midi_port = self._midi_port, None
         poll, self._poll = self._poll, None
         steps: list[tuple[str, Callable[[], object]]] = [

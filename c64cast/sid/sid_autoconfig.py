@@ -1,33 +1,19 @@
 """SID Player Autoconfig: match a tune's requested chip model (6581/8580) to
 the U64's actual SID hardware.
 
-Port of the 1541ultimate firmware's "SID Player Autoconfig" (`u64_config.cc`,
-`CFG_PLAYER_AUTOCONFIG`) into c64cast's own SID playback path — independent of
-whatever the firmware's own (device-local) autoconfig is doing, since c64cast
-drives SID playback via its hand-rolled 6502 player over DMA rather than the
-firmware's PSID player.
+Reads the model each chip is tagged with in a `.sid` file's PSID header
+(:func:`c64cast.sid.sid_host_emu.parse_sid_header`'s `sid_models`), compares it
+against what is actually socketed (:mod:`c64cast.sid.sid_hw_config`), and —
+best-effort — reconfigures the U64 so the tune lands on a matching chip.
 
-A `.sid` file's PSID header can declare which chip model each voice expects
-(:func:`c64cast.sid.sid_host_emu.parse_sid_header`'s `sid_models`). Without this
-module, c64cast ignores that entirely — a tune tagged "needs 8580" just plays
-on whatever chip currently answers its address, silently wrong-sounding if
-that's a 6581. This module reads the header, compares it against what's
-actually socketed (via :mod:`c64cast.sid.sid_hw_config`), and — best-effort, like
-every other REST config helper in this codebase — reconfigures the U64 so the
-tune lands on a matching chip: swap to a physical socket with a matching chip
-if one exists, else fall back to an UltiSID FPGA core set to a representative
-filter curve for that model *and* take the address away from whatever answered
-it before, else warn and leave the chip on whatever answers its address already.
+A port of the 1541ultimate firmware's "SID Player Autoconfig" (`u64_config.cc`,
+`CFG_PLAYER_AUTOCONFIG`), run independently of it because c64cast plays SIDs
+through its own 6502 player rather than the firmware's PSID player.
 
-Mirrors :mod:`c64cast.audio.dac_calibration`'s auto/explicit-override +
-snapshot/apply/restore shape, reusing :mod:`c64cast.sid.sid_hw_config` (REST
-plumbing) and :mod:`c64cast.sid.asid_sidmap` (category/item name constants)
-rather than duplicating either.
+A genuinely fixed physical 6581/8580 chip cannot be reconfigured to the other
+model; autoconfig can only route around it — see docs/caveats.md.
 
-Hardware limitation inherited from firmware: a genuinely fixed physical
-6581/8580 chip cannot be reconfigured to the other model. Autoconfig can only
-*route around* it (swap sockets, or fall back to UltiSID), never transmute
-it — see docs/caveats.md.
+See docs/architecture/sid.md#sid-player-autoconfig.
 """
 
 from __future__ import annotations
@@ -68,17 +54,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# [ultimate64].sid_model / --sid-model value space. "auto" reads the tune's
-# header per chip; an explicit "6581"/"8580" forces that model for every chip,
-# ignoring the header; "off" disables header inspection + hardware
-# reconfiguration entirely (matches firmware's CFG_PLAYER_AUTOCONFIG disabled
-# state).
+# [ultimate64].sid_model / --sid-model value space. "off" matches the firmware's
+# CFG_PLAYER_AUTOCONFIG disabled state.
 SID_MODEL_CHOICES: Final[tuple[str, ...]] = ("auto", "6581", "8580", "off")
 
-# A chip whose header model is one of these carries no definite requirement —
-# always a no-op regardless of what's socketed. Defined in asid_sidmap so the
-# address planner (which matches models in the same pass as routing) and this
-# module agree on what "no requirement" means.
+# A chip whose header model is one of these carries no definite requirement.
+# Defined in asid_sidmap so the address planner and this module agree on it.
 _NO_REQUIREMENT = NO_MODEL_REQUIREMENT
 
 # Which config item enables each physical socket, keyed as current_source_map
@@ -186,13 +167,8 @@ def plan_sid_model_config(
                 curve = FILTER_CURVE_6581 if required == "6581" else FILTER_CURVE_8580
                 plan[(CAT_ADDRESSING, addr_item)] = f"${address:04X}"
                 plan[(CAT_ULTISID, filter_item)] = curve
-                # Pointing a core at the address is not enough to make it the
-                # chip a listener hears. `Auto Address Mirroring` lets a socket
-                # mirror the core's base, and a socket still enabled there
-                # answers alongside it — so the real (wrong-model) chip keeps
-                # sounding and the whole route is inaudible. Same reason
-                # plan_sid_map disables both; both items are in the
-                # snapshot/restore set, so the user's config comes back.
+                # A core route the address is not taken away from is inaudible:
+                # a mirroring socket answers alongside it and wins.
                 plan[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
                 if displaced := _SOCKET_ENABLE_ITEM.get(current_source or ""):
                     plan[(CAT_SOCKETS, displaced)] = "Disabled"

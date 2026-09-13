@@ -1,53 +1,21 @@
 """Pure U64 multi-SID address planner for :class:`~c64cast.sid.asid_scene.AsidScene`.
 
-An ASID stream can carry several SID chips (commands ``0x50``-``0x5F`` =
-SID2..SID17; see :mod:`c64cast.sid.asid`). To play them on genuine hardware, the
-Ultimate 64 is **dynamically configured for multiple SIDs** — up to 8 across two
-physical sockets plus two "UltiSID" FPGA cores, each core splittable across
-address lines into 2 or 4 instances. This module decides, for *N* required chips
-and which physical sockets carry a detected SID, the U64 **address map**: which
-``$Dxxx`` base each ASID chip index is written to, and the exact
-``PUT /v1/configs/<category>/<item>`` values that realize it live on the U64.
+An ASID stream or a multi-SID `.sid` file can carry several SID chips. To play
+them on genuine hardware the Ultimate 64 is dynamically configured for multiple
+SIDs — up to 8 across two physical sockets plus two "UltiSID" FPGA cores, each
+core splittable across address lines into 2 or 4 instances. This module decides
+the U64 **address map**: which ``$Dxxx`` base each chip index is written to, and
+the ``PUT /v1/configs/<category>/<item>`` values that realize it.
 
-This is a **pure** planner — no hardware, no REST — so it's unit-tested against a
-Python port of the firmware's address math (``_realize_addresses``, mirroring
-``u64_config.cc``: ``u64_sid_offsets`` / ``split_bits`` / ``fix_splits``). The
-:class:`~c64cast.sid.asid_scene.AsidScene` owns the actual REST calls + restore.
+:func:`plan_sid_map` chooses a canonical layout from a chip count;
+:func:`plan_sid_map_for_addresses` realizes a file's own fixed bases and matches
+chip models in the same pass.
 
-Policy — **prefer physical socket SIDs** (the user's real chips sound better than
-the emulated cores for the primary voices):
+A **pure** planner — no hardware, no REST — unit-tested against a Python port of
+the firmware's address math (``u64_config.cc``: ``u64_sid_offsets`` /
+``split_bits`` / ``fix_splits``).
 
-  1. The lowest ASID indices go to present sockets first, at ``$D400`` (socket 1)
-     then ``$D420`` (socket 2).
-  2. The remaining chips come from the UltiSID cores, placed on the ``$D5xx``
-     page — clear of the sockets in ``$D4xx`` regardless of split level, which
-     matters because the firmware force-aligns a split core's base
-     (``1/2`` → ``$40``-aligned, ``1/4`` → ``$80``-aligned).
-  3. ``Auto Address Mirroring`` is disabled so every base responds distinctly.
-  4. Every socket the plan does **not** claim is explicitly ``Disabled``. A
-     socket left enabled at an address the plan just handed to an UltiSID core
-     answers it too, so the tune plays on both the real chip and the core at
-     once — audible as a detuned double, and the reason a stale enable from a
-     previous run must never be allowed to survive into this one.
-  5. A core left over after every chip is placed is **mirrored** onto a
-     socket-served address rather than unmapped (see :func:`mirror_bases`).
-  6. No core instance may land on I/O c64cast drives itself
-     (:data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` — the REU's command registers
-     and the Ultimate Audio sampler's page, both inside the cartridge-I/O
-     window the firmware lets a core sit in). Because the firmware aligns a
-     split core's base *downward*, this has to be tested against the base the
-     planner realizes, not the one a `.sid` header declared.
-
-:func:`plan_sid_map_for_addresses` additionally takes the tune's per-chip model
-requirements, so a socket only claims an address when its chip is the model the
-tune asked for. Without that, a 3×8580 tune on a 6581-socketed machine gets its
-first two chips routed onto the wrong chips here, and the model-autoconfig pass
-that runs afterwards has to fight this planner to undo it — the two disagree,
-and the chip that loses ends up mapped to nothing at all.
-
-Hardware ceiling: 2 sockets + 2 cores × 4 (``1/4`` split) = 10 theoretical, but
-ASID tops out at chip 16 and real multi-SID tunes are 2-3 SID. We support up to
-:data:`MAX_SIDS` (8); a stream asking for more is clamped (the caller warns).
+See docs/architecture/sid.md#multi-sid-on-the-u64-asid_sidmappy.
 """
 
 from __future__ import annotations
@@ -71,21 +39,17 @@ ITEM_SOCKET2_EN = "SID Socket 2"
 ITEM_SOCKET1_TYPE = "SID Detected Socket 1"
 ITEM_SOCKET2_TYPE = "SID Detected Socket 2"
 
-# UltiSID filter-curve config — a separate category from CAT_ADDRESSING/
-# CAT_SOCKETS (confirmed live against a U64: GET /v1/configs/UltiSID%20Configuration).
+# A separate category from CAT_ADDRESSING/CAT_SOCKETS (confirmed live).
 CAT_ULTISID = "UltiSID Configuration"
 ITEM_ULTISID1_FILTER = "UltiSID 1 Filter Curve"
 ITEM_ULTISID2_FILTER = "UltiSID 2 Filter Curve"
-# Fixed representative curve per requested model (the full enum also has
-# "8580 Hi", "6581 Alt", "U2 Low/Mid/High" — not exposed as a config knob in
-# this pass). Confirmed live values via GET .../UltiSID%201%20Filter%20Curve.
+# One representative curve per model; the live enum also carries "8580 Hi",
+# "6581 Alt" and "U2 Low/Mid/High", none of them a config knob.
 FILTER_CURVE_6581 = "6581"
 FILTER_CURVE_8580 = "8580 Lo"
 
 # PSID header model values that carry no definite requirement — any chip
-# satisfies them, so they never force a socket swap or an UltiSID fallback.
-# Shared with sid_autoconfig (which cannot be imported from here: it imports
-# these names).
+# satisfies them. Defined here, not in sid_autoconfig, which imports these names.
 NO_MODEL_REQUIREMENT = (None, "?", "6581+8580")
 
 # Address enum value for a disabled slot (u64_sid_base[0]).
@@ -101,14 +65,16 @@ _SPLIT_STRIDE = 0x20
 
 # The two socket base addresses (real chips take the low $D4xx slots).
 _SOCKET_BASES = (0xD400, 0xD420)
-# UltiSID core base pages. With no physical sockets in play the cores start at
-# the conventional $D400 (chip 0 stays at $D400, no mid-stream move). When
-# sockets occupy $D400/$D420 the cores move to the $D5xx page so they never
-# collide — both pages are $80-aligned, so any split (incl. 1/4) realizes
-# cleanly after the firmware's base alignment (see fix_splits).
+# UltiSID core base pages. With no socket in play the cores start at the
+# conventional $D400 so chip 0 stays there; with sockets in $D4xx they move to
+# $D5xx. Both pages are $80-aligned, so any split (incl. 1/4) realizes cleanly
+# after the firmware's downward base alignment (fix_splits).
 _ULTISID_PAGE_NO_SOCKETS = 0xD400
 _ULTISID_PAGE_WITH_SOCKETS = 0xD500
 
+# Below the 10 the hardware could realize (2 sockets + 2 cores x 4 at the 1/4
+# split): real multi-SID tunes are 2-3 chips, and a stream asking for more is
+# clamped by the caller.
 MAX_SIDS = 8
 
 # (address item, enable item, fixed base) per physical socket, socket 1 first.
@@ -235,7 +201,6 @@ def plan_sid_map(
     sources: list[str] = []
     config: dict[tuple[str, str], str] = {}
 
-    # 1) Sockets first (real chips), lowest indices.
     sockets = []
     if socket1_present:
         sockets.append((ITEM_SOCKET1_ADDR, ITEM_SOCKET1_EN, _SOCKET_BASES[0], "socket1"))
@@ -249,9 +214,8 @@ def plan_sid_map(
         config[(CAT_ADDRESSING, addr_item)] = f"${base:04X}"
         config[(CAT_SOCKETS, en_item)] = "Enabled"
 
-    # 2) UltiSID cores fill the tail on the $D5xx page. Cores left over after
-    #    the tail is placed mirror the socket addresses (LED display); cores
-    #    beyond even that are unmapped so a stale mapping can't collide.
+    # Cores left over after the tail is placed mirror the socket addresses (LED
+    # display); cores beyond that are unmapped so no stale mapping can collide.
     tail = n_sids - used_sockets
     split = _pick_split(tail)
     config[(CAT_ADDRESSING, ITEM_ULTISID_SPLIT)] = split
@@ -260,7 +224,6 @@ def plan_sid_map(
         cap = _SPLIT_CAPACITY[split]
         core1_base = _ULTISID_PAGE_NO_SOCKETS if used_sockets == 0 else _ULTISID_PAGE_WITH_SOCKETS
         core_bases.append(core1_base)
-        # Realize instances core-by-core, lowest address first, until tail met.
         instances = [core1_base + k * _SPLIT_STRIDE for k in range(cap)]
         instance_sources = ["ultisid1"] * cap
         if tail > cap:
@@ -274,7 +237,7 @@ def plan_sid_map(
     mirrors = mirror_bases(split, core_bases, addresses[:used_sockets])
     _assign_cores(config, core_bases + mirrors, curves=[])
 
-    # 3) Distinct addresses only.
+    # Distinct addresses only.
     config[(CAT_ADDRESSING, ITEM_AUTO_MIRROR)] = "Disabled"
 
     disable_unclaimed_sockets(config, set(sources[:used_sockets]))
@@ -288,9 +251,9 @@ def plan_sid_map(
 
 
 # Split label → (per-core instance capacity, base-address alignment). The
-# firmware force-aligns a split core's base: 1/2 → $40, 1/4 → $80 (see the
-# module docstring / u64_config.cc fix_splits). Split off → any $20-granular
-# base. Both UltiSID cores share ONE split setting.
+# firmware force-aligns a split core's base: 1/2 → $40, 1/4 → $80
+# (u64_config.cc fix_splits); split off → any $20-granular base. Both UltiSID
+# cores share ONE split setting.
 _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
     (SPLIT_OFF, 1, 0x20),
     (SPLIT_HALF, 2, 0x40),
@@ -299,15 +262,9 @@ _SPLIT_LEVELS: tuple[tuple[str, int, int], ...] = (
 # The base addresses an UltiSID core may sit at, as inclusive $20-granular
 # windows — a transcription of the firmware's own `u64_sid_base[]` enum
 # (u64_config.cc): the $D4xx-$D7xx SID page and the $DExx/$DFxx cartridge I/O
-# page. A base outside them is a string the REST PUT would simply reject, so the
-# planner must treat it as unrealizable rather than emit it; unbounded above,
-# any $20-aligned address up to $FFFF looked realizable.
-#
-# This is a transcription of what the firmware *accepts*, deliberately kept
-# separate from what c64cast is *willing to emit*: every base from $DF00 up is
-# refused by :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS`, so the second window's
-# top half is unreachable in practice. Widening the reserved set must not
-# require editing an enum transcription.
+# page. What the firmware *accepts*, kept separate from what c64cast is willing
+# to emit: :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` refuses more, and
+# widening that set must not mean editing an enum transcription.
 _ULTISID_BASE_WINDOWS: tuple[tuple[int, int], ...] = ((0xD400, 0xD7E0), (0xDE00, 0xDFE0))
 
 
@@ -509,28 +466,12 @@ def plan_sid_map_for_addresses(
         blocked=frozenset(served_by_socket),
     )
     if core_plan is None and served_by_socket:
-        # A socket claim that boxes the cores in costs more than it buys. The
-        # firmware aligns a split core's base *downward*, so for some target
-        # sets every level wide enough to cover them aligns back over the
-        # claimed socket and is rejected as `blocked`. Dropping the claim is
-        # what clears those levels: give the socket up and let the cores answer
-        # everything, because every chip audible on emulated cores beats handing
-        # the caller None and falling back to the canonical layout, which
-        # ignores the file's own addresses entirely.
-        #
-        # `blocked` is the only rejection the claim can cause, so it is the only
-        # one this retry can clear. In particular it cannot rescue a
-        # :data:`~c64cast.hw.c64.RESERVED_IO_WINDOWS` exhaustion. Each level's
-        # window holds `cap` instances at `_SPLIT_STRIDE`, which is exactly
-        # `align` wide and `align`-aligned, so any target inside a window has
-        # ``_align_down(t, align) == base`` (pinned directly, over every level
-        # and every address the planner can see, by
-        # `test_every_target_in_a_split_window_realizes_that_windows_base`). A target's
-        # realized base is therefore ``align_down(t)`` whether it opens its own
-        # window or rides in a lower target's, the reserved test walks the same
-        # instances either way, and the retry's wider target list can only add
-        # windows, never move one off reserved I/O. Both directions are pinned
-        # in tests/test_asid_sidmap.py.
+        # Give the socket up and let the cores answer everything: every chip
+        # audible on emulated cores beats the canonical-layout fallback, which
+        # ignores the file's own addresses. `blocked` is the only rejection a
+        # socket claim can cause and so the only one this retry can clear — it
+        # cannot rescue a RESERVED_IO_WINDOWS exhaustion, which is pinned in
+        # tests/test_asid_sidmap.py in both directions.
         served_by_socket = {}
         core_plan = _plan_ultisid_cores(targets)
     if core_plan is None:

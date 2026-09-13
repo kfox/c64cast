@@ -1,35 +1,17 @@
 """Buffered C64-side ASID ring player — cycle-accurate high-multispeed playback.
 
-:class:`~c64cast.sid.asid_scene.AsidScene`'s default path coalesces incoming ASID
-register frames into per-chip shadows and flushes one block write per chip at
-≤60 Hz (host-driven socket DMA). That drops intermediate frames on multispeed
-tunes (``0x31`` up to 16×) — arpeggios, fast vibrato, and gate-off→gate-on hard
-restarts get mangled — and every flush is a bus-halting, wall-clock-jittered DMA
-burst.
+Moves ASID frame *consumption* onto the C64. The host serializes each frame into
+a compact fixed-size **slot** and REUWRITEs it (bus-clean, no 6510 halt) into a
+ring in REU SDRAM, ahead of a computed read head; a small 6502 player fired by
+CIA #1 Timer A at the ASID frame cadence pops one slot per tick and applies its
+register writes to the SID(s), honoring the ``0x30`` recipe's write order and
+inter-write waits. Open-loop, like :mod:`c64cast.audio.sampler`: the C64 crystal
+is exact, so the read head is computed from wall-clock and never read back.
 
-This module moves frame *consumption* onto the C64. The host serializes each
-ASID frame into a compact fixed-size **slot** and REUWRITEs it (bus-clean, no
-6510 halt) into a ring in REU SDRAM, ahead of a computed read head. A small 6502
-player fired by CIA #1 Timer A at the ASID frame cadence pops one slot per tick
-and applies its register writes to the SID(s) — honoring the ``0x30`` recipe's
-write order + inter-write waits — decoupled from host-DMA jitter, no frames
-dropped. It is the **producer-ahead-of-computed-read-head** pattern proven by
-:mod:`c64cast.audio.sampler` (open-loop: the C64 crystal is exact, so the read head is
-computed from wall-clock, never read back — no servo, no C64→host reads), with
-an IRQ-driven ring consumer modeled on the REU audio pump in :mod:`c64cast.audio.audio`.
-
-**U64-only** — it needs bus-clean ``reu_write`` (``profile.supports_reu``). On
-TeensyROM / any no-REU backend :class:`AsidScene` keeps the coalesced path (and
-never blanks the TR display). Because :class:`AsidScene` runs no ``$D418`` DAC /
-NMI, the whole ``$C000`` RAM page and the REU are free for the player.
-
-Two halves, mirroring :mod:`c64cast.audio.sampler`:
-
-* **Pure builders** (unit-testable, no hardware): :func:`serialize_frame` /
-  :func:`pack_slot` (the wire format), :func:`slot_size_for_chips`, and
-  :func:`build_player` (the 6502 handler blob).
-* :class:`AsidRingPlayer` — the scene-facing producer: a writer thread + REU
-  ring, open-loop.
+**U64-only** — it needs bus-clean ``reu_write`` (``profile.supports_reu``); on
+any no-REU backend :class:`AsidScene` keeps the coalesced path. Because
+:class:`AsidScene` runs no ``$D418`` DAC / NMI, the whole ``$C000`` RAM page and
+the REU are free for the player.
 
 Wire format — each frame is one fixed-size slot (zero-padded), so DMA length +
 stride + wrap are trivial::
@@ -47,6 +29,8 @@ A hard restart is two control-register ops (first value + a small wait, then the
 final value). A multi-SID frame concatenates every active chip's ops into one
 slot. ``SLOT_SIZE`` derives from the active chip count and the player is re-init'd
 when it changes (piggybacks :meth:`AsidScene._reconfigure_chips`).
+
+See docs/architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player.
 """
 
 from __future__ import annotations
@@ -86,94 +70,71 @@ def new_truncation_log() -> LogThrottle:
     permanent rather than occasional, so its report is throttled instead of
     logged per frame; see :mod:`c64cast._wire_log`. A factory rather than a
     module-level instance for the same reason as
-    :func:`c64cast.sid.asid.new_recipe_log`: the rule is O(1) per *stream*,
-    `pack_slot` is a free function, and one module-level instance made it O(1)
-    per *process* — so with two systems in an ensemble, one flooding stream
-    suppressed the other's first-ever report.
+    :func:`c64cast.sid.asid.new_recipe_log`: the rule is O(1) per *stream*, and
+    a module-level instance in a free function had made it O(1) per *process*.
     """
     return LogThrottle(log)
 
 
-# --------------------------------------------------------------------------
-# Memory map. AsidScene runs no DAC/NMI/pump, so $C000-$CFFF and the REU are
-# entirely free. The literal addresses and their disjointness are pinned by
-# MemoryMapTest in tests/test_asid_player.py — the symbolic assertions elsewhere
-# move with the constant, so relocating HANDLER_ADDR onto LANDING_BUF (a handler
-# the REU pull overwrites every tick) used to leave the whole suite green.
-# --------------------------------------------------------------------------
+# Memory map. The literal addresses and their disjointness are pinned by
+# MemoryMapTest in tests/test_asid_player.py: the symbolic assertions elsewhere
+# move with the constant, so they cannot catch an overlapping relocation.
 HANDLER_ADDR = 0xC000  # player IRQ handler + inline delay subroutine
 LANDING_BUF = 0xC400  # REU→RAM pull target (page-aligned; up to ~1 KB slot)
 TRACKER_ADDR = 0xC800  # REU src tracker: LO/MI/HI at $C800-$C802
 TICK_COUNTER_ADDR = 0xC803  # kernal-chain tick divider counter
 NOPS_COUNTER_ADDR = 0xC804  # per-IRQ op-loop counter
-# Zero-page indirect pointer used by the op-execute loop ($FB-$FE is the
-# documented free-for-user ZP; the BASIC clear-loop + kernal IRQ tail don't
-# touch it).
+# $FB-$FE is the documented free-for-user zero page; neither the BASIC
+# clear-loop nor the kernal IRQ tail touches it.
 ZP_PTR = 0xFB
 
 # REU ring offset. Clear of the $D418-DAC mic ring ($100000), the sampler ring
 # ($200000), and the REU-staged video region ($E00000).
 RING_BASE = 0x300000
-# Number of fixed-size slots the ring holds. The ring is a jitter buffer, not
-# latency (latency is the lead target below). 512 slots is ~8.5 s at single
-# speed / ~0.5 s at a 960 Hz 16× multispeed — ample, and even at the 8-SID
-# worst case (~912 B/slot) it is under 0.5 MB of REU, far below the video region.
+# 512 slots is ~8.5 s at single speed / ~0.5 s at a 960 Hz 16x multispeed, and
+# at the 8-SID worst case (~912 B/slot) under 0.5 MB of REU.
 RING_SLOTS = 512
 
-# Op-execute delay: the on-C64 busy-wait loop costs ~5 cycles per unit (DEY 2 +
-# BNE 3). serialize_frame converts a 0x30 recipe's wait_cycles into units by
-# dividing by this. Coarse (±a few cycles), documented, far better than
-# dropped/instant — see docs/caveats.md.
+# The on-C64 busy-wait loop costs ~5 cycles per unit (DEY 2 + BNE 3), so a 0x30
+# recipe's wait_cycles divides by this — coarse to ±a few cycles, see
+# docs/caveats.md.
 DELAY_CYCLES_PER_UNIT = 5
-# Default wait between a voice's two hard-restart control writes when no 0x30
-# recipe is carried — enough for the gate-off write to land before the gate-on
-# (mirrors the coalesced path's two-phase emit). In delay units.
+# In delay units: enough for the gate-off write to land before the gate-on when
+# no 0x30 recipe carries a wait of its own.
 DEFAULT_HARD_RESTART_WAIT_UNITS = 2
 
 # What one op costs the 6510 beyond its wait, counted off build_player's
 # `oploop`: 40 cycles to unpack the op and store the value, 3 to branch past the
 # delay, 13 to advance the slot pointer, 9 for the op counter and loop branch.
-# An op that carries a nonzero wait pays WAITED_OP_EXTRA_CYCLES more (the BEQ
-# falls through into JSR/TAY/RTS around the delay loop) plus
-# DELAY_CYCLES_PER_UNIT per unit.
+# A nonzero wait adds WAITED_OP_EXTRA_CYCLES (the JSR/TAY/RTS around the delay
+# loop) plus DELAY_CYCLES_PER_UNIT per unit.
 PER_OP_CYCLES = 65
 WAITED_OP_EXTRA_CYCLES = 13
 
-# The share of one consume period a slot's ops may spend. The rest is the
-# handler's own overhead — the REU pull, the tracker advance + wrap test, the
-# kernal IRQ entry/exit, and the $EA31 chain every Nth tick — and it is a coarse
-# reserve, not a model: the point is to keep the 6510 out of the ASID handler,
-# not to predict the last cycle. Without a budget the wait column is a wire-
-# supplied amplifier: 28 ops each carrying the maximum 255-cycle wait cost 9324
-# cycles per chip, over half a 60 Hz NTSC frame for ONE chip, and the read head
-# is open-loop — the host keeps writing at the requested rate while the C64
-# consumes at whatever it can manage, with no way to resynchronize.
+# The share of one consume period a slot's ops may spend; the rest is a coarse
+# reserve for the handler's own overhead (REU pull, tracker advance + wrap test,
+# kernal IRQ entry/exit, the $EA31 chain every Nth tick). The wait column is
+# wire-supplied, so the bound matters: 28 ops each carrying the maximum 255-cycle
+# wait cost 9324 cycles for one chip, over half a 60 Hz NTSC frame, and the read
+# head is open-loop with no way to resynchronize.
 FRAME_BUDGET_FRACTION = 0.8
 
-# The most write-ops one chip's frame can carry: 22 non-control registers +
-# 3 voices × 2 control writes (hard restart). Sets the slot size.
+# 22 non-control registers + 3 voices x 2 control writes (hard restart).
 MAX_OPS_PER_CHIP = 28
 OP_BYTES = 4  # addr_lo, addr_hi, value, wait
 _SLOT_ALIGN = 16  # round slot size up to this so single-SID → 128 (plan pins it)
 
-# Producer buffering depth / watermarks (in slots). Unlike the FPGA sampler
-# (fed by a demuxer that races ahead of real time, so it can grow its lead), an
-# ASID host streams in real time at exactly the consume cadence — the ring can
-# never build lead beyond the startup prebuffer. So seed the prebuffer CLOSE to
-# the lead target: that cushion is all the jitter headroom there is before a
-# genuine producer stall pads a hold (SID holds its last state — no echo).
+# An ASID host streams in real time at exactly the consume cadence, so the ring
+# can never build lead beyond the startup prebuffer: seeding it close to the lead
+# target is all the jitter headroom there is.
 DEFAULT_LEAD_SLOTS_SECONDS = 0.30  # keep the write head this far ahead of read
 DEFAULT_PREBUFFER_SECONDS = 0.30  # seed the full lead before arming (max cushion)
 _QUEUE_MAX_SLOTS = 4096
-# How long teardown waits for the arm lock before restoring the C64 anyway. The
-# lock is only ever held across a bounded run of DMA writes, so overshooting it
-# means the link is wedged — and a wedged link is exactly when the kernal
-# restore matters most.
+# The arm lock is only ever held across a bounded run of DMA writes, so
+# overshooting this means the link is wedged; teardown restores anyway.
 _TEARDOWN_LOCK_TIMEOUT_S = 2.0
-# Cap one reu_write burst, so a 256-slot prebuffer or catch-up run at the 8-SID
-# slot size doesn't become a quarter-megabyte single transfer. Mirrors the same
-# cap in _prefill_holds. Well above the ~2.4 KB below which payload is free on
-# the U64 DMA link (see CLAUDE.md), so widening a run up to here costs nothing.
+# Caps one reu_write burst; _prefill_holds mirrors it. Well above the ~2.4 KB
+# below which payload is free on the U64 DMA link (see CLAUDE.md).
 _MAX_DMA_BURST_BYTES = 32 * 1024
 
 # The band a wire-supplied 0x31 may steer the consume rate into.
@@ -181,34 +142,26 @@ _MAX_DMA_BURST_BYTES = 32 * 1024
 # Ceiling: the ASID spec's speed multiplier is 4 bits against the video frame
 # rate, so 16 x 60 Hz = 960 Hz is the fastest cadence the protocol can ask for;
 # 1000 Hz leaves headroom for a host deriving the same 16x from frame_delta_us.
-# Past it the numbers stop meaning anything: frame_delta_us = 1 asks for 1 MHz,
-# and because cia1_latch_for_rate clamps the *latch* rather than the rate, that
-# lands on latch 1 — a CIA IRQ every 2 cycles into a handler that needs hundreds,
-# so the 6510 never leaves it (jiffy clock, SCNKEY and the kernal tail dead until
-# a power cycle) while the read head advances ~511,000 slots/s and the writer
-# floods the shared single-connection DMA socket forever (measured: 767
-# reu_write/s against the ~200/s ceiling CLAUDE.md documents, starving the video
-# render path that shares the socket).
+# `cia1_latch_for_rate` clamps the *latch*, not the rate, so an unclamped
+# frame_delta_us = 1 lands on latch 1 — a CIA IRQ every 2 cycles into a handler
+# that needs hundreds.
 #
 # Floor: CIA #1 Timer A is a 16-bit down-counter, so the slowest cadence the
 # hardware can realize is cpu_clock / 65536 — 15.6 Hz on NTSC, 15.0 Hz on PAL.
-# Take the lower of the two: below it the latch saturates and the request means
-# nothing. A malformed rate (NaN, or a delta the decoder aliased) clamps to the
-# floor rather than the ceiling — slow is the safe direction here.
+# Take the lower of the two. A malformed rate (NaN, or a delta the decoder
+# aliased) clamps to the floor rather than the ceiling — slow is the safe
+# direction here.
 MAX_FRAME_RATE_HZ = 1000.0
 MIN_FRAME_RATE_HZ = 15.0
 
 # SID control-register offsets (voice 0/1/2), i.e. the ASID ids 22-27 targets.
 _CONTROL_OFFSETS = (0x04, 0x0B, 0x12)
 # Reverse of _ASID_REG_TO_OFFSET for the non-control ids (0-21): SID offset →
-# ASID register id, so recipe ordering can key on either. Control offsets are
-# handled separately (their ids split into first/second write).
+# ASID register id. Control offsets are handled separately — their ids split
+# into a first and a second write.
 _OFFSET_TO_NONCTRL_ID: dict[int, int] = {_ASID_REG_TO_OFFSET[rid]: rid for rid in range(22)}
 
 
-# --------------------------------------------------------------------------
-# Pure wire-format builders.
-# --------------------------------------------------------------------------
 def slot_size_for_chips(n_chips: int) -> int:
     """Fixed slot size (bytes) for a frame carrying ``n_chips`` chips' ops.
 
@@ -267,8 +220,8 @@ def serialize_frame(
     for the whole frame — so the pair is positioned as a unit and its internal
     order is the serializer's property, not a property of a well-formed
     recipe."""
-    # Build the set of writes as (asid_reg_id, offset, value, default_wait_units).
-    # A voice with a hard restart contributes two writes (ids 22-24 then 25-27).
+    # (asid_reg_id, offset, value, default_wait_units). A voice with a hard
+    # restart contributes two writes: ids 22-24, then 25-27.
     writes: list[tuple[int, int, int, int]] = []
     for offset in sorted(regs):
         if offset in _CONTROL_OFFSETS:
@@ -281,7 +234,6 @@ def serialize_frame(
         final = regs.get(offset)
         first = control_first.get(voice)
         if first is not None:
-            # Hard restart: gate-off/first write, wait, then the final write.
             writes.append((22 + voice, offset, first & 0xFF, DEFAULT_HARD_RESTART_WAIT_UNITS))
             if final is not None:
                 writes.append((25 + voice, offset, final & 0xFF, 0))
@@ -289,20 +241,13 @@ def serialize_frame(
             writes.append((25 + voice, offset, final & 0xFF, 0))
 
     if recipe:
-        # The recipe positions *registers*, and the unit it can position is the
-        # SID register offset — not the ASID register id. A voice's hard restart
-        # is two writes to one offset under two ids (22+v gate-off, then 25+v
-        # gate-on), and they mean the opposite thing in the opposite order, so
-        # both travel together to the first position naming either of them.
-        # Grouping by id instead let a recipe that named 25+v but not 22+v emit
-        # the gate-on value at that position and the gate-off value in the tail
-        # append below: the voice ended the frame gated OFF where the tune asked
-        # for a re-attack, and ids 25-27 are the ordinary control ids, so that
-        # was the default outcome for such a stream, not an exotic one.
-        #
-        # Waits are looked up per write id rather than taken from the recipe
-        # entry that positioned the group, so a recipe naming both of a pair's
-        # ids keeps both of its waits.
+        # The unit a recipe can position is the SID register *offset*, not the
+        # ASID register id: a voice's hard restart is two writes to one offset
+        # under two ids (22+v gate-off, then 25+v gate-on) that mean the opposite
+        # thing in the opposite order, so both travel to the first position
+        # naming either of them. Waits are looked up per write id rather than
+        # taken from the entry that positioned the group, so a recipe naming both
+        # of a pair's ids keeps both of its waits.
         by_offset: dict[int, list[tuple[int, int, int, int]]] = {}
         for w in writes:
             by_offset.setdefault(w[1], []).append(w)
@@ -313,11 +258,10 @@ def serialize_frame(
         seen: set[int] = set()
         for rid, _wait_cycles in recipe:
             # A register named twice in the write order — directly, or once per
-            # control id of the same voice — writes once, at its first position.
-            # Without this, op count tracks recipe length rather than the frame's
-            # write count, and a spec-legal 28-pair recipe naming one id can push
-            # a single chip past MAX_OPS_PER_CHIP — which pack_slot then
-            # truncates, taking later chips with it.
+            # control id of the same voice — writes once, at its first position,
+            # or op count tracks recipe length rather than the frame's write
+            # count and a spec-legal 28-pair recipe can push one chip past
+            # MAX_OPS_PER_CHIP, which pack_slot truncates.
             offset = _offset_for_recipe_id(rid)
             if offset is None or offset in seen:
                 continue
@@ -347,17 +291,15 @@ def pack_slot(
 
     Ops beyond what fits are dropped, and that is **loud**: ``slot_size`` is
     derived from the chip count on the assumption that 28 ops per chip is a hard
-    ceiling, so a truncation means something upstream broke it. It used to be
-    silent, which is how an over-long ``0x30`` recipe deleted a whole chip's
-    frame (every op past the cut belongs to the later chips in the slot).
+    ceiling, so a truncation means something upstream broke it — and every op
+    past the cut belongs to the later chips in the slot.
 
     Loud, but throttled: this runs once per ASID frame (60-960 Hz) on the MIDI
     reader thread, and the mismatch that trips it can persist for a whole scene,
     so the report is O(1) per stream — :mod:`c64cast._wire_log`.
     ``truncation_log`` is that stream's budget (:func:`new_truncation_log`),
     required rather than defaulted so a new caller has to say which stream it is
-    packing for; a default would be a process-wide one, which is what made the
-    rule false."""
+    packing for."""
     max_ops = (slot_size - 1) // OP_BYTES
     if len(ops) > max_ops:
         truncation_log.warn(
@@ -425,13 +367,9 @@ def hold_slot(slot_size: int) -> bytes:
     return bytes(slot_size)
 
 
-# --------------------------------------------------------------------------
 # 6502 handler builder — a tiny label-based assembler keeps the many relative
-# branches correct. The mnemonics live in comments, so BuildPlayerTest pins the
-# exact output bytes against a committed golden blob: without it, flipping the
-# op loop's `STA $0000` (0x8D) to `STX` (0x8E) — every SID write storing X
-# instead of the value, i.e. total silence — left the whole ASID suite green.
-# --------------------------------------------------------------------------
+# branches correct. The mnemonics live only in comments, so BuildPlayerTest pins
+# the exact output bytes against a committed golden blob.
 class _Asm:
     """Minimal 6502 assembler: emit bytes, mark labels, resolve rel/abs refs."""
 
@@ -671,9 +609,6 @@ def restore_kernal_irq(api: C64Backend, system: str) -> None:
         log.debug("asid_player: kernal IRQ restore failed: %s", e)
 
 
-# --------------------------------------------------------------------------
-# Producer.
-# --------------------------------------------------------------------------
 class AsidRingPlayer:
     """Scene-facing producer: installs the 6502 player and streams serialized
     frame-slots into the REU ring ahead of a computed read head (open-loop).
@@ -710,27 +645,24 @@ class AsidRingPlayer:
 
         self._q: queue.Queue[bytes] = queue.Queue(maxsize=_QUEUE_MAX_SLOTS)
         # ONE PollThread for the player's lifetime, restarted across reinit()
-        # rather than replaced. Its "already running" guard lives on the object
-        # (see _pollthread's module docstring), so a fresh object per start()
-        # threw the guard away — and a writer still blocked in reu_write past
-        # the join timeout would then race a second one over self._write_pos and
-        # one REU ring. The loop exits on this thread's own stop event, so a
-        # start() that does spawn a replacement can never un-stop the old one.
+        # rather than replaced: its "already running" guard lives on the object
+        # (see _pollthread's module docstring), and a fresh object per start()
+        # would let a writer still blocked in reu_write past the join timeout
+        # race a second one over self._write_pos and one REU ring.
         self._writer = PollThread(
             self._writer_loop, name="asid-ring", manual=True, join_timeout=1.0
         )
         self._armed = False
-        # Set the moment start() begins touching the C64 and cleared by the
-        # teardown that puts it back. Distinct from _armed on purpose: start()
-        # programs the CIA #1 latch immediately but hooks $0314 only once a
-        # prebuffer arrives, so a stream that never sends a frame (one 0x31 and
-        # no 0x4E at all) leaves the machine running the KERNAL IRQ at the
-        # sender's rate with _armed still False. Teardown restores on this flag,
-        # not on _armed, so the wire can never keep the CIA.
+        # Set the moment start() begins touching the C64, cleared by the teardown
+        # that puts it back, and distinct from _armed: start() programs the CIA #1
+        # latch immediately but hooks $0314 only once a prebuffer arrives, so a
+        # stream that never sends a frame leaves the machine running the kernal
+        # IRQ at the sender's rate with _armed still False. Teardown restores on
+        # this flag, not on _armed.
         self._installed = False
         self._lock = threading.Lock()  # guards rate/anchor accounting
 
-        # Read-head accounting (cumulative consumed-slot estimate, drift-free).
+        # Cumulative consumed-slot estimate, drift-free.
         self._rate = 60.0
         self._rate_anchor = 0.0  # monotonic time the current rate took effect
         self._consumed_base = 0  # slots consumed before the last rate change
@@ -744,14 +676,11 @@ class AsidRingPlayer:
         self._pushed = 0
         self._dropped_full = 0
         self._stale_slots = 0  # dropped by _take_slot: sized for a previous layout
-        # None = never sampled. A plain -1 sentinel collided with a genuinely
-        # negative lead — the pathological state this telemetry exists to catch
-        # — so the minimum tracked the current value and stop()'s guard then
-        # suppressed the whole line on exactly the run worth reading.
+        # None = never sampled. A -1 sentinel would collide with a genuinely
+        # negative lead, which is the state this telemetry exists to catch.
         self._lead_min: int | None = None
         self._lead_max: int | None = None
 
-    # ---- rate / read-head accounting --------------------------------------
     def _recompute_lead(self) -> None:
         lead = int(self._rate * self._lead_seconds)
         self._lead_target = max(1, min(lead, RING_SLOTS // 2))
@@ -774,7 +703,6 @@ class AsidRingPlayer:
             return 0
         return self._consumed_base + int((time.monotonic() - self._rate_anchor) * self._rate)
 
-    # ---- bring-up ---------------------------------------------------------
     def start(self, frame_rate_hz: float) -> None:
         """Prefill the ring, install the player + program CIA #1 Timer A, then
         start the writer thread — but **arm lazily**: the read-head clock and the
@@ -786,15 +714,12 @@ class AsidRingPlayer:
         prebuffer is ready makes ``gate_time`` coincide with data actually
         flowing, so the write head stays a full ``lead`` ahead.
 
-        **Refuses to bring up over a live writer.** A previous writer still
-        blocked in ``reu_write`` past its join timeout would otherwise be
-        stranded: ``PollThread.start()`` declines the duplicate, so it never
-        clears the stop event, the abandoned worker exits on its next check and
-        nothing spawns a replacement — the player would install, never arm, and
-        stay silent for the whole run while claiming it was padding holds. Worse,
-        that worker keeps REUWRITEing at the *old* slot size into a ring this
-        install just re-described at the new one. Staying down is the honest and
-        safe outcome; the next activation brings it up once the worker is gone."""
+        **Refuses to bring up over a live writer.** ``PollThread.start()``
+        declines a duplicate, so a previous writer still blocked in ``reu_write``
+        past its join timeout would be stranded — installed, never armed, silent
+        for the whole run, and still REUWRITEing at the *old* slot size into a
+        ring this install just re-described at the new one. The next activation
+        brings it up once that worker is gone."""
         if self._writer.is_running():
             log.warning(
                 "asid_player: the previous writer thread has not exited (blocked on the "
@@ -809,16 +734,12 @@ class AsidRingPlayer:
         self._latch = cia1_latch_for_rate(frame_rate_hz, self.system)
         self._rate = actual_rate_for_latch(self._latch, self.system)
         self._recompute_lead()
-        # Prebuffer to the full lead so we start with maximum jitter cushion (a
-        # real-time producer feeds at exactly the consume rate, so the lead can
-        # never GROW past this — it's the only headroom before a stall pads).
         self._prebuffer_target = max(
             1, min(int(self._rate * self._prebuffer_seconds), self._lead_target)
         )
         self._divider = tick_divider_for_rate(self._rate)
 
-        # Prefill the whole ring with hold slots so the first laps read silence,
-        # not uninitialized REU.
+        # So the first laps read silence, not uninitialized REU.
         self._prefill_holds()
 
         # Upload the player, seed the tracker + counters + CIA latch. The vector
@@ -899,21 +820,16 @@ class AsidRingPlayer:
                 )
             if n < self._prebuffer_target:
                 # Arming here would start the read-head clock against a ring the
-                # prebuffer never filled — Symptom 1 with extra steps. The
-                # discarded stragglers are gone, so the next call re-checks
-                # against fresh, correctly-sized frames.
+                # prebuffer never filled.
                 return False
             self._write_slots(0, slots)
             self.api.flush()
             if self._writer.stop_event.is_set():
                 # Teardown is in flight and its bounded join may already have
-                # given up on us — the blocking DMA above is exactly how this
-                # method outlives it. Hooking $0314 now would leave the C64
-                # running the ASID IRQ into the next scene, against a ring
-                # nobody feeds and at the CIA cadence this stream asked for,
-                # with $C000 (where a later scene's DAC/NMI handler lands) as
-                # the vector. The ring slots just written are inert: nothing
-                # reads them unless the vector is hooked.
+                # given up on this method, which the blocking DMA above outlives.
+                # Hooking $0314 now would leave the C64 running the ASID IRQ into
+                # the next scene against a ring nobody feeds. The ring slots just
+                # written are inert while the vector stays unhooked.
                 log.debug("asid_player: arm abandoned — teardown in flight")
                 return False
             self._write_pos = n
@@ -930,8 +846,7 @@ class AsidRingPlayer:
 
     def _prefill_holds(self) -> None:
         hold = hold_slot(self.slot_size)
-        # One reu_write per slice of slots (cap the burst); the whole ring is
-        # holds, so a repeated block is fine.
+        # The whole ring is holds, so one capped burst of a repeated block does.
         block = hold * max(1, (32 * 1024) // self.slot_size)
         total = RING_SLOTS * self.slot_size
         for off in range(0, total, len(block)):
@@ -939,7 +854,6 @@ class AsidRingPlayer:
             self.api.reu_write(self.ring_base + off, block[:n])
         self.api.flush()
 
-    # ---- streaming --------------------------------------------------------
     def push_frame(self, slot_bytes: bytes) -> None:
         """Enqueue one serialized frame-slot. Never blocks the reader thread: the
         queue is large and, before arming, it fills to the prebuffer; after
@@ -963,8 +877,7 @@ class AsidRingPlayer:
         slot after it in the ring. The 6502 player then reads ``n_ops`` from what
         was an op's wait byte and decodes ``[value][wait]`` pairs as absolute
         addresses — i.e. ``STA`` anywhere in the C64's 64K, including the handler
-        at $C000 and the $0314 vector. Two of the three consumers used to filter
-        and the third did not."""
+        at $C000 and the $0314 vector."""
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             try:
@@ -1006,9 +919,8 @@ class AsidRingPlayer:
         rate = actual_rate_for_latch(latch, self.system)
         divider = tick_divider_for_rate(rate)
         with self._lock:
-            # Read _armed under the lock _try_arm holds across the whole arm
-            # sequence, so an arm in progress serializes ahead of this and the
-            # post-arm re-anchor below actually runs.
+            # _try_arm holds this lock across the whole arm sequence, so an arm
+            # in progress serializes ahead of this read.
             armed = self._armed
             if armed:
                 self._consumed_base = self._read_head()
@@ -1018,19 +930,17 @@ class AsidRingPlayer:
             self._divider = divider
             self._recompute_lead()
             if not armed:
-                # The prebuffer target scales with the (now correct) lead.
                 self._prebuffer_target = max(
                     1, min(int(rate * self._prebuffer_seconds), self._lead_target)
                 )
-        # Reprogram the CIA latch (takes effect at the vector swap if not armed).
+        # Takes effect at the vector swap if not armed.
         self.api.write_memory(
             f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
         )
         if not armed:
-            # The vector isn't hooked yet, so rebuild the handler in place — the
-            # tick divider then matches the real rate before it starts running.
-            # (`armed` came from the locked read above, so this branch can no
-            # longer lose a race against an arm and rewrite a live handler.)
+            # The vector isn't hooked yet, so the handler can be rebuilt in
+            # place and its tick divider matches the real rate before it runs.
+            # `armed` came from the locked read above, so this cannot race an arm.
             self.api.write_memory_file(
                 f"{HANDLER_ADDR:04X}",
                 build_player(self.slot_size, divider, ring_base=self.ring_base),
@@ -1050,7 +960,7 @@ class AsidRingPlayer:
 
         The layout only ever moves with **no writer alive**. ``_write_slots``
         derives its ring offsets from ``slot_size``, so assigning a new one while
-        a writer is blocked mid-burst in ``reu_write`` put the rest of that
+        a writer is blocked mid-burst in ``reu_write`` would put the rest of that
         burst's old-sized payloads at the new stride: slots land across slot
         boundaries, the 6502 reads ``n_ops`` from a mid-op byte and executes the
         stream shifted — arbitrary ``STA``s across the C64's 64K. A single
@@ -1079,10 +989,10 @@ class AsidRingPlayer:
         scene activation.
 
         Playlists reuse scene instances, so without this lap 2 starts on lap 1's
-        chip count — which is what makes :meth:`reinit`'s ``n_chips ==
-        self.n_chips`` guard let the ring *shrink* — and with lap 1's leftover
-        frames still queued, so the new stream's prebuffer arms on the previous
-        tune's registers."""
+        chip count — which is what lets :meth:`reinit`'s ``n_chips ==
+        self.n_chips`` guard *shrink* the ring — and with lap 1's leftover frames
+        still queued, so the new stream's prebuffer arms on the previous tune's
+        registers."""
         if self._writer.is_running():
             log.warning(
                 "asid_player: the writer thread from the previous activation is still "
@@ -1100,14 +1010,11 @@ class AsidRingPlayer:
         self.slot_size = slot_size_for_chips(self.n_chips)
         self._write_pos = 0
 
-    # ---- writer loop ------------------------------------------------------
     def _writer_loop(self, stop: threading.Event) -> None:
-        # Phase 1: wait for a real-frame prebuffer, then arm (start the read-head
-        # clock + swap $0314). See start()/_try_arm for why we don't arm eagerly.
         while not stop.is_set() and not self._armed:
             if not self._try_arm():
                 time.sleep(0.005)
-        # Phase 2: steady state — keep the write head a `lead` ahead of the read.
+        # Steady state: keep the write head a `lead` ahead of the read.
         while not stop.is_set():
             read_head = self._read_head()
             lead = self._write_pos - read_head
@@ -1117,8 +1024,6 @@ class AsidRingPlayer:
             if deficit <= 0:
                 time.sleep(0.002)
                 continue
-            # Gather up to `deficit` real slots without blocking (_take_slot
-            # drops any straggler sized for a previous layout).
             slots: list[bytes] = []
             for _ in range(deficit):
                 slot = self._take_slot()
@@ -1129,10 +1034,9 @@ class AsidRingPlayer:
             if slots:
                 self._real_written += len(slots)
             else:
-                # Producer momentarily empty. Only pad NEUTRAL (a hold) once the
-                # lead has actually drained to the panic watermark — otherwise
-                # just wait for the producer (no glitch). Holds make the SID hold
-                # its last state (no echo).
+                # Producer momentarily empty. Pad a hold only once the lead has
+                # drained to the panic watermark; a hold leaves the SID on its
+                # last state, so it is silence rather than an echo.
                 if lead > self._lead_panic:
                     slot = self._take_slot(timeout=0.02)
                     if slot is None:
@@ -1140,15 +1044,12 @@ class AsidRingPlayer:
                     slots.append(slot)
                     self._real_written += 1
                 else:
-                    # Pad a batch in one contiguous write, then sleep the time it
-                    # buys. Nothing else paces this branch: a spec-legal 16×
-                    # (960 Hz) stream that then goes quiet leaves the lead
-                    # negative forever, and padding one slot per unpaced
-                    # iteration ran at the link's maximum rate indefinitely
-                    # (measured: 705 reu_write/s — the whole ~200/s DMA ceiling
-                    # on real hardware, taken from the render path that shares
-                    # the socket). Batched + paced, holds cost `rate / pads`
-                    # writes per second, ~15/s at any rate in the band.
+                    # The sleep is the only thing pacing this branch: a stream
+                    # that goes quiet at a spec-legal 960 Hz leaves the lead
+                    # negative forever, and one pad per unpaced iteration measured
+                    # 705 reu_write/s — the whole ~200/s DMA ceiling, taken from
+                    # the render path that shares the socket. Batched and paced,
+                    # holds cost ~15 writes/s at any rate in the band.
                     pads = min(deficit, max(1, self._lead_panic))
                     slots.extend([hold_slot(self.slot_size)] * pads)
                     self._underrun_pads += pads
@@ -1165,9 +1066,9 @@ class AsidRingPlayer:
 
         The stride is snapshotted once: ``self.slot_size`` is re-read nowhere in
         the loop, so a payload list and the stride it was built for can never
-        disagree half way through a call. (:meth:`reinit` now refuses to move the
-        layout while a writer is alive, which is the real guarantee; this keeps
-        the function correct on its own terms rather than on that promise.)"""
+        disagree half way through a call. :meth:`reinit` refusing to move the
+        layout under a live writer is the real guarantee; this keeps the function
+        correct on its own terms rather than on that promise."""
         i = 0
         n = len(slots)
         slot_size = self.slot_size
@@ -1179,7 +1080,6 @@ class AsidRingPlayer:
             self.api.reu_write(self.ring_base + ring_slot * slot_size, payload)
             i += run
 
-    # ---- shutdown ---------------------------------------------------------
     def _teardown_player(self) -> None:
         """Stop the writer + hand the C64's IRQ back to the kernal ($0314 + the
         CIA #1 latch). Idempotent; leaves the SID untouched (the scene silences
@@ -1192,11 +1092,10 @@ class AsidRingPlayer:
         cost two DMA ops, and the alternative is a wrong CIA latch surviving into
         every later scene."""
         # Stop the thread but KEEP the PollThread object: after a timed-out join
-        # it deliberately holds its reference so a later start() refuses a
-        # duplicate. Discarding it here is what let reinit() (reachable from one
-        # 0x5F SysEx via _reconfigure_chips) run a second writer alongside an
-        # abandoned one, racing self._write_pos over a single REU ring. The stop
-        # event it sets is also what makes an in-flight _try_arm abandon its arm.
+        # it holds its reference so a later start() refuses a duplicate, which is
+        # what keeps reinit() (reachable from one 0x5F SysEx) from running a
+        # second writer alongside an abandoned one over a single REU ring. The
+        # stop event it sets also makes an in-flight _try_arm abandon its arm.
         self._writer.stop()
         if not self._claim_installed():
             return

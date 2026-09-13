@@ -1,38 +1,17 @@
-"""SID stereo panning: spread a tune's SID chips across the U64 mixer's field.
+"""SID stereo panning: spread a tune's SID chips across the mixer's field.
 
-The U64 firmware mixes each audio *source* — physical SID socket 1/2, UltiSID
-FPGA core 1/2 — at an independent stereo pan, exposed as the `Audio Mixer`
-config items ``Pan Socket 1``/``Pan Socket 2``/``Pan UltiSID 1``/``Pan UltiSID 2``
-(enum ``Left 5 … Left 1, Center, Right 1 … Right 5``, confirmed live via
-``GET /v1/configs/Audio%20Mixer``). Panning is therefore a property of the
-*source*, not the ``$Dxxx`` address — so we pan whichever source each tune chip
-is routed onto (see :func:`plan_sid_panning`).
+A pan belongs to an audio *source* — physical SID socket 1/2, UltiSID FPGA core
+1/2, or the Ultimate II+'s two emulated stereo SIDs — not to a ``$Dxxx``
+address, so the ``sid_panning`` config list is indexed by source: entry *k*
+positions the *k*-th source the tune claims.
 
-Because a pan belongs to a source, the ``sid_panning`` config list is indexed by
-*source*, not by chip: entry *k* positions the *k*-th source the tune claims. At
-most :data:`MAX_PANNED_SOURCES` (4) entries can ever apply, and fewer when the
-machine has no socketed SIDs — then only the 2 UltiSID cores are pannable, so a
-3+ chip tune necessarily doubles chips onto a shared pan (warned at apply time).
+A **pure** planner (`plan_sid_panning`, `resolve_panning`, `default_pan_spread`,
+`window_order_for_pans`, label/int conversion) plus one best-effort impure entry
+point (`apply_panning`), which also reports the scope's left-to-right column
+order. Ultimate-family only: a no-op on a backend with neither mixer surface
+(TeensyROM), and a REST failure never crashes a scene.
 
-This module is the panning sibling of :mod:`c64cast.sid.sid_autoconfig` (chip-model
-matching) and :mod:`c64cast.sid.asid_sidmap` (address routing): a **pure** planner
-(`plan_sid_panning`, `resolve_panning`, `default_pan_spread`, `window_order_for_pans`,
-label/int conversion) plus one best-effort impure entry point (`apply_panning`)
-that every SID-playing scene calls, reusing :mod:`c64cast.sid.sid_hw_config`'s REST
-plumbing (`apply_config`, `current_source_map`) rather than duplicating it.
-
-`apply_panning` also reports the scope's column order, so the oscilloscope's
-side-by-side chip windows run left-to-right across the stereo field and the
-picture matches what you hear.
-
-The same planners drive the Ultimate II+'s emulated stereo SIDs: its two
-sides are the ``emusid1``/``emusid2`` sources (`Pan EmuSid1/2` under `Audio
-Output Settings` — topology in :mod:`c64cast.sid.emusid_mixer`), resolved per
-backend by :func:`mixer_category_for`. Ultimate-family only, best-effort —
-every function no-ops on a backend with neither mixer surface (TeensyROM),
-and a REST failure never crashes a scene. The scene folds the returned
-originals into its existing SID-config restore snapshot so the user's mixer
-is put back on teardown.
+See docs/architecture/sid.md#sid-panning.
 """
 
 from __future__ import annotations
@@ -55,13 +34,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Config category + per-source pan item names — must match the firmware
-# exactly (u64_config.cc / audio_select.cc / live GET). One pan item per
-# mixable SID source, across both surfaces: the U64's socket/UltiSID sources
-# live in `Audio Mixer`, the U2+'s emulated stereo SIDs in `Audio Output
-# Settings`. One merged map is safe because a backend only ever *derives*
-# its own surface's sources, and a planner probing the other surface's item
-# finds no current value and leaves it alone.
+# Config category + per-source pan item names — must match the firmware exactly
+# (u64_config.cc / audio_select.cc / live GET). One merged map across both
+# surfaces: the U64's sockets/cores in `Audio Mixer`, the U2+'s emulated stereo
+# SIDs in `Audio Output Settings`.
 CAT_MIXER: Final = "Audio Mixer"
 PAN_ITEM: Final[dict[str, str]] = {
     "socket1": "Pan Socket 1",
@@ -105,19 +81,13 @@ _LABEL_TO_VALUE: Final[dict[str, int]] = {
     lbl.lower(): PAN_MIN + i for i, lbl in enumerate(PAN_LABELS)
 }
 
-# One pan control per source, so at most this many distinct pan positions
-# exist on any one device — and a sid_panning list longer than this can never
-# take effect. Pinned to the U64's source count (2 sockets + 2 UltiSID cores),
-# NOT len(PAN_ITEM): the merged map spans both surfaces, but no device carries
-# more than 4. The *achievable* count is lower without socketed SIDs — 2
-# UltiSID cores, or the U2+'s 2 emulated stereo SIDs
-# (_warn_if_sources_limited surfaces the shortfall).
+# One pan control per source, so a longer sid_panning list can never take
+# effect. Pinned to the U64's source count (2 sockets + 2 UltiSID cores), NOT
+# len(PAN_ITEM): the merged map spans both surfaces, no device carries both.
 MAX_PANNED_SOURCES: Final = 4
 
 # Default stereo spreads by pannable-source count, ordered by musical
-# importance rather than as a uniform fan: an odd count puts the primary chip
-# dead center with the rest flanking it; an even count keeps the first two
-# closest to center and spreads later ones wider.
+# importance rather than as a uniform fan.
 _DEFAULT_SPREAD: Final[dict[int, tuple[int, ...]]] = {
     0: (),
     1: (0,),
@@ -157,9 +127,8 @@ def pan_to_label(v: int | str) -> str:
             raise ValueError(f"pan value {v} out of range {PAN_MIN}..{PAN_MAX}")
         return PAN_LABELS[v - PAN_MIN]
     s = v.strip()
-    # A stringified int ("0", "-3", "+2") is accepted for TOML friendliness.
-    # Parse and range-check separately so an out-of-range "-9" reports the range
-    # error rather than falling through to "unrecognized label".
+    # A stringified int ("0", "-3", "+2") is accepted for TOML friendliness;
+    # parsed separately so an out-of-range "-9" reports the range error.
     try:
         as_int = int(s)
     except ValueError:

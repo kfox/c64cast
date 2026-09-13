@@ -1,45 +1,12 @@
 """ASID protocol decoder — ASID MIDI SysEx payloads → SID register updates.
 
-The ASID protocol (spec: https://github.com/thomasj/asid-protocol) streams SID register
-writes frame-by-frame over MIDI SysEx; the receiving unit's SID chip
-synthesizes the sound. Each message is ``F0 2D <cmd> <payload...> F7``; mido
-hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.
-``(0x2D, cmd, *payload)``.
+Each message is ``F0 2D <cmd> <payload...> F7``; mido hands us the bytes between
+``F0`` and ``F7`` as ``msg.data``, i.e. ``(0x2D, cmd, *payload)``. Spec:
+https://github.com/thomasj/asid-protocol.
 
-This module is a **pure** decoder — no mido, no hardware, and a decode's result
-depends on nothing but its bytes — so it's trivially unit-testable: feed a byte
-sequence, assert the resulting register map. It holds no module state at all:
-the one thing that would have been state, the over-cap warning's report budget,
-is passed in by the caller that owns the stream (:func:`new_recipe_log`), which
-is what makes that budget per-stream rather than per-process. The
-:class:`~c64cast.sid.asid_scene.AsidScene` owns the MIDI port, the register shadow,
-the DMA writes, and the oscilloscope.
+A **pure** decoder: no mido, no hardware, no module state.
 
-Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
-streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
-``0x4C``/``0x4D`` start/stop, ``0x4F`` character display, ``0x31`` speed
-(PAL/NTSC + multiplier + buffering bit), ``0x32`` SID type (per chip), and the
-``0x30`` timing recipe (per-register write order + inter-write wait cycles,
-decoded into :attr:`AsidUpdate.timing_recipe`). OPL-FM (``0x60``) is recognized
-but dropped (no OPL), as is **any unrecognized command byte** — the catch-all,
-not just ``0x60``, is what a reader of this untrusted-input decoder most needs
-to know. Every register/type update carries a ``chip_index`` so the
-scene can route it to the matching SID address (see :mod:`c64cast.sid.asid_sidmap`
-for the U64 address map). See docs/architecture.md for the rationale.
-
-The ``0x30`` recipe used to be dropped: the coalesced flush path applies the
-whole register image at once, so the plain write order sufficed. The buffered
-C64-side ring player (see :mod:`c64cast.sid.asid_player`) *does* honor it — it
-replays each frame's writes on the real SID in the recipe's order with the
-recipe's inter-write waits — so the decoder now surfaces it.
-
-The ASID ``0x4E`` payload orders the three voice control registers last
-(register IDs 22-27) so a frame can carry a *second* write to each control
-register — the gate-off→gate-on "hard restart" trick players use to re-attack
-an already-gated voice. We surface the first control value in
-:attr:`AsidUpdate.control_first` so the scene can emit it before the coalesced
-block write (which lands the second/final value), preserving the pulse a real
-SID needs.
+See docs/architecture/sid.md#asidpy--the-pure-decoder.
 """
 
 from __future__ import annotations
@@ -59,11 +26,11 @@ def new_recipe_log() -> LogThrottle:
     The warning is chosen by the sender — the smallest message that trips it is
     62 bytes — so it is throttled rather than logged per message; see
     :mod:`c64cast._wire_log`. A factory rather than a module-level instance
-    because the rule there is O(1) per *stream*, and a decoder is a free
-    function: the throttle has to come from whatever owns the stream, which is
-    one :class:`~c64cast.sid.asid_scene.AsidScene` per MIDI port. A module-level
-    instance made it O(1) per *process*, so in ensemble mode one system's flood
-    suppressed another system's first report.
+    because the rule there is O(1) per *stream* and a decoder is a free
+    function: the throttle comes from whatever owns the stream, one
+    :class:`~c64cast.sid.asid_scene.AsidScene` per MIDI port. A module-level
+    instance would be O(1) per *process*, so in ensemble mode one system's flood
+    would suppress another system's first report.
 
     The logger is this module's, so a record lands where a reader of
     ``c64cast.sid.asid`` expects it whoever built the throttle.
@@ -74,30 +41,23 @@ def new_recipe_log() -> LogThrottle:
 # SysEx manufacturer id chosen by Elektron for ASID (45 = 0x2D).
 ASID_MANUFACTURER_ID = 0x2D
 
-# Commands (see spec/protocol.md).
 CMD_TIMING = 0x30  # SID write order & inter-write wait recipe
 CMD_SPEED = 0x31  # PAL/NTSC + speed multiplier + frame delta + buffering bit
 CMD_SID_TYPE = 0x32  # 6581 / 8580
-CMD_START = 0x4C  # start playback
-CMD_STOP = 0x4D  # stop playback
+CMD_START = 0x4C
+CMD_STOP = 0x4D
 CMD_REG = 0x4E  # SID register data (the workhorse)
-CMD_CHARS = 0x4F  # display characters
+CMD_CHARS = 0x4F
 CMD_MULTI_SID_LO = 0x50  # SID2 .. SID17 register data (chips 1..16)
 CMD_MULTI_SID_HI = 0x5F
-CMD_OPL = 0x60  # OPL-FM register data (dropped)
+CMD_OPL = 0x60  # OPL-FM register data
 
 # The highest chip index the protocol can name: 0x5F = SID17 = chip 16.
 MAX_CHIP_INDEX = CMD_MULTI_SID_HI - CMD_MULTI_SID_LO + 1
 
-# The 0x30 recipe is a SID write *order*, so it can be no longer than the
-# register table and can name each ASID register id at most once. Neither bound
-# is on the wire: SysEx has no length limit on a virtual/network MIDI port, and
-# the recipe persists until the next 0x30 — so an uncapped decode lets one
-# message amplify every later frame (measured: a 400 KB message decodes to
-# 200,000 entries, and an ordinary 4-register frame then serializes to 200,004
-# ops on the MIDI reader thread). Both bounds are load-bearing: a fully
-# spec-legal 28-pair recipe that repeats one id still serializes past
-# ``asid_player.MAX_OPS_PER_CHIP``, which silently truncates other chips away.
+# A SID write *order*: no longer than the register table, each ASID register id
+# named at most once. Neither bound is on the wire, and both are load-bearing —
+# see docs/architecture/sid.md#asidpy--the-pure-decoder.
 MAX_TIMING_RECIPE_PAIRS = 28
 
 # ASID register ID (0-27) → SID register offset from $D400. IDs 0-21 are the
@@ -115,7 +75,6 @@ _ASID_REG_TO_OFFSET: tuple[int, ...] = (
 )
 # fmt: on
 
-# Voice control-register ID ranges within _ASID_REG_TO_OFFSET.
 _CTRL_FIRST_BASE = 22  # ids 22,23,24 → voice 0,1,2 (first write)
 _CTRL_SECOND_BASE = 25  # ids 25,26,27 → voice 0,1,2 (second write)
 
@@ -159,9 +118,7 @@ def decode(data: Sequence[int], *, recipe_log: LogThrottle) -> AsidUpdate | None
 
     ``recipe_log`` is this stream's budget for the one warning a sender can
     provoke here — :func:`new_recipe_log` builds one, and it is required rather
-    than defaulted so that a new caller has to answer which stream it is
-    reading. A default would silently be a process-wide one, which is the bug
-    this parameter exists to remove.
+    than defaulted so a new caller has to answer which stream it is reading.
     """
     if len(data) < 2 or data[0] != ASID_MANUFACTURER_ID:
         return None
@@ -170,8 +127,7 @@ def decode(data: Sequence[int], *, recipe_log: LogThrottle) -> AsidUpdate | None
     if cmd == CMD_REG:
         return _decode_registers(payload, chip_index=0)
     if CMD_MULTI_SID_LO <= cmd <= CMD_MULTI_SID_HI:
-        # 0x50 = SID2 (chip 1) .. 0x5F = SID17 (chip 16). Same packed format
-        # as 0x4E, just targeting a higher chip index.
+        # 0x50 = SID2 (chip 1) .. 0x5F = SID17 (chip 16), same packed format as 0x4E.
         return _decode_registers(payload, chip_index=cmd - CMD_MULTI_SID_LO + 1)
     if cmd == CMD_START:
         return AsidUpdate(command=cmd, playing=True)
@@ -185,8 +141,7 @@ def decode(data: Sequence[int], *, recipe_log: LogThrottle) -> AsidUpdate | None
         return _decode_sid_type(payload)
     if cmd == CMD_TIMING:
         return _decode_timing(payload, recipe_log)
-    # Recognized-but-unsupported (OPL-FM) and anything unknown: flag as dropped
-    # so the scene can warn once and move on.
+    # The default branch: recognized-but-unsupported (OPL-FM) and anything unknown.
     return AsidUpdate(command=cmd, dropped=True)
 
 
@@ -225,9 +180,8 @@ def _decode_registers(payload: Sequence[int], *, chip_index: int) -> AsidUpdate:
             first_ctrl[reg_id - _CTRL_FIRST_BASE] = value
         elif _CTRL_SECOND_BASE <= reg_id < _CTRL_SECOND_BASE + 3:
             second_ctrl[reg_id - _CTRL_SECOND_BASE] = value
-    # Hard restart: a voice with both a first and a *differing* second control
-    # write in this frame. The first value (gate off / test) must reach the
-    # chip before the final one, so surface it for the two-phase emit.
+    # Hard restart: the first value (gate off / test) must reach the chip before
+    # the final one, so surface it for the two-phase emit.
     for voice, fval in first_ctrl.items():
         sval = second_ctrl.get(voice)
         if sval is not None and sval != fval:
@@ -297,9 +251,7 @@ def _decode_sid_type(payload: Sequence[int]) -> AsidUpdate:
     update = AsidUpdate(command=CMD_SID_TYPE)
     if len(payload) >= 2:
         # data0 = chip index (0 = SID1), data1 bit0 = 0:6581 / 1:8580. mido hands
-        # up a full 0..127 data byte; clamp it to the range the multi-SID
-        # commands can produce so no consumer is handed an index this decoder
-        # would never otherwise emit.
+        # up a full 0..127 data byte; clamp to the multi-SID commands' range.
         update.chip_index = min(payload[0], MAX_CHIP_INDEX)
         update.chip_type = "8580" if (payload[1] & 0x01) else "6581"
     return update

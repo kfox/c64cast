@@ -17,50 +17,18 @@ the U64 ones :mod:`c64cast.sid.sid_volume` exists for:
     mush, and the snooped emulations are the only output where it can sound
     as authored.
 
-That last point inverts on a machine with an internal dual-SID mod (ARM2SID,
-SIDFX, DualSID). There the second chip is properly decoded at its own address,
-so the machine's own output carries the tune as authored with no help from
-this module — and carries it *more* faithfully than the emulations do, because
-the snoop cannot tell a write to ``$D4xx-$D7xx`` from a write to the RAM
-underneath (the cartridge port carries no signal distinguishing the two), so a
-tune using that RAM sprays clicks and stray notes into the emulated SIDs.
-Which output a listener should trust is therefore a property of the machine,
-not of this surface; ``[hardware].host_sid_chips`` is how that gets declared,
-and c64cast/sid/sid_resolved.py renders the two routes separately.
+So this module *routes* — a spare enabled emulated SID is retargeted to an
+uncovered tune chip — and *matches the model*, setting each side snooping a tune
+chip to the 6581 or 8580 the tune's PSID header asked for. Same shape as the
+siblings: pure planners plus best-effort impure entry points
+(:func:`apply_emusid_routing`, :func:`apply_emusid_model`), gated on
+``profile.supports_emusid_mixer``. A REST failure never crashes a scene.
 
-So this module *routes*: a spare enabled emulated SID (one snooping an address
-the tune doesn't play) is retargeted to an uncovered tune chip, and the
-original base goes back at teardown via the caller's
-:class:`~c64cast.sid.sid_hw_config.SidHwSession`. A side the user disabled stays
-disabled — enabling hardware the user turned off is a bigger intervention than
-retargeting what they left on. Panning and volume for the routed sides ride on
-:mod:`c64cast.sid.sid_panning` / :mod:`c64cast.sid.sid_volume`, whose item maps
-include the ``emusid1``/``emusid2`` sources defined here.
+Field names and both enum ladders confirmed live
+(``GET /v1/configs/Audio%20Output%20Settings``) and against the firmware source
+(audio_select.cc, built only for the U2/U2+/U2+L targets).
 
-It also *matches the model*: each side snooping a tune chip is set to the
-6581 or 8580 the tune's PSID header asked for (:func:`apply_emusid_model`,
-under the same ``[ultimate64].sid_model`` knob as the U64's SID Player
-Autoconfig). That pass is trivial next to the U64's, where matching means
-finding a different chip — swapping sockets or falling back to an FPGA core.
-Here the side *is* an emulation, so it is simply told which chip to be, and a
-mismatch is always fixable in place. The host C64's own SID still plays the
-tune unmatched on the machine's own output; nothing on this surface can change
-that, which is why the resolved-audio line reports both routes separately.
-
-Same shape as the siblings: pure planners plus best-effort impure entry
-points (:func:`apply_emusid_routing`, :func:`apply_emusid_model`), gated on
-``profile.supports_emusid_mixer`` — granted by ``refine_capabilities`` from
-the device's category list, so it is never true alongside the U64's
-``supports_sid_config`` surface (the two firmwares register different
-categories). A REST failure never crashes a scene.
-
-Field names confirmed live (``GET /v1/configs/Audio%20Output%20Settings``)
-and against the firmware source (audio_select.cc, built only for the
-U2/U2+/U2+L targets — the U64's u64_config.cc registers `Audio Mixer`
-instead): the volume items spell it ``Vol EmuSid1`` (no space, lowercase
-``id``), the enum ladders are byte-identical to the U64 mixer's (including
-the leading space in ``" 0 dB"``), and the snoop-base enum covers only the
-twelve standard multi-SID addresses plus cartridge-I/O mappings.
+See docs/architecture/sid.md#emusid_mixerpy--u2-emulated-stereo-sid-snoop-routing--model-matching.
 """
 
 from __future__ import annotations
@@ -83,8 +51,8 @@ log = logging.getLogger(__name__)
 CAT_EMUSID: Final = "Audio Output Settings"
 
 # Per-source items. "emusid1" is the firmware's "SID Left" instance and
-# "emusid2" its "SID Right" — the Left/Right names are historical (each side
-# has its own mixer pan), so the sources are named after the Vol/Pan items.
+# "emusid2" its "SID Right"; the sources are named after the Vol/Pan items
+# because the Left/Right names are historical — each side has its own pan.
 ITEM_ENABLE: Final[dict[str, str]] = {"emusid1": "SID Left", "emusid2": "SID Right"}
 ITEM_BASE: Final[dict[str, str]] = {"emusid1": "SID Left Base", "emusid2": "SID Right Base"}
 ITEM_FILTER: Final[dict[str, str]] = {
@@ -100,23 +68,17 @@ PAN_ITEM_EMU: Final[dict[str, str]] = {"emusid1": "Pan EmuSid1", "emusid2": "Pan
 
 ENABLED: Final = "Enabled"
 
-# Both model items take the firmware's two-entry `sidchip_sel` ladder, so the
-# emulation is told which chip to *be* rather than which curve to approximate —
-# none of the U64 UltiSID's "8580 Lo"/"8580 Hi"/"6581 Alt" variants to choose
-# between, and the labels are already the model names the PSID header uses.
+# The firmware's two-entry `sidchip_sel` ladder: already the model names the
+# PSID header uses, with none of the UltiSID's "8580 Lo"/"6581 Alt" variants.
 EMU_MODELS: Final[tuple[str, ...]] = ("6581", "8580")
 
-# Filter curve and combined waveforms are separate config items, but they are
-# two halves of one question — a side set to an 8580 curve with 6581 waveform
-# combining emulates neither chip. A tune asks for a chip, so they move
-# together.
+# Two separate config items, moved together: a side on an 8580 curve with 6581
+# waveform combining emulates neither chip.
 _MODEL_ITEMS: Final[tuple[dict[str, str], ...]] = (ITEM_FILTER, ITEM_WAVEFORMS)
 
 # The bus addresses the snoop-base enum can express (audio_select.cc
-# sid_base[]) — the twelve standard multi-SID bases. The enum's remaining
-# entries map the emulation into cartridge I/O ($DExx/$DFxx) instead of
-# snooping the SID range; a side parked there hears no tune and counts as
-# retargetable.
+# sid_base[]). Its remaining entries map the emulation into cartridge I/O
+# ($DExx/$DFxx) instead; a side parked there hears no tune and is retargetable.
 SNOOPABLE_ADDRESSES: Final[tuple[int, ...]] = (
     0xD400,
     0xD420,
@@ -185,8 +147,7 @@ def plan_emusid_routing(
     topology = emusid_topology(category)
     covered = set(topology.values())
     uncovered = [a for a in dict.fromkeys(addresses) if a not in covered]
-    # The first side covering a tune address is that chip's primary; every
-    # other enabled side is spare and retargetable.
+    # The first side covering a tune address is that chip's primary.
     primaries = set(emusid_sources_for_addresses(addresses, category)) - {None}
     spare = [
         source

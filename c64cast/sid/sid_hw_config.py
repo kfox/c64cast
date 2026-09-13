@@ -1,17 +1,12 @@
 """Shared U64 multi-SID hardware-config plumbing.
 
-The REST side of the multi-SID story: snapshot the SID address/socket config,
-apply a :class:`~c64cast.sid.asid_sidmap.SidMap`, and restore the snapshot on
-teardown. Extracted from :class:`~c64cast.sid.asid_scene.AsidScene` so
-:class:`~c64cast.sid.waveform.WaveformScene` (playing a multi-SID `.sid` file) can
-reuse it verbatim — both need the U64's extra SID cores mapped to the tune's
-chip addresses, and both must put the user's config back afterward.
+Snapshot the SID address/socket config, apply a
+:class:`~c64cast.sid.asid_sidmap.SidMap`, and restore the snapshot on teardown.
 
-Every function is best-effort and swallows REST errors (logging at debug/warn):
-a config read/write failure must never crash a scene. All are gated by the
-caller on ``api.profile.supports_sid_config`` (U64 only: TeensyROM has no
-config API, and the Ultimate II+ has a config API without any of these
-categories — the display still works, chip 0 stays audible).
+Every function is best-effort and swallows REST errors (logging at debug/warn),
+and every caller gates on ``api.profile.supports_sid_config``.
+
+See docs/architecture/sid.md#sid_hw_configpy--shared-sid-hardware-config-plumbing.
 """
 
 from __future__ import annotations
@@ -54,10 +49,7 @@ MANAGED_ADDRESSING_ITEMS = (
     "Auto Address Mirroring",
 )
 MANAGED_SOCKET_ITEMS = ("SID Socket 1", "SID Socket 2")
-# UltiSID filter-curve items a model-autoconfig plan touches (see
-# sid_autoconfig.py). A third sibling to MANAGED_ADDRESSING_ITEMS/
-# MANAGED_SOCKET_ITEMS rather than folded into either — distinct category
-# (CAT_ULTISID), distinct concern (chip model, not address routing).
+# UltiSID filter-curve items a model-autoconfig plan touches (sid_autoconfig.py).
 MANAGED_MODEL_ITEMS = (ITEM_ULTISID1_FILTER, ITEM_ULTISID2_FILTER)
 
 
