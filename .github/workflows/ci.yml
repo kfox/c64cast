@@ -100,7 +100,7 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      # `make web` is `npm ci` + svelte-check + vite build, so a type error in
+      # `make web` is `npm ci` + svelte-check + vite build + vitest, so a type error in
       # the UI fails here too rather than shipping in a committed bundle.
       - name: Rebuild the console
         run: make web
