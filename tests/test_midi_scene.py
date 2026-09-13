@@ -18,6 +18,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
@@ -1024,6 +1025,16 @@ class LifecycleTests(_MidiTestCase):
         with self.assertLogs("c64cast.sid.midi_scene", level="ERROR"):
             scene.teardown()
         self.assertEqual(api.memories.get("D018"), "14")
+
+    def test_the_midi_port_closes_before_the_sid_is_silenced(self):
+        order: list[str] = []
+        scene, api = _make_scene()
+        scene._midi_port = SimpleNamespace(close=lambda: order.append("port close"))
+        api.silence_sid = lambda: order.append("SID silence")  # type: ignore[method-assign]
+
+        scene.teardown()
+
+        self.assertEqual(order, ["port close", "SID silence"])
 
     def test_teardown_leaves_d018_on_the_char_mode_default(self):
         # The scope ran in hires ($18). Teardown hands the next scene the
