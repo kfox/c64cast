@@ -585,7 +585,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 # on the way into a char scene, which would then read its matrix
                 # from the wrong offset. Safe only after uninstall — before it,
                 # the next field's IRQ would put the page value straight back.
-                api.write_memory(f"{VIC.D018_MEMORY:04X}", "14")
+                api.write_memory(f"{VIC.D018_MEMORY:04X}", f"{VIC.D018_CHAR_DEFAULT:02X}")
             api.invalidate_cache()
 
     def _entry_penalty(self, table: BlendTable) -> np.ndarray:

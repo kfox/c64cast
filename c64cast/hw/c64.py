@@ -39,6 +39,7 @@ class VIC:
     D016_CONTROL_2: Final = 0xD016  # bit 4 = multicolor mode, 3 = 38/40-col
     D017_SPRITE_YE: Final = 0xD017  # vertical expansion enable per sprite
     D018_MEMORY: Final = 0xD018  # screen-mem + char-set / bitmap base
+    D018_CHAR_DEFAULT: Final = 0x14  # bank-0 char matrix at $0400
     D019_IRQ_FLAGS: Final = 0xD019  # IRQ status; write to ack
     D01A_IRQ_ENABLE: Final = 0xD01A  # IRQ enable mask (raster, sprite, ...)
     D01B_SPRITE_PRI: Final = 0xD01B  # sprite priority (vs background)

@@ -15,7 +15,7 @@ import numpy as np
 
 from c64cast.app.config import InterstitialCfg
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, RegionID
+from c64cast.hw.c64 import CIA2, VIC, RegionID
 from c64cast.video.palette import C64_COLORS, resolve_color
 
 from .backgrounds import build as build_background
@@ -121,7 +121,7 @@ class InterstitialScene(Scene):
         self.api.write_memory("d019", "01")
         self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
         # Standard PETSCII char mode, black border/bg.
-        self.api.write_memory("d018", "14")
+        self.api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         self.api.write_memory("d016", "08")
         self.api.write_memory("d011", "1b")
         self.api.write_regs("d020", 0x00, 0x00)
