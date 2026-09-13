@@ -1,30 +1,18 @@
 """SID-driven music feature stream for reactive generative visuals.
 
-`SidFeatureStream` is the cheapest music-feature source we have: it runs the
-same SID file the U64 is playing in parallel on a host-side 6502
-([SidHostEmu](sid_host_emu.py)) and reads per-voice envelope / frequency / gate
-state straight out of the emulated `$D400-$D418` shadow — no FFT, no
-onset-detection on a raw audio signal, because the features are already computed
-by the emulator we know how to run. It mirrors WaveformScene's poll-thread
-pattern (a `PollThread` ticking PLAY at the tune's real rate, with wall-clock
-catch-up) but, instead of an oscilloscope trace, distills the state into a small
-[MusicModulation](modulation.py) snapshot the generators read.
+`SidFeatureStream` runs the same SID file the U64 is playing in parallel on a
+host-side 6502 ([SidHostEmu](sid_host_emu.py)) and reads per-voice envelope /
+frequency / gate state straight out of the emulated `$D400-$D418` shadow — no
+FFT and no onset detection on a raw signal, because the emulator has already
+computed the features. A `PollThread` ticks PLAY at the tune's real rate with
+wall-clock catch-up, as WaveformScene's does, and each tick is distilled into a
+[MusicModulation](modulation.py) snapshot the generators read. It is entirely
+host-side, so it adds no U64 bus traffic.
 
-It is entirely host-side: the real chip plays autonomously on the U64 and the
-poll thread only steps a pure-Python emulator, so this adds **zero** U64 bus
-traffic — important, because a SID-audio SourceScene is already forced onto
-host-DMA and bitmap displays already run at half-rate.
-
-`bpm` is an onset-rate proxy, not a true beat tracker: it EMAs the interval
-between note onsets (gate-on edges + hard-restarts), folded into a plausible
-tempo band. `beat_phase` is the running integral of `bpm/60`, so a jittery
-estimate never causes a phase discontinuity (the cycle rate it drives stays
-smooth). That math lives in `modulation.TempoEstimator`, shared with the
-audio-input analyzer ([audio_features.py](audio_features.py)) so both producers
-report tempo identically; a real beat tracker can be dropped in behind it later.
-
-This stream reports no `bands` — it reads envelopes, not a spectrum, so
+This stream reports no `bands`: it reads envelopes, not a spectrum, so
 `MusicModulation.bands` stays empty on the SID path (see modulation.py).
+
+See docs/architecture/scenes.md#composable-scenes--scenessourcescene--frame_sourcepy--generators--effectspy--audio_sourcepy--modulationpy--music_featurespy.
 """
 
 from __future__ import annotations
@@ -63,18 +51,15 @@ class SidFeatureStream:
     a consistent snapshot.
     """
 
-    # Catch-up safety: never run more than this many PLAY passes in a single
-    # poll wakeup (mirrors WaveformScene._MAX_CATCHUP_TICKS — bounds a long
-    # scheduler stall to a fixed amount of host CPU rather than a stampede),
-    # and never spend more than this fraction of a poll period doing it. The
-    # count alone is not a time bound: the tune sets what a PLAY pass costs and
-    # the rate the batch is sized against, so an expensive tune could keep this
-    # thread permanently busy. See sid_host_emu.run_catchup_passes.
+    # Bounds on one poll wakeup's catch-up: at most this many PLAY passes, and
+    # at most this fraction of a poll period spent on them. Both are needed —
+    # the tune sets what a pass costs, so a count alone is no time bound and an
+    # expensive tune would keep this thread permanently busy. Mirrors
+    # WaveformScene._MAX_CATCHUP_TICKS; see sid_host_emu.run_catchup_passes.
     _MAX_CATCHUP_TICKS = 120
     _MAX_CATCHUP_PERIOD_FRACTION = 0.5
-    # Onset envelope time constant (seconds). The per-tick decay factor is
-    # exp(-dt/τ); τ≈0.18 s gives a brief, visible pulse that fades over ~3-4
-    # frames at 60 Hz.
+    # Onset envelope time constant, decaying per tick by exp(-dt/τ): 0.18 s is a
+    # brief pulse that fades over 3-4 frames at 60 Hz.
     _ONSET_TAU_S = 0.18
 
     def __init__(
@@ -97,26 +82,22 @@ class SidFeatureStream:
         self._host_emu: SidHostEmu | None = None
         self._poll: PollThread | None = None
 
-        # Tick cadence (set in start()). `_poll_dt` is the song time one PLAY
-        # tick advances; `_poll_period` is how often the thread wakes, which is
-        # the same number until a PLAY pass costs more than the rate allows.
+        # `_poll_dt` is the song time one PLAY tick advances; `_poll_period` is
+        # how often the thread wakes, which is the same number until a PLAY pass
+        # costs more than the rate allows.
         self._reg_poll_hz = self._video_hz
         self._poll_dt = 1.0 / self._video_hz
         self._poll_period = self._poll_dt
         self._onset_decay = 0.0
 
-        # Wall-clock catch-up bookkeeping (see _poll).
         self._sid_start_time = 0.0
         self._ticks_done = 0
         self._catchup_warned = False
 
-        # Feature accumulators (reset in start()).
         self._tick_index = 0
         self._onset = 0.0
         self._tempo = TempoEstimator()
         self._prev_gate = [False] * SID.N_VOICES
-
-    # ---- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
         """Build the persistent emulator, detect the PLAY rate, and start the
@@ -138,15 +119,14 @@ class SidFeatureStream:
         is the only piece a unit test has to skip — tests call _prepare() then
         drive _process_tick directly with synthetic register snapshots."""
         self._emulator = SIDEmulator(system=self._system)
-        # One budget for this whole preparation: the persistent emulator's INIT
-        # and the throwaway probe's. INIT is bounded in emulated cycles at 2 M,
-        # which is not seconds — an unbudgeted one is the part no per-pass cap
-        # was ever bounding, and this runs on the audio source's setup path.
+        # One budget covers this whole preparation — the persistent emulator's
+        # INIT and the throwaway probe's. INIT is bounded at 2 M emulated
+        # cycles, which is not a bound in seconds, and this runs on the audio
+        # source's setup path.
         budget = HostEmuBudget()
         self._host_emu = SidHostEmu(self._sid_bytes, song=self._song, budget=budget)
-        # This emulator's own INIT verdict, frozen in its constructor — the
-        # probe below builds a throwaway one and cannot touch it. Not a
-        # refusal; see init_truncation_notice.
+        # This emulator's own INIT verdict, frozen in its constructor; the
+        # throwaway probe below cannot touch it. Not a refusal.
         notice = init_truncation_notice(self._host_emu)
         if notice is not None:
             log.warning(
@@ -165,10 +145,10 @@ class SidFeatureStream:
         self._reg_poll_hz = float(rate)
         self._poll_dt = 1.0 / max(rate, 5.0)
         # Floored so one measured PLAY pass fits inside a fraction of a wakeup.
-        # The tune sets both the rate and the pass cost, so without this the
-        # catch-up batch's time bound could be smaller than one indivisible
-        # pass — the thread then runs continuously and, under the GIL, takes
-        # the render thread's time with it. See sustainable_poll_period_s.
+        # The tune sets both the rate and the pass cost, so otherwise the
+        # catch-up batch's time bound can be smaller than one indivisible pass,
+        # and the thread then runs continuously — taking the render thread's
+        # time with it, under the GIL.
         self._poll_period = sustainable_poll_period_s(
             self._poll_dt, pass_cost_s, self._MAX_CATCHUP_PERIOD_FRACTION
         )
@@ -183,7 +163,6 @@ class SidFeatureStream:
             )
         self._onset_decay = math.exp(-self._poll_dt / self._ONSET_TAU_S)
 
-        # Reset accumulators + clocks so a fresh stream starts clean.
         self._tick_index = 0
         self._onset = 0.0
         self._tempo.reset()
@@ -196,8 +175,6 @@ class SidFeatureStream:
         """Stop the poll thread (pure host-side cleanup; no U64 I/O)."""
         if self._poll is not None:
             self._poll.stop()
-
-    # ---- poll thread --------------------------------------------------------
 
     def _detect_play_rate_hz(self, budget: HostEmuBudget) -> tuple[float, float | None]:
         """Return ``(rate_hz, pass_cost_s)`` for this tune, probed on a
@@ -294,8 +271,6 @@ class SidFeatureStream:
                 self._tempo.note_onset(now)
 
             self._tempo.advance(self._poll_dt)
-
-    # ---- feature snapshot ---------------------------------------------------
 
     def features(self) -> MusicModulation | None:
         """Return the current music-feature snapshot, or None before start().

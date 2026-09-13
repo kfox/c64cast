@@ -1,24 +1,6 @@
-"""Scene state machine.
+"""Scene state machine: a DisplayMode, an optional audio path, and a source.
 
-Scenes own a DisplayMode and (optionally) an AudioStreamer + video source.
-The Playlist drives them: setup() → process_frame()* → teardown().
-
-Each scene also carries a list of `Overlay`s (see overlays/) which the
-Playlist runs around the scene's lifecycle. The scene itself is oblivious
-to overlays — they're a Playlist-level concern.
-
-Two scene families:
-
-* Live (webcam): WebcamScene. Optimized for low latency — reads each
-  frame and pushes it straight through. Audio follows the global
-  [audio].enabled flag (overridable per-scene with `audio = false`);
-  when on, the mic feed runs uncorrelated to the video (no sync delay).
-  The Playlist's deadline-based frame dropping handles congestion; no
-  per-scene backpressure check needed under DMA.
-
-* Recorded (file): VideoScene. Uses PyAV for A/V demux with a shared
-  PTS clock — the video reader picks frames against the audio playback
-  position rather than wall-clock-from-start, so drift can't accumulate.
+See docs/architecture/scenes.md#scenespy--scene-state-machine.
 """
 
 from __future__ import annotations
@@ -80,42 +62,23 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# A scene's audio object is either the shared 4-bit DAC streamer or (video
-# scenes on a sampler-capable U64) the Ultimate Audio FPGA sampler. Both
-# satisfy the scene-facing contract (sample_rate / position_seconds / stop /
-# push_samples / set_pre_emphasis); backend-specific bring-up branches narrow
-# via isinstance.
 SceneAudio = AudioStreamer | UltimateAudioSampler
 
 _C64_ASPECT = 320 / 200
 
-# Rolling-window auto_fit: how many opening frames to fold into the online
-# ColorFitAccumulator before freezing the derived fit. The accumulator is
-# additive, so the fit converges and stabilizes over this window (~2s at
-# 24 fps) — replacing the old blocking full-source pre-scan with a brief
-# on-screen settle and no startup pause. See VideoScene.setup.
+# Opening frames folded into the online ColorFitAccumulator before the derived
+# fit freezes — ~2 s at 24 fps.
 ONLINE_FIT_WARMUP_FRAMES = 48
 
-# How often (seconds) VideoScene emits the live A/V-lag debug line while a
-# video plays under -vv. The per-scene summary is logged once at teardown
-# (info, visible at -v). See VideoScene._log_av_lag.
 AV_LAG_LOG_INTERVAL_S = 2.0
 
-# Media extensions each file-driven scene accepts (`file =` spec resolution).
-# Defined here — not in scene_factory, which imports this module — so the
-# concrete scenes below can carry them as MEDIA_EXTS class attrs;
-# scene_factory re-exports them to the app layer (quickcast, wizard, CLI).
+# Defined here, not in scene_factory (which imports this module); scene_factory
+# re-exports them to the app layer.
 VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v")
 SID_EXTS = (".sid",)
 PICTURE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 PROGRAM_EXTS = (".prg", ".crt")
-# Audio-only formats — a generative scene with `audio_source = "file"` decodes
-# one (PyAV) to the DAC and reacts to it. Shared with quickcast.py.
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus")
-
-# Border color while a MIDI live-tune loop is armed (Record pressed / first
-# loop_toggle press, awaiting Stop/second press to close it) — C64 palette
-# index 2 = red. See VideoScene._set_record_border.
 
 
 def _crop_to_aspect(img: np.ndarray, target_ratio: float = _C64_ASPECT) -> np.ndarray:
@@ -145,19 +108,15 @@ def _fit_to_aspect(
     pad the short axis with ``pad_color`` bars so the *whole* image is visible.
     The inverse trade-off to ``_crop_to_aspect`` — nothing is lost, but bars
     appear. The bars are a single solid color so they quantize to one stable
-    palette cell (black by default → C64 index 0); for a still slideshow that's
-    flicker-free, which is why fit-mode is exposed there and not on video (where
-    per-frame bg0 churn would shimmer — see project_slideshow_aspect_fit)."""
+    palette cell (black by default → C64 index 0)."""
     h, w = img.shape[:2]
     ar = w / h if h else target_ratio
     if ar > target_ratio:
-        # Wider than target → keep full width, pad top/bottom.
         new_h = round(w / target_ratio)
         pad = max(0, new_h - h)
         top = pad // 2
         return cv2.copyMakeBorder(img, top, pad - top, 0, 0, cv2.BORDER_CONSTANT, value=pad_color)
     if ar < target_ratio:
-        # Taller than target → keep full height, pad left/right.
         new_w = round(h * target_ratio)
         pad = max(0, new_w - w)
         left = pad // 2
@@ -215,12 +174,11 @@ def _blit_c64_text(
     if not text:
         return out
     h, w = out.shape[:2]
-    mask = glyphs_to_mask(load_glyphs(), text)  # (8, 8*len)
+    mask = glyphs_to_mask(load_glyphs(), text)
     gw = mask.shape[1]
     scale = max(1, int(round((width_frac * w) / max(gw, 1))))
     up = np.repeat(np.repeat(mask, scale, axis=0), scale, axis=1)
     bh, bw = up.shape
-    # Left-aligned at a 2% margin; inset from the top or bottom edge.
     x0 = max(0, int(0.02 * w))
     y0 = h - bh - int(margin_y_frac * h) if vpos == "bottom" else int(margin_y_frac * h)
     y0 = max(0, y0)
@@ -229,8 +187,6 @@ def _blit_c64_text(
     if rh == 0 or rw == 0:
         return out
     glyph = up[:rh, :rw]
-    # Black halo (dilated glyph, ~1 C64 pixel thick) then white glyph on top, so
-    # the text reads on any background without blacking out a full box.
     k = scale
     kernel = np.ones((2 * k + 1, 2 * k + 1), dtype=np.uint8)
     halo = cv2.dilate(glyph, kernel).astype(bool)
@@ -257,25 +213,15 @@ class OsdState:
     Thread-safe: control threads (the MIDI reader, the WLED server) call
     :meth:`post`; the render thread calls :meth:`current` once per frame. A post
     supersedes any earlier one and shows for `duration_s`, then clears itself.
-    Two independent gates, because they answer different questions and one
-    must not clobber the other. `enabled` is the **static** setting
-    (``[midi_control].osd = "off"``), stamped on by
-    ``scene_factory.build_scene``. `suppressed` is the **run-level** override —
-    performance mode (``Playlist.performance_mode``, from the web console's
-    PERF button or the ``osd.position`` pad's double-tap): the C64 output is in
-    front of an audience, so nothing may draw over it. Were performance mode to
-    write `enabled` instead, turning it back off would have to guess a value
-    and would silently override a config that said "off"; were the pad to write
-    `enabled` — as it did until the two were unified — its hide would reach
-    only the live scene and come undone on the next auto-advance.
 
-    Ask :attr:`visible`, not either gate, whenever the question is "is the OSD
-    up?": ``Playlist.cycle_osd``'s re-show branch does, which is what lets one
-    tap raise an OSD whichever gate is holding it down. `position` is "top" or
-    "bottom". Rendered pre-quantization via
-    :func:`_annotate_osd`, so it works on every display mode (the text becomes
-    part of the quantized bitmap), exactly like the ``--frame-numbers`` debug
-    label."""
+    Two independent gates: `enabled` is the static setting
+    (``[midi_control].osd = "off"``), stamped on by
+    ``scene_factory.build_scene``; `suppressed` is the run-level override that
+    performance mode (``Playlist.performance_mode``) sets. Ask :attr:`visible`,
+    not either gate, whenever the question is "is the OSD up?" — see
+    docs/architecture/control.md#the-osd. `position` is "top" or "bottom".
+    Rendered pre-quantization via :func:`_annotate_osd`, so it works on every
+    display mode, exactly like the ``--frame-numbers`` debug label."""
 
     __slots__ = ("_lock", "_text", "_expires_at", "position", "enabled", "suppressed")
 
@@ -329,12 +275,8 @@ def _annotate_osd(img: np.ndarray, text: str, position: str = "bottom") -> np.nd
 
 
 class Scene:
-    # Subclasses that drive audible content (video PyAV, native
-    # sidplay, MIDI → SID) flip this to True so the Playlist consults
-    # the ensemble audio lock before setup. Live scenes (webcam, blank)
-    # leave it False — in ensemble mode their audio is suppressed at
-    # build time so they have nothing to coordinate. Single-system mode
-    # ignores this flag entirely (no ensemble → no lock to consult).
+    # Consulted by the Playlist's ensemble audio lock before setup; ignored
+    # entirely in single-system mode.
     WANTS_AUDIO_LOCK: bool = False
 
     def __init__(
@@ -348,62 +290,28 @@ class Scene:
         self.audio = audio
         self.display_mode = display_mode
         self.name = name
-        # On-screen display for live performance: brief "param value" feedback
-        # posted by the MIDI/WLED live-tune controls. Position + enabled are
-        # stamped from [midi_control].osd at build time (config.build_scene);
-        # the default is a bottom, enabled OSD that stays invisible until
-        # something posts to it. See OsdState / _annotate_osd / Playlist.post_osd.
         self.osd = OsdState()
         self.is_done = False
         self.duration_s: float = 30.0
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self.prev_frame: np.ndarray | None = None
-        # Populated by config.scenes_from_config(); Playlist runs them around
-        # setup/process_frame/teardown. Order matters — later overlays paint
-        # on top of earlier ones.
+        # Later overlays paint on top of earlier ones.
         self.overlays: list[Overlay] = []
-        # Per-scene framerate cap. None = use the Playlist's default (60 for
-        # NTSC / 50 for PAL). Bitmap scenes that can't sustain full system fps
-        # over HTTP set this to something achievable (24-30 typical) so the
-        # natural-pace + drop logic in Playlist doesn't waste CPU trying.
+        # None = the Playlist's system default (60 NTSC / 50 PAL).
         self.target_fps: float | None = None
-        # Debug aid (set by config.build_scene from [debug].frame_numbers):
-        # source-bearing scenes draw the timecode + frame number into each
-        # frame before quantization. See _annotate_frame_number.
         self.show_frame_numbers: bool = False
-        # Set by config.build_scene: per-scene pre-emphasis (float, or None =
-        # global/source-aware default). Applied to the shared AudioStreamer in
-        # setup() for audio-bearing scenes; ignored when the scene has no audio.
+        # None = the global/source-aware default.
         self.pre_emphasis: float | None = None
-        # Ordered per-scene pixel effect chain (empty = no effect). Set by
-        # config.build_scene from [[scenes]].effects (or the legacy single
-        # `effect`). Each layer is applied in order in _render_with_overlays
-        # before the display mode quantizes, so it works on any frame-bearing
-        # scene (webcam/video/slideshow/generative). Self-rendered bitmap scenes
-        # (waveform/midi) bypass that helper, so effects don't apply to them.
-        # Reset in setup() so a looping/re-entered scene starts clean. The
-        # `effect` property below preserves the pre-chain single-effect API.
         self.effects: list[FrameEffect] = []
-        # ClockModulationSource wrapping the playlist's beat grid, injected by
-        # Playlist.safe_setup. An effect layer with mod_source = "clock" reads
-        # its snapshot in _render_with_overlays so it locks to MIDI/tap tempo
-        # (Live DJ/VJ Phase 3). None until a playlist owns the scene (e.g. an
-        # armed-but-not-yet-set-up clip), which just means clock layers fall
-        # back to the no-modulation baseline until then.
+        # ClockModulationSource over the playlist's beat grid, injected by
+        # Playlist.safe_setup; None until a playlist owns the scene.
         self.clock_modulation: Any = None
-        # Set by config.build_scene to the SceneCfg the scene was built
-        # from — the playlist's orchestrator wiring reads this (and the
-        # rest are populated for conductor/follower roles by the
-        # playlist / cli ensemble plumbing). All Any because Orchestrator
-        # imports would create cycles; the consumers (overlays, playlist)
-        # know the real types.
+        # The SceneCfg this scene was built from. Any, because an Orchestrator
+        # import would cycle; the consumers know the real types.
         self._cfg: Any = None
-        # Which `[[scenes]]` block of the config this scene came from, or None
-        # when no block named it (an interleaved video, a launched clip, the
-        # no-scenes-configured fallback). Set by scene_factory.scenes_from_config
-        # — an index rather than the SceneCfg above because the live-tune
-        # save-back edits the config *file*, which it re-reads first, so what it
-        # needs is the address of the block and not the object this run loaded.
+        # Which `[[scenes]]` block the scene came from, or None when no block
+        # named it. An index, not the SceneCfg above, because the live-tune
+        # save-back re-reads the config file and needs the block's address.
         self.cfg_index: int | None = None
         self._orchestrator: Any = None
         self._is_conductor: bool = False
@@ -422,17 +330,15 @@ class Scene:
     def clear_orchestrator(self) -> None:
         """Drop the orchestrator stamp at teardown. The same Scene instance is
         reused across loop iterations, and a stale stamp would make the next
-        conductor install short-circuit (see EnsembleCoordinator)."""
+        conductor install short-circuit."""
         self._orchestrator = None
         self._is_conductor = False
 
     @property
     def effect(self) -> FrameEffect | None:
         """Back-compat single-effect accessor over the `effects` chain: reads the
-        first layer (or None). Predates the Phase-3 layerable chain; kept so
-        callers that set/read one effect (the WLED bridge, older code) still
-        work. Setting it to a FrameEffect makes it the sole layer; setting None
-        clears the chain."""
+        first layer (or None). Setting it to a FrameEffect makes it the sole
+        layer; setting None clears the chain."""
         return self.effects[0] if self.effects else None
 
     @effect.setter
@@ -441,12 +347,11 @@ class Scene:
 
     def competes_for_audio_lock(self) -> bool:
         """Whether THIS instance contends for the ensemble audio slot.
+
         `WANTS_AUDIO_LOCK` declares the capability at the class level;
-        instances opt out when their audio is actually disabled (e.g. a
-        muted video), so a silent scene is selectable like any
-        non-audio scene. SID-driving scenes (waveform/midi) always
-        compete — they output through the chip regardless of the
-        AudioStreamer, so they don't override this."""
+        instances opt out when their audio is actually disabled (e.g. a muted
+        video). SID-driving scenes (waveform/midi) output through the chip
+        regardless of the AudioStreamer, so they don't override this."""
         return self.WANTS_AUDIO_LOCK
 
     def features(self) -> MusicModulation | None:
@@ -478,13 +383,10 @@ class Scene:
     def setup(self) -> None:
         self.is_done = False
         self.prev_frame = None
-        # Clear any inter-frame effect state so a looping or re-entered scene
-        # doesn't ghost a trail from the previous iteration (every layer).
         for eff in self.effects:
             eff.reset()
-        # Apply this scene's pre-emphasis to the shared streamer before the
-        # subclass brings audio up (mic start / video pre-encode read the
-        # updated DSP params). No-op when the scene has no audio.
+        # Before the subclass brings audio up: mic start and the video
+        # pre-encode both read the updated DSP params.
         if self.audio is not None:
             self.audio.set_pre_emphasis(self.pre_emphasis)
         if self.display_mode is not None:
@@ -493,10 +395,6 @@ class Scene:
         fps_str = f"{self.target_fps:.0f}fps" if self.target_fps else "auto-fps"
         overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
         ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
-        # duration_s = math.inf means the scene never auto-advances: a video
-        # (lifetime is video-driven, ends on EOF) or a single-scene
-        # webcam/blank (runs until stopped). Format that distinctly instead
-        # of "inf.0s".
         dur_str = "unbounded" if math.isinf(self.duration_s) else f"{self.duration_s:.1f}s"
         log.info(
             "scene %r: mode=%s duration=%s %s [%s]", self.name, mode_name, dur_str, fps_str, ov_str
@@ -531,13 +429,9 @@ class Scene:
         raise NotImplementedError
 
     def teardown(self) -> None:
-        # Give the display mode a chance to undo any C64-side state that
-        # outlives the scene boundary — currently only HiresDisplayMode
-        # with use_reu_staged, which leaves a raster IRQ hooked at $0314.
-        # Default DisplayMode.teardown is a no-op, so this is harmless
-        # for every other mode. Runs FIRST so subclasses with audio.stop()
-        # don't pile teardown latency on top of an IRQ that's still
-        # firing into a half-installed handler.
+        # First, so a subclass's audio.stop() latency does not land on top of a
+        # raster IRQ the mode still has hooked at $0314 (HiresDisplayMode with
+        # use_reu_staged; a no-op for every other mode).
         if self.display_mode is not None:
             try:
                 self.display_mode.teardown(self.api)
@@ -587,9 +481,7 @@ class WebcamScene(Scene):
     config.SceneCfg.audio). When attached, mic capture runs independently
     of the video (no sync).
 
-    Congestion handling lives in the Playlist's deadline-based frame
-    dropper; no per-scene queue-fill check needed since DMA writes go
-    over a persistent socket without an in-process queue.
+    See docs/architecture/scenes.md#webcamscene--tuned-for-latency.
     """
 
     def __init__(
@@ -607,10 +499,6 @@ class WebcamScene(Scene):
         self.audio_cfg = audio_cfg
         self.start_time = 0.0
         self._frame_count = 0
-        # [color] drives the display-mode shaping at construction; here it also
-        # enables the LIVE rolling force_palette (a webcam can't pre-scan). None
-        # unless [color].force_palette is on AND the mode applies it — see
-        # _maybe_start_rolling_palette.
         self._color = color
         self._rolling_fp: RollingForcePalette | None = None
 
@@ -618,13 +506,11 @@ class WebcamScene(Scene):
         super().setup()
         self.start_time = time.time()
         self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
-        # The webcam mic path is always the 4-bit DAC streamer (the sampler is a
-        # video-only backend), so narrow to AudioStreamer for start_mic.
+        # The mic path is always the 4-bit DAC streamer; the sampler is a
+        # video-only backend.
         if isinstance(self.audio, AudioStreamer):
-            # Mirror VideoScene: when the display mode installs the
-            # bank-swap merged dispatcher at $0314 (audio_reu_pump_active
-            # flag on a bitmap mode with use_reu_staged), the mic REU pump
-            # install must skip its own $0314 hook.
+            # A mode that installs the bank-swap merged dispatcher at $0314
+            # owns that vector, so the mic REU pump must skip its own hook.
             skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
             self.audio.start_mic(
                 self.audio_cfg.device,
@@ -646,9 +532,8 @@ class WebcamScene(Scene):
             return False
         img = self._read_frame()
         if img is not None:
-            # Feed the clean (pre-annotation) frame to the rolling force_palette
-            # before quantization so it stats the shown picture, not the debug
-            # digits; installs any freshly baked map onto the display mode.
+            # Before annotation, so the rolling force_palette stats the shown
+            # picture and not the debug digits.
             _apply_rolling_palette(self._rolling_fp, self.display_mode, img)
             if self.show_frame_numbers:
                 self._frame_count += 1
@@ -662,13 +547,6 @@ class WebcamScene(Scene):
         return True
 
     def teardown(self) -> None:
-        # The palette worker and the audio streamer are independent promises to
-        # the next scene: `RollingForcePalette.stop()` joins a worker that
-        # touches the DMA link, and a raise there used to starve `audio.stop()`
-        # — handing the next scene the previous scene's audio still streaming,
-        # silently, because `safe_teardown` swallows it. The handle is cleared
-        # before the call, so a failing stop does not leave a dead worker
-        # referenced either.
         fp, self._rolling_fp = self._rolling_fp, None
         steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
         if fp is not None:
@@ -778,14 +656,9 @@ def _render_with_overlays(
                     scene.name,
                 )
                 ov.disabled = True
-    # Cache the full-brightness, post-overlay frame so a freeze+dim fade-out can
-    # re-push it without re-composing; then dim toward black if a fade is active.
-    # apply_fade never mutates the cached buffers, so the fade-out ramp always
-    # dims from the pristine frame. The fade folds over overlays too — they're
-    # part of the composed frame at this point.
+    # Cached at full brightness so a freeze+dim fade-out can re-push without
+    # re-composing; apply_fade never mutates the cached buffers.
     display_mode.last_buffers = buffers
-    # Dim when a transient scene fade OR a persistent user brightness (WLED
-    # bridge `bri`) is active; apply_fade folds both (fade_alpha × user_dim).
     if display_mode.fade_alpha < 1.0 or display_mode.user_dim < 1.0:
         buffers = display_mode.apply_fade(buffers)
     with prof.stage("push"):
@@ -795,17 +668,15 @@ def _render_with_overlays(
 class SourceScene(Scene):
     """Composable scene: a FrameSource × an AudioSource × a display mode.
 
-    Generalizes the live-frame pattern (WebcamScene/SlideshowScene): read a
-    frame from the source at the scene clock, optionally run the scene's pixel
-    effect (applied inside _render_with_overlays), quantize via the display
-    mode, push — overlays compose on top. The source decides the scene's
-    lifetime: infinite sources (generative art) run until `duration_s`; a
-    finite source ends the scene when it reports `finished`.
+    Read a frame from the source at the scene clock, run the scene's effect
+    chain (inside _render_with_overlays), quantize via the display mode, push —
+    overlays compose on top. The source decides the scene's lifetime: infinite
+    sources (generative art) run until `duration_s`; a finite source ends the
+    scene when it reports `finished`.
 
-    Audio is delegated to the AudioSource building block (silence, live mic,
-    and — later — SID playback / sampled streaming), chosen independently of
-    the video source. The base `audio` reference is still passed so the shared
-    streamer's per-scene pre-emphasis hook works; the AudioSource owns
+    Audio is delegated to the AudioSource building block, chosen independently
+    of the video source. The base `audio` reference is still passed so the
+    shared streamer's per-scene pre-emphasis hook works; the AudioSource owns
     start/stop.
     """
 
@@ -824,31 +695,22 @@ class SourceScene(Scene):
         self.audio_source = audio_source
         self.start_time = 0.0
         self._frame_count = 0
-        # [color]: enables the LIVE rolling force_palette for this composable
-        # scene (webcam/wled sink/generative — none can pre-scan). None unless
-        # [color].force_palette is on AND the mode applies it.
         self._color = color
         self._rolling_fp: RollingForcePalette | None = None
 
     def competes_for_audio_lock(self) -> bool:
-        # The audio building block decides: a mic/silent source doesn't claim
-        # the ensemble SID spotlight; a future SID-playback source would.
         return self.audio_source.wants_audio_lock
 
     def features(self) -> MusicModulation | None:
-        # Expose the audio source's live music features (a SID source returns a
-        # real MusicModulation; mic/null return None) for reactive sinks.
         return self.audio_source.features()
 
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
         self.source.setup()
-        # The audio source can fail on real content (a SID source rejects an
-        # RSID / a tune that loads too low / one whose payload clobbers the
-        # display). The playlist does NOT wrap setup() in try/except, so a
-        # raise here would crash the run loop — instead self-abort like
-        # VideoScene: log, flip is_done, and let the playlist advance.
+        # The playlist does not wrap setup() in try/except, so a raise from a
+        # source that rejects its content would crash the run loop. Self-abort
+        # instead and let the playlist advance.
         try:
             self.audio_source.setup()
         except Exception:
@@ -858,13 +720,9 @@ class SourceScene(Scene):
                 type(self.audio_source).__name__,
             )
             self.is_done = True
-        # A SID audio source kicks its player via the firmware's run_prg, which
-        # re-inits the machine to text mode — clobbering the VIC mode the display
-        # configured in super().setup() (which runs BEFORE the audio source). A
-        # bitmap display (mhires/hires) would then render its $0400 color-nibble
-        # bytes as PETSCII. Re-assert the display AFTER the player, the same order
-        # WaveformScene uses. invalidate_cache first so the next frame fully
-        # repaints against the player-disturbed RAM.
+        # A SID audio source kicks its player through run_prg, which re-inits
+        # the machine to text mode and clobbers the VIC registers super().setup()
+        # just wrote; re-assert the display after it, against invalidated cache.
         if (
             not self.is_done
             and self.display_mode is not None
@@ -872,31 +730,23 @@ class SourceScene(Scene):
         ):
             self.api.invalidate_cache()
             self.display_mode.setup(self.api)
-        # Live rolling force_palette (after any display re-assert above so it
-        # installs onto the settled mode). No-op unless the mode applies it.
+        # After any display re-assert above, so it installs onto the settled mode.
         if not self.is_done:
             self._rolling_fp = _maybe_start_rolling_palette(self, self._color, self.display_mode)
 
     def process_frame(self, current_time: float) -> bool:
-        # setup() flips is_done when the audio source failed to start (e.g. a
-        # SID source whose tune run_sid_player refuses). The generative
-        # FrameSource's `finished` is always False, so without this guard the
-        # playlist's `is_done = not still_active` would clobber the abort and
-        # play silent video for the full duration. Honor it like a finished
-        # source so the scene tears down and the playlist advances.
+        # A generative FrameSource is never `finished`, so an is_done set by a
+        # failed setup() has to end the scene here or it plays silent for the
+        # full duration.
         if self.is_done:
             return False
         if self.source.finished:
             return False
         if (current_time - self.start_time) >= self.duration_s:
             return False
-        # Music-reactive scenes: the audio source exposes a live feature snapshot
-        # (None when it has no feature stream), which the source reads to
-        # modulate its frame. Non-reactive sources ignore it.
         modulation = self.audio_source.features()
         frame = self.source.read(current_time - self.start_time, modulation)
         if frame is not None:
-            # Feed the clean frame to the rolling force_palette before quantization.
             _apply_rolling_palette(self._rolling_fp, self.display_mode, frame)
             if self.show_frame_numbers:
                 self._frame_count += 1
@@ -910,14 +760,6 @@ class SourceScene(Scene):
         return True
 
     def teardown(self) -> None:
-        # Display teardown first (unhook any IRQ), then stop audio + source —
-        # mirrors WebcamScene so audio.stop() latency doesn't pile on a still-
-        # firing IRQ.
-        #
-        # The `try/finally` this replaces protected the source handle from a
-        # failing audio source and nothing else, so the rolling-palette stop
-        # above it could starve both and leak the PyAV/capture handle for the
-        # rest of the run. Each guarantee is its own step instead.
         fp, self._rolling_fp = self._rolling_fp, None
         steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
         if fp is not None:
@@ -952,18 +794,15 @@ class BlankScene(Scene):
     def setup(self) -> None:
         super().setup()
         self.start_time = time.time()
-        # Only start mic capture if the scene opted in *and* the global
-        # audio is enabled — same model as WebcamScene. Always the DAC streamer.
         if isinstance(self.audio, AudioStreamer):
             self.audio.start_mic(
                 self.audio_cfg.device, self.audio_cfg.mic_sensitivity, self.audio_cfg.noise_gate
             )
 
     def process_frame(self, current_time: float) -> bool:
-        # Always paint — the Playlist's busy-defer flips is_done back to
-        # False when an overlay (e.g. big_text) reports busy, and a scene
-        # that stopped rendering past duration_s would freeze the screen
-        # mid-message until the next teardown+setup cycle.
+        # Paints past duration_s too: the Playlist's overlay busy-defer flips
+        # is_done back to False, and a scene that stopped rendering there would
+        # freeze the screen mid-message.
         assert self.display_mode is not None
         _render_with_overlays(self.display_mode, self.api, None, self.overlays, current_time, self)
         return (current_time - self.start_time) < self.duration_s
@@ -976,10 +815,10 @@ class BlankScene(Scene):
 
 class MediaFileMixin:
     """Shared `file =` spec plumbing for the media-file scenes (slideshow /
-    video / launcher), which were three identical copies modulo extensions and
-    label. Owns candidate resolution, the random per-setup pick, and the
-    interstitial pre-pick; a concrete scene sets ``MEDIA_EXTS``/``MEDIA_LABEL``
-    and provides the annotated instance attrs."""
+    video / launcher). Owns candidate resolution, the random per-setup pick,
+    and the interstitial pre-pick; a concrete scene sets
+    ``MEDIA_EXTS``/``MEDIA_LABEL`` and provides the annotated instance
+    attrs."""
 
     MEDIA_EXTS: ClassVar[tuple[str, ...]] = ()
     MEDIA_LABEL: ClassVar[str] = ""
@@ -1085,29 +924,16 @@ class SlideshowScene(MediaFileMixin, Scene):
 
         self.file_spec = file
         self.image_duration_s = float(image_duration_s)
-        # How each image is fit to the C64 aspect before the display mode
-        # downscales it: "crop" (center-crop to fill — the default everywhere),
-        # "fit" (letterbox/pillarbox so the whole image shows), or "stretch"
-        # (no aspect handling — the mode's resize distorts to fill). See
-        # _apply_aspect.
         self._aspect_mode = aspect_mode
-        # The whole [color] section travels as one object — it drives both the
-        # display-mode shaping (channel_boost / hue_corrections, applied at
-        # construction) AND the per-image stages installed here at setup time:
-        # the adaptive color fit ([color].auto_fit) and the forced-palette remap
-        # ([color].force_palette), both recomputed per slide in _advance_image so
-        # every photo is optimized while staying stable within a slide.
+        # Drives the display-mode shaping at construction and the per-slide
+        # color fit / forced-palette remap recomputed in _advance_image.
         self._color = color if color is not None else ColorCfg()
-        # Original spec (may be "random") — re-resolved at every setup()
-        # so single-scene loops get a fresh display mode per iteration.
+        # May be "random" — re-resolved at every setup() so single-scene loops
+        # get a fresh display mode per iteration.
         self.display_spec = display_spec
-        # The factory's own display wiring, stashed whole so a
-        # `display = "random"` rebuild goes back through
-        # scene_factory.build_wired_display_mode rather than re-deriving the
-        # cluster here. It carries the raw [video] tri-states plus the probe
-        # verdicts (not resolved bools), which is what lets each re-pick
-        # re-decide REU staging / double-buffer / flicker against its own
-        # concrete mode. See DisplayWiring for why it is one object.
+        # Stashed whole: it carries the raw [video] tri-states plus the probe
+        # verdicts, so a `display = "random"` re-pick can re-decide REU staging
+        # / double-buffer / flicker against its own concrete mode.
         self._display_wiring = wiring if wiring is not None else DisplayWiring(color=self._color)
         candidates = self._resolve_candidates()
         super().__init__(api, None, display_mode, self._initial_scene_name(candidates))
@@ -1116,9 +942,6 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._current_img: np.ndarray | None = None
         self._image_start: float = 0.0
         self.start_time: float = 0.0
-        # True when prepare_next() has already loaded the opening slide (and
-        # updated self.name); setup() then skips the re-pick. See
-        # VideoScene._prepared for the full rationale.
         self._prepared = False
 
     def _maybe_rebuild_display_mode(self) -> None:
@@ -1128,10 +951,8 @@ class SlideshowScene(MediaFileMixin, Scene):
 
         The wiring goes back through the factory's own
         `build_wired_display_mode`, so this cannot drift from the mode the
-        factory built at load time — it used to re-derive the whole cluster
-        here and had already lost `dither_method`/`cell_strategy` and two of
-        `resolve_double_buffer`'s inputs. Only `has_buffer_overlays` is
-        recomputed, because overlays are attached after construction."""
+        factory built at load time. Only `has_buffer_overlays` is recomputed,
+        because overlays are attached after construction."""
         if self.display_spec != "random":
             return
         from c64cast.app.scene_factory import (
@@ -1150,9 +971,6 @@ class SlideshowScene(MediaFileMixin, Scene):
             new_name,
             replace(
                 self._display_wiring,
-                # Text overlays fold into the bitmap; under auto they prefer
-                # the crisp host-DMA path over the REU bank-swap (which
-                # shimmers fine glyphs). See resolve_use_reu_staged.
                 has_buffer_overlays=any(
                     getattr(ov, "PAINTS_INTO_BUFFERS", False) for ov in self.overlays
                 ),
@@ -1182,24 +1000,20 @@ class SlideshowScene(MediaFileMixin, Scene):
             img = cv2.imread(path, cv2.IMREAD_COLOR)
             if img is None:
                 log.warning("slideshow: failed to decode %s; skipping", path)
-                # Drop it from future candidates this iteration.
                 self._shuffle_bag = [p for p in self._shuffle_bag if p != path]
                 if not self._shuffle_bag:
                     # Whole pool consumed and nothing decoded — bail rather
-                    # than infinite-loop.
+                    # than loop forever.
                     self.is_done = True
                     return
                 continue
             self._current_path = path
             self._current_img = _apply_aspect(img, self._aspect_mode)
             if self.display_mode is not None:
-                # Per-image color stages: build the enabled accumulators, feed
-                # the one cropped image, install both results. None clears any
-                # stale state from the previous slide.
                 c = self._color
                 if c.auto_fit:
-                    # Full-strength fit; the display mode lerps it by
-                    # [color].auto_fit_strength at apply time (live-tunable).
+                    # Full strength: the display mode lerps it by
+                    # [color].auto_fit_strength at apply time.
                     fit_acc = ColorFitAccumulator(strength=1.0)
                     fit_acc.add(self._current_img)
                     self.display_mode.set_color_fit(fit_acc.result())
@@ -1224,7 +1038,6 @@ class SlideshowScene(MediaFileMixin, Scene):
         self.name to it, extension stripped). Returns False if the file
         spec no longer resolves to anything."""
         self._maybe_rebuild_display_mode()
-        # Reset shuffle state so each scene entry starts a fresh pass.
         self._shuffle_bag = []
         self._current_path = None
         self._current_img = None
@@ -1244,8 +1057,6 @@ class SlideshowScene(MediaFileMixin, Scene):
             self._prepared = True
 
     def setup(self) -> None:
-        # Consume a prepare_next() pick if present; else pick now
-        # (single-scene loops / pause-resume skip prepare_next).
         if self._prepared:
             self._prepared = False
         elif not self._pick_first_image():
@@ -1253,13 +1064,12 @@ class SlideshowScene(MediaFileMixin, Scene):
             self.is_done = True
             return
         super().setup()
-        # Re-anchor timers to now: prepare_next may have loaded the slide
-        # seconds ago during the interstitial, so _image_start (stamped by
-        # _advance_image then) would short-change the first slide.
+        # prepare_next may have loaded the slide seconds ago, during the
+        # interstitial, so its _image_start would short-change the first slide.
         self.start_time = time.time()
         self._image_start = time.time()
-        # _advance_image (in _pick_first_image) may have failed to decode
-        # any image; super().setup() just cleared is_done, so re-assert it.
+        # super().setup() just cleared is_done, so a failed decode above has to
+        # re-assert it.
         if self._current_img is None:
             self.is_done = True
 
@@ -1300,10 +1110,6 @@ class VideoScene(MediaFileMixin, Scene):
     MEDIA_LABEL = "video"
 
     def competes_for_audio_lock(self) -> bool:
-        # A muted video (audio = false, or global [audio].enabled
-        # off) has self.audio is None and produces no sound — it doesn't
-        # need the ensemble audio slot and should be selectable like any
-        # non-audio scene.
         return self.WANTS_AUDIO_LOCK and self.audio is not None
 
     def __init__(
@@ -1325,20 +1131,15 @@ class VideoScene(MediaFileMixin, Scene):
         re-resolves so a directory's contents can change between scene
         repeats. Single-entry pools stay deterministic."""
         self.file_spec = file
-        # Initial resolution so __init__ raises on bad specs (mirrors the
-        # validate_scene_cfg check; also covers auto-interleaved scenes
-        # built without going through validate). Picked again at setup.
+        # Resolve once so a bad spec raises at construction; picked again at
+        # each setup().
         candidates = self._resolve_candidates()
         super().__init__(api, audio, display_mode, self._initial_scene_name(candidates))
-        # True when prepare_next() has already chosen this iteration's file
-        # (and updated self.name) so setup() consumes that pick instead of
-        # re-rolling. Reset to False each setup so single-scene loops /
-        # pause-resume (which skip prepare_next) still pick fresh.
+        # True when prepare_next() has already chosen this iteration's file, so
+        # setup() consumes that pick instead of re-rolling.
         self._prepared = False
-        # `filepath` is the currently-chosen path (set at each setup()).
-        # Initialize to the deterministic single-entry case so callers
-        # introspecting before setup see a real path; multi-entry pools
-        # overwrite this in setup().
+        # The deterministic single-entry case, so a caller introspecting before
+        # setup() sees a real path; multi-entry pools overwrite it in setup().
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self.wall_start_time = 0.0
@@ -1346,59 +1147,42 @@ class VideoScene(MediaFileMixin, Scene):
         # post-construction by scene_factory._build_video; read by
         # recording_metadata._video_source, nowhere in playback itself.
         self.source_info: ResolvedMedia | None = None
-        # Seconds into the file to begin playback (0 = from the start). Passed
-        # to AVFileSource at setup(), which seeks + rebases PTS. Quick playback
-        # derives this from a URL's t=/start= timestamp.
+        # Where playback begins. AVFileSource seeks + rebases PTS to it; quick
+        # playback derives it from a URL's t=/start= timestamp.
         self.start_s = max(0.0, start_s)
-        # Bitmap + $D418-DAC tempo compensation factor (1.0 = off). < 1.0 tells
-        # AVFileSource to time-compress the audio by 1/tempo_scale (pitch-
-        # preserving) and scale video PTS by tempo_scale, canceling the ~1/s
-        # bitmap+DAC slowdown so content plays at real time. Resolved in
-        # config.build_scene (gated to the host-DMA DAC path over bitmap modes).
+        # Bitmap + $D418-DAC tempo compensation (1.0 = off): AVFileSource
+        # time-compresses the audio by 1/tempo_scale and scales video PTS by
+        # tempo_scale, canceling the bitmap+DAC slowdown. Resolved in
+        # config.build_scene.
         self.tempo_scale = tempo_scale
         self._last_rendered_img: np.ndarray | None = None
-        # The OSD text baked into the last rendered frame (None = none). Compared
-        # each tick so an OSD post/expiry busts the identity-skip for one render.
+        # The OSD text baked into the last rendered frame; compared each tick so
+        # a post or expiry busts the identity-skip for one render.
         self._last_osd_shown: str | None = None
-        # A/V-lag telemetry (reset each setup): per-displayed-frame
-        # audio_clock - displayed_frame_pts. Small + (≤ one frame interval) is
-        # healthy; a growing + means the decoder is falling behind the
-        # audio-master clock (the 4K-decode-bound symptom). See _log_av_lag.
+        # A/V-lag telemetry: per-displayed-frame audio_clock − frame PTS.
         self._av_lag_min = math.inf
         self._av_lag_max = -math.inf
         self._av_lag_sum = 0.0
         self._av_lag_count = 0
         self._av_buf_min = math.inf
         self._av_last_log_t = 0.0
-        # Rolling-window auto_fit state (set up in setup() when [color].auto_fit
-        # is on without force_palette). None = no online fit (pre-scanned or
-        # disabled). See ONLINE_FIT_WARMUP_FRAMES.
+        # None = no online fit (pre-scanned or disabled).
         self._online_fit: ColorFitAccumulator | None = None
         self._online_fit_frames = 0
-        # Capture-anchor marker (see audio_marker.py + AudioCfg.source_
-        # alignment_marker). Only honored on the REU pre-encode path.
+        # Capture-anchor marker (audio_marker.py). Only honored on the REU
+        # pre-encode path.
         self.prepend_alignment_marker = prepend_alignment_marker
-        # [video].setup_progress_bar: draw the striped buffering bar while
-        # setup() blocks (see setup_progress.py).
         self._setup_progress = setup_progress
-        # The whole [color] section travels as one object. It drives both the
-        # display-mode shaping (channel_boost / hue_corrections) AND the
-        # per-video stages installed at setup() from a one-shot pre-scan of the
-        # picked file: the adaptive color fit ([color].auto_fit) and the
-        # forced-palette remap ([color].force_palette). See prescan_source_color.
+        # Drives the display-mode shaping and the per-video color fit /
+        # forced-palette remap installed at setup() from a one-shot pre-scan.
         from c64cast.app.config import ColorCfg
 
         self._color = color if color is not None else ColorCfg()
-        # Lifetime is video-driven: `process_frame` returns False when the
-        # source signals `finished`, advancing the playlist. math.inf
-        # disables the base-class duration timer (a finite duration_s would
-        # truncate playback partway through long files); the config layer
-        # rejects any user-supplied `duration_s` so this stays consistent.
+        # Lifetime is video-driven; math.inf disables the base-class duration
+        # timer, and the config layer rejects a user-supplied `duration_s`.
         self.duration_s = math.inf
-        # DJ transport collaborator (MIDI live-tune Phases 2-4). Owns the
-        # touched/paused flags, both post-touch clocks, the A/B loop machine,
-        # the record border, and the per-video loop preset store; reset in
-        # setup() so a repeated/looped scene starts fresh.
+        # DJ transport collaborator; reset in setup() so a repeated or looped
+        # scene starts fresh.
         self.transport = VideoTransportControls(self, loop_audio=loop_audio)
 
     def _display_name_for(self, filepath: str) -> str:
@@ -1407,16 +1191,11 @@ class VideoScene(MediaFileMixin, Scene):
         cheap header-only peek in video.probe_container_title (no frame
         decode, so this stays fast enough to run before every "UP NEXT"
         interstitial). Falls back to the filename otherwise, and always for
-        a URL (its real title comes from yt-dlp instead — see
-        scene_factory._resolve_video_source — and probing a stream here
-        would mean real network I/O just to pick a display name)."""
+        a URL — its real title comes from yt-dlp instead, and probing a stream
+        here would mean network I/O just to pick a display name."""
         return probe_container_title(filepath) or super()._display_name_for(filepath)
 
     def setup(self) -> None:
-        # Consume a prepare_next() pick if there is one; otherwise pick now
-        # (single-scene loops and pause/resume re-setup skip prepare_next).
-        # On a resolve failure the base-class setup still runs but is_done
-        # flips immediately.
         if self._prepared:
             self._prepared = False
         elif not self._pick_filepath():
@@ -1424,9 +1203,8 @@ class VideoScene(MediaFileMixin, Scene):
             self.is_done = True
             return
         super().setup()
-        # Reset transport state so a repeated/looped scene starts back on the
-        # audio-master clock, untouched, rather than inheriting a prior run's
-        # pause/seek/loop/mute.
+        # Back onto the audio-master clock, untouched, rather than inheriting a
+        # prior run's pause/seek/loop/mute.
         self.transport.reset()
         self.transport.loop_store = make_loop_preset_store(self.filepath)
         if not ensure_pyav():
@@ -1446,8 +1224,8 @@ class VideoScene(MediaFileMixin, Scene):
             )
             self.is_done = True
             return
-        # The buffering bar (see setup_progress.py). Created after the mode's
-        # setup() cleared the screen; the mode's first frame push wipes it.
+        # Created after the mode's setup() cleared the screen; the mode's first
+        # frame push wipes it.
         bar = make_setup_bar(self.api, self.display_mode) if self._setup_progress else None
         progress = (
             SegmentedProgress(self._setup_segments(), bar.show)
@@ -1456,16 +1234,13 @@ class VideoScene(MediaFileMixin, Scene):
         )
 
         sr = int(round(self.audio.effective_rate)) if self.audio else 8000
-        # The peak scan only matters when AVFileSource will push audio with
-        # per-frame gain — i.e. the non-REU audible path. A muted scene
-        # (self.audio is None) never pushes; the REU path pre-encodes audio
-        # with its own gain and tells the demuxer to skip audio. Skipping the
-        # scan in those cases removes a full audio decode from setup.
+        # The peak scan only matters on the non-REU audible path: a muted scene
+        # never pushes, and the REU path pre-encodes with its own gain. Skipping
+        # it removes a full audio decode from setup.
         will_push_audio = self.audio is not None and not getattr(self.audio, "use_reu_pump", False)
-        # The only resolution the display mode consumes (≤320×200). Passed to
-        # AVFileSource so it downscales each frame DURING decode instead of
-        # converting the full source frame — the supply-side fix for video
-        # lagging audio on heavy/4K clips. See video._plan_decode_size.
+        # The only resolution the display mode consumes (≤320×200); AVFileSource
+        # downscales to it during decode rather than converting the full source
+        # frame. See video._plan_decode_size.
         decode_target = getattr(self.display_mode, "frame_target_size", None)
         try:
             self.source = AVFileSource(
@@ -1491,14 +1266,11 @@ class VideoScene(MediaFileMixin, Scene):
         progress.complete("open")
 
         c = self._color
-        # Per-video color stages. force_palette needs a blocking pre-scan (its
-        # k-means false-color map must be fixed before the first frame, or the
-        # mapping would shift mid-playback); auto_fit on its own does NOT —
-        # it converges online over a warmup window, which removes the pre-scan
-        # decode (the bulk of the startup pause) from the common path.
+        # force_palette needs a blocking pre-scan: its k-means false-color map
+        # must be fixed before the first frame or the mapping shifts
+        # mid-playback. auto_fit on its own converges online instead.
         self._online_fit = None
         self._online_fit_frames = 0
-        # Reset A/V-lag telemetry so a looped/re-entered scene starts clean.
         self._av_lag_min = math.inf
         self._av_lag_max = -math.inf
         self._av_lag_sum = 0.0
@@ -1509,13 +1281,13 @@ class VideoScene(MediaFileMixin, Scene):
             if c.force_palette:
                 from c64cast.app.config import resolved_force_palette
 
-                # One pre-scan pass derives the map (and the fit, since it's
-                # already decoding). None clears stale state from a prior file.
+                # One pre-scan pass derives the map, and the fit too since it
+                # is already decoding.
                 map_colors, map_indices = resolved_force_palette(c)
                 fit, cmap = prescan_source_color(
                     self.filepath,
-                    # Full-strength fit; the mode lerps it by
-                    # [color].auto_fit_strength at apply time (live-tunable).
+                    # Full strength: the mode lerps it by
+                    # [color].auto_fit_strength at apply time.
                     fit_strength=1.0 if c.auto_fit else None,
                     map_colors=map_colors,
                     map_indices=map_indices,
@@ -1534,12 +1306,12 @@ class VideoScene(MediaFileMixin, Scene):
                         list(cmap.indices),
                     )
             elif c.auto_fit:
-                # Rolling/online auto_fit: start neutral, converge during
-                # playback (see process_frame + ONLINE_FIT_WARMUP_FRAMES).
+                # Start neutral and converge during playback; see process_frame
+                # and ONLINE_FIT_WARMUP_FRAMES.
                 self.display_mode.set_color_fit(None)
                 self.display_mode.set_color_map(None)
-                # Full-strength online fit; the mode lerps it by
-                # [color].auto_fit_strength at apply time (live-tunable).
+                # Full strength: the mode lerps it by
+                # [color].auto_fit_strength at apply time.
                 self._online_fit = ColorFitAccumulator(strength=1.0)
                 log.info(
                     "video: auto-fit converging online over first %d frames",
@@ -1551,63 +1323,34 @@ class VideoScene(MediaFileMixin, Scene):
 
         has_audio = (self.source.a_stream is not None) and (self.audio is not None)
         if has_audio and isinstance(self.audio, UltimateAudioSampler):
-            # Ultimate Audio FPGA sampler path: bring up the streaming REU ring
-            # (prefill + gate the A↔B loop), then feed the demuxer's decoded
-            # int16 straight to its push_samples. No SID/$D418/NMI bring-up —
-            # the FPGA plays from REU off the C64 bus. position_seconds()/stop()
-            # are polymorphic, so _clock_s() + teardown() are unchanged.
-            # The demuxer must start FIRST: start() blocks on collecting a
-            # prebuffer, and push_samples accepts data before the ring is
-            # gated — starting the sampler first just waits out the full
-            # prebuffer timeout on silence (see AudioFileSource.setup for
-            # the same ordering on the audio-file path).
+            # The demuxer starts FIRST: the sampler's start() blocks collecting
+            # a prebuffer, and push_samples accepts data before the ring is
+            # gated, so starting the sampler first waits out the whole prebuffer
+            # timeout on silence. AudioFileSource.setup keeps the same order.
             self.source.start(audio_push=self.audio.push_samples)
             self.audio.start()
             progress.complete("audio-start")
         elif has_audio and getattr(self.audio, "use_reu_pump", False):
-            # REU-staged path: pre-decode entire audio track, 4-bit encode
-            # with the same gain/dither pipeline as the host-DMA path uses
-            # per sample, then upload to REU. Video frames still come from
-            # the AVFileSource demuxer thread; pass audio_push=None so the
-            # demuxer SKIPS audio decode entirely (otherwise it competes
-            # with video decode in the same thread for CPU, causing
-            # noticeable video lag at scene start until the demuxer catches up).
-            assert isinstance(self.audio, AudioStreamer)  # DAC streamer (not sampler)
+            # audio_push=None makes the demuxer skip audio decode entirely: the
+            # REU path has already pre-encoded the whole track, and decoding it
+            # again would compete with video decode on the same thread and lag
+            # the picture at scene start.
+            assert isinstance(self.audio, AudioStreamer)
             audio_4bit = self._preencode_audio_for_reu()
             progress.complete("encode")
-            # Bitmap display modes (hires/mhires) push ~300 KB/sec via host
-            # DMAWRITE which halts the C64 bus ~30 % of the time. NMI service
-            # drops from 8 kHz to ~5 kHz under that load — the default REU
-            # pump chunk size = 128 then over-produces by ~2× and overflows
-            # the audio ring in ~2 sec (audible as accelerating distortion +
-            # static). Smaller chunk keeps the production rate close to the
-            # bus-halt-reduced consumption rate.
-            # Chunk-size choice for the REU audio pump:
-            #   * Bitmap modes via host-DMAWRITE (use_reu_staged=False):
-            #     bus is halted in long unpredictable bursts as the host
-            #     dumps 8K bitmap + 1K screen + 1K color. NMI loses ~50%
-            #     of ticks. HEAVY_BUS chunk (80) keeps production matched
-            #     to the reduced consumption rate.
-            #   * Bitmap modes via REU bank-swap (use_reu_staged=True):
-            #     the bus halt moves to a single ~10ms vblank-aligned
-            #     event per source frame (~30 Hz). NMI still loses ticks
-            #     during the halt, but the halt is deterministic and
-            #     bounded. The default chunk (128) is matched to nominal
-            #     NMI rate; production/consumption stay balanced because
-            #     halts block both proportionally.
-            #   * Char modes (default else branch): no bitmap traffic at
-            #     all, default chunk fine.
+            # Bitmap modes push ~300 KB/sec of host DMAWRITE, halting the bus in
+            # long bursts that cost the NMI ~50 % of its ticks; the default
+            # chunk (128) then over-produces ~2× and overflows the audio ring in
+            # ~2 sec. Char modes carry no bitmap traffic and keep the default.
             chunk = (
                 REU_PUMP_CHUNK_SIZE_HEAVY_BUS
                 if isinstance(self.display_mode, BitmapDisplayMode)
                 else None
             )
-            # When the display mode also installs the bank-swap dispatcher
-            # at $0314 (the merged variant JMPs to $C100 on non-raster
-            # IRQs), the audio install must skip its own $0314 hook so it
-            # doesn't clobber the dispatcher. The dispatcher's installer
-            # already pre-uploaded a JMP $EA31 stub at $C100 covering the
-            # gap until this method writes real audio bytes there.
+            # A mode that installs the bank-swap dispatcher at $0314 (the
+            # merged variant JMPs to $C100 on non-raster IRQs) owns that vector,
+            # and its installer has already pre-uploaded a JMP $EA31 stub at
+            # $C100 covering the gap until real audio bytes land there.
             skip_hook = bool(getattr(self.display_mode, "audio_reu_pump_active", False))
             self.audio.start_for_reu_staged(
                 audio_4bit,
@@ -1617,7 +1360,7 @@ class VideoScene(MediaFileMixin, Scene):
             )
             self.source.start(audio_push=None)
         elif has_audio:
-            assert isinstance(self.audio, AudioStreamer)  # DAC streamer (not sampler)
+            assert isinstance(self.audio, AudioStreamer)
             self.audio.start_for_external_source()
             self.source.start(audio_push=self.audio.push_samples)
         else:
@@ -1655,39 +1398,31 @@ class VideoScene(MediaFileMixin, Scene):
         brief blip at scene start, then real content begins. Used to
         anchor Cam Link captures to a known source-timeline-zero for
         cross-capture comparison."""
-        # The REU-pump pre-encode is a DAC-streamer-only path (the sampler
-        # streams 16-bit PCM through its own ring); narrow to AudioStreamer.
         assert isinstance(self.audio, AudioStreamer)
-        # effective_rate: the REU pump's CIA #1 latch derives from the same
-        # nominal as the NMI consumer, so it drains at the achieved rate too —
-        # pre-encoding at the requested one would play the clip off-speed.
+        # The REU pump's CIA #1 latch derives from the same nominal as the NMI
+        # consumer, so it drains at the *achieved* rate; pre-encoding at the
+        # requested one would play the clip off-speed.
         sr = int(round(self.audio.effective_rate))
-        # Decode full audio to int16 mono at that rate.
         int16 = decode_audio_full(self.filepath, sr)
         if int16.size == 0:
             log.warning("video: empty audio track after decode; REU pump will play silence")
             return b""
-        # Apply the same peak-normalization gain AVFileSource computes.
         peak = int(np.abs(int16).max())
         gain = _compute_normalization_gain(peak)
         if gain != 1.0:
             int16 = np.clip(int16.astype(np.float32) * gain, -32768, 32767).astype(np.int16)
         log.info("video: REU pre-encode peak=%d → gain=%.2fx (%d samples)", peak, gain, int16.size)
-        # Float → 4-bit DAC code via the shared encoder (identical math to the
-        # mic paths). Use an explicit Generator so this offline pass doesn't
-        # perturb the global RNG state the realtime callbacks draw from.
         floats = int16.astype(np.float32) / INT16_FULL_SCALE
-        # Apply the host DSP chain (compressor/limiter/expander/pre-emphasis)
-        # over the whole track so REU-staged video audio matches the
-        # host-DMA path, which applies the same DSP per chunk in
-        # _encode_and_enqueue. No-op when [dsp].enabled is false.
+        # The whole track at once, matching the per-chunk DSP the host-DMA path
+        # applies in _encode_and_enqueue.
         floats = self.audio.process_offline_dsp(floats)
+        # An explicit Generator, so this offline pass does not perturb the
+        # global RNG state the realtime callbacks draw from.
         rng = np.random.default_rng() if self.audio.dither_enabled else None
         vol = encode_floats_to_dac(
             floats, dither=self.audio.dither_enabled, rng=rng, curve=self.audio.dac_curve
         )
-        # numpy.ndarray.tobytes() returns Any per the stubs; cast for strict
-        # mypy. Runtime guarantee: ndarray.tobytes() returns bytes.
+        # ndarray.tobytes() is typed Any by the stubs; the wrap is for mypy.
         encoded = bytes(vol.tobytes())
         if getattr(self, "prepend_alignment_marker", False):
             from c64cast.audio.audio_marker import MARKER_DURATION_S, synthesize_marker_4bit
@@ -1703,11 +1438,9 @@ class VideoScene(MediaFileMixin, Scene):
             encoded = marker + encoded
         return encoded
 
-    # ---- DJ transport (MIDI live-tune Phases 2-4) ----------------------------
-    # TransportSession getattr-probes the transport_* names on whatever scene
-    # is current — the duck-typed contract lives on the scene — so these stay
-    # as one-line delegators; the state machine (clocks, anchors, A/B loop,
-    # record border, preset slots) is video_transport.VideoTransportControls.
+    # TransportSession getattr-probes these transport_* names on whatever
+    # scene is current, so the duck-typed contract lives here even though the
+    # state machine is video_transport.VideoTransportControls.
     def transport_pause(self) -> None:
         self.transport.pause()
 
@@ -1748,11 +1481,11 @@ class VideoScene(MediaFileMixin, Scene):
         return self.transport.loop_slots()
 
     def process_frame(self, current_time: float) -> bool:
-        # A source at EOF while an A/B loop is active isn't "done" — it's
-        # about to wrap to A (below) — so it doesn't end the scene.
+        # A source at EOF under an active A/B loop is about to wrap to A below,
+        # so it does not end the scene.
         if self.source is None or (self.source.finished and self.transport.loop_state != "active"):
-            # Tell a sampler the source is exhausted so position_seconds()
-            # clamps to the pushed total (no-op for the DAC streamer). Idempotent.
+            # Clamps a sampler's position_seconds() to the pushed total; a
+            # no-op for the DAC streamer, and idempotent.
             if self.audio is not None:
                 mark_eof = getattr(self.audio, "mark_eof", None)
                 if callable(mark_eof):
@@ -1766,48 +1499,34 @@ class VideoScene(MediaFileMixin, Scene):
             # domain on the resync tempo path, so compare against the scaled B.
             at_b = tr.loop_b is not None and clock_s >= tr.content_to_clock(tr.loop_b)
             if at_b or self.source.finished:
-                # On the resync path the source.finished wrap re-fires every
-                # frame until the demuxer clears _eof; guard so we flush + seek A
-                # only once (each re-fire would drop the first fresh post-A
-                # audio). The mute path keeps today's re-fire behavior verbatim.
+                # On the resync path a source.finished wrap re-fires every frame
+                # until the demuxer clears _eof, and each re-fire would drop the
+                # first fresh post-A audio; flush and seek A exactly once.
                 if not (tr.resync and self.source.seek_pending):
                     tr.seek(tr.loop_a)
                 return True
         img = self.source.current_frame(clock_s)
         if img is None:
             return True  # still pre-rolling
-        # Source video is typically 24-30 fps; the playlist polls at the
-        # system rate (50/60 Hz). AVFileSource.current_frame returns the
-        # SAME ndarray object across calls between PTS boundaries — so
-        # without this skip, we re-quantize + re-DMA identical pixels on
-        # every other playlist tick. On mhires/hires REU the per-frame
-        # bus-halt is ~10 ms (8K bitmap + 1K screen + 1K color via REC
-        # DMA); doubling it to 60/s halts the bus ~60 % of the time and
-        # AM-modulates the SID DAC at the playlist rate (audible 60 Hz
-        # buzz, verified via Cam Link envelope FFT 2026-05-26). Identity
-        # check is exact and cheap; overlays still tick because the
-        # Playlist runs overlay.process_frame separately afterwards.
-        #
-        # The OSD (live-tune feedback) busts this skip for one render on a post
-        # or an expiry: when the source frame is steady but the OSD text changed,
-        # we re-quantize so the message appears / clears. Only an actual OSD-state
-        # change forces the extra frame — a steady OSD keeps the skip intact, so
-        # the DMA-load rationale above is preserved.
+        # AVFileSource.current_frame returns the SAME ndarray object between
+        # PTS boundaries, and the playlist polls faster (50/60 Hz) than source
+        # video runs (24-30 fps). Re-pushing those identical pixels doubles the
+        # ~10 ms per-frame mhires/hires REU bus halt to ~60 % of the time, which
+        # AM-modulates the SID DAC at the playlist rate — an audible 60 Hz buzz,
+        # measured via Cam Link envelope FFT 2026-05-26. An OSD post or expiry
+        # busts the skip for one render so the message appears or clears.
         osd_now = self.osd.current()
         new_source = img is not self._last_rendered_img
         if not new_source and osd_now == self._last_osd_shown:
             return True
-        # A/V-lag accounting and the rolling auto_fit accumulator track REAL
-        # frames, so they only advance on a new source frame (an OSD-only
-        # re-render re-quantizes the same frame without disturbing either).
+        # A/V-lag accounting and the rolling auto_fit accumulator count real
+        # frames, so an OSD-only re-render must not advance them.
         if new_source:
             self._last_rendered_img = img
             self._record_av_lag(clock_s, current_time)
         img = _crop_to_aspect(img)
-        # Rolling-window auto_fit: fold the clean (pre-annotation) frame into
-        # the accumulator and refresh the derived fit until the warmup window
-        # closes, then freeze. Feeding before annotation keeps the debug
-        # digits out of the contrast/saturation stats.
+        # Before annotation, so the debug digits stay out of the
+        # contrast/saturation stats.
         if (
             new_source
             and self._online_fit is not None
@@ -1819,12 +1538,9 @@ class VideoScene(MediaFileMixin, Scene):
             self.display_mode.set_color_fit(self._online_fit.result())
         if self.show_frame_numbers:
             fps = self.source.video_fps or 30.0
-            # clock_s is rebased to 0 at start_s (AVFileSource seeks + rebases
-            # PTS on setup), so add it back to report the true offset from the
-            # beginning of the file — UNLESS transport has been touched, in
-            # which case clock_s is already an absolute file position (the
-            # wall-clock anchor tracks transport_seek's target_s directly;
-            # see design decision 2) and adding start_s again would double-count.
+            # clock_s is rebased to 0 at start_s, so add it back for the true
+            # offset into the file — unless transport has been touched, past
+            # which clock_s is already an absolute file position.
             file_s = tr.clock_to_content(clock_s) if tr.touched else clock_s + self.start_s
             label = f"{timecode(file_s)} f{int(round(file_s * fps))}"
             img = _annotate_frame_number(img, label)
@@ -1843,7 +1559,7 @@ class VideoScene(MediaFileMixin, Scene):
         Lag is artifact-free (software-side, no capture): small + lag ≤ one
         source-frame interval is healthy frame selection; a lag that climbs
         while the decode buffer sits near 0 is the decoder failing to keep
-        real time (project_av_sync_decode_bound). Cheap — no allocation."""
+        real time."""
         assert self.source is not None
         lag = clock_s - self.source.last_frame_pts
         depth = self.source.video_buffer_depth
@@ -1852,13 +1568,12 @@ class VideoScene(MediaFileMixin, Scene):
         self._av_lag_sum += lag
         self._av_lag_count += 1
         self._av_buf_min = min(self._av_buf_min, depth)
-        # clock/wall: how fast the master clock (position_seconds on the DAC/
-        # sampler paths, else wall) advances vs real time. ~1.0 is real-time;
-        # <1.0 flags the host-DMA servo under-draining the ring under bitmap
-        # DMA load — the raw bitmap+DAC speed fraction `s`. It stays ~s even
-        # with tempo compensation ON (that pre-compresses CONTENT, not the drain
-        # clock), so it's the calibration gauge for [audio].dac_bitmap_tempo_*
-        # (see scripts/diags/mhires_tempo_clock_ab.py + mhires_dac_tempo_stretch).
+        # clock/wall is how fast the master clock advances against real time:
+        # ~1.0 is real-time, and below that is the host-DMA servo under-draining
+        # the ring under bitmap DMA load. Tempo compensation pre-compresses
+        # content, not the drain clock, so the figure is unmoved by it and
+        # scripts/diags/mhires_tempo_clock_ab.py calibrates
+        # [audio].dac_bitmap_tempo_* against it.
         wall = current_time - self.wall_start_time
         clock_wall = clock_s / wall if wall > 0 else 0.0
         if log.isEnabledFor(logging.DEBUG) and (
@@ -1881,9 +1596,8 @@ class VideoScene(MediaFileMixin, Scene):
         src, self.source = self.source, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
-            # Idempotent no-op if a loop was never armed — restores the border
-            # if the scene ends (or is interrupted) mid-record so a red border
-            # never lingers into the next scene. See VideoTransportControls.
+            # Idempotent, so a scene interrupted mid-record never leaves a red
+            # border lingering into the next one.
             ("record border restore", partial(self.transport.set_record_border, False)),
         ]
         # Ahead of the audio stop: that zeroes `position_seconds()`, which is
@@ -1897,8 +1611,8 @@ class VideoScene(MediaFileMixin, Scene):
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _reset_identity_skip_cache(self) -> None:
-        # Nothing resets these on setup(), so a stale value reaches lap 2 and
-        # suppresses its first OSD repaint.
+        # Nothing resets these in setup(), so a stale value would reach lap 2
+        # and suppress its first OSD repaint.
         self._last_rendered_img = None
         self._last_osd_shown = None
 
@@ -1959,12 +1673,9 @@ class LauncherScene(MediaFileMixin, Scene):
     MEDIA_LABEL = "launcher"
 
     def competes_for_audio_lock(self) -> bool:
-        # The launched program outputs through the real SID regardless of
-        # self.audio (which is always None here), so — like waveform/midi —
-        # it normally contends for the ensemble slot. `bypass_audio_lock`
-        # opts out: the scene then never claims or waits on the slot, so
-        # several systems can run interactive launchers at once and each
-        # player hears their own game.
+        # The launched program outputs through the real SID whatever self.audio
+        # is, so the scene contends unless `bypass_audio_lock` opts it out —
+        # which is what lets several systems each run their own launcher.
         return self.WANTS_AUDIO_LOCK and not self.bypass_audio_lock
 
     # Bytes to read for each input source (contiguous so one read covers both).
@@ -1986,9 +1697,8 @@ class LauncherScene(MediaFileMixin, Scene):
         name: str | None = None,
     ):
         self.file_spec = file
-        # Resolve once so __init__ raises on a bad spec (mirrors
-        # validate_scene_cfg; also covers any scene built without validation).
-        # Re-resolved at each setup() so a dropped file becomes eligible.
+        # Resolve once so a bad spec raises at construction; re-resolved at each
+        # setup() so a newly dropped file becomes eligible.
         candidates = self._resolve_candidates()
         super().__init__(api, None, None, name or self._initial_scene_name(candidates))
         self.input_source = input_source
@@ -1997,19 +1707,16 @@ class LauncherScene(MediaFileMixin, Scene):
         self.min_duration_s = float(min_duration_s)
         self.poll_interval_s = float(poll_interval_s)
         self.launch_grace_s = float(launch_grace_s)
-        # Hard ceiling; inf = no cap.
         self.max_duration_s = float(max_duration_s)
         # Nothing is rendered, so a low cap keeps host overhead negligible.
         self.target_fps = 4.0
         self.filepath: str = candidates[0]
         self.start_time = 0.0
-        # Idle clock: last time input was observed. Guarded because the poll
-        # thread writes it and process_frame reads it.
+        # Written by the poll thread, read by process_frame; hence the lock.
         self._last_input_t = 0.0
         self._input_lock = threading.Lock()
         self._baseline: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
-        # True when prepare_next() already picked this iteration's file.
         self._prepared = False
 
     def setup(self) -> None:
@@ -2033,8 +1740,7 @@ class LauncherScene(MediaFileMixin, Scene):
         with self._input_lock:
             self._last_input_t = now
         self._baseline = None
-        # A fresh machine state avoids inheriting whatever the prior scene
-        # left in RAM/VIC; .crt especially expects a reset to take effect.
+        # A `.crt` in particular expects a reset to take effect.
         if self.reset_before_launch:
             self.api.reset()
         try:
@@ -2047,23 +1753,19 @@ class LauncherScene(MediaFileMixin, Scene):
             self._poll.start()
 
     def process_frame(self, current_time: float) -> bool:
-        # Hard ceiling wins regardless of input.
         if (current_time - self.start_time) >= self.max_duration_s:
             return False
-        # Floor: never advance before min_duration_s, even when idle.
         if (current_time - self.start_time) < self.min_duration_s:
             return True
         with self._input_lock:
             last_input = self._last_input_t
-        # Idle timeout: advance (return False) when no input for duration_s.
+        # duration_s is an idle timeout here, not a runtime.
         return (current_time - last_input) < self.duration_s
 
     def teardown(self) -> None:
-        # The reset is mandatory for a `.crt` (`run_crt` leaves it active), so
-        # the input poll stop must not be able to take it down: `PollThread.stop`
-        # joins, and `_pollthread` documents `Thread.join` raising RuntimeError
-        # on a target that stopped its own poller. Unguarded and first in the
-        # sequence, that raise left a cartridge live into the next scene.
+        # The reset is mandatory for a `.crt` — `run_crt` leaves the cartridge
+        # active — so it is a guarded step of its own, out of reach of a
+        # RuntimeError from the input poll's join.
         run_teardown_steps(
             log,
             type(self).__name__,
@@ -2074,8 +1776,6 @@ class LauncherScene(MediaFileMixin, Scene):
             ],
         )
 
-    # -- input polling --------------------------------------------------
-
     def _read_snapshot(self) -> bytes | None:
         """Read the configured input registers. Returns None on a failed
         read (caller ignores it — don't reset the idle clock on a glitch).
@@ -2085,8 +1785,8 @@ class LauncherScene(MediaFileMixin, Scene):
             cia = self.api.read_memory(self._CIA_BASE, 2)
             if cia is None:
                 return None
-            # Mask to the joystick bits on both ports; the upper bits carry
-            # keyboard-scan / serial state that churns independently of input.
+            # The upper bits carry keyboard-scan / serial state that churns
+            # independently of player input.
             parts.append(bytes(b & CIA1.JOY_MASK for b in cia))
         if self.input_source in ("kernal", "auto"):
             kern = self.api.read_memory(self._KERNAL_BASE, 2)

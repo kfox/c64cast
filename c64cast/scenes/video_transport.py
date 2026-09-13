@@ -41,12 +41,10 @@ class VideoTransportControls:
 
     def __init__(self, scene: VideoScene, *, loop_audio: str = "on") -> None:
         self._scene = scene
-        # Audio resync policy once transport is touched (MIDI live-tune
-        # Phase 4): "on" keeps audio playing and re-syncs it across every
-        # seek/pause/loop splice; "mute" is the Phase-2 escape valve (mute +
-        # wall clock for the rest of the run). Resolved to `resync` at touch
-        # time — "on" degrades to the mute/wall path when the scene has no
-        # audio (stream).
+        # "on" keeps audio playing and re-syncs it across every splice; "mute"
+        # mutes and runs on the wall clock for the rest of the run. Resolved to
+        # `resync` at touch time, where "on" degrades to mute without an audio
+        # stream.
         self.loop_audio = loop_audio
         self.loop_store: LoopPresetStore | None = None
         self.reset()
@@ -61,11 +59,9 @@ class VideoTransportControls:
         self.wall_anchor_clock_s = 0.0
         self.wall_anchor_time = 0.0
         self.resync = False
-        # Audio-anchored post-touch clock (resync path): playback clock =
+        # The resync path's post-touch clock, in the scaled/PTS domain:
         # audio_anchor_clock_s + (audio.position_seconds() - audio_anchor_pos),
-        # frozen at audio_anchor_clock_s while paused. Re-anchored at
-        # touch/pause/resume/seek. Lives in the scaled/PTS domain (see the
-        # clock_to_content/content_to_clock helpers).
+        # frozen while paused, re-anchored at touch/pause/resume/seek.
         self.audio_anchor_clock_s = 0.0
         self.audio_anchor_pos = 0.0
         self.loop_a: float | None = None
@@ -89,16 +85,16 @@ class VideoTransportControls:
         return s
 
     def clock_s(self) -> float:
-        # Once transport is touched, the playback clock comes from a transport
-        # anchor rather than the free-running audio-position clock.
-        #  - Resync path (loop_audio="on" with audio): audio-anchored — the
-        #    anchor plus the audio consumer's position delta, frozen while
-        #    paused. This inherits the shipped pre-touch clock's drift behavior
-        #    on every backend (crucially the ~0.88x drain rate on DAC+bitmap,
-        #    where a wall clock would desync ~7 s/min). Lives in the scaled/PTS
-        #    domain — see the conversion helpers.
-        #  - Mute path (loop_audio="mute", or no audio): the Phase-2 wall-clock
-        #    anchor, verbatim (audio is muted, so its position is meaningless).
+        """The playback clock: the free-running audio position — or the wall
+        clock when the scene has no audio stream — until transport is touched,
+        and a transport anchor after.
+
+        The resync path anchors to the audio consumer's position delta, which
+        inherits its drift behavior on every backend — on DAC+bitmap the drain
+        runs ≈0.88× wall, where a wall clock would desync ≈7 s/min. The mute
+        path anchors to the wall clock instead, audio being muted there and its
+        position meaningless.
+        """
         sc = self._scene
         if self.touched:
             if self.resync:
@@ -126,9 +122,8 @@ class VideoTransportControls:
         if self.touched:
             return
         sc = self._scene
-        # Read the pre-touch clock BEFORE flipping the flag — clock_s() branches
-        # on `touched`, so a read taken after the flip would return the anchor's
-        # own not-yet-seeded default instead of the real position.
+        # BEFORE the flag flip: clock_s() branches on `touched`, so a read taken
+        # after it returns the anchor's own unseeded default.
         clock_s = self.clock_s()
         self.touched = True
         self.resync = (
@@ -140,8 +135,8 @@ class VideoTransportControls:
         )
         if self.resync:
             assert sc.audio is not None
-            # Pre-touch clock == audio position in the scaled domain, so the
-            # anchor delta starts at zero and playback continues seamlessly.
+            # The pre-touch clock is the audio position in the scaled domain, so
+            # the anchor delta starts at zero and playback carries on unbroken.
             self.audio_anchor_clock_s = clock_s
             self.audio_anchor_pos = sc.audio.position_seconds()
         else:
@@ -167,10 +162,9 @@ class VideoTransportControls:
         sc = self._scene
         self.touch()
         if self.resync:
-            # Freeze the audio-anchored clock at the current reading (BEFORE
-            # setting `paused`, which changes clock_s's branch), mute output, and
-            # ask the consumer to silence the ring fast (sampler: $DF21 volume 0;
-            # DAC: worker ring stomp). flush() drops queued audio so resume
+            # Freeze the clock BEFORE setting `paused`, which changes clock_s's
+            # branch. The silencing flush is the fast one (sampler: $DF21 volume
+            # 0; DAC: worker ring stomp) and drops queued audio, so resume
             # starts clean.
             assert sc.audio is not None and sc.source is not None
             self.audio_anchor_clock_s = self.clock_s()
@@ -187,11 +181,11 @@ class VideoTransportControls:
         if not self.paused:
             return
         if self.resync:
-            # Splice back to the paused position first (re-anchors + flushes +
-            # restores the sampler's volume via the plain flush()), THEN unmute —
-            # this ordering closes the resume audio-leak window. During pause the
-            # sampler's wall position kept advancing; the fresh audio_anchor_pos
-            # in _splice absorbs it (the DAC's position froze on its own).
+            # Splice back to the paused position first — re-anchor, flush, and
+            # restore the sampler's volume — THEN unmute; that order closes the
+            # resume audio-leak window. The sampler's wall position kept
+            # advancing through the pause, and the fresh audio_anchor_pos
+            # absorbs it (the DAC's position froze on its own).
             assert sc.source is not None
             self.paused = False
             self._splice(self.clock_to_content(self.audio_anchor_clock_s))
@@ -212,8 +206,7 @@ class VideoTransportControls:
     def seek(self, target_s: float) -> None:
         sc = self._scene
         self.touch()
-        # Clamp against the duration in CONTENT seconds (duration() is the file
-        # duration, unscaled) — target_s is a content-seconds position.
+        # Both target_s and duration() are content seconds, unscaled.
         duration = self.duration()
         hi = duration if duration is not None else max(target_s, 0.0)
         target_s = max(0.0, min(target_s, hi))
@@ -227,11 +220,11 @@ class VideoTransportControls:
         sc.osd.post(f"SEEK {timecode(target_s)}")
 
     def loop_toggle(self) -> None:
-        """3-state cycle: mark A -> mark B + start looping -> clear. Drives
-        the same loop_a/loop_b/loop_state machine as the Record/Stop pair
-        (record()/stop()) — the red border/pad-slot persistence added there
-        (MIDI live-tune Phase 3) apply here too, so the single-button and
-        Record/Stop workflows give identical feedback."""
+        """3-state cycle: mark A -> mark B + start looping -> clear.
+
+        Drives the same loop_a/loop_b/loop_state machine as the Record/Stop
+        pair, so the single-button and Record/Stop workflows give identical
+        feedback."""
         sc = self._scene
         self.touch()
         pos = self.position()
@@ -254,11 +247,12 @@ class VideoTransportControls:
             sc.osd.post("LOOP OFF")
 
     def set_record_border(self, active: bool) -> None:
-        """Red border while a loop is armed (MIDI live-tune Phase 3). The
-        bitmap/char display modes VideoScene uses engage with a hardcoded
+        """Red border while a loop is armed.
+
+        The bitmap/char display modes VideoScene uses engage with a hardcoded
         black ($00) border and never rewrite $D020 per frame afterward (see
-        modes.engage_bitmap_mode's docstring), so 0 is always the correct
-        value to restore to — no per-mode border state to preserve."""
+        modes.engage_bitmap_mode's docstring), so 0 is always the correct value
+        to restore to."""
         if active == self.record_border_active:
             return
         self.record_border_active = active
@@ -267,8 +261,7 @@ class VideoTransportControls:
     def record(self) -> None:
         """Record button: arm a loop at the current position (first step of
         the Record -> Stop workflow; see stop()). A no-op beyond the usual
-        transport touch if a loop is already armed or active — Stop governs
-        every subsequent transition."""
+        transport touch if a loop is already armed or active."""
         self.touch()
         if self.loop_state != "none":
             return
@@ -310,18 +303,9 @@ class VideoTransportControls:
         flags TransportSession resolves before calling this — mutually
         exclusive, both False on a plain press (recall).
 
-        **Save and clear post no OSD; recall does.** The line this engine
-        draws goes over the *audience* output, so what belongs on it is
-        transport **state** — what the picture is now doing — not confirmation
-        that a control was pressed. A recall changes what is playing (`LOOP 3`
-        is the state that follows), and arming keeps `LOOP A`/`REC ●` beside
-        its red border. A save or a delete changes a file on disk and nothing
-        on screen, so `SAVED 3` and `3 CLEARED` were the performer's
-        bookkeeping shown to the room. They go to the log, and to the console
-        for free: every pushed state frame already carries `loop_slots`
-        (`perf_console._transport_dict`), so a slot filling or emptying is
-        live feedback in the surface that asked for it, and not a two-second
-        flash the audience has to read."""
+        Save and clear post no OSD; recall does. See
+        docs/architecture/scenes.md#record-workflow--loop-preset-pads-midi-live-tune-phase-3.
+        """
         sc = self._scene
         if clear:
             if self.loop_store is not None:
@@ -353,8 +337,9 @@ class VideoTransportControls:
         sc.osd.post(f"LOOP {slot}")
 
     def position(self) -> float:
-        # The transport surface speaks content seconds; the internal clock is in
-        # the scaled/PTS domain on the resync tempo path (identity elsewhere).
+        """The playback position in content seconds, which is what the whole
+        transport surface speaks; the internal clock is in the scaled/PTS
+        domain on the resync tempo path, and identical elsewhere."""
         return self.clock_to_content(self.clock_s())
 
     def duration(self) -> float | None:

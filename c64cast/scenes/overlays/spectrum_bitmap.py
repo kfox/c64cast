@@ -1,35 +1,16 @@
 """Native multicolor-bitmap spectrum-analyzer overlay.
 
-The bitmap counterpart to `spectrum_petscii`. Where that one fills character
-cells in a 40×25 grid, this paints directly into the mhires 160×200 multicolor
-bitmap, so a bar's height is a *pixel* — 200 levels instead of 25.
+The bitmap counterpart to `spectrum_petscii`: bars are painted into the mhires
+160×200 multicolor bitmap, so a bar's height is a *pixel*. Each bar owns its
+cells' c3 slot (color RAM) and leaves the screen nibbles alone, so bar tops land
+mid-cell. Gaps are never blanked — only cells a bar fills are written.
 
 Restricted to `mhires` (`COMPATIBLE_MODES`) because it is written against that
 mode's exact buffer set: an 8000-byte 2bpp bitmap, a 1000-byte screen matrix
 (c1 = high nibble, c2 = low nibble) and 1000 bytes of color RAM (c3), with %00
 falling through to the global bg0. See modes.MHiresComposeBuffers.
 
-**Which color slot a bar owns.** MCBM gives each 4×8 hardware cell four colors:
-bg0 (global), c1 and c2 (the two screen nibbles) and c3 (color RAM). A bar wants
-one solid color per band, and the frame underneath is already using all four. c3
-is the slot to take: it is a whole byte per cell that nothing else in the cell
-depends on, so setting a bar cell's pixels to %11 and writing the band color to
-that cell's color RAM leaves the screen nibbles — and therefore the frame's own
-c1/c2 pixels — completely alone. `MHiresTextSurface` makes the opposite choice
-(it reserves c1+c2 for an opaque text box and leaves c3 to the frame) because
-text needs two colors per cell; a bar needs one.
-
-**Bar tops are sub-cell.** A bar's top edge lands wherever the energy puts it,
-including mid-cell — that's the resolution this overlay exists for. The cost is
-confined to the single 4×8 cell at each bar's tip: that cell's c3 becomes the
-band color, so any *frame* pixel in the exposed part of that one cell that was
-using the c3 slot is recolored. Frame pixels on bg0/c1/c2 are untouched, as is
-every cell the bar doesn't reach. Snapping tops to the 8px cell boundary would
-remove even that, at the price of throwing away the vertical resolution that is
-the whole point — so it isn't the default.
-
-Gaps are never blanked: only cells a bar actually fills are written, so the
-video shows through between and above the bars.
+See docs/architecture/scenes.md#spectrum_bitmap--bars-in-the-multicolor-bitmap.
 """
 
 from __future__ import annotations
@@ -92,8 +73,6 @@ class BitmapSpectrumOverlay(_SpectrumBands, Overlay):
         self.n_bands = N_BANDS
         self._init_bands()
 
-    # ---- geometry -----------------------------------------------------------
-
     @property
     def height_px(self) -> int:
         """Scanlines a full-energy bar spans."""
@@ -117,8 +96,6 @@ class BitmapSpectrumOverlay(_SpectrumBands, Overlay):
             return [(mid - half, mid + half)]
         # split — from the top edge down, and from the bottom edge up.
         return [(0, half), (BITMAP_H - half, BITMAP_H)]
-
-    # ---- per-frame paint ----------------------------------------------------
 
     def compose(self, buffers: dict, scene, t: float) -> None:
         heights = self._bar_heights(self.bands_now(scene))
@@ -159,24 +136,20 @@ class BitmapSpectrumOverlay(_SpectrumBands, Overlay):
             return
         first_row, last_row = y0 // CELL_PX, (y1 - 1) // CELL_PX
         if first_row == last_row:
-            # One cell row, partially covered top and bottom.
             s0, s1 = y0 - first_row * CELL_PX, y1 - first_row * CELL_PX
             bitmap[first_row, x0:x1, s0:s1] = _C3_SOLID
             color[first_row, x0:x1] = band_color
             return
-        # Leading partial row.
         s0 = y0 - first_row * CELL_PX
         if s0:
             bitmap[first_row, x0:x1, s0:] = _C3_SOLID
             color[first_row, x0:x1] = band_color
             first_row += 1
-        # Trailing partial row.
         s1 = y1 - last_row * CELL_PX
         if s1 != CELL_PX:
             bitmap[last_row, x0:x1, :s1] = _C3_SOLID
             color[last_row, x0:x1] = band_color
             last_row -= 1
-        # Fully covered rows in between.
         if first_row <= last_row:
             bitmap[first_row : last_row + 1, x0:x1, :] = _C3_SOLID
             color[first_row : last_row + 1, x0:x1] = band_color

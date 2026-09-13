@@ -56,8 +56,6 @@ class DotSwarmSource(GenerativeSource):
         self._orbit = min(width, height) * self._ORBIT_FRAC
         rng = np.random.default_rng(0xD07A)
         n = self._N_DOTS
-        # Varied, deliberately non-harmonic per-dot frequencies (mirrors the
-        # spread of distinct beatsin8 rates each WLED kin effect hand-picks).
         self._fx = rng.uniform(0.4, 2.6, n)
         self._fy = rng.uniform(0.4, 2.6, n)
         self._px = rng.uniform(0.0, 2.0 * math.pi, n)

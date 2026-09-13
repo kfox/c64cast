@@ -3,11 +3,10 @@
 
 The art file is plain ASCII; each line becomes a row, each character
 becomes a screen code via the standard ASCII → screen-code conversion.
-Trailing whitespace is stripped per line, blank leading/trailing rows
-are dropped, but interior spaces are preserved so multi-column art
-aligns the way the author drew it. Lines wider than 40 chars are
-truncated (with a warning) so weird files don't silently corrupt the
-display.
+Trailing whitespace is stripped per line and blank leading/trailing rows
+are dropped, but interior spaces are preserved so multi-column art aligns
+the way the author drew it. Lines wider than 40 chars are truncated, with
+a warning.
 """
 
 from __future__ import annotations
@@ -51,14 +50,12 @@ def _load_art(path: str) -> list[str]:
     with open(paths.expand_user(path), encoding="utf-8", errors="replace") as f:
         raw = f.read().rstrip("\n")
     lines = raw.split("\n")
-    # Trim blank rows top + bottom; preserve internal spacing.
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
     if not lines:
         raise ValueError("logo: file is empty after stripping blank rows")
-    # Pad each line to the max width found, truncate cells past 40 cols.
     out = []
     for ln in lines:
         if len(ln) > SCREEN_W:
@@ -72,10 +69,9 @@ def _load_art(path: str) -> list[str]:
 @register("logo")
 class LogoOverlay(Overlay):
     REQUIRES_PETSCII = True
-    # Art is just screen codes + a color, which the TextSurface folds into a
-    # bitmap as readily as char RAM. On hires the 40-col layout maps 1:1; on
-    # mhires the grid is 20 double-wide cols, so wide art clips — size the file
-    # for the target mode (or use hires for full-width art).
+    # Art is screen codes plus a color, which the TextSurface folds into a
+    # bitmap as readily as into char RAM. hires maps the 40-col layout 1:1;
+    # mhires is 20 double-wide cols, so wide art clips there.
     SUPPORTS_BITMAP_TEXT = True
     REQUIRES_AUDIO = False
     PAINTS_INTO_BUFFERS = True
@@ -98,9 +94,6 @@ class LogoOverlay(Overlay):
         fg_color: str = "white",
         bg_color: str = "black",
     ):
-        # Missing file → render a friendly placeholder instead of crashing.
-        # Lets the example config "just work" even before the user has
-        # dropped their own art into assets/logos/.
         self._placeholder = not os.path.exists(file)
         if self._placeholder:
             log.warning("logo: file %r not found — using placeholder", file)
@@ -119,7 +112,6 @@ class LogoOverlay(Overlay):
             self.lines = _placeholder_art(file)
         else:
             self.lines = _load_art(file)
-        # Limit total rows to the screen height.
         if len(self.lines) > SCREEN_H:
             log.warning("logo: %d rows exceeds %d; truncating", len(self.lines), SCREEN_H)
             self.lines = self.lines[:SCREEN_H]
@@ -139,14 +131,13 @@ class LogoOverlay(Overlay):
             raise ValueError(
                 f"logo: cols {self._col}..{self._col + self._w - 1} don't fit in 0..{SCREEN_W - 1}"
             )
-        # Pre-encode once; logo is static so this never changes.
         self._encoded = [ascii_to_screen(ln) for ln in self.lines]
 
     def compose(self, buffers: dict, scene, t: float) -> None:
         surface = buffers["text"]
-        # Recompute the corner anchor against the surface's actual grid (40-col
-        # char/hires, 20-col mhires) so the block lands in the right corner on
-        # every mode. Explicit row/col is used verbatim (clipped if off-grid).
+        # The anchor is recomputed against the surface's actual grid (40-col
+        # char/hires, 20-col mhires); an explicit row/col is used verbatim and
+        # clipped if off-grid.
         if self.corner is not None:
             col, row = _surface_corner_origin(
                 self.corner, self._w, self._h, surface.cols, surface.rows

@@ -17,9 +17,8 @@ class TunnelSource(GenerativeSource):
     """Infinite-zoom tunnel: hue is driven by per-pixel depth (1/radius) and
     angle, scrolled over time. Depth + angle fields are precomputed once."""
 
-    # `scale` multiplies the 0.05 depth coefficient (the ix live knob): higher
-    # packs more concentric rings toward the mouth of the tunnel. 1.0 == the
-    # historical fixed depth.
+    # `scale` multiplies the 0.05 depth coefficient: higher packs more
+    # concentric rings toward the mouth of the tunnel.
     LIVE_PARAMS = {"speed": (0.0, 2.0), "scale": (0.25, 4.0)}
 
     def __init__(
@@ -45,8 +44,6 @@ class TunnelSource(GenerativeSource):
         if modulation is None:
             hue = self._depth * depth_coeff + self._angle + t * self.speed
             return self._hsv_to_bgr(hue)
-        # Reactive: same generic treatment as plasma (tempo cycles the colors,
-        # onsets pulse). The depth-driven tunnel shape itself stays time-locked.
         offset = t * self.speed + self._reactive_hue_offset(modulation)
         hue = self._depth * depth_coeff + self._angle + offset
         return self._hsv_to_bgr(hue, val=self._reactive_value(modulation))

@@ -10,8 +10,9 @@ Generators are registered by name, one module per source: add a
 import it in the ordered block at the bottom of this file, and it shows up
 in config discovery + the `_GENERATIVE_SOURCE_CHOICES` list. The math is pure
 numpy and deterministic in `t` (no hidden frame-to-frame state), so a given
-scene-time always renders the same frame — which keeps unit tests trivial and
-dropped frames harmless.
+scene-time always renders the same frame.
+
+See docs/architecture/scenes.md#generators--the-generativesource-registry.
 """
 
 from __future__ import annotations
@@ -27,9 +28,9 @@ from c64cast.scenes.frame_source import BaseFrameSource
 if TYPE_CHECKING:
     from c64cast.scenes.modulation import MusicModulation
 
-# Native render resolution. The display mode downscales to its own grid
-# (40×25 / 80×50 / 320×200 / 160×200), so this only sets the detail the
-# generator computes at — 320×200 matches the richest bitmap mode.
+# Native render resolution: the display mode downscales to its own grid, so
+# this only sets the detail a generator computes at. 320×200 is the richest
+# bitmap mode's own grid.
 GEN_WIDTH = 320
 GEN_HEIGHT = 200
 
@@ -77,27 +78,25 @@ class GenerativeSource(BaseFrameSource):
 
     name = "base"
 
-    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep.
-    # midi_control.py scales into this range and setattr()s directly —
-    # only declare independent single-numeric fields here (a plain
-    # setattr is GIL-atomic; a value split across two fields wouldn't be).
+    # name -> (min, max) for a CC-style [0, 1] sweep. midi_control.py scales
+    # into the range and setattr()s directly, so only independent
+    # single-numeric fields belong here: a plain setattr is GIL-atomic, and a
+    # value split across two fields would not be.
     LIVE_PARAMS: dict[str, tuple[float, float]] = {}
 
-    # Reactive-modulation mapping constants (used only on the music-reactive
-    # render path; the unmodulated path never touches them). Tuned on real HW
-    # (Cam Link A/B vs the static path) so the reaction is unmistakable after
-    # 16-color quantization — the C64's coarse palette + MCM's population-based
-    # bg pick swallow a timid offset, so the gains are deliberately punchy.
+    # Reactive-modulation gains, read only on the music-reactive render path.
+    # Tuned on real hardware (Cam Link A/B against the static path): the C64's
+    # coarse palette and MCM's population-based bg pick swallow a timid offset,
+    # so these are punchy on purpose.
     _BEAT_HUE_GAIN = 0.22  # hue cycles added per accumulated beat → tempo-driven cycle rate
     _ONSET_HUE_KICK = 0.22  # hue jump on a transient, decays with `onset` → color pulse
     _V_REST = 0.50  # dim resting HSV value so onsets + loudness clearly flash up
     _ONSET_FLASH = 0.45  # sharp value punch on a transient (the on-beat flash)
     _LEVEL_GAIN = 0.32  # value lift from overall loudness (envelope breathing)
-    # Spectral split (audio-input sources only — `bands` is empty on the SID
-    # path, so both terms are exactly 0.0 there and the SID look is unchanged).
-    # Bass drives brightness and treble drives hue, deliberately: that makes a
-    # kick and a hi-hat read differently without ever desaturating, which the
-    # 16-color quantizer handles badly (a desaturated hue lands in the grays).
+    # Audio-input sources only: `bands` is empty on the SID path, where both
+    # terms are exactly 0.0. Bass drives brightness and treble drives hue so a
+    # kick and a hi-hat read differently without desaturating — a desaturated
+    # hue lands in the grays under the 16-color quantizer.
     _BASS_VALUE_GAIN = 0.25  # extra value from low-band energy → kicks punch the brightness
     _TREBLE_HUE_GAIN = 0.10  # hue shift from high-band energy → cymbals/hats shimmer the color
 
@@ -112,13 +111,10 @@ class GenerativeSource(BaseFrameSource):
         raise NotImplementedError
 
     def reset(self) -> None:
-        """Clear any inter-frame state. Mirrors `effects.FrameEffect.reset()`; a
-        no-op for the pure-in-`t` generators (nothing to clear), overridden by
-        the few generators that carry real incremental state (see `SoapSource`
-        / `FireworksSource`). Not currently called by `scenes.py` — a fresh
-        generator instance is built per scene entry via `build_scene`, so state
-        already resets naturally — but declared here for parity with
-        `FrameEffect` and defensiveness against a future reused-instance path."""
+        """Clear any inter-frame state. A no-op for the pure-in-`t` generators,
+        overridden by the few that carry real incremental state (`SoapSource`,
+        `FireworksSource`). Not called by `scenes.py` today: a fresh generator
+        instance is built per scene entry, so state already resets naturally."""
         return None
 
     @classmethod
@@ -157,9 +153,8 @@ class GenerativeSource(BaseFrameSource):
         return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
-# Import order IS registration order: generator_names() promises the historical
-# declaration order (test_introspect pins tuple equality against
-# config._GENERATIVE_SOURCE_CHOICES), so these lines must not be re-sorted.
+# Import order IS registration order, and test_introspect pins it as a tuple
+# against config._GENERATIVE_SOURCE_CHOICES: do not re-sort these lines.
 # isort: off
 from .plasma import PlasmaSource as PlasmaSource
 from .tunnel import TunnelSource as TunnelSource

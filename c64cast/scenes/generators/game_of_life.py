@@ -30,8 +30,8 @@ def _life_step(grid: np.ndarray, hue: np.ndarray) -> tuple[np.ndarray, np.ndarra
     born = (~grid) & (neighbor_count == 3)
     survive = grid & ((neighbor_count == 2) | (neighbor_count == 3))
     new_grid = born | survive
-    # Born cells always have exactly 3 live neighbors (the B3 rule), so the
-    # accumulated hue_sum / 3 is their new hue's mean; survivors keep theirs.
+    # A born cell has exactly 3 live neighbors under B3, so hue_sum / 3 is the
+    # mean of its parents' hues; survivors keep their own.
     new_hue = np.where(born, hue_sum / 3.0, hue)
     return new_grid, new_hue
 

@@ -22,8 +22,8 @@ from .marquee import MarqueeBase
 
 log = logging.getLogger(__name__)
 
-# Atom uses an XML namespace; RSS 2.0 doesn't. Strip the namespace
-# from tag names so a single match works for both.
+# Atom tags carry an XML namespace and RSS 2.0's do not; stripping it lets one
+# match serve both.
 _NS_STRIP = re.compile(r"\{[^}]*\}")
 
 
@@ -34,7 +34,7 @@ def _local(tag: str) -> str:
 def _extract_titles(xml_text: str, limit: int) -> list[str]:
     root = ET.fromstring(xml_text)
     titles = []
-    # Walk anything tagged 'item' (RSS) or 'entry' (Atom).
+    # 'item' is RSS, 'entry' is Atom.
     for el in root.iter():
         if _local(el.tag) not in ("item", "entry"):
             continue

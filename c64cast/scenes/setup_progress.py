@@ -1,34 +1,11 @@
 """The video-setup progress bar: a diagonal-striped strip that grows along
-screen row ``BAR_ROW`` while ``VideoScene.setup()`` does its blocking work
-(container open, color pre-scan, audio pre-encode, REU upload, sampler
-start). The bar carries no text or numbers — the screen's right edge *is*
-100% — so it reads as "loading" without claiming a precision the weighted
-model below doesn't have.
+screen row ``BAR_ROW`` while ``VideoScene.setup()`` does its blocking work.
 
-Design constraints this module leans on:
+It paints via ``write_memory_file``, outside the ``write_region`` delta cache,
+and never erases itself. ``bar_style_for`` supplies the per-mode fill and
+returns None for an unknown or absent display mode.
 
-* **Direct, uncached writes.** The bar paints via ``write_memory_file``, not
-  ``write_region`` — deliberately outside the delta cache. Every display
-  mode's ``setup()`` calls ``invalidate_cache()`` and clears its field with
-  uncached bulk writes, so the mode's first real frame push finds an empty
-  cache, pushes the full region, and wipes the bar wherever it lives (char
-  screen, bank-0 bitmap, or a staged bank about to be swapped away). No
-  region IDs to claim, no erase pass, no cache entry that could go stale.
-* **Monotonic, cell-quantized repaints.** ``show()`` only ever extends the
-  bar, and each repaint writes just the newly filled cells — at most 40
-  screen-byte spans (plus their color/nibble twins) over the whole setup,
-  noise against the ≈200 writes/sec DMA budget.
-* **Row 22, not 24.** A Shadowcast-style 16:9 crop of the 4:3 frame eats the
-  outermost rows; 22 stays visible there while still reading as a bottom
-  status strip.
-
-Mode coverage: petscii/blank draw a row of "/" glyphs (the same `0x4E` the
-HatchStyle shading ramp uses); MCM uses its synthesized charset, where code
-`0xC3` fills the top-left + bottom-right quadrants in the cell's color-RAM
-color; hires/mhires get true 45° stripes — 8-byte cells cycling
-``$88 $11 $22 $44`` light the bits where ``(x + y) % 4 == 0``, continuous
-across cells since a cell is 8 wide. An unknown or absent display mode gets
-no bar (``bar_style_for`` returns None).
+See docs/architecture/scenes.md#setup_progresspy--the-video-setup-progress-bar.
 """
 
 from __future__ import annotations

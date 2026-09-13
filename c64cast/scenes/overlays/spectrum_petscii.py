@@ -59,7 +59,6 @@ class PetsciiSpectrumOverlay(_SpectrumBands, Overlay):
         self.gain = float(gain)
         self.n_bands = N_BANDS
         self._init_bands()
-        # Strip rows we ever touch — used by compose to scope buffer writes.
         self._strip_rows = self._compute_strip_rows()
 
     def _compute_strip_rows(self) -> range:
@@ -71,27 +70,23 @@ class PetsciiSpectrumOverlay(_SpectrumBands, Overlay):
             top = max(0, (SCREEN_H // 2) - half)
             bot = min(SCREEN_H, (SCREEN_H // 2) + half)
             return range(top, bot)
-        # split
-        # Top strip 0..height_rows, bottom strip SCREEN_H-height_rows..SCREEN_H.
-        # We expose a single range covering both for the write region;
-        # placement of cells handled in render below.
+        # split: one range covering both strips, since the write region wants a
+        # single span; the cells themselves are placed in _paint_band.
         return range(0, SCREEN_H)
 
     def _bar_lengths(self, mags: np.ndarray) -> np.ndarray:
         """Map band magnitudes to integer bar lengths in [0, height_rows]."""
-        # Heuristic mapping: clip at 1.0 after log compression, scale to rows.
+        # Clip at 1.0 after log compression, then scale to rows.
         scaled = np.clip(mags, 0, 1.0)
         return (scaled * self.height_rows + 0.5).astype(np.int32)
-
-    # ---- per-frame paint ----------------------------------------------------
 
     def compose(self, buffers: dict, scene, t: float) -> None:
         lengths = self._bar_lengths(self.bands_now(scene))
 
         screen = buffers["screen"]
         color = buffers["color"]
-        # Paint bars on top of the scene's video without blanking the gaps —
-        # quiet bands leave the underlying video visible between bars.
+        # The gaps are never blanked, so a quiet band leaves the underlying
+        # video visible between bars.
         for b in range(N_BANDS):
             ln = int(lengths[b])
             if ln <= 0:
@@ -111,8 +106,8 @@ class PetsciiSpectrumOverlay(_SpectrumBands, Overlay):
             half = max(1, ln // 2)
             self._fill_rect(chars, colors, x_start, x_end, mid - half, mid + half, color)
         elif self.placement == "split":
-            # From top down to `ln`, AND from bottom up `ln` rows. When loud,
-            # they meet in the middle. Each side gets half the magnitude.
+            # Each side gets half the magnitude, so loud bands meet in the
+            # middle.
             half = max(1, ln // 2)
             self._fill_rect(chars, colors, x_start, x_end, 0, half, color)
             self._fill_rect(chars, colors, x_start, x_end, SCREEN_H - half, SCREEN_H, color)

@@ -186,9 +186,9 @@ class FireworksSource(GenerativeSource):
                 self._next_launch_s = max(
                     self._sim_t, self._next_launch_s - level_gain * self._STEP_S
                 )
-        # A strong transient bursts immediately regardless of whether a physics
-        # tick fired this call — an onset is a discrete "the beat hit" reaction,
-        # not something that should wait on the tick accumulator.
+        # A transient bursts immediately whether or not a physics tick fired
+        # this call: the beat hit is a discrete event, not one to hold for the
+        # tick accumulator.
         if modulation is not None and modulation.onset > self._ONSET_THRESHOLD:
             self._explode(
                 float(self._rng.uniform(0.2, 0.8) * self.width),

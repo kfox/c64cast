@@ -10,6 +10,8 @@ Overlays write directly to fixed VIC/screen/color RAM addresses without
 participating in the scene's delta-cache (they don't pass a region_id to
 write_region). Restrictions are declared as class attributes and validated
 at scene-build time in config.py.
+
+See docs/architecture/scenes.md#overlays.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Re-export common screen-code constants so overlays import once.
 from c64cast.scenes.backgrounds import SC_DOT as SC_DOT  # noqa: E402
 from c64cast.scenes.backgrounds import SC_FULL as SC_FULL  # noqa: E402
 from c64cast.scenes.backgrounds import SC_GT as SC_GT  # noqa: E402
@@ -40,65 +41,54 @@ from c64cast.scenes.backgrounds import SC_STAR as SC_STAR  # noqa: E402
 def ascii_to_screen(text: str) -> bytes:
     """Convert an ASCII string to C64 screen codes (uppercase character set).
 
-    Same conversion the legacy TransitionScene used: PETSCII letters A-Z
-    (0x40-0x5F) map to screen codes 0x00-0x1F; everything else passes
-    through (works for digits, punctuation, space)."""
+    PETSCII letters A-Z (0x40-0x5F) map to screen codes 0x00-0x1F;
+    everything else passes through (digits, punctuation, space)."""
     return bytes(
         (ord(c) - 0x40) & 0x3F if 0x40 <= ord(c) <= 0x5F else ord(c) & 0xFF for c in text.upper()
     )
 
 
-# ---------------------------------------------------------------------------
-# Base + registry
-# ---------------------------------------------------------------------------
-
-
 class Overlay:
+    """Base class for the scene decorations.
+
+    The restriction attributes below are declared per subclass;
+    :func:`validate_for_scene` checks the display-mode ones and
+    :func:`build_overlay` the audio ones. docs/architecture/scenes.md#overlays
+    says what each one buys.
+    """
+
     name = "base"
-    # One-line, author-facing description rendered by `--list-overlays` and
-    # `--describe`. Subclasses should set this. Per-constructor-param help
-    # lives in PARAM_HELP (merged across the MRO by the introspection layer,
-    # so a subclass only needs to document the params it adds).
+    # Rendered by `--list-overlays` and `--describe`. PARAM_HELP is merged
+    # across the MRO by the introspection layer, so a subclass documents only
+    # the constructor params it adds.
     HELP: str = ""
     PARAM_HELP: dict[str, str] = {}
-    # When True, the overlay paints PETSCII screen codes into $0400/$D800.
-    # The default character set + color RAM nibbles only render correctly
-    # in the standard PETSCII display mode — MCM reinterprets color RAM
-    # bit 3 as "this cell is multicolor", which munges both glyph spacing
-    # (double-wide pixels) and color (low 3 bits only). Bitmap modes ($2000)
-    # don't expose the character matrix at all. So we restrict to display
-    # mode "petscii" rather than just "any char mode".
+    # When True, the overlay paints PETSCII screen codes into $0400/$D800, which
+    # only render right in the standard PETSCII display mode: MCM reads color
+    # RAM bit 3 as "this cell is multicolor" and munges both glyph spacing and
+    # color, and bitmap modes do not expose the character matrix at all.
     REQUIRES_PETSCII = False
-    # When True (alongside REQUIRES_PETSCII), this text overlay can ALSO render
-    # on a bitmap mode (hires/mhires) by folding its glyphs into the bitmap via
-    # the TextSurface — not just on char modes. Set on the shared text bases
-    # (corner_text, marquee, scrolling_text). Overlays whose paint doesn't map
-    # onto a simple text-row rasterizer (logo art, spectrum bars) leave it
-    # False, staying petscii/blank-only. See modes.is_bitmap_text_compatible.
+    # When True, alongside REQUIRES_PETSCII: this text overlay folds its glyphs
+    # through the TextSurface, so it renders on hires/mhires too. An overlay
+    # whose paint is not a simple text row (logo art, spectrum bars) leaves it
+    # False.
     SUPPORTS_BITMAP_TEXT = False
     REQUIRES_AUDIO = False
-    # When True, the overlay is HANDED the shared AudioStreamer (as an `audio`
-    # constructor kwarg) if one exists, but works without it — unlike
-    # REQUIRES_AUDIO, which refuses to build when audio is off. The spectrum
-    # overlays are the case: they read band energies from the scene's music
-    # features (a SID scene has those and no streamer at all) and fall back to
-    # FFT-ing the streamer only when the scene reports none.
+    # When True, handed the shared AudioStreamer as an `audio` kwarg when one
+    # exists, but built either way — unlike REQUIRES_AUDIO, which refuses when
+    # audio is off.
     WANTS_AUDIO = False
-    # Optional whitelist of display-mode names this overlay supports. Empty
-    # tuple = no restriction (works on any display mode that accepts it via
-    # the other flags). Use this when an overlay is too custom to gate on
-    # the generic REQUIRES_PETSCII / is_bitmapped flags — e.g. BigText only
-    # makes sense on `blank` and `mcm`.
+    # Whitelist of display-mode names; empty = no restriction. For an overlay
+    # too custom to gate on the flags above.
     COMPATIBLE_MODES: tuple[str, ...] = ()
-    # When True, the overlay paints into the scene's screen/color buffers
-    # via compose() before the scene pushes them. The Playlist's per-frame
-    # process_frame() loop SKIPS this overlay because the scene already
-    # invoked compose() on it during its render path. This is what prevents
-    # flicker: scene + overlays produce one composed frame, uploaded once.
+    # When True, the overlay paints into the scene's buffers via compose() before
+    # the scene pushes them, and the Playlist's process_frame() loop skips it,
+    # because the scene already invoked compose() during its render path. That
+    # is what keeps scene + overlays one composed frame, uploaded once.
     PAINTS_INTO_BUFFERS = False
-    # Flipped by the scene's render loop when compose() raises; once True the
-    # Playlist skips this overlay for the rest of the scene so a broken
-    # overlay doesn't spam errors every frame.
+    # Flipped by the scene's render loop when compose() raises; the Playlist
+    # then skips the overlay for the rest of the scene rather than logging
+    # every frame.
     disabled: bool = False
 
     def setup(self, api: C64Backend, scene: Scene) -> None:
@@ -110,7 +100,7 @@ class Overlay:
         message that hasn't finished). Default False.
 
         The Playlist defers `scene.is_done = True` while any overlay
-        reports busy — but a CTRL skip still cuts through immediately.
+        reports busy; a CTRL skip still cuts through immediately.
         """
         return False
 
@@ -154,8 +144,8 @@ def register(name: str) -> Callable[[type[_OverlayT]], type[_OverlayT]]:
     """Class decorator that registers an Overlay subclass under a config name.
 
     Returns the class unchanged so the decorated symbol keeps its concrete
-    subclass type — important for static analyzers (Pyright/Pylance) to see
-    each overlay's actual `__init__` parameters instead of the base class's.
+    subclass type, and a static analyzer sees each overlay's actual
+    `__init__` parameters instead of the base class's.
     """
 
     def deco(cls: type[_OverlayT]) -> type[_OverlayT]:
@@ -167,7 +157,6 @@ def register(name: str) -> Callable[[type[_OverlayT]], type[_OverlayT]]:
 
 
 def known_overlays() -> list[str]:
-    # Force-load submodules so all @register decorators have run.
     _load_all()
     return sorted(_REGISTRY)
 
@@ -212,10 +201,8 @@ def build_overlay(cfg: dict[str, Any], audio) -> Overlay:
             f"overlay {type_name!r} requires audio but audio is not enabled — "
             "set [audio].enabled = true in config and don't pass --no-audio"
         )
-    # Filter 'type' out; pass remaining as kwargs.
     kwargs = {k: v for k, v in cfg.items() if k != "type"}
-    # The overlay's __init__ accepts an `audio` kw for audio-using overlays.
-    # WANTS_AUDIO overlays get it too (possibly None — they cope).
+    # A WANTS_AUDIO overlay gets the kwarg too, possibly None; it copes.
     if cls.REQUIRES_AUDIO or cls.WANTS_AUDIO:
         kwargs.setdefault("audio", audio)
     try:
@@ -251,8 +238,6 @@ def validate_for_scene(overlay: Overlay, display_mode) -> None:
     """Raise ValueError if `overlay` can't run on a scene with `display_mode`."""
     mode_name = getattr(display_mode, "name", "?")
     if overlay.REQUIRES_PETSCII:
-        # Text overlays render on char modes (petscii/blank) and — when the
-        # overlay folds glyphs via the TextSurface — on bitmap modes too.
         petscii_ok = getattr(display_mode, "is_petscii_compatible", False)
         bitmap_ok = getattr(overlay, "SUPPORTS_BITMAP_TEXT", False) and getattr(
             display_mode, "is_bitmap_text_compatible", False
@@ -285,10 +270,9 @@ def _load_all():
     global _LOADED
     if _LOADED:
         return
-    # Import inside the function to avoid an import-time chain at package load.
-    # Modules whose @register decorator depends on an optional dep (e.g.
-    # obs_status → obsws-python) check the availability inside __init__
-    # so just importing the module is always safe.
+    # Imported here, not at package load, to avoid the import-time chain. A
+    # module whose overlay needs an optional dep (obs_status → obsws-python)
+    # checks for it inside __init__, so the import itself is always safe.
     from . import (  # noqa: F401
         big_text,
         callsign,

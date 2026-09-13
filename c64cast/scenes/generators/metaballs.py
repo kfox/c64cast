@@ -35,12 +35,11 @@ class MetaballsSource(GenerativeSource):
     _BALL2 = {"fx": (0.11, 0.178), "fy": (0.13, 0.210), "px": (0.0, 1.7), "py": (0.9, 2.4)}
     _BALL3 = {"fx": (0.17, 0.275), "fy": (0.19, 0.307), "px": (2.1, 0.4), "py": (1.2, 3.0)}
     _THRESHOLD = 60.0
-    # WLED's raw `color/threshold` value maps cleanly to brightness on the
-    # small (16-64px) matrices it targets, but decays too fast to read as
-    # anything but a dim smudge at this generator's much larger 320x200 native
-    # resolution — this gamma lifts the mid/low range for legibility after C64
-    # quantization (background pixels, already ~0, stay ~0; it's a display
-    # tone curve, not a change to the underlying distance-field math).
+    # WLED's raw `color/threshold` value reads as brightness on the 16-64 px
+    # matrices it targets, but decays to a dim smudge at 320x200. This gamma is
+    # a display tone curve over it — lifting the mid/low range for legibility
+    # after C64 quantization, leaving the ~0 background at ~0 and the
+    # distance-field math untouched.
     _VALUE_GAMMA = 0.6
 
     def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, speed: float = 1.0):
@@ -80,8 +79,8 @@ class MetaballsSource(GenerativeSource):
             hue = np.mod(hue + self._reactive_hue_offset(modulation), 1.0)
             val = val * self._reactive_value(modulation)
         val = np.where(in_range, val, 0.0)
-        # Per-pixel `val` (not the scalar `_hsv_to_bgr` accepts) needs the
-        # manual HSV build Mandelbrot/Hopalong already use for the same reason.
+        # `_hsv_to_bgr` takes a scalar `val`; a per-pixel one needs the manual
+        # HSV build, as in mandelbrot and hopalong.
         h, w = val.shape
         hsv = np.empty((h, w, 3), dtype=np.uint8)
         hsv[..., 0] = (np.mod(hue, 1.0) * 180.0).astype(np.uint8)

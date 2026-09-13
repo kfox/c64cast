@@ -148,6 +148,8 @@ On a `True` return the caller, `TransportSession._dispatch`, sets `Playlist.stop
 
 This is a deliberately **explicit-save** design, confirmed with the user over an implicit "auto-store the last recording" heuristic: a performer shouldn't have to remember per-pad context to know whether the next press saves or recalls.
 
+**Save and clear post no OSD; recall does.** The line this engine draws goes over the *audience* output, so what belongs on it is transport **state** — what the picture is now doing — not confirmation that a control was pressed. A recall changes what is playing (`LOOP 3` is the state that follows), and arming keeps `LOOP A`/`REC ●` beside its red border. A save or a delete changes a file on disk and nothing on screen, so `SAVED 3` and `3 CLEARED` were the performer's bookkeeping shown to the room. They go to the log, and to the console for free: every pushed state frame already carries `loop_slots` (`perf_console._transport_dict`), so a slot filling or emptying is live feedback in the surface that asked for it, and not a two-second flash the audience has to read.
+
 **`_set_record_border(active)`** writes `api.write_regs("d020", 2 if active else 0)`, where C64 palette index 2 is red. Restoring to `0` is always correct, because the bitmap and char display modes `VideoScene` uses engage with a hardcoded `$00` border and never rewrite `$D020` per frame afterward — see `modes.engage_bitmap_mode`'s docstring, where border is a one-time engage-time poke on every mode `VideoScene` can use.
 
 `teardown()` calls `_set_record_border(False)` unconditionally and idempotently, so an interrupted recording never leaves a red border lingering into the next scene.
@@ -331,6 +333,24 @@ Most corner-positioned overlays (`clock`, `weather`, `callsign`, `countdown`, `n
 
 `marquee` and `rss` share `overlays/marquee.py:MarqueeBase` — subclass and implement `_current_text()`.
 
+### `big_text` — the 8× scroller
+
+Each source PETSCII character is expanded so that one pixel of its 8×8 ROM glyph becomes one solid-block character on the C64 screen — screen code `$A0` (reverse space) in the FG color for an "on" pixel, `$20` for an "off" one — so a single source char fills an 8×8 cell footprint and reads as the ROM letter scaled 8× on each axis. That is the chunky-bitmap look demo-scene scrollers have used since the mid-80s; [codebase64](https://codebase64.net/doku.php?id=base:8x_scale_charset_scrolling_message) carries the canonical 6502 implementation. Restricted to `blank` and `mcm` scenes: bitmap modes do not expose the character matrix at all, and a PETSCII scene's own per-frame char rendering would fight the scroller.
+
+Smooth horizontal scrolling is four pieces.
+
+**Integer pixels per frame.** Motion is driven by a frame counter, not the wall clock: `setup()` snaps the requested `speed_cells_per_s` to the nearest whole number of screen pixels per frame at the scene's target FPS, and the text advances by exactly that much on every `compose()`. The classic trap is `x = int(t * v)` — when `v / fps` is not an integer the per-frame delta alternates (1, 2, 1, 1, 2 px) and the eye reads the unevenness as jerk. Frame-counted motion is uniform by construction.
+
+**Cell-aligned coarse scroll.** Each frame rounds the message's leftmost source-pixel screen position *down* to a cell boundary and writes the resulting 8×40 cell strip. Cell content changes only when the scroll has crossed an 8 px boundary, so the screen-RAM upload is mostly a no-op between shifts.
+
+**Hardware fine X-scroll.** The sub-cell remainder (0–7 px) goes to VIC-II `$D016` bits 0–2, and the VIC translates the whole display by that many pixels — pixel-by-pixel motion with no character RAM rewritten.
+
+**Raster-IRQ commit of `$D016`/`$D018`.** The VIC reads `$D016` per scan line and `$D018` to find the screen matrix, so a write landing mid-frame paints the top rows with the old value and the bottom rows with the new — a visible horizontal tear at that line. Neither register is written directly: `compose()` writes shadow bytes at `$C100`/`$C101`, and a small 6502 raster IRQ handler at `$C000` copies them into the real registers during VBLANK (raster line 248) once per frame, then chains to `$EA31` so the keyboard scan and jiffy clock keep ticking. `$C000-$C01F` is free because the audio NMI routine starts at `$C020`. This is the canonical demoscene shadow-register trick.
+
+Screen RAM is page-flipped for the same reason: the strip is written to whichever of `$0400`/`$0C00` the VIC is *not* displaying, and the shadow `$D018` byte then flips to it, so the VIC sees the old page until the flip lands and never a half-uploaded strip. In blank mode `compose()` therefore leaves `buffers["screen"]` untouched — `BlankDisplayMode.push()` finds nothing changed against its diff cache and writes nothing to `$0400`, so the only screen-RAM writes are the overlay's own offscreen strip uploads. MCM keeps its own per-scene auto-uploaded charset at `$3000` and does not page-flip; it mutates the buffer and lets the scene's `push()` carry it.
+
+Color RAM is filled for the *entire* 8-row strip rather than only the "on" cells, which keeps it constant across the scroll frames of one message so the `write_region` diff cache absorbs it entirely between message changes. SHIFT cycles the color through `COLOR_CYCLE`, whose first stop is the sentinel "no override" (each message keeps its configured color); the picked stop survives single-scene loop iterations and pause/resume on the same overlay instance, and resets only when a real scene change builds a fresh overlay from config — the same contract the display mode's cycled style follows.
+
 ### `spectrum_bitmap` — bars in the multicolor bitmap
 
 The bitmap-native sibling of `spectrum_petscii`, whitelisted to `mhires` via `COMPATIBLE_MODES` (it is written against that mode's exact buffer set). It is not a port of the char version: bar height is a *scanline*, 200 levels instead of 25, with tops landing mid-cell. Horizontal geometry falls out of the arithmetic — 160 mhires px / 8 bands = 20 px = exactly 5 hardware cells per band, of which 4 are bar and 1 is a gutter so neighboring bars don't fuse into a solid strip.
@@ -375,11 +395,15 @@ The layout fact `paint_text_row` is built on: a hires cell is 8 consecutive bitm
 
 `InterstitialScene` is what plays between scenes ("UP NEXT: …"). It renders two centered text lines (the label `UP NEXT:`, a blank row, then the upcoming scene name) on top of an animated parallax background. Color is configurable (`rainbow` gives each line a different color from the rainbow palette).
 
+**Defeating a leaked bank-swap raster IRQ.** A preceding hires/mhires double-buffer scene hooks `$0314` to a handler at `$C500` (installed and removed by `modes_irq.install_bank_swap_irq` / `uninstall_bank_swap_irq`) that flips `$DD00` (VIC bank 0 ↔ 2) every frame. Its teardown unhooks it, but a CTRL skip can race that teardown and leave the handler live — and because `$D019`'s raster flag latches every frame regardless of `$D01A`, *any* IRQ (the CIA #1 jiffy included) still vectors through it, sees the raster bit, and re-flips `$DD00` to bank 2 right after the interstitial reset it. The VIC then reads its matrix from `$8400` and the card shows a screenful of the previous bitmap's leftover bytes as wrong glyphs, stable for its whole duration. So `setup()` unhooks the handler *first* — restoring `$0314` → `$EA31` puts it out of reach of any IRQ — then disables the raster source, acks the latched flag, and only then pins the bank. That order is the point: anything else leaves a window in which `$DD00` can be re-flipped after the pin. It is safe unconditionally, because the interstitial is host-DMA char mode and needs only the kernal jiffy IRQ for the keyboard scan.
+
+One late flip can still land: a handler already *dispatched* when the vector write lands runs to completion and does its `STA $DD00` after `setup()`'s one-shot bank-0 write. `process_frame` therefore re-asserts bank 0 every frame, which corrects it on the very next frame and cannot recur now that the vector is unhooked. It costs one byte on a light char-mode card that already repaints `$0400`/`$D800` each frame, so the screen self-heals in lockstep.
+
 `backgrounds.py` registers 7 styles: `starfield`, `petscii_bars`, `raster_bars`, `checker`, `nature`, `city`, `none`. Each implements `render(t, top_rows, bottom_rows, bg_color) -> (chars[1000], colors[1000])` that fills only the strips above and below the text — the InterstitialScene writes its text into the middle rows on top. `"random"` rotates through styles per setup() call. All writes go via `write_region` so the delta cache absorbs the static cells.
 
 ## `setup_progress.py` — the video-setup progress bar
 
-`VideoScene.setup()` blocks the playlist thread for seconds — container open + audio peak scan, the `force_palette` pre-scan, the REU audio pre-encode + upload, the sampler bring-up — while the display mode's `setup()` has already cleared the screen to a blank field. This module paints a diagonal-striped bar growing along row `BAR_ROW` (22) through that gap: no text or numbers, the screen's right edge *is* 100%. `[video].setup_progress_bar = false` disables it.
+`VideoScene.setup()` blocks the playlist thread for seconds — container open + audio peak scan, the `force_palette` pre-scan, the REU audio pre-encode + upload, the sampler bring-up — while the display mode's `setup()` has already cleared the screen to a blank field. This module paints a diagonal-striped bar growing along row `BAR_ROW` (22) through that gap: no text or numbers, the screen's right edge *is* 100%. Row 22 rather than 24 because a Shadowcast-style 16:9 crop of the 4:3 frame eats the outermost rows, and 22 still reads as a bottom status strip. `[video].setup_progress_bar = false` disables it.
 
 Two pieces:
 

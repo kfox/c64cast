@@ -51,8 +51,6 @@ class RorschachSource(GenerativeSource):
         self._walk = walk * scale  # (_N_STEPS, 2) offsets from center
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
-        # Triangle wave (grow then recede) rather than a sawtooth, so the
-        # cycle loops with no visible pop back to empty.
         phase = (t * self.grow_speed / self._PERIOD_S) % 2.0
         frac = phase if phase <= 1.0 else 2.0 - phase
         scale = 1.0

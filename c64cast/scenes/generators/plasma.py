@@ -37,15 +37,13 @@ class PlasmaSource(GenerativeSource):
             + np.sin((xs + ys) / 16.0)
             + np.sin(np.sqrt((xs - width / 2.0) ** 2 + (ys - height / 2.0) ** 2) / 8.0)
         )
-        # Normalize to ~[0,1] so `scale` maps to a predictable number of hue cycles.
         self._field = (field - field.min()) / (field.max() - field.min() + 1e-6)
 
     def render(self, t: float, modulation: MusicModulation | None = None) -> np.ndarray:
         if modulation is None:
             hue = self._field * self.scale + t * self.speed
             return self._hsv_to_bgr(hue)
-        # Reactive: beat_phase speeds the hue cycle with the tempo; an onset kicks
-        # the hue and flashes the brightness. beat_phase is frozen while silent,
-        # so this degrades smoothly to the baseline drift when nothing's playing.
+        # beat_phase is frozen while silent, so the reaction degrades smoothly
+        # to the baseline drift when nothing is playing.
         hue = self._field * self.scale + t * self.speed + self._reactive_hue_offset(modulation)
         return self._hsv_to_bgr(hue, val=self._reactive_value(modulation))

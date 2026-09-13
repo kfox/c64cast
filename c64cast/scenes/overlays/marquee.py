@@ -65,8 +65,7 @@ class MarqueeBase(Overlay):
         surface = buffers["text"]
         width = surface.cols  # 40 char/hires, 20 mhires (double-wide)
         text = self._current_text() or " "
-        # Loop the text seamlessly: repeat with a separator so there's never
-        # a long blank gap.
+        # Repeated with a separator, so the loop never shows a long blank gap.
         looped = text + self.SEPARATOR
         encoded = np.frombuffer(ascii_to_screen(looped), dtype=np.uint8)
         n = encoded.size
@@ -83,8 +82,8 @@ class MarqueeBase(Overlay):
         if row.size < width:
             pad = np.full(width - row.size, SC_SPACE, dtype=np.uint8)
             row = np.concatenate([row, pad])
-        # Per-cell FG = text color on glyphs, bg color on the gaps (so the
-        # ticker reads as a band). bg also fills the "off" pixels on bitmap.
+        # Per-cell FG is the text color on glyphs and bg on the gaps, so the
+        # ticker reads as a band; bg also fills the "off" pixels on bitmap.
         colors = np.where(row != SC_SPACE, self.fg, self.bg).astype(np.int64)
         surface.paint_run(self.row, 0, row, colors, self.bg)
 
