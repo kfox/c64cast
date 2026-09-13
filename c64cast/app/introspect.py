@@ -39,10 +39,6 @@ from c64cast.scenes import overlays as ovmod
 from . import config as cfgmod
 from . import paths as pathsmod
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class FieldDoc:
@@ -52,14 +48,13 @@ class FieldDoc:
     help: str
     choices: tuple[str, ...] = ()
     applies_to: tuple[str, ...] = ()
-    # On-C64 menu hint: "live" = the running scene can apply a change in place;
-    # "rebuild" (default) = needs a scene rebuild, so the menu shows it read-only.
-    # Internal — not emitted to schema/serializer/example.toml.
+    # On-C64 menu hint: "live" = the running scene applies a change in place,
+    # "rebuild" = the menu shows it read-only. Internal to the menu — never
+    # emitted to the schema, the serializer or example.toml.
     apply: str = "rebuild"
-    # The named set a field's *string* values are drawn from, when they come
-    # from one small enough to offer whole: "c64color" is the sixteen palette
-    # entries by name. `choices` can't say this, because these fields accept an
-    # index as well and a picker would refuse it. Empty = free text.
+    # The named set a field's *string* values are drawn from ("c64color" is the
+    # sixteen palette entries by name); "" is free text. Not `choices`, because
+    # these fields also accept an index and a picker would refuse it.
     vocabulary: str = ""
 
 
@@ -111,10 +106,9 @@ class SceneTypeDoc:
     help: str
     displays: tuple[str, ...]  # supported `display` values ("" = N/A / fixed)
     fields: tuple[FieldDoc, ...]
-    # Which media_store.py kind(s) this type's `file =` field browses. A
-    # field's own `vocabulary` ("media") can't say this by itself — the same
-    # field means videos on a video scene and .sid files on a waveform one —
-    # so it rides on the scene type instead. Empty for a type with no `file =`.
+    # Which media_store.py kind(s) this type's `file =` field browses; empty for
+    # a type with no `file =`. On the type and not on the field's `vocabulary`,
+    # because the same field means videos here and .sid files there.
     media_kinds: tuple[str, ...] = ()
 
 
@@ -136,9 +130,8 @@ class LiveTargetDoc:
     hi: float | None = None  # scalar range high
     choices: tuple[str, ...] = ()  # choice values
     owners: tuple[str, ...] = ()  # which registered classes declare it (for display)
-    # The named set a choice's values are drawn from, mirroring FieldDoc's own
-    # `vocabulary` — "c64color" is what tells a console to render swatches
-    # instead of a <select>. "" for every scalar and most choices.
+    # Mirrors `FieldDoc.vocabulary`: "c64color" tells a console to render
+    # swatches instead of a <select>, "" every scalar and most choices.
     vocabulary: str = ""
 
 
@@ -149,10 +142,6 @@ class _Required:
 
 REQUIRED = _Required()
 
-
-# ---------------------------------------------------------------------------
-# Static descriptors (sync-tested against the runtime classes)
-# ---------------------------------------------------------------------------
 
 # TOML section name -> (dataclass, one-line section help). Mirrors the section
 # list in config.load(); excludes [[scenes]] (see scene_types) and [ensemble].
@@ -314,11 +303,6 @@ _SCENE_MEDIA_KINDS: dict[str, tuple[str, ...]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Builders
-# ---------------------------------------------------------------------------
-
-
 def _field_docs(dc: type) -> list[FieldDoc]:
     """Build FieldDocs for a config dataclass, reading defaults off a fresh
     instance (so default_factory fields resolve to concrete values)."""
@@ -327,8 +311,8 @@ def _field_docs(dc: type) -> list[FieldDoc]:
     for f in fields(dc):
         md = f.metadata
         if md.get("internal"):
-            # Non-config tracking fields (e.g. MidiControlCfg.cc_map_is_default) —
-            # never emitted to --describe / the schema / the serialized TOML.
+            # A non-config tracking field, never emitted to --describe, the
+            # schema or the serialized TOML.
             continue
         out.append(
             FieldDoc(
@@ -361,9 +345,8 @@ def display_modes() -> list[ModeDoc]:
     return list(_MODES)
 
 
-# Live-tune target holders, in picker display order. Each pairs a cc_map "holder"
-# prefix (the string before the "." in a param target — see
-# midi_control._apply_param) with the picker section it lands in.
+# Live-tune target holders in picker display order: a cc_map "holder" prefix
+# (the string before the "." in a param target) and the section it lands in.
 _LIVE_TARGET_GROUPS: tuple[tuple[str, str], ...] = (
     ("mode", "Color pipeline"),
     ("effect", "Effect"),
@@ -409,7 +392,6 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
 
     out: list[tuple[str, str, type]] = []
 
-    # Display modes: every concrete DisplayMode subclass, by DisplayMode.name.
     def _walk(cls: type) -> None:
         for sub in cls.__subclasses__():
             name = getattr(sub, "name", None)
@@ -428,9 +410,8 @@ def _iter_live_holders() -> list[tuple[str, str, type]]:
     return out
 
 
-# Choice targets whose values are C64 color names rather than a mode keyword —
-# keyed by the bare param name (unambiguous across holders today). The picker
-# renders these as swatches instead of a <select>; see LiveTargetDoc.vocabulary.
+# Choice targets whose values are C64 color names rather than a mode keyword,
+# keyed by the bare param name. See `LiveTargetDoc.vocabulary`.
 _LIVE_CHOICE_VOCAB: dict[str, str] = {"border": "c64color", "background": "c64color"}
 
 
@@ -441,8 +422,8 @@ def live_targets() -> list[LiveTargetDoc]:
     effect / generator / mode / scope registries — a drift test pins this to those
     attrs (same spirit as the ``LIVE_CHOICES`` ↔ ``[color]`` metadata pin)."""
     group_of = dict(_LIVE_TARGET_GROUPS)
-    # target -> mutable accumulator (kind/range/choices from the first declarer;
-    # owners unioned across every class that declares the same holder.name).
+    # target -> accumulator: kind/range/choices from the first declarer, owners
+    # unioned across every class declaring the same holder.name.
     acc: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for holder, owner, cls in _iter_live_holders():
@@ -493,8 +474,7 @@ def live_targets() -> list[LiveTargetDoc]:
                 vocabulary=str(a.get("vocabulary", "")),
             )
         )
-    # Stable group order for the picker (Color pipeline / Effect / Generator /
-    # Scope), then insertion order within a group.
+    # Group order for the picker, then insertion order within a group.
     group_rank = {g: i for i, (_, g) in enumerate(_LIVE_TARGET_GROUPS)}
     out.sort(key=lambda t: group_rank.get(t.group, len(group_rank)))
     return out
@@ -596,11 +576,6 @@ def overlay_names() -> list[str]:
     return ovmod.known_overlays()
 
 
-# ---------------------------------------------------------------------------
-# Compatibility matrix (#3)
-# ---------------------------------------------------------------------------
-
-
 def overlay_mode_ok(ov: OverlayDoc, mode: ModeDoc) -> tuple[bool, str]:
     """Mirror overlays.validate_for_scene against a ModeDoc. Returns
     (ok, reason-when-not-ok)."""
@@ -622,11 +597,6 @@ def compat_matrix() -> tuple[list[ModeDoc], list[tuple[OverlayDoc, list[bool]]]]
     modes = display_modes()
     rows = [(ov, [overlay_mode_ok(ov, m)[0] for m in modes]) for ov in overlay_docs()]
     return modes, rows
-
-
-# ---------------------------------------------------------------------------
-# JSON (the web console's copy of this model)
-# ---------------------------------------------------------------------------
 
 
 def _jsonable(val: object) -> object:
@@ -739,11 +709,6 @@ def as_dict() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
-
 def _fmt_default(val: object) -> str:
     if val is REQUIRED:
         return "(required)"
@@ -817,7 +782,6 @@ def _render_scene_type(sd: SceneTypeDoc) -> str:
         lines.append("  display: fixed/ignored by this scene type")
     lines.append("")
     lines.append("  fields:")
-    # Indent the shared field renderer one more level.
     for line in _render_fields(sd.fields):
         lines.append("  " + line if line else line)
     return "\n".join(lines)
@@ -914,15 +878,6 @@ def render_describe(name: str) -> str:
     return renderer(ent)  # type: ignore[operator]
 
 
-# ---------------------------------------------------------------------------
-# Packaged example configs
-# ---------------------------------------------------------------------------
-#
-# `--list-examples` reads the shipped files rather than a hand-kept table, for
-# the same reason the rest of this module reads config metadata: the old
-# Markdown index in examples/README.md had drifted ~15 files behind. A
-# generated index cannot.
-
 _SUMMARY_MAX = 150
 
 
@@ -953,14 +908,13 @@ def example_summary(path: Path, *, full: bool = False) -> str:
             para.append(body)
     text = re.sub(r"\s+", " ", " ".join(para))
     text = re.sub(r"\s*\(see [^)]*\)", "", text)
-    # First sentence. A period only ends one when whitespace follows, which
+    # First sentence: a period only ends one when whitespace follows, which
     # spares `FX.cpp` and `docs/caveats.md` mid-sentence.
     if match := re.search(r"\.(?=\s)", text):
         text = text[: match.end()]
     text = re.sub(r"^Single-scene demo(?: of|:)\s*", "", text)
-    # A few files open with one very long sentence; hold every entry to about
-    # two terminal lines so the list stays scannable. The book's appendix has a
-    # column that wraps, so it asks for the sentence in full.
+    # About two terminal lines, so the list stays scannable. The book's appendix
+    # wraps its column and asks for the sentence in full instead.
     if not full and len(text) > _SUMMARY_MAX:
         text = text[:_SUMMARY_MAX].rsplit(" ", 1)[0] + " …"
     return text
@@ -1031,7 +985,6 @@ def render_compat() -> str:
     of gaps in the bitmap columns — that block is the parity worklist."""
     modes, rows = compat_matrix()
     name_w = max((len(ov.name) for ov, _ in rows), default=8)
-    # Column headers: abbreviate to keep the grid narrow.
     abbr = {
         "hires_edges": "h.edg",
         "hires": "hires",
@@ -1048,9 +1001,6 @@ def render_compat() -> str:
         lines.append(f"  {ov.name:<{name_w + 2}}{cells}")
     lines.append("")
     lines.append("Columns: " + ", ".join(f"{abbr.get(m.name, m.name)}={m.name}" for m in modes))
-    # Only worth saying when some overlay actually carries the gate — the
-    # spectrum overlays used to and no longer do (they read the scene's music
-    # features first), so this note would otherwise be a lie by default.
     if any(ov.requires_audio for ov, _ in rows):
         lines.append("Note: audio overlays additionally need [audio].enabled.")
     return "\n".join(lines)

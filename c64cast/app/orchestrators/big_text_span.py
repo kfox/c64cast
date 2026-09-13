@@ -36,12 +36,9 @@ class BigTextSpanOrchestrator(Orchestrator):
 
     def __init__(self, ensemble: Ensemble, conductor_name: str):
         super().__init__(ensemble, conductor_name)
-        # Per-broadcast state guarded by its own lock so snapshot reads
-        # don't contend with the base class's _lock (which guards
-        # begin/end). Allocated in __init__ (not _on_begin) because
-        # the conductor's big_text overlay calls publish_bits BEFORE
-        # begin to ensure followers see populated state the moment
-        # their interrupt event fires.
+        # Its own lock, so snapshot reads don't contend with the base class's
+        # `_lock`. Allocated here and not in `_on_begin` because the conductor's
+        # big_text overlay calls `publish_bits` before `begin`.
         self._state_lock = threading.Lock()
         self._abs_scroll_px = 0
         self._bits: np.ndarray | None = None
@@ -58,11 +55,8 @@ class BigTextSpanOrchestrator(Orchestrator):
         return any(o.get("type") == "big_text" for o in scene_cfg.overlays)
 
     def _on_begin(self, cfg: SceneCfg) -> None:
-        # The rightmost system *must* be the conductor because the
-        # message enters from the right edge of that screen. If the
-        # user puts orchestrate=true on a non-rightmost system, fail
-        # cleanly so the conductor's playlist can fall back to local
-        # rendering (begin() reraises out of the playlist's caller).
+        # The message enters from the right edge, so the rightmost system must
+        # be the conductor.
         rightmost_name = self.ensemble.stacks[-1].name
         if self.conductor_name != rightmost_name:
             raise OrchestratorError(
@@ -71,18 +65,12 @@ class BigTextSpanOrchestrator(Orchestrator):
                 "Move the orchestrate=true scene to the rightmost "
                 "per-system TOML."
             )
-        # Reset only the scroll counter — `bits` is set by publish_bits
-        # which the conductor's big_text overlay calls BEFORE begin() so
-        # followers see populated state the moment their interrupt
-        # event fires. Clearing it here would clobber that publish.
-        # _on_end is what clears bits at the end of a broadcast.
+        # Only the scroll counter: `publish_bits` runs before `begin()`, so
+        # clearing `bits` here would clobber it. `_on_end` clears it instead.
         with self._state_lock:
             self._abs_scroll_px = 0
 
     def _on_end(self) -> None:
-        # Allow the GC to reclaim the bits array immediately. The
-        # follower scenes will be torn down on resume; any in-flight
-        # snapshot() reads see the cleared state and render nothing.
         with self._state_lock:
             self._bits = None
 

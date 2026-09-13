@@ -92,17 +92,14 @@ _EXTRAS: tuple[tuple[str, str, str], ...] = (
     ("wizard", "questionary", "--init config wizard"),
     ("yt", "yt_dlp", "cast URL playback (YouTube et al.)"),
     ("wled", "zeroconf", "[wled].listen virtual WLED device"),
-    # Probed on `websockets` rather than fastapi: `control` already covers
-    # fastapi, and the state feed is the part that silently does nothing when
-    # uvicorn has no WebSocket implementation to upgrade with.
+    # Probed on `websockets` rather than fastapi, which `control` already covers:
+    # the state feed silently does nothing when uvicorn cannot upgrade.
     ("web", "websockets", "--serve web console host"),
 )
 
-# Hard dependencies (top-level module, what uses it). These are declared in
-# [project].dependencies and MUST import — a missing one means the active
-# interpreter isn't the synced project env (the classic "No module named cv2"
-# time-sink: bare `python` resolving to a non-.venv interpreter, or a partially
-# synced .venv).
+# Hard dependencies (top-level module, what uses it), declared in
+# [project].dependencies. A miss means the active interpreter is not the synced
+# project env — a bare `python` outside .venv, or a partial sync.
 _HARD_DEPS: tuple[tuple[str, str], ...] = (
     ("cv2", "opencv-python: video decode + palette quantize"),
     ("numpy", "array math everywhere"),
@@ -110,11 +107,9 @@ _HARD_DEPS: tuple[tuple[str, str], ...] = (
     ("py65", "host-side SID emulator"),
 )
 
-# Repo root (parent of the package dir; this file sits two levels below the
-# package). Used to locate the project .venv and run `uv lock --check` from
-# the right directory. `install_root()` is the single home for this
-# expression — `cli.py`'s `_version_text` and `upgrade.py`'s install
-# detection both call it too, rather than each computing it independently.
+# Repo root, for locating the project .venv and running `uv lock --check` from
+# the right directory. `install_root()` is the one home for that expression;
+# `cli._version_text` and `upgrade`'s install detection call it too.
 _REPO_ROOT = install_root()
 
 
@@ -196,13 +191,9 @@ def validate_load_result(
         out.extend(_validate_ensemble_shared_dma_password(loaded))
     out.extend(_probe_extras())
 
-    # dac_curve resolution ("auto"/"calibrated" -> an actual table) is
-    # hardware-identity-dependent (see _validate_dac_curve_resolution), so a
-    # live per-system answer from _probe_connectivity (precise — reads the
-    # live device identity) always wins over the offline guess. Only systems
-    # that didn't get a live answer (skip-probe entirely, or that one
-    # system's connectivity probe failed) fall back to the offline,
-    # hedged report.
+    # dac_curve resolution depends on hardware identity, so a live per-system
+    # answer from `_probe_connectivity` always wins over the offline guess. Only a
+    # system with no live answer falls back to the hedged offline report.
     connectivity: list[Diagnostic] = []
     live_dac_names: frozenset[str] = frozenset()
     if probe_u64:
@@ -226,9 +217,8 @@ def _probe_environment() -> list[Diagnostic]:
     Offline; runs in every doctor invocation (including `--skip-probe`)."""
     out: list[Diagnostic] = []
 
-    # First line of any bug report. `__version__` reads installed metadata and
-    # falls back to "0+unknown" in a source checkout that was never installed —
-    # say so plainly rather than showing a bare sentinel nobody can interpret.
+    # `__version__` falls back to the uninstalled sentinel in a source checkout
+    # that was never installed, which is spelled out rather than shown bare.
     from c64cast import UNINSTALLED_VERSION, __version__
 
     if __version__ == UNINSTALLED_VERSION:
@@ -237,9 +227,8 @@ def _probe_environment() -> list[Diagnostic]:
         detail = __version__
     out.append(Diagnostic("ok", "environment", "c64cast version", detail))
 
-    # Active interpreter vs the project .venv. Only flag a mismatch when a
-    # project .venv actually exists — an installed package legitimately runs
-    # from some other prefix and has nothing to compare against.
+    # Only a mismatch against an existing project .venv is worth flagging: an
+    # installed package legitimately runs from some other prefix.
     venv = _REPO_ROOT / ".venv"
     if venv.exists():
         if Path(sys.prefix).resolve() == venv.resolve():
@@ -262,7 +251,6 @@ def _probe_environment() -> list[Diagnostic]:
     else:
         out.append(Diagnostic("ok", "environment", "interpreter", sys.executable))
 
-    # Hard deps must import. A miss here is the root of the cv2-missing sessions.
     for module, used_for in _HARD_DEPS:
         try:
             spec = importlib.util.find_spec(module)
@@ -351,8 +339,8 @@ def _probe_opencv_provider() -> list[Diagnostic]:
     build = ""
     flags: list[str] = []
     try:
-        # Imported by name because cv2's stubs don't declare the `version`
-        # submodule, even though every wheel generates one.
+        # By name, because cv2's stubs do not declare the `version` submodule even
+        # though every wheel generates one.
         version_mod: Any = importlib.import_module("cv2.version")
         build = str(version_mod.opencv_version)
         flags = [
@@ -657,14 +645,13 @@ def _validate_schema_directive(loaded: LoadResult) -> list[Diagnostic]:
             )
             continue
         if value.startswith(("http://", "https://")):
-            # Somebody else's URL — a fork, a mirror, a team's copy. Nothing
-            # here can tell whether it's right, and guessing would be noise.
+            # A fork, mirror or team copy: nothing here can tell whether it is
+            # right, so guessing would be noise.
             continue
 
         named = Path(os.path.join(os.path.dirname(os.path.abspath(path)), value))
         if named.name != _packaged_schema().name:
-            # A deliberately hand-picked schema (`./house-style.schema.json`),
-            # not a stale pointer at ours.
+            # A hand-picked schema, not a stale pointer at ours.
             continue
         out.extend(_compare_named_schema(named, subject, hint))
     return out
@@ -797,10 +784,9 @@ def _validate_audio_nmi_rate(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
             continue
-        # Adaptive compensation needs latch headroom (max_safe_rate above the
-        # configured rate) to raise the NMI rate over bus-halt loss. Too little
-        # → it can't fully cancel the video slowdown (acute on PAL's tighter
-        # clock). Warn so the user lowers the rate or accepts residual slowness.
+        # Adaptive compensation raises the NMI rate over bus-halt loss, so it
+        # needs latch headroom above the configured rate; too little and it cannot
+        # fully cancel the video slowdown, acutely so on PAL's tighter clock.
         if cfg.audio.nmi_rate_adaptive:
             headroom = max_safe_sample_rate(system) / rate - 1.0
             if headroom < 0.03:
@@ -1388,7 +1374,6 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
     every other system. If not, the Playlist falls back to building the
     follower from the conductor's cfg — usually surprising."""
     out: list[Diagnostic] = []
-    # name -> set of system names that have a scene with that name
     coverage: dict[str, set[str]] = {}
     for sys_name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         for s in cfg.scenes:
@@ -1435,9 +1420,8 @@ def _validate_ensemble_shared_dma_password(loaded: LoadResult) -> list[Diagnosti
     behavior, and this row exists so it is *stated* rather than inferred.
 
     Never quotes the password, only counts it and names the systems."""
-    # Grouped by value, not merely counted: two systems that each named their
-    # own different password are not sharing one, and saying they were would
-    # be a false alarm about the exact thing this row is here to clarify.
+    # Grouped by value, not counted: two systems naming two different passwords
+    # are not sharing one.
     by_secret: dict[str, list[str]] = {}
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         if cfg.ultimate64.dma_password:
@@ -1507,11 +1491,9 @@ def _validate_ensemble_recording_paths(loaded: LoadResult) -> list[Diagnostic]:
 
 def _probe_extras() -> list[Diagnostic]:
     out: list[Diagnostic] = []
-    # An installed user has no project to `uv sync`; they re-run the tool
-    # install (same reasoning as the checkout-gated .venv / uv.lock probes
-    # above). `[all]` rather than the one missing extra because extras do not
-    # accumulate — installing `c64cast[midi]` over `c64cast[video]` would trade
-    # one missing feature for another.
+    # An installed user has no project to `uv sync` and re-runs the tool install
+    # instead. `[all]` and not the one missing extra, because extras do not
+    # accumulate: `c64cast[midi]` over `c64cast[video]` trades one for the other.
     hint = (
         "uv sync --all-extras"
         if _running_from_checkout()
@@ -1541,8 +1523,6 @@ def _probe_extras() -> list[Diagnostic]:
     return out
 
 
-# --doctor connectivity hints, hoisted so the probe code reads as logic and a
-# wording tweak is one edit (the same prose used to be inlined per Diagnostic).
 _HINT_DMA_SERVICE = (
     "Enable F2 -> Network Settings -> Ultimate DMA Service. "
     "If a password is set, supply it via "
@@ -1619,9 +1599,8 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
             return _probe_tr_reachability(name, cfg, api, status)
         if status is None:
             return [_rest_down_diagnostic(name, cfg, url)]
-        # REST just answered the probe; refine the optimistic capability
-        # flags so the per-service probes below judge the device's actual
-        # config surface (U2+: no multi-SID categories), like a real run.
+        # REST has just answered, so the per-service probes below can judge the
+        # device's actual config surface rather than the optimistic flags.
         api.refine_capabilities()
         return _probe_u64_services(name, cfg, api, url, status)
     finally:
@@ -1731,11 +1710,10 @@ def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnost
     ]
 
 
-# The emulated-SID enable state. The category is registered by U2/U2+/U2+L
-# firmware only (the U64's internal SID lives elsewhere and is normally on) —
-# the probe below already stays quiet when the fields are absent, which is
-# exactly what a U64 answers. Canonical names live in
-# c64cast/sid/emusid_mixer.py, the module that drives this surface.
+# The emulated-SID enable state. Only U2/U2+/U2+L firmware registers the
+# category — a U64's internal SID lives elsewhere and is normally on — and the
+# probe below stays quiet when the fields are absent, which is what a U64
+# answers. `c64cast/sid/emusid_mixer.py` owns the canonical names.
 _AUDIO_CONFIG_CATEGORY = emusid_mixer.CAT_EMUSID
 _SID_LEFT_FIELD = emusid_mixer.ITEM_ENABLE["emusid1"]
 _SID_RIGHT_FIELD = emusid_mixer.ITEM_ENABLE["emusid2"]
@@ -1825,8 +1803,8 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
 
     left = section.get(_SID_LEFT_FIELD)
     right = section.get(_SID_RIGHT_FIELD)
-    # Neither field present → a firmware/variant we don't recognize. Stay
-    # quiet rather than emit a misleading warning.
+    # Neither field present: an unrecognized firmware or variant, where a warning
+    # would be misleading.
     if left is None and right is None:
         return []
 
@@ -1967,11 +1945,9 @@ def _probe_reu_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
                 message=f"REU enabled, size {size} ({reason_str})",
             )
         ]
-    # REU is off. When [ultimate64].auto_reu is on (the default), the run
-    # provisions it live at startup (provision_reu) — so this isn't an error,
-    # just an informational "will be auto-enabled". It's a hard error only when
-    # the user has opted out of auto-provisioning. (We reach here only on a
-    # REST-reachable Ultimate, so supports_reu is implied.)
+    # REU off. With [ultimate64].auto_reu on, the run provisions it live at
+    # startup, so this is informational; it is a hard error only for a user who
+    # opted out. Reached only on a REST-reachable Ultimate, so supports_reu holds.
     auto_reu = cfg.ultimate64.auto_reu
     if auto_reu:
         return [
@@ -2214,10 +2190,6 @@ def _probe_sid_autoconfig_status(name: str, cfg: Config, api: object) -> list[Di
     ]
 
 
-# ---------------------------------------------------------------------------
-# Report formatting
-# ---------------------------------------------------------------------------
-
 _LEVEL_ORDER = {"error": 0, "warn": 1, "ok": 2}
 _LEVEL_GLYPH = {"ok": "[ ok ]", "warn": "[WARN]", "error": "[ERR ]"}
 
@@ -2246,8 +2218,8 @@ def print_report(diagnostics: list[Diagnostic], file: IO[str] | None = None) -> 
         "extras",
         "connectivity",
     ]
-    # Anything with a category not named above still has to reach the user;
-    # dropping it would make a new probe look like it passed.
+    # A category not named above still has to reach the user, or a new probe
+    # would look like it passed.
     category_order += sorted(set(by_category) - set(category_order))
     for cat in category_order:
         rows = by_category.get(cat)

@@ -114,34 +114,26 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Display modes that benefit from REU bank-swap double-buffering. Bitmap
-# modes push a full 8000-byte frame every frame, so staging it off-screen and
-# swapping $DD00 at vblank is what eliminates the single-buffer tearing that
-# flashes the whole screen on scene cuts. Char modes (petscii/blank) are
-# delta-cached small writes where staging is a net regression — so the "auto"
-# setting leaves them on the host-DMA path. (mcm doesn't support staging.)
+# Bitmap modes push a full 8000-byte frame per frame, so staging it in an REU
+# bank and swapping $DD00 at vblank removes the single-buffer tearing. Char modes
+# are delta-cached small writes where staging is a net regression; mcm cannot stage.
 _REU_BITMAP_MODES = frozenset({"hires", "hires_edges", "mhires"})
 
-# Read ceiling for the load-time SID header check. A PSID/RSID is a header
-# plus a C64 memory image, so 256 KB is already four times the address
-# space; anything larger is not a tune. The check runs inside the
-# network-reachable validate path, so the read has to be bounded — see
-# _check_first_sid_clears_display.
+# Read ceiling for the load-time SID header check, which runs inside the
+# network-reachable validate path (see _check_first_sid_clears_display). A C64
+# memory image plus a 118/124-byte PSID header, so 256 KB is ~4x headroom.
 MAX_SID_BYTES = 256 * 1024
 
-# Control characters (and DEL) that must never reach a scene name: it is
-# interpolated into log lines with no args, drawn on the OSD, and shipped
-# in the SCENE_CONFIG_JSON snapshot. See _clean_scene_name.
+# A scene name is interpolated into log lines with no args, drawn on the OSD, and
+# shipped in the SCENE_CONFIG_JSON snapshot.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 #: Cap on a scene name taken from a media file's own metadata.
 MAX_SCENE_NAME_CHARS = 120
 
-# Every display mode that can quantize an arbitrary BGR frame — i.e. the
-# whole `_DISPLAY_CHOICES` set minus "blank" (nothing to paint into) and
-# "random" (not a mode). It is both what `display = "random"` picks from
-# and the list every "pick a real mode" refusal quotes, so a new display
-# mode reaches the picker and all four messages from one place.
+# `_DISPLAY_CHOICES` minus "blank" (nothing to paint into) and "random" (not a
+# mode): what `display = "random"` picks from and what every "pick a real mode"
+# refusal quotes.
 QUANTIZING_DISPLAYS = ("mhires", "hires", "hires_edges", "mcm", "petscii")
 
 
@@ -221,9 +213,8 @@ def resolve_double_buffer(
     return bool(setting)
 
 
-# Display modes whose per-cell color lives in the screen matrix, which is the
-# only memory the field-alternating page flip can re-point ($D018). See
-# resolve_flicker_tolerance.
+# Display modes whose per-cell color lives in the screen matrix, the only memory
+# the field-alternating page flip can re-point ($D018).
 _FLICKER_DISPLAY_MODES = ("hires", "mhires")
 
 
@@ -318,27 +309,15 @@ def _build_display_mode(
     cell_strategy: str = "frequency",
     flicker_tolerance: str = DEFAULT_TOLERANCE,
 ) -> DisplayMode:
-    # border/background may be a C64 color name or an index; resolve to a plain
-    # index here — the single point every scene's border/background flows
-    # through — so the mode constructors (and callers) only ever see an int.
     border = resolve_color(border)
     background = resolve_color(background)
-    # The whole [color] section is threaded through as one object; unpack the
-    # static-shaping + forced-palette knobs the chromatic modes need here (a
-    # single extraction point keeps the call sites to one `color=` kwarg).
     color = color if color is not None else ColorCfg()
     channel_boost = color.channel_boost
     hue_corrections = color.hue_corrections
     hue_corrections_replace = color.hue_corrections_replace_defaults
     force_palette = color.force_palette
     dither_strength = color.dither_strength
-    # auto_fit_strength is applied mode-side now (the scenes install a
-    # FULL-strength ColorFit and the mode lerps it by this factor at apply time)
-    # so it's a live-tunable knob rather than frozen into the pre-scanned fit.
-    # See DisplayMode._fit_for_apply + ColorFit.lerped.
     auto_fit_strength = color.auto_fit_strength
-    # Resolve [color].color_match's "auto" against the concrete display mode —
-    # the single point every mode's perceptual flag flows through.
     perceptual = resolve_color_match(color.color_match, name)
     if name == "hires_edges":
         return HiresDisplayMode(
@@ -496,8 +475,6 @@ def _load_songlengths(path: str | None) -> LengthsDB | None:
     if path in _songlengths_cache:
         return _songlengths_cache[path]
     if autodetected:
-        # Behind the cache check: it is one fact about the host, and every
-        # waveform scene built in the run asks for the same database.
         log.info("playlist.songlengths_file not set; auto-detected HVSC database at %s", path)
     try:
         db = LengthsDB.load(path)
@@ -528,11 +505,8 @@ def _attach_overlays(
         scene.overlays.append(ov)
 
 
-# Truthy stand-in for an AudioStreamer; used by `validate_scene_cfg` so the
-# REQUIRES_AUDIO gate in `build_overlay` mirrors what `build_scene` would see
-# at runtime when `[audio].enabled = true`. Overlay constructors only store
-# the audio reference (they call into it at process_frame, not __init__), so
-# a bare object satisfies validation without needing real audio hardware.
+# Truthy stand-in for an AudioStreamer so `validate_scene_cfg` can exercise the
+# REQUIRES_AUDIO gate; overlay constructors only store the reference.
 _AUDIO_SENTINEL: Any = object()
 
 
@@ -572,10 +546,6 @@ def _resolve_file_spec_or_explain(
     the file-kind hint."""
     if not s.file:
         s.file = default_dir
-        # The default dirs are relative, so they resolve against the process's
-        # working directory — which for a `serve.py` daemon, a systemd unit or
-        # a container entrypoint is not necessarily where the operator thinks
-        # the media is. Say which directory was actually used.
         log.info(
             "%s scene: no `file =` set; using the default directory %s",
             label,
@@ -736,9 +706,8 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
             has_buffer_overlays=wiring.has_buffer_overlays,
         )
     )
-    # Host-DMA double-buffer (no-REU backends). Also disabled by force_host_dma:
-    # like the REU path it installs a $0314 raster IRQ, which would collide with
-    # the SID player's PLAY IRQ on a SID-audio scene.
+    # Also disabled by force_host_dma: like the REU path it installs a $0314 raster
+    # IRQ, which would collide with the SID player's PLAY IRQ.
     double_buffer = (
         False
         if wiring.force_host_dma
@@ -751,11 +720,9 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
             audio_reu_pump_active=wiring.audio_reu_pump_active,
         )
     )
-    # Flicker blend needs the $D018 phase toggle, which neither of the other two
-    # swap handlers carries — so where it engages it takes over the double-buffer
-    # slot and pushes REU staging aside, extending the mutual exclusion those two
-    # already have. force_host_dma gates it for the same reason it gates the
-    # others: a SID-audio scene's player owns $0314.
+    # Flicker blend needs the $D018 phase toggle the other two swap handlers lack, so
+    # it takes the double-buffer slot and pushes REU staging aside. force_host_dma
+    # gates it because a SID-audio scene's player owns $0314.
     flicker_tolerance = (
         "off"
         if wiring.force_host_dma
@@ -851,10 +818,8 @@ def _validate_webcam(s: SceneCfg, cfg: Config) -> DisplayMode:
 
 
 def _validate_blank(s: SceneCfg, cfg: Config) -> DisplayMode:
-    # "hires_edges" is accepted alongside the real default (None) as a
-    # historical quirk: it was SceneCfg's literal global default before
-    # display became per-type-resolved, and blank ignores the value anyway
-    # (always builds BlankDisplayMode below).
+    # "hires_edges" was SceneCfg's global default before `display` became
+    # per-type-resolved, so it is still accepted here; blank ignores the value.
     if s.display not in (None, "blank", "hires_edges"):
         raise ValueError(f"blank scene must use display = 'blank', got {s.display!r}")
     return _build_display_mode(
@@ -968,18 +933,13 @@ def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
     _resolve_file_spec_or_explain(
         s, DEFAULT_VIDEO_DIR, VIDEO_EXTS, label="video", drop_hint="a video"
     )
-    # Offline URL sanity (runs in --doctor too). Deferred import: quickcast
-    # imports this module's *_EXTS at top level, so a top-level import here
-    # would be a cycle.
+    # Deferred import: quickcast imports this module's *_EXTS at top level, so a
+    # top-level import here would be a cycle.
     if s.file is not None:
         from .quickcast import _ytdlp_available, url_needs_ytdlp
 
         spec = s.file.strip()
         if _is_single_url_spec(spec):
-            # A single URL that yt-dlp must resolve (a YouTube/etc. page, not a
-            # direct media link) needs the `yt` extra. Flag it now instead of
-            # failing at playback with a cryptic ffmpeg "Invalid data found"
-            # when PyAV tries to open the page as a media file.
             if url_needs_ytdlp(spec) and not _ytdlp_available():
                 raise ValueError(
                     f"video: {redact_media_spec(spec)!r} is a URL that needs yt-dlp "
@@ -988,13 +948,8 @@ def _validate_video(s: SceneCfg, cfg: Config) -> DisplayMode:
                     "media URL / local file."
                 )
         else:
-            # A page URL mixed into a multi-entry spec is never resolved at all:
-            # `_resolve_video_source` resolves a WHOLE-spec URL only, so the
-            # candidate pool keeps the raw page URL, `_pick_filepath` may pick
-            # it, and PyAV is handed the HTML — the exact cryptic failure the
-            # check above exists to prevent, and it happens even with the `yt`
-            # extra installed. Refuse it here, where the message can say what
-            # to do about it.
+            # `_resolve_video_source` resolves a whole-spec URL only, so a page URL mixed into
+            # a multi-entry spec would reach PyAV as HTML even with the `yt` extra installed.
             for entry in split_file_spec(spec):
                 if is_media_url(entry) and url_needs_ytdlp(entry):
                     raise ValueError(
@@ -1057,10 +1012,8 @@ def _validate_waveform(s: SceneCfg, cfg: Config) -> DisplayMode:
         recurse_sid_dir=True,
     )
     _validate_scope_knobs(s, "waveform")
-    # WaveformScene is bitmap-only — the SceneCfg `display` field is
-    # ignored for this scene type. Synthesize a hires display_mode so
-    # overlay compatibility checks fire against what the scene will
-    # actually paint.
+    # WaveformScene is bitmap-only and ignores `display`; synthesize hires so overlay
+    # compatibility checks fire against what the scene actually paints.
     return _build_display_mode("hires")
 
 
@@ -1101,19 +1054,15 @@ def _validate_midi(s: SceneCfg, cfg: Config) -> DisplayMode:
                 f"midi scene midi_voice_channels must be unique, got {s.midi_voice_channels!r}"
             )
     _validate_scope_knobs(s, "midi")
-    # MidiScene is bitmap-only (hires oscilloscope) — the SceneCfg `display`
-    # field is ignored. Synthesize a hires display_mode so overlay
-    # compatibility validates against what the scene will actually paint
-    # (and PETSCII overlays are rejected, as on a waveform scene).
+    # MidiScene is bitmap-only and ignores `display`; synthesize hires so overlay
+    # compatibility checks fire against what the scene actually paints.
     return _build_display_mode("hires")
 
 
 def _validate_asid(s: SceneCfg, cfg: Config) -> DisplayMode:
     """ASID-over-MIDI client scene. `cfg` is unused — see `_validate_midi`."""
-    # AsidScene carries the SID state in the stream, so it has no synth knobs
-    # to validate — only the shared oscilloscope knobs. Like MidiScene it's
-    # bitmap-only (hires), so synthesize a hires display_mode for overlay
-    # compatibility (PETSCII overlays rejected).
+    # AsidScene carries the SID state in the stream, so it has no synth knobs to
+    # validate. Bitmap-only like MidiScene; synthesize hires for overlay compat.
     _validate_scope_knobs(s, "asid")
     if not (1 <= s.asid_max_sids <= 8):
         raise ValueError(f"asid: asid_max_sids must be in 1..8, got {s.asid_max_sids!r}")
@@ -1134,9 +1083,8 @@ def _validate_slideshow(s: SceneCfg, cfg: Config) -> DisplayMode:
         raise ValueError(
             f"slideshow: aspect_mode must be one of {_ASPECT_MODE_CHOICES}, got {s.aspect_mode!r}"
         )
-    # Resolve "random" to a concrete mode for overlay-compat validation.
-    # The actual scene re-resolves at every setup() so single-scene loops
-    # get a fresh mode per iteration.
+    # The scene re-resolves at every setup(), so single-scene loops get a fresh mode
+    # per iteration; this resolution is only for overlay-compat validation.
     display = _resolve_slideshow_display(s.display)
     if display == "blank":
         raise ValueError(
@@ -1160,24 +1108,16 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             f"got {s.audio_source!r}"
         )
     if s.audio_source == "sid":
-        # A SID source drives the chip directly; the DAC-path `audio` toggle is
-        # meaningless for it (it plays regardless of [audio].enabled). Reject an
-        # explicit per-scene `audio` rather than silently ignoring it.
         if s.audio is not None:
             raise ValueError(
                 "generative scene with audio_source = 'sid' must not set `audio` — "
                 "the SID plays on the chip regardless of the DAC/mic path. Remove "
                 "`audio` (use audio_source = 'mic'/'none' for the live-mic path)."
             )
-        # Resolve the .sid spec (default to the SID dir, like waveform) and
-        # validate the first candidate's payload against the FIXED bank-0
-        # display — a SID source can't relocate, so a bitmap display + a tune
-        # that loads over $2000 is a hard conflict. setup() does the
-        # authoritative per-pick check; this is the load-time fast-fail.
-        # Recursion into the default SID dir, like waveform: this arm shares
-        # that directory, and every real HVSC unpack (assets/sids/C64Music/...,
-        # assets/sids/MUSICIANS/...) has zero .sid files at the top level, so
-        # a shallow listing refused the exact tree the recursion exists for.
+        # A SID source cannot relocate, so a bitmap display plus a tune that loads over
+        # $2000 is a hard conflict; setup() does the authoritative per-pick check.
+        # Recursion matters: every real HVSC unpack (assets/sids/C64Music/...) has zero
+        # .sid files at the top level.
         _resolve_file_spec_or_explain(
             s,
             DEFAULT_WAVEFORM_DIR,
@@ -1191,9 +1131,6 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
         _check_first_sid_clears_display(s, mode, display)
         return mode
     if s.audio_source == "file":
-        # Decode an audio file to the DAC + analyzer. `file` is required (no
-        # default dir); resolve it now so a bad path/glob fails at load time. The
-        # scene re-resolves at each setup() (a dir/glob random-picks per play).
         if not s.file:
             raise ValueError(
                 'generative scene with audio_source = "file" needs `file = "..."` '
@@ -1201,10 +1138,6 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             )
         resolve_file_spec(s.file, AUDIO_EXTS, label="generative file audio")
         if not cfg.audio.enabled or s.audio is False:
-            # The file streams to the C64's audio output (the off-bus sampler on a
-            # sampler-capable U64, else the 4-bit DAC) and the analyzer taps that
-            # same path, so with audio off there's neither playback nor
-            # reactivity. Warn, don't fail (mirrors the mic/listen guidance).
             log.warning(
                 "generative scene: audio_source = 'file' but audio is off "
                 "(%s) — the file won't play or drive the visuals. Enable [audio] to "
@@ -1212,9 +1145,6 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
                 "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
             )
     if s.audio_source == "mic" and s.reactive and (not cfg.audio.enabled or s.audio is False):
-        # The analyzer taps the mic callback, so no capture ⇒ no features. Warn
-        # rather than fail: `reactive` defaults True, so a user who only wanted
-        # silent generative visuals shouldn't have to turn it off explicitly.
         log.warning(
             "generative scene: audio_source = 'mic' with reactive = true, but the "
             "mic never runs (%s) — the visuals will stay time-driven. Enable "
@@ -1222,10 +1152,6 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
             "this scene sets audio = false" if s.audio is False else "[audio].enabled is false",
         )
     if s.audio_source == "listen":
-        # Listen-only exists solely to drive the visuals from the input, so
-        # reactive = false leaves it opening nothing. And its capture still needs
-        # the shared streamer, i.e. [audio].enabled (the per-scene `audio` DAC
-        # toggle is irrelevant — listen never feeds the DAC). Warn, don't fail.
         if not s.reactive:
             log.warning(
                 "generative scene: audio_source = 'listen' with reactive = false — "
@@ -1240,7 +1166,6 @@ def _validate_generative(s: SceneCfg, cfg: Config) -> DisplayMode:
                 "the visuals will stay time-driven. Enable [audio] (listen still "
                 "produces no C64 audio) to make them react to the input."
             )
-    # mic / listen / none: standard frame-source display (REU staging allowed).
     return _display_mode_for_scene(s.display, s, cfg)
 
 
@@ -1259,14 +1184,10 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str
         return
     path = candidates[0]
     try:
-        # `os.path.isfile` before the read, and a size ceiling on it. This runs
-        # inside the network-reachable validate path (`config_store` →
-        # `session.validate_configs` → `validate_scene_cfg`), where the
-        # candidate is a config-named path whose extension is the only thing
-        # checked: an unbounded read of a FIFO named `x.sid` blocked the
-        # request thread forever and a multi-gigabyte one exhausted memory.
-        # A real PSID/RSID is a 64 KB C64 image plus a small header, so
-        # anything past the ceiling is not a tune and setup() can say so.
+        # Bounded: this runs inside the network-reachable validate path (`config_store` ->
+        # `session.validate_configs` -> `validate_scene_cfg`) on a config-named path whose
+        # extension is the only thing checked, so an unbounded read of a FIFO named
+        # `x.sid` blocks the request thread and a multi-gigabyte one exhausts memory.
         if not os.path.isfile(path) or os.path.getsize(path) > MAX_SID_BYTES:
             return
         with open(path, "rb") as f:
@@ -1278,12 +1199,9 @@ def _check_first_sid_clears_display(s: SceneCfg, mode: DisplayMode, display: str
     if conflict is not None:
         lo, hi = conflict
         region = "hires bitmap" if lo == 0x2000 else "screen RAM"
-        # `payload_overlaps_bank0_display` returns the FIRST conflicting
-        # region and checks screen RAM before the bitmap, so a payload that
-        # spans both is reported as the screen conflict — and "load above
-        # $07E8" would then land straight in the bitmap. Word the remedy off
-        # the highest region the display actually reserves, so following it
-        # clears the conflict.
+        # `payload_overlaps_bank0_display` returns the FIRST conflicting region and checks
+        # screen RAM before the bitmap, so word the remedy off the highest region the
+        # display reserves or following it lands in the bitmap.
         clear_above = VIC_BANK_0.BITMAP + SCREEN.BITMAP_BYTES if mode.is_bitmapped else hi
         raise ValueError(
             f"generative sid audio: {os.path.basename(path)}'s payload overlaps the "
@@ -1320,12 +1238,8 @@ def _validate_wled(s: SceneCfg, cfg: Config) -> DisplayMode:
                 f"wled scene sink_allow entry {addr!r} is not a valid IP address"
             ) from None
         if parsed.version != 4:
-            # The sink binds AF_INET only (wled_sink._bind is the module's one
-            # socket constructor), so the peer address it compares against is
-            # always a dotted quad and an IPv6 entry can never match. Accepting
-            # one produced a config that validated cleanly and then silently
-            # dropped every sender, with no log line — `wled_sink._handle` just
-            # returns.
+            # The sink binds AF_INET only (wled_sink._bind), so the peer address it compares
+            # against is always a dotted quad and an IPv6 entry can never match.
             raise ValueError(
                 f"wled scene sink_allow entry {addr!r} is IPv6, but the sink "
                 "listens on IPv4 only — an IPv6 entry can never match, so the "
@@ -1353,8 +1267,6 @@ def _validate_launcher(s: SceneCfg, cfg: Config) -> None:
         raise ValueError(f"launcher: max_duration_s must be > 0, got {s.max_duration_s!r}")
     if s.min_duration_s < 0:
         raise ValueError(f"launcher: min_duration_s must be >= 0, got {s.min_duration_s!r}")
-    # `display` is unset by default on SceneCfg; reject any explicit value
-    # since the program — not c64cast — drives the VIC.
     if s.display is not None:
         raise ValueError(
             "launcher scene does not use `display` — the launched "
@@ -1422,9 +1334,8 @@ def validate_dac_curve_cfg(cfg: Config) -> None:
             f"[audio].dac_curve must be one of {', '.join(DAC_CURVE_CHOICES)}, "
             f"got {cfg.audio.dac_curve!r}"
         )
-    # An EXPLICIT non-linear curve conflicts with digi_boost (both park the 3 SID
-    # voices as DC sources for different DAC schemes). "auto" is not a conflict:
-    # it yields to digi_boost by resolving to linear (see
+    # Both park the 3 SID voices as DC sources for different DAC schemes. "auto" is
+    # not a conflict: it yields to digi_boost by resolving to linear (see
     # dac_curve_resolve.resolve_dac_curve_for_backend).
     if cfg.audio.dac_curve in ("mahoney_ultisid", "calibrated") and cfg.audio.digi_boost:
         raise ConfigError(
@@ -1465,10 +1376,8 @@ def validate_dac_bitmap_tempo_cfg(cfg: Config) -> None:
 
 DITHER_CHOICES: tuple[str, ...] = ("auto", *DITHER_METHODS)
 
-# Scene types whose source is effectively static once composed (a slideshow
-# holds one image for its whole dwell time), so the expensive floyd-steinberg/
-# atkinson per-pixel loop is a one-time cost, not a per-frame one. Everything
-# else `resolve_dither_method` sees is a motion scene.
+# Scene types whose source is static once composed, so the per-pixel
+# floyd-steinberg/atkinson loop is a one-time cost. Everything else is motion.
 _STATIC_DITHER_SCENE_TYPES = frozenset({"slideshow"})
 
 
@@ -1563,12 +1472,9 @@ def validate_motion_smoothing_cfg(cfg: Config) -> None:
 
 COLOR_MATCH_CHOICES: tuple[str, ...] = ("auto", *COLOR_MATCH_MODES)
 
-# Display modes whose "auto" color_match resolves to perceptual (CIE-Lab). These
-# are the modes that make a genuine nearest-of-16 color decision; the perceptual
-# metric picks the color the eye calls closest and needs no channel_boost /
-# gray-penalty bias (see palette.quantize_distances_for). Modes not listed
-# ("blank", "hires_edges") pick no colors, so the setting is a no-op there and
-# auto resolves to rgb (harmless).
+# Display modes whose "auto" color_match resolves to perceptual (CIE-Lab): the
+# modes that make a genuine nearest-of-16 decision. The others pick no colors, so
+# the setting is a no-op and auto resolves to rgb.
 _COLOR_MATCH_AUTO_PERCEPTUAL: frozenset[str] = frozenset({"mcm", "mhires", "hires", "petscii"})
 
 
@@ -1607,11 +1513,10 @@ def validate_color_match_cfg(cfg: Config) -> None:
 
 CELL_STRATEGY_CHOICES: tuple[str, ...] = ("auto", *CELL_STRATEGIES)
 
-# Scene types whose composed frame is effectively static (a slideshow holds one
-# image for its whole dwell), so the costlier error-min cell strategy is a
-# one-time cost and worth its better reconstruction. Everything else recomposes
-# every frame, where frequency's temporal stability (it ranks the EMA-smoothed
-# histogram) avoids per-frame slot churn. Mirrors _STATIC_DITHER_SCENE_TYPES.
+# Scene types whose composed frame is static, so the costlier error-min cell
+# strategy is a one-time cost. Everything else recomposes every frame, where
+# frequency's temporal stability avoids per-frame slot churn. Mirrors
+# _STATIC_DITHER_SCENE_TYPES.
 _STATIC_CELL_STRATEGY_SCENE_TYPES = frozenset({"slideshow"})
 
 
@@ -1790,7 +1695,6 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                     f">= 1, got {slot!r}"
                 )
         if action == "fx_toggle":
-            # Effect layer index is 0-based (fx0 is the first layer), so >= 0.
             slot = entry.get("slot")
             if not isinstance(slot, int) or isinstance(slot, bool) or slot < 0:
                 raise ConfigError(
@@ -1809,9 +1713,8 @@ def _has_sid_scene(cfg: Config) -> bool:
     )
 
 
-# [wled] endpoint defaults, per direction. Broadcast targets WLED's Audio Sync
-# multicast group; listen binds the Mode-1 JSON API on all interfaces so the LAN
-# can reach it (the mDNS SRV record carries the real port for app discovery).
+# Broadcast targets WLED's Audio Sync multicast group; listen binds the Mode-1
+# JSON API on all interfaces (the mDNS SRV record carries the real port).
 WLED_BROADCAST_DEFAULT_HOST = "239.0.0.1"
 WLED_BROADCAST_DEFAULT_PORT = 11988
 WLED_LISTEN_DEFAULT_HOST = "0.0.0.0"
@@ -1841,7 +1744,6 @@ def parse_wled_endpoint(
         return (True, default_host, default_port)
     host, sep, port_str = token.rpartition(":")
     if not sep:
-        # No colon: the whole value is a host override.
         return (True, token, default_port)
     host = host or default_host
     if not port_str:
@@ -1884,15 +1786,10 @@ def validate_wled_cfg(cfg: Config) -> None:
     broadcast_on, _, _ = resolve_wled_broadcast(cfg)
     listen_on, listen_host, listen_port = resolve_wled_listen(cfg)
     if listen_on and listen_host not in LOOPBACK_HOSTS and not cfg.wled.allow_unauthenticated:
-        # Same refusal as `validate_control_cfg`, for a strictly larger
-        # capability: Mode 1 covers everything the control plane's four verbs
-        # do and more — `on=false` pauses, `seg[].fx` jumps scenes, `sx`/`ix`
-        # sweep live params, `pal`/`col` force the palette, preset saves write
-        # the data dir — while carrying no token at all and being advertised
-        # over mDNS. This used to warn rather than refuse, which is the wrong
-        # way round: the plane that can only pause/skip is the one that fails
-        # closed. LAN discovery is the whole feature and WLED has no credential
-        # to offer, so the opt-in is a config flag rather than a token.
+        # Mode 1 is a strictly larger capability than the control plane's four verbs —
+        # `on=false` pauses, `seg[].fx` jumps scenes, `sx`/`ix` sweep live params,
+        # `pal`/`col` force the palette, preset saves write the data dir — and it carries
+        # no token while being advertised over mDNS.
         raise ConfigError(
             f"[wled].listen binds the virtual WLED device's JSON/WebSocket API to "
             f"{listen_host}:{listen_port} with no authentication, and wled_device "
@@ -1909,8 +1806,6 @@ def validate_wled_cfg(cfg: Config) -> None:
             f"{cfg.wled.broadcast_tempo_fallback!r}"
         )
     if broadcast_on and cfg.wled.broadcast_tempo_fallback:
-        # The tempo fallback keeps a non-SID scene lit, so the "nothing to
-        # broadcast" warning below no longer applies — the grid supplies packets.
         return
     if broadcast_on and not _has_sid_scene(cfg):
         log.warning(
@@ -1920,18 +1815,12 @@ def validate_wled_cfg(cfg: Config) -> None:
         )
 
 
-# Every whole-Config validator in this module, in the order a run applies
-# them. `session.validate_configs` iterates this rather than naming them one
-# by one: the hand-written list had already fallen a validator behind
-# (`validate_wled_cfg` reached `--doctor` and no actual run), and the symptom
-# of the next omission is a mid-show failure instead of a pre-hardware
-# rejection. tests/test_scene_factory_validators.py holds the tuple to a
-# partition of the module's `validate_*(cfg: Config)` callables.
-#
-# The two validators that take a *section* rather than a whole Config
-# (`validate_control_cfg`, `validate_midi_control_cfg`) are deliberately not
-# here: [control] and [midi_control] are process-wide, so they are checked
-# once against the master, not once per system.
+# Every whole-Config validator in this module, in apply order;
+# `session.validate_configs` iterates this rather than naming them one by one.
+# tests/test_session.py holds the tuple to a partition of the
+# module's `validate_*(cfg: Config)` callables. The two section-level validators
+# (`validate_control_cfg`, `validate_midi_control_cfg`) are excluded: [control]
+# and [midi_control] are process-wide, checked once against the master.
 PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
     validate_nmi_sample_rate,
     validate_sampler_cfg,
@@ -1947,14 +1836,8 @@ PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
 )
 
 
-# The per-type validators, keyed the same way `_BUILDERS` is. Two copies of
-# the scene-type list already existed (`config.SCENE_TYPES` and `_BUILDERS`,
-# held to each other by a drift test); the validator dispatch was a third,
-# hand-maintained as an if/elif ladder whose `else` branch spelled all ten
-# names out a fourth time. A type added to SCENE_TYPES and _BUILDERS but not
-# here passed the drift test, passed config load, and was then refused as
-# "unknown scene type" from inside build_scene at run start.
-# tests/test_scene_factory_validators.py holds this to SCENE_TYPES and to
+# The per-type validators, keyed the same way `_BUILDERS` is.
+# tests/test_scene_factory_seams.py holds this to config.SCENE_TYPES and to
 # _BUILDERS. `None` means "no display mode" — launcher owns the VIC.
 _VALIDATORS: dict[str, Callable[[SceneCfg, Config], DisplayMode | None]] = {
     "webcam": _validate_webcam,
@@ -2008,10 +1891,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     display mode the scene will paint (so the shared overlay-compat loop can
     validate against it). Launcher is the exception — it owns the VIC, so it
     self-validates (including its orchestrator) and we return immediately."""
-    # Per-scene pixel effect(s): validated up front (before the launcher early
-    # return) so it's caught on every type. Only frame-bearing scenes support
-    # them. The single `effect` and the `effects` chain are mutually exclusive
-    # (one authoring style per scene — see build_scene's chain construction).
+    # Validated before the launcher early return so it is caught on every type.
+    # `effect` and `effects` are mutually exclusive: one authoring style per scene.
     if s.effect is not None and s.effects:
         raise ValueError(
             "set either `effect` (single) or `effects` (chain), not both — got "
@@ -2030,24 +1911,18 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
     if s.mod_source not in _MOD_SOURCE_CHOICES:
         raise ValueError(f"mod_source must be one of {_MOD_SOURCE_CHOICES}, got {s.mod_source!r}")
 
-    # [scenes.color] only means anything on a scene that paints a frame — the
-    # same set `effect`/`effects` are scoped to above.
     if s.color and s.type not in _EFFECT_SCENE_TYPES:
         raise ValueError(
             f"color is not supported on {s.type!r} scenes (they don't render a "
             f"video frame). Supported: {tuple(sorted(_EFFECT_SCENE_TYPES))}."
         )
 
-    # start_s is a video-only start offset (the only scene whose source has a
-    # seekable timeline). Reject it elsewhere rather than silently ignoring it.
     if s.start_s is not None and s.type != "video":
         raise ValueError(
             f"start_s is only supported on video scenes, not {s.type!r}. "
             "Remove the field (it would be a silent no-op here)."
         )
 
-    # duration_s = 0 is the "run forever" sentinel; negatives are a typo.
-    # (Video rejects any duration_s below in _validate_video.)
     if s.duration_s is not None and s.duration_s < 0:
         raise ValueError(f"duration_s must be >= 0 (0 = run forever), got {s.duration_s!r}")
 
@@ -2060,10 +1935,8 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         )
     mode = validate(s, cfg)
     if mode is None:
-        # Launcher: the launched program owns the VIC, so the scene carries no
-        # display mode and no overlays (`_validate_launcher` self-validates,
-        # including its orchestrator). The shared overlay-compat loop below
-        # assumes a real mode, so there is nothing left to do.
+        # Launcher: the launched program owns the VIC, so there is no display mode and no
+        # overlays for the shared compat loop below to check.
         return
 
     audio_proxy = _AUDIO_SENTINEL if audio_enabled else None
@@ -2294,20 +2167,13 @@ def _resolve_video_source(
         # Deferred: cycle with quickcast (see _validate_video).
         from .quickcast import resolve_video_url
 
-        # One line before the call, because it is a network fetch made from
-        # inside `build_scene` — i.e. after `build_stack` has opened the link
-        # and reset the machine — and yt-dlp's own logger is routed to
-        # `log.debug`. Without this a slow extraction looked like a hang with
-        # nothing at default level naming what it was waiting on.
         log.info("video: resolving %s", redact_media_spec(s.file))
         resolved = resolve_video_url(s.file.strip())
         stream_scheme = urlsplit(resolved.stream_url).scheme.lower()
         if stream_scheme not in ("http", "https"):
-            # For the generic extractor the stream URL is derived from the
-            # fetched page's own markup, i.e. from whoever controls the page
-            # the operator pasted. `resolve_file_spec`'s literal-path branch
-            # gates on the suffix alone, so a `file://` or `udp://` value
-            # would reach PyAV/ffmpeg, which honors both.
+            # For the generic extractor the stream URL comes from the fetched page's own
+            # markup. `resolve_file_spec`'s literal-path branch gates on the suffix alone, so
+            # a `file://` or `udp://` value would reach PyAV/ffmpeg, which honors both.
             raise ValueError(
                 f"video: {redact_media_spec(s.file)!r} resolved to a "
                 f"{stream_scheme or 'scheme-less'} stream URL; only http/https "
@@ -2333,11 +2199,8 @@ def _build_webcam(ctx: _SceneBuildContext) -> Scene:
     name = s.name or f"Webcam {display}"
     scene_audio = _resolve_live_audio(ctx, name, "live webcam scene")
     scene = WebcamScene(ctx.api, scene_audio, mode, ctx.source, cfg.audio, name, color=ctx.color)
-    # always_fresh: every camera grab differs, so there is no dedup — a char
-    # mode still repaints the whole screen each tick and, with mic audio on the
-    # DAC, contends with the ring writes. An explicit `target_fps` overrides
-    # this in build_scene's epilogue, which runs after every builder — so no
-    # builder re-checks `s.target_fps` itself.
+    # always_fresh: every camera grab differs, so there is no dedup and even a char
+    # mode repaints the whole screen each tick.
     fps = _frame_push_default_fps(
         mode,
         scene_audio is not None,
@@ -2367,10 +2230,6 @@ def _build_blank(ctx: _SceneBuildContext) -> Scene:
 def _build_video(ctx: _SceneBuildContext) -> Scene:
     s, cfg = ctx.s, ctx.cfg
     mode = ctx.display_mode(s.display)
-    # Default: audio ON for videos (it's part of the file). The user can mute
-    # one with `audio = false`. Widened because it may hold the per-scene
-    # off-bus sampler instead of the shared DAC streamer (see
-    # _resolve_sampler_audio).
     video_audio: AudioStreamer | UltimateAudioSampler | None = (
         None if s.audio is False else ctx.audio
     )
@@ -2380,7 +2239,6 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
         if sampler is not None:
             video_audio = sampler
             using_sampler = True
-    # `using_sampler` False with audio present means the DAC path.
     has_dac_audio = video_audio is not None and not using_sampler
     file_spec, start_s, video_name, resolved = _resolve_video_source(s)
     scene = VideoScene(
@@ -2397,18 +2255,12 @@ def _build_video(ctx: _SceneBuildContext) -> Scene:
     )
     if video_name:
         scene.name = video_name
-    # Stashed for recording_metadata._video_source — never read by playback
-    # itself, only by the SCENE_CONFIG_JSON snapshot at scene start.
+    # Read only by recording_metadata._video_source for the SCENE_CONFIG_JSON snapshot.
     scene.source_info = resolved
-    # The sampler plays entirely off the C64 bus, so it neither imposes the
-    # 4-bit DAC's bitmap fps cap (the DAC's NMI + ring DMAWRITEs compete with
-    # frame uploads for the bus) nor the muted half-rate cap (its REU-staged
-    # frame uploads are bus-clean, not host DMA). So sampler bitmap video
-    # uncaps to the system rate (60/50) — and because VideoScene dedups, the
-    # effective push rate then equals the source video's fps (24fps clip →
-    # 24/s, etc.). DAC video stays 20; muted bitmap stays 30/25. See
-    # _frame_push_default_fps. An explicit `target_fps` overrides all of this
-    # in build_scene's epilogue, which runs after every builder.
+    # The sampler plays off the C64 bus, so it imposes neither the 4-bit DAC's bitmap
+    # fps cap nor the muted half-rate cap (its REU-staged uploads are bus-clean), and
+    # sampler bitmap video uncaps to the system rate. VideoScene dedups, so the
+    # effective push rate is then the source video's own fps.
     fps = _frame_push_default_fps(
         mode, has_dac_audio, cfg.ultimate64.system, off_bus_audio=using_sampler
     )
@@ -2440,9 +2292,6 @@ def _resolve_sid_play_rate(cfg: Config) -> str | float | None:
 
 def _build_waveform(ctx: _SceneBuildContext) -> Scene:
     s, cfg = ctx.s, ctx.cfg
-    # If duration_s is unset AND a songlengths DB is configured, let the
-    # WaveformScene look up the true length. Explicit duration_s wins over
-    # the DB.
     db = _load_songlengths(cfg.playlist.songlengths_file)
     assert s.file is not None  # narrowed by validate_scene_cfg
     scene = WaveformScene(
@@ -2481,11 +2330,9 @@ def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
         backend_supports_reu=ctx.backend_supports_reu,
     )
     assert s.file is not None  # narrowed by validate_scene_cfg
-    # Pass the *original* display spec (may be "random") so the scene can
-    # re-resolve at each setup() for fresh variety in single-scene loops, and
-    # the same DisplayWiring the mode above was built from so the re-pick
-    # goes back through `build_wired_display_mode` instead of re-deriving the
-    # cluster (see DisplayWiring).
+    # Pass the *original* display spec (may be "random") so the scene can re-resolve at
+    # each setup(), and the same DisplayWiring so the re-pick goes back through
+    # `build_wired_display_mode` instead of re-deriving the cluster.
     return SlideshowScene(
         ctx.api,
         build_wired_display_mode(display, wiring),
@@ -2499,9 +2346,6 @@ def _build_slideshow(ctx: _SceneBuildContext) -> Scene:
 
 
 def _build_generative(ctx: _SceneBuildContext) -> Scene:
-    # The three arms differ in how audio reaches the C64: "sid" plays through
-    # the real SID chip via the player IRQ, "listen" analyzes live input with
-    # no C64 output, and mic/file/none ride the live DAC-or-sampler path.
     s = ctx.s
     gen = build_generator(s.source)
     name = s.name or f"Generative {s.source}"
@@ -2514,13 +2358,10 @@ def _build_generative(ctx: _SceneBuildContext) -> Scene:
 
 def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
     s, cfg = ctx.s, ctx.cfg
-    # Force host-DMA: the SID player owns the $0314 IRQ for PLAY, so the
-    # display must NOT install the REU bank-swap raster IRQ (it would
-    # collide). The SID drives the chip directly — no DAC streamer, plays
-    # regardless of [audio].enabled, and is NOT subject to the ensemble
-    # live-mic suppression (it legitimately holds the audio spotlight;
-    # wants_audio_lock=True gates the slot). The scene's base audio stays
-    # None.
+    # Force host-DMA: the SID player owns the $0314 IRQ for PLAY, so the display must
+    # not install the REU bank-swap raster IRQ. The SID drives the chip directly, so
+    # the scene carries no DAC streamer and holds the ensemble audio lock rather than
+    # being live-mic suppressed.
     mode = _display_mode_for_scene(s.display, s, cfg, force_host_dma=True)
     assert s.file is not None  # narrowed by _validate_generative
     audio_src = SidFileAudioSource(
@@ -2536,11 +2377,8 @@ def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: 
         sid_play_rate=_resolve_sid_play_rate(cfg),
     )
     scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
-    # Bitmap displays push a full ~9-10 KB frame via host DMAWRITE; at full
-    # system rate that competes with the SID player's per-frame PLAY IRQ for
-    # the bus. Default such scenes to half-rate (like WaveformScene) for
-    # safety; a char display stays full-rate, and an explicit target_fps
-    # (applied in build_scene's epilogue) still wins.
+    # A bitmap display pushes a full ~9-10 KB frame via host DMAWRITE, which at full
+    # system rate competes with the SID player's per-frame PLAY IRQ for the bus.
     fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system)
     if fps is not None:
         scene.target_fps = fps
@@ -2550,12 +2388,10 @@ def _build_generative_sid(ctx: _SceneBuildContext, gen: GenerativeSource, name: 
 def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
     s, cfg = ctx.s, ctx.cfg
     mode = ctx.display_mode(s.display)
-    # Listen-only: analyze the live input for reactive visuals with NO C64
-    # audio output. It drives neither the DAC nor the SID, so it is never
-    # ensemble-suppressed and ignores the per-scene `audio` DAC toggle — it
-    # just needs the shared streamer to own the input + analysis sink. The
-    # SourceScene gets no DAC audio (None): the analyzer taps pre-DSP, so
-    # per-scene pre-emphasis is irrelevant.
+    # Listen-only drives neither the DAC nor the SID, so it is never ensemble-
+    # suppressed and ignores the per-scene `audio` toggle; it needs the shared streamer
+    # only to own the input and the analysis sink. The analyzer taps pre-DSP, so
+    # per-scene pre-emphasis is irrelevant and the SourceScene gets no DAC audio.
     audio_src: AudioSource
     if ctx.audio is not None and s.reactive:
         audio_src = MicAudioSource(
@@ -2567,16 +2403,11 @@ def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, nam
             features_cfg=cfg.audio_features,
         )
     else:
-        # No streamer ([audio] off) or reactive = false → silence.
         audio_src = NullAudioSource()
     scene = SourceScene(ctx.api, None, mode, gen, audio_src, name, color=ctx.color)
-    # No DAC stream to protect, but a bitmap display still pushes a full
-    # ~9-10 KB frame per tick over host DMA, and a generator renders a fresh
-    # frame every tick with no dedup to fall back on — so the half-rate tear
-    # cap applies here exactly as it does to `_build_wled` (no audio at all),
-    # `_build_generative_sid`, and a muted video. This branch used to set no
-    # target_fps at all, on the reasoning that there was "no DAC stream to
-    # frame-cap against"; the half-rate bitmap cap was never about the DAC.
+    # A bitmap display still pushes a full ~9-10 KB frame per tick over host DMA, and a
+    # generator renders a fresh frame every tick with no dedup — the half-rate tear cap
+    # is about host-DMA tear, not about the DAC.
     fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system, always_fresh=True)
     if fps is not None:
         scene.target_fps = fps
@@ -2584,20 +2415,12 @@ def _build_generative_listen(ctx: _SceneBuildContext, gen: GenerativeSource, nam
 
 
 def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name: str) -> Scene:
-    # mic / file / none: the live-frame audio path. Like webcam/blank, a live
-    # mic source is suppressed in ensemble mode.
     s, cfg = ctx.s, ctx.cfg
     mode = ctx.display_mode(s.display)
     scene_audio = _resolve_live_audio(ctx, name, "generative scene")
     audio_src: AudioSource
     file_audio_src: AudioFileSource | None = None
-    # The audio object the SourceScene carries as its base `.audio` (the
-    # set_pre_emphasis hook + overlay sample tap). Defaults to the shared
-    # 4-bit DAC streamer; the file path may swap it for a per-scene off-bus
-    # sampler (below), so it must widen to either.
     scene_base_audio: AudioStreamer | UltimateAudioSampler | None = scene_audio
-    # True when the file path decodes into the Ultimate Audio sampler rather
-    # than the $D418 DAC — lifts the DAC bitmap fps caps.
     file_uses_sampler = False
     if s.audio_source == "mic" and scene_audio is not None:
         audio_src = MicAudioSource(
@@ -2608,17 +2431,11 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
             features_cfg=cfg.audio_features,
         )
     elif s.audio_source == "file" and scene_audio is not None:
-        # Decode a music file to the C64's audio AND analyze it — the same
-        # analyzer the mic path uses, sourced from a file. The backend
-        # resolves exactly like a video scene: on a sampler-capable U64 with
-        # the Ultimate Audio sampler available (backend = auto/sampler),
-        # decode into the off-bus 16-bit sampler instead of the 4-bit $D418
-        # DAC. The DAC path is intrinsically staticky here — its NMI service
-        # is jittered by every host-DMA RAM write and it quantizes to ~6-7
-        # bits — so a decoded track is barely recognizable regardless of
-        # display mode (HW-measured 2026-07-24); the sampler is immune (no
-        # $D418/NMI/CPU). Falls back to the DAC on TeensyROM, when the
-        # sampler is unavailable, or backend = "dac".
+        # On a sampler-capable U64 (backend = auto/sampler) the file decodes into the
+        # off-bus 16-bit sampler instead of the 4-bit $D418 DAC, whose NMI service is
+        # jittered by every host-DMA RAM write and which quantizes to ~6-7 bits, leaving a
+        # decoded track barely recognizable (HW-measured 2026-07-24). Falls back to the
+        # DAC on TeensyROM, when the sampler is unavailable, or backend = "dac".
         assert s.file is not None  # narrowed by _validate_generative
         file_audio_obj: AudioStreamer | UltimateAudioSampler = scene_audio
         sampler = _resolve_sampler_audio(ctx)
@@ -2634,48 +2451,22 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
         )
         audio_src = file_audio_src
     else:
-        # "none", or "mic"/"file" with audio disabled → silence.
         audio_src = NullAudioSource()
     scene = SourceScene(ctx.api, scene_base_audio, mode, gen, audio_src, name, color=ctx.color)
-    # Size a file-audio scene to the track so `c64cast tune.mp3` plays the
-    # whole song then advances/loops (an explicit duration_s still wins,
-    # applied in build_scene's duration-resolution epilogue).
     if file_audio_src is not None and s.duration_s is None and file_audio_src.duration_s:
         scene.duration_s = file_audio_src.duration_s
-    # A mic/file-source generative scene is digitized-audio-capable like
-    # webcam/video, so a bitmap display caps its frame push: 20 fps while the
-    # 4-bit DAC streams (its NMI + ring DMAWRITEs compete with frame
-    # uploads), half the system rate (30/25) otherwise. The off-bus sampler
-    # frees the *audio* from the bus, but NOT the video: a generative source
-    # renders a fresh frame every tick (no VideoScene-style dedup), so
-    # uncapping to the system rate would push 60 real mhires frames/s of REU
-    # bank-swap traffic — which starves the sampler's own REU writes (audible
-    # static) and overloads the bus (C64-side visual crash, HW 2026-07-24).
-    # So a sampler-routed file scene keeps the muted 30/25 bitmap cap:
-    # off-bus audio, no on-bus digi, no uncap.
+    # A mic/file-source generative scene is digitized-audio-capable like webcam/video,
+    # so a bitmap display caps its frame push: 20 fps while the 4-bit DAC streams, half
+    # the system rate (30/25) otherwise. A sampler-routed file scene keeps the muted
+    # 30/25 cap rather than uncapping: the generator renders a fresh frame every tick,
+    # and 60 mhires frames/s of REU bank-swap traffic starves the sampler's own REU
+    # writes (audible static) and overloads the bus (C64-side visual crash, HW
+    # 2026-07-24). always_fresh is also why the DAC's 20 fps cap applies in char modes
+    # here — the repaint goes over the socket the audio ring shares.
     #
-    # That same no-dedup property (always_fresh) is why the DAC's 20 fps cap
-    # now applies in CHAR modes too, not just bitmap ones — a 60 fps mcm
-    # generative scene repaints screen + color RAM every tick over the socket
-    # the audio ring shares. Sampler-routed audio is off-bus and keeps the
-    # high default.
-    #
-    # Unconditional, not gated on `audio_source`. This used to run only for
-    # "mic"/"file", which left `audio_source = "none"` pushing a full ~9-10 KB
-    # bitmap frame at the system rate with no cap at all (as did "listen", in
-    # its own builder). The gate read as "no DAC, not in scope", but "no DAC"
-    # is not the criterion anywhere else: `_build_wled` has no audio at all and
-    # still takes the half-rate cap, `_build_generative_sid` takes it, and so
-    # does a `mic` scene built with the global streamer off. The half-rate
-    # bitmap cap is about host-DMA tear, which a silent generator causes
-    # exactly as much of as a loud one. `_frame_push_default_fps` returns None
-    # for char modes with no on-bus digi, so "none" keeps the playlist default
-    # there — only its bitmap displays change.
-    #
-    # `audio_src`, not `scene_audio`, decides whether digitized audio is on the
-    # bus: `_resolve_live_audio` hands back the shared streamer whenever
-    # [audio] is on, including for `audio_source = "none"`, which pushes
-    # nothing to it. Asking the source object is the question we actually mean.
+    # `audio_src`, not `scene_audio`, decides whether digitized audio is on the bus:
+    # `_resolve_live_audio` hands back the shared streamer whenever [audio] is on,
+    # including for `audio_source = "none"`, which pushes nothing to it.
     on_bus_digi = not isinstance(audio_src, NullAudioSource) and not file_uses_sampler
     fps = _frame_push_default_fps(mode, on_bus_digi, cfg.ultimate64.system, always_fresh=True)
     if fps is not None:
@@ -2685,9 +2476,6 @@ def _build_generative_live(ctx: _SceneBuildContext, gen: GenerativeSource, name:
 
 def _build_wled(ctx: _SceneBuildContext) -> Scene:
     s, cfg = ctx.s, ctx.cfg
-    # A network pixel sink: the frame arrives over UDP, no audio, no SID.
-    # It's just another FrameSource behind the SourceScene seam — the display
-    # mode quantizes the received BGR frame to the C64 unchanged.
     mode = ctx.display_mode(s.display)
     wled_source = WLEDSource(
         s.sink_width,
@@ -2698,12 +2486,9 @@ def _build_wled(ctx: _SceneBuildContext) -> Scene:
     )
     name = s.name or "WLED sink"
     scene = SourceScene(ctx.api, None, mode, wled_source, NullAudioSource(), name, color=ctx.color)
-    # Bitmap displays push a full ~9-10 KB frame per update; default to half
-    # rate like the other frame scenes (an explicit target_fps, applied in
-    # build_scene's epilogue, still wins). Through _frame_push_default_fps
-    # rather than a hand-coded _half_system_rate, so the cap policy — and the
-    # "worth revisiting once the firmware no longer halts the CPU" note its
-    # docstring carries — has one home.
+    # Bitmap displays push a full ~9-10 KB frame per update; default to half rate like
+    # the other frame scenes. Through _frame_push_default_fps rather than a hand-coded
+    # _half_system_rate so the cap policy has one home.
     fps = _frame_push_default_fps(mode, False, cfg.ultimate64.system)
     if fps is not None:
         scene.target_fps = fps
@@ -2713,8 +2498,8 @@ def _build_wled(ctx: _SceneBuildContext) -> Scene:
 def _build_launcher(ctx: _SceneBuildContext) -> Scene:
     s = ctx.s
     assert s.file is not None  # narrowed by validate_scene_cfg
-    # No audio streamer: the launched program drives the real SID directly.
-    # No display mode / overlays: it owns the VIC.
+    # No audio streamer and no display mode: the launched program drives the real SID
+    # and owns the VIC.
     return LauncherScene(
         ctx.api,
         s.file,
@@ -2782,11 +2567,9 @@ def _build_asid(ctx: _SceneBuildContext) -> Scene:
     )
 
 
-# One builder per scene type, mirroring the _validate_<type> helpers that
-# validate_scene_cfg fans out to. validate_scene_cfg (always called first in
-# build_scene) rejects unknown types, so the lookup can't miss. Keep in sync
-# with config.SCENE_TYPES — tests/test_config.py holds the two to the same
-# set.
+# One builder per scene type. validate_scene_cfg (always called first in
+# build_scene) rejects unknown types, so the lookup cannot miss. Keep in sync with
+# config.SCENE_TYPES — tests/test_config.py holds the two to the same set.
 _BUILDERS: dict[str, Callable[[_SceneBuildContext], Scene]] = {
     "webcam": _build_webcam,
     "blank": _build_blank,
@@ -2856,29 +2639,19 @@ def build_scene(
     )
     scene = _BUILDERS[s.type](ctx)
 
-    # Duration resolution. `scene.duration_s = math.inf` means "run until
-    # stopped" (the scene never auto-advances).
-    #   * explicit duration_s == 0 → the "run forever" sentinel (any type);
-    #   * explicit duration_s  > 0 → honored verbatim;
-    #   * unset (None): webcam/blank default to infinite in a SINGLE-scene
-    #     playlist ("leave the camera running"), but keep the base 30 s in a
-    #     multi-scene playlist so the rotation still advances — an infinite
-    #     live scene never becomes is_done and would wedge the playlist. Every
-    #     other type keeps the default already set above (video's video-driven
-    #     math.inf, waveform's song-length, etc.).
-    # Video scenes set their own math.inf in __init__ and reject explicit
-    # duration_s in _validate_video, so leave them untouched here.
+    # `scene.duration_s = math.inf` means "run until stopped":
+    #   * explicit duration_s == 0 -> that sentinel (any type);
+    #   * explicit duration_s  > 0 -> honored verbatim;
+    #   * unset: webcam/blank go infinite in a SINGLE-scene playlist but keep the base
+    #     30 s in a multi-scene one, since an infinite live scene never becomes
+    #     is_done and would wedge the rotation. Every other type keeps the default
+    #     already set above.
+    # Video sets its own math.inf in __init__ and rejects explicit duration_s in
+    # _validate_video.
     if s.type != "video":
-        # A single configured scene stays single-scene: interleave_videos is
-        # skipped for a 1-scene playlist (see scenes_from_config), so the
-        # scene count is the whole story here — but it has to be the count of
-        # scenes that actually reach the playlist. `scenes_from_config` skips
-        # every `follower_only` scene and `Playlist.single_scene` counts what
-        # it was handed, so one live scene plus a follower-only sibling (the
-        # canonical ensemble shape) really IS a single-scene playlist. Counting
-        # `cfg.scenes` there left the camera on the finite 30 s default, so it
-        # tore down and re-set-up — reopening the capture device — every 30
-        # seconds forever, and under `--no-loop` the show just ended.
+        # The count has to be of scenes that actually reach the playlist: `scenes_from_config`
+        # skips every `follower_only` scene and `Playlist.single_scene` counts what it was
+        # handed, so one live scene plus a follower-only sibling is a single-scene playlist.
         single_scene_playlist = sum(1 for x in cfg.scenes if not x.follower_only) <= 1
         if s.duration_s is not None:
             scene.duration_s = math.inf if s.duration_s == 0 else s.duration_s
@@ -2886,11 +2659,9 @@ def build_scene(
             scene.duration_s = math.inf
     if s.target_fps is not None:
         scene.target_fps = float(s.target_fps)
-    # Per-scene pixel effect chain (validated frame-bearing + mutually-exclusive
-    # in validate_scene_cfg). Applied in order in scenes._render_with_overlays.
-    # `effects` (the chain) wins if set; otherwise the legacy single `effect`
-    # becomes a one-layer chain. Each layer inherits the scene's mod_source so a
-    # clock/audio choice drives the whole stack uniformly.
+    # Validated frame-bearing and mutually exclusive in validate_scene_cfg; applied in
+    # order in scenes._render_with_overlays. Each layer inherits the scene's mod_source
+    # so a clock/audio choice drives the whole stack uniformly.
     effect_names = s.effects if s.effects else ([s.effect] if s.effect is not None else [])
     if effect_names:
         chain = []
@@ -2900,26 +2671,14 @@ def build_scene(
             chain.append(eff)
         scene.effects = chain
     _attach_overlays(scene, s.overlays, audio)
-    # Debug aid: source-bearing scenes draw the playback timecode + frame
-    # number into each frame (pre-quantization). Harmless no-op on scenes
-    # without a video frame (waveform/launcher/midi ignore the flag).
     scene.show_frame_numbers = cfg.debug.frame_numbers
-    # Live-tune OSD placement ([midi_control].osd): "top"/"bottom" position, or
-    # "off" to disable. Stamped here (like show_frame_numbers) so every built
-    # scene honors the setting; the OsdState stays invisible until a live-tune
-    # control posts to it.
     scene.osd.enabled = cfg.midi_control.osd != "off"
     scene.osd.position = (
         cfg.midi_control.osd if cfg.midi_control.osd in ("top", "bottom") else "bottom"
     )
-    # Per-scene pre-emphasis cascade: explicit scene value wins; otherwise fall
-    # back to the global [dsp].pre_emphasis (which may itself be None = source-
-    # aware auto). The audio-bearing scenes apply this to the shared streamer at
-    # setup() via audio.set_pre_emphasis; other scene types ignore it.
     scene.pre_emphasis = s.pre_emphasis if s.pre_emphasis is not None else cfg.dsp.pre_emphasis
-    # Stamp the source SceneCfg on the instance so the playlist's
-    # orchestrator wiring (and overlays that need access to the
-    # declarative cfg) can find it without re-iterating cfg.scenes.
+    # Stamped on the instance so the playlist's orchestrator wiring can find the source
+    # SceneCfg without re-iterating cfg.scenes.
     scene._cfg = s
     return scene
 
@@ -2977,10 +2736,8 @@ def scenes_from_config(
 
     `sampler_available` propagates to `build_scene` to resolve the
     [audio].backend selector for video scenes (see resolve_audio_backend)."""
-    # Validate follower-only scenes here too — they're built lazily at
-    # broadcast time via `build_follower_scene`, so without this call a
-    # bad cfg would only surface mid-broadcast. (build_scene below runs
-    # validate_scene_cfg internally for the scenes that DO build now.)
+    # Follower-only scenes build lazily at broadcast time via `build_follower_scene`, so
+    # without this call a bad cfg would only surface mid-broadcast.
     for s in cfg.scenes:
         if s.follower_only:
             validate_scene_cfg(s, cfg, audio_enabled=audio is not None)
@@ -2999,17 +2756,14 @@ def scenes_from_config(
             reu_available=reu_available,
             sampler_available=sampler_available,
         )
-        # The scene's address in the *file*, so a live-tune save-back can write a
-        # per-scene knob (palette_mode) into the block it came from. Counted over
-        # cfg.scenes rather than over this list, so a follower-only scene earlier
-        # in the file doesn't shift everything after it — and stamped only here,
-        # which leaves it None on every scene the config did not name.
+        # The scene's address in the *file*, so a live-tune save-back can write a per-scene
+        # knob into the block it came from. Counted over cfg.scenes so a follower-only scene
+        # earlier in the file doesn't shift everything after it; left None on every scene the
+        # config did not name.
         scene.cfg_index = index
         base.append(scene)
 
     if not base:
-        # Sensible default if user gave us no scenes at all. No audio —
-        # live video defaults to silent so it can run at full speed.
         if source is None:
             raise ValueError(
                 "no scenes configured and no WebcamSource available — "
@@ -3020,15 +2774,13 @@ def scenes_from_config(
                 api, None, HiresDisplayMode(style="edges"), source, cfg.audio, "Live Hi-Res Edges"
             )
         )
-        # The sole scene when nothing is configured — leave it running.
         base[-1].duration_s = math.inf
 
     if not cfg.playlist.interleave_videos:
         return base
     if len(base) <= 1:
-        # Single-scene playlists run in Playlist's single-scene mode (no
-        # interstitials, loop forever). Interleaving a video would silently
-        # promote it to a 2-scene multi-scene playlist — surprising. Skip.
+        # Single-scene playlists run in Playlist's single-scene mode; interleaving a video
+        # would silently promote it to a multi-scene playlist.
         if _gather_videos(cfg.playlist.videos_dir):
             log.info(
                 "interleave_videos skipped: single-scene playlist "
@@ -3066,28 +2818,22 @@ def scenes_from_config(
     return interleaved
 
 
-# The media-extension tuples live with the scene classes (scenes.scenes,
-# whose MediaFileMixin subclasses carry them as MEDIA_EXTS) and are
-# re-exported here — quickcast, wizard, and the CLI import them from this
-# module, the app layer's scene surface.
+# The tuples live with the scene classes (scenes.scenes MediaFileMixin subclasses
+# carry them as MEDIA_EXTS) and are re-exported here, the app layer's scene surface.
 VIDEO_EXTS = _scenes.VIDEO_EXTS
 SID_EXTS = _scenes.SID_EXTS
 PICTURE_EXTS = _scenes.PICTURE_EXTS
 PROGRAM_EXTS = _scenes.PROGRAM_EXTS
 AUDIO_EXTS = _scenes.AUDIO_EXTS
 
-# Default `file =` value for scenes that don't set one. The scene picks a
-# random file from the directory at each setup() (same as an explicit
-# directory spec). Missing/empty default dirs surface as a clear
-# validate-time error pointing the user at the dir to populate or the
-# `file =` field to override.
+# Default `file =` value for scenes that don't set one. The scene random-picks from
+# the directory at each setup(), as it does for an explicit directory spec.
 DEFAULT_VIDEO_DIR = "assets/videos"
 DEFAULT_WAVEFORM_DIR = "assets/sids"
 DEFAULT_SLIDESHOW_DIR = "assets/pictures"
 DEFAULT_PROGRAM_DIR = "assets/programs"
 
-# Display modes the slideshow can pick from when `display = "random"`. Blank
-# is excluded (no video source); bitmap + char modes all accept a BGR frame.
+# Blank is excluded (no video source); bitmap and char modes all accept a BGR frame.
 SLIDESHOW_RANDOM_DISPLAYS = ("mhires", "hires", "hires_edges", "mcm", "petscii")
 
 
@@ -3130,11 +2876,10 @@ def _gather_videos(directory: str) -> list[str]:
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
-# An absolute glob whose FIRST path segment is itself a pattern. Combined with
-# a `**` anywhere in the entry that is a walk of every mounted volume, which
-# `glob.glob(recursive=True)` will happily attempt inside one network-reachable
-# validate request (`config_store` → `session.validate_configs` →
-# `validate_scene_cfg` → here). No media spec means it.
+# An absolute glob whose FIRST path segment is itself a pattern. Combined with a
+# `**` anywhere in the entry that is a walk of every mounted volume, which
+# `glob.glob(recursive=True)` will attempt inside one network-reachable validate
+# request (`config_store` -> `session.validate_configs` -> `validate_scene_cfg`).
 _ROOTED_GLOB = re.compile(r"^/+[*?\[]")
 
 
@@ -3171,16 +2916,13 @@ def _expand_glob_entry(entry: str, extensions: tuple[str, ...], *, label: str) -
             "pattern rooted at the filesystem root walks every mounted volume. "
             "Root the pattern at the directory the media is in."
         )
-    # recursive=True only changes behavior for `**` segments; ordinary
-    # `*`/`?`/`[...]` patterns are unaffected (backward-compatible).
+    # recursive=True only changes behavior for `**` segments.
     hits = [
         p
         for p in glob.glob(entry, recursive=True)
         if os.path.isfile(p) and p.lower().endswith(extensions)
     ]
     if not hits:
-        # A glob with zero hits is almost always a typo — louder than
-        # silently shrinking the candidate pool.
         raise ValueError(
             f"{label}: glob {redact_media_spec(entry)!r} matched no files with "
             f"extension {extensions}"
@@ -3271,21 +3013,16 @@ def resolve_file_spec(
     matches: set[str] = set()
     for entry in split_file_spec(spec):
         if is_media_url(entry):
-            # A URL (e.g. a direct media link, or a yt-dlp-resolved stream URL
-            # from quickcast). Pass through untouched — URLs have no meaningful
-            # local extension and must not be globbed or existence-checked;
-            # AVFileSource opens http(s) directly via PyAV.
+            # A URL has no meaningful local extension and must not be globbed or
+            # existence-checked; AVFileSource opens http(s) directly via PyAV.
             matches.add(entry)
             continue
-        # A TOML file has no shell to expand a leading `~/…` the way one
-        # does for a CLI argument, and glob/os.path treat `~` as a literal
-        # directory name — so this has to happen here or the entry matches
-        # nothing. URLs are kept off the path helpers entirely.
+        # A TOML file has no shell to expand a leading `~/...`, and glob/os.path treat `~` as
+        # a literal directory name. URLs are kept off the path helpers entirely.
         entry = paths.expand_user(entry)
         if os.path.isfile(entry):
-            # An existing file wins over glob interpretation — filenames with
-            # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would
-            # otherwise be mistaken for glob patterns and match nothing.
+            # An existing file wins over glob interpretation: filenames with `[`/`]`/`*`/`?`
+            # (e.g. YouTube-style `name [videoid].mp4`) would otherwise be read as patterns.
             if not entry.lower().endswith(extensions):
                 raise ValueError(
                     f"{label}: {redact_media_spec(entry)!r} doesn't match expected "
@@ -3307,10 +3044,8 @@ def resolve_file_spec(
         elif _GLOB_CHARS.search(entry):
             matches.update(_expand_glob_entry(entry, extensions, label=label))
         else:
-            # Literal path. Don't require it to exist yet — the scene's
-            # setup() reports a clear "file not found" if it disappears
-            # between config load and playback. But DO catch extension
-            # mismatches now (those are typos, not transient issues).
+            # Don't require a literal path to exist yet — setup() reports a clear "file not
+            # found". Extension mismatches are typos, not transient, so catch those now.
             if not entry.lower().endswith(extensions):
                 raise ValueError(
                     f"{label}: {redact_media_spec(entry)!r} doesn't match expected "

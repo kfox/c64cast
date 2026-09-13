@@ -22,16 +22,10 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# The drain's work bound reads the clock through this name so a test can drive a
-# pass without sleeping through one. Rebinding the module attribute is the only
-# injection point: `poll_pending` is a free function with no object to hang a
-# clock off, and the call sites that matter (`AsidScene._reader`,
-# `MidiScene._reader`) pass no arguments of their own.
+# The drain's work bound reads the clock through this name, so rebinding the
+# module attribute lets a test drive a pass without sleeping through one.
 _monotonic = time.monotonic
 
-# Typed as Any so Pyright doesn't flag every mido.XXX as accessing attributes
-# of None — the MIDI_AVAILABLE flag is the runtime guard. Also sidesteps
-# pyright not seeing mido.open_input / mido.get_input_names through stubs.
 try:
     import mido as _mido
 
@@ -71,44 +65,22 @@ def open_input_port(spec: str | None, *, label: str) -> tuple[Any, str]:
     return port, match
 
 
-# How many already-queued messages a reader pass may retire. mido's
-# `iter_pending()` yields until the port queue is momentarily *empty*, and
-# rtmidi's input queue has no size limit — so a backlog arriving faster than the
-# reader retires it never returns, and whatever the reader does after the drain
-# is never reached: the rate-bounded register flush that keeps the SID current,
-# and the stop check that lets teardown's bounded join finish. 64 leaves ~7x
-# headroom over the busiest legitimate stream we know of (a 16x multispeed
-# 8-SID ASID frame is ~9 messages per 1 ms pass).
+# How many already-queued messages a reader pass may retire — ~7x the busiest
+# legitimate stream measured (a 16x multispeed 8-SID ASID frame is ~9 messages
+# per 1 ms pass).
 MAX_MSGS_PER_DRAIN = 64
 
-# The coalescing flush both readers run *after* their drain — AsidScene and
-# MidiScene each flush at 1/60 s — i.e. the deadline a drain pass must not eat.
+# AsidScene and MidiScene each flush at 1/60 s after their drain — the deadline
+# a drain pass must not eat.
 _READER_FLUSH_PERIOD_S = 1.0 / 60.0
 
-# The share of that period one pass may spend retiring messages. A quarter
-# leaves the flush at most 25% late and still runs the stop check ~240x a
-# second against `PollThread`'s 1 s join.
 _DRAIN_BUDGET_FRACTION = 0.25
 
-# How long one drain pass may spend retiring messages, whatever the count bound
-# would still permit. :data:`MAX_MSGS_PER_DRAIN` bounds the message *count*, but
-# the wire chooses the *work* per message: one WARNING through the default
-# terminal handler costs ~322 us of Rich rendering, so 64 of them is 20.6 ms
-# inside a pass whose loop is otherwise sub-millisecond — which starves exactly
-# the two things the count bound exists to protect. A pass always hands out at
-# least one message, so a consumer slower than the whole budget still makes
-# progress instead of spinning.
-#
-# This is the *default*, and it is sized for a consumer whose per-message cost
-# is microseconds — `AsidScene._handle_sysex` decodes, pokes a shadow, and
-# returns, so an ordinary pass never approaches it. It is emphatically NOT a
-# universal budget: `MidiScene._handle_msg` issues blocking link writes inside
-# the drain, and on an Ultimate one of those (5.222 ms) already exceeds this
-# whole budget, so an ordinary note pass there would spend it on message one.
-# A caller whose consumer is not cheap passes its own `budget_s` sized from
-# what it actually costs — see `midi_scene._drain_budget_s`. The sizing lives
-# with the caller and not here because reaching a `HardwareProfile` from this
-# module would invert the layering, and the two callers' numbers differ.
+# The *default* work bound for a pass, sized for a consumer whose per-message
+# cost is microseconds; a caller whose consumer is not cheap passes its own
+# `budget_s` (see `midi_scene._drain_budget_s`). Why a count bound alone is not
+# enough, and what a rebind of this constant does and does not reach:
+# docs/architecture/config.md#_midipy--the-guarded-mido-import.
 MAX_DRAIN_WORK_S = _READER_FLUSH_PERIOD_S * _DRAIN_BUDGET_FRACTION
 
 
@@ -178,12 +150,8 @@ def poll_pending(
     caller whose consumer blocks on the link must pass its own or a pass with
     traffic waiting will retire just the one message. :data:`MAX_DRAIN_WORK_S`
     says why the sizing belongs to the caller."""
-    # Read here, not bound as the parameters' defaults, so that rebinding
-    # either constant is not a silent no-op — this module's one injection idiom
-    # is rebinding, as the deadline below does for `_monotonic`. Full rationale
-    # in docs/architecture/config.md under `_midi.py`, which also says which
-    # reader a rebind of `MAX_DRAIN_WORK_S` reaches, and why MidiScene's own
-    # copy of it is not the lever it looks like.
+    # Read in the body, not bound as the parameters' defaults, so that rebinding
+    # either constant is not a silent no-op.
     if limit is None:
         limit = MAX_MSGS_PER_DRAIN
     if budget_s is None:

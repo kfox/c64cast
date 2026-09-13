@@ -35,9 +35,9 @@ from . import config as cfgmod
 from . import config_serialize as ser
 from . import introspect, scene_factory
 
-# Scene type -> (default asset dir, accepted extensions) for the file picker.
-# Mirrors the DEFAULT_*_DIR / *_EXTS constants the loader resolves against, so
-# the wizard suggests exactly the directory build_scene will search.
+# Scene type -> (default asset dir, accepted extensions) for the file picker,
+# taken from the loader's own constants so the wizard suggests exactly the
+# directory `build_scene` will search.
 _ASSET_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "video": (scene_factory.DEFAULT_VIDEO_DIR, scene_factory.VIDEO_EXTS),
     "waveform": (scene_factory.DEFAULT_WAVEFORM_DIR, scene_factory.SID_EXTS),
@@ -54,11 +54,6 @@ _CORE_SCENE_FIELDS = frozenset(
 # Scene types whose audio is driven by the scene/program itself, not the
 # global [audio] streamer — the wizard doesn't ask "enable audio?" for these.
 _SELF_AUDIO_TYPES = frozenset({"waveform", "midi", "asid", "launcher"})
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers (unit-tested without questionary)
-# ---------------------------------------------------------------------------
 
 
 def field_kind(type_str: str) -> str:
@@ -301,11 +296,6 @@ def _section_field_docs(section_name: str) -> tuple[introspect.FieldDoc, ...]:
     return ()
 
 
-# ---------------------------------------------------------------------------
-# Interactive shell (thin; not unit-tested)
-# ---------------------------------------------------------------------------
-
-
 def _ensure_questionary():  # type: ignore[no-untyped-def]
     """Lazy-import questionary so the dep is only needed for `--init` (mirrors
     video.py / vision.py lazy-importing their extras)."""
@@ -455,7 +445,6 @@ def _pick_asset(q, scene_type: str) -> str | None:  # type: ignore[no-untyped-de
             return default_dir
         if pick != custom:
             return pick
-    # No files found, or user chose custom entry.
     return q.text(
         f"{scene_type} file spec (path / dir / comma-separated globs)",
         default="" if files else default_dir,
@@ -491,14 +480,12 @@ def _prompt_one_scene(
 
     scene_fields: dict[str, object] = {}
 
-    # --- file (asset-bearing types) ---
     if scene_type in _ASSET_SPECS:
         f = _pick_asset(q, scene_type)
         if f is None:
             return None
         scene_fields["file"] = f
 
-    # --- display (display-bearing types) ---
     displays = supported_displays(scene_type)
     display_for_overlays = "petscii"  # default assumption for fixed-mode types
     if displays:
@@ -508,14 +495,12 @@ def _prompt_one_scene(
         scene_fields["display"] = chosen
         display_for_overlays = chosen
 
-    # --- name (optional) ---
     name = q.text("Scene name (optional, shown in logs/interstitials)", default="").ask()
     if name is None:
         return None
     if name.strip():
         scene_fields["name"] = name.strip()
 
-    # --- audio ---
     if ask_audio:
         scene_audio: bool | None = None
         if scene_type not in _SELF_AUDIO_TYPES:
@@ -536,14 +521,12 @@ def _prompt_one_scene(
                 scene_fields["audio"] = False
         audio_for_overlays = bool(audio_enabled) and scene_fields.get("audio") is not False
 
-    # --- advanced fields ---
     if q.confirm(f"Configure advanced {scene_type} options?", default=False).ask():
         adv = _prompt_scene_fields(q, scene_type)
         if adv is None:
             return None
         scene_fields.update(adv)
 
-    # --- overlays (compat-filtered) ---
     overlays: list[dict[str, object]] = []
     candidates = compatible_overlays(display_for_overlays, audio_enabled=audio_for_overlays)
     if candidates and q.confirm("Add overlays?", default=False).ask():
@@ -774,9 +757,8 @@ def _run_single(q, path_arg: str | None) -> tuple[str, bool] | None:  # type: ig
         return None
     url, system = globals_
 
-    # Two instances rather than one: the build mutates what it is handed, and
-    # the serializer needs an untouched copy of the same layer to measure the
-    # answers against.
+    # Two instances: the build mutates what it is handed, and the serializer
+    # needs an untouched copy of the same layer to measure the answers against.
     baseline = cfgmod.machine_baseline()
     cfg = build_config(
         scene_type=str(scene["scene_type"]),

@@ -58,9 +58,8 @@ class ConsoleLibrary:
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path if path is not None else paths.console_library_path()
-        # A phone and a laptop can each hit `set_favorite`/`record_recent` in
-        # the same moment; both are read-modify-write over one file, and
-        # without this a second save can silently overwrite the first's.
+        # A phone and a laptop can each hit `set_favorite`/`record_recent` at
+        # once, and both are read-modify-write over one file.
         self._lock = threading.Lock()
 
     def _load(self) -> dict[str, Any]:
@@ -73,11 +72,9 @@ class ConsoleLibrary:
             return {"favorites": [], "recents": []}
         if not isinstance(raw, dict):
             return {"favorites": [], "recents": []}
-        # `dict.get(key, default)`'s default only applies when `key` is
-        # *absent* — a wrong-shaped value present under the key (`null`, an
-        # int, a bare string) falls through to the comprehension below
-        # unguarded, so a foreign or half-written file with `"favorites":
-        # null` has to be caught here rather than trusted to `.get`.
+        # `dict.get`'s default applies only when the key is *absent*, so a
+        # wrong-shaped value present under it (`"favorites": null` in a foreign or
+        # half-written file) has to be caught here rather than left to `.get`.
         raw_favorites = raw.get("favorites")
         raw_recents = raw.get("recents")
         favorites = [

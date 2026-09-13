@@ -58,19 +58,15 @@ log = logging.getLogger("c64cast.recording")
 # of the active log formatter (rich/plain terminal vs. file handler).
 SCENE_CONFIG_MARKER = "SCENE_CONFIG_JSON"
 
-# Fallback for when the source's license genuinely isn't available (yt-dlp
-# gave neither a license nor an uploader, or the local file's container
-# carries none of _COPYRIGHT_METADATA_TAGS). Written as an admission rather
-# than a "TODO:" — the blob's whole purpose is to be pasted somewhere public,
-# so a line that is false when published is worse than one that is merely
-# unhelpful.
+# Fallback when no license is available: yt-dlp gave neither a license nor an
+# uploader, or the container carries none of _COPYRIGHT_METADATA_TAGS. The blob
+# is meant to be pasted somewhere public, so it admits the gap rather than
+# asserting anything.
 _UNKNOWN_COPYRIGHT = "unknown — add the link, license and attribution before publishing"
 
-# SceneCfg fields already surfaced elsewhere in the payload in resolved form
-# (scene.name, scene.display_mode, scene.duration_s, scene.target_fps,
-# scene.audio, scene.effects, scene.overlays, source.*) — skipped here so the
-# blob doesn't show a raw value next to its resolved counterpart. `mod_source`
-# is kept (it's a per-scene selector with no resolved twin).
+# SceneCfg fields the payload already carries in resolved form, skipped so the
+# blob never shows a raw value beside its resolved counterpart. `mod_source` is
+# kept: it is a per-scene selector with no resolved twin.
 _SCENE_CFG_SKIP_FIELDS = frozenset(
     {
         "type",
@@ -130,8 +126,7 @@ def _sid_header_fields(header: Any) -> dict[str, str]:
 
 
 # Container tags that plausibly carry rights info, checked in this order.
-# PyAV normalizes tag keys to lowercase; most casual clips carry none of
-# them, but stock footage and edited exports routinely do.
+# Lowercase because PyAV normalizes tag keys to lowercase.
 _COPYRIGHT_METADATA_TAGS = ("copyright", "rights", "license")
 
 
@@ -169,10 +164,9 @@ def _video_source(scene: Scene) -> dict[str, Any]:
     spec = raw_spec if isinstance(raw_spec, str) else None
     is_url = spec is not None and scene_factory.is_media_url(spec)
     out: dict[str, Any] = {
-        # Redacted: this field is what scripts/scene_config_to_description.py
-        # renders as "Source video: <url>" in a *published* video description,
-        # and a private asset is legitimately reached with a `user:token@`
-        # URL. See scene_factory.redact_media_spec.
+        # Redacted: scripts/scene_config_to_description.py renders this as
+        # "Source video: <url>" in a *published* description, and a private asset
+        # is legitimately reached with a `user:token@` URL.
         "url": scene_factory.redact_media_spec(spec) if spec is not None and is_url else None,
         "local_file": None if is_url or not filepath else os.path.basename(filepath),
         "title": getattr(scene, "name", None),
@@ -254,8 +248,6 @@ def build_scene_recording_metadata(scene: Scene, cfg: Config, system_name: str) 
             ),
             "target_fps": getattr(scene, "target_fps", None) or "auto",
             "audio_enabled": getattr(scene, "audio", None) is not None,
-            # The resolved effect chain (layer class names in order); [] = none.
-            # A single-effect scene is just a one-element chain.
             "effects": [type(eff).__name__ for eff in getattr(scene, "effects", []) or []],
             "overlays": overlay_names,
             **_scene_cfg_fields(scene_cfg),

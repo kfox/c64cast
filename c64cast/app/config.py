@@ -46,23 +46,19 @@ from . import connect, paths
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Enum-ish value vocabularies
-# ---------------------------------------------------------------------------
-# Surfaced to `--describe` and the JSON schema as the valid `choices` for a
-# field. These mirror the authoritative constants in the heavy runtime modules
-# (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, voice_scope.TIME_BASE_NAMES,
-# …) but are duplicated here so config.py stays import-light (no numpy / cv2
-# pulled in just to load a TOML). tests/test_introspect.py asserts each list
-# stays in sync with its source of truth, so the duplication can't drift.
+# Value vocabularies surfaced to `--describe` and the JSON schema as a field's
+# `choices`. They duplicate the authoritative constants in the heavy runtime
+# modules (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, …) so config.py stays
+# import-light. tests/test_introspect.py pins _PALETTE_MODE_CHOICES and
+# _STYLE_CHOICES against their sources; the rest are unpinned (c64cast#399).
 SYSTEM_CHOICES = ("auto", "NTSC", "PAL")
 # [ultimate64].sid_play_rate. "auto"/"off" plus any positive float (Hz), so the
 # schema carries this as a union rather than a plain enum — see schema.py.
 SID_PLAY_RATE_CHOICES = ("auto", "off")
 SID_VIDEO_MODE_CHOICES = ("off", "auto")
 # [ultimate64].hdmi_scan_resolution. "auto"/"keep" plus the firmware's own
-# scan_modes[] labels; mirrors hw_provision.HDMI_RESOLUTION_CHOICES, which
-# tests/test_introspect.py pins this against.
+# scan_modes[] labels; mirrors hw_provision.HDMI_RESOLUTION_CHOICES. Nothing
+# pins the two together (c64cast#399).
 HDMI_SCAN_RESOLUTION_CHOICES = (
     "auto",
     "keep",
@@ -74,7 +70,7 @@ HDMI_SCAN_RESOLUTION_CHOICES = (
     "PC 1280 x 1024",
 )
 # Mirrors backend.BACKENDS; duplicated here so config.py stays import-light
-# (it doesn't pull in api.py). tests/test_introspect.py asserts they match.
+# (it doesn't pull in api.py). tests/test_backend.py:75 asserts they match.
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
 # Unlike [ultimate64].sid_model ("off" = don't touch the hardware config),
 # the opt-out here is "unknown": there is no hardware config to touch, only
@@ -91,15 +87,10 @@ HOST_SID_TUNE_MATCH_CHOICES = ("off", "prefer", "require")
 # The window `[hardware].host_sid_chips` addresses are range-checked against:
 # the $Dxx0 I/O page a PSID second/third-SID address byte can encode
 # ($D000 | byte<<4).
-#
-# These bounds are deliberately WIDER than sid_host_emu._decode_extra_sid_addr's,
-# which rejects anything outside the $D420-$D7E0 / $DE00-$DFE0 windows the PSID
-# spec permits. The two are validating different things and no longer share a
-# rule: that decode reads an untrusted header byte and turns it into a DMA write
-# target, so it must refuse everything the spec forbids, while this field is the
-# user describing where the chips in their own machine actually answer — a real
-# rig is not bound by what a file format may declare, and getting it wrong costs
-# a wrong routing decision, not a write to a CIA.
+# Deliberately wider than sid_host_emu._decode_extra_sid_addr's $D420-$D7E0 /
+# $DE00-$DFE0 windows: that decode turns an untrusted PSID header byte into a DMA
+# write target, while this field is the user describing where the chips in their
+# own machine answer.
 _HOST_SID_ADDR_LO = 0xD000
 _HOST_SID_ADDR_HI = 0xDFF0
 _TR_TRANSPORT_CHOICES = ("serial", "tcp")
@@ -120,11 +111,9 @@ _STYLE_CHOICES = (
 _TIME_BASE_CHOICES = ("wallclock", "auto")
 _PERSISTENCE_CHOICES = ("off", "short", "medium", "long", "random")
 _COLOR_MODE_CHOICES = ("per_voice", "per_waveform")
-# Field-metadata "apply" hint for the on-C64 menu: "live" = the running scene
-# can apply a change in place (zero-flash, via a display-mode/scene setter);
-# "rebuild" (the default for unmarked fields) = changing it needs a scene
-# rebuild, so the menu shows it read-only this cut. Internal-only — not
-# surfaced in the schema, serializer, or example.toml.
+# Field-metadata "apply" hint for the on-C64 menu: "live" = the running scene can
+# apply a change in place; "rebuild" (the default) = the menu shows it read-only.
+# Internal-only — not surfaced in the schema, serializer, or example.toml.
 _APPLY_CHOICES = ("live", "rebuild")
 
 #: The config sections a **reload** picks up. A reload re-reads each system's
@@ -191,11 +180,9 @@ _EFFECT_CHOICES = (
 # drift note: mirrored in effects.FrameEffect.mod_source's docstring.
 _MOD_SOURCE_CHOICES = ("audio", "clock", "off")
 
-# The fixed `param` target holder prefixes (the bit before the first "."), plus
-# the layer-addressed effect forms `fx<N>` and `effect[<N>]` that reach a
-# specific effect-chain layer (Live DJ/VJ Phase 3). Mirrors the holder
-# resolution in midi_control._apply_param — kept independent so config stays
-# import-light (the module's standing rule).
+# The fixed `param` target holder prefixes, plus the layer-addressed effect forms
+# `fx<N>` and `effect[<N>]`. Mirrors midi_control._apply_param's holder resolution,
+# kept independent so config stays import-light.
 _PARAM_HOLDER_PREFIXES = ("effect", "source", "scene", "mode")
 _FX_LAYER_HOLDER_RE = re.compile(r"^(?:fx(\d+)|effect\[(\d+)\])$")
 
@@ -211,31 +198,21 @@ def _is_valid_param_holder(holder: str) -> bool:
 # downscales it. See scenes._apply_aspect.
 _ASPECT_MODE_CHOICES = ("crop", "fit", "stretch")
 
-# Per-scene audio source for composable (generative) scenes — the AudioSource
-# building block in audio_source.py. "none" = silence; "mic" = live mic via the
-# shared AudioStreamer, streamed to the 4-bit DAC AND analyzed for reactive
-# visuals; "listen" = analyze the live input for reactive visuals only, no C64
-# audio output (the VJ case); "file" = decode an audio file (mp3/wav/…, needs
-# `file`) to the DAC AND analyze it for reactive visuals; "sid" = play a .sid on
-# the real chip (needs `file`). "mic"/"listen"/"file" are gated by [audio].enabled
-# (they need the shared streamer). Default "none". A drift test pins this list.
+# Per-scene audio source for generative scenes — the AudioSource building block in
+# audio_source.py. "listen" analyzes the live input without any C64 audio output;
+# "mic"/"listen"/"file" need [audio].enabled for the shared streamer. A drift test
+# pins this list.
 _AUDIO_SOURCE_CHOICES = ("none", "mic", "listen", "file", "sid")
 
-# Video-audio backend selector ([audio].backend). "dac" = the 4-bit $D418 NMI
-# DAC (every backend; lo-fi, bus-coupled). "sampler" = the U64 "Ultimate Audio"
-# FPGA PCM sampler (high fidelity, off the C64 bus; U64 only — see sampler.py).
-# "auto" = sampler on a sampler-capable U64 with the feature available, else
-# dac. A drift test pins this list.
+# Video-audio backend selector ([audio].backend): the 4-bit $D418 NMI DAC (every
+# backend) or the U64 "Ultimate Audio" FPGA PCM sampler (U64 only — see
+# sampler.py). A drift test pins this list.
 AUDIO_BACKEND_CHOICES = ("auto", "dac", "sampler")
 
-# The scene types (mirrors validate_scene_cfg). Used by the introspection
-# layer's `applies_to` filtering; declared here so SceneCfg metadata can name
-# them symbolically. `applies_to` means scene types and nothing else — only
-# SceneCfg fields carry it, and every value is a member of this tuple
-# (tests/test_introspect.py pins both halves). A section field that is
-# meaningful only on some backend or display mode says so in its `help`:
-# one metadata key silently spanning three vocabularies is a trap for the
-# first consumer that applies the documented rule generically.
+# The scene types (mirrors validate_scene_cfg), used by the introspection layer's
+# `applies_to` filtering. `applies_to` means scene types and nothing else: only
+# SceneCfg fields carry it and every value is a member of this tuple
+# (tests/test_introspect.py pins both halves).
 SCENE_TYPES = (
     "webcam",
     "blank",
@@ -255,29 +232,19 @@ SCENE_TYPES = (
 _EFFECT_SCENE_TYPES = frozenset({"webcam", "video", "slideshow", "generative", "wled"})
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-#
 # Every overridable field carries `metadata={"help": ...}` (plus optional
-# "choices" and, on SceneCfg, "applies_to"). That metadata is the single
-# source of truth the introspection layer (introspect.py) renders into
-# `--describe`, `--list-*`, `--compat`, and the JSON schema — so the docs
-# can't drift from the code. Deep design/rationale comments stay as ordinary
-# comments (maintainer-facing); `help` text is concise and author-facing.
+# "choices" and, on SceneCfg, "applies_to"). That metadata is the single source of
+# truth introspect.py renders into `--describe`, `--list-*`, `--compat`, and the
+# JSON schema.
 #
-# NOTE: metadata is written as `field(default=..., metadata={...})` *inlined*
-# in each class body, not via a helper — mypy's dataclass plugin only
-# recognizes a literal `dataclasses.field(...)` call when deciding a field has
-# a default. A wrapper would make every field look required.
+# metadata is written as `field(default=..., metadata={...})` *inlined* in each
+# class body, not via a helper: mypy's dataclass plugin only recognizes a literal
+# `dataclasses.field(...)` call when deciding a field has a default.
 
 
 @dataclass
 class HardwareCfg:
-    # Selects the hardware abstraction backend (see backend.make_backend).
-    # "ultimate" = Ultimate 64 / Ultimate II+ over socket DMA + REST.
-    # "teensyrom" = TeensyROM+ over the token protocol ([teensyrom] section).
-    # Defaults to "ultimate" so existing configs are unaffected.
+    # See backend.make_backend.
     backend: str = field(
         default="ultimate",
         metadata={"help": "Hardware backend family driving the C64.", "choices": _BACKEND_CHOICES},
@@ -312,16 +279,10 @@ class HardwareCfg:
             "is made. Ignored where the live SID state is readable (U64).",
         },
     )
-    # Tune *selection*, as opposed to the chip configuration above: on a link
-    # that can't re-place chips, a 2SID tune or a wrong-model tune is heard as
-    # authored on the Ultimate's own output and as mush through the C64's AV
-    # output, and no setting can change that. What can be changed is which tune
-    # a directory pool picks.
-    #
-    # Default "off" because a directory the user pointed at is a statement of
-    # what they want played, and quietly narrowing it to what this machine
-    # renders best is their call to make. Acts only on a declaration, never on
-    # the NTSC/PAL assumption — see sid_resolved.host_chip_fit.
+    # Tune *selection*, as opposed to the chip configuration above: on a link that
+    # cannot re-place chips, a 2SID or wrong-model tune is heard as authored on the
+    # Ultimate's own output and as mush through the C64's AV output. Acts only on a
+    # declaration, never on the NTSC/PAL assumption — see sid_resolved.host_chip_fit.
     host_sid_tune_match: str = field(
         default="off",
         metadata={
@@ -335,12 +296,9 @@ class HardwareCfg:
             "choices": HOST_SID_TUNE_MATCH_CHOICES,
         },
     )
-    # The 16 colors the display shows are a property of the machine driving it,
-    # not of the link — an Ultimate 64's FPGA VIC and a real VIC-II are ~25
-    # counts per channel apart, and the quantizer picks indices by distance, so
-    # aiming at the wrong table sends ~19% of pixels to the wrong color. Same
-    # reasoning as host_sid_model above: declared here, resolved against the
-    # machine when the machine can answer.
+    # An Ultimate 64's FPGA VIC and a real VIC-II are ~25 counts per channel apart, and
+    # the quantizer picks indices by distance, so aiming at the wrong table sends ~19%
+    # of pixels to the wrong color.
     host_palette: str = field(
         default="auto",
         metadata={
@@ -487,19 +445,13 @@ class Ultimate64Cfg:
             "env var over committing it here."
         },
     )
-    # Auto-provision the U64's REU for runs that hard-require it. When a config
-    # opts into an REU-staged path as a hard requirement ([audio].use_reu_pump
-    # or an explicit [video].use_reu_staged = true — the same condition
-    # --doctor checks), c64cast PUTs "RAM Expansion Unit" = Enabled + "REU
-    # Size" = 16 MB over the REST config API at startup, LIVE and VOLATILE
-    # (never saved to flash, so it reverts on the next power-cycle), and
-    # restores the originals at teardown. This removes the manual "F2 -> C64 and
-    # Cartridge Settings -> RAM Expansion Unit -> Enabled" step those paths used
-    # to require (and that --doctor errored on). The default use_reu_staged =
-    # "auto" is left alone — it self-heals to host-DMA double-buffer (also
-    # tear-free), so no machine config is touched for it. No effect on backends
-    # without an REU (TeensyROM) or under --skip-probe (we never write config we
-    # can't first read back). Set false to manage the REU yourself.
+    # Auto-provision the U64's REU for runs that hard-require it ([audio].use_reu_pump
+    # or an explicit [video].use_reu_staged = true, the same condition --doctor
+    # checks): PUT "RAM Expansion Unit" = Enabled + "REU Size" = 16 MB over the REST
+    # config API at startup, LIVE and VOLATILE (never saved to flash), restored at
+    # teardown. use_reu_staged = "auto" is left alone — it self-heals to host-DMA
+    # double-buffer. No effect without an REU (TeensyROM) or under --skip-probe (we
+    # never write config we can't first read back).
     auto_reu: bool = field(
         default=True,
         metadata={
@@ -573,30 +525,22 @@ class VideoCfg:
             )
         },
     )
-    # REU-staged video push. Bitmap frames (hires/mhires) are staged into
-    # REU SRAM off-screen and swapped into the displayed bank by an atomic
-    # $DD00 flip at vblank (double-buffer — kills the single-buffer tearing
-    # that flashes the whole screen on scene cuts). Char-mode screens
-    # (petscii, blank) are single-buffer-staged: the 1000-byte $0400 screen
-    # is REUWRITE'd then dropped in via one REU→main DMA. Color RAM at $D800
-    # always stays on the delta-cached DMAWRITE path (it isn't VIC-banked).
+    # REU-staged video push. Bitmap frames (hires/mhires) are staged into REU SRAM
+    # off-screen and swapped into the displayed bank by an atomic $DD00 flip at vblank,
+    # which kills the single-buffer tearing on scene cuts. Char-mode screens
+    # (petscii, blank) are single-buffer-staged: the 1000-byte $0400 screen is
+    # REUWRITE'd then dropped in via one REU->main DMA. Color RAM at $D800 always stays
+    # on the delta-cached DMAWRITE path (it isn't VIC-banked).
     #
     # Tri-state — true | false | "auto" (default):
-    #   * "auto" enables staging ONLY for bitmap modes (where double-buffer
-    #     fixes tearing and the bulk transfer wins) and ONLY when the
-    #     startup probe confirms the U64's REU is Enabled. Char modes stay on
-    #     the host-DMA path under auto — the delta cache makes staging a net
-    #     regression there (a full 1000-byte REU→main DMA every frame vs
-    #     "only the changed cells"). Falls back to false whenever REU can't be
-    #     confirmed (--skip-probe, REU disabled, or the probe query fails), so
-    #     video never silently freezes on a box without a (enabled) REU.
-    #   * true forces staging on for every mode that supports it.
-    #   * false forces it off everywhere.
-    # Resolution is per-scene at build time (scene_factory.resolve_use_reu_staged),
-    # so a `display = "random"` slideshow re-decides per concrete mode.
-    # Pairs cleanly with [audio].use_reu_pump on any scene (the bank-swap
-    # installer picks a merged $0314 dispatcher that services both IRQ
-    # sources). MCM doesn't support staging yet (separate future-work).
+    #   * "auto" stages bitmap modes only, and only when the startup probe confirms
+    #     the REU is Enabled; char modes stay on host DMA (the delta cache makes
+    #     staging a net regression). Falls back to false whenever the REU can't be
+    #     confirmed, so video never silently freezes.
+    #   * true forces staging on for every mode that supports it; false forces it off.
+    # Resolved per-scene at build time (scene_factory.resolve_use_reu_staged). Pairs
+    # with [audio].use_reu_pump (the bank-swap installer picks a merged $0314
+    # dispatcher). MCM does not support staging.
     use_reu_staged: bool | str = field(
         default="auto",
         metadata={
@@ -607,21 +551,18 @@ class VideoCfg:
             "auto silently falls back to host-DMA when REU isn't confirmed."
         },
     )
-    # Host-DMA double-buffer (page flip) for tear-free bitmap video on backends
-    # WITHOUT a usable REU — the TeensyROM, whose slow cycle-clean bus DMA tears
-    # a single-buffered mhires frame (the per-cell "sparkle"). The host writes
-    # each frame's bitmap+screen into the OFF-screen VIC bank, then a tiny raster
-    # IRQ flips $DD00 at vblank, so the visible bank is never written mid-display.
-    # Needs no REU (mhires color RAM, the un-banked $D800, still tears briefly —
-    # the c3 slot; bitmap+screen go tear-free). Unlike REU staging the IRQ does
-    # no in-IRQ DMA, so the flip is shimmer-free and text overlays render crisp.
+    # Host-DMA double-buffer (page flip) for tear-free bitmap video on backends without
+    # a usable REU — the TeensyROM, whose slow cycle-clean bus DMA tears a
+    # single-buffered mhires frame. The host writes each frame's bitmap+screen into the
+    # OFF-screen VIC bank, then a tiny raster IRQ flips $DD00 at vblank. mhires color
+    # RAM, the un-banked $D800, still tears briefly. Unlike REU staging the IRQ does no
+    # in-IRQ DMA, so the flip is shimmer-free.
     #
     # Tri-state — true | false | "auto" (default):
-    #   * "auto" enables it for bitmap modes (hires/mhires) when REU staging is
-    #     NOT active (mutually exclusive — both flip $DD00) AND the backend has
-    #     no REU at all (so this is its only tear-free path). The U64's fast DMA
-    #     doesn't visibly tear single-buffered, so auto leaves it on host-DMA.
-    #   * true forces it on for bitmap modes (on any backend); false off.
+    #   * "auto" enables it for bitmap modes when REU staging is NOT active (both flip
+    #     $DD00) and the backend has no REU at all; the U64's fast DMA does not
+    #     visibly tear single-buffered.
+    #   * true forces it on for bitmap modes on any backend; false off.
     # Resolved per-scene at build time (scene_factory.resolve_double_buffer).
     double_buffer: bool | str = field(
         default="auto",
@@ -683,13 +624,9 @@ class AudioCfg:
             "[audio].sampler_sample_rate instead."
         },
     )
-    # Video-audio backend. The sampler (U64 "Ultimate Audio" FPGA PCM, see
-    # sampler.py) plays straight from REU with zero SID/$D418/NMI/CPU, so it is
-    # vastly higher fidelity than the 4-bit DAC and immune to the bus-halt
-    # problems the DAC fights. "auto" picks it on a sampler-capable U64 when the
-    # feature is available (else falls back to the DAC); "dac" forces the lo-fi
-    # 4-bit DAC (the only path on TeensyROM); "sampler" forces the sampler and
-    # warns+falls-back to the DAC if it isn't available. Resolved per video scene
+    # The sampler (U64 "Ultimate Audio" FPGA PCM, see sampler.py) plays straight from
+    # REU with zero SID/$D418/NMI/CPU, so it is immune to the bus-halt problems the
+    # 4-bit DAC fights. "dac" is the only path on TeensyROM. Resolved per video scene
     # in build_scene via resolve_audio_backend; mic/webcam audio stays on the DAC.
     backend: str = field(
         default="auto",
@@ -750,9 +687,8 @@ class AudioCfg:
             "for smoother hiss on already-noisy sources."
         },
     )
-    # See the audio.py digi_boost note in docs/architecture.md for the full
-    # rationale. Essential on
-    # 8580s and emulated SIDs; on a 6581 it just raises output level.
+    # See the audio.py digi_boost note in docs/architecture.md. Essential on 8580s and
+    # emulated SIDs; on a 6581 it just raises output level.
     digi_boost: bool = field(
         default=False,
         metadata={
@@ -760,17 +696,13 @@ class AudioCfg:
             "the master mixer, raising $D418 playback level."
         },
     )
-    # Mahoney 8-bit $D418 companding. "auto" (default) picks the best curve for
-    # the SID that actually answers $D400: a per-unit calibrated table if one
-    # applies (see --calibrate-dac), else "mahoney_ultisid" when an UltiSID core
-    # owns that address (the emulated SID is deterministic), else "linear" (a
-    # physical/unknown SID with no calibration — the baked emulated table would
-    # not match it, see dac_curve_resolve.py). "linear" = the
-    # classic 4-bit volume-nibble DAC. "mahoney_ultisid" parks the SID voices as
-    # DC sources and writes the full $D418 byte per sample (volume + filter-mode
-    # + 3-off bits) for ~6-7 effective bits, using a baked table measured on the
-    # U64's emulated UltiSID. "calibrated" forces this system's calibrated table
-    # (errors if none). Non-linear curves are mutually exclusive with digi_boost.
+    # Mahoney 8-bit $D418 companding. "auto" picks a per-unit calibrated table if one
+    # applies (see --calibrate-dac), else "mahoney_ultisid" when an UltiSID core owns
+    # $D400 (the emulated SID is deterministic), else "linear" — the baked emulated
+    # table would not match a physical SID (see dac_curve_resolve.py).
+    # "mahoney_ultisid" parks the SID voices as DC sources and writes the full $D418
+    # byte per sample for ~6-7 effective bits, from a table measured on the U64's
+    # emulated UltiSID. Non-linear curves are mutually exclusive with digi_boost.
     # See dac_curves.py, dac_curve_resolve.py + docs/architecture.md.
     dac_curve: str = field(
         default="auto",
@@ -787,13 +719,10 @@ class AudioCfg:
             "choices": DAC_CURVE_CHOICES,
         },
     )
-    # Overrides system_calibration_key's auto-derived identity (device
-    # unique_id / TR USB serial number / legacy host-based fallback) with a
-    # user-chosen name. Mainly for a roaming TeensyROM+: it has no config API,
-    # so it can't tell which physical SID it's currently plugged into — naming
-    # a profile at --calibrate-dac time and passing the same name on every
-    # playback run against that host is the only way to keep calibrations
-    # straight when the cartridge moves between machines. See dac_calibration_store.py.
+    # Overrides system_calibration_key's auto-derived identity (device unique_id / TR
+    # USB serial number / legacy host-based fallback). Mainly for a roaming
+    # TeensyROM+: it has no config API, so it cannot tell which physical SID it is
+    # plugged into. See dac_calibration_store.py.
     dac_calibration_profile: str | None = field(
         default=None,
         metadata={
@@ -817,9 +746,8 @@ class AudioCfg:
             "Attenuates the carrier above the audio band."
         },
     )
-    # See the audio.py REU-pump note in docs/architecture.md. Eliminates the
-    # host-DMA 'gurgling'
-    # artifact on real hardware by streaming from REU SRAM instead.
+    # See the audio.py REU-pump note in docs/architecture.md. Eliminates the host-DMA
+    # 'gurgling' artifact on real hardware by streaming from REU SRAM instead.
     use_reu_pump: bool = field(
         default=False,
         metadata={
@@ -827,15 +755,12 @@ class AudioCfg:
             "(bus-clean) instead of per-write host DMA. Requires REU enabled."
         },
     )
-    # See the audio.py REU-pump note in docs/architecture.md. The C64-side
-    # pump (CIA #1 rate) and
-    # the NMI reader free-run open-loop; video DMA bus-halts throttle the NMI
-    # reader below nominal so the pump out-produces it and laps the ring every
-    # ~15-23s = audible echo. The governor lives in the pump's own IRQ handler:
-    # it reads the NMI read pointer and skips a chunk whenever the write head
-    # is too far ahead, self-throttling to the consumer with zero host bus
-    # writes. Default on per "prefer best quality"; only relevant when
-    # use_reu_pump is set. Off = open-loop (original drift/echo) for A/B.
+    # See the audio.py REU-pump note in docs/architecture.md. The C64-side pump (CIA #1
+    # rate) and the NMI reader free-run open-loop; video DMA bus-halts throttle the NMI
+    # reader below nominal, so the pump out-produces it and laps the ring every ~15-23s
+    # = audible echo. The governor lives in the pump's own IRQ handler: it reads the NMI
+    # read pointer and skips a chunk when the write head is too far ahead. Only
+    # relevant when use_reu_pump is set.
     reu_pump_governor: bool = field(
         default=True,
         metadata={
@@ -860,20 +785,16 @@ class AudioCfg:
             "host-side timing, no C64 writes. Not the REU pump path."
         },
     )
-    # Adaptive NMI-rate compensation: a closed loop that RAISES the nominal NMI
-    # rate to cancel the video slowdown from bus-halt-stolen NMI ticks. Built
-    # when bitmap video cost ~2-14% of ticks — but the bitmap+digi fps cap, the
-    # VideoScene frame dedup, and REU-staged double-buffering have since driven
-    # that loss to ~0 (HW 2026-07-02: with NO compensation, DAC-path mhires video
-    # plays at +0.07% on a near-static clip and -0.01% on a high-motion one). With
-    # the loss gone the loop only INJECTS error: its dR/dt R estimator reads ~12%
-    # high (torn DMA read-back of the $C025/$C026 read pointer), so it drives the
-    # latch the wrong way — measured -8.5% slow on one clip, content-dependent and
-    # non-deterministic. So DEFAULT OFF: playing at the nominal latch is dead-on
-    # (host_dma_servo still centers the ring — that's orthogonal to pitch). Kept
-    # as a knob for platforms that may still lose ticks (PAL, TeensyROM+), where
-    # the estimator bias would need fixing first. See the nmi_adaptive_rate_obsolete
-    # note + scripts/diags/nmi_pitch_ab.py.
+    # Adaptive NMI-rate compensation: a closed loop that RAISES the nominal NMI rate to
+    # cancel the video slowdown from bus-halt-stolen NMI ticks. The bitmap+digi fps
+    # cap, the VideoScene frame dedup, and REU-staged double-buffering have driven that
+    # loss to ~0 (HW 2026-07-02: with NO compensation, DAC-path mhires video plays at
+    # +0.07% on a near-static clip and -0.01% on a high-motion one). With the loss gone
+    # the loop only injects error: its dR/dt R estimator reads ~12% high (torn DMA
+    # read-back of the $C025/$C026 read pointer), measured -8.5% slow on one clip. Kept
+    # as a knob for platforms that may still lose ticks (PAL, TeensyROM+), where the
+    # estimator bias would need fixing first. See the nmi_adaptive_rate_obsolete note +
+    # scripts/diags/nmi_pitch_ab.py.
     nmi_rate_adaptive: bool = field(
         default=False,
         metadata={
@@ -893,48 +814,34 @@ class AudioCfg:
             "capture-alignment anchor. Turn OFF for production listening."
         },
     )
-    # ---- host-DMA servo pitch compensation (static; per-mode) ---------------
-    # These STATIC per-mode playback-rate multipliers apply only when
-    # nmi_rate_adaptive = false (now the default). Each cancels the video
-    # slowdown from bus-halt-stolen NMI ticks for one display mode: >1.0 speeds
-    # playback up, 1.0 = no change. The AudioStreamer converts a multiplier to a
-    # shorter CIA #2 Timer A period (faster NMI → faster R; rate and latch are
-    # inversely related). `hires_edges` scenes use pitch_mult_hires (same VIC
-    # fetch).
+    # Static per-mode playback-rate multipliers, applied only when nmi_rate_adaptive =
+    # false (the default). Each cancels the video slowdown from bus-halt-stolen NMI
+    # ticks for one display mode: >1.0 speeds playback up, 1.0 = no change. The
+    # AudioStreamer converts a multiplier to a shorter CIA #2 Timer A period (faster NMI
+    # -> faster R; rate and latch are inversely related). `hires_edges` scenes use
+    # pitch_mult_hires (same VIC fetch).
     #
-    # ALL DEFAULT 1.0 (no compensation). The earlier bitmap defaults (hires 1.02,
-    # mhires 1.015) were ear-tuned when bitmap video cost ~2% of NMI ticks — but
-    # the bitmap+digi fps cap + REU-staged double-buffer since drove that loss to
-    # ~0 (HW 2026-07-02: DAC-path mhires video plays at +0.07% PITCH with NO
-    # compensation; 1.015 now overcorrects to +1.36% HIGH). So the modern U64-II
-    # NTSC platform wants no static PITCH compensation. Re-tune per system ONLY if
-    # a platform actually shows pitch drift (PAL @ 50fps, or the lower-latency TR+
-    # backend, may differ — measure with scripts/diags/nmi_pitch_ab.py).
+    # All default 1.0. HW 2026-07-02: DAC-path mhires video plays at +0.07% PITCH with
+    # no compensation, and the earlier ear-tuned 1.015 overcorrects to +1.36% high.
+    # Re-tune per system only if a platform actually shows pitch drift (PAL @ 50fps, or
+    # the TR+ backend) — measure with scripts/diags/nmi_pitch_ab.py.
     #
-    # NOTE: that "+0.07%" measurement was PITCH only (a pure-tone frequency read),
-    # and is correct. It is TEMPO-BLIND: on the host-DMA DAC path over a bitmap
-    # mode the content still plays ~12% SLOW at that correct pitch (the servo
-    # under-drains the ring). Tempo is fixed SEPARATELY by dac_bitmap_tempo_*
-    # below (time-domain pre-compression), not by these NMI-rate multipliers.
+    # That +0.07% is PITCH only and is TEMPO-BLIND: on the host-DMA DAC path over a
+    # bitmap mode the content still plays ~12% SLOW at that correct pitch. Tempo is
+    # fixed separately by dac_bitmap_tempo_* below.
     #
-    # THESE KNOBS ARE QUANTIZED — they look continuous and are not. The NMI
-    # period is an integer PHI2 cycle count, so NmiTimer.compensated_latch rounds:
-    # period = round((nominal+1) / mult). At the default 12 kHz the nominal
-    # NTSC period is 85 cycles, so ONE STEP IS ~1.2% and every request lands on
-    # that grid:
+    # THESE KNOBS ARE QUANTIZED. The NMI period is an integer PHI2 cycle count, so
+    # NmiTimer.compensated_latch rounds: period = round((nominal+1) / mult). At the
+    # default 12 kHz the nominal NTSC period is 85 cycles, so one step is ~1.2%:
     #
     #     1.005 (+0.5%) -> period 85 -> +0.00%   (a no-op)
     #     1.010 (+1.0%) -> period 84 -> +1.19%
     #     1.015 (+1.5%) -> period 84 -> +1.19%   (same latch as 1.010)
     #     1.020 (+2.0%) -> period 83 -> +2.41%
     #
-    # This retro-explains the ear-tuned defaults above: 1.015 was measured
-    # +1.36% high on hardware, which tracks the QUANTIZED +1.19%, not the
-    # +1.5% that was asked for. Sub-step pitch trim is not expressible here —
-    # a finer correction has to come from the content side (resampling), the
-    # way dac_bitmap_tempo_* fixes tempo. The grid coarsens as sample_rate
-    # rises (fewer cycles per period): ~1.2% at 12 kHz, ~0.8% at 8 kHz.
-    # AudioStreamer.effective_rate is the same quantization seen at mult=1.0.
+    # Sub-step pitch trim is not expressible here; a finer correction has to come from
+    # the content side (resampling), the way dac_bitmap_tempo_* fixes tempo. The grid
+    # coarsens as sample_rate rises: ~1.2% at 12 kHz, ~0.8% at 8 kHz.
     pitch_mult_petscii: float = field(
         default=1.00,
         metadata={
@@ -987,26 +894,19 @@ class AudioCfg:
             "1.005 is a no-op, 1.015 lands on +1.19%."
         },
     )
-    # ---- bitmap + $D418-DAC tempo compensation (static; per-mode) -----------
-    # ORTHOGONAL to pitch_mult_* (which shorten the C64 NMI rate to fix PITCH).
-    # These fix TEMPO on the host-DMA 4-bit DAC path over a BITMAP display mode
-    # only. There, the audio worker shares the single socket-DMA link with heavy
-    # REU bank-swap bitmap writes; the host-DMA servo reads the ring pointer
-    # biased under that load and throttles the worker ~12%, so video (slaved to
-    # the drain clock) + audio play ~1/value SLOW at CORRECT pitch (the $D418
-    # output rate stays ≈ sample_rate — a pitch-preserving time stretch, the ring
-    # under-fills and the NMI re-reads samples). The fix pre-compresses the
-    # content in the time domain by 1/value (audio time-compressed pitch-
-    # preserving via atempo; video PTS × value) so the system's own ~1/value
-    # stretch lands both at real time, in sync, pitch intact. `hires_edges`
-    # scenes use dac_bitmap_tempo_hires (same VIC fetch as hires). No effect on
-    # the off-bus Ultimate Audio sampler (the U64 video default), the REU pump,
-    # or char modes (petscii/mcm/blank) — those stay at real time already.
+    # Orthogonal to pitch_mult_* (which shorten the C64 NMI rate to fix PITCH). These
+    # fix TEMPO on the host-DMA 4-bit DAC path over a BITMAP display mode only. There
+    # the audio worker shares the single socket-DMA link with heavy REU bank-swap bitmap
+    # writes; the host-DMA servo reads the ring pointer biased under that load and
+    # throttles the worker ~12%, so video (slaved to the drain clock) + audio play
+    # ~1/value SLOW at CORRECT pitch. The fix pre-compresses the content in the time
+    # domain by 1/value (audio via atempo; video PTS x value). `hires_edges` scenes use
+    # dac_bitmap_tempo_hires. No effect on the off-bus sampler, the REU pump, or char
+    # modes.
     #
-    # Default 0.88 = the measured U64-II NTSC mhires speed fraction (clock/wall).
-    # Other platforms (U64+PAL, U2P, TR+ PAL/NTSC) have different fractions —
-    # measure per platform with scripts/diags/mhires_tempo_clock_ab.py and set
-    # here. 1.0 = compensation off.
+    # Default 0.88 = the measured U64-II NTSC mhires speed fraction (clock/wall). Other
+    # platforms have different fractions — measure with
+    # scripts/diags/mhires_tempo_clock_ab.py. 1.0 = compensation off.
     dac_bitmap_tempo_hires: float = field(
         default=0.89,
         metadata={
@@ -1202,13 +1102,6 @@ class SceneCfg:
         default=None,
         metadata={"help": "Display name (shown in interstitials/logs; ensemble match key)."},
     )
-    # None = scene-type default: webcam/blank run forever in a single-scene
-    # playlist (else 30s so a rotation still advances), songlengths-or-180s
-    # (WaveformScene.FALLBACK_DURATION_S) for waveform, the decoded track's
-    # length for a generative scene with audio_source = "file" (set in
-    # _build_generative_live so `c64cast tune.mp3` plays the whole song), 30s
-    # for everything else. 0 = run forever (any type). Video scenes reject any
-    # value (video-driven).
     duration_s: float | None = field(
         default=None,
         metadata={
@@ -1249,10 +1142,6 @@ class SceneCfg:
             "vocabulary": "media",
         },
     )
-    # Start offset for video playback. Quick playback (`c64cast MEDIA…`) fills
-    # this from a URL's t=/start= timestamp; it can also be set directly on a
-    # [[scenes]] video. Honored by VideoScene -> AVFileSource (container seek to
-    # the keyframe at/just-before this time). Video-only; rejected elsewhere.
     start_s: float | None = field(
         default=None,
         metadata={
@@ -1296,8 +1185,6 @@ class SceneCfg:
             "apply": "live",
         },
     )
-    # None = follow global [audio].enabled; False forces off; True is a no-op
-    # when the global is off. waveform/midi ignore this (they drive the SID).
     audio: bool | None = field(
         default=None,
         metadata={
@@ -1306,7 +1193,6 @@ class SceneCfg:
             "applies_to": ("webcam", "blank", "video", "generative"),
         },
     )
-    # Generative scene: which procedural video source to render.
     source: str = field(
         default="plasma",
         metadata={
@@ -1315,7 +1201,6 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
-    # Generative scene: the audio building block paired with the video source.
     audio_source: str = field(
         default="none",
         metadata={
@@ -1336,9 +1221,6 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
-    # Generative scene: drive the visuals from the music. Two producers supply
-    # the features — a host-side SID emulator (audio_source = sid) or the
-    # audio-input analyzer (audio_source = mic). Inert for "none".
     reactive: bool = field(
         default=True,
         metadata={
@@ -1352,10 +1234,6 @@ class SceneCfg:
             "applies_to": ("generative",),
         },
     )
-    # WLED pixel-sink scene: the virtual LED-matrix dimensions a sender streams
-    # to. The display mode downscales this to the C64 grid, so it only sets how
-    # many pixels the sink expects — it MUST match the sender's configured
-    # matrix (a WLED-ecosystem sender is set up for a specific pixel count).
     sink_width: int = field(
         default=320,
         metadata={
@@ -1405,7 +1283,6 @@ class SceneCfg:
             "applies_to": ("wled",),
         },
     )
-    # Per-scene pixel effect applied to the source frame before quantization.
     effect: str | None = field(
         default=None,
         metadata={
@@ -1419,10 +1296,6 @@ class SceneCfg:
             "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
-    # Ordered pixel-effect chain (Live DJ/VJ Phase 3) — an alternative to the
-    # single `effect` above. Each layer is applied in order; every layer is
-    # independently live-tunable (fx<N>.<param>) and bypass-toggleable
-    # (fx_toggle). Mutually exclusive with `effect` (set one or the other).
     effects: list[str] = field(
         default_factory=list,
         metadata={
@@ -1436,7 +1309,6 @@ class SceneCfg:
             "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
-    # Which modulation feeder drives the reactive effect layers on this scene.
     mod_source: str = field(
         default="audio",
         metadata={
@@ -1450,9 +1322,6 @@ class SceneCfg:
             "applies_to": ("webcam", "video", "slideshow", "generative", "wled"),
         },
     )
-    # None = use global [dsp].pre_emphasis (which itself may be source-aware
-    # auto); a number overrides it for this scene. Only meaningful when
-    # [dsp].enabled and the scene has audio.
     pre_emphasis: float | None = field(
         default=None,
         metadata={
@@ -1462,7 +1331,6 @@ class SceneCfg:
             "applies_to": ("webcam", "blank", "video", "generative"),
         },
     )
-    # waveform-specific kwargs — passed straight through to WaveformScene.
     song: int = field(
         default=0,
         metadata={
@@ -1519,7 +1387,6 @@ class SceneCfg:
             "applies_to": ("waveform", "midi", "asid"),
         },
     )
-    # Scalar broadcasts to all 3 voices; a list of 3 assigns per voice.
     scroll_columns: int | list[int] = field(
         default=0,
         metadata={
@@ -1528,7 +1395,6 @@ class SceneCfg:
             "applies_to": ("waveform", "midi", "asid"),
         },
     )
-    # ASID scene kwargs.
     asid_port: str | None = field(
         default=None,
         metadata={
@@ -1572,7 +1438,6 @@ class SceneCfg:
             "applies_to": ("asid",),
         },
     )
-    # MIDI scene kwargs.
     midi_port: str | None = field(
         default=None,
         metadata={
@@ -1726,7 +1591,6 @@ class SceneCfg:
             "vocabulary": "c64color",
         },
     )
-    # Launcher scene kwargs.
     input_source: str = field(
         default="cia",
         metadata={
@@ -1830,7 +1694,6 @@ class DebugCfg:
         default=None,
         metadata={"help": "Also mirror log output to this file (useful for headless runs)."},
     )
-    # Zero overhead when off (every hook resolves to a no-op NullProfiler).
     profile: bool = field(
         default=False,
         metadata={"help": "Emit per-scene frame-timing summaries (render/compose/push/wait)."},
@@ -1838,8 +1701,7 @@ class DebugCfg:
     profile_interval: float = field(
         default=10.0, metadata={"help": "Seconds between profiler summary lines."}
     )
-    # Diagnostic aid for video flicker/flash investigation — draws the
-    # playback timecode + source frame number into each rendered frame
+    # Draws the playback timecode + source frame number into each rendered frame
     # (before quantization) so an on-screen range maps onto a known frame.
     frame_numbers: bool = field(
         default=False,
@@ -2402,10 +2264,8 @@ class ControlPlaneCfg:
             "Prefer the C64CAST_CONTROL_VIEWER_TOKEN env var."
         },
     )
-    # An open plane on loopback is reachable only by someone who already has a
-    # shell here, so it stays allowed and unprompted; off-loopback is the
-    # combination this gates. Kept as an opt-out rather than dropping the open
-    # mode: a trusted, isolated show network is a real deployment.
+    # An open plane on loopback is reachable only by someone who already has a shell
+    # here; off-loopback is the combination this gates.
     allow_unauthenticated: bool = field(
         default=False,
         metadata={
@@ -2478,15 +2338,11 @@ class WebCfg:
         },
     )
 
-    # Appliance-only. A normal `--serve` (a laptop, a dev machine) never sets
-    # this, so its exposure is opt-in per SECURITY.md rather than something
-    # every headless install inherits. See docs/architecture/control.md ->
-    # "setup_gate.py" for why the window it opens is bounded by construction.
-    # Declared below `autostart` rather than beside the token fields it relates
-    # to, and deliberately: the reference appendix's worked `[web]` fragment is
-    # the first four fields with a showable default (_SNIPPET_KEYS in
-    # scripts/gen_reference_appendices.py), and a switch nobody should turn on
-    # by hand does not belong in the example everyone copies.
+    # Appliance-only; a normal `--serve` never sets it. See docs/architecture/control.md
+    # -> "setup_gate.py" for why the window it opens is bounded by construction.
+    # Declared below `autostart` on purpose: the reference appendix's worked `[web]`
+    # fragment is the first four fields with a showable default (_SNIPPET_KEYS in
+    # scripts/gen_reference_appendices.py).
     setup_wizard: bool = field(
         default=False,
         metadata={
@@ -2514,9 +2370,8 @@ class WebCfg:
             "for a few seconds after one closes, and a camera will not reopen instantly."
         },
     )
-    # A list rather than one directory because show configs and the packaged
-    # examples usually live apart, and copying one next to the other to make it
-    # visible is how a config browser starts growing a file manager.
+    # A list rather than one directory because show configs and the packaged examples
+    # usually live apart.
     config_roots: list[str] = field(
         default_factory=list,
         metadata={
@@ -2526,12 +2381,10 @@ class WebCfg:
             "name media anywhere, so treat write access as shell-equivalent."
         },
     )
-    # Kind -> directory, unlike `config_roots`'s flat list: which directory an
-    # upload of that kind lands in has to be stated, not guessed from a name
-    # (a directory called "clips" tells you nothing) or from its contents (a
-    # brand-new empty one has none to guess from). The same directories are
-    # also what every kind's browsing offers, same as before this field grew
-    # a write side.
+    # Kind -> directory, unlike `config_roots`'s flat list: which directory an upload of
+    # that kind lands in has to be stated, not guessed from a name or from the contents
+    # of a brand-new empty one. The same directories are what each kind's browsing
+    # offers.
     media_read_write: dict[str, str] = field(
         default_factory=dict,
         metadata={
@@ -2602,11 +2455,10 @@ _MIDI_ACTION_CHOICES = (
 # "config stays import-light" rule; see scene_factory.validate_midi_control_cfg).
 _MIDI_MMC_COMMAND_CHOICES = (0x01, 0x02, 0x04, 0x05, 0x06, 0x09)
 
-# Shipped out of the box so MIDI control works with no config edits, per a
-# typical 16-pad-grid + knob-bank live controller (Launch Control XL / APC
-# style). See midi_control.py's module docstring for the full mapping
-# rationale; kept here (not imported from midi_control.py) so config stays
-# import-light, same rationale as the DAC_CURVE_CHOICES-style constants above.
+# Shipped out of the box so MIDI control works with no config edits, per a typical
+# 16-pad-grid + knob-bank live controller (Launch Control XL / APC style). See
+# midi_control.py's module docstring for the mapping rationale; kept here rather
+# than imported so config stays import-light.
 _DEFAULT_MIDI_CC_MAP: tuple[dict[str, Any], ...] = (
     {"type": "note", "number": 36, "action": "skip"},
     {"type": "note", "number": 37, "action": "cycle_style"},
@@ -2704,10 +2556,9 @@ class MidiControlCfg:
             "the shipped defaults, or override/extend individual entries. Each "
             "entry: type ('cc'|'note'|'pc'|'mmc'), number (0-127 for cc/note/pc; "
             "an MMC command byte — 0x01 stop, 0x02 play, 0x04 FF, 0x05 RW, 0x06 "
-            # Built from the constant rather than re-typed: this help is the
-            # only per-key documentation a list[dict] field can carry to
-            # --describe, the JSON schema and the wizard, and the hand-written
-            # enumeration had fallen four actions behind _MIDI_ACTION_CHOICES.
+            # Built from the constant rather than re-typed: this help is the only per-key
+            # documentation a list[dict] field can carry to --describe, the JSON schema and the
+            # wizard.
             "record, 0x09 pause — for mmc), action ("
             + "|".join(repr(a) for a in _MIDI_ACTION_CHOICES)
             + "); 'jump' also needs an int scene; 'param' also needs "
@@ -2749,15 +2600,12 @@ class MidiControlCfg:
             "profile. Requires [midi_control] to be enabled; needs no extra."
         },
     )
-    # Non-persisted: True until a TOML layer (machine settings, project/per-system,
-    # or master) actually specifies a `cc_map` key. It decides the profile-merge
-    # order (see midi_control.resolve_effective_cc_map): when the user authored no
-    # cc_map (still the shipped defaults), a profile layers OVER the defaults and
-    # can reclaim them; once the user wrote an explicit cc_map, their entries win
-    # over the profile and the defaults are not re-injected. `compare=False` keeps
-    # it out of Config equality (so load(dumps(cfg)) == cfg holds), and the
-    # `internal` metadata keeps it out of --describe / the schema / serialized TOML
-    # (introspect._field_docs skips it).
+    # Non-persisted: True until a TOML layer actually specifies a `cc_map` key. It
+    # decides the profile-merge order (see midi_control.resolve_effective_cc_map): with
+    # no authored cc_map a profile layers OVER the shipped defaults and can reclaim
+    # them; once the user wrote one, their entries win. `compare=False` keeps it out of
+    # Config equality (so load(dumps(cfg)) == cfg holds) and the `internal` metadata
+    # keeps it out of --describe / the schema / serialized TOML.
     cc_map_is_default: bool = field(default=True, compare=False, metadata={"internal": True})
 
 
@@ -2773,11 +2621,10 @@ _CLIP_LAUNCH_KEYS: tuple[str, ...] = ("slot", "pad", "pad_type", "launch", "quan
 # Scene-spec fields a clip may NOT carry (deferred to a later phase / ensemble-
 # only). Overlays + orchestrate/follower belong to declared [[scenes]] only.
 _CLIP_SCENE_FIELD_DENY: frozenset[str] = frozenset({"overlays", "orchestrate", "follower_only"})
-# What a [[performance.clips]] table means for each launch key it omits. Named
-# here because `clips` is a list[dict]: the per-key `default` metadata machinery
-# never sees these, so _validate_clips, clip_scene_cfg and the field's own help
-# (the only surface --describe / the schema / the wizard can render for a
-# list-of-tables field) all have to read one source.
+# What a [[performance.clips]] table means for each launch key it omits. Named here
+# because `clips` is a list[dict]: the per-key `default` metadata machinery never
+# sees these, so _validate_clips, clip_scene_cfg and the field's own help all read
+# one source.
 _CLIP_DEFAULTS: dict[str, Any] = {
     "type": "webcam",
     "launch": "trigger",
@@ -2972,12 +2819,11 @@ class WledCfg:
             "'wled' extra."
         },
     )
-    # Mode 1's default endpoint is 0.0.0.0:8080 — off-loopback out of the box,
-    # unlike [control], which defaults to 127.0.0.1. So this gate is reached by
-    # a plain `listen = "enabled"`, not just by someone who typed an address.
-    # Kept as an opt-out rather than dropping the open mode, and for the same
-    # reason [control].allow_unauthenticated is: LAN discovery from the WLED app
-    # is the entire feature, and the protocol has no credential to offer.
+    # Mode 1's default endpoint is 0.0.0.0:8080 — off-loopback out of the box, unlike
+    # [control], which defaults to 127.0.0.1, so this gate is reached by a plain
+    # `listen = "enabled"`. Kept as an opt-out for the same reason
+    # [control].allow_unauthenticated is: LAN discovery from the WLED app is the entire
+    # feature and the protocol has no credential to offer.
     allow_unauthenticated: bool = field(
         default=False,
         metadata={
@@ -3047,10 +2893,6 @@ class Config:
     ensemble: EnsembleCfg | None = None
 
 
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-
 DEFAULT_CONFIG_PATH = "c64cast.toml"
 
 
@@ -3094,13 +2936,10 @@ def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
         lines = doc.splitlines()
         if 0 < lineno <= len(lines):
             offending = lines[lineno - 1]
-            # A syntax error on a credential-bearing line would otherwise copy
-            # the credential into this message, which cli.py logs at error level
-            # and --log-file mirrors to disk — and a TOML typo is exactly the
-            # error whose log someone pastes into an issue. The position and the
-            # parser's message carry all the diagnostic value; the value does
-            # not. The caret is dropped when the line was redacted because the
-            # substitution moves the columns it would point at.
+            # A syntax error on a credential-bearing line would otherwise copy the credential
+            # into this message, which cli.py logs at error level and --log-file mirrors to
+            # disk. The caret is dropped when the line was redacted because the substitution
+            # moves the columns it would point at.
             safe = redact_secrets(offending)
             out.append(f"    {safe}")
             if safe == offending:
@@ -3631,17 +3470,14 @@ def _validate_force_palette(color: ColorCfg) -> None:
 
 
 # `choices` metadata is enforced generically over the scalar sections (see
-# _validate_choice_fields), so a newly added choices field is checked by
-# construction instead of by somebody remembering to hand-write a validator.
-# These are the documented exceptions; a test asserts every name here is still
-# a real choices field, so an exemption cannot outlive the field it excuses.
+# _validate_choice_fields); these are the documented exceptions, and a test asserts
+# every name here is still a real choices field.
 #
-# SceneCfg is deliberately out of scope: scene_factory.validate_scene_cfg
-# checks scene fields per type, with messages that know which type is building.
-# So is [color], for a second reason on top of that one — every choices field
-# it has is already enforced by a session/mode validator, and the web console's
-# layer-blame report (config_store._blame_layers) is built on those refusals
-# arriving from validate_configs with a *loadable* config in hand.
+# SceneCfg is out of scope: scene_factory.validate_scene_cfg checks scene fields per
+# type. So is [color] — every choices field it has is already enforced by a
+# session/mode validator, and the web console's layer-blame report
+# (config_store._blame_layers) is built on those refusals arriving from
+# validate_configs with a *loadable* config in hand.
 _CHOICES_OPEN: dict[str, str] = {
     # "auto"/"off" plus any positive float (Hz) — see the field's own help.
     "ultimate64.sid_play_rate": "also accepts a rate in Hz",
@@ -3831,11 +3667,10 @@ def _apply_toml_sections(
         if name in data:
             _apply_section(getattr(cfg, name), data[name], name, unknown, source=source)
 
-    # Record whether any layer explicitly authored a cc_map. Monotonic (only ever
-    # set False, default True): once machine settings OR the project/per-system
-    # file OR the ensemble master specifies cc_map, the effective mapping is the
-    # user's own, not the shipped defaults — which flips the profile-merge order
-    # (see midi_control.resolve_effective_cc_map). Every layer routes through here.
+    # Monotonic (only ever set False, default True): once any layer specifies cc_map the
+    # effective mapping is the user's own, not the shipped defaults, which flips the
+    # profile-merge order (see midi_control.resolve_effective_cc_map). Every layer
+    # routes through here.
     mc = data.get("midi_control")
     if isinstance(mc, dict) and "cc_map" in mc:
         cfg.midi_control.cc_map_is_default = False
@@ -3917,14 +3752,11 @@ def load_machine_settings() -> dict[str, Any]:
     return data
 
 
-# Machine-settings files this process has already announced, keyed on
-# (path, mtime_ns, size). The layer is re-applied once per system in ensemble
-# mode plus twice more (the master defaults and the cascade baseline), so an
-# N-system wall printed the same INFO line N+2 times for one file — the exact
-# repetition `_dedupe_unknown` exists to collapse for unknown keys, and one
-# line was the whole point of a line whose job is making a surprising default's
-# origin discoverable. Keyed on the file's state, not just its path, so a run
-# that saves machine settings and re-reads them announces the new content.
+# Machine-settings files this process has already announced, keyed on (path,
+# mtime_ns, size). The layer is re-applied once per system in ensemble mode plus
+# twice more (the master defaults and the cascade baseline), so an N-system wall
+# would print the same INFO line N+2 times for one file. Keyed on the file's state
+# so a run that saves machine settings and re-reads them announces the new content.
 _announced_machine_settings: set[tuple[str, int, int]] = set()
 
 
@@ -4021,11 +3853,10 @@ def load(path: str | None, unknown: list[UnknownKey] | None = None) -> Config:
 
     for raw in data.get("scenes", []):
         sc = SceneCfg()
-        # Pull overlays and the [scenes.color] override out before
-        # _apply_section so we keep the original dicts intact (each overlay
-        # class validates its own kwargs; color is validated below against a
-        # throwaway ColorCfg so a typo'd key gets the same unknown-key
-        # difflib hint as a top-level [color] key).
+        # Pull overlays and the [scenes.color] override out before _apply_section so the
+        # original dicts stay intact: each overlay class validates its own kwargs, and color
+        # is validated below against a throwaway ColorCfg so a typo'd key gets the same
+        # difflib hint as a top-level [color] key.
         raw_overlays = raw.pop("overlays", [])
         raw_color = raw.pop("color", {})
         _apply_section(sc, raw, "scenes", unknown, source=path)
@@ -4101,17 +3932,13 @@ def _parse_ensemble_section(data: dict[str, Any]) -> EnsembleCfg:
     return EnsembleCfg(systems=entries)
 
 
-# Sections that inherit master defaults, paired with the field names within
-# each section that should NEVER cascade (e.g. ultimate64.url is per-system
-# only — every U64 has its own IP, no sensible global default).
+# Sections that inherit master defaults, paired with the field names within each
+# section that must NEVER cascade (e.g. ultimate64.url is per-system only — every
+# U64 has its own IP).
 #
-# Together with _NEVER_CASCADE_SECTIONS below this is a TOTAL classification of
-# the scalar sections plus [color]: every one is listed exactly once, and
-# tests/test_ensemble_config.py asserts the partition. It used to be a
-# don't-list in a comment, which is how six sections came to be missing from the
-# master apply path with nothing to notice — including [hardware] and
-# [teensyrom], listed here as cascading while `defaults.hardware` was never
-# populated from the master file at all.
+# Together with _NEVER_CASCADE_SECTIONS below this is a TOTAL classification of the
+# scalar sections plus [color]: every one is listed exactly once, and
+# tests/test_ensemble_config.py asserts the partition.
 _CASCADE_SECTIONS: tuple[tuple[str, frozenset[str]], ...] = (
     ("hardware", frozenset()),
     # serial_port + host are per-system (each TR has its own device/IP),
@@ -4350,20 +4177,11 @@ def load_master(path: str | None) -> LoadResult:
             path,
         )
 
-    # Master defaults start from the machine layer (defaults → machine →
-    # master), so a machine setting is the baseline the master TOML overrides.
-    #
-    # The master's own sections go through the SAME apply loop as a project or
-    # per-system file. A hand-written tuple of (section, dataclass) pairs used
-    # to stand in for it here, and had drifted: six sections a master file may
-    # legally carry (hardware, teensyrom, vision, dsp, audio_features, wled)
-    # never reached _apply_section at all, so they produced neither an applied
-    # value nor an UnknownKey — and [hardware]/[teensyrom] are in
-    # _CASCADE_SECTIONS, so `[hardware] backend = "teensyrom"` in a master read
-    # as nothing while the cascade dutifully copied the machine layer instead.
-    # It also ran 3 of the 10 validators, so a master [ultimate64].sid_panning
-    # was cascaded into every system without the check whose whole purpose is
-    # to fire before the mixer is configured.
+    # Master defaults start from the machine layer (defaults -> machine -> master), so a
+    # machine setting is the baseline the master TOML overrides. The master's own
+    # sections go through the SAME apply loop as a project or per-system file, so every
+    # section a master file may legally carry reaches _apply_section and every validator
+    # runs before the cascade copies a value into each system.
     defaults = Config()
     apply_machine_settings(defaults, unknown)
     _apply_toml_sections(defaults, raw, source=path, unknown=unknown)
@@ -4395,9 +4213,8 @@ def load_master(path: str | None) -> LoadResult:
             sub_path = os.path.join(master_dir, sub_path)
         sys_cfg = load(sub_path, unknown)
         sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=cascade_baseline)
-        # Per-system Configs never carry ensemble metadata themselves —
-        # only the master TOML does. (Belt and braces: load() never sets
-        # ensemble either since it doesn't know about [ensemble].)
+        # Per-system Configs never carry ensemble metadata themselves — only the master TOML
+        # does.
         sys_cfg.ensemble = None
         cfgs.append(sys_cfg)
         sys_paths.append(sub_path)
@@ -4418,13 +4235,10 @@ def load_master(path: str | None) -> LoadResult:
     )
 
 
-# Scene types that can hold the ensemble audio slot. `generative` is here for
-# one arm only: scene_factory._build_generative builds a SidFileAudioSource
-# (`wants_audio_lock = True`) for `audio_source = "sid"`, which
-# ComposableScene.competes_for_audio_lock then reports — so a playlist of
-# generative+sid scenes really does contend, and omitting the type meant
-# _warn_audio_only_ensemble stayed silent on the exact contention footgun it
-# exists to catch. tests/test_ensemble_config.py pins the mirror.
+# Scene types that can hold the ensemble audio slot. `generative` is here for one arm
+# only: scene_factory._build_generative builds a SidFileAudioSource
+# (`wants_audio_lock = True`) for `audio_source = "sid"`.
+# tests/test_ensemble_config.py pins the mirror.
 _AUDIO_BEARING_SCENE_TYPES = frozenset(
     {"video", "waveform", "midi", "asid", "launcher", "generative"}
 )
@@ -4439,15 +4253,10 @@ def _scene_contends_for_audio(s: SceneCfg) -> bool:
     always count."""
     if s.type not in _AUDIO_BEARING_SCENE_TYPES:
         return False
-    # A muted video falls through like a non-audio scene.
     if s.type == "video" and s.audio is False:
         return False
-    # A generative scene contends only when its audio source drives the real
-    # chip; mic/listen/file/none all leave the slot alone.
     if s.type == "generative":
         return s.audio_source == "sid"
-    # A launcher with bypass_audio_lock never waits on the slot (it plays
-    # its own SID concurrently), so it doesn't contend either.
     return not (s.type == "launcher" and s.bypass_audio_lock)
 
 

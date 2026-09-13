@@ -25,14 +25,6 @@ import re
 #: any real token — a fixed-width mask invites the reader to guess.
 REDACTED = "REDACTED"
 
-# Keyed on a `*token=`/`*password=`/`*secret=`/`*api[_-]key=` suffix rather
-# than on each parameter's full name, so `viewer_token=`, `token:` (JSON) and
-# any later `…_token=` are covered by construction rather than by naming each
-# one here — plus an `Authorization: Bearer …` header value, the other shape
-# the console's admin token can appear in. The value stops at whitespace, a
-# query-string separator, or a quote/brace, which leaves the rest of a login
-# URL (`&next=/`) or a JSON document's other fields readable — the point is
-# to keep the line diagnostic, not to blank the whole thing.
 _SECRET_VALUE = re.compile(
     r"""
     (?P<kv_prefix> \b\w*(?:token|password|secret|api[_-]?key)\b "? \s* [=:] \s* "? )

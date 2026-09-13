@@ -1,49 +1,9 @@
 """Throttled logging for warnings a byte off the wire can trigger.
 
-An ASID host is untrusted input, and every warning on the decode/serialize path
-costs the MIDI reader thread real time: ``configure_logging``'s default terminal
-handler renders a record through Rich at ~322 us (vs 9.8 us for a plain
-StreamHandler, 24.9 us for the redacting FileHandler, 14.5 us for
-``SessionLogBuffer``). A warning that fires once per message therefore lets the
-*sender* choose the reader's throughput — 64 records inside one
-:func:`c64cast._midi.poll_pending` pass is 20.6 ms on a loop that is otherwise
-sub-millisecond — and, because ``--log-file`` is a plain unrotated
-``FileHandler``, it fills the disk at megabytes a second while taking the global
-logging lock the render and audio threads also contend for.
-
-So the rule on this path is: **wire-triggered logging is O(1) per stream, not
-O(1) per message**, and :class:`LogThrottle` is the one implementation of it.
-Each site owns an instance rather than sharing one — a shared instance would let
-a noisy site swallow a quiet site's first report — but they all share this code,
-because two hand-rolled copies of a gate is how the two drift and six is how the
-seventh site forgets.
-
-**Per stream is not per site, and the difference only shows with two streams.**
-A throttle owned by the object that reads the wire gets this for free, which is
-what ``control/midi_control.py``'s three do (one listener, one control surface,
-three ``self._`` instances). A throttle at a module's top level is per
-*process*, and reads identically until a second stream exists: ``asid.decode``
-and ``asid_player.pack_slot`` are free functions, so theirs sat at module level,
-and in an ensemble — one ``AsidScene`` per system, each on its own MIDI port —
-system A's flood then suppressed system B's *first ever* report of the same
-condition, which is precisely the "noisy site swallows a quiet site's first
-report" failure the previous paragraph rules out, one scope up. A free function
-therefore takes its stream's throttle as a required argument rather than
-defaulting to one; ``asid.new_recipe_log`` and ``asid_player.new_truncation_log``
-build them, and ``AsidScene`` owns one of each.
-
-The rule is about a *wire*, not about ASID, so the gate is not ASID's alone:
-``control/midi_control.py`` logged a full traceback per message it could not
-handle — on a dispatch failure, a clock-feed failure, and a mapped action
-failing against one system — inside an unbounded drain on a live-performance
-control surface, and all three take :meth:`LogThrottle.exception` for exactly
-the reason above. So it sits at the package root beside the other cross-cutting
-utilities: it imports nothing from the package, and its consumers are in two
-different subpackages. Under ``sid/`` — where the first two sites put it — the
-``control/`` consumer was the tree's only import from ``control/`` into
-``sid/`` — the same shape ``hw/backend.py`` twice refuses in as many words for
-``hw/``, and it went unremarked here only because a throttle looks like a SID
-detail.
+The rule on this path is **wire-triggered logging is O(1) per stream, not O(1)
+per message**, and :class:`LogThrottle` is the one implementation of it. A free
+function takes its stream's throttle as a required argument rather than
+defaulting to one, because a default would be per *process*.
 
 Two design points worth not re-deriving:
 
@@ -59,6 +19,8 @@ Two design points worth not re-deriving:
   "since the previous report", not "in the last second": the interval bounds
   how *often* a record goes out, not how far back one reaches, so a site that
   fires twice an hour apart reports a span of an hour.
+
+See docs/architecture/config.md#_wire_logpy--wire-triggered-logging-is-o1-per-stream.
 """
 
 from __future__ import annotations
@@ -68,16 +30,10 @@ import threading
 import time
 from collections.abc import Callable
 
-# Longest a repeating wire-triggered condition may go unreported, and the whole
-# cost budget this module is allowed to spend: one record per site per second.
-# At the fastest frame rate the ASID protocol can express (960 Hz) that turns
-# 960 records into one, and 322 us/s through the default terminal handler is
-# 0.03% of the reader thread. Shorter buys nothing a human reading a log can
-# use; longer starts to hide a condition that began after the previous report.
+# Longest a repeating wire-triggered condition may go unreported: one record per
+# site per second. `tests/test_wire_log.py` holds it to a 0.5-5.0 s band.
 THROTTLE_INTERVAL_S = 1.0
 
-# Appended to the message of a record that stands for more than one occurrence.
-# One spelling, so the two emitters can't drift and a log reader sees one shape.
 _MORE_SUFFIX = " [and %d more since the previous report]"
 
 

@@ -111,13 +111,12 @@ class Session:
     control_server: _Stoppable | None = None
     midi_control_listener: _Stoppable | None = None
     wled_device_server: _Stoppable | None = None
-    # True for the one-shot CLI, False for a long-lived host that owns
-    # sessions. Gates the surfaces that assume a terminal and a process to
-    # themselves: the live-tune input() prompt and the in-session control
-    # plane (whose port a host would already be holding).
+    # True for the one-shot CLI, False for a long-lived host that owns sessions.
+    # Gates the surfaces assuming a terminal and a process to themselves: the
+    # live-tune input() prompt, and the control plane whose port a host holds.
     interactive: bool = True
-    # Monotonic across sessions in one process, so a log line or a state
-    # push can say which run it belongs to.
+    # Monotonic across sessions in one process, so a log line or a state push can
+    # say which run it belongs to.
     generation: int = 0
 
 
@@ -348,14 +347,12 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
         log.info("%s reachable: %s", cfg.hardware.backend, status)
         if identity := api.describe_device():
             log.info("connected device: %s", identity)
-        # Reachability just proved; one cheap REST call downgrades capability
-        # flags the family profile claims optimistically (U2+: no multi-SID
-        # config surface). Under --skip-probe the flags stay optimistic and
-        # the per-call error handling absorbs any missing surface, as before.
+        # One cheap REST call downgrades capability flags the family profile
+        # claims optimistically (a U2+ has no multi-SID config surface). Under
+        # --skip-probe they stay optimistic and per-call error handling absorbs it.
         api.refine_capabilities()
     hw_provision.resolve_system(cfg, api)
-    # Before anything renders: every color decision in the run is a distance
-    # measured against these 16.
+    # Before anything renders: every color decision is a distance against these 16.
     hw_provision.resolve_palette(cfg, api)
     return api
 
@@ -391,10 +388,8 @@ def _build_input_controls(
 ) -> tuple[CommodoreKeyPoller | None, VisionController | None]:
     """The two physical control surfaces: the Commodore-key poller (needs a
     read-capable backend) and the optional webcam gesture controller."""
-    # The Commodore-key poller reads $028D over the wire. A backend that can't
-    # read C64 memory (an older TeensyROM firmware without ReadC64Mem) has no
-    # physical-keyboard control — skip the poller; the HTTP control plane is
-    # the read-free equivalent. (The Ultimate and cycle-clean TR+ both read.)
+    # The poller reads $028D over the wire, so a backend that cannot read C64
+    # memory has no physical-keyboard control; the HTTP control plane stands in.
     key_poller = CommodoreKeyPoller(api, name=name) if api.profile.supports_read else None
     if key_poller is None:
         log.info(
@@ -403,9 +398,8 @@ def _build_input_controls(
             name,
         )
 
-    # Optional: webcam hand-gesture control. Reads the shared camera (not C64
-    # memory), so it works on any backend. A missing mediapipe dep / model
-    # file degrades to "no gesture control" rather than killing the stream.
+    # Reads the shared camera rather than C64 memory, so it works on any backend.
+    # A missing mediapipe dep or model file degrades to "no gesture control".
     vision_controller: VisionController | None = None
     if cfg.vision.enabled:
         assert source is not None  # needs_camera guaranteed it in build_stack
@@ -463,12 +457,9 @@ def _build_preview_and_recording(
         assert framebuffer is not None
         from c64cast.video.preview import PreviewWindow as _PW
 
-        # Constructed here but not opened: the window has to be created and
-        # serviced on the main thread (see preview.py), which happens in
-        # _pump_previews_until_done once the playlist threads are running.
-        # HighGUI keys windows by title, so an ensemble needs one title per
-        # system to get one window per system rather than N systems fighting
-        # over a single window.
+        # Constructed but not opened: HighGUI windows are created and serviced on
+        # the main thread, in `_pump_previews_until_done`. HighGUI keys windows by
+        # title, so an ensemble needs one title per system.
         preview_window = _PW(
             framebuffer,
             fps=cfg.preview.fps,
@@ -565,17 +556,11 @@ def _acquire_stack(
     def release_on_failure(label: str, fn: Callable[[], object]) -> None:
         unwind.callback(_release_step, name, label, fn)
 
-    # Only open the camera when a scene actually needs it. Skipping the open
-    # otherwise means a "blank" or "waveform"-only playlist won't fail on a
-    # box without a webcam (or one whose OS-level camera permission is denied,
-    # which is the typical macOS first-run snag in IDE-launched runs).
-    # The shared camera broker feeds both webcam scenes and the (always-on)
-    # vision controller, so open it if either wants it.
-    # A [[performance.clips]] table counts too: `type` defaults to "webcam"
-    # there, so a clip grid can hold webcam clips with no webcam [[scenes]]
-    # entry at all — and the clip build factory below closes over `source`,
-    # so a None there means that pad raises at launch and dies silently in
-    # PerformanceSession's background build.
+    # Opened only when something needs it, so a blank/waveform-only playlist runs
+    # on a box with no webcam (or with camera permission denied). Clips count as
+    # well: `type` defaults to "webcam" in [[performance.clips]], and the clip
+    # factory below closes over `source`, so a None there makes that pad raise at
+    # launch and die silently inside PerformanceSession's background build.
     needs_webcam = any(s.type == "webcam" for s in cfg.scenes) or any(
         cfgmod.clip_scene_type(c) == "webcam" for c in cfg.performance.clips
     )
@@ -598,28 +583,21 @@ def _acquire_stack(
     # + scenes are built (so the host-DMA paths are used instead).
     _coerce_reu_for_backend(cfg, api)
 
-    # Auto-provision the U64 REU (enable + size to 16 MB, live + volatile) for
-    # runs that hard-require it, so the REU-staged audio/video paths "just work"
-    # without the manual F2 enable step. No-op unless [ultimate64].auto_reu is
-    # on, the backend has an REU, a probe is allowed, and the config hard-needs
-    # the REU (see hw_provision.provision_reu). Runs BEFORE _resolve_reu_available
-    # so that probe sees the now-enabled REU; restored at teardown (teardown_stack).
+    # Enable + size the U64 REU, live and volatile, for runs that hard-require it.
+    # Before `_resolve_reu_available`, so that probe sees the now-enabled REU;
+    # restored in `teardown_stack`.
     reu_restore = hw_provision.provision_reu(api, cfg)
     release_on_failure("REU restore", lambda: hw_provision.restore_reu(api, reu_restore))
-    # Auto-enable the Ultimate Audio sampler (map $DF20 + unmute Sampler mixer,
-    # live + volatile) when a video scene will use it. Runs BEFORE
-    # _resolve_sampler_available so the probe sees it on; restored at teardown.
+    # Map $DF20 + unmute the Sampler mixer, live and volatile, when a video scene
+    # will use it. Before `_resolve_sampler_available`; restored at teardown.
     sampler_restore = hw_provision.provision_sampler(api, cfg)
     release_on_failure(
         "sampler restore", lambda: hw_provision.restore_sampler(api, sampler_restore)
     )
-    # Video output: the opt-in System Mode retime ([ultimate64].sid_video_mode,
-    # which fixes SID PITCH) plus the HDMI upscaler that keeps capture working
-    # across it ([ultimate64].hdmi_scan_resolution). Resolved once per run —
-    # every switch changes the HDMI output mode and costs the capture device a
-    # re-lock. The C64 reset that follows makes the KERNAL re-run its PAL/NTSC
-    # autodetect against the new timing; it also has to happen before any scene
-    # has painted, which is why this sits here.
+    # Once per run, because every switch changes the HDMI output mode and costs
+    # the capture device a re-lock. Here, and not later, because the C64 reset
+    # that follows re-runs the KERNAL's PAL/NTSC autodetect against the new
+    # timing and must precede any scene painting.
     video_output_restore = hw_provision.provision_video_output(api, cfg)
     release_on_failure(
         "video output restore",
@@ -648,10 +626,8 @@ def _acquire_stack(
         log.error("%s", e)
         raise StackBuildError(3) from e
 
-    # The system video rate (60 NTSC / 50 PAL) is resolved into the
-    # backend's profile by make_backend; a per-variant `max_fps` cap (None
-    # for the Ultimate) clamps it. Today this resolves identically to the
-    # old `60 if NTSC else 50`.
+    # `make_backend` resolves the system video rate (60 NTSC / 50 PAL) into the
+    # profile; a per-variant `max_fps` (None on the Ultimate) clamps it.
     target_fps = api.profile.default_fps
     if api.profile.max_fps is not None:
         target_fps = min(target_fps, api.profile.max_fps)
@@ -661,10 +637,9 @@ def _acquire_stack(
     time.sleep(1)
     api.run_basic_clear_loop()
 
-    # First run against this machine: read its character ROM so C64 text
-    # renders in the real C64 font. Here because the machine is idle and
-    # nothing has painted yet — the Ultimate's dump soft-resets and puts the
-    # clear loop back itself. Best-effort and never fatal; a no-op once cached.
+    # Here because the machine is idle and nothing has painted: the Ultimate's
+    # dump soft-resets and puts the clear loop back itself. Best-effort and never
+    # fatal; a no-op once cached.
     char_rom.ensure_installed(api, cfg)
 
     api.disable_case_switch()
@@ -713,12 +688,10 @@ def _acquire_stack(
         performance=cfg.performance,
     )
 
-    # Clip-launch build factory (Live-performance Phase 2): turn a
-    # [[performance.clips]] dict into a Scene, closing over this stack's
-    # api/audio/source/cfg (the playlist can't build scenes itself), mirroring
-    # the ensemble `build_follower_scene` wiring. The PerformanceSession calls
-    # this on a background thread during the count-in; setup() runs later on the
-    # playlist thread at the swap.
+    # Turns a [[performance.clips]] dict into a Scene, closing over this stack's
+    # api/audio/source/cfg because the playlist cannot build scenes itself. Called
+    # on a background thread during the count-in; `setup()` runs later, on the
+    # playlist thread, at the swap.
     playlist.build_performance_scene = _performance_scene_factory(
         cfg,
         api,
@@ -729,9 +702,8 @@ def _acquire_stack(
         is_ensemble=is_ensemble,
     )
 
-    # Vision performance mode (Live DJ/VJ Phase 6): route hand gestures to the
-    # clip-launch grid instead of transport. Bound after the playlist exists so
-    # the controller can reach pl.performance / pl.toggle_effect_layer.
+    # Routes hand gestures to the clip grid instead of transport. After the
+    # playlist exists, so the controller can reach `pl.performance`.
     if vision_controller is not None and cfg.vision.performance:
         vision_controller.bind_performance(playlist)
         log.info("%s: vision gestures routed to performance grid", name)
@@ -768,9 +740,8 @@ def teardown_stack(stack: SystemStack) -> None:
             lambda: stack.preview_window.close() if stack.preview_window else None,
         ),
         ("recording stop", lambda: stack.recorder.stop() if stack.recorder else None),
-        # Both consumers are down, so stop shadowing DMA writes into the
-        # framebuffer — every write for the rest of the process would
-        # otherwise still pay for a buffer nothing reads.
+        # Both consumers are down, so every remaining DMA write would otherwise
+        # still pay to shadow into a buffer nothing reads.
         (
             "framebuffer detach",
             lambda: _detach_framebuffer(stack.api, stack.framebuffer),
@@ -780,13 +751,12 @@ def teardown_stack(stack: SystemStack) -> None:
             "vision controller stop",
             lambda: stack.vision_controller.stop() if stack.vision_controller else None,
         ),
-        # Restore any REU config we auto-provisioned, while the REST session is
-        # still open (no-op when nothing was changed; volatile regardless).
+        # While the REST session is still open.
         ("REU restore", lambda: hw_provision.restore_reu(stack.api, stack.reu_restore)),
         # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
         ("sampler restore", lambda: hw_provision.restore_sampler(stack.api, stack.sampler_restore)),
-        # Same for an opt-in System Mode / scan-resolution switch. Before the
-        # reset below, so the KERNAL re-autodetects against the restored timing.
+        # Before the reset below, so the KERNAL re-autodetects against the
+        # restored timing.
         (
             "video output restore",
             lambda: hw_provision.restore_video_output(stack.api, stack.video_output_restore),
@@ -799,13 +769,13 @@ def teardown_stack(stack: SystemStack) -> None:
         _release_step(stack.name, label, fn)
 
 
-# How long the headless join parks per poll. Short enough that Ctrl+C feels
-# immediate, long enough not to spin (see pump_until_done on why it polls).
+# How long the headless join parks per poll: short enough that Ctrl+C feels
+# immediate, long enough not to spin.
 _JOIN_POLL_S = 0.2
 
-# How long a playlist thread gets to drain once it has been asked to stop,
-# before it is logged and abandoned. Shared by join_playlists and by
-# teardown_session's own pre-teardown drain so the stop path has one budget.
+# How long a playlist thread gets to drain once asked to stop, before it is
+# logged and abandoned. Shared by `join_playlists` and `teardown_session`'s
+# pre-teardown drain, so the stop path has one budget.
 _STOP_JOIN_S = 5.0
 
 
@@ -973,12 +943,10 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
             if overwrite:
                 applied = tracker.apply(pl.config)
                 if pl.menu.save_config():
-                    # No "(backup .bak)" here: save_config's .bak is one-shot
-                    # (it preserves the hand-written original, not the previous
-                    # save), and this path fires on every exit under
-                    # --overwrite — so repeating the reassurance every run is
-                    # exactly the claim that was misleading. save_config logs
-                    # what actually happened to the backup.
+                    # No "(backup .bak)" here: `save_config`'s .bak is one-shot,
+                    # preserving the hand-written original rather than the previous
+                    # save, and this path fires on every exit under --overwrite.
+                    # `save_config` logs what happened to the backup.
                     log.info(
                         "%slive-tune: saved %d change(s) → %s",
                         tag,
@@ -990,7 +958,6 @@ def _maybe_save_live_tune(stacks: list[SystemStack], overwrite: bool) -> None:
             for line in tracker.describe():
                 print(f"  {line}")
             if not sys.stdin.isatty():
-                # Headless/piped: can't prompt. Don't lose the info silently.
                 print(f"{tag}Not saved (no interactive terminal; re-run with --overwrite to save).")
                 continue
             try:
@@ -1024,14 +991,11 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
     Pure and hardware-free by construction: a caller that owns a running
     session can reject a bad config without disturbing it. Raises
     SessionConfigError after logging the user-facing diagnostic."""
-    # [midi_control] is process-wide (see _coerce_reu_for_transport's
-    # docstring), so resolve the one MidiControlCfg that actually drives the
-    # listener once, before the per-cfg loop below applies it to each
-    # system's audio settings.
+    # [midi_control] is process-wide, so the one MidiControlCfg that drives the
+    # listener resolves once, before the per-cfg loop applies it to each system.
     midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
-    # [control] is process-wide too, and `loaded.master_control` is the very
-    # section start_services binds — so check it once here, before hardware,
-    # rather than at bind time when a show is already up.
+    # [control] is process-wide too, and `loaded.master_control` is the section
+    # `start_services` binds — checked before hardware, not once a show is up.
     try:
         scene_factory.validate_control_cfg(loaded.master_control)
     except cfgmod.ConfigError as e:
@@ -1051,21 +1015,19 @@ def validate_configs(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> No
             )
             log.error(detail)
             raise SessionConfigError(3, detail)
-        # Every whole-Config validator scene_factory owns, in one pass — a
-        # rejected NMI sample rate that would overrun the DAC handler, a bad
-        # [wled] endpoint, and the rest. The tuple lives next to the
-        # validators so this list can't fall behind the one doctor walks.
+        # Every whole-Config validator `scene_factory` owns, in one pass. The
+        # tuple lives beside the validators, so this cannot fall behind the list
+        # `doctor` walks.
         try:
             for validate in scene_factory.PER_SYSTEM_VALIDATORS:
                 validate(cfg)
         except cfgmod.ConfigError as e:
             log.error("%s", e)
             raise SessionConfigError(5, str(e)) from e
-        # Every scene, including the follower-only ones (built lazily at
-        # broadcast time, so without this a bad one surfaces mid-show). Exit
-        # code 3 is what `build_stack` already returns when `scenes_from_config`
-        # raises the same error a few seconds later — the failure moves ahead of
-        # the hardware, it doesn't change identity.
+        # Every scene, including the follower-only ones, which are built lazily
+        # at broadcast time and would otherwise surface mid-show. Exit code 3 is
+        # what `build_stack` returns for the same error seconds later: the failure
+        # moves ahead of the hardware, it does not change identity.
         for idx, s in enumerate(cfg.scenes):
             try:
                 scene_factory.validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
@@ -1140,11 +1102,9 @@ def build_session(
     Call validate_configs first. On a StackBuildError the stacks that did come
     up are torn down in reverse before the error propagates, so a partial
     failure leaves no hardware held."""
-    # Install the profiler (or NullProfiler if disabled) before constructing
-    # the Playlists so the module-global accessor is correct for the first
-    # frame's sub-stage timings inside _render_with_overlays. The profiler
-    # is process-wide today (per-scene timings will mix across systems in
-    # ensemble mode — a future enhancement could split it per-system).
+    # Before the Playlists are constructed, so the module-global accessor is
+    # right for the first frame's sub-stage timings. Process-wide, so an
+    # ensemble's per-scene timings mix across systems.
     if cfgs[0].debug.profile:
         profiler: FrameProfiler | NullProfiler = FrameProfiler(
             interval=cfgs[0].debug.profile_interval
@@ -1154,8 +1114,8 @@ def build_session(
         profiler = NullProfiler()
     set_profiler(profiler)
 
-    # Allocate the Ensemble first (multi-system only) so each stack's
-    # Playlist receives the shared stop_event at construction time.
+    # First, so each stack's Playlist receives the shared stop_event at
+    # construction time.
     ensemble: Ensemble | None = None
     if loaded.is_ensemble:
         ensemble = Ensemble(stacks=[], stop_event=threading.Event())
@@ -1177,7 +1137,6 @@ def build_session(
                 )
             )
     except StackBuildError:
-        # Tear down whatever we did manage to build before bailing.
         for st in reversed(stacks):
             teardown_stack(st)
         raise
@@ -1185,12 +1144,9 @@ def build_session(
     if ensemble is not None:
         ensemble.stacks = stacks
         ensemble.populate_broadcast_events()
-        # Per-stack ensemble plumbing: wire the playlist to its ensemble,
-        # its broadcast events, and a follower-scene factory that closes
-        # over the stack's api/audio/source/cfg (the playlist can't build
-        # follower scenes itself without those references). The factory is
-        # built by a helper rather than a loop-body lambda so each one
-        # captures its own stack, not the last iteration's.
+        # The follower-scene factory closes over the stack's api/audio/source/cfg,
+        # which the playlist has no way to reach. Built by a helper rather than a
+        # loop-body lambda, so each captures its own stack.
         for st, cfg in zip(stacks, cfgs, strict=True):
             st.playlist.bind_ensemble(
                 ensemble,
@@ -1222,8 +1178,8 @@ def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     :func:`start_services` because a long-lived host builds the same two maps
     against whichever session is current, through a provider."""
     args, loaded, stacks = sess.args, sess.loaded, sess.stacks
-    # Default-arg `st=st, p=p` captures by value to avoid the late-binding bug
-    # where every lambda would see the last loop iteration's st.
+    # Default-arg `st=st, p=p` captures by value; a closure would see only the
+    # last iteration's `st`.
     config_loaders = {
         st.name: (
             lambda st=st, p=p: scene_factory.scenes_from_config(
@@ -1254,11 +1210,9 @@ def start_services(sess: Session) -> None:
     session down with it. Handles land on `sess` for teardown_session."""
     loaded, cfgs, stacks = sess.loaded, sess.cfgs, sess.stacks
 
-    # Optional FastAPI control plane. One server for the whole ensemble;
-    # endpoints take ?system=NAME (defaults to all systems in multi
-    # mode, to the sole system in single mode). Skipped when the session
-    # doesn't own the process: a long-lived host serves its own API and
-    # would collide with this one on the port.
+    # One server for the whole ensemble; endpoints take ?system=NAME. Skipped
+    # when the session does not own the process, since a long-lived host serves
+    # its own API and would collide on the port.
     control_cfg = loaded.master_control if loaded.is_ensemble else cfgs[0].control
     if control_cfg.enabled and sess.interactive:
         try:
@@ -1277,10 +1231,8 @@ def start_services(sess: Session) -> None:
         except RuntimeError as e:
             log.error("control plane disabled: %s", e)
 
-    # Optional MIDI control surface for live performance. One listener
-    # for the whole ensemble (like [control]); MIDI channel selects the
-    # target system. See midi_control.py's module docstring for the
-    # latency rationale.
+    # One listener for the whole ensemble, like [control]; the MIDI channel
+    # selects the target system.
     midi_cfg = loaded.master_midi_control if loaded.is_ensemble else cfgs[0].midi_control
     if midi_cfg.enabled:
         try:
@@ -1290,10 +1242,8 @@ def start_services(sess: Session) -> None:
             sess.midi_control_listener = build_midi_control_listener(
                 playlists={st.name: st.playlist for st in stacks},
                 cfg=midi_cfg,
-                # [performance] is per-system-cascaded, so cfgs[0] carries
-                # the effective clock_port / feedback settings (identical
-                # across systems in ensemble mode — the clock + LED-out port
-                # are process-wide).
+                # [performance] is per-system-cascaded, but the clock and LED-out
+                # ports are process-wide, so cfgs[0] carries the effective values.
                 clock_port=cfgs[0].performance.clock_port,
                 feedback_enabled=cfgs[0].performance.midi_feedback,
                 feedback_port=cfgs[0].performance.feedback_port,
@@ -1302,15 +1252,11 @@ def start_services(sess: Session) -> None:
         except (cfgmod.ConfigError, RuntimeError, ValueError) as e:
             log.error("MIDI control disabled: %s", e)
 
-    # Optional WLED bridge Mode 1: present c64cast as a virtual WLED device
-    # (mDNS + WLED JSON API) so the WLED app / python-wled / HA can control
-    # it. One server spans every system (one WLED segment per system); the
-    # first system's [wled].listen governs it (like [control]).
-    # resolve_wled_listen parses [wled].listen and raises ConfigError on a bad
-    # host:port, so it sits *inside* the try with ConfigError caught — the
-    # shape the MIDI block above uses. Outside it, a typo'd port took the whole
-    # session down with an unmapped traceback after every system's hardware was
-    # already open, which is exactly what this function promises not to do.
+    # WLED bridge Mode 1: c64cast as a virtual WLED device. One server spans
+    # every system, one segment each, governed by the first system's
+    # [wled].listen. `resolve_wled_listen` raises ConfigError on a bad host:port,
+    # so it sits *inside* the try — outside it, a typo'd port took the whole
+    # session down after every system's hardware was already open.
     try:
         listen_on, wled_host, wled_port = scene_factory.resolve_wled_listen(cfgs[0])
         if listen_on:
@@ -1354,10 +1300,8 @@ def reload_all(sess: Session) -> None:
     list + master defaults are set at startup), so add/remove of systems
     still needs a restart. A failed reload keeps the current playlist."""
     log.info("reloading config for %d system(s)", len(sess.stacks))
-    # The songlengths lookups are process-global memos, including the "no HVSC
-    # here" answer. Without this, unpacking HVSC or fixing
-    # `[playlist].songlengths_file` could not take effect in a long-lived host
-    # without a restart.
+    # The songlengths lookups are process-global memos, the "no HVSC here" answer
+    # included, so a long-lived host would need a restart to see a new HVSC.
     scene_factory.reset_songlengths_cache()
     for st, sub_path in zip(sess.stacks, sess.loaded.paths, strict=True):
         if sub_path is None:
@@ -1399,8 +1343,7 @@ def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
     sess.stop_event.set()
     for t in sess.threads:
         join_bounded(t, _STOP_JOIN_S)
-    # Stop input surfaces before tearing down what they act on — same
-    # ordering the keyboard/vision controllers already follow.
+    # Input surfaces stop before what they act on is torn down.
     if sess.midi_control_listener is not None:
         try:
             sess.midi_control_listener.stop()
@@ -1418,10 +1361,9 @@ def teardown_session(sess: Session, *, save_live_tune: bool = True) -> None:
             log.exception("control plane shutdown failed")
     for st in reversed(sess.stacks):
         teardown_stack(st)
-    # Live-tune save-back: after teardown (terminal free), persist or prompt
-    # for any parameter changes made via MIDI/WLED. Guarded so a save-flow
-    # error can't mask the original shutdown. Skipped when the session doesn't
-    # own the terminal — the prompt is a blocking input().
+    # After teardown, so the terminal is free for the prompt — which is a
+    # blocking `input()`, hence the `interactive` gate. Guarded so a save-flow
+    # error cannot mask the original shutdown.
     if save_live_tune and sess.interactive:
         try:
             _maybe_save_live_tune(sess.stacks, bool(sess.args.overwrite))

@@ -26,10 +26,9 @@ out, `stop()` keeps the thread reference instead of discarding it: `is_running()
 then keeps reporting True for as long as the abandoned worker actually runs,
 and `start()`'s ordinary "already running" check refuses to spawn a
 replacement — and therefore never calls `self._stop.clear()` — until it
-finally exits. Discarding the reference on a timeout used to make both of
-those lie, which let a `start()` after a timed-out `stop()` clear the one
-shared stop `Event` out from under the still-running worker and resurrect it
-alongside a second, freshly-started one.
+finally exits.
+
+See docs/architecture/config.md#_pollthreadpy--the-background-loop-idiom.
 """
 
 from __future__ import annotations
@@ -88,10 +87,8 @@ class PollThread:
         self._join_timeout = join_timeout
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # Reentrant so a target that stops its own poller raises the
-        # RuntimeError `Thread.join` gives for joining the current thread,
-        # rather than deadlocking on the lock, where the cause would be much
-        # harder to read.
+        # Reentrant: a target stopping its own poller then raises `Thread.join`'s
+        # "cannot join current thread" instead of deadlocking here.
         self._lifecycle = threading.RLock()
 
     @property
@@ -107,8 +104,7 @@ class PollThread:
                 return
             self._stop.clear()
             thread = threading.Thread(target=self._run, daemon=True, name=self._name)
-            # Started before it is published, so `stop()` can never reach a
-            # thread object that has not run yet.
+            # Started before published, so `stop()` cannot reach an unstarted thread.
             thread.start()
             self._thread = thread
 
@@ -118,15 +114,6 @@ class PollThread:
             if self._thread is not None:
                 self._thread.join(timeout=self._join_timeout)
                 if self._thread.is_alive():
-                    # Leave `self._thread` set rather than clearing it: a
-                    # cleared reference would make `is_running()` lie (it
-                    # reports False while this worker keeps running), and a
-                    # later `start()` trusts that lie and calls
-                    # `self._stop.clear()` — which this same worker reads
-                    # dynamically, un-stopping it while a fresh thread also
-                    # starts. Keeping the reference makes `start()`'s
-                    # existing "already running" guard refuse the duplicate
-                    # until this thread actually exits.
                     log.warning(
                         "PollThread %r did not stop within %.1fs; it is still "
                         "running and start() will refuse a replacement until it exits",
