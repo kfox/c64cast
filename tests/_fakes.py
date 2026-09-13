@@ -582,6 +582,28 @@ class FakeTime:
         return getattr(time, name)
 
 
+class SleepDrivenClock:
+    """A time-module stand-in advanced only by positive ``sleep`` calls.
+
+    ``time``, ``monotonic`` and ``perf_counter`` share one nonzero timeline, so
+    code under test cannot accidentally mix host time with virtual time. Names
+    outside that explicit clock surface raise ``AttributeError``.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._now = float(start)
+
+    def monotonic(self) -> float:
+        return self._now
+
+    perf_counter = monotonic
+    time = monotonic
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            self._now += seconds
+
+
 class FrozenClock(FakeTime):
     """A [FakeTime] whose one pinned clock the test drives itself.
 

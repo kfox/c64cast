@@ -10,7 +10,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
-from _fakes import FakeTime, make_psid
+from _fakes import FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.hw import api
 from c64cast.hw.api import (
@@ -1270,24 +1270,6 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.reset()  # shutdown path — must not raise
 
 
-class _VirtualClock:
-    """A stand-in for the `time` module whose `sleep` advances its own `time`.
-
-    A poll loop bound to this clock advances exactly one poll interval per
-    iteration however loaded the machine is, which is what makes a fake that
-    answers "not yet" twice before signaling deterministic: on the real clock
-    that fake raced the deadline whenever a parallel worker stalled between
-    two of its reads."""
-
-    def __init__(self, now: float = 0.0) -> None:
-        self._now = now
-
-    def time(self) -> float:
-        return self._now
-
-    def sleep(self, seconds: float) -> None:
-        self._now += seconds
-
 
 class DumpCharRomTest(unittest.TestCase):
     """The shared dump orchestration on the Ultimate: upload the stub, SYS it
@@ -1334,7 +1316,7 @@ class DumpCharRomTest(unittest.TestCase):
         # arithmetic on it, and the full production budget costs no wall time.
         # Bound over the module's own `time` name, never over an attribute of
         # the stdlib module — see _fakes.FrozenClock for why.
-        patch("c64cast.hw.api.time", _VirtualClock()).start()
+        patch("c64cast.hw.api.time", SleepDrivenClock()).start()
 
     def tearDown(self):
         patch.stopall()
