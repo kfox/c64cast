@@ -350,7 +350,7 @@ The CTRL key (skip) also relies on `$028D`, so the same applies.
 ### "Playlist freezes between scenes"
 
 Usually the new scene's `setup()` is blocking — the U64 might be
-unreachable. Run with `-vv` to see the per-write debug log; you'll
+unreachable. Run with `-v` to see the per-write debug log; you'll
 see retries piling up if so. Eventually the scene gives up and the
 playlist advances to the next interstitial.
 

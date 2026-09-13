@@ -902,7 +902,7 @@ class Playlist:
         feats = scene.features()
         self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
         # Announce lock/loss transitions at INFO (rare); trickle the live BPM at
-        # DEBUG (~2 s) while locked so `-vv` shows the grid tracking the beat.
+        # DEBUG (~2 s) while locked so `-v` shows the grid tracking the beat.
         locked = self.tempo.running
         if locked != self._tempo_audio_locked:
             self._tempo_audio_locked = locked
