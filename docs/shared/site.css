@@ -1,41 +1,27 @@
-/* c64cast documentation site — the entire visual language lives in this file.
+/* c64cast documentation site — the web counterpart of docs/shared/template.typ.
  *
- * The web counterpart of docs/shared/template.typ, and the same bargain: the
- * prose is Markdown (docs/<book>/*.md), scripts/build_site.py says only what
- * each construct becomes in HTML, and everything about the *look* is decided
- * here. Tune the design in this file.
- *
- * The palette and the two faces are the PDF's, so a reader who downloads the
- * book after reading it online gets the same object. The light values below
- * are copied from template.typ's own declarations rather than re-picked, and
- * tests/test_build_site.py fails if the two drift.
- */
-
-/* --------------------------------------------------------------------------
- * Palette
- * ----------------------------------------------------------------------- */
+ * The light palette below is copied from that template's own declarations;
+ * tests/test_build_site.py fails if the two drift. */
 
 :root {
-  --accent: #2b73b5; /* the one blue */
-  --accent-pale: #9fc0de; /* figure frames, hairlines */
-  --accent-wash: #f2f6fa; /* code block fill */
-  --ink: #111111; /* body text */
-  --keycap-fill: #3a3a3a; /* <kbd> chips */
+  --accent: #2b73b5;
+  --accent-pale: #9fc0de;
+  --accent-wash: #f2f6fa;
+  --ink: #111111;
+  --keycap-fill: #3a3a3a;
 
   --paper: #ffffff;
   --muted: #56606a;
   --rule: #e2e8ef;
   --shadow: 0 1px 2px rgb(17 17 17 / 6%), 0 8px 24px rgb(17 17 17 / 6%);
 
-  --measure: 44rem; /* the column width prose is set to */
+  --measure: 44rem;
   --sidebar: 17.5rem;
   --radius: 6px;
 }
 
-/* The book palette is light-only: it was measured off a printed page, where
- * there is no dark mode to derive. These are chosen for the screen instead —
- * the same blue lightened until it holds contrast on a dark ground, and the
- * washes rebuilt rather than inverted (an inverted #F2F6FA is a muddy brown). */
+/* Chosen for the screen, not derived: the book palette was measured off a
+ * printed page, and an inverted #F2F6FA is a muddy brown. */
 @media (prefers-color-scheme: dark) {
   :root {
     --accent: #6fb3ea;
@@ -50,9 +36,7 @@
   }
 }
 
-/* A reader whose browser or extension stamps data-theme on the root has asked
- * for that theme specifically, so it wins over the media query in both
- * directions rather than only in the dark one. */
+/* An explicit data-theme wins over the media query in both directions. */
 :root[data-theme="light"] {
   --accent: #2b73b5;
   --accent-pale: #9fc0de;
@@ -75,13 +59,8 @@
   --rule: #272f36;
 }
 
-/* --------------------------------------------------------------------------
- * Fonts
- *
- * The same two OFL faces the PDFs are set in, served from the same vendored
- * files — build_site.py copies them, and their licenses, into /fonts/. Both
- * are variable, so one file covers every weight the site asks for.
- * ----------------------------------------------------------------------- */
+/* The PDFs' two OFL faces; build_site.py copies them, and their licenses, into
+ * /fonts/. Both are variable, so one file covers every weight. */
 
 @font-face {
   font-family: "Jost";
@@ -106,10 +85,6 @@
   font-style: normal;
   font-display: swap;
 }
-
-/* --------------------------------------------------------------------------
- * Page
- * ----------------------------------------------------------------------- */
 
 *,
 *::before,
@@ -149,10 +124,6 @@ pre,
 samp {
   font-family: "Inconsolata", ui-monospace, "SF Mono", Menlo, monospace;
 }
-
-/* --------------------------------------------------------------------------
- * Chrome
- * ----------------------------------------------------------------------- */
 
 .banner {
   background: var(--accent-wash);
@@ -301,10 +272,6 @@ samp {
   text-align: center;
 }
 
-/* --------------------------------------------------------------------------
- * Layout
- * ----------------------------------------------------------------------- */
-
 .layout {
   display: grid;
   grid-template-columns: var(--sidebar) minmax(0, 1fr);
@@ -329,7 +296,6 @@ samp {
   line-height: 1.45;
 }
 
-/* The landing page is one column: its navigation is the hero's book cards. */
 body.landing .layout {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -338,8 +304,6 @@ body.landing .content {
   max-width: none;
 }
 
-/* A standalone document has no book around it, so its only sidebar is its own
- * outline — which belongs on the right, where a table of contents goes. */
 body.standalone .layout {
   grid-template-columns: minmax(0, 1fr) var(--sidebar);
 }
@@ -405,8 +369,8 @@ body.standalone .sidebar {
   padding-left: 0.75rem;
 }
 
-/* Inside a book the heading is the chapter you are already reading; standing
- * alone it needs to say what the list is. */
+/* Inside a book the heading names the chapter already being read; standing
+ * alone the list needs a title of its own. */
 .onthispage .navtitle {
   display: none;
 }
@@ -434,10 +398,6 @@ body.standalone .onthispage .navtitle {
 .sidebar .pdf a {
   color: var(--accent);
 }
-
-/* --------------------------------------------------------------------------
- * Prose
- * ----------------------------------------------------------------------- */
 
 .content h1 {
   font-size: 2.1rem;
@@ -475,8 +435,6 @@ body.standalone .onthispage .navtitle {
   margin: 0 0 0.4rem;
 }
 
-/* A heading's permalink: there for anyone who wants to send one, out of the
- * way of everyone who does not. */
 .anchor {
   color: var(--accent-pale);
   margin-left: 0.4rem;
@@ -535,10 +493,6 @@ pre {
   padding: 0.9rem 1.1rem;
 }
 
-/* --------------------------------------------------------------------------
- * Callouts
- * ----------------------------------------------------------------------- */
-
 .callout {
   background: var(--accent-wash);
   border: 1px solid var(--rule);
@@ -567,12 +521,7 @@ pre {
   color: #c2751d;
 }
 
-/* --------------------------------------------------------------------------
- * Tables
- * ----------------------------------------------------------------------- */
-
-/* The reference guide's tables are wider than a phone. Each scrolls inside its
- * own box, which is what stops the page itself from scrolling sideways. */
+/* A wide table scrolls inside its own box, so the page never scrolls sideways. */
 .table-wrap {
   margin: 0 0 1.5rem;
   overflow-x: auto;
@@ -607,8 +556,7 @@ th {
   text-align: center;
 }
 
-/* A settings list rather than a grid of values: the name column is as narrow
- * as its longest name, and the description takes whatever is left. */
+/* nowrap plus width:1% shrinks the name column to its longest name. */
 table.fields td:first-child,
 table.index td:first-child {
   white-space: nowrap;
@@ -618,10 +566,6 @@ table.index td:first-child {
 table.index td:first-child {
   font-weight: 600;
 }
-
-/* --------------------------------------------------------------------------
- * Figures
- * ----------------------------------------------------------------------- */
 
 figure {
   margin: 0 0 1.6rem;
@@ -640,10 +584,6 @@ figcaption {
   font-size: 0.85rem;
   margin-top: 0.5rem;
 }
-
-/* --------------------------------------------------------------------------
- * Page furniture
- * ----------------------------------------------------------------------- */
 
 .pager {
   border-top: 1px solid var(--rule);
@@ -687,10 +627,6 @@ figcaption {
   font-size: 0.85rem;
   margin-top: 1.5rem;
 }
-
-/* --------------------------------------------------------------------------
- * Contents page
- * ----------------------------------------------------------------------- */
 
 .tagline {
   color: var(--muted);
@@ -746,10 +682,6 @@ ol.contents ul a {
 ol.contents ul a:hover {
   color: var(--accent);
 }
-
-/* --------------------------------------------------------------------------
- * Landing hero
- * ----------------------------------------------------------------------- */
 
 .hero {
   border-bottom: 1px solid var(--rule);
@@ -825,10 +757,6 @@ a.bookcard .cta::after {
   content: " →";
 }
 
-/* --------------------------------------------------------------------------
- * Narrow screens
- * ----------------------------------------------------------------------- */
-
 @media (max-width: 60rem) {
   body {
     font-size: 16px;
@@ -840,10 +768,8 @@ a.bookcard .cta::after {
     gap: 0;
   }
 
-  /* A book's chapter list is long enough to bury the prose if it stays on top,
-   * so on a phone it becomes an index at the foot of the page instead. It is
-   * moved with `order` rather than by placement: it comes first in the source,
-   * which is where a screen reader and a no-CSS reader want the navigation. */
+  /* Moved with `order` rather than by placement: the sidebar comes first in the
+   * source, which is where a screen reader and a no-CSS reader want it. */
   .sidebar,
   body.standalone .sidebar {
     order: 2;

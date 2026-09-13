@@ -1,15 +1,6 @@
-// Zero-dependency tests for search.js's pure ranking/highlighting core --
-// node:test + node:assert, no package.json, no bundler. `search.js` guards
-// its DOM-wiring half behind `typeof document === "undefined"`, so
-// require()'ing it here (no `document` global under plain Node) exercises
-// only the half this file is about.
-//
-//   node --test docs/shared/search.test.mjs
-//
-// This exists because the mark() bug below (an earlier term's regex
-// matching literal characters a previous term had just wrapped in <mark>)
-// shipped once and was only caught by a human re-reading the diff -- see
-// CHANGELOG.md's "search box" entry and the commit that followed it.
+// Tests for search.js, run as `node --test docs/shared/search.test.mjs`.
+// search.js guards its DOM-wiring half behind `typeof document === "undefined"`,
+// so require()'ing it with no `document` global reaches only the ranking core.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -66,10 +57,8 @@ test("mark: highlights a single match without corrupting the string", () => {
 });
 
 test("mark: a later term that is a substring of an earlier match's word does not corrupt the markup", () => {
-  // The regression case: "market" and "ark" both match inside "market", and
-  // the buggy version re-ran each term's regex against the growing
-  // marked-up string, so "ark" matched literal characters inside the
-  // <mark> tag "market" had just inserted.
+  // The shipped bug: each term's regex was re-run against the growing marked-up
+  // string, so "ark" matched inside the <mark> tag "market" had just inserted.
   assert.equal(mark("the market is open", ["market", "ark"]), "the <mark>market</mark> is open");
 });
 
@@ -88,19 +77,8 @@ test("mark: two non-adjacent matches each get their own span", () => {
   );
 });
 
-// --- the fetch-race guard (search()'s DOM-wiring half) -----------------
-//
-// A minimal fake DOM, just enough for search.js's wiring to run: an element
-// that records its own event listeners so a test can fire them, and a
-// controllable `fetch` so a test can decide exactly when the index "arrives"
-// relative to a later keystroke -- the race the real bug (and the real fix)
-// is about, not something a unit test of score()/mark() in isolation can
-// exercise. Deletes the module from Node's require cache first: the pure-
-// function tests above already required search.js with no `document`
-// global, and CommonJS caches by resolved path, so a second require() here
-// would just return that same cached export unless the cache entry is
-// cleared -- this is the one time in the file that's necessary.
-
+// A fake DOM for search.js's wiring: an element that records its own listeners
+// so a test can fire them, and a `fetch` a test decides when to resolve.
 function fakeElement() {
   const listeners = {};
   return {
@@ -120,9 +98,8 @@ function fakeElement() {
 }
 
 function flush() {
-  // Two hops: one for fetch()'s own promise, one for the .then(r => r.json())
-  // in between it and search()'s .then() that reads searchToken. A single
-  // microtask turn is not enough to guarantee both have run.
+  // Two turns: one for fetch()'s own promise, one for the .then(r => r.json())
+  // between it and search()'s .then() that reads searchToken.
   return new Promise((resolve) => setTimeout(resolve, 0)).then(
     () => new Promise((resolve) => setTimeout(resolve, 0)),
   );
@@ -131,6 +108,8 @@ function flush() {
 function loadWiredSearch() {
   const require = createRequire(import.meta.url);
   const resolved = require.resolve("./search.js");
+  // The tests above already required search.js with no `document` global, and
+  // CommonJS caches by resolved path, so the wired half needs the entry cleared.
   delete require.cache[resolved];
 
   const input = fakeElement();
@@ -172,7 +151,7 @@ test("search(): a fetch that resolves after the query was cleared does not reope
   const page = loadWiredSearch();
   try {
     page.type("bus");
-    page.type(""); // cleared before the index ever arrives
+    page.type("");
     page.deliverIndex([{ url: "guide/x.html", title: "Bus", text: "bus service info" }]);
     await flush();
     assert.equal(page.results.hidden, true);
@@ -198,8 +177,8 @@ test("search(): the latest query's results still render once the index resolves"
 test("search(): a fetch still in flight when Escape dismisses it does not reopen the dropdown once it resolves", async () => {
   const page = loadWiredSearch();
   try {
-    page.type("bus"); // starts the fetch; the index has not arrived yet
-    page.escape(); // dismissed before it does
+    page.type("bus");
+    page.escape();
     page.deliverIndex([{ url: "guide/x.html", title: "Bus", text: "bus service info" }]);
     await flush();
     assert.equal(page.results.hidden, true);

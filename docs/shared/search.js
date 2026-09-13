@@ -1,29 +1,19 @@
-// Client-side search: no server, no build-time framework, just the JSON
-// index scripts/build_site.py writes next to this file. Every page loads it
-// and fetches the index relative to itself, so the same script works at any
-// depth (`index.html`, `guide/04-setting-up.html`, ...).
-//
-// The ranking/highlighting core above is plain data-in-data-out logic with no
-// DOM dependency; the wiring below it is the only part that touches
-// `document`. That split is what lets search.test.mjs `require()` this same
-// file under Node (via the `module.exports` guard at the bottom) without a
-// browser or a build step -- `typeof document` is the one signal that tells
-// the two environments apart.
+// Client-side search over the JSON index scripts/build_site.py writes next to
+// this file, found through each page's own `data-index` path so the same file
+// works at any page depth. The ranking core below is DOM-free and exported for search.test.mjs;
+// the wiring past the `typeof document` guard is the only part touching the DOM.
 (function () {
   "use strict";
 
-  const TITLE_WEIGHT = 100; // a title hit always outranks any text hit
-  const TEXT_WEIGHT_MAX = 40; // a text hit at position 0
-  const TEXT_WEIGHT_DECAY = 20; // chars per point of falloff after that
-  const TEXT_WEIGHT_FLOOR = 1; // a text hit is still worth more than no hit
+  const TITLE_WEIGHT = 100;
+  const TEXT_WEIGHT_MAX = 40;
+  const TEXT_WEIGHT_DECAY = 20; // chars per point of falloff
+  const TEXT_WEIGHT_FLOOR = 1;
 
   function words(query) {
     return query.toLowerCase().split(/\s+/).filter(Boolean);
   }
 
-  // Every query word must appear somewhere (title or text) -- a query is a
-  // refinement, not a bag of optional hints. Title hits outrank text hits,
-  // and an earlier text hit outranks a later one (more likely the lede).
   function score(entry, terms) {
     let total = 0;
     for (const term of terms) {
@@ -57,11 +47,10 @@
     );
   }
 
-  // Finds every term's match ranges against the *plain* text first, merges
-  // the overlapping ones, then escapes and wraps in a single left-to-right
-  // pass -- doing it a term at a time against the growing marked-up string
-  // (the obvious way) lets a later term's regex match literal characters an
-  // earlier one just inserted (e.g. the "ark" in a `<mark>` tag it added).
+  // Ranges are found against the *plain* text and merged before anything is
+  // escaped or wrapped: marking one term at a time against the growing marked-up
+  // string lets a later term match characters inside a `<mark>` an earlier one
+  // inserted (the "ark" in "market").
   function mark(text, terms) {
     const lower = text.toLowerCase();
     const ranges = [];
@@ -102,17 +91,14 @@
   if (!input || !results) return;
 
   const indexUrl = new URL(input.dataset.index, document.baseURI);
-  // Every entry's `url` is site-root-relative (e.g. "guide/04-x.html"); the
-  // index file itself lives at the site root, so its own directory is that
-  // root, whatever depth the current page is at.
+  // Entry urls are site-root-relative, and the index file sits at the site root.
   const siteRoot = new URL(".", indexUrl);
 
   let entries = null;
   let pending = null;
   let active = -1;
-  // Bumped on every search() call and captured in its closure, so a fetch
-  // that resolves after a later (or emptied) query no longer wins the race
-  // and reopens the dropdown with an answer to a question nobody is asking.
+  // Captured by each search() call, so a fetch resolving after a later query
+  // cannot render an answer to a question nobody is asking.
   let searchToken = 0;
 
   function load() {
@@ -121,9 +107,6 @@
     pending = fetch(indexUrl)
       .then((r) => r.json())
       .then((data) => {
-        // Lowercased once here rather than by score() on every keystroke --
-        // the index is fetched once and never mutated, so every later
-        // search would otherwise re-lowercase the whole corpus per term.
         entries = data.map((e) => ({
           ...e,
           titleLower: e.title.toLowerCase(),
@@ -139,16 +122,9 @@
     return pending;
   }
 
-  // The only thing that makes the dropdown's result set stale: hides it,
-  // drops the markup `querySelectorAll` would otherwise still find (`hidden`
-  // does not remove elements from the DOM), clears the keyboard-nav pointer
-  // into it, and bumps `searchToken` so a fetch already in flight when the
-  // dismissal happens can't land its `render()` afterward and reopen what was
-  // just dismissed -- the same guard a newer search uses against a stale
-  // older one, applied here against a dismiss racing an older search. Escape
-  // and an outside click both dismiss through here, so neither leaves a
-  // dismissed result reachable by a bare Enter afterward, however slow the
-  // fetch behind it turns out to be.
+  // `hidden` leaves the items in the DOM for `querySelectorAll`, so the markup
+  // goes too; the token bump stops a fetch already in flight from reopening
+  // what was just dismissed.
   function closeResults() {
     results.hidden = true;
     results.innerHTML = "";
@@ -229,9 +205,6 @@
       event.preventDefault();
       active = Math.max(active - 1, 0);
     } else if (event.key === "Enter") {
-      // No arrow key yet on this query is the common case, not an edge
-      // case -- Enter goes to the top-ranked result then, same as active
-      // being explicitly on it.
       const target = active >= 0 ? items[active] : items[0];
       if (!target) return;
       event.preventDefault();
