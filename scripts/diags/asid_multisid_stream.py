@@ -234,7 +234,6 @@ def main() -> None:
         time.sleep(args.wait)
         out.send(mido.Message("sysex", data=[MANUF, CMD_START]))
         if args.pattern == "multispeed":
-            # Announce the cadence + ask for buffering; optionally the recipe.
             out.send(_speed_msg(multiplier, buffering=True, ntsc=ntsc))
             if args.recipe:
                 out.send(_recipe_msg())
@@ -243,7 +242,7 @@ def main() -> None:
         # Pace against an ABSOLUTE monotonic schedule (next_t += period) rather
         # than sleep(period) so per-loop send overhead doesn't accumulate into a
         # systematic under-production (which would starve a buffered client's
-        # ring → hold-pads). This lets the sender actually hit `rate`.
+        # ring → hold-pads).
         period = 1.0 / rate
         start = time.monotonic()
         next_t = start

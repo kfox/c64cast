@@ -159,7 +159,6 @@ def main() -> int:
         d.rest_reset(args.url)
         return 1
 
-    # Summary
     print(f"\n{'=' * 70}")
     print("[SUMMARY]")
     print(f"{'=' * 70}")
@@ -177,7 +176,6 @@ def main() -> int:
             f"{r['slowdown_pct']:>6.2f}%     {r['nmi_latch_compensation_pct']:>+6.2f}%"
         )
 
-    # Analysis
     print("\n[ANALYSIS]")
     if len(valid_results) >= 2:
         r60 = next((r for r in valid_results if "60fps" in r["mode"]), None)

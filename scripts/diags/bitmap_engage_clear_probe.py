@@ -83,11 +83,10 @@ def probe(api: Ultimate64API, name: str, bring_up) -> bool:
     if screen is None or bitmap is None:
         print(f"[{name}] READ FAILED (screen={screen is not None}, bitmap={bitmap is not None})")
         return False
-    # Invariant: setup() must clear the stale prior-scene fill (0xFF) before the
-    # bitmap flip. We can't assert all-zero on $0400 here because the synthetic
-    # test sits at the live BASIC prompt, whose running KERNAL maintains a single
-    # cursor cell (~1 nonzero byte that ISN'T 0xFF); a real prior c64cast scene
-    # owns the whole screen, so that artifact only exists in this probe.
+    # $0400 cannot be asserted all-zero here: the synthetic test sits at the live
+    # BASIC prompt, whose running KERNAL maintains a single cursor cell (~1
+    # nonzero byte that ISN'T 0xFF). A real prior c64cast scene owns the whole
+    # screen, so that artifact only exists in this probe.
     stale_screen = sum(1 for b in screen if b == 0xFF)
     stale_bitmap = sum(1 for b in bitmap if b == 0xFF)
     nz_screen = sum(1 for b in screen if b)

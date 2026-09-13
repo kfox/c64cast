@@ -137,12 +137,10 @@ def main() -> int:
         f"gap={100 * gap.mean():.0f}%  speech={100 * speech.mean():.0f}%"
     )
 
-    # --- legacy mic path: sensitivity, then hard gate ---
     leg_in = noisy * args.sens
     leg_gate = (np.abs(leg_in) >= args.gate).astype(np.float32)  # 1=open
     legacy = _encode_decode(leg_in * leg_gate)
 
-    # --- DSP expander path (the gate replacement) ---
     cfg = load_config(args.config).dsp if args.config else DSPCfg()
     exp = Expander(
         sample_rate=args.sr,

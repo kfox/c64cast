@@ -69,7 +69,6 @@ from c64cast.hw.teensyrom_dma import (
     TRError,
 )
 
-# ---- C64 targets ----------------------------------------------------------
 HAMMER_ADDR = 0x4000  # plain RAM, clear of BASIC, screen, and the heartbeat
 BORDER_REG = 0xD020
 HEARTBEAT_DEST = "c64cast/hb.prg"  # on TR storage
@@ -133,10 +132,8 @@ _HEARTBEAT_BODY = (
 HEARTBEAT_PRG = _basic_one_liner(10, _HEARTBEAT_BODY)
 
 
-# ---------------------------------------------------------------------------
 # Cam Link capture: a background thread that grabs frames and records only the
 # whole-frame mean color + timestamp (cheap; the border dominates the swing).
-# ---------------------------------------------------------------------------
 @dataclass
 class CamSample:
     t: float
@@ -274,9 +271,6 @@ def analyze_window(
     }
 
 
-# ---------------------------------------------------------------------------
-# TR control helpers
-# ---------------------------------------------------------------------------
 def connect(transport_desc: str, *, tcp_host: str | None, serial_port: str | None) -> TRClient:
     if transport_desc == "tcp":
         tx = TcpTransport(tcp_host, DEFAULT_TCP_PORT)  # type: ignore[arg-type]
@@ -337,9 +331,6 @@ def hammer(client: TRClient, addr: int, size: int, seconds: float) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Test stages
-# ---------------------------------------------------------------------------
 def run_transport(label: str, client: TRClient, cam: CamCapture, args) -> list[dict]:
     print(f"\n=== Transport: {label} ===")
     print(f"  connected via {client.transport.description}; firmware: {client.firmware}")
@@ -349,7 +340,6 @@ def run_transport(label: str, client: TRClient, cam: CamCapture, args) -> list[d
 
     drive = DRIVE_SD if args.storage == "sd" else DRIVE_USB
 
-    # ---- (2) border smoke test ----
     print("  [smoke] reset -> TR menu, then write $D020 colors ...")
     client.reset()
     time.sleep(args.reset_settle)

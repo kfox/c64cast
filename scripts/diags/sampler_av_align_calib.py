@@ -60,7 +60,6 @@ SAMP_HZ_BAND = (2150.0, 2850.0)  # sampler burst ~2500 Hz (drifting signal)
 BURST_S = 0.12  # marker burst duration
 
 
-# ------------------------------------------------------------------ analysis
 def _read_wav_mono(path: Path) -> tuple[np.ndarray, int]:
     with wave.open(str(path), "rb") as w:
         sr = w.getframerate()
@@ -164,7 +163,6 @@ def analyze(wav: Path, period_s: float, used_ref: int) -> int:
     return 0
 
 
-# ------------------------------------------------------------------ playback
 def _sid_setup(api) -> None:
     from c64cast.hw.c64 import SID
 

@@ -63,9 +63,6 @@ from c64cast.video.video import _compute_normalization_gain, decode_audio_full
 NEUTRAL = 7.5  # 4-bit DAC midpoint (encode maps float 0 → 7 by truncation)
 
 
-# ---- source acquisition ---------------------------------------------------
-
-
 def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
     """Synthetic test signals (float [-1, 1]) with realistic dynamics so the
     compressor/expander have something to act on. RNG is seedless-but-fixed via
@@ -113,9 +110,6 @@ def _load_source(path: str, sr: int, secs: float | None) -> np.ndarray:
     return int16.astype(np.float32) / 32768.0
 
 
-# ---- the two encode paths -------------------------------------------------
-
-
 def _peak_normalize(floats: np.ndarray) -> np.ndarray:
     """Reproduce AVFileSource's peak-normalization (int16 domain) in float."""
     peak = int(np.max(np.abs(floats)) * 32768)
@@ -135,9 +129,6 @@ def _write_wav(path, mono: np.ndarray, sr: int) -> None:
         w.setsampwidth(2)
         w.setframerate(sr)
         w.writeframes(pcm.tobytes())
-
-
-# ---- metrics --------------------------------------------------------------
 
 
 def _db(x: float) -> float:

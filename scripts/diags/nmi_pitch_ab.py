@@ -70,7 +70,6 @@ BAND_HI = 3500.0
 LOG_GRID_N = 2048  # log-f bins across [BAND_LO, BAND_HI]
 
 
-# --- capture / source spectra --------------------------------------------
 def _decode_mono(path: str) -> tuple[np.ndarray, int]:
     """Decode any media file's first audio stream to mono float64 at its native
     rate (via PyAV). Used for both the reference clip and the captured wav."""
@@ -188,7 +187,6 @@ def analyze(cap_wav: str, ref_path: str) -> None:
     print(f"    GLIDE (late/early)            : {glide:+.2f} %")
 
 
-# --- one condition = one c64cast run + capture ---------------------------
 def _write_config(out: Path, clip: str, label: str, adaptive: bool, pitch_mult: float) -> Path:
     """Minimal single-scene DAC-path video TOML for one condition."""
     abs_clip = str(Path(clip).resolve())

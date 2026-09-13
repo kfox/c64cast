@@ -225,7 +225,6 @@ def _run_servo(args: argparse.Namespace, clock: int) -> int:
     ki = 0.04  # integral gain on phase error (latch units / byte)
     latch = REU_PUMP_CIA1_LATCH
     lo, hi = 8000, 40000  # latch clamp (sane pump rate bounds)
-    # rate estimator state
     prev_r = _read_R(url)
     prev_t = time.time()
     phases: list[int] = []

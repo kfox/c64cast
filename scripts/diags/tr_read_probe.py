@@ -77,7 +77,6 @@ def run_transport(label: str, client: TRClient, args) -> dict:
 
     result: dict = {"transport": label, "rom_ok": False, "ram_ok": False, "error": None}
 
-    # ---- (2) ROM read ----
     try:
         rom = client.read_segment(ROM_ADDR, 2)
         result["rom_bytes"] = rom.hex()
@@ -89,7 +88,6 @@ def run_transport(label: str, client: TRClient, args) -> dict:
         print(f"  [rom]  FAILED: {e}")
         return result
 
-    # ---- (3) RAM write/read round-trip ----
     pattern = bytes((0xA5 ^ i) & 0xFF for i in range(16))
     try:
         client.write_segment(RAM_ADDR, pattern)
@@ -104,7 +102,6 @@ def run_transport(label: str, client: TRClient, args) -> dict:
         print(f"  [ram]  FAILED: {e}")
         return result
 
-    # ---- (4) live $028D watch ----
     if args.watch:
         print(
             f"  [$028D] reading {args.watch_count}x @ {args.watch_interval}s "
