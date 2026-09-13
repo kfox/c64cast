@@ -27,18 +27,13 @@ from c64cast.video.palette import (
     parse_hue_corrections,
 )
 
-# Both are pure additive (h, w) offsets with the same strength semantics
-# (see dither.py) — dispatch table for the three compose() call sites below
-# rather than duplicating the ordered/blue_noise branch three times.
 ORDERED_DITHER_OFFSET_FNS = {"ordered": bayer_offset, "blue_noise": blue_noise_offset}
 
 
 class ComposeBuffers(TypedDict):
     """The screen + color RAM buffers a char-mode display's ``compose()``
     produces and ``push()`` (plus overlay ``compose()``) consume. Each is a
-    length-1000 uint8 numpy array, one byte per 40×25 cell. Named so the
-    'screen'/'color' string keys stop being repeated as bare literals across
-    the display modes and every PAINTS_INTO_BUFFERS overlay.
+    length-1000 uint8 numpy array, one byte per 40×25 cell.
 
     ``text`` is the backend-neutral surface buffer-painting overlays write text
     into (see text_surface.TextSurface). Char modes wrap their screen/color
@@ -53,10 +48,7 @@ class ComposeBuffers(TypedDict):
 class MCMComposeBuffers(ComposeBuffers):
     """MCM adds `bg`: a 3-element array of bg0/bg1/bg2 palette indices that
     MCMDisplayMode.compose() hands to its own push() for the $D020-$D023
-    register write. A separate type (rather than a NotRequired field on
-    ComposeBuffers) so MCM's push can read buffers['bg'] without a
-    possibly-missing-key warning, while other modes' buffers stay just
-    screen+color."""
+    register write."""
 
     bg: np.ndarray
 
@@ -88,10 +80,9 @@ class FlickerComposeBuffers(BitmapComposeBuffers):
     1000-byte screen matrix, alternated with ``screen`` at the VIC field rate so
     each cell's color pair fuses in the eye.
 
-    The two pages differ only in their color nibbles — ``bitmap`` is shared,
-    which is both what keeps the shapes stable (a differing mask would flicker
-    geometry, not color) and what holds the cost to one extra 1000-byte write
-    rather than a second full frame."""
+    The two pages differ only in their color nibbles; ``bitmap`` is shared, so
+    a differing mask cannot make the flicker geometric and a frame costs one
+    extra 1000-byte write rather than a second full frame."""
 
     screen_b: np.ndarray
 
@@ -106,146 +97,52 @@ class MHiresFlickerComposeBuffers(MHiresComposeBuffers, FlickerComposeBuffers):
     palette indices, which is why ``color`` has no B-page sibling here."""
 
 
-# grayscale palette_mode uses fixed slot assignments (no per-frame picking)
-# in luminance order. Two reasons:
-#   1. Slot 0..N maps to ascending luminance, so the bitmap stays a stable
-#      "darkest-to-brightest" intensity LUT regardless of frame content.
-#   2. Adaptive top-N picking flips the slot order whenever per-frame
-#      counts shuffle (which they do constantly on a real webcam — the
-#      low-count gray indices tie-break differently across frames). Each
-#      reorder remaps every pixel to a different slot in the 8 KB bitmap,
-#      busting the delta cache and forcing a full re-upload per frame.
-# MCM has 3 bg slots; FG ∈ {0, 1} (color RAM bit 3 is the multicolor flag
-# and the gray-axis entries below 8 are black and white), so FG covers the
-# extremes and the bgs cover the mid-tones for full 5-level coverage.
-# MHires has 4 global slots and no per-cell FG, so the slots include black
-# plus the three mid/light grays — pure white (palette 1) is dropped in
-# favor of better mid-tone resolution where webcam content lives.
+# Fixed slot assignments in ascending luminance, so the bitmap stays a stable
+# darkest-to-brightest LUT whatever the frame holds. MCM's FG is restricted to
+# {0, 1} — color RAM bit 3 is the multicolor flag — so its bgs carry the
+# mid-tones; mhires has no per-cell FG and drops pure white for a third
+# mid-tone. See video-color.md#palette_mode--per-cell-slot-allocation.
 GRAYSCALE_MHIRES_SLOTS = (0, 11, 12, 15)  # black, dark gray, gray, light gray
 GRAYSCALE_MCM_BGS = (11, 12, 15)  # dark gray, gray, light gray
 
 # EMA weight on the new frame's palette counts when picking the global color
-# slots for cheap/vivid modes. Raw per-frame counts shuffle constantly (a
-# couple of pixels at a chromatic-vs-gray boundary is enough to swap which
-# entries are in the top-4), and the slot ORDER coming out of argsort/diversity
-# directly drives screen + color RAM + bg-register writes, producing a visible
-# palette flash on every borderline reshuffle. The 0.25 weight smooths the
-# counts over ~4 frames — fast enough to track real scene changes, slow enough
-# to filter the borderline jitter. Picked slots are then sorted by palette
-# index so the same SET always lands in the same slot ORDER regardless of
-# count ranking, giving the bitmap delta cache something stable to hit.
+# slots for cheap/vivid. Smooths over ≈4 frames.
 PALETTE_PICK_EMA_ALPHA = 0.25
 
-# Per-cell EMA weight for the percell mhires path. Each 4×8 cell has only
-# 32 pixels, so its per-frame palette histogram is an order of magnitude
-# noisier than the global one — a couple of pixels flipping at a
-# chromatic-vs-gray boundary (webcam sensor noise on a flat region) was
-# enough to swap which palette entry won the 3rd top-3 slot, which rewrites
-# the cell's screen-RAM byte + color-RAM byte AND remaps every pixel in
-# that cell's 8 bitmap bytes (the codes resolve against {bg0, c1, c2, c3}
-# and the SET just changed). With 0.15 (≈7-frame time constant) the picks
-# stay sticky until real content change dominates the noise, but still
-# converge inside ~120 ms — fast enough that motion doesn't smear.
+# Per-cell EMA weight for the percell mhires path. A 4×8 cell's 32-pixel
+# histogram is an order of magnitude noisier than the global one, so this sits
+# lower: ≈7-frame time constant, converging inside ≈120 ms.
 PERCELL_PICK_EMA_ALPHA = 0.15
 
-# Bitmap-code hysteresis bonus for the percell path, in d² space (same
-# units quantize_distances returns). Even with stable per-cell {bg0, c1,
-# c2, c3}, pixels sitting at a chromatic boundary between two of the four
-# candidates flip code every frame from sensor noise — the most-flickery
-# cells in the long-capture profile had 80-90 % bitmap-byte transition
-# rates with ZERO screen+color RAM changes, i.e. pure per-pixel code
-# oscillation. A pixel "keeps" its previous code as long as it's within
-# this bonus of the current frame's minimum-distance code. 5000 ≈ √5000
-# ≈ 71 in L2 BGR space — strong enough to suppress webcam sensor noise
-# on textured static subjects, weak enough that real color changes still
-# flip the code on the next frame.
+# Bitmap-code hysteresis for the percell path, in d² space (the units
+# quantize_distances returns). A pixel keeps its previous code while it stays
+# within this bonus of the frame's minimum-distance code.
 PERCELL_CODE_HYSTERESIS_BONUS = 5000.0
 
-# Per-pixel palette-index hysteresis for the percell path. Each pixel's
-# argmin over the 16-entry palette can flip frame-to-frame when sensor
-# noise + downsample aliasing on a textured static subject shifts it
-# across a chromatic boundary. The bitmap-code hysteresis below
-# (PERCELL_CODE_HYSTERESIS_BONUS) only operates in the cell's 4-entry
-# {bg0, c1, c2, c3} space *after* top-3 picks — so when the unstable
-# argmin pushes the cell's histogram around, top-3 picks shift and the
-# cand-changed gate disables the code hysteresis, defeating it.
-#
-# Stabilizing the per-pixel argmin upstream means per-cell histograms
-# stay stable, top-3 picks stay stable, cand stays stable, and the code
-# hysteresis stays armed — every layer benefits. Unlike input-frame EMA
-# (which smears motion as the smoothed input chases the real one), this
-# is a *decision* hysteresis: when a pixel's actual color shifts enough
-# that the alternative palette entry is meaningfully better, the
-# threshold is exceeded on a single frame and the new index wins
-# immediately. No motion smear, no ghosting.
-#
-# 5000 in d² space suppresses up to ~10-LSB-per-channel sensor noise
-# (which moves d² by ~3000 for a typical near-boundary pixel), while a
-# 25-LSB real color change (d² shift ~22000) still releases on a single
-# frame. Tuned upward from the initial 2000 because residual rug-style
-# flicker (textured static subjects + ~8 LSB webcam noise) was still
-# crossing the threshold; 5000 fully suppresses it without introducing
-# any motion lag (since real motion exceeds 5000 trivially).
+# Per-pixel palette-index hysteresis for the percell path, same d² units.
+# Calibrated against measured webcam sensor noise — see
+# video-color.md#colormotion_smoothing--temporal-smoothing--after-images.
 PERCELL_QUANT_HYSTERESIS_BONUS = 5000.0
 
-# bg0 stickiness for the percell path. bg0 (the global %00 color, written to
-# $D021) is picked each frame as argmax of the EMA-smoothed palette counts. On
-# content where two colors are near-tied for most-populated — e.g. a mostly-
-# black frame with a bright moment, or letterboxed/pillarboxed video whose bars
-# quantize to black — the argmax flip-flops frame-to-frame, and since bg0 fills
-# every %00 pixel (background + the bars) the whole field strobes a different
-# color for a frame. That's a single instant $D021 change, not a write tear, so
-# it's especially visible on a slow transport where the rest of the frame lags.
-#
-# Fix: make bg0 sticky. Keep the current bg0 unless a challenger's smoothed
-# count beats it by this relative margin — so bg0 still tracks a *sustained*
-# dominant-color change (a real blue scene eventually turns the bars blue) but
-# stops flickering between near-equal dominants. If the old bg0 vanishes from the
-# frame its smoothed count → ~0 and any challenger trivially clears the margin,
-# so bg0 can never get stuck on an absent color.
+# bg0 stickiness for the percell path: keep the current bg0 unless a
+# challenger's smoothed count beats it by this relative margin. A vanished bg0
+# has a smoothed count of ≈0, so it can never get stuck on an absent color.
 BG0_HYSTERESIS_MARGIN = 0.25
 
-# Per-cell color-selection strategies for the mhires percell path. Each 4×8 cell
-# gets bg0 (global) plus 3 per-cell colors (c1/c2/c3); the strategy decides WHICH
-# 3 of the cell's present colors fill those slots. See pick_cell_colors.
-#   frequency — the 3 most-populated non-bg0 colors (default; temporally stable
-#               via the existing EMA, since the histogram it ranks is smoothed).
-#   luminance — the darkest, median, and brightest present color, so a cell's
-#               full tonal span survives even when one tone dominates the count.
-#   contrast  — darkest + brightest, then the present color farthest (in luma)
-#               from both, maximizing tonal spread across the 3 slots.
-#   error-min — the trio minimizing summed per-pixel quantization error against
-#               {bg0, c1, c2, c3}. Best reconstruction, but evaluates C(K,3)
-#               trios over the cell's top-K present colors (see
-#               ERROR_MIN_POOL_SIZE) — costlier than the others.
-# The strategy name list itself is CELL_STRATEGIES (imported from palette, the
-# single source of truth config.py validates against).
+# The strategies themselves are `pick_cell_colors`; the name list is
+# CELL_STRATEGIES in palette.py, the source config.py validates against. See
+# video-color.md#colorcell_strategy--which-3-colors-fill-a-cell.
 
-# error-min considers only each cell's top-K present colors (by smoothed count),
-# bounding the trio search to C(K,3) candidates evaluated across all 1000 cells
-# at once. A 4×8 cell rarely holds more than this many meaningfully-populated
-# colors after quantization, so top-6 is near-optimal while keeping the search
-# vectorized and realtime-capable. C(6,3) = 20 trios.
+# error-min bounds its trio search to each cell's top-K present colors by
+# smoothed count: C(6,3) = 20 trios, evaluated across all 1000 cells at once.
 ERROR_MIN_POOL_SIZE = 6
 
-# Relative-margin hysteresis for the error-min trio pick. Every other
-# selection stage in this module (bg0, frequency's top-3) picks off the
-# EMA-smoothed cell_counts, so temporal stability comes for free. error-min
-# instead scores candidate trios by summed reconstruction error against this
-# frame's raw (unsmoothed) per-pixel distances — the pool of colors it
-# searches is smoothed, but the winning trio is not. Under flicker blending, a
-# pair's fused color is deliberately close to a solid or another pair (that's
-# what makes it worth blending), so two trios routinely land within noise of
-# each other, and ordinary per-frame sensor/video noise flips the argmin every
-# frame — reproduced offline at ~500 of 1000 cells/frame on a synthetic
-# near-tied cell, versus 0 for the same noise under frequency/16-solid. Keep
-# the previous frame's trio unless a challenger's summed error is at least
-# this fraction lower, mirroring BG0_HYSTERESIS_MARGIN's keep-unless-beaten
-# shape for a minimization instead of a maximization — same value as that
-# constant, and an offline sweep against the reproduction above found no
-# measurable cost to a real (large, single-frame) color change: a genuine
-# jump clears even a much larger margin immediately, since the challenger's
-# error improvement is overwhelming rather than a near-tie.
+# Relative-margin hysteresis for the error-min trio pick: keep the previous
+# frame's trio unless a challenger's summed error is at least this fraction
+# lower. Unlike every other selection stage here, error-min scores against the
+# frame's raw per-pixel distances rather than the EMA-smoothed cell_counts, so
+# it gets no temporal stability for free. See
+# video-color.md#colorflicker_tolerance--temporal-color-blending.
 ERROR_MIN_HYSTERESIS_MARGIN = 0.25
 
 
@@ -269,11 +166,9 @@ def pick_cell_colors(
     bg0 entry already masked to -1 (so bg0 is never picked). `d_cell` is the
     (1000, 32, N) per-cell-pixel distance to all N entries (only the error-min
     strategy uses it). Returns a (1000, 3) int64 array of palette indices; any
-    slot the cell can't fill from a genuinely-present color is set to `bg0` —
-    the same poison-filler guard the frequency path has always used (a duplicate
-    bg0 is harmless: the %00 code already reaches bg0, and it keeps the absent
-    slots deterministic so present colors don't churn screen/color RAM
-    frame-to-frame). The caller sorts the result by palette index for
+    slot the cell can't fill from a genuinely-present color is set to `bg0`,
+    the poison-filler guard — a duplicate bg0 is harmless, since the %00 code
+    already reaches it. The caller sorts the result by palette index for
     delta-cache stability.
 
     N is 16 for the plain palette and larger under flicker blending, where the
@@ -283,8 +178,8 @@ def pick_cell_colors(
     when one is in play — the default is the 16-entry palette.
 
     `prev_trio` (only the error-min strategy uses it) is the previous frame's
-    (1000, 3) winning trio, for the temporal hysteresis ERROR_MIN_HYSTERESIS_MARGIN
-    documents; None disables it (first frame, or a caller that doesn't track it).
+    (1000, 3) winning trio, for the ERROR_MIN_HYSTERESIS_MARGIN hysteresis;
+    None disables it (first frame, or a caller that doesn't track it).
     """
     if strategy == "frequency":
         top3 = np.argpartition(cell_counts, -3, axis=1)[:, -3:]
@@ -294,14 +189,13 @@ def pick_cell_colors(
     if strategy == "error-min":
         return _pick_cell_colors_error_min(cell_counts, d_cell, bg0, prev_trio, error_min_margin)
 
-    # luminance / contrast both order the cell's present colors dark→light and
-    # pick the extremes; they differ only in the 3rd slot.
+    # luminance and contrast both order the cell's present colors dark→light
+    # and pick the extremes; they differ only in the 3rd slot.
     rows = np.arange(cell_counts.shape[0])
     last = cell_counts.shape[1] - 1  # highest valid entry index
     present = cell_counts > 0.0  # (1000, N) bool; bg0 masked out via -1
     n = present.sum(axis=1)  # (1000,) present color count per cell
-    # Sort present colors by luma; absent entries → +inf so they sort last and
-    # never get gathered for a valid slot.
+    # Absent entries → +inf so they sort last and are never gathered.
     luma_masked = np.where(present, luma[None, :], np.inf)
     order = np.argsort(luma_masked, axis=1)  # (1000, N) ascending by luma
     darkest = order[:, 0]
@@ -349,19 +243,17 @@ def _pick_cell_colors_error_min(
     """
     n_cells = cell_counts.shape[0]
     k = ERROR_MIN_POOL_SIZE
-    # Top-K present colors per cell (poison-guarded to bg0), like frequency but K.
+    # Top-K present colors per cell, poison-guarded to bg0.
     poolk = np.argpartition(cell_counts, -k, axis=1)[:, -k:]  # (n, K)
     absent = np.take_along_axis(cell_counts, poolk, axis=1) <= 0.0
     poolk = np.where(absent, bg0, poolk)  # (n, K)
-    # Per-cell-pixel distance to each pool color and to bg0.
     d_pool = np.take_along_axis(d_cell, poolk[:, None, :], axis=2)  # (n, 32, K)
     d_bg0 = d_cell[:, :, bg0]  # (n, 32)
-    # Enumerate all C(K,3) position-trios once; evaluate each across every cell.
+    # Every C(K,3) position-trio, each evaluated across all cells at once.
     trios = list(itertools.combinations(range(k), 3))  # T trios of pool positions
     best_err = np.full(n_cells, np.inf, dtype=np.float32)
     best_trio = np.zeros((n_cells, 3), dtype=np.intp)
     for i, j, m in trios:
-        # Per-pixel min over {bg0, pool[i], pool[j], pool[m]}, summed over pixels.
         cand_min = np.minimum(
             d_bg0, np.minimum(d_pool[:, :, i], np.minimum(d_pool[:, :, j], d_pool[:, :, m]))
         )
@@ -373,9 +265,9 @@ def _pick_cell_colors_error_min(
     if prev_trio is None:
         return challenger
 
-    # prev_trio's error against *this* frame's d_cell — not last frame's pool
-    # search, since the pool (and even the trio's own poolk positions) may have
-    # shifted; the trio's actual entry indices still index d_cell directly.
+    # prev_trio scored against *this* frame's d_cell: the pool, and the trio's
+    # own poolk positions, may have shifted since. Its entry indices still index
+    # d_cell directly.
     d_prev = np.take_along_axis(d_cell, prev_trio[:, None, :], axis=2)  # (n, 32, 3)
     prev_min = np.minimum(
         d_bg0, np.minimum(d_prev[:, :, 0], np.minimum(d_prev[:, :, 1], d_prev[:, :, 2]))
@@ -396,17 +288,12 @@ def ema_counts(mode, per_pixel: np.ndarray, n_entries: int = 16) -> np.ndarray:
     return mode._smoothed_counts.astype(np.int64)
 
 
-# Saturation multiplier applied (in HSV) before quantization in the palette-
-# mapping modes. Pushes desaturated webcam input far enough away from the
-# gray-axis palette entries that the gray-penalty bias actually flips the
-# argmin to a chromatic neighbor. 1.0 = identity.
+# HSV saturation multiplier applied before quantization in the palette-mapping
+# modes, so the gray-penalty bias can flip a desaturated pixel's argmin to a
+# chromatic neighbor. 1.0 = identity.
 DEFAULT_SAT_FACTOR = 1.8
 
-# palette_mode selects the VIC-II per-cell slot-allocation strategy ONLY.
-# Color shaping (channel boost + hue corrections) is an orthogonal global stage
-# configured in [color] and applied to every mode below — see
-# resolve_color_shaping / DEFAULT_HUE_CORRECTIONS. percell leads the tuple so
-# it's the default and the natural SHIFT-cycle starting point.
+# percell leads the tuple: it is the default and the SHIFT-cycle start.
 PALETTE_MODES = ("percell", "cheap", "vivid", "grayscale")
 
 
@@ -459,8 +346,6 @@ def advance_palette_cycle(
 def palette_mode_settings(mode: str) -> tuple[float, np.ndarray]:
     """Return (saturation_factor, gray_penalty_vector) for a palette mode."""
     if mode == "grayscale":
-        # Boosting saturation on a frame that'll only quantize to gray-axis
-        # is wasted work — leave it identity.
         return 1.0, make_gray_penalty(
             gray_strength=0.0,
             pale_strength=0.0,
@@ -485,75 +370,50 @@ def fade_nibbles(arr: np.ndarray, lut: np.ndarray) -> np.ndarray:
 class DisplayMode:
     name = "base"
     # True when the scene paints into the bitmap area ($2000). Overlays that
-    # write character/color RAM ($0400/$D800) only make sense over char modes,
-    # so they check this flag to refuse attachment to bitmap scenes.
+    # write $0400/$D800 check this flag to refuse attachment.
     is_bitmapped = False
-    # True for standard char modes (PETSCII screen codes + color RAM low
-    # nibble = FG). Overlays that paint PETSCII glyphs check this flag
-    # instead of matching `name == "petscii"`, so multiple compatible modes
-    # (petscii, blank) can host the same overlays.
+    # True for standard char modes (PETSCII screen codes + color RAM low nibble
+    # = FG). Overlays check this flag rather than matching `name == "petscii"`.
     is_petscii_compatible = False
-    # True for bitmap modes (hires, mhires) that can render the PETSCII text
-    # overlays (clock/marquee/…) by folding glyphs into the bitmap. Overlays
-    # that paint text accept either is_petscii_compatible (char) OR this
-    # (bitmap) — see overlays.validate_for_scene + text_surface.py.
+    # True for bitmap modes that render PETSCII text overlays by folding glyphs
+    # into the bitmap. Text overlays accept either this or
+    # is_petscii_compatible — see overlays.validate_for_scene + text_surface.py.
     is_bitmap_text_compatible = False
-    # Frame-rate ceiling the Playlist falls back to when the scene itself
-    # doesn't override target_fps. None = "use the playlist default (60
-    # NTSC / 50 PAL)". Bitmap modes can't sustain that over HTTP so they
-    # cap at 30.
+    # Frame-rate ceiling the Playlist falls back to when the scene does not
+    # override target_fps. None = the playlist default (60 NTSC / 50 PAL);
+    # bitmap modes cannot sustain that over HTTP and cap at 30.
     default_target_fps: float | None = None
-    # True if compose() + push() are implemented. When set, the scene's
-    # render path can call compose() to get screen/color buffers, run
-    # overlay composers that mutate those buffers, and then push() a single
-    # set of writes to the U64. Single-pass composition is what prevents
-    # overlay flicker — the scene's full-frame write would otherwise stomp
-    # the overlay's separate writes (and vice versa) on the next frame.
+    # True if compose() + push() are implemented, which lets overlays mutate the
+    # buffers between them so one set of writes carries scene and overlay
+    # together. Two separate write passes stomp each other on alternate frames.
     supports_compose = False
 
-    # The (width, height) compose()/render() downscales an incoming source
-    # frame to before quantizing — the *only* resolution this mode consumes
-    # (≤ 320×200 for every C64 mode). The single source of truth for both the
-    # compose resize AND the video decoder's downscale-during-decode plan
-    # (video._plan_decode_size): a 4K source frame for a 320px result is pure
-    # waste that blows the real-time decode budget, so AVFileSource reformats
-    # to a small headroom multiple of this during the yuv→bgr swscale pass
-    # instead of converting the full source frame. None = the mode renders no
-    # source frame (BlankDisplayMode), so the decoder keeps the native size.
+    # The (width, height) compose()/render() downscales a source frame to before
+    # quantizing — the only resolution this mode consumes. Also read by the
+    # video decoder's downscale-during-decode plan (video._plan_decode_size),
+    # which reformats to a small headroom multiple of this during the yuv→bgr
+    # swscale pass. None = the mode renders no source frame (BlankDisplayMode),
+    # so the decoder keeps the native size.
     frame_target_size: tuple[int, int] | None = None
 
-    # Per-source adaptive color fit ([color].auto_fit). None = disabled (the
-    # default for every mode); a scene that can pre-scan its source
-    # (video / slideshow) installs one via set_color_fit. The chromatic
-    # modes apply it as the first shaping step in compose()/render(); webcam
-    # scenes never set it, so this stays None and the path is a no-op.
+    # Per-source adaptive color fit ([color].auto_fit), installed by a scene
+    # that can pre-scan its source (video / slideshow). None = disabled.
     _color_fit: ColorFit | None = None
 
-    # Per-source forced-palette remap ([color].force_palette). None = disabled.
-    # Installed by pre-scanning scenes via set_color_map; only the chromatic
-    # quantizing modes (mcm, mhires) actually APPLY it — the base stores it so
-    # other modes (petscii) accept the call as a no-op. `_force_palette` is the
-    # active toggle (set from config at construction, flipped by SHIFT cycle);
-    # the remap only runs when the toggle is on AND a map has been installed.
+    # Per-source forced-palette remap ([color].force_palette). Only mcm and
+    # mhires apply it; the base stores it so other modes accept set_color_map as
+    # a no-op. The remap runs only when `_force_palette` is on AND a map is set.
     _color_map: ColorMap | None = None
     _force_palette: bool = False
 
-    # Scene fade (set/teardown transitions, driven by the Playlist). 1.0 = no
-    # fade; < 1.0 dims the composed frame's color-bearing fields toward black
-    # via a palette remap (see palette.build_fade_lut). `last_buffers` caches
-    # the most recent full-brightness composed frame so the freeze+dim fade-out
-    # can re-push it at decreasing alpha without re-composing. Only the
-    # compose-based families (Char/Bitmap) implement apply_fade; the base is a
-    # no-op so non-compose modes are unaffected.
+    # Scene fade, driven by the Playlist. 1.0 = no fade. `last_buffers` caches
+    # the most recent full-brightness composed frame, which is what lets the
+    # freeze+dim fade-out re-push at decreasing alpha without re-composing.
     fade_alpha: float = 1.0
     last_buffers: ComposeBuffers | None = None
 
-    # Persistent user brightness (WLED bridge Mode 1 `bri` slider). 1.0 = full
-    # brightness; < 1.0 dims the composed frame the same way a fade does, but it
-    # persists across frames (and is re-stamped onto each fresh scene's mode by
-    # the Playlist) rather than ramping. It folds *multiplicatively* with the
-    # transient `fade_alpha`, so a fade-out from a dimmed scene ramps down from
-    # the dimmed level. See `_fade_lut_alpha`.
+    # Persistent user brightness (WLED bridge Mode 1 `bri` slider). Folds
+    # multiplicatively with the transient `fade_alpha` — see `_fade_lut_alpha`.
     user_dim: float = 1.0
 
     @property
@@ -595,24 +455,15 @@ class DisplayMode:
         from a previous file. No-op effect on modes that don't apply it."""
         self._color_map = cmap
 
-    # --- Live performance: runtime-tunable parameters --------------------
-    # Continuous scalars a MIDI knob / WLED slider can sweep, name -> (lo, hi);
-    # and discrete choices, name -> allowed values (a CC/slider bucket-selects,
-    # a note/pad cycles). midi_control / wled_device drive both through the
-    # `mode.<name>` holder, the same seam they use for effect/source LIVE_PARAMS.
-    # Empty on the base; the quantizing modes populate them. The choice tuples
-    # are pinned to [color]'s metadata choices by tests/test_live_tune.py so they
-    # can't drift from the config surface.
+    # Continuous scalars a MIDI knob / WLED slider can sweep, name -> (lo, hi),
+    # and discrete choices, name -> allowed values. The choice tuples are pinned
+    # to [color]'s metadata choices by tests/test_live_tune.py.
     LIVE_PARAMS: dict[str, tuple[float, float]] = {}
     LIVE_CHOICES: dict[str, tuple[str, ...]] = {}
 
     # [color].auto_fit_strength as a live knob. The pre-scanned ColorFit is
-    # installed at FULL strength (the scenes' accumulators use strength=1.0) and
-    # the mode lerps it toward identity by this factor at apply() time, so the
-    # strength is tunable at runtime (and persistable) instead of frozen into the
-    # fit. 1.0 = the full fit; 0.0 = identity (auto_fit off). Only the
-    # color_fit-applying modes (mcm/mhires/petscii) read it via _fit_for_apply;
-    # others leave it at the default and it does nothing.
+    # installed at full strength and lerped toward identity by this factor at
+    # apply() time, so the strength stays runtime-tunable. 0.0 = auto_fit off.
     _auto_fit_strength: float = 1.0
 
     @property
@@ -669,8 +520,8 @@ class DisplayMode:
         return value if isinstance(value, str) else None
 
     def setup(self, api: C64Backend):
-        # Anything that changes the meaning of the VIC memory map should
-        # drop the dirty cache so we don't suppress a needed write.
+        # A change in what the VIC memory map means has to drop the dirty
+        # cache, which is keyed by region and not by content.
         api.invalidate_cache()
 
     def teardown(self, api: C64Backend) -> None:
@@ -678,11 +529,9 @@ class DisplayMode:
         a scene boundary. Default: no-op (most modes only write VIC
         registers + memory, which the next scene's setup overwrites).
 
-        Modes that install a C64-side IRQ handler (currently:
-        HiresDisplayMode with use_reu_staged) MUST override this to
-        unhook $0314 before the next scene runs, or the next scene's
-        IRQ-using code (e.g. an audio REU pump on a video that
-        followed) vectors into the stale handler.
+        Modes that install a C64-side IRQ handler MUST override this to unhook
+        $0314 before the next scene runs, or the next scene's IRQ-using code
+        vectors into the stale handler.
 
         Called by Scene.teardown before audio.stop() and any
         scene-specific teardown."""

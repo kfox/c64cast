@@ -22,20 +22,16 @@ datagram (a sender only needs to speak one):
   index, for >256 px). Byte 1 is a return-to-normal timeout we ignore (the scene
   owns the display lifetime).
 
-E1.31/sACN (multi-universe reassembly) is a deliberate follow-up — LedFx and
-xLights can both emit DDP, so it buys little for a lot of protocol surface.
-
 Neither wire protocol carries authentication, so this sink is trusted-segment
-only: any host that can reach the bound ports controls what c64cast renders
-(and, since c64cast casts/streams, what any viewer sees). `sink_allow`
-(`[scenes.*]` config) restricts accepted senders to an IP allowlist; leaving
-it empty accepts any sender that reaches the port, matching real WLED's own
-receive-side behavior. `sink_ddp_port` / `sink_wled_port` move the sink off
-the two standard ports if another local process already owns one.
+only: any host that can reach the bound ports controls what c64cast renders,
+and therefore what any viewer of the cast sees. `sink_allow` restricts accepted
+senders to an IP allowlist; empty accepts any sender that reaches the port,
+matching real WLED's receive-side behavior. `sink_ddp_port` / `sink_wled_port`
+move the sink off the standard ports when another local process owns one.
 
-Pure stdlib (`socket`/`struct`/`select`) + numpy — no new dependency and no
-`wled` extra (unlike Modes 1/3, which need zeroconf/fastapi). The parsers are
-side-effect-free so they unit-test against the documented byte layouts.
+Pure stdlib (`socket`/`struct`/`select`) plus numpy — no `wled` extra.
+
+See docs/architecture/wled.md#wled_sinkpy--virtual-led-matrix--realtime-pixel-sink-wled-bridge-mode-2.
 """
 
 from __future__ import annotations
@@ -60,14 +56,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Standard ports. DDP is fixed by spec; WLED realtime is WLED's documented
-# realtime UDP port.
+# DDP is fixed by spec; 21324 is WLED's documented realtime UDP port.
 DDP_PORT = 4048
 WLED_REALTIME_PORT = 21324
 
-# --- DDP -------------------------------------------------------------------
-# 10-byte header, big-endian offset+length. Layout (WLED's DDPoutput / the DDP
-# spec): flags, sequence, data-type, dest-id, uint32 offset (bytes), uint16 len.
+# DDP: 10-byte header, big-endian offset+length. Layout (WLED's DDPoutput and
+# the DDP spec): flags, sequence, data-type, dest-id, uint32 offset (bytes),
+# uint16 len.
 _DDP_HEADER_FMT = ">BBBBIH"
 _DDP_HEADER_LEN = struct.calcsize(_DDP_HEADER_FMT)
 assert _DDP_HEADER_LEN == 10, "DDP header must be 10 bytes"
@@ -79,7 +74,6 @@ _DDP_FLAG_REPLY = 0x04  # a reply packet, not pixel data
 _DDP_FLAG_STORAGE = 0x08  # config-storage data, not pixel data
 _DDP_FLAG_TIME = 0x10  # a 4-byte timecode follows the 10-byte header
 
-# --- WLED realtime UDP -----------------------------------------------------
 _WLED_WARLS = 1  # [index, r, g, b] per pixel
 _WLED_DRGB = 2  # [r, g, b] from pixel 0
 _WLED_DRGBW = 3  # [r, g, b, w] from pixel 0 (white dropped)
@@ -210,9 +204,8 @@ class WledPixelReceiver:
     # select() wakeup cadence so the blocking loop can honor the stop event.
     _SELECT_TIMEOUT = 0.25
     _RECV_BUF = 65535
-    # Publish at most this often: bounds the per-datagram frame-copy cost
-    # (snapshot_bgr) to a real display frame budget regardless of how fast a
-    # sender (or an attacker) pushes datagrams.
+    # Bounds the per-datagram frame-copy cost (snapshot_bgr) to a display frame
+    # budget regardless of how fast a sender pushes datagrams.
     _PUBLISH_MIN_INTERVAL_S = 1.0 / 60.0
 
     def __init__(
@@ -248,10 +241,9 @@ class WledPixelReceiver:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            # Loopback-only was rejected: the senders (LedFx, xLights, a WLED
-            # controller) stream from elsewhere on the LAN, and a loopback bind
-            # succeeds, so the scene would show nothing and never report why.
-            # Accepting LAN traffic is the feature, hence the CodeQL waiver.
+            # Senders (LedFx, xLights, a WLED controller) stream from
+            # elsewhere on the LAN, so a loopback bind would succeed and then
+            # show nothing without reporting why.
             # codeql[py/bind-socket-all-network-interfaces]
             s.bind((self._host, port))
         except OSError as e:
@@ -294,9 +286,8 @@ class WledPixelReceiver:
 
     def stop(self) -> None:
         # Ring before joining: the worker parks in `select` for up to
-        # _SELECT_TIMEOUT, which leaves only a 2x margin under PollThread's
-        # 0.5 s join, so on a loaded box the join timed out and logged
-        # "did not stop within 0.5s" even though nothing was actually wedged.
+        # _SELECT_TIMEOUT, only a 2x margin under PollThread's 0.5 s join, so a
+        # loaded box can time the join out with nothing actually wedged.
         self._ring_wakeup()
         if self._poll is not None:
             self._poll.stop()
@@ -366,11 +357,10 @@ class WledPixelReceiver:
             return self._latest
 
     def _publish(self) -> None:
-        # Rate-limited: a sender (or an attacker) can push datagrams far
-        # faster than any display refreshes, and snapshot_bgr copies the
-        # whole frame twice — so cap the copy rate to a frame budget rather
-        # than the datagram rate. The assembler buffer itself is unaffected;
-        # a skipped publish is simply caught by the next one, moments later.
+        # A sender can push datagrams far faster than any display refreshes and
+        # snapshot_bgr copies the whole frame twice, so the copy rate is capped
+        # to a frame budget rather than the datagram rate. The assembler buffer
+        # is unaffected; a skipped publish is caught by the next one.
         now = time.monotonic()
         if now - self._last_publish_ts < self._PUBLISH_MIN_INTERVAL_S:
             return
@@ -400,8 +390,8 @@ class WledPixelReceiver:
                 self._saw_ddp_push = True
                 self._publish()
             elif not self._saw_ddp_push:
-                # A sender that never sets the push flag: publish every packet so
-                # the display still updates (once we've seen one push we trust it).
+                # A sender that never sets the push flag: publish every packet,
+                # until the first push proves it uses the flag.
                 self._publish()
             return
         writes = parse_wled_realtime(datagram)

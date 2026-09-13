@@ -1,20 +1,15 @@
 """VIC-II display mode renderers.
 
-Each mode owns the conversion from an OpenCV BGR frame to the byte layout
-the VIC-II expects, plus the register pokes needed to put the chip into
-that mode. All renderers go through C64Backend.write_region so the
-delta-upload cache can skip unchanged bytes.
+Each mode owns the conversion from an OpenCV BGR frame to the byte layout the
+VIC-II expects, plus the register pokes that put the chip into that mode. One
+module per mode (`petscii`/`blank`/`mcm`/`hires`/`mhires`) over two mid-bases
+(`char`, `bitmap`) and the shared machinery + `DisplayMode` base in `base`.
 
-Package layout: one module per mode (`petscii`/`blank`/`mcm`/`hires`/
-`mhires`) over two mid-bases (`char`, `bitmap`) and the shared machinery +
-`DisplayMode` base in `base`. The C64-side 6502 layer for the tear-free
-bitmap pipelines lives one level up in `modes_irq.py`; the bitmap modes
-here install and drive it per frame.
+The live-tunable pick knobs re-exported here are value snapshots. Their
+rebindable home is `modes.base`, which the mode classes read at call time, so
+a diag retuning them at runtime must set them on `c64cast.video.modes.base`.
 
-The live-tunable pick knobs (`PALETTE_PICK_EMA_ALPHA`, `PERCELL_*`) are
-re-exported here as value snapshots; their *rebindable* home is
-`modes.base`, which the mode classes read at call time — a diag that wants
-to retune them at runtime must set them on `c64cast.video.modes.base`.
+See docs/architecture/video-color.md#modes--displaymode-hierarchy.
 """
 
 from .base import (
@@ -93,10 +88,9 @@ from .base import (
     validate_palette_mode as validate_palette_mode,
 )
 
-# Import order below IS DisplayMode.__subclasses__() creation order — the
-# historical modes.py declaration order. introspect's live-target walk, the
-# MIDI-setup wizard's pick lists, and the generated reference appendix F all
-# render in that order, so these lines must not be re-sorted.
+# This order IS DisplayMode.__subclasses__() creation order, which introspect's
+# live-target walk, the MIDI-setup wizard's pick lists and reference appendix F
+# all render in. Do not re-sort.
 # isort: off
 from .char import (
     CharDisplayMode as CharDisplayMode,

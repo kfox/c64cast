@@ -1,21 +1,11 @@
 """Software VIC-II framebuffer for local preview + recording.
 
-Maintains a shadow copy of relevant C64 memory ranges (screen RAM, color
-RAM, bitmap area, VIC registers) by subscribing to ``Ultimate64API``
-write events, then on demand renders the current state to a 320×200 RGB
-image you can display in a window or pipe to a video file.
+Shadows the C64 memory ranges the render path writes (screen RAM, color RAM,
+bitmap area, VIC registers) by subscribing to backend write events, then
+renders the current state to a 320×200 BGR image on demand. Covers the four
+modes c64cast renders to: standard text, MCM, hires and mhires.
 
-Supports the modes c64cast actually renders to:
-  * Standard text mode (PETSCII char + color)
-  * Multicolor text mode (MCM)
-  * Hires bitmap
-  * Multicolor bitmap (mhires)
-
-Text modes need a 2 KB character set. By default we use a hand-rolled 8×8
-ASCII-only font shipped with the package — it's not the real C64 ROM but
-covers letters/digits/punctuation enough for the visible scene previews
-to be legible. To get pixel-accurate PETSCII glyphs, pass a 2 KB char-ROM
-dump as `charset_path` (read from a real C64 / VICE / U64).
+See docs/architecture/video-color.md#framebufferpy--previewpy--the-software-mirror-behind-preview-and-recording.
 """
 
 from __future__ import annotations
@@ -52,16 +42,13 @@ def _builtin_charset() -> bytes:
         ch = chr(code)
         img = np.zeros((8, 8), dtype=np.uint8)
         cv2.putText(img, ch, (0, 7), cv2.FONT_HERSHEY_PLAIN, 0.5, 255, 1, cv2.LINE_8)
-        # Threshold to 1-bit.
         bits = (img > 128).astype(np.uint8)
-        # Pack each row's 8 bits into a byte (MSB = col 0).
         for row in range(8):
             byte = 0
             for col in range(8):
                 byte |= int(bits[row, col]) << (7 - col)
             cs[code * 8 + row] = byte
-    # Map upper-case to screen codes 0x01-0x1A (where C64 PETSCII puts them).
-    # The C64 default charset has @ at screen code 0, A at 1, ..., Z at 26.
+    # Screen codes, not PETSCII: the default charset has @ at 0, A at 1, Z at 26.
     for code in range(0x01, 0x1B):
         ascii_code = 0x40 + code  # A..Z
         ch = chr(ascii_code)
@@ -74,12 +61,7 @@ def _builtin_charset() -> bytes:
                 byte |= int(bits[row, col]) << (7 - col)
             cs[code * 8 + row] = byte
     cs[0x60 * 8 : 0x60 * 8 + 8] = bytes([0xFF] * 8)
-    # Screen codes $80-$FF are the reverse-video twins of $00-$7F, so mirror
-    # the real ROM and make them the bitwise complement. Without this the whole
-    # upper half is blank, and the codes c64cast leans on hardest are up there:
-    # SC_FULL_BLOCK ($A0) is what big_text paints its glyph pixels with and
-    # what the `blocks` PETSCII style fills every cell with, and the shading
-    # ramp in petscii_styles is mostly $E0-$F2. They all rendered as nothing.
+    # Screen codes $80-$FF are the real ROM's reverse-video twins of $00-$7F.
     for i in range(1024):
         cs[1024 + i] = ~cs[i] & 0xFF
     return bytes(cs)
@@ -89,24 +71,18 @@ class Framebuffer:
     """Shadow + renderer. Register with `api.add_write_listener(fb.on_write)`."""
 
     def __init__(self, charset_path: str | None = None):
-        # 64K shadow. Plenty cheap.
         self.ram = bytearray(0x10000)
-        # VIC mode defaults (post-reset).
+        # Post-reset VIC and color-RAM state, so the mirror agrees with the C64
+        # about the screen nothing has written to yet.
         self.ram[VIC.D011_CONTROL_1] = 0x1B
         self.ram[VIC.D016_CONTROL_2] = 0x08
         self.ram[VIC.D018_MEMORY] = 0x14
         self.ram[VIC.D020_BORDER] = 14  # light blue
         self.ram[VIC.D021_BG0] = 6  # blue
-        # Color RAM defaults to light blue (matches boot).
         for i in range(SCREEN.N_CELLS):
             self.ram[SCREEN.COLOR_RAM + i] = 14
         self._lock = threading.Lock()
-        # Resolve through char_rom so the preview shows the same glyphs the C64
-        # does (a dumped ROM under the data dir, or `charset_path` when set).
-        # A configured-but-unreadable (or unverifiable) path degrades to the
-        # builtin font with a warning from char_rom itself: this window is a
-        # mirror, and killing the whole run over a mistyped preview path would
-        # be a spectacularly bad trade.
+
         from c64cast.hw.char_rom import load_glyphs
 
         self.charset = load_glyphs(charset_path)
@@ -137,8 +113,6 @@ class Framebuffer:
         if is_multicolor:
             return self._render_mcm(ram)
         return self._render_text(ram)
-
-    # ---- bitmap modes -------------------------------------------------------
 
     def _vic_bank_base(self, ram: bytes) -> int:
         """0x0000 or 0x8000: which VIC bank a bank-swapping bitmap mode's
@@ -195,16 +169,13 @@ class Framebuffer:
         if installed != FLICKER_SWAP_IRQ_HANDLER:
             return None
         page_b = ram[FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_D018 + 1]
-        # $D018's matrix nibble is bank-relative, so it's added to whichever
-        # bank the tracker's own pending-bank byte says is current (see
-        # _vic_bank_base) rather than assumed to be bank 0.
+        # $D018's matrix nibble is bank-relative, hence the bank_base addend.
         return bank_base + ((page_b >> 4) & 0x0F) * 0x400
 
     def _render_hires(self, ram: bytes) -> np.ndarray:
         """320×200 hires bitmap. Each 8×8 cell has FG (high nibble of screen
         RAM byte) and BG (low nibble)."""
         bank_base = self._vic_bank_base(ram)
-        # Cell layout: 25 cell rows × 40 cells × 8 bytes/cell.
         bitmap_base = bank_base + SCREEN.BITMAP
         screen_base = bank_base + SCREEN.RAM
         bitmap = np.frombuffer(
@@ -222,9 +193,7 @@ class Framebuffer:
             fg_palette = C64_PALETTE_BGR[fg]
             bg_palette = C64_PALETTE_BGR[bg]
         else:
-            # Fuse the two fields' cell colors once, then render a single pass:
-            # equivalent to alternating them, and it is the frame the eye
-            # integrates. Both pages share the bitmap, so only the colors differ.
+            # Both pages share the bitmap, so only the cell colors differ.
             screen_b = np.frombuffer(ram[page_b : page_b + SCREEN.N_CELLS], dtype=np.uint8).reshape(
                 25, 40
             )
@@ -257,8 +226,7 @@ class Framebuffer:
             ram[screen_base : screen_base + SCREEN.N_CELLS],
             dtype=np.uint8,
         ).reshape(25, 40)
-        # Color RAM ($D800) is never banked — one shared SRAM regardless of
-        # which VIC bank is displayed.
+        # Color RAM ($D800) is never banked — one SRAM whatever the VIC bank is.
         color_ram = np.frombuffer(
             ram[SCREEN.COLOR_RAM : SCREEN.COLOR_RAM + SCREEN.N_CELLS],
             dtype=np.uint8,
@@ -269,10 +237,8 @@ class Framebuffer:
             c1_palette = C64_PALETTE_BGR[(screen >> 4) & 0x0F]
             c2_palette = C64_PALETTE_BGR[screen & 0x0F]
         else:
-            # Only c1/c2 alternate — c3 is the un-banked $D800 and bg0 the single
-            # $D021 register, so both fields read one value there. Fusing the two
-            # pages once is what the eye integrates, and is far cheaper than
-            # rendering both (see fuse_indices).
+            # Only c1/c2 alternate: c3 is the un-banked $D800 and bg0 the single
+            # $D021 register, so both fields read one value there.
             screen_b = np.frombuffer(ram[page_b : page_b + SCREEN.N_CELLS], dtype=np.uint8).reshape(
                 25, 40
             )
@@ -297,8 +263,6 @@ class Framebuffer:
                         img[cy * 8 + row, x] = c
                         img[cy * 8 + row, x + 1] = c
         return img
-
-    # ---- char modes ---------------------------------------------------------
 
     def _render_text(self, ram: bytes) -> np.ndarray:
         """Standard 40×25 char mode. Each cell: screen code, FG from color

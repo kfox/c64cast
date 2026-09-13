@@ -682,7 +682,9 @@ def build_wired_display_mode(display: str, wiring: DisplayWiring) -> DisplayMode
 
     REU-staged video push (opt-in via [video].use_reu_staged): PETSCII and
     Blank honor the flag with single-buffer host-triggered REU→main DMAs (no
-    IRQ install — coexists with REU audio cleanly today). Hires and
+    IRQ install, but they drive REC from the host while the REU audio pump
+    drives it from $0314, and nothing enforces exclusion — see the
+    REU_VIDEO_SCREEN_BASE block in modes_irq.py). Hires and
     MultiHires honor it with double-buffer + a C64-side raster IRQ at $0314
     that swaps $DD00 at vblank; when the scene also opts into REU audio, the
     bank-swap install picks a MERGED dispatcher whose non-raster branch JMPs

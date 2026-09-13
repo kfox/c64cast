@@ -308,7 +308,7 @@ Nothing structural changes downstream: candidate selection, EMA/hysteresis, and 
 
 Both are a single vectorized array op over the whole frame, so they hold realtime frame rates, and both are constant at a given screen position — a static source dithers identically frame to frame, and motion sources gain no shimmer.
 
-Blue noise additionally has no low-frequency structure, so it drops the regular grid/cross-hatch pattern Bayer's 8×8 tiling shows at C64 resolution — same cost, same stability. See the module docstring for the full property breakdown.
+Blue noise additionally has no low-frequency structure, so it drops the regular grid/cross-hatch pattern Bayer's 8×8 tiling shows at C64 resolution — same cost, same stability.
 
 Both are skipped when a force-palette remap (`ColorMap.apply`) is active: those pixels are already exact chosen colors, and dithering would fight the assignment. Modes dispatch through `modes._ORDERED_DITHER_OFFSET_FNS`, a lookup shared by the three `compose()` call sites (MCM, Hires, MultiHires).
 
@@ -456,7 +456,7 @@ The tolerance values are named apart from the tier names on purpose: one pair sc
 
 **No tolerance admits the `intense` tier.** Those ten pairs stay in the table because they are what was seen, and dropping them would make "scored but excluded" indistinguishable from "never scored" — which is the distinction the whole admission rule turns on. But there is no setting for them, because measured against the plain palette they buy nothing: see the reconstruction table below, where admitting them moves the error by under 0.1 % on every fixture. A setting that trades visible flicker for zero accuracy is not a choice worth offering.
 
-**A pair with no tier is never admitted, at any tolerance.** On the Ultimate 64 table that costs nothing — the scored set is exactly what the hard clamp allows, so coverage is total at every legal setting. The VIC-II rendering shifts luminances enough to bring five unscored pairs under the clamp, and one of them is Cyan+Yellow, which this module's own docstring calls as violent a flicker as anything on the chart and which ΔY refused on the U64. Excluding the unscored is what stops a palette swap admitting it. `scripts/diags/flicker_score_grid.py` is how the table grows; a test pins the recorded distribution so a tier cannot drift silently.
+**A pair with no tier is never admitted, at any tolerance.** On the Ultimate 64 table that costs nothing — the scored set is exactly what the hard clamp allows, so coverage is total at every legal setting. The VIC-II rendering shifts luminances enough to bring five unscored pairs under the clamp, and one of them is Cyan+Yellow — as violent a flicker as anything on the chart, and one ΔY refused on the U64. Excluding the unscored is what stops a palette swap admitting it. `scripts/diags/flicker_score_grid.py` is how the table grows; a test pins the recorded distribution so a tier cannot drift silently.
 
 **The scoring path is not bounded by the table it feeds.** Filtering by tier is right for playback and exactly wrong for the tool that produces the tiers. A pair scored `intense` is in no blend table, so it cannot be put on screen — which would make a wrong tier permanent, since re-judging it requires rendering it. The same blocks scoring a palette nobody has scored: its unscored pairs are in no table either. `[color].flicker_score_pairs` takes an explicit list (`"Blue+Brown"`, or `"6+9"` — the shape `BlendTable.describe` prints, so a pair copies straight out of an arming log) and replaces the eligible set outright, ignoring both the tier data and the luma cap. `flicker_score_grid.py` writes it per page, so each page's table holds exactly that page's patches and `verify_page` becomes an exact check rather than an approximate one.
 
@@ -575,6 +575,12 @@ Range 0..1, default 0.25. A single dial over the mhires `percell` path's two *te
 
 1. The per-cell color-count EMA (`_smoothed_cell_counts`, blended each frame with `PERCELL_PICK_EMA_ALPHA = 0.15`), which stabilizes *which* colors a cell offers.
 2. The per-pixel/per-cell decision hysteresis (`PERCELL_QUANT_HYSTERESIS_BONUS` / `PERCELL_CODE_HYSTERESIS_BONUS`, each 5000 in d²-space, further scaled by `PERCEPTUAL_DIST_SCALE` under Lab matching), which keeps a pixel on its previous palette index or bitmap code unless the new frame beats it by the bonus.
+
+    The code hysteresis is what the long-capture profile pointed at: its most-flickery cells ran 80-90 % bitmap-byte transition rates with **zero** screen + color RAM changes, i.e. pure per-pixel code oscillation inside a stable cell palette.
+
+    Both are calibrated against measured webcam sensor noise rather than picked round. 5000 in d² space (√5000 ≈ 71 in L2 BGR) suppresses up to ≈10 LSB per channel of sensor noise, which moves d² by ≈3000 for a typical near-boundary pixel, while a 25-LSB real color change (d² shift ≈22000) still releases on a single frame. `PERCELL_QUANT_HYSTERESIS_BONUS` was raised from an initial 2000 because residual rug-style flicker on textured static subjects under ≈8 LSB of noise was still crossing the threshold. It is a *decision* hysteresis rather than an input-frame EMA, so it costs no motion smear: real motion exceeds the threshold on the frame it happens.
+
+    They also have to work together. The code hysteresis operates only in the cell's 4-entry `{bg0, c1, c2, c3}` space *after* the top-3 picks, so an unstable per-pixel argmin pushes the cell's histogram around, shifts the top-3 picks, and trips the cand-changed gate that disarms it. Stabilizing the per-pixel argmin upstream is what keeps the per-cell histograms, the top-3 picks and therefore the code hysteresis all stable.
 
 **The tradeoff.** Both exist to stop per-frame color churn reading as shimmer on noisy video. Both buy that by trading motion-tracking for stability — so on a hard shot cut they hold structure from the *previous* shot for a moment, and an outline lingers as an after-image while the buffers decay.
 
