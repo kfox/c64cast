@@ -1,24 +1,22 @@
 """``--midi-setup`` — the MIDI-learn wizard that writes a controller profile.
 
-Everything ``[midi_control]`` can do live today requires hand-authoring a
-``cc_map`` TOML: you have to know a controller's CC/note numbers *and* the
-internal target vocabulary (``effect.decay``, ``mode.dither_strength``,
-``transport.jog``, …). This wizard removes both: it watches the controller,
-you press/twist each control when prompted, and it writes a reusable
+Watches the controller while you press or twist each control when prompted, and
+writes a reusable
 :class:`~c64cast.control.transport.ControllerProfileStore` profile so a plain
 ``c64cast --config …`` run (with ``[midi_control].controller_profile = "auto"``,
-the default) picks the mappings up with zero TOML edits.
+the default) picks the mappings up with no TOML edits.
 
 Mirrors :mod:`c64cast.app.wizard`'s split: **pure helpers** (``detect_encoder``,
 ``dominant_control``, ``build_*`` — all testable with scripted fake-mido
 messages) plus a **thin questionary shell** (:func:`run_setup`). Runs *instead
 of* playback, like ``--init``. Needs the ``midi`` + ``wizard`` extras.
 
-The learn loop reads a controller identically to the live listener by reusing
-:func:`c64cast.control.midi_control.classify_message` — a learned mapping can't disagree
-with how the listener will later interpret the same message. The target picker
-is driven by :func:`c64cast.app.introspect.live_targets`, the single source of truth
-over the ``LIVE_PARAMS``/``LIVE_CHOICES`` registries.
+The learn loop reads a controller through
+:func:`c64cast.control.midi_control.classify_message`, so a learned mapping
+cannot disagree with how the listener will later interpret the same message;
+the target picker is driven by :func:`c64cast.app.introspect.live_targets`.
+
+See docs/architecture/control.md#midi_setuppy--the---midi-setup-midi-learn-wizard-phase-5.
 """
 
 from __future__ import annotations
@@ -49,11 +47,6 @@ _TRANSPORT_BUTTONS: tuple[tuple[str, str], ...] = (
 # A learned knob detected as a relative encoder can drive the jog/scrub instead
 # of sweeping a param — offered as an extra target for encoders.
 _JOG_TARGET_LABEL = "transport.jog (DJ scrub — relative encoder)"
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers (no I/O — scripted-message testable)
-# ---------------------------------------------------------------------------
 
 
 def detect_encoder(values: list[int]) -> bool:
@@ -144,11 +137,6 @@ def describe_mapping(m: dict[str, Any]) -> str:
     return head
 
 
-# ---------------------------------------------------------------------------
-# I/O: reading learn bursts from a live port
-# ---------------------------------------------------------------------------
-
-
 def _drain(port: Any) -> None:
     """Discard any messages already queued (so a learn step starts clean)."""
     for _ in port.iter_pending():
@@ -180,11 +168,6 @@ def _read_burst(
             break
         time.sleep(0.005)
     return events
-
-
-# ---------------------------------------------------------------------------
-# Shell
-# ---------------------------------------------------------------------------
 
 
 def _ensure_questionary():  # type: ignore[no-untyped-def]
@@ -261,7 +244,6 @@ def _bind_knobs(q: Any, knobs: list[tuple[int, bool]]) -> list[dict[str, Any]]:
     if not knobs:
         return []
     targets = introspect.live_targets()
-    # Grouped picker labels → target string.
     label_to_target: dict[str, str] = {}
     choices_by_group: dict[str, list[str]] = {}
     for t in targets:
@@ -279,7 +261,6 @@ def _bind_knobs(q: Any, knobs: list[tuple[int, bool]]) -> list[dict[str, Any]]:
     print("\nBind each learned knob to a live target.\n")
     out: list[dict[str, Any]] = []
     for number, is_enc in knobs:
-        # Build the flat choice list: an encoder gets the jog option first.
         choices: list[str] = ["(skip)"]
         if is_enc:
             choices.append(_JOG_TARGET_LABEL)
@@ -452,9 +433,8 @@ def run_setup() -> int:
         print("Nothing saved.")
         return 2
 
-    # Grid-controller LED feedback pass (Phase 4) — after the input mappings,
-    # since the OUT port picker doesn't need the learn port open. Preserves any
-    # existing block on skip (re-run friendly).
+    # After the input mappings, since the OUT port picker doesn't need the
+    # learn port open. Preserves any existing block on skip (re-run friendly).
     try:
         feedback = _learn_feedback(q, store.feedback())
     except KeyboardInterrupt:

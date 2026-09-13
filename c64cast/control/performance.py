@@ -1,41 +1,27 @@
-"""Clip-launch grid — the "video sampler" core of the Live DJ/VJ arc (Phase 2;
-see docs/architecture/control.md → "Live performance").
+"""Clip-launch grid — the "video sampler" core of the Live DJ/VJ arc.
 
-`PerformanceSession` turns a bank of ``[[performance.clips]]`` slots into
-pad-fired scenes, quantized to the process-wide :class:`~c64cast.control.tempo.TempoClock`
-beat grid (Phase 1). It is constructed one-per-:class:`~c64cast.app.playlist.Playlist`
-(mirrors :class:`~c64cast.control.transport.TransportSession` / ``pl.tempo``), and — like
-the transport session — **all scene mutation happens on the playlist thread**:
-the MIDI reader thread only ever :meth:`enqueue`\\s a :class:`ClipEvent`; the
-playlist thread drains it in :meth:`service`, which is called at the top of
-``Playlist._advance`` once per frame.
+:class:`PerformanceSession` turns a bank of ``[[performance.clips]]`` slots into
+pad-fired scenes, quantized to the process-wide
+:class:`~c64cast.control.tempo.TempoClock` beat grid. One per
+:class:`~c64cast.app.playlist.Playlist`.
 
-Launch lifecycle (the thing that makes scene-*type* changes viable as live hits,
-which the plain ``midi_control`` surface deliberately excludes):
+**All scene mutation happens on the playlist thread**: the MIDI reader thread
+only ever :meth:`enqueue`\\s a :class:`ClipEvent`, and the playlist thread drains
+it in :meth:`service`, called at the top of ``Playlist._advance`` once per
+frame. A pad press arms a slot and builds its scene on a background thread, so
+the setup cost hides under the count-in; the swap lands on the next ``quantize``
+boundary. ``trigger`` plays through or loops, ``gate`` plays while the pad is
+held, ``toggle`` latches.
 
-1. **Arm** — a pad press arms the slot. The scene is *built* on a background
-   thread (``pl.build_performance_scene`` → ``config.build_scene``), so the
-   network/decoder setup cost is hidden under the bar count-in. A second press
-   supersedes a pending arm.
-2. **Quantized swap** — once the build is ready *and* the next ``quantize``
-   boundary (``off`` = immediately, ``beat``/``bar`` = the grid) arrives, the
-   armed scene is swapped in via ``Playlist.perf_swap_scene`` (the single-scene
-   hot-swap generalized from ``_apply_reload``: ``safe_teardown`` the current
-   scene, ``safe_setup`` the armed one). When the clock isn't running the
-   quantize is treated as ``off`` so a pad always fires.
-3. **Launch semantics** — ``trigger`` plays through / loops; ``gate`` plays while
-   the pad is held and restores the prior program on release; ``toggle`` latches
-   on/off. A finished clip either re-setups (``loop``) or restores the program it
-   replaced (a one-level return target: the playlist scene it interrupted, or the
-   clip that was running under it).
-
-There is **no on-screen feedback** here (the C64 output is audience-facing):
-count-in / armed / active state is surfaced to controller LEDs (Phase 4) and the
-web console (Phase 5), never ``post_osd`` to the screen.
+There is **no on-screen feedback** here — the C64 output is audience-facing, so
+armed/active state goes to controller LEDs and the web console, never
+``post_osd``.
 
 Kept import-light (stdlib only; ``Playlist``/``Scene`` under ``TYPE_CHECKING``,
 ``build_performance_scene`` injected by cli.py) so playlist.py can pull it in
 without a cycle — the same rule transport.py follows.
+
+See docs/architecture/control.md#performancepy--clip-launch-grid-live-djvj-phase-2.
 """
 
 from __future__ import annotations
@@ -61,8 +47,8 @@ class ClipEvent:
     """One pad press/release for a clip slot, queued by the MIDI reader thread
     (:mod:`midi_control`'s ``clip_launch`` action) and drained on the playlist
     thread by :meth:`PerformanceSession.service`. ``pressed`` is False for a
-    note release — the signal ``gate`` (return on release) and ``toggle`` (latch
-    off) read, exactly like the transport module's held-note actions."""
+    note release — the signal a ``gate`` clip returns on; ``trigger`` and
+    ``toggle`` act on the press alone."""
 
     slot: int
     pressed: bool = True
@@ -175,11 +161,10 @@ def default_look_store(name: str) -> LookStore:
     return LookStore(paths.presets_dir() / f"looks-{_slugify_name(name)}.json")
 
 
-# A "program" to return to when an overlaid clip ends: either a declared playlist
-# scene (by index — its Scene object is reused, so restoring is a cheap re-setup)
-# or a prior clip (by its config dict — rebuilt via the factory). Kept to a
-# single level (a restored clip returns to the playlist base) so gate/toggle over
-# a running loop returns sensibly without an unbounded rebuild chain.
+# A "program" to return to when an overlaid clip ends: a declared playlist scene
+# (by index — its Scene object is reused, so restoring is a cheap re-setup) or a
+# prior clip (by config dict — rebuilt via the factory). One level only: a
+# restored clip returns to the playlist base, bounding the rebuild chain.
 @dataclass
 class _Return:
     kind: str  # "playlist" | "clip"
@@ -236,9 +221,8 @@ class PerformanceSession:
         import queue
 
         self._queue: queue.SimpleQueue[ClipEvent] = queue.SimpleQueue()
-        # Look snapshot/recall pad presses (Live DJ/VJ Phase 6) — a separate
-        # queue so a save/recall doesn't interleave with the clip-event stream;
-        # both drain on the playlist thread in `service`.
+        # A separate queue so a save/recall doesn't interleave with the
+        # clip-event stream; both drain on the playlist thread in `service`.
         self._look_queue: queue.SimpleQueue[LookEvent] = queue.SimpleQueue()
         self._look_store = look_store
         # Effect state a pending look recall will apply once its clip activates
@@ -257,7 +241,6 @@ class PerformanceSession:
         # a restored-clip chain collapses back to.
         self._base_index: int = 0
 
-    # ---- introspection (LED / web feedback, later phases) ------------------
     @property
     def has_clips(self) -> bool:
         return bool(self._clips)
@@ -327,7 +310,6 @@ class PerformanceSession:
             return []
         return sorted(int(k) for k in self._look_store.load())
 
-    # ---- MIDI reader thread ------------------------------------------------
     def enqueue(self, event: ClipEvent) -> None:
         self._queue.put(event)
 
@@ -357,7 +339,6 @@ class PerformanceSession:
         self._queue.put(ClipEvent(slot=nxt, pressed=True))
         return nxt
 
-    # ---- playlist thread ---------------------------------------------------
     def service(self, pl: Playlist) -> bool:
         """Drain queued pad events, progress any armed build, swap on the grid
         boundary, and manage the active clip's loop/end. Returns True iff

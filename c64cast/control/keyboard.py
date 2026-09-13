@@ -1,47 +1,15 @@
-"""Polls the U64 for keyboard modifier state and drives pause/resume/skip/cycle.
+"""Polls the C64's keyboard modifier state and drives pause/resume/skip/cycle.
 
-The kernal IRQ scans the keyboard at 60 Hz and writes the modifier-key
-state to $028D:
-  bit 0  SHIFT
-  bit 1  COMMODORE
-  bit 2  CONTROL
+The kernal IRQ scans the keyboard at 60 Hz and writes the modifier bits to
+$028D (:data:`BIT_SHIFT` / :data:`BIT_COMMODORE` / :data:`BIT_CONTROL`).
+:class:`CommodoreKeyPoller` reads it every ``poll_interval_s`` and turns edge
+transitions into the thread events the Playlist's run loop watches.
 
-We poll $028D over the HTTP read endpoint every `poll_interval_s`
-(default 100 ms = 10 Hz) and translate edge transitions into thread
-events the Playlist's run loop watches:
+With the on-C64 menu wired it additionally drains the kernal keyboard buffer —
+NDX ($00C6) + KEYD ($0277), the same buffer the U64's CMD_KEYB opcode injects
+into — so SPACE toggles the menu and cursor/RETURN codes drive it.
 
-  * COMMODORE pressed (running)   → pause_event
-  * COMMODORE held `hold_threshold_s` while paused → resume_event
-  * CONTROL pressed (running)     → skip_event   (advance to next interstitial)
-  * CONTROL anything while paused → no-op (deliberate; the user's UI
-    contract is "pause means only the resume-hold can do anything")
-  * SHIFT pressed (running)       → cycle_event  (rotate display style)
-  * SHIFT anything while paused   → no-op (same UI contract)
-
-Chord rule: SHIFT is dropped on any tick where C= or CTRL is also held,
-so a user reaching for pause/skip with a thumb on shift doesn't get a
-phantom cycle. C= + CTRL still prefers pause over skip.
-
-When the on-C64 menu is wired (`menu_event`/`menu_active`/`menu_eligible`/
-`nav_queue` passed to `start`), we additionally drain the kernal keyboard
-buffer — NDX ($00C6) + KEYD ($0277), the same buffer the U64's CMD_KEYB
-opcode injects into — so SPACE/cursor/RETURN keys can drive the menu:
-  * SPACE pressed              → menu_event (toggle the menu open/closed),
-    debounced by `_SPACE_COOLDOWN_S` so a held/repeating SPACE is one toggle.
-  * while `menu_active` is set  → the entire pause/skip/cycle branch is
-    suspended; cursor + RETURN codes are pushed onto `nav_queue`. The kernal
-    has already folded SHIFT into the cursor codes (CRSR-up/left = $91/$9D),
-    so direction rides on the code itself — no modifier read for "reverse".
-  * `menu_eligible` gates buffer access: draining writes $00C6=0 to consume
-    keystrokes, which must NOT happen on a scene that watches $00C6 itself
-    (a kernal-input launcher) or can't host the panel. The poller only
-    touches the buffer when the menu is open or the current scene is eligible.
-
-Reading keystrokes from the buffer (rather than the matrix byte $00CB) is
-what makes the menu drivable over the bus-clean DMA socket: CMD_KEYB writes
-KEYD/NDX directly, the value persists until we consume it (no 60 Hz kernal
-scan overwriting it), so an automated test can inject keys over DMA with zero
-REST traffic. See docs + the menu_hw_key_injection note.
+See docs/architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle.
 """
 
 from __future__ import annotations
@@ -65,13 +33,12 @@ BIT_SHIFT = 0x01
 BIT_COMMODORE = 0x02
 BIT_CONTROL = 0x04
 
-# Decoded cursor + RETURN codes that drive menu navigation (SPACE is handled
-# separately as the open/close toggle, never enqueued).
+# Cursor + RETURN codes that drive menu navigation. SPACE is the open/close
+# toggle, handled separately and never enqueued.
 _NAV_CODES = frozenset(
     {KEYBUF.CRSR_DOWN, KEYBUF.CRSR_UP, KEYBUF.CRSR_RIGHT, KEYBUF.CRSR_LEFT, KEYBUF.RETURN}
 )
-# Debounce window for SPACE→toggle, so a held SPACE (the kernal repeats it)
-# doesn't flutter the menu open/closed. A deliberate tap is well clear of this.
+# Debounce for SPACE→toggle: the kernal repeats a held SPACE.
 _SPACE_COOLDOWN_S = 0.4
 
 
@@ -81,9 +48,9 @@ class _KeyPollState:
     Mirrors vision._GestureState — the two pollers share this shape."""
 
     held_since: float | None = None  # C= hold-to-resume timer
-    last_cbm_seen: bool = False  # edge detect for pause trigger
-    last_ctrl_seen: bool = False  # edge detect for skip trigger
-    last_shift_seen: bool = False  # edge detect for cycle trigger
+    last_cbm_seen: bool = False
+    last_ctrl_seen: bool = False
+    last_shift_seen: bool = False
     last_space_toggle: float = 0.0  # monotonic time of the last SPACE menu toggle
 
     def set_baselines(self, cbm: bool, ctrl: bool, shift: bool) -> None:
@@ -102,10 +69,9 @@ class CommodoreKeyPoller:
     ):
         self.api = api
         self.name = name
-        # Per-instance logger so ensemble runs can tell which system a
-        # given press came from. Child of the existing c64cast.control.keyboard
-        # logger, so assertLogs("c64cast.control.keyboard", ...) in tests still
-        # matches via the logging hierarchy.
+        # Per-instance logger so ensemble runs can tell which system a press
+        # came from. A child of `c64cast.control.keyboard`, so the tests'
+        # assertLogs on that name still matches via the logging hierarchy.
         self.log = logging.getLogger(f"c64cast.control.keyboard.{name}")
         self.poll_interval_s = poll_interval_s
         self.hold_threshold_s = hold_threshold_s
@@ -222,10 +188,9 @@ class CommodoreKeyPoller:
         ctrl = bool(mod & BIT_CONTROL)
         shift = bool(mod & BIT_SHIFT)
 
-        # Drain decoded keystrokes from the kernal buffer — only when the
-        # menu is wired AND it's open or the current scene is eligible, so
-        # the read stays $028D-only for non-menu runs and the buffer's
-        # $00C6 is never zeroed under a kernal-input launcher scene.
+        # Only when the menu is wired AND open or the scene is eligible: the
+        # drain zeroes $00C6, which must not happen under a kernal-input
+        # launcher scene that watches it itself.
         menu_open = self._menu_active is not None and self._menu_active.is_set()
         eligible = self._menu_eligible is not None and self._menu_eligible.is_set()
         keys: list[int] = []
@@ -256,9 +221,8 @@ class CommodoreKeyPoller:
                     st.last_space_toggle = now
             elif code in _NAV_CODES and self._nav_queue is not None:
                 self._nav_queue.append(code)
-        # Keep the modifier edge baselines current so a SHIFT/C=/CTRL
-        # held across the menu session can't fire a phantom event the
-        # tick the menu closes.
+        # Keep the modifier edge baselines current so a SHIFT/C=/CTRL held
+        # across the menu session can't fire a phantom event as it closes.
         st.set_baselines(cbm, ctrl, shift)
         st.held_since = None
 

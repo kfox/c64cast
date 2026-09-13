@@ -1,37 +1,16 @@
 """mDNS advertisement for the web console host (``--serve``).
 
-Answers "which box on the LAN is a c64cast console, and has it been set up
-yet" without a browser first having to be pointed at an IP — the appliance
-image's own fixed hostname (``c64cast.local``, set by Armbian + Avahi, not by
-this module) answers "where is *the* appliance", while this answers "what is
-serving here and in what state", which is the piece a discovery client still
-needs when there is more than one box, or none of them has a hostname anyone
-picked.
-
+Registers one ``_c64cast._tcp.local.`` service per
+:func:`c64cast.app.serve.run_daemon` loop iteration, carrying a TXT record a
+discovery client can read as "configured" or "still in the setup window".
 Mirrors :class:`c64cast.wled.wled_device.WledDeviceServer`'s
-``_register_mdns``/``_local_ip`` shape — lazy ``zeroconf`` import, a
-try/except that logs and gives up rather than raising, the same UDP-connect
-trick for the LAN IP — without importing from it: the two live in unrelated
-feature areas (a console host vs. a WLED bridge) that neither should depend on
-for one 12-line helper, and the WLED module itself carries no shared home for
-it either (a third copy already exists in
-``c64cast/scenes/overlays/network.py``).
+``_register_mdns``/``_local_ip`` shape without importing from it.
 
-**Advertised only when `[web].host` is not loopback.** ``_advertised_ip()``
-names the real LAN-facing address whatever the server is bound to, which is
-what a discovery client needs from the appliance's ``0.0.0.0`` — but a console
-bound to ``127.0.0.1`` (`WebCfg`'s own default) would then advertise a port
-nothing off this machine can reach at all, which is worse than not being
-discoverable: a LAN peer that finds it gets a connection refused rather than a
-console. A plain ``--serve`` on a laptop therefore stays exactly as quiet on
-the network as it always was, with no separate opt-out to configure. The same
-reasoning covers the other way of ending up with an unreachable A record:
-``_local_ip()`` falling back to loopback because nothing is routable yet also
-means there is nothing worth advertising.
+Advertised only when ``[web].host`` is not loopback and there is a LAN address
+to name — an A record nothing is listening on is worse than no entry at all.
 
-``_advertised_ip`` is the one piece with no sibling in the WLED module: a
-WLED device is always bound wide, while ``[web].host`` may name one interface
-of several and the OS's routing guess need not be that one."""
+See docs/architecture/control.md#console_mdnspy--mdns-advertisement-of-the-web-console.
+"""
 
 from __future__ import annotations
 
@@ -75,15 +54,10 @@ def _local_ip() -> str:
 def _advertised_ip(host: str) -> str:
     """The address to put in the A record for a console bound to `host`.
 
-    `_local_ip()` is a *guess* — the interface the OS would route LAN traffic
-    over — and that is exactly right for the appliance's `0.0.0.0`, which is
-    listening on every interface anyway. It is the wrong answer when `host`
-    names one specific interface: on a multi-homed box the default route need
-    not be the one the console actually bound, and advertising the other one
-    is the same connection-refused trap this module otherwise avoids. So a
-    concrete IPv4 host is advertised as itself, and the guess is reserved for
-    the binds it can't be wrong about (`0.0.0.0`) and the ones it can't
-    improve on (a hostname, or an IPv6 literal this A record can't carry)."""
+    A concrete IPv4 host is advertised as itself; `_local_ip()`'s routing
+    guess is reserved for the binds it cannot be wrong about (`0.0.0.0`) and
+    the ones it cannot improve on (a hostname, or an IPv6 literal this A
+    record cannot carry)."""
     try:
         address = ipaddress.IPv4Address(host)
     except ValueError:
@@ -96,18 +70,15 @@ def _short_hostname() -> str:
     label and the base of the `.local.` name we advertise.
 
     `socket.gethostname()` is an FQDN on plenty of machines (`c64cast.local` on
-    macOS, `box.lan` under some DHCP servers), and only the first label is ours
-    to reuse: pasting the whole thing into `f"{name}.local."` yields
-    `c64cast.local.local.`, which nothing on the LAN resolves, and the extra
-    dots split what should be one instance label into several."""
+    macOS, `box.lan` under some DHCP servers), and pasting the whole thing into
+    `f"{name}.local."` yields a name nothing on the LAN resolves."""
     return socket.gethostname().split(".")[0] or "c64cast"
 
 
 def _close_quietly(zc: Any) -> None:
-    """Close a `Zeroconf` instance, swallowing whatever teardown says. Every
-    caller here is already on a path where the console keeps serving either
-    way; what must not happen is the instance's multicast socket and engine
-    threads outliving the reference we are dropping."""
+    """Close a `Zeroconf` instance, swallowing whatever teardown says. What
+    must not happen is the instance's multicast socket and engine threads
+    outliving the reference being dropped."""
     try:
         zc.close()
     except Exception:
@@ -158,20 +129,17 @@ class ConsoleMdnsAdvertiser:
                 },
                 server=f"{name}.local.",
             )
-            # allow_name_change, because the appliance case is precisely two
-            # boxes flashed from one image sharing a hostname: without it the
-            # second one's registration raises `NonUniqueNameException` and it
-            # advertises nothing, in the "more than one box" situation this
-            # module exists for. Zeroconf renames it (`c64cast-2`) instead.
+            # allow_name_change: two boxes flashed from one image share a
+            # hostname, and without it the second registration raises
+            # NonUniqueNameException and advertises nothing at all.
             zc.register_service(info, allow_name_change=True)
             self._zc = zc
             self._info = info
             log.info("web console: advertised as %r on %s:%d (mDNS)", info.name, ip, self._port)
         except Exception:
-            # A discovery failure must not take down the (already-serving)
-            # console — it is still reachable by IP:port, just not auto-found.
-            # The instance still has to be closed: `stop()` can't reach one we
-            # never stored, and its socket and threads would outlive the run.
+            # The instance still has to be closed: `stop()` cannot reach one
+            # that was never stored, and its socket and threads would outlive
+            # the run.
             log.exception("web console: mDNS advertisement failed (console still serving)")
             if zc is not None:
                 _close_quietly(zc)

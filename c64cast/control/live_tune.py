@@ -1,49 +1,18 @@
 """One place that turns a live-tune target string into a write on a running scene.
 
-A live-tune target is a string like ``mode.dither_strength`` or ``fx2.amount``:
-a *holder* prefix naming an object hanging off the current scene, and the name
-of a field that object's class declares in ``LIVE_PARAMS`` (a scalar, with a
-range) or ``LIVE_CHOICES`` (a discrete list). :func:`introspect.live_targets`
-enumerates every one of them from those same class attributes, so the set of
-targets is the registries themselves and nothing here can offer a knob the code
-does not have.
+A target is ``<holder>.<field>`` — ``mode.dither_strength``, ``fx2.amount`` —
+resolved against the ``LIVE_PARAMS`` / ``LIVE_CHOICES`` that the holder's class
+declares, so the registries themselves are the set of tunable knobs.
+:class:`Move` carries what a value means to the surface that sent it: a
+controller reading and its full scale, a real value, or "step to the next
+choice". The OSD line (``Move.osd``) and the ``mode.<name>`` tracker entry ride
+along here, so every surface gets them by coming through this module.
 
-**Four surfaces turn these knobs and they used to resolve them three ways.**
-``midi_control`` scaled a 0..127 CC, ``wled_device`` scaled a 0..255 slider, and
-``perf_console`` walked ``scene.effects`` itself for the browser's effect rack —
-each with its own copy of the holder lookup, two of them carrying a comment
-saying they were kept mirrored by hand. This module is that lookup, once. The
-surfaces differ only in what a value *means* to them, which is what :class:`Move`
-carries: a controller reading and its full scale, a real value, or "step to the
-next choice".
+Every write is a plain attribute set on an object the render loop reads next
+frame — safe from a MIDI reader thread, an HTTP worker or the WLED listener. A
+target that does not resolve is a silent no-op returning False.
 
-Two behaviors ride along with the resolution, and having them here is most of
-the point of the extraction:
-
-* **The OSD line.** A knob turned from a controller says so on the C64's screen;
-  a knob turned from the web console must not, because that surface exists
-  precisely so a performer has a readout the audience does not see. That is a
-  per-surface decision (``Move.osd``), not a per-target one.
-* **The tracker entry.** ``mode.<name>`` targets are the live face of config
-  fields — ``[color]`` for the ones a whole show shares, a scene's own
-  ``[[scenes]]`` block for ``palette_mode`` — so changing one records into the
-  playlist's
-  :class:`~c64cast.control.transport.LiveTuneTracker`, which a CLI run's exit
-  offers to write back into the config. Every surface that reaches a ``mode.``
-  target gets that by coming through here rather than by remembering to call it,
-  and it is why the browser was routed through this module instead of being
-  given a fifth copy of the lookup. (Note that ``serve.py`` tears sessions down
-  with ``save_live_tune=False``: a daemon has no terminal to prompt on and must
-  not rewrite show files on every stop, so under ``--serve`` the entry is
-  recorded and nothing acts on it. Offering it there is a separate decision
-  about the daemon, not about this seam.)
-
-Everything here is a plain attribute write on an object the render loop reads
-next frame: GIL-atomic, no DMA, no lock, safe to call from a MIDI reader thread,
-an HTTP worker or the WLED listener. A target that does not resolve — no scene,
-no such holder, no such declared param — is a **silent no-op** returning False,
-because every caller is a control surface where the alternative is an exception
-on a thread nobody is watching.
+See docs/architecture/control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7.
 """
 
 from __future__ import annotations
@@ -237,8 +206,7 @@ def _apply_choice(pl: Playlist, found: LiveTarget, move: Move) -> bool:
     chosen = _chosen(found, move, old)
     if chosen is None:
         return False
-    # The scene owns the backend handle; a mode that has to repaint on a choice
-    # change needs it, and one that doesn't ignores the argument.
+    # The api handle: a mode that repaints on a choice change needs it.
     label = setter(getattr(pl.current, "api", None), found.name, chosen)
     if move.osd:
         pl.post_osd(label or f"{found.name} {chosen}")

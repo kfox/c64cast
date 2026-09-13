@@ -1,20 +1,13 @@
 """Packaged assets for the two hand-written control pages.
 
 The `/perf` console (`control/perf_console.html`) and the WLED bridge's device
-page (`wled/wled_index.html`) are each one self-contained HTML document: no
-second request, no third-party resource, nothing from a CDN. That is what lets
-:data:`PAGE_HEADERS` be as strict as it is, and what makes both pages work on a
-phone that can reach the show host and nothing else.
+page (`wled/wled_index.html`) are each one self-contained HTML document — no
+second request, no third-party resource. Shared code between them is therefore
+spliced at render time by :func:`with_live_socket` rather than served as a
+`.js` file. Everything reads through :mod:`importlib.resources` so a zipped
+distribution answers too, and everything is cached.
 
-Sharing code between them therefore cannot mean serving a `.js` file. It means
-splicing one at render time, which is what :func:`with_live_socket` does —
-`control/live_socket.js`, the reconnecting-socket-with-poll-fallback both pages
-need, lands in place of a marker comment.
-
-Everything here reads through :mod:`importlib.resources` rather than
-``__file__``, so a zipped distribution answers too (``read_text`` needs no real
-filesystem path), and everything is cached: the same bytes go out on every
-request.
+See docs/architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5.
 """
 
 from __future__ import annotations

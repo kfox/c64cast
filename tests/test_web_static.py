@@ -120,7 +120,8 @@ class MountTest(unittest.TestCase):
     def test_nothing_is_cached(self) -> None:
         # The filenames are fixed rather than content-hashed, so a cached copy
         # would survive an upgrade and run yesterday's console against today's
-        # API. See web_static's module docstring for why the trade goes this way.
+        # API. See docs/architecture/control.md → "web_static.py — the console's
+        # built UI, committed and served" for why the trade goes this way.
         client = self._client()
         for path in ("/", "/assets/app.js", "/assets/app.css"):
             with self.subTest(path=path):

@@ -1,55 +1,27 @@
-"""Phone / web performance console (Live DJ/VJ Phase 5 — see
-docs/architecture/control.md → "Live performance").
+"""Phone / web performance console.
 
 The no-OSD constraint (the C64 output is audience-facing) leaves the performer
-with no on-screen readout of clip / effect / tempo state. Phase 4 fills that gap
-with controller LEDs; this module is the other off-screen surface: a
-phone-friendly touch page served by the **control plane** (same FastAPI app /
-port as ``/status`` — `control_plane.build_app` registers these routes), with a
-WebSocket live-state feed. It is the intended feedback surface for controllers
-that can't light their pads (Arturia / SysEx-only grids — see the Phase-4 note).
+with no on-screen readout of clip / effect / tempo state. Controller LEDs fill
+that gap for grids that can light their pads; this module is the other
+off-screen surface — a phone-friendly touch page served by the **control
+plane** (same FastAPI app and port as ``/status``; ``control_plane.build_app``
+registers these routes), with a WebSocket live-state feed.
 
 Everything the console drives is the **same engine** the MIDI surface drives, so
-a web launch and a pad launch are indistinguishable downstream:
+a web launch and a pad launch are indistinguishable downstream — and, as on
+that surface, nothing here rebuilds a scene on the caller's thread: a clip launch
+or a look enqueues onto ``pl.performance``, a transport verb sets a playlist
+event or enqueues onto ``pl.transport``, tap tempo and an effect bypass are
+in-memory writes, and a live-tune knob goes through :mod:`live_tune` — the one
+module that resolves a target string against the running scene, tracker entry
+included.
 
-* **Clip launch** enqueues a :class:`~c64cast.control.performance.ClipEvent` onto
-  ``pl.performance`` (drained on the playlist thread) — never a scene mutation on
-  this HTTP thread, the rule the whole performance path follows.
-* **Tap tempo** calls ``pl.tempo.tap()`` — an in-memory beat-grid write, no DMA.
-* **Effect bypass** flips ``scene.effects[i].enabled`` — a GIL-atomic bool the
-  render loop reads next frame.
-* **Live tune** goes through :mod:`live_tune`, the one module that resolves a
-  target string against the running scene, so a knob turned here is the same
-  write a MIDI CC or a WLED slider makes — including the live-tune tracker entry
-  that lets a ``mode.*`` change be saved back into the config. That record rides
-  back out in the state frame (:func:`_tuned_dict`), because a daemon has no exit
-  prompt to offer it at; the write itself is an HTTP route in :mod:`web_api`,
-  with the config store's other writers. The one thing this surface asks for
-  differently is **no** ``post_osd``: performance feedback stays off the audience
-  screen, which is the whole point of a phone console.
-* **Transport** (``pause`` / ``resume`` / ``skip``) and **jump** set the same
-  playlist events the C64's own keys do, so the run loop applies them at its
-  next clean boundary rather than this thread mutating a scene. The Phase-7
-  verbs (freeze / scrub / rw / ff / loop) reach the same ``TransportSession``
-  the MIDI surface drives, and **that engine posts its own OSD line** — which
-  is not a leak in the no-``post_osd`` rule above but the line the rule is
-  drawn at: the audience screen carries transport **state** (``PAUSED``,
-  ``PLAY``, ``LOOP 1:04-1:31``, ``REC ●`` beside its red border), because the
-  picture is visibly doing that and an unexplained frozen frame is worse than a
-  label. It does **not** carry confirmation that a control was pressed. That is
-  why a ``loop_slot`` save no longer draws ``SAVED 3`` there: it changes a file
-  on disk and nothing on screen, so it goes to the log — and to this console
-  for free, since every pushed state frame carries ``loop_slots``
-  (:func:`_transport_dict`), which is live feedback rather than a two-second
-  flash. The rule is one boundary, applied in the engine, so the MIDI and web
-  surfaces stay the mirror images they have been since Phase 2. What is *also*
-  closed here is the caller's hand in those strings: the slot a console may
-  name is bounded to ``JsonSlotStore.SLOT_MIN..SLOT_MAX`` (see
-  :meth:`PerfBridge.transport`), so nothing caller-shaped is interpolated into
-  an OSD line and nothing unbounded is persisted.
-* **Looks** (Live DJ/VJ Phase 6) enqueue a :class:`~c64cast.control.performance.LookEvent`
-  (``save`` / recall), drained on the playlist thread exactly like a clip launch —
-  a look captures the active clip + effect-chain state and re-fires it on recall.
+What this surface asks for differently is **no** ``post_osd``: performance
+feedback stays off the audience screen. The DJ transport engine still posts its
+own line, which is the boundary rather than an exception to it — the audience
+screen carries transport *state* (``PAUSED``, ``LOOP 1:04-1:31``), because the
+picture is visibly doing that, and never confirmation that a control was
+pressed.
 
 The controls are generated from the registries rather than listed here: the
 effect rack from each live layer's own class ``LIVE_PARAMS``, and the tune panel
@@ -61,6 +33,8 @@ Like :mod:`wled_device`, this module deliberately does **not** ``from __future__
 import annotations``: the WebSocket route below annotates its param with a name
 imported inside :func:`register_perf_routes`, and stringized annotations would
 make FastAPI mis-read it as a query param and skip the WebSocket injection.
+
+See docs/architecture/control.md#perf_consolepy--phone--web-performance-console-live-djvj-phase-5.
 """
 
 import asyncio
@@ -109,11 +83,9 @@ TRANSPORT_VERBS = (
 )
 
 # How often the WebSocket pushes a fresh state snapshot to connected consoles.
-# The beat grid advances continuously, so a client extrapolates the beat pulse
-# locally between pushes (bpm + last beat_phase + wall-clock elapsed); this
-# cadence only needs to be fast enough that clip/effect/tempo *changes* and the
-# count-in readout feel live. ~3/sec is trivially cheap (one small JSON to a
-# couple of phones) and nowhere near any I/O ceiling.
+# A client extrapolates the beat pulse locally between pushes (bpm + last
+# beat_phase + wall-clock elapsed), so this only has to be fast enough that
+# clip/effect/tempo changes and the count-in readout feel live.
 _PUSH_INTERVAL_S = 0.35
 
 #: How many console state sockets one feed may hold open at once.
@@ -322,16 +294,15 @@ class ConsoleFeed:
         read_only = is_viewer(websocket.scope)
         reader = SocketReader(websocket, label=self.label)
         try:
-            # Push a fresh snapshot on a fixed cadence; the client extrapolates
-            # the beat pulse locally in between. The polled receive lets a
-            # client command frame (if any) through without blocking the push.
+            # The polled receive lets a client command frame through without
+            # blocking the push.
             while True:
                 if self._on_tick is not None:
                     self._on_tick()
                 # Split from the socket's own failures below: a state frame
-                # that raises is *our* bug, and swallowing it silently leaves
-                # every connected console waiting forever for a push that will
-                # never come — a hang where an error belongs.
+                # that raises is *our* bug, and swallowing it leaves every
+                # connected console waiting forever for a push that will never
+                # come — a hang where an error belongs.
                 try:
                     frame = await asyncio.to_thread(self._build_frame, websocket.scope)
                 except Exception:
@@ -407,7 +378,6 @@ def _beats_remaining(pl: Playlist, detail: tuple[int, str, float, float]) -> flo
     if quantize == "beat":
         target = math.floor(arm_beat) + 1
         return max(0.0, target - tempo.beat_phase_at(now))
-    # bar
     target_bar = math.floor(arm_bar) + 1
     remaining_bars = target_bar - tempo.bar_phase_at(now)
     return max(0.0, remaining_bars * tempo.beats_per_bar)
@@ -558,17 +528,15 @@ def _tuned_dict(pl: Playlist) -> dict[str, Any]:
         "config_path": pl.config_path or "",
         # The file's bare name, no directory and no `.toml` — the same spelling
         # a config gets everywhere else in the console. No `ConfigStore` reaches
-        # this surface, so a root-relative label (`config/journey`) isn't
-        # available; the name alone is what both consoles show for a tune save.
+        # this surface, so a root-relative label isn't available.
         "config_name": (PurePath(pl.config_path).stem if pl.config_path else ""),
     }
     if savable and not pl.config_path:
-        # From the rows already in hand. `toml_snippet()` calls `pending()` a
-        # second time, and a knob turned between the two reads (a MIDI CC, a
-        # second console) made `savable` and `snippet` describe different sets
-        # — `savable > 0` paired with `snippet == ""` is exactly the condition
-        # the page's `if (tuned.snippet)` branch keys off. `pending()`'s own
-        # docstring promises this self-consistency for its rows.
+        # From the rows already in hand: `toml_snippet()` calls `pending()` a
+        # second time, and a knob turned between the two reads would make
+        # `savable` and `snippet` describe different sets — `savable > 0` with
+        # `snippet == ""` is exactly the condition the page's
+        # `if (tuned.snippet)` branch keys off.
         out["snippet"] = pl.live_tracker.snippet_from(savable)
     return out
 
@@ -664,8 +632,8 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         "paused": pl.pause_event.is_set(),
         # Performance mode: the audience screen carries no OSD line. Read off
         # the playlist rather than the live scene's OsdState, so the button
-        # still shows the right state in the gap where `current` is None
-        # (mid-advance) and on an idle host.
+        # still shows the right state where `current` is None (mid-advance) and
+        # on an idle host.
         "performance_mode": bool(getattr(pl, "performance_mode", False)),
         "scenes": scene_rows(pl, index),
         "tempo": _tempo_dict(pl),
@@ -673,17 +641,16 @@ def _system_state(name: str, pl: Playlist) -> dict[str, Any]:
         "armed": armed_block,
         "clips": clips,
         "effects": _effects_dict(scene),
-        # The color-pipeline / generator / scope knobs the current scene has.
-        # The same list --midi-setup maps a controller onto, so a phone and a
-        # MIDI box reach the same surface (Live DJ/VJ Phase 7).
+        # The color-pipeline / generator / scope knobs the current scene has —
+        # the same list --midi-setup maps a controller onto.
         "live": _live_dict(scene),
         # …and what has already been turned, so a console can offer to keep it.
         "tuned": _tuned_dict(pl),
-        # Saved look slots (Live DJ/VJ Phase 6) — the console lights a recall pad
-        # only for a slot that holds a look. This reads the look store off
-        # disk, and `transport.loop_slots` above reads the loop-preset store,
-        # so building one frame does real blocking I/O — which is why
-        # `ConsoleFeed` builds it on a thread rather than the event loop.
+        # Saved look slots: the console lights a recall pad only for a slot that
+        # holds one. This reads the look store off disk, and
+        # `transport.loop_slots` above reads the loop-preset store, so building
+        # one frame does real blocking I/O — which is why `ConsoleFeed` builds
+        # it on a thread rather than the event loop.
         "looks": perf.saved_look_slots(),
         # The current scene's DJ transport (freeze/scrub/rw/ff/A-B loop), or
         # None when it has none — see _transport_dict.
@@ -756,8 +723,6 @@ class PerfBridge:
     def __init__(self, systems: Callable[[], list[tuple[str, Playlist]]]) -> None:
         self._systems = systems
 
-    # -- reads ---------------------------------------------------------------
-
     def state(self) -> dict[str, Any]:
         systems = self._systems()
         return {
@@ -775,8 +740,6 @@ class PerfBridge:
         if system is None:
             return systems[0][1]
         return dict(systems).get(system)
-
-    # -- writes --------------------------------------------------------------
 
     def launch(self, system: str | None, slot: int, pressed: bool = True) -> bool:
         """Fire (or release) a clip slot — enqueues a :class:`ClipEvent`, exactly
@@ -941,12 +904,11 @@ class PerfBridge:
             )
             return True
         # Unreachable while `TRANSPORT_VERBS` and the branches above agree, and
-        # this line is what makes that a statement rather than an accident: the
-        # dispatch used to *end* in the `loop_slot` enqueue with no `if`, so
-        # adding a verb to the tuple — the obvious way to grow this surface,
-        # and where a contributor starts — silently saved or cleared one of the
-        # performer's loop presets instead. `tests/test_perf_console.py` walks
-        # the tuple and asserts each verb has its own effect.
+        # this line is what keeps that true: the dispatch used to *end* in the
+        # `loop_slot` enqueue with no `if`, so adding a verb to the tuple
+        # silently saved or cleared one of the performer's loop presets.
+        # `tests/test_perf_console.py` walks the tuple and asserts each verb has
+        # its own effect.
         return False
 
     def jump(self, system: str | None, index: int) -> bool:
@@ -1082,10 +1044,8 @@ class PerfBridge:
             # An explicit target state rather than a bare toggle, for the
             # reason `freeze`/`unfreeze` are two verbs: two consoles open on
             # one show, or a retried request, would otherwise race their stale
-            # reads into a double-toggle that cancels out.
-            # Absent `on` is malformed, not "turn it on": defaulting a
-            # missing field to the state-changing value is the toggle-shaped
-            # behavior the explicit-target design above exists to avoid.
+            # reads into a double-toggle that cancels out. Absent `on` is
+            # therefore malformed, not "turn it on".
             if "on" not in cmd:
                 return self._malformed(cmd, "on")
             return self.perf(system, bool(cmd["on"]))
@@ -1105,35 +1065,22 @@ class PerfBridge:
         return False
 
 
-# The console page. Self-contained (inline CSS/JS, no CDN), phone-first: a sticky
-# tempo bar with a locally-animated beat pulse and transport, a touch clip grid,
-# an auto-generated effect rack, the current scene's tune knobs, the record of
-# turning them, the look pads and a scene jump — one control for every action
-# `PerfBridge.apply` dispatches, which `tests/test_perf_console.py` reads back
-# out of this string and compares against that method's own source.
-#
-# It also shows the machine's screen, which is not a bridge action at all: one
-# <img> against /api/screen/stream, because `multipart/x-mixed-replace` needs no
-# decoder and no second socket, and a page with no build step cannot afford
-# either. Off until asked — the host holds the machine's video stream up only
-# while somebody is watching.
+# The console page: self-contained (inline CSS/JS, no CDN), phone-first, with
+# one control for every action `PerfBridge.apply` dispatches —
+# `tests/test_perf_console.py` reads the actions back out of the page and
+# compares them against that method's own source.
 #
 # State arrives over /perf/ws; commands go out as POSTs to /perf/*. The two
 # exceptions are both /api routes that only a --serve host registers: the
 # live-tune save-back (a *config write*, which needs a status code) and the
 # screen. Both are handled as absent rather than assumed — this page is served
-# by the control plane, which a plain CLI run has without any of /api. Kept
-# dependency-free so it renders in any phone browser.
+# by the control plane, which a plain CLI run has without any of /api.
 def perf_page_html() -> str:
     """The console page, read once from the packaged ``perf_console.html``.
 
-    A ~650-line HTML/CSS/JS document, so it lives in a real ``.html`` file
-    rather than a Python string: as a string it got no syntax highlighting, no
-    formatter, no linter, and could not be opened in a browser on its own while
-    someone iterated on it. Nothing else changes — it is still one fixed,
-    server-authored body with no caller content in it and no third-party
-    resource to load, which is what lets :data:`page_assets.PAGE_HEADERS` be
-    as strict as it is.
+    One fixed, server-authored body with no caller content in it and no
+    third-party resource to load, which is what lets
+    :data:`page_assets.PAGE_HEADERS` be as strict as it is.
 
     The reconnecting-socket-with-poll-fallback client is spliced in from
     ``live_socket.js`` rather than duplicated here — see

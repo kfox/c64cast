@@ -1,56 +1,19 @@
 """The C64's screen in the browser, from the machine's own video stream.
 
-Everything else the console does is open-loop. It can author a show, start it,
-tune it and save it without ever showing what any of that did — verification
-means looking at the television the Commodore is plugged into. For a console
-meant to be held in one hand at a gig that was the largest remaining source of
-friction, and it made every other improvement worth less than it should be.
+:mod:`c64cast.hw.vic_stream` receives the Ultimate 64's own VIC-out UDP stream,
+so the browser shows what the VIC actually painted rather than what the render
+pipeline believes it wrote — including scenes c64cast did not draw.
 
-The picture comes from the machine, not from c64cast. :mod:`c64cast.hw.vic_stream`
-receives the Ultimate 64's own VIC-out UDP stream, so what the browser shows is
-what the VIC actually painted rather than what the render pipeline believes it
-wrote — which is the difference between a monitor and a second opinion from the
-same source. It also means the screen is right for things c64cast did not draw:
-a SID scene's own display, the launcher's game, a machine somebody is typing on.
+**Ultimate 64 only.** ``HardwareProfile.supports_video_stream`` is False on an
+Ultimate II+ (a cartridge in someone else's C64, no VIC to tap) and on a
+TeensyROM+ (neither the FPGA nor the Ethernet MAC), and those hosts answer
+``501`` with that as the reason.
 
-**Ultimate 64 only.** `HardwareProfile.supports_video_stream` is False on an
-Ultimate II+, which is a cartridge in someone else's C64 with no VIC to tap, and
-on a TeensyROM+, which has neither the FPGA nor the Ethernet MAC this depends
-on. Those hosts answer `501` with that as the reason, rather than a blank panel
-that could be read as "nothing is running".
+The stream is ~2.6 MB/s while it is on, so :class:`ScreenFeed` ref-counts
+watchers per system and runs the receiver only while somebody is watching.
+Frames go out as PNG in a ``multipart/x-mixed-replace`` body.
 
-## Ref-counted, because the stream is not free
-
-A PAL frame is ~52 KB and the machine sends fifty a second: about 2.6 MB/s of
-UDP for as long as it is on. So it is on only while somebody is watching.
-:class:`ScreenFeed` counts watchers per system and starts the receiver on the
-first and stops it on the last, which is why the acquire/release pair is a
-context manager and not two methods anyone could get out of step. The linger is
-deliberate: a browser reloading the page drops its connection and makes a new
-one a moment later, and tearing the stream down and back up in between would
-cost the machine's ARP resolution and a second of black for nothing.
-
-That leaves the process being killed outright, which no `finally` can cover —
-handled a layer down by the firmware's own auto-stop timer, which the receiver
-re-arms while it is listening. See `vic_stream`.
-
-## PNG, and multipart
-
-`multipart/x-mixed-replace` is the whole client: one `<img>`, no script, no
-socket, no decoder, and it works in a browser that has JavaScript turned off.
-The alternative — binary frames on the existing WebSocket into a canvas — buys
-control the screen does not need and costs a decoder in the page.
-
-**PNG rather than JPEG**, which is the opposite of the usual advice for video
-and right here for one reason: this is flat sixteen-color art with hard edges,
-which is the best case for PNG's filters and the worst case for a DCT. A C64
-screen is 5-15 KB as PNG, *smaller* than the JPEG that would have ringing
-around every character cell.
-
-The frame rate is capped well under the machine's because the point is to see
-what a change did, not to relay a demo — and every frame is a compress. What
-the cap does not do is slow the machine: it is already sending every frame, and
-the ones not encoded are simply the ones no longer in `latest()`.
+See docs/architecture/control.md#screenpy--the-c64s-screen-in-the-browser.
 """
 
 from __future__ import annotations
@@ -135,8 +98,6 @@ class ScreenFeed:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _sweeper: Any = None
 
-    # ---- what a caller can ask for ---------------------------------------
-
     def available(self) -> dict[str, bool]:
         """Which running systems can show a screen. Empty when nothing runs."""
         return {
@@ -172,10 +133,8 @@ class ScreenFeed:
         """Hold the stream up, and return a way to read frames. Pair with
         :meth:`release` — and prefer :meth:`watching`, which pairs them for you.
 
-        The raw pair exists for one caller: a streaming HTTP response, whose end
-        is not the end of any Python block. Tying the release to a `finally`
-        inside the frame generator was the first design and was wrong in a way
-        that only shows up under a real disconnect — see :meth:`release`."""
+        The raw pair exists for one caller: a streaming HTTP response, whose
+        end is not the end of any Python block — see :meth:`release`."""
         return self._acquire(system).latest
 
     def release(self, system: str) -> None:
@@ -188,7 +147,7 @@ class ScreenFeed:
         disconnecting cancels the async task *while that thread is inside it* —
         closing the generator from there raises `ValueError: generator already
         executing`, the `finally` never runs, and the machine goes on streaming
-        to nobody. Found on hardware, by watching it keep streaming."""
+        to nobody."""
         self._release(system)
 
     @contextmanager
@@ -246,17 +205,15 @@ class ScreenFeed:
         for name, receiver in expired:
             _stop_quietly(name, receiver)
 
-    # ---- lifetime ---------------------------------------------------------
-
     def _acquire(self, system: str) -> Any:
         with self._lock:
             watched = self._live.get(system)
             if watched is not None:
                 watched.watchers += 1
                 return watched.receiver
-        # Built outside the lock: opening it talks to the machine, and holding a
-        # process-wide lock across a network round trip is how one slow device
-        # stalls every other request.
+        # Built outside the lock: opening it talks to the machine, and holding
+        # a process-wide lock across a network round trip is how one slow
+        # device stalls every other request.
         receiver = self._open(system)
         with self._lock:
             existing = self._live.get(system)
@@ -272,15 +229,12 @@ class ScreenFeed:
     def _start_sweeper(self) -> None:
         """Bring up the thread that expires idle receivers, if it isn't up.
 
-        It has to be a thread of this module's own. The first design leaned on
-        the state feed's push loop, on the reasoning that a timer whose only job
-        is to notice nothing is happening is a thread paid for at idle — and it
-        was wrong in the one case that matters: `/perf` and a bare `<img>` do
-        not open a WebSocket, so nothing ticked, nothing swept, and the machine
-        went on sending 2.6 MB/s after the last watcher closed the tab. (Found
-        on hardware, by watching it keep sending.) Costing nothing at idle is
-        preserved by *lifetime* instead: the sweeper exists only while a
-        receiver does, and ends itself when the last one goes."""
+        It has to be a thread of this module's own: `/perf` and a bare `<img>`
+        open no WebSocket, so a sweeper driven by the state feed's push loop
+        never ticks for them and the machine keeps sending after the last tab
+        closes. Costing nothing at idle is preserved by *lifetime* instead —
+        the sweeper exists only while a receiver does, and ends itself when the
+        last one goes."""
         with self._lock:
             if self._sweeper is not None:
                 return
@@ -324,22 +278,17 @@ def _stop_quietly(system: str, receiver: Any) -> None:
         receiver.stop()
     except Exception:
         # `%r` rather than `%s` because the name reaches here from a `?system=`
-        # query parameter, and the log drawer streams to a browser: a value with
+        # query parameter and the log drawer streams to a browser: a value with
         # a newline in it would arrive looking like a log line of its own.
-        # `repr` cannot emit one, so the record holds whatever the caller sent.
-        # It is already a validated key of the running-systems map by this point
-        # — `_open` refuses an unknown name, and every other call site reads the
-        # name out of `_live` — so this is the belt to that braces, and the
-        # waiver is for CodeQL modeling neither as a sanitizer.
+        # `repr` cannot emit one. The name is already a validated key of the
+        # running-systems map by this point; the waiver is for CodeQL modeling
+        # neither as a sanitizer.
         #
-        # The marker goes on its own line above the one it waives. This used to
-        # trail the call, on the belief that a suppression on the line above "is
-        # not one" because moving it minted a second alert number — but a fresh
-        # number is what moving the flagged line does either way, and the
-        # trailing form was the inert one. `CodeQlSuppressionComment` in
+        # The marker must stay on its own line above the call it waives:
+        # `CodeQlSuppressionComment` in
         # `shared/util/codeql/util/suppression/AlertSuppression.qll` only
         # constructs when no AST node precedes the comment on its line, and its
-        # `covers` is `startline - 1` — own line, suppressing the next.
+        # `covers` is `startline - 1`. A trailing form is inert.
         # codeql[py/log-injection]
         log.exception("could not stop the stream for %r", system)
 
