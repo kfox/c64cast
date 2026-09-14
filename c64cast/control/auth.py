@@ -2,9 +2,10 @@
 
 ``[control] token`` (or ``$C64CAST_CONTROL_TOKEN``, which wins) turns the whole
 control plane — routes, ``/perf`` console, WebSocket — into a token-gated
-surface. Empty is the default and leaves it open, which is allowed on loopback
-and refused off it by ``scene_factory.validate_control_cfg``. ``viewer_token``
-is a second credential that may only issue read methods.
+surface. Empty is the default and leaves it open, which
+``scene_factory.validate_control_cfg`` allows on loopback and refuses off it
+unless ``[control].allow_unauthenticated`` says otherwise. ``viewer_token`` is
+a second credential that may only issue read methods.
 
 **One pure-ASGI middleware, not a per-route dependency.** Two reasons a
 ``Depends`` can't do this job:

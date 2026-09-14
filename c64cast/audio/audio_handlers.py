@@ -751,7 +751,7 @@ REU_IRQ_HANDLER_TRACKED = bytes(
         # end:
         0x68,  # PLA (offset 105)
         # tick divider (offsets 106-124): chain to $EA31 every Nth tick, lean
-        # exit the other N-1. Borrowed from SID player (api.py:089e97a).
+        # exit the other N-1. Same shape as api.py's SID_PLAYER_MC_TEMPLATE divider.
         0xCE,
         _TCTR_LO,
         _TCTR_HI_BYTE,  # DEC counter

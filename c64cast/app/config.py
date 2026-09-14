@@ -70,7 +70,7 @@ HDMI_SCAN_RESOLUTION_CHOICES = (
     "PC 1280 x 1024",
 )
 # Mirrors backend.BACKENDS; duplicated here so config.py stays import-light
-# (it doesn't pull in api.py). tests/test_backend.py:75 asserts they match.
+# (it doesn't pull in api.py). test_backend_choices_match_registry asserts they match.
 _BACKEND_CHOICES = ("ultimate", "teensyrom")
 # Unlike [ultimate64].sid_model ("off" = don't touch the hardware config),
 # the opt-out here is "unknown": there is no hardware config to touch, only
@@ -904,9 +904,9 @@ class AudioCfg:
     # dac_bitmap_tempo_hires. No effect on the off-bus sampler, the REU pump, or char
     # modes.
     #
-    # Default 0.88 = the measured U64-II NTSC mhires speed fraction (clock/wall). Other
-    # platforms have different fractions — measure with
-    # scripts/diags/mhires_tempo_clock_ab.py. 1.0 = compensation off.
+    # Each default is a measured U64-II NTSC speed fraction (clock/wall); other
+    # platforms differ — measure with scripts/diags/mhires_tempo_clock_ab.py.
+    # 1.0 = compensation off.
     dac_bitmap_tempo_hires: float = field(
         default=0.89,
         metadata={

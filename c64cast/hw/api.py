@@ -113,8 +113,8 @@ BASIC_CLEAR_LOOP_PRG = bytes(
 # ($Dx→$34, ≥$E0→$35, ≥$A0→$36, else $37): init from the load-END page, play
 # from the play-address page. Do not collapse this to one $01 set at startup:
 # the $36/$37 choice for the "data under ROM, entry points in RAM" class is
-# undecidable offline (Election needs $37, Sunday_Night needs $36, and their
-# headers are identical). See docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking.
+# undecidable offline (Election needs $37, Sunday_Night needs $36). See
+# docs/architecture/sid.md#sid-player-prg--6502-player-relocation-and-per-call-banking.
 #
 # IRQ handler shape: `JSR play` then a tick divider — every N ticks the
 # handler chains to the kernal IRQ tail at $EA31 (SCNKEY / UDTIM / cursor

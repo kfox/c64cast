@@ -10,11 +10,11 @@ prior command has been processed.
 Only the opcodes c64cast's write path needs are covered here (DMAWRITE,
 REUWRITE, IDENTIFY, AUTHENTICATE, plus RESET, KEYB and the VIC stream pair).
 
-Protocol reference: https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc
+The full set is in the firmware's own protocol table:
+https://github.com/GideonZ/1541ultimate/blob/master/software/network/socket_dma.cc
 
-See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient
-and [docs/caveats.md](../docs/caveats.md) for the transport measurements and
-the full opcode set.
+For the transport measurements, see docs/caveats.md and
+docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient.
 """
 
 from __future__ import annotations
