@@ -5,7 +5,8 @@
 # under gravity, and explode into a fading burst of particles. The same
 # small particle engine also drives WLED's Volcano/Ballpit/Waterfall/Impact/
 # Attractor/Galaxy presets — only Fireworks is ported this batch (see
-# c64cast/generators.py's FireworksSource docstring for the deferred rest).
+# c64cast/scenes/generators/fireworks.py's FireworksSource docstring for the
+# deferred rest).
 #
 # `effect = "trails"` gives the classic streak/comet look for free — this
 # generator draws no synthetic per-particle trail of its own (see the class

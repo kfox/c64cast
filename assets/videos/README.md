@@ -1,6 +1,6 @@
 # assets/videos/
 
-Source video files for [VideoScene](../../c64cast/scenes.py) playback
+Source video files for [VideoScene](../../c64cast/scenes/scenes.py) playback
 via PyAV. Directory/glob scans recognize `.mp4`, `.avi`, `.mkv`, `.mov`,
 `.webm`, and `.m4v` (an explicit `file =` path can point at any container PyAV
 can demux). Audio is resampled to the SID DAC rate (typically 8 kHz) and the

@@ -24,7 +24,7 @@ class MusicModulation:
     """A point-in-time snapshot of music features for driving visuals.
 
     All fields are normalized or physical and generator-agnostic — the generator
-    decides how to map them onto its parameters (see generators.py). A frozen
+    decides how to map them onto its parameters (see scenes/generators/). A frozen
     snapshot so the render thread reads a consistent set while the feature thread
     builds the next one.
 

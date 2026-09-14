@@ -21,7 +21,7 @@ code.
 Kept deliberately import-light: it imports `config` (no numpy) and the overlay
 registry, but NOT `modes` (which pulls in cv2/numpy) — the six display modes
 are described by a small static table here, with `tests/test_introspect.py`
-asserting that table stays in sync with the real `modes.py` classes.
+asserting that table stays in sync with the real `video/modes/` classes.
 """
 
 from __future__ import annotations

@@ -443,7 +443,7 @@ def _layout_fits(
 
     `avoid` is an optional 64 KB bitmap (1 = occupied) — the union of the
     tune's observed RAM write footprint and the caller's scene-reserved
-    regions. See [ram_write_footprint](sid_host_emu.py) and the
+    regions. See [ram_write_footprint](../sid/sid_host_emu.py) and the
     scene-reserved regions assembled in WaveformScene.setup."""
     payload_lo = parsed.load_addr
     payload_hi = parsed.load_addr + len(parsed.payload)

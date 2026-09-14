@@ -1,7 +1,7 @@
 """SID-driven music feature stream for reactive generative visuals.
 
 `SidFeatureStream` runs the same SID file the U64 is playing in parallel on a
-host-side 6502 ([SidHostEmu](sid_host_emu.py)) and reads per-voice envelope /
+host-side 6502 ([SidHostEmu](../sid/sid_host_emu.py)) and reads per-voice envelope /
 frequency / gate state straight out of the emulated `$D400-$D418` shadow — no
 FFT and no onset detection on a raw signal, because the emulator has already
 computed the features. A `PollThread` ticks PLAY at the tune's real rate with

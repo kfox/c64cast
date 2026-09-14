@@ -549,7 +549,7 @@ class WebcamSource:
     reads the newest frame, and hands out independent *copies* to any number of
     consumers via `read()`. That lets the webcam scene (when active) and the
     vision controller (always) share a single physical camera with no
-    contention — see [c64cast/control/vision.py](c64cast/control/vision.py).
+    contention — see [c64cast/control/vision.py](../control/vision.py).
 
     Returning the latest grabbed frame (rather than blocking for the next one)
     also keeps the live-webcam path low-latency: a consumer always gets the

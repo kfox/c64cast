@@ -533,7 +533,7 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn"
 
 
 class RegionID:
-    # Char-mode displays (modes.py, interstitial.py, midi_scene.py).
+    # Char-mode displays (video/modes/, interstitial.py, midi_scene.py).
     SCREEN: Final = 1  # $0400 (1000 bytes)
     COLOR: Final = 2  # $D800 (1000 bytes)
     BITMAP: Final = 3  # $2000 (8000 bytes)
@@ -563,7 +563,7 @@ class RegionID:
     MENU_ROW_SCREEN: Final = 5100  # +row 0..24
     MENU_ROW_COLOR: Final = 5200  # +row 0..24
 
-    # Host-DMA double-buffer (modes.py). The off-screen VIC bank must diff
+    # Host-DMA double-buffer (video/modes/). The off-screen VIC bank must diff
     # against its own prior content, so bank 2 gets its own bitmap/screen IDs;
     # bank 0 reuses BITMAP/SCREEN above. Color RAM ($D800) is un-banked and
     # stays on COLOR.

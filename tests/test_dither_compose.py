@@ -85,7 +85,7 @@ class MultiHiresDitherTest(unittest.TestCase):
         self.assertFalse(np.array_equal(plain["bitmap"], dithered["bitmap"]))
 
     def test_blue_noise_differs_from_ordered_on_gradient(self):
-        # Confirms the modes.py dispatch actually selects a different mask
+        # Confirms the video/modes/ dispatch actually selects a different mask
         # per method rather than both methods silently sharing one offset.
         frame = _gradient()
         ordered = MultiHiresDisplayMode(

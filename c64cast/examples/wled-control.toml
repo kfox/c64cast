@@ -31,7 +31,7 @@
 # "Hiphotic" / "Metaballs" / "Rotozoomer" / "Lissajous" / "DNA" / "Drift" /
 # "Colored Bursts" / "Black Hole" / "Game Of Life" / "Soap" / "Fireworks" /
 # "Waveform" — everything from Hiphotic through Fireworks is a ported WLED
-# effect (see docs/architecture.md's generators.py section), so their names
+# effect (see docs/architecture.md's scenes/generators/ section), so their names
 # match what a real WLED device would show for the same effect. Requires the
 # `wled` extra (zeroconf + fastapi + uvicorn).
 #
@@ -152,9 +152,10 @@ duration_s = 30.0
 
 [[scenes]]
 # The shared "beatsin dot swarm" primitive behind WLED's Black Hole,
-# Frizzles, Sindots, Squared Swirl, and Drift Rose (see generators.py's
-# DotSwarmSource docstring) — named "Black Hole" here to match one real WLED
-# effect name in the app's dropdown, per this file's naming convention.
+# Frizzles, Sindots, Squared Swirl, and Drift Rose (see
+# scenes/generators/dotswarm.py's DotSwarmSource docstring) — named
+# "Black Hole" here to match one real WLED effect name in the app's
+# dropdown, per this file's naming convention.
 type = "generative"
 name = "Black Hole"
 source = "dotswarm"

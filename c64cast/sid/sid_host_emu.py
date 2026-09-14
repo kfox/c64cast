@@ -11,8 +11,8 @@ The emulator has to be ticked at the rate the tune's PLAY is *really* called at
 — the kernal jiffy IRQ rate ([C64Backend.sid_vsync_play_rate_hz](../hw/backend.py)),
 times a CIA-timed multispeed tune's own multiple ([play_rate_hz]) — not the video
 frame rate. Validation (RSID/load_addr/play_addr) is delegated to
-[parse_psid_for_player](api.py), so SidHostEmu refuses the same SIDs
-[Ultimate64API.run_sid_player](api.py) refuses.
+[parse_psid_for_player](../hw/api.py), so SidHostEmu refuses the same SIDs
+[Ultimate64API.run_sid_player](../hw/api.py) refuses.
 
 See docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene.
 """

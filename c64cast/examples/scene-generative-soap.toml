@@ -5,7 +5,7 @@
 # noise-driven flow field — the classic swirling soap-film look. WLED derives
 # its flow from Perlin noise; this port reuses the tileable value-noise
 # helper already built for the `fire` generator instead (a documented
-# substitution — see generators.py's SoapSource docstring).
+# substitution — see scenes/generators/soap.py's SoapSource docstring).
 #
 # Unlike most generators here this one carries real incremental state (the
 # buffer can't be cheaply replayed from an arbitrary time), so it doesn't

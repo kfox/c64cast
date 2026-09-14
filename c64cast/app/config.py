@@ -936,7 +936,7 @@ class AudioCfg:
 class VisionCfg:
     """Camera-as-input: hand-gesture control via MediaPipe HandLandmarker.
 
-    See [c64cast/control/vision.py](c64cast/control/vision.py). Needs the `vision` extra
+    See [c64cast/control/vision.py](../control/vision.py). Needs the `vision` extra
     (mediapipe) + a downloaded HandLandmarker model. The camera is shared with
     any webcam scene through the WebcamSource broker, so no second device is
     needed; gestures work over any scene (blank/video/waveform/webcam)."""
@@ -1538,7 +1538,7 @@ class SceneCfg:
             "applies_to": ("midi",),
         },
     )
-    # See the modes.py section of docs/architecture.md for the per-mode
+    # See the video/modes/ section of docs/architecture.md for the per-mode
     # palette_mode semantics.
     palette_mode: str = field(
         default="percell",

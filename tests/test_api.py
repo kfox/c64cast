@@ -791,7 +791,7 @@ class TunePlayDividerTest(unittest.TestCase):
         self.assertEqual(self.api._tune_play_divider(), 1)
         self.assertEqual(self.divider_writes, [])
 
-    def test_default_50hz_latch_divides_to_1(self):
+    def test_kernal_default_latch_divides_to_1(self):
         # Kernal-default latch ~$4292 → ~59 Hz PLAY → divider 1 (59 / 30 = 1,
         # kernal chain on every tick).
         from c64cast.hw.api import _PlayerLayout
