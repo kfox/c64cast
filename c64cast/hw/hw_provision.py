@@ -21,11 +21,13 @@ See docs/architecture/hardware-io.md#hw_provisionpy--live-reu--sampler-auto-prov
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Sequence
 from typing import NamedTuple
 
 from c64cast.app.config import Config
+from c64cast.hw import uci
 
 from .backend import SYSTEM_MODE_CATEGORY
 
@@ -500,7 +502,8 @@ HDMI_RESOLUTION_FIELD = "HDMI Scan Resolution"
 # Empty means the firmware is driving its built-in table (which is what
 # palette.U64_PALETTE_BGR transcribes); non-empty names a .vpl the user loaded
 # onto the machine, whose contents live in the Ultimate's own flash and are not
-# reachable over the REST API.
+# reachable over the REST API — `read_active_palette` asks the machine itself
+# for the colors.
 PALETTE_FIELD = "Palette Definition"
 HDMI_RESOLUTION_SD = "SD (480p/576p)"
 # What "auto" raises SD to: the lower of the two HW-verified modes. The four
@@ -792,6 +795,33 @@ def read_palette_definition(api: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def read_active_palette(api: object) -> tuple[tuple[int, int, int], ...] | None:
+    """The 16 colors this Ultimate is driving right now, as a BGR table, or
+    None when it can't say (older firmware, a backend with no memory bus, a
+    failed read).
+
+    Unlike `read_palette_definition` this answers with the colors themselves,
+    so a machine carrying a custom .vpl reports what it actually emits.
+    """
+    if not all(hasattr(api, attr) for attr in ("read_memory", "write_memory", "flush")):
+        return None
+    rgb = uci.read_palette_rgb(api)  # type: ignore[arg-type]
+    if rgb is None:
+        return None
+    return tuple((b, g, r) for r, g, b in rgb)
+
+
+def live_palette_name(table: Sequence[Sequence[int]]) -> str:
+    """A name for a live-read palette that changes when its colors do.
+
+    Two machines reporting different colors would otherwise both be called
+    `u64-live`, and the ensemble mismatch warning names the two palettes it is
+    comparing.
+    """
+    digest = hashlib.sha256(bytes(v & 0xFF for color in table for v in color)).hexdigest()
+    return f"u64-live:{digest[:6]}"
+
+
 def resolve_palette(cfg: Config, api: object) -> None:
     """Settle `[hardware].host_palette` and point the render pipeline at the
     colors this machine emits.
@@ -804,11 +834,13 @@ def resolve_palette(cfg: Config, api: object) -> None:
     eligibility all measure distances against it.
 
     A configured value always wins, and is the only way to describe a machine
-    that can't answer: a real C64 behind a TeensyROM+, or an Ultimate carrying a
-    custom .vpl (whose contents live in the machine's flash, out of REST's
-    reach — so point host_palette at a local copy of the same file).
+    that can't answer: a real C64 behind a TeensyROM+, or an Ultimate whose
+    firmware predates the UCI palette command, where a custom .vpl lives in
+    flash out of reach and host_palette has to point at a local copy of it.
     """
-    from c64cast.video.palette import active_host_palette_name, set_host_palette
+    import numpy as np
+
+    from c64cast.video.palette import C64_PALETTE_BGR, active_host_palette_name, set_host_palette
 
     global _palette_resolved
     name, table = _resolve_palette_table(cfg, api)
@@ -817,7 +849,7 @@ def resolve_palette(cfg: Config, api: object) -> None:
         # so an ensemble of machines that render the 16 colors differently can
         # only be right about one of them.
         active = active_host_palette_name()
-        if active != name:
+        if not np.array_equal(np.asarray(table, dtype=np.float32), C64_PALETTE_BGR):
             log.warning(
                 "ensemble: this system's palette (%s) differs from the one "
                 "already in effect (%s), and the color pipeline holds one "
@@ -849,17 +881,23 @@ def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequ
         log.debug("[hardware].host_palette = auto -> pepto (real VIC-II assumed)")
         return "pepto", HOST_PALETTES["pepto"]
 
+    live = read_active_palette(api)
+    if live is not None:
+        name = live_palette_name(live)
+        log.info("[hardware].host_palette = auto -> %s (live, read over UCI)", name)
+        return name, live
+
     loaded = read_palette_definition(api)
     if loaded:
         log.warning(
             "[hardware].host_palette = auto: this Ultimate has the custom "
-            "palette %r loaded, which it won't serve over the network — "
-            "assuming the built-in table instead, so colors will be matched "
-            "against the wrong 16. Point host_palette at a local copy of that "
-            ".vpl to fix it.",
+            "palette %r loaded, and did not answer the UCI read that would "
+            "have returned it — assuming the built-in table instead, so colors "
+            "will be matched against the wrong 16. Point host_palette at a "
+            "local copy of that .vpl to fix it.",
             loaded,
         )
-    log.info("[hardware].host_palette = auto -> u64 (read from the machine)")
+    log.info("[hardware].host_palette = auto -> u64 (built-in table)")
     return "u64", HOST_PALETTES["u64"]
 
 

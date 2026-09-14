@@ -8,7 +8,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`, `hw/uci.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
@@ -133,6 +133,7 @@ the two lists account for every module in the tree.
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `hw/teensyrom_api.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend) |
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
+| `hw/uci.py` | [Hardware I/O & transports](architecture/hardware-io.md#ucipy--the-ultimate-command-interface-at-df1c-df1f) |
 | `scenes/text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `control/transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
 | `app/update_state.py` | [Config, CLI & ensemble](architecture/config.md#update_statepy) |

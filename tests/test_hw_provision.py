@@ -663,3 +663,116 @@ class ResolvePaletteTest(unittest.TestCase):
         hw_provision.resolve_palette(_palette_cfg(), api)
         with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
             hw_provision.resolve_palette(_palette_cfg(), api)
+
+
+class _LivePaletteApi(_FakeVideoApi):
+    """A `_FakeVideoApi` that also carries the memory bus a UCI read needs."""
+
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        return b"\x00" * length
+
+    def write_memory(self, address: str, data_hex: str) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+
+def _stock_u64_bgr():
+    from c64cast.video.palette import HOST_PALETTES
+
+    return HOST_PALETTES["u64"]
+
+
+_LIVE_RGB_A = tuple((i, i * 2, i * 3) for i in range(16))
+_LIVE_RGB_B = tuple((i + 1, i * 2, i * 3) for i in range(16))
+
+
+def _answering(rgb):
+    """Patch the UCI client so `read_active_palette` gets `rgb` back."""
+    return mock.patch("c64cast.hw.uci.read_palette_rgb", return_value=rgb)
+
+
+class ResolveLivePaletteTest(unittest.TestCase):
+    """host_palette = "auto" prefers the palette the machine is actually
+    driving, read over UCI, and falls back to the built-in table without it."""
+
+    def setUp(self):
+        from c64cast.video import palette as pal
+
+        before = pal.C64_PALETTE_BGR.copy(), pal.active_host_palette_name()
+        self.addCleanup(lambda: pal.set_host_palette(before[0], name=before[1]))
+        hw_provision._palette_resolved = False
+        self.addCleanup(setattr, hw_provision, "_palette_resolved", False)
+        self.pal = pal
+
+    def test_a_live_read_wins_over_the_built_in_table(self):
+        with _answering(_LIVE_RGB_A):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        self.assertTrue(self.pal.active_host_palette_name().startswith("u64-live:"))
+
+    def test_the_live_table_is_stored_as_bgr(self):
+        with _answering(_LIVE_RGB_A):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        self.assertEqual(tuple(self.pal.C64_PALETTE_BGR[5]), (15.0, 10.0, 5.0))
+
+    def test_an_explicit_value_still_wins_over_a_live_read(self):
+        with _answering(_LIVE_RGB_A):
+            hw_provision.resolve_palette(_palette_cfg("pepto"), _LivePaletteApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "pepto")
+
+    def test_a_machine_that_cannot_answer_falls_back(self):
+        with _answering(None):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "u64")
+
+    def test_an_api_without_a_memory_bus_falls_back(self):
+        hw_provision.resolve_palette(_palette_cfg(), _FakeVideoApi())
+        self.assertEqual(self.pal.active_host_palette_name(), "u64")
+
+    def test_a_custom_vpl_that_cannot_be_read_still_warns(self):
+        api = _LivePaletteApi(palette_definition="mine.vpl")
+        with _answering(None):
+            with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+                hw_provision.resolve_palette(_palette_cfg(), api)
+        self.assertIn("mine.vpl", "".join(logs.output))
+
+    def test_a_custom_vpl_that_was_read_does_not_warn(self):
+        api = _LivePaletteApi(palette_definition="mine.vpl")
+        with _answering(_LIVE_RGB_A):
+            with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
+                hw_provision.resolve_palette(_palette_cfg(), api)
+
+    def test_two_live_palettes_get_different_names(self):
+        """The warning below names the palette it is keeping and the one it is
+        dropping, so two machines reporting different colors must not both come
+        out as the same `u64-live:` name."""
+        self.assertNotEqual(
+            hw_provision.live_palette_name(_LIVE_RGB_A),
+            hw_provision.live_palette_name(_LIVE_RGB_B),
+        )
+
+    def test_two_machines_with_different_live_palettes_warn(self):
+        with _answering(_LIVE_RGB_A):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        with _answering(_LIVE_RGB_B):
+            with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as logs:
+                hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        self.assertIn("differs from the one already in effect", "".join(logs.output))
+
+    def test_two_machines_with_the_same_live_palette_are_quiet(self):
+        with _answering(_LIVE_RGB_A):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+            with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
+                hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+
+    def test_a_live_read_matching_the_built_in_table_does_not_warn(self):
+        """The mismatch is about colors, not names: a stock machine reaches the
+        same 16 whether it answered the read or not, and warning there would
+        fire on every ensemble of stock Ultimates where one has the command."""
+        stock_rgb = tuple((int(r), int(g), int(b)) for b, g, r in _stock_u64_bgr())
+        with _answering(None):
+            hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
+        with _answering(stock_rgb):
+            with self.assertNoLogs("c64cast.hw.hw_provision", level="WARNING"):
+                hw_provision.resolve_palette(_palette_cfg(), _LivePaletteApi())
