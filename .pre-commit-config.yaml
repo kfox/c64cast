@@ -19,6 +19,11 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
 
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.38.0
+    hooks:
+      - id: check-dependabot
+
   # A hook added here must not re-pin a tool pyproject pins —
   # tests/test_tooling_pins.py enforces it.
   - repo: local
