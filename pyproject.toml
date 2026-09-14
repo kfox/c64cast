@@ -133,11 +133,11 @@ all = [
 ]
 [dependency-groups]
 dev = [
-    "ruff==0.16.6",
+    "ruff==0.16.7",
     "coverage==7.16.0",
     "mypy==2.3.1",
-    "types-requests==2.33.0.20260712",
-    "pyright==1.1.411",
+    "types-requests==2.33.0.20260906",
+    "pyright==1.1.414",
     "jsonschema==4.26.0",
     # fastapi.testclient (Starlette's TestClient) needs it, and FastAPI
     # declares it optional, so the `control` extra does not pull it.
