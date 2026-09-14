@@ -1,8 +1,9 @@
 """A dev tool's version is written in pyproject.toml and nowhere else.
 
 `.pre-commit-config.yaml` runs ruff, pyright and the suite out of the project
-environment rather than re-pinning them, so the commit hook, CI and `make lint`
-cannot resolve different builds
+environment rather than re-pinning them, and every call site invokes
+`pre-commit` itself the same way, so the commit hook, CI and `make lint` cannot
+resolve different builds
 (https://github.com/kfox/c64cast/issues/398).
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 import unittest
 
@@ -18,6 +20,29 @@ _PYPROJECT = os.path.join(_REPO, "pyproject.toml")
 _PRECOMMIT = os.path.join(_REPO, ".pre-commit-config.yaml")
 
 _PROJECT_ENV = "uv run --locked"
+
+_SUBCOMMANDS = (
+    "autoupdate",
+    "clean",
+    "gc",
+    "hazmat",
+    "help",
+    "hook-impl",
+    "init-templatedir",
+    "install",
+    "install-hooks",
+    "migrate-config",
+    "run",
+    "sample-config",
+    "try-repo",
+    "uninstall",
+    "validate-config",
+    "validate-manifest",
+)
+_INVOCATION = re.compile(
+    r"(?<![\w./-])pre-commit(?![\w-])[ \t]+(?:" + "|".join(_SUBCOMMANDS) + r")(?![\w-])"
+)
+_GENERATED = ("c64cast/web/dist/",)
 
 _BLOCK = re.compile(r"^[ \t]*-[ \t]*repo:.*?(?=^[ \t]*-[ \t]*repo:|\Z)", re.M | re.S)
 _HOOK = re.compile(r"^[ \t]*-[ \t]*id:.*?(?=^[ \t]*-[ \t]*id:|\Z)", re.M | re.S)
@@ -39,6 +64,29 @@ _COMMENT_LINE = re.compile(r"^[ \t]*#.*$", re.M)
 def _read(path: str) -> str:
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+def _tracked_text() -> list[tuple[str, str]]:
+    """Every tracked text file, as (repo-relative path, contents).
+
+    `git ls-files` rather than a walk: it skips build output and anything
+    untracked without a directory blocklist to keep current.
+    """
+    listing = subprocess.run(
+        ["git", "-C", _REPO, "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    files = []
+    for name in listing.split("\0"):
+        if not name or name.startswith(_GENERATED):
+            continue
+        try:
+            files.append((name, _read(os.path.join(_REPO, name))))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return files
 
 
 def _keys(pattern: re.Pattern[str], text: str) -> list[str]:
@@ -108,7 +156,7 @@ class SinglePinTest(unittest.TestCase):
         )
 
         tools = _pinned_tools()
-        for tool in ("ruff", "pyright", "mypy"):
+        for tool in ("ruff", "pyright", "mypy", "pre-commit"):
             self.assertIn(tool, tools, f"pyproject stopped pinning {tool} exactly")
 
         repinned = sorted(_version_sources(raw) & tools.keys())
@@ -134,6 +182,23 @@ class SinglePinTest(unittest.TestCase):
 
 
 class ProjectEnvironmentTest(unittest.TestCase):
+    def test_every_pre_commit_invocation_runs_through_the_project_environment(self) -> None:
+        unprefixed = []
+        for name, text in _tracked_text():
+            for call in _INVOCATION.finditer(text):
+                if not text[: call.start()].endswith(f"{_PROJECT_ENV} "):
+                    line = text.count("\n", 0, call.start()) + 1
+                    unprefixed.append(f"{name}:{line}")
+
+        self.assertFalse(
+            unprefixed,
+            f"{unprefixed} reach pre-commit outside the project environment. "
+            f"`uvx` and a bare name each resolve the newest release per "
+            f"machine and cache it, so CI and `make preflight` can run "
+            f"different builds of the tool that runs every other gate. Prefix "
+            f"it with `{_PROJECT_ENV}`, which takes the pinned one",
+        )
+
     def test_every_local_hook_runs_through_the_project_environment(self) -> None:
         local = [b for b in _blocks() if (m := _REPO_URL.search(b)) and m[1] == "local"]
         self.assertEqual(len(local), 1, "expected exactly one `- repo: local` block")

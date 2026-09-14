@@ -191,7 +191,7 @@ check: lint typecheck test
 # Mirrors every CI job except the OS x Python-version test matrix
 # (`lint-and-test`), which needs the actual runners rather than a local flag.
 preflight: lint test
-	SKIP=ruff,ruff-format,pyright,unittest uvx pre-commit run --all-files
+	SKIP=ruff,ruff-format,pyright,unittest uv run --locked pre-commit run --all-files
 	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
 	$(call check-platforms,mypy --strict,uv run mypy --strict --platform,$(MYPY_PLATFORMS))
 	@for book in docs/*/book.toml; do \

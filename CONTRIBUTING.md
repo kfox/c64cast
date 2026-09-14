@@ -18,7 +18,7 @@ git clone https://github.com/kfox/c64cast
 cd c64cast
 uv sync --all-extras    # creates/updates .venv from uv.lock: every runtime
                         # extra + the dev tool group
-pre-commit install      # ruff + pyright + tests run before every commit
+uv run --locked pre-commit install   # ruff + pyright + tests run before every commit
 ```
 
 Then either prefix one-off commands with `uv run`, or let
