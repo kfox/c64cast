@@ -35,6 +35,25 @@ def _read(name: str) -> str:
         return f.read()
 
 
+_USES = re.compile(r"^[ \t]*(?:-[ \t]+)?uses:[ \t]*(\S+)(?:[ \t]*#[ \t]*(\S+))?", re.M)
+_USES_ANYWHERE = re.compile(r"(?<![A-Za-z0-9_-])uses:")
+_ANNOTATION = re.compile(r"^v\d+(?:\.\d+)*$")
+
+
+def _workflow_files() -> list[str]:
+    workflows = os.path.join(_REPO, ".github", "workflows")
+    return [n for n in sorted(os.listdir(workflows)) if n.endswith((".yml", ".yaml"))]
+
+
+def _workflow_action_refs() -> list[tuple[str, str, str]]:
+    """(workflow, `uses:` ref, `# vX.Y.Z` annotation) for every action step."""
+    refs = []
+    for name in _workflow_files():
+        for ref, annotation in _USES.findall(_read(f".github/workflows/{name}")):
+            refs.append((name, ref, annotation))
+    return refs
+
+
 def _book_outputs() -> list[str]:
     """Every book's artifact basename, from the books themselves."""
     docs = os.path.join(_REPO, "docs")
@@ -376,16 +395,42 @@ class TestReleaseWorkflow(unittest.TestCase):
         last. The rule is the repository's rather than the release's; it lives
         here because release.yml is where it first mattered.
         """
-        workflows = os.path.join(_REPO, ".github", "workflows")
-        for name in sorted(os.listdir(workflows)):
-            if not name.endswith((".yml", ".yaml")):
-                continue
-            for ref in re.findall(r"^\s*uses: (\S+)", _read(f".github/workflows/{name}"), re.M):
-                self.assertRegex(
-                    ref,
-                    r"@[0-9a-f]{40}$",
-                    f"{name}: {ref} is not pinned to a full commit SHA",
-                )
+        for name, ref, _ in _workflow_action_refs():
+            self.assertRegex(
+                ref,
+                r"@[0-9a-f]{40}$",
+                f"{name}: {ref} is not pinned to a full commit SHA",
+            )
+
+    def test_every_uses_line_reaches_the_pinning_check(self) -> None:
+        """A `uses:` the collector misses is not unpinned, it is unexamined,
+        which reads back exactly like a pass. Counted against the raw text so
+        the counter and the collector cannot share a blind spot.
+        """
+        self.assertEqual(
+            len(_workflow_action_refs()),
+            sum(
+                len(_USES_ANYWHERE.findall(_read(f".github/workflows/{n}")))
+                for n in _workflow_files()
+            ),
+            "a `uses:` is not being collected, so nothing checks how it is pinned",
+        )
+
+    def test_every_pinned_action_names_one_digest_and_one_version(self) -> None:
+        """The `# vX.Y.Z` beside a digest is what Dependabot reads to find the
+        next bump, and the pinning check stops before the `#`.
+        """
+        pins: dict[str, set[tuple[str, str]]] = {}
+        for name, ref, annotation in _workflow_action_refs():
+            action, _, digest = ref.partition("@")
+            self.assertRegex(annotation, _ANNOTATION, f"{name}: {ref} has no `# vX.Y.Z` annotation")
+            pins.setdefault("/".join(action.split("/")[:2]), set()).add((digest, annotation))
+        for action, seen in sorted(pins.items()):
+            self.assertEqual(
+                len(seen),
+                1,
+                f"{action} is pinned to more than one digest/version: {sorted(seen)}",
+            )
 
     def test_every_book_asset_carries_the_version(self) -> None:
         for output in _book_outputs():
