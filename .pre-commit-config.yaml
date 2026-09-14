@@ -19,25 +19,31 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Keep on the same version as uv.lock's ruff; bump both together.
-    rev: v0.15.17
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-      - id: ruff-format
-
+  # A hook added here must not re-pin a tool pyproject pins —
+  # tests/test_tooling_pins.py enforces it.
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run --locked ruff check --fix --force-exclude
+        language: system
+        require_serial: true
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format --force-exclude
+        language: system
+        require_serial: true
+        types_or: [python, pyi, jupyter]
       - id: pyright
         name: pyright
-        entry: pyright
+        entry: uv run --locked pyright
         language: system
         pass_filenames: false
-        types: [python]
+        types_or: [python, pyi]
       - id: unittest
         name: unittest
-        entry: scripts/pre-commit.sh
+        entry: uv run --locked scripts/pre-commit.sh
         language: system
         pass_filenames: false
-        types: [python]
+        types_or: [python, pyi]

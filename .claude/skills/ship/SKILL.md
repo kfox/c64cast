@@ -207,7 +207,9 @@ Watch the checks and fix what breaks:
 gh pr checks --watch
 ```
 
-CI runs lint, typecheck, and tests across Python 3.11–3.14. GHAS code scanning
+CI runs the tests across Python 3.11–3.14 and three operating systems, lint and
+formatting once in the `pre-commit` job, and the type checks once per target
+platform in the `types` job. GHAS code scanning
 runs too, and its findings are frequently regex-flavored false positives on this
 codebase — read each one before changing code to satisfy it, and say so if you
 think it is wrong rather than contorting the code around it. That leeway ends

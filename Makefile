@@ -73,7 +73,7 @@ endef
 help:
 	@echo "targets:"
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
-	@echo "  lint       ruff check"
+	@echo "  lint       ruff check + ruff format --check"
 	@echo "  fmt        ruff format"
 	@echo "  mutation-ready  hash-based .pyc invalidation, so a mutation pass cannot read stale bytecode"
 	@echo "  mutation-check  verify the tree is still armed (a clean/worktree/sync un-arms it silently)"
@@ -94,7 +94,7 @@ help:
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
-	@echo "  preflight  lint + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
+	@echo "  preflight  lint + hygiene hooks + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
 	@echo "  clean      remove build artifacts"
 
 sync:
@@ -102,6 +102,7 @@ sync:
 
 lint: $(SYNC)
 	uv run ruff check .
+	uv run ruff format --check .
 
 fmt:
 	uv run ruff format .
@@ -190,6 +191,7 @@ check: lint typecheck test
 # Mirrors every CI job except the OS x Python-version test matrix
 # (`lint-and-test`), which needs the actual runners rather than a local flag.
 preflight: lint test
+	SKIP=ruff,ruff-format,pyright,unittest uvx pre-commit run --all-files
 	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
 	$(call check-platforms,mypy --strict,uv run mypy --strict --platform,$(MYPY_PLATFORMS))
 	@for book in docs/*/book.toml; do \

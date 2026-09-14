@@ -77,7 +77,7 @@ whether or not the current shell has `.venv` activated:
 | Target | What it does |
 |---|---|
 | `make sync` | `uv sync --all-extras` (refresh the project env) |
-| `make lint` | `ruff check` |
+| `make lint` | `ruff check` + `ruff format --check` |
 | `make fmt` | `ruff format` |
 | `make test` | the unittest suite, parallel across cores (`T=tests.test_foo` runs just that, serially) |
 | `make coverage` | tests under coverage → report + HTML + `coverage.xml` + JUnit XML |
@@ -90,8 +90,10 @@ whether or not the current shell has `.venv` activated:
 | `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
 | `make mutation-check` | verify it is still armed — a clean, a new worktree or a `uv sync` un-arms it silently |
 
-CI runs the same lint, typecheck, and tests on every push and pull request
-across Python 3.11–3.14 — see
+CI runs the same tests on every push and pull request across Python 3.11–3.14
+and three operating systems, the same lint and formatting once in the
+`pre-commit` job, and the same type checks once per target platform on Python
+3.14 in the `types` job — see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Type-checking is
 deliberately two-tiered: `pyright` in basic mode across the whole tree
 (including tests), matching Pylance's VS Code defaults so editor diagnostics
