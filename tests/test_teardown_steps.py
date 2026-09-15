@@ -185,6 +185,30 @@ class SceneTeardownTests(unittest.TestCase):
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
         self.assertIsNone(scene._last_osd_shown, "lap 2 suppresses its first OSD repaint")
 
+    def test_the_audio_stops_before_the_video_source_is_joined(self):
+        """`AVFileSource.close()` bounded-joins the thread that feeds the sink.
+
+        That demux thread pushes into `push_samples`, and on the sampler it
+        parks there until the *sampler* stops — `_closed` releases a demuxer
+        waiting on the frame queue, but not one waiting on the audio queue. So
+        the audio stop has to run in front of the close, or the close burns its
+        full 1 s bound and logs a join timeout, which is #369's symptom at the
+        busier site.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = os.path.join(tmp, "clip.mp4")
+            with open(clip, "wb") as f:
+                f.write(b"\x00" * 16)
+            order: list[str] = []
+            audio = MagicMock()
+            audio.stop.side_effect = lambda: order.append("audio stop")
+            scene = VideoScene(MagicMock(), audio, MagicMock(), clip)
+            source = MagicMock()
+            source.close.side_effect = lambda: order.append("source close")
+            scene.source = source
+            scene.teardown()
+        self.assertEqual(order, ["audio stop", "source close"])
+
     def test_the_av_lag_summary_reads_the_clock_before_the_audio_stops(self):
         """The summary's `clock/wall` gauge divides by a clock the audio stop
         zeroes.
@@ -230,8 +254,10 @@ class AudioSourceTeardownTests(unittest.TestCase):
     """The two live `audio_source.py` teardowns that sequenced independent
     guarantees.
 
-    Both end in the audio stop, which is what keeps the next scene from
-    inheriting a streaming pump — and both put a thread join in front of it.
+    Both owe the next scene an audio stop, which is what keeps it from
+    inheriting a streaming pump. `MicAudioSource` joins its analyzer in front of
+    that stop; `AudioFileSource` joins its decoder behind it, because stopping
+    the sink is what releases a decoder parked on a full queue.
     """
 
     def test_a_failing_feature_stop_does_not_starve_the_mic_audio_stop(self):
@@ -270,8 +296,9 @@ class AudioSourceTeardownTests(unittest.TestCase):
         so publishing the thread before starting it put an unjoinable object
         where `teardown` reaches for one. Both backend orderings are pinned
         because they differ in what is already running when the start fails: on
-        the DAC path `start_for_external_source()` has run, so a raise escaping
-        teardown's first step would strand a live pump.
+        the DAC path `start_for_external_source()` has run, so the pump is live
+        by the time the raise escapes `setup`, and teardown's `audio stop` is
+        the only thing that shuts it down.
         """
         for is_sampler in (False, True):
             with self.subTest(sampler=is_sampler):
@@ -310,3 +337,39 @@ class AudioSourceTeardownTests(unittest.TestCase):
         audio.stop.reset_mock()
         scene.teardown()
         self.assertTrue(audio.stop.called, "the next scene inherits a streaming audio pump")
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_file_audio_stops_the_sink_before_joining_decode(self):
+        order: list[str] = []
+        audio = MagicMock(is_sampler=False)
+        audio.stop.side_effect = lambda: order.append("audio stop")
+        source = self._file_source(audio, reactive=False)
+        thread = MagicMock()
+        thread.join.side_effect = lambda _timeout: order.append("decode join")
+        thread.is_alive.return_value = False
+        source._thread = thread
+
+        source.teardown()
+
+        self.assertEqual(order, ["audio stop", "decode join"])
+        self.assertIsNone(source._thread)
+
+    @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
+    def test_a_surviving_decode_thread_blocks_restart(self):
+        audio = MagicMock(is_sampler=False)
+        source = self._file_source(audio, reactive=False)
+        source._stop.clear()
+        thread = MagicMock()
+        thread.is_alive.return_value = True
+        source._thread = thread
+
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            source.teardown()
+        self.assertIs(source._thread, thread)
+        self.assertTrue(source._stop.is_set())
+
+        with self.assertLogs(_SOURCES_LOG, level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "previous audio-file decode thread"):
+                source.setup()
+        self.assertTrue(source._stop.is_set(), "restart released the surviving decode thread")
+        self.assertFalse(audio.start_for_external_source.called)

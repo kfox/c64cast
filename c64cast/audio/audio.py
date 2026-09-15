@@ -315,10 +315,10 @@ class AudioStreamer:
         # q.full() is unused because the cap below is in bytes, not items.
         self.q: queue.Queue[bytes] = queue.Queue(maxsize=AUDIO_QUEUE_MAX_BLOBS)
         self._queued_samples = 0
-        # flush() bumps _flush_epoch; _encode_and_enqueue and _worker each
-        # capture it and discard audio held across a change, so a seek/loop/pause
-        # splice cannot leak pre-splice samples from a blocked pusher or the
-        # worker's hand. _count_lock pairs the _pushed_count/_queued_samples
+        # flush() and stop() bump _flush_epoch; _encode_and_enqueue and _worker
+        # each capture it and discard audio held across a change, so neither a
+        # seek/loop/pause splice nor a scene cut-over can leak pre-splice samples
+        # from a blocked pusher or the worker's hand. _count_lock pairs the _pushed_count/_queued_samples
         # mutations so position_seconds() (= pushed - queued) stays invariant
         # across a flush drain. _stomp_requested asks the worker (which owns
         # write_addr) to NEUTRAL-fill the unplayed ring, keeping ring DMA off the
@@ -1902,7 +1902,10 @@ class AudioStreamer:
     def push_samples(self, samples_int16: np.ndarray) -> None:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
         briefly when the queue is full so the PyAV demuxer naturally
-        throttles to the audio sample rate."""
+        throttles to the audio sample rate. A no-op once stopped, as the
+        sampler's is."""
+        if not self.running:
+            return
         floats = samples_int16.astype(np.float32) / INT16_FULL_SCALE
         # Pre-DSP analysis tap, as in the mic callbacks, so a decoded file
         # drives reactive visuals through the same analyzer.
@@ -2014,6 +2017,10 @@ class AudioStreamer:
         #  - Then zero SID volume so the DAC isn't clamped at the last NMI
         #    value, and finally restore the KERNAL NMI vector.
         self.running = False
+        # Ahead of everything a producer could outlast: the push path's epoch
+        # check is what drops a blob from a producer this clear just released,
+        # and the drain at the bottom only catches one that beats it there.
+        self._flush_epoch += 1
         # No-op if the pump was never armed. The governor lives entirely in the
         # C64-side handler, so disarming the IRQ vector stops it.
         self._disarm_reu_pump()
@@ -2055,7 +2062,8 @@ class AudioStreamer:
                     WORKER_JOIN_TIMEOUT_S,
                 )
             self._worker_thread = None
-        # Drain the queue so subsequent runs start clean.
+        # Drain so subsequent runs start clean. The epoch bumped above is what
+        # covers a producer still between its own capture and its put.
         self._drain_queue_samples()
         self._pushed_count = 0
         self._queued_samples = 0

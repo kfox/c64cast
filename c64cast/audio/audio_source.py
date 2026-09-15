@@ -313,10 +313,11 @@ class AudioFileSource:
         """Re-pick from the (re-resolved) pool, install the analyzer, and spin up
         the decode→audio thread. Never raises on a decode/analyzer hiccup —
         degrades to non-reactive so the visual keeps running. Plenty else does
-        escape, though — a file spec that resolves to nothing openable, a host
-        too short of threads to start the decode thread, and whatever the audio
-        bring-up raises over the link. `SourceScene.setup` catches all of it,
-        logs, and flips `is_done` so the playlist advances.
+        escape, though, including a file spec that resolves to nothing openable,
+        a decode thread from the last activation still running, a host too short
+        of threads to start a new one, and whatever the audio bring-up raises
+        over the link. `SourceScene.setup` catches all of it, logs, and flips
+        `is_done` so the playlist advances.
 
         Ordering differs by backend, by what each bring-up call *waits* for
         rather than by whether it touches the link — both do. The 4-bit DAC's
@@ -329,14 +330,16 @@ class AudioFileSource:
         prebuffer fills promptly and playback starts without the empty-prebuffer
         stall.
 
-        That sampler ordering is why a `start()` that raises is the awkward one:
-        it leaves the decode thread running with no writer to drain the queue,
-        and `UltimateAudioSampler.push_samples` waits on the *sampler's* stopped
-        flag rather than this source's, so `teardown`'s `_stop` does not release
-        a thread parked on a full queue. Its bounded join spends the whole 2 s
-        and returns with the thread still alive; the `audio stop` step behind it
-        is what actually frees it. Every teardown promise is still kept, which
-        is what the guarded steps are for, but the shutdown pauses."""
+        If a previous decode thread outlives teardown, setup raises rather than
+        clearing its stop event or starting another one. Teardown stops the
+        audio sink before joining, which releases a sampler producer blocked on
+        a full queue; a thread that still survives the bounded join remains
+        referenced, so this source cannot stack a second decoder behind it."""
+        if self._thread is not None:
+            if self._thread.is_alive():
+                log.error("audio file: previous decode thread is still running; refusing restart")
+                raise RuntimeError("previous audio-file decode thread is still running")
+            self._thread = None
         self._pick_and_probe()
         self._stop.clear()
         self._start_features()
@@ -448,15 +451,22 @@ class AudioFileSource:
         # push into a dying tap.
         self._stop.set()
         self._audio.analysis_sink = None
-        thread, self._thread = self._thread, None
+        thread = self._thread
         features, self._features = self._features, None
         steps: list[tuple[str, Callable[[], object]]] = []
-        if thread is not None:
-            steps.append(("decode thread join", partial(thread.join, 2.0)))
         if features is not None:
             steps.append(("feature stream stop", features.stop))
         steps.append(("audio stop", self._audio.stop))
+        if thread is not None:
+            steps.append(("decode thread join", partial(self._join_decode_thread, thread)))
         run_teardown_steps(log, type(self).__name__, steps)
+
+    def _join_decode_thread(self, thread: threading.Thread) -> None:
+        thread.join(2.0)
+        if thread.is_alive():
+            log.error("audio file: decode thread did not stop; keeping it fenced from restart")
+        elif self._thread is thread:
+            self._thread = None
 
     def position_seconds(self) -> float | None:
         # The consumer clock, for the protocol. The scene ends on duration_s.
