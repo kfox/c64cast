@@ -129,8 +129,8 @@ and the run silently reuses whatever level ran last.
 call is a report-only run; nothing reaches the tree unless the subagent applies
 it. Have it apply the fixes itself and leave them in the working tree, then say
 what it fixed, what it declined, and why. An advisory *design* finding is the
-exception — on a shipping branch it is reported as backlog (step 7) rather than
-applied.
+exception — the subagent reports it rather than applying it, and you route it
+once it has reported, below.
 
 Do not commit, or edit anything in this checkout, while it runs: it verifies
 findings by mutating the tree and running the suite, so a concurrent commit
@@ -181,10 +181,16 @@ Then, once it has reported:
   make it. Batching them to the end is the batching step 3 forbids, done at the
   point where the branch is closest to shipping — and the push gate counts these
   commits, so leaving them unreviewed blocks `gh pr create` in step 5.
-- **Write down what was declined and why** — in the step-3 report for the commit
-  it belongs to, and again in the PR body (step 5). A declined finding with a
-  reason is a legitimate outcome; one that was only said out loud is re-litigated
-  by the next reader.
+- **Write down what was declined and why**, in the step-3 report for the commit
+  it belongs to. A declined finding with a reason is a legitimate outcome; one
+  that was only said out loud is re-litigated by the next reader. The record is
+  where that belongs — not the PR body, which is for the change and not for the
+  history of reviewing it.
+- **Route every advisory finding before step 5.** Fix it on this branch when a
+  commit here introduced it or the fix fits the spirit of the change, as its own
+  commit under the rule above; otherwise open a labeled GitHub issue. A finding
+  that is only mentioned is one nothing tracks, and one fixed after step 6 costs
+  another commit, review and push with the PR already green.
 
 A defect still open when the subagent is done is a stop, not a pass. Report what
 remains and ask the user how to proceed before opening a PR.
@@ -196,8 +202,10 @@ gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>
 ```
 
 The body should say what the change does, why, and anything a reviewer should
-look at closely. Mention findings you declined during review and the reason —
-that is exactly the context a human reviewer would otherwise have to rediscover.
+look at closely — and nothing else. Not the findings the review declined, not
+which review passes ran, not what this branch left for later: the step-3 record
+holds the declines, and whatever was left for later is a labeled issue by now,
+which the body links rather than recounts.
 
 ## 6. Watch until green
 
@@ -226,7 +234,8 @@ Report to the user:
 
 - The PR URL and its check status.
 - What the review found, fixed, and declined — with reasons for the declines.
-- Any advisory findings, as a backlog.
+- Any advisory finding, and where step 4 routed it — the commit that fixed it
+  here, or the issue it became.
 - Anything still open, stated plainly.
 
 Then stop. The merge is the user's, and they squash-merge from the GitHub UI.

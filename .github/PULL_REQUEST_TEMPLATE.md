@@ -39,6 +39,7 @@ lines that didn't.
 ## Anything reviewers should know
 
 <!--
-Trade-offs you made, approaches you rejected, parts you are unsure about, or
-follow-up work you deliberately left out of scope.
+Trade-offs you made, approaches you rejected, or parts you are unsure about.
+Follow-up work you deliberately left out of scope belongs in an issue — link it
+here rather than describing it.
 -->
