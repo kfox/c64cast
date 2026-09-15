@@ -22,6 +22,12 @@ _STATE_LAST_DATA = 0x20
 _READ_CEILING = 1000
 
 
+class _UnboundedRead(BaseException):
+    """Derived from BaseException to pass `read_palette_rgb`'s blanket
+    `except Exception`, which would otherwise answer the ceiling with the same
+    quiet None every failure test already asserts."""
+
+
 class _CountedBus:
     """Per-instance read counter, so no fake can loop forever."""
 
@@ -30,7 +36,7 @@ class _CountedBus:
     def _count_read(self) -> None:
         self._reads += 1
         if self._reads > _READ_CEILING:
-            raise AssertionError(f"unbounded read loop: more than {_READ_CEILING} reads")
+            raise _UnboundedRead(f"unbounded read loop: more than {_READ_CEILING} reads")
 
 
 class _FakeUltimate(_CountedBus):
@@ -77,6 +83,7 @@ class _FakeUltimate(_CountedBus):
         self._pending = b""
         self._status_out = b""
         self._reads = 0
+        self._status_reads = 0
         self._pushed = False
 
     @property
@@ -127,6 +134,7 @@ class _FakeUltimate(_CountedBus):
             head, self._pending = self._pending[:1], self._pending[1:]
             return head
         if address == uci.UCI_STATUS:
+            self._status_reads += 1
             if self.stuck_status:
                 return b"!"
             head, self._status_out = self._status_out[:1], self._status_out[1:]
@@ -394,11 +402,11 @@ class ReadPaletteFailureTest(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def test_none_when_the_interface_never_goes_idle(self):
-        device = _FakeUltimate(busy_before_push=10_000, handshake_reads=0)
+        device = _FakeUltimate(busy_before_push=10_000)
         self.assertIsNone(uci.read_palette_rgb(device))
 
     def test_no_command_is_pushed_when_the_interface_never_goes_idle(self):
-        device = _FakeUltimate(busy_before_push=10_000, handshake_reads=0)
+        device = _FakeUltimate(busy_before_push=10_000)
         uci.read_palette_rgb(device)
         self.assertEqual(device.commands, [])
 
@@ -510,10 +518,9 @@ class ReadPaletteFailureTest(unittest.TestCase):
     def test_an_endless_status_reply_is_bounded(self):
         device = _FakeUltimate(stuck_status=True, handshake_reads=0)
         uci.read_palette_rgb(device)
-        # A ceiling of the test's own, not a multiple of _STATUS_LIMIT:
-        # bounding the assertion by the constant under test passes for any
-        # value of it.
-        self.assertLess(device._reads, _READ_CEILING)
+        # CMD_MAX_STATUS_LEN, from the firmware's command_intf.h. Asserting
+        # against _STATUS_LIMIT would hold for any value of it.
+        self.assertEqual(device._status_reads, 256)
 
 
 if __name__ == "__main__":
