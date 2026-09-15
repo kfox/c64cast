@@ -11,8 +11,9 @@ PALETTE_RGB = tuple((i * 3, i * 3 + 1, i * 3 + 2) for i in range(uci.PALETTE_COL
 PALETTE_BYTES = bytes(v for color in PALETTE_RGB for v in color)
 STATUS_OK = b"00,OK"
 STATUS_UNKNOWN_COMMAND = b"21,UNKNOWN COMMAND"
-# The state the firmware reports alongside the last data byte, and the only one
-# in which it acts on a NEXT_DATA write.
+# The state the firmware reports alongside the last data byte, and the only data
+# state a single-part reply such as the palette reaches. Its bit is `state(1)`,
+# which is what gates NEXT_DATA and the data and status bits alike.
 _STATE_LAST_DATA = 0x20
 
 # Well above the ~110 reads a palette costs and the ~615 a maximal status drain
@@ -93,10 +94,15 @@ class _FakeUltimate(_CountedBus):
             else:
                 self.state = _STATE_LAST_DATA
 
+        # `response_valid` and `status_valid` are both `state(1) and not
+        # handshake_in(2)` in command_protocol.vhd, so nothing is readable until
+        # the state machine reaches a data state. An abort here goes straight
+        # back to idle, so the state bit alone carries both terms.
+        readable = bool(self.state & _STATE_LAST_DATA)
         value = self.state | self.handshake
-        if self._pending:
+        if self._pending and readable:
             value |= uci.DATA_AVAILABLE
-        if self._status_out or self.stuck_status:
+        if (self._status_out or self.stuck_status) and readable:
             value |= uci.STATUS_AVAILABLE
         if self.error_busy:
             value |= uci.ERROR_BUSY
@@ -253,6 +259,22 @@ class _DataPortDiesMidDrain(_FakeUltimate):
         return super().read_memory(address, length, timeout)
 
 
+class _ControlPortDiesMidDrain(_FakeUltimate):
+    """An Ultimate whose read link drops on the register that paces the drain:
+    the control register stops answering once eight bytes are out, while the
+    result and status ports still would. Both drains end there regardless,
+    because each reads the control register before every byte."""
+
+    _DIES_AFTER = 8
+
+    def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
+        drained = len(self.reply) - len(self._pending)
+        if address == uci.UCI_CONTROL and self._pushed and drained >= self._DIES_AFTER:
+            self._count_read()
+            return None
+        return super().read_memory(address, length, timeout)
+
+
 class _RaisingBus:
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise RuntimeError("this backend cannot read memory")
@@ -316,6 +338,15 @@ class ReadPaletteTest(unittest.TestCase):
 
     def test_waits_out_a_busy_interface(self):
         self.assertEqual(uci.read_palette_rgb(_FakeUltimate(busy_after_push=5)), PALETTE_RGB)
+
+    def test_nothing_is_readable_until_the_command_leaves_busy(self):
+        """Draining before BUSY clears reads nothing at all: neither port
+        hands its reply to a client that asks early."""
+        device = _FakeUltimate(busy_after_push=5)
+        with mock.patch.object(uci, "_await_not_busy", return_value=True):
+            self.assertIsNone(uci.read_palette_rgb(device))
+        self.assertEqual(device._pending, PALETTE_BYTES)
+        self.assertEqual(device._status_out, STATUS_OK)
 
     def test_waits_for_a_non_idle_interface_to_settle(self):
         self.assertEqual(uci.read_palette_rgb(_FakeUltimate(busy_before_push=3)), PALETTE_RGB)
@@ -452,8 +483,26 @@ class ReadPaletteFailureTest(unittest.TestCase):
         with self.assertLogs("c64cast.hw.uci", level="DEBUG") as logs:
             self.assertIsNone(uci.read_palette_rgb(device))
         self.assertIn("palette reply was 8 bytes", "".join(logs.output))
+        # Stopping there spares the rest of the 48 reads on a link already gone.
+        self.assertEqual(device._result_reads, device._DIES_AFTER + 1)
         self.assertEqual(device.control_writes, [0x01, 0x04])
         self.assertTrue(device.released)
+
+    def test_a_control_port_that_stops_answering_mid_drain_loses_the_status_too(self):
+        # The same dropped link one register over: a drain spends a control
+        # read per byte, so that is the read as likely to go. It paces the
+        # status drain as well, so this ends at the status check rather than at
+        # the length check — a drain that took the miss for a byte would raise
+        # on `None & int` instead, and the log is what tells the two apart.
+        device = _ControlPortDiesMidDrain(handshake_reads=0)
+        with self.assertLogs("c64cast.hw.uci", level="DEBUG") as logs:
+            self.assertIsNone(uci.read_palette_rgb(device))
+        self.assertIn("get-palette answered", "".join(logs.output))
+        self.assertEqual(device._pending, PALETTE_BYTES[device._DIES_AFTER :])
+        # The abort cannot be confirmed either — the register that would say so
+        # is the one that died — so the release escalates to a second abort.
+        self.assertEqual(device.control_writes, [0x01, 0x04, 0x04])
+        self.assertIn("did not return to idle", "".join(logs.output))
 
     def test_none_when_the_backend_cannot_read_memory(self):
         self.assertIsNone(uci.read_palette_rgb(_RaisingBus()))
