@@ -130,10 +130,23 @@ anything under `assets/` that git does not carry. The rule, the reasoning and
 the two known blind spots are in
 [`tests/_fs_sandbox.py`](tests/_fs_sandbox.py)'s docstring.
 
-If a test trips it, the fix is almost always to point the code under test at a
-file the test writes under `tempfile.mkdtemp()`, or to run the block from
-`tmp_cwd()` (in [`tests/_fakes.py`](tests/_fakes.py)) when what it resolves is a
-*relative* default like `assets/videos/`. `MachineSettingsIsolation` is still
+**A test may not leave a thread running either, and the same startup hook
+enforces that.** A thread outlives every guard the test was wrapped in —
+`quiet_logging()` is `logging.disable`, which ends with its block, and
+`assertLogs` swaps a handler for the same span — so a poll thread still
+ticking afterwards logs into the middle of an unrelated test.
+`tests/sitecustomize.py` also arms
+[`tests/_thread_sandbox.py`](tests/_thread_sandbox.py), which fails the test
+that ends with a thread it started still alive, naming the thread. `PollThread`
+names every loop at its construction site, so the name identifies the owner;
+the fix is to call that object's teardown from `addCleanup`. A stray gets half
+a second to finish first, so a thread genuinely winding down is not a failure.
+
+If a test trips the filesystem hook, the fix is almost always to point the code
+under test at a file the test writes under `tempfile.mkdtemp()`, or to run the
+block from `tmp_cwd()` (in [`tests/_fakes.py`](tests/_fakes.py)) when what it
+resolves is a *relative* default like `assets/videos/`.
+`MachineSettingsIsolation` is still
 there for a module that wants a settings/data directory of its own, fresh and
 untouched by anything else.
 

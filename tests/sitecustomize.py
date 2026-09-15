@@ -1,4 +1,5 @@
-"""Arm the test suite's filesystem sandbox at interpreter startup.
+"""Arm the test suite's filesystem and background-thread sandboxes at
+interpreter startup.
 
 `site` imports a module named exactly `sitecustomize` if it can find one on
 `sys.path`, which is the only hook that runs early enough to catch a file
@@ -13,7 +14,9 @@ on its path, so it is not importable there at all.
 """
 
 import _fs_sandbox
+import _thread_sandbox
 
 _fs_sandbox.redirect_local_state()
 _fs_sandbox.neutralize_local_chargen()
 _fs_sandbox.arm()
+_thread_sandbox.arm()

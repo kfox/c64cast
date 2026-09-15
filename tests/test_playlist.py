@@ -20,10 +20,23 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable
 
 from c64cast.app import playlist_support
 from c64cast.app.playlist import Playlist
 from c64cast.scenes.scenes import OsdState
+
+
+def arm_deadline(test: unittest.TestCase, seconds: float, fire: Callable[[], None]) -> None:
+    """Fire `fire` after `seconds` unless the test ends first.
+
+    A bare `threading.Timer` outlives the test that armed it whenever the run
+    it guards finishes early, which is the normal case. What a thread that
+    outlives its test does to the run's output is in `tests/_thread_sandbox.py`.
+    """
+    timer = threading.Timer(seconds, fire)
+    test.addCleanup(timer.cancel)
+    timer.start()
 
 
 class FakeScene:
@@ -303,7 +316,7 @@ class PlaylistTest(unittest.TestCase):
             loop=False,
         )
         # Safety timer in case loop=False is broken and this would spin.
-        threading.Timer(2.0, stop.set).start()
+        arm_deadline(self, 2.0, stop.set)
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         self.assertEqual(s.setup_count, 1, "scene should set up exactly once with loop=False")
@@ -335,7 +348,7 @@ class PlaylistTest(unittest.TestCase):
             interstitial_factory=factory,
             loop=False,
         )
-        threading.Timer(2.0, stop.set).start()
+        arm_deadline(self, 2.0, stop.set)
         with self.assertLogs("c64cast.app.playlist", level="INFO") as cap:
             pl.run()
         for s in scenes:
@@ -419,7 +432,7 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        threading.Timer(0.05, stop.set).start()
+        arm_deadline(self, 0.05, stop.set)
         t0 = time.time()
         pl.run()
         dt = time.time() - t0
@@ -1337,8 +1350,8 @@ class PauseResumeTest(unittest.TestCase):
         )
         # Resume shortly after entering the pause loop (so _handle_pause moves
         # on to reset() rather than idling forever), then stop mid-wait.
-        threading.Timer(0.05, pl.resume_event.set).start()
-        threading.Timer(0.3, stop_event.set).start()
+        arm_deadline(self, 0.05, pl.resume_event.set)
+        arm_deadline(self, 0.3, stop_event.set)
         t0 = time.time()
         pl._handle_pause()
         dt = time.time() - t0

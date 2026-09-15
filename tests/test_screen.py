@@ -100,6 +100,8 @@ class LifetimeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.api = _FakeApi()
         self.feed = ScreenFeed(lambda: {"c64cast": self.api})
+        # A feed that served a watcher is left holding a live sweeper thread.
+        self.addCleanup(self.feed.close)
 
     def test_the_stream_comes_up_for_a_watcher_and_stays_up_for_a_second(self):
         with self.feed.watching("c64cast"):
@@ -168,6 +170,7 @@ class LifetimeTest(unittest.TestCase):
         # against a backend that is gone, re-arming a watchdog over a dead link.
         running: dict[str, _FakeApi] = {"c64cast": self.api}
         feed = ScreenFeed(lambda: dict(running))
+        self.addCleanup(feed.close)
         with feed.watching("c64cast"):
             self.assertEqual(self.api.starts, 1)
             running.clear()

@@ -152,6 +152,14 @@ test at a `tempfile.mkdtemp()` fixture, or wrap the block in `tmp_cwd()` from
 pass — `allow_outside_checkout(path)` exempts that one path, for a test whose
 subject genuinely is a real path, and nothing else.
 
+**The suite cannot leave a thread running either**, and the same startup hook
+arms [tests/_thread_sandbox.py](tests/_thread_sandbox.py) to enforce it: a test
+that ends with a thread it started still alive fails, named. A thread outlives
+`quiet_logging()` and `assertLogs` alike — both are scoped to a block — so a
+poll thread still ticking logs into an unrelated test. Stop and join what the
+test started (the owning object's teardown, from `addCleanup`); a stray gets
+half a second to wind down before it counts.
+
 ## Quirks worth knowing
 
 Cross-cutting traps that belong to no single module. **Per-subsystem design rationale

@@ -1074,6 +1074,7 @@ class SourceSceneTest(unittest.TestCase):
             display_mode=cast(DisplayMode, SimpleNamespace(audio_reu_pump_active=False)),
         )
         scene, _mode, src = self._scene(audio_source=mic)
+        self.addCleanup(scene.teardown)
         scene.setup()
         self.assertTrue(src.setup_called)
         self.assertIsNotNone(streamer.started)

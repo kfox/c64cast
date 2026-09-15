@@ -148,6 +148,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
             song=0,
             display_mode=cast("object", _FakeMode(False)),  # type: ignore[arg-type]
         )
+        self.addCleanup(src.teardown)
         src.setup()
         assert api.sid_played is not None
         # avoid is a 64 KB bitmap reserving screen RAM ($0400).
@@ -167,6 +168,7 @@ class SidFileAudioSourceTest(unittest.TestCase):
             path,
             display_mode=cast("object", _FakeMode(True)),  # type: ignore[arg-type]
         )
+        self.addCleanup(src.teardown)
         src.setup()
         avoid = api.sid_played_avoid
         assert avoid is not None
