@@ -1603,10 +1603,12 @@ class VideoScene(MediaFileMixin, Scene):
         # Ahead of the audio stop: that zeroes `position_seconds()`, which is
         # what this summary's clock/wall gauge divides.
         steps.append(("A/V lag summary", self._log_av_lag_summary))
-        if src is not None:
-            steps.append(("source close", src.close))
         if self.audio:
             steps.append(("audio stop", self.audio.stop))
+        # Behind the audio stop: the close bounded-joins the demux thread, which
+        # parks in the sampler's push_samples until the sampler itself stops.
+        if src is not None:
+            steps.append(("source close", src.close))
         steps.append(("identity-skip cache reset", self._reset_identity_skip_cache))
         run_teardown_steps(log, type(self).__name__, steps)
 

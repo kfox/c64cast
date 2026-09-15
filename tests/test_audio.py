@@ -7,6 +7,7 @@ import queue
 import threading
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 from _fakes import new_streamer
@@ -399,6 +400,45 @@ class EffectiveRateTest(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertEqual(result["n"], 0)  # stale push dropped
         self.assertTrue(s.q.empty())
+
+    def test_blocked_push_dropped_by_stop(self):
+        """`stop()` owes the next scene the same cut-over `flush()` does."""
+        import time
+
+        s = new_streamer()
+        s.running = True
+        s._max_queued_samples = 16384
+        s._queued_samples = 16384  # at cap → _encode_and_enqueue spins
+        for _ in range(16):
+            s.q.put(bytes([NEUTRAL_SAMPLE]) * 1024)
+
+        result: dict[str, int] = {}
+
+        def push():
+            result["n"] = s._encode_and_enqueue(np.zeros(100, dtype=np.float32), block_on_full=True)
+
+        t = threading.Thread(target=push)
+        t.start()
+        time.sleep(0.02)  # let it park in the backpressure spin
+        s.stop()
+        t.join(timeout=1.0)
+        self.assertEqual(result["n"], 0)
+        self.assertTrue(s.q.empty(), "the next scene inherits the previous track's audio")
+        self.assertEqual(s._queued_samples, 0)
+
+    def test_stop_bumps_the_epoch_before_it_drains(self):
+        """Drain-then-bump leaves the window open for the length of the drain."""
+        s = new_streamer()
+        s.running = True
+        seen: list[int] = []
+
+        def recording_drain(self: AudioStreamer) -> int:
+            seen.append(self._flush_epoch)
+            return 0
+
+        with patch.object(AudioStreamer, "_drain_queue_samples", recording_drain):
+            s.stop()
+        self.assertEqual(seen, [1], "stop() drained before it bumped")
 
     def test_stop_still_drains_and_zeroes(self):
         # stop() routes its drain through _drain_queue_samples; the queue must

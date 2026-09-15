@@ -1413,6 +1413,16 @@ class LifecycleTest(unittest.TestCase):
         s.push_samples(np.array([0, 16384, -16384], dtype=np.int16))
         self.assertEqual(s._queued_samples, 3)
 
+    def test_push_samples_after_stop_does_not_refill_the_queue(self):
+        s = _make()
+        s.running = True
+        s.push_samples(np.array([0, 16384, -16384], dtype=np.int16))
+        self.assertEqual(s._queued_samples, 3)
+        s.stop()
+        s.push_samples(np.array([0, 16384, -16384], dtype=np.int16))
+        self.assertEqual(s._queued_samples, 0)
+        self.assertTrue(s.q.empty())
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is
