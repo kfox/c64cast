@@ -1,42 +1,18 @@
 """The appliance first-run setup window.
 
-``[web].setup_wizard`` is for a pre-provisioned OS image: the box boots with no
-connection target and a token nobody has seen yet, and the *only* way to reach
-it is a browser on the LAN. Something has to be reachable before any
-credential exists, and per SECURITY.md that has never before been true of this
-surface — "it has no 'off'". This module is the one deliberate, narrow
-exception, and the point of putting it in its own module is that the exposure
-is bounded by construction rather than by an allowlist someone has to keep
-correct.
+``[web].setup_wizard`` is for a pre-provisioned OS image booted with no
+connection target and a token nobody has seen: the one deliberate exception to
+SECURITY.md's "the web console has no 'off'". This is a middleware installed
+*outside* the token gate (``Starlette.add_middleware`` prepends, and the stack
+wraps in reverse, so the last one added is outermost), not a hole punched in
+it, and it derives what to block from
+:func:`c64cast.control.web_static.owned_segments` rather than a route list.
 
-**A middleware *outside* the token gate, not a hole punched in it.**
-:func:`c64cast.control.auth.install_auth` runs inside
-:func:`c64cast.control.control_plane.build_app_for_registry`, so
-``TokenAuthMiddleware`` already wraps the app by the time
-:func:`c64cast.app.serve.build_daemon_app` gets control back.
-``Starlette.add_middleware`` inserts at index 0 of ``user_middleware`` and the
-stack is built by wrapping the router in *reverse* of that list, which makes
-the most-recently-added middleware the **outermost** one — installing this
-gate afterward means it sees every request *before* the token check does, so
-it can let the setup surface through with no token at all rather than trying
-to carve an exemption out of ``TokenAuthMiddleware`` itself (whose
-``public_paths`` matches only exact strings, and would need to grow a copy of
-every setup route by hand).
+Once :data:`SETUP_PATH` answers ``pending: false`` the app is rebuilt without
+this middleware (``serve.run_daemon``'s restart loop); nothing here supports a
+mid-run toggle.
 
-**No hardcoded route list either.** :func:`install_setup_gate` is called after
-every other route — including :func:`c64cast.control.web_static.mount_web_app`
-— is registered, so :func:`c64cast.control.web_static.owned_segments` already
-knows every top-level path segment the app answers. Blocking "any owned
-segment except the console shell's own assets and the setup API" costs nothing
-to keep correct as routes are added elsewhere; the alternative, a list of
-``/status``, ``/scenes``, ``/perf``, … maintained here, is exactly the kind of
-copy that silently stops covering a new route.
-
-Once :data:`SETUP_PATH` answers ``pending: false`` the whole app is rebuilt
-without this middleware (see ``serve.run_daemon``'s restart loop) rather than
-this gate switching itself off mid-run — a `[web].token` chosen during setup
-has to reach ``TokenAuthMiddleware``'s constructor, which takes a plain string,
-not a live credential, so there is no "mid-run" state worth supporting here.
+See docs/architecture/control.md#setup_gatepy--setup_apipy--the-appliance-first-run-setup-window.
 """
 
 from __future__ import annotations
@@ -95,8 +71,8 @@ class SetupGateMiddleware:
     async def _deny(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] == "websocket":
             # Consume the queued `websocket.connect` before closing, same as
-            # TokenAuthMiddleware._deny — closing unaccepted turns into a
-            # clean handshake failure rather than uvicorn logging a warning.
+            # TokenAuthMiddleware._deny: an unaccepted close is then a clean
+            # handshake failure rather than a uvicorn warning.
             await receive()
             await send({"type": "websocket.close", "code": 1013})
             return

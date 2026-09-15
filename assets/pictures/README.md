@@ -1,6 +1,6 @@
 # assets/pictures/
 
-Still images for the [SlideshowScene](../../c64cast/scenes.py). Any format
+Still images for the [SlideshowScene](../../c64cast/scenes/scenes.py). Any format
 OpenCV's `cv2.imread` can decode works — `.jpg`, `.jpeg`, `.png`, `.bmp`,
 `.webp`. Images are center-cropped to the C64's 320:200 aspect ratio and
 quantized to the VIC-II palette by the scene's display mode.

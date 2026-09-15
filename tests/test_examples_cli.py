@@ -23,8 +23,7 @@ from c64cast.app import introspect, paths
 from c64cast.app.cli import _resolve_configs, build_parser, main
 
 # Loading a demo applies the machine-settings layer; isolate it so a real
-# ~/.config/c64cast/settings.toml on the dev's machine can't change what the
-# resolved configs look like.
+# ~/.config/c64cast/settings.toml cannot change the resolved configs.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -58,8 +57,8 @@ class ListExamplesTest(unittest.TestCase):
     def test_summaries_come_from_the_files_own_header(self):
         summary = introspect.example_summary(paths.resolve_example("hello"))
         self.assertIn("hello world", summary)
-        # The schema directive is not prose, and neither is the boilerplate
-        # prefix nearly every demo repeats.
+        # Neither the schema directive nor the boilerplate prefix most demos
+        # repeat is prose.
         self.assertNotIn("#:schema", summary)
         self.assertNotIn("Single-scene demo", summary)
         # ...and it reaches the listing (which wraps, so match the opening).
@@ -77,9 +76,9 @@ class ListExamplesTest(unittest.TestCase):
     def test_demos_needing_user_media_are_tagged(self):
         _, out = _run(["--list-examples"])
         self.assertIn("needs your own media", out)
-        # A scene sourcing from the empty `assets/` tree needs a file dropped
-        # in; an overlay's missing file (logo) draws a placeholder instead, so
-        # tagging it would send users looking for a problem they don't have.
+        # A scene sourcing from the empty `assets/` tree needs a file dropped in;
+        # an overlay's missing logo draws a placeholder, so tagging it would send
+        # users looking for a problem they do not have.
         self.assertTrue(introspect.example_needs_media(paths.resolve_example("scene-slideshow")))
         self.assertFalse(introspect.example_needs_media(paths.resolve_example("overlay-logo")))
         self.assertFalse(introspect.example_needs_media(paths.resolve_example("hello")))

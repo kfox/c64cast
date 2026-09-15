@@ -6,9 +6,9 @@ firmware's own `/v1/runners:sidplay` runner is deliberately avoided — it
 hijacks the HDMI output with its own UI). The SID registers are
 write-only and read back as open-bus zeros, so c64cast can't poll the
 chip; instead it runs the same tune in parallel on a host-side
-[py65 6502 emulator](../../c64cast/sid_host_emu.py) that traps
+[py65 6502 emulator](../../c64cast/sid/sid_host_emu.py) that traps
 `$D400-$D418` writes and feeds an in-process
-[SID emulator](../../c64cast/sidemu.py) to drive the per-voice waveform
+[SID emulator](../../c64cast/sid/sidemu.py) to drive the per-voice waveform
 visualization. PSID-only — RSIDs are refused (see
 [docs/caveats.md](../../docs/caveats.md)).
 

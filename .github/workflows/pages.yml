@@ -1,16 +1,5 @@
 name: Pages
 
-# Publishes https://kfox.github.io/c64cast/ — the books and the user docs,
-# rendered from the same Markdown the release's PDFs are set from.
-#
-# On every push to main, not on a tag: the site documents `main` and says so in
-# a banner on every page. What it does NOT carry is a built PDF — each page
-# links `releases/latest/download/…`, which is the published spelling of "the
-# current book" and the one that survives a release.
-#
-# Pages must be switched to the "GitHub Actions" source once, by hand, before
-# the first run can deploy:
-#     gh api -X POST repos/kfox/c64cast/pages -f build_type=workflow
 on:
   push:
     branches: [main]
@@ -24,15 +13,11 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-# Least privilege: the job reads the repo and mints the OIDC token the Pages
-# deployment is authorized with. Nothing here writes to the repository.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# One deployment at a time, and never cancel one in flight: a half-published
-# site is worse than a stale one, and the next push will republish anyway.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -47,20 +32,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
-      # `--no-project`, exactly as the release renders the books: the site
-      # builder is stdlib-only and imports nothing from c64cast, so there is no
-      # environment to sync and nothing to install.
       - name: Render the site
         run: make site PY="uv run --no-project python"
 
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      # The artifact upload path, not a gh-pages branch — so nothing generated
-      # is ever committed, and Jekyll never runs over the output.
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/_site

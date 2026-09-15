@@ -2,26 +2,11 @@
 
 Wraps `palette.RollingColorMapAccumulator` with a worker thread + shot-cut
 detection so a LIVE scene (webcam / wled sink / generative) can run
-`[color].force_palette` without a pre-scan — the pre-scan force_palette path
-(`VideoScene` / `SlideshowScene`) needs a whole file up front, which a webcam or
-a network pixel stream doesn't have.
+`[color].force_palette` without the whole-file pre-scan `VideoScene` and
+`SlideshowScene` use. The render thread calls `submit_frame` then
+`poll_colormap`; the worker does the k-means.
 
-Split of work:
-
-* the **render thread** calls `submit_frame(img)` each rendered frame — cheap:
-  stash the latest frame reference (under a lock) and run a throttled shot-cut
-  check (downscaled HSV histogram correlation);
-* a **worker thread** samples the latest frame at ~1 Hz into the rolling Lab
-  window, re-bakes a stable `ColorMap` (warm-start k-means + assignment
-  hysteresis live in the accumulator), and **publishes** it — but only when the
-  resulting C64 color SET actually changed (or a cut fired). Within an unchanged
-  set the warm-start+hysteresis map is visually identical, so not re-installing
-  it avoids per-cycle shimmer;
-* the render thread calls `poll_colormap()` and installs any published map on
-  its display mode.
-
-k-means is ~15-60 ms; keeping it off the render thread means it never stutters
-playback. See project_force_palette_analysis_rolling.
+See docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap.
 """
 
 from __future__ import annotations
@@ -38,11 +23,10 @@ from .palette import ColorMap, RollingColorMapAccumulator
 
 log = logging.getLogger(__name__)
 
-# Worker cadence: sample the latest frame + re-bake this often.
 _SAMPLE_INTERVAL_S = 1.0
-# Shot-cut detection: run the (cheap) histogram compare every Nth submitted
-# frame, on the downscaled HSV hue/sat histogram. A correlation below the
-# threshold vs the previous checked frame = a cut (fresh palette, snap hidden).
+
+# Shot-cut detection: a downscaled HSV hue/sat histogram correlated against the
+# previous checked frame, below the threshold = a cut.
 _CUT_CHECK_EVERY = 5
 _CUT_HIST_WIDTH = 160
 _CUT_H_BINS = 16
@@ -115,9 +99,6 @@ class RollingForcePalette:
         return corr < _CUT_CORREL_THRESHOLD
 
     def _run(self, stop: threading.Event) -> None:
-        # `published` (worker-local) is the last color set we installed; a new
-        # bake is published only when its set differs (or a cut fired), so a
-        # stable scene stops re-installing after it converges.
         published: tuple[int, ...] | None = None
         while not stop.wait(self._interval):
             with self._lock:

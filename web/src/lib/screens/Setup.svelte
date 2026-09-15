@@ -3,8 +3,8 @@
   import { submitSetup, waitForRestart, type SetupState } from "$lib/setup";
 
   interface Props {
-    /** What `probeSetup` answered. The shell only mounts this screen when
-     *  setup is actually pending, so there is no "nothing to do" state here. */
+    /** What `probeSetup` answered. The shell mounts this screen only when
+     *  setup is pending, so there is no "nothing to do" state. */
     setup: SetupState;
   }
 
@@ -14,8 +14,8 @@
   let token = $state("");
   let problem = $state("");
   // `form` until the host has accepted it, `restarting` while it rebuilds
-  // itself, `ready` once it is answering again — at which point the page
-  // navigates itself into the console.
+  // itself, `ready` once it answers again — at which point the page navigates
+  // itself into the console.
   let phase = $state<"form" | "restarting" | "ready">("form");
   let loginUrl = $state("");
 
@@ -23,9 +23,8 @@
                px-3 py-1 font-mono text-sm disabled:opacity-40
                focus-visible:outline-2 focus-visible:outline-[var(--accent)]`;
 
-  // Never the real one, even masked: the form answers anybody on the LAN
-  // while the window is open, so the host reports only *that* its token is
-  // fixed and this stands in for it.
+  // Never the real token, even masked: the form answers anybody on the LAN
+  // while the window is open, so the host reports only *that* one is fixed.
   const REDACTED = "••••••••••••••••";
 
   async function submit(event: SubmitEvent): Promise<void> {
@@ -39,9 +38,9 @@
       phase = "form";
       return;
     }
-    // The host is tearing its app down and building the next one as we ask.
-    // Wait for it rather than navigating into the gap — and go anyway if it
-    // takes too long, since the link below is the only way in from here.
+    // The host tears its app down and builds the next one as we ask, so wait
+    // rather than navigate into the gap — and go anyway on a timeout, since
+    // the link below is the only other way in.
     await waitForRestart();
     phase = "ready";
     window.location.href = loginUrl;

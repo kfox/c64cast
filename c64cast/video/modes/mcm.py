@@ -62,9 +62,6 @@ class MCMDisplayMode(CharDisplayMode):
 
     name = "mcm"
     frame_target_size = (80, 50)
-    # Live-tune surface (see DisplayMode.LIVE_PARAMS). MCM applies the adaptive
-    # color fit, spatial dither, and nearest-palette matching, and can swap
-    # palette_mode live — but has no per-cell (percell) axis.
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0), "auto_fit_strength": (0.0, 1.0)}
     LIVE_CHOICES = {
         "dither_method": DITHER_METHODS,
@@ -86,9 +83,8 @@ class MCMDisplayMode(CharDisplayMode):
     ):
         validate_palette_mode(palette_mode)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        # The forced-palette preset pairs with percell (see cycle_style); when
-        # config opts in, start in that state regardless of the configured
-        # palette_mode (which still seeds the non-forced cycle stops).
+        # The forced-palette preset pairs with percell (see cycle_style); the
+        # configured palette_mode still seeds the non-forced cycle stops.
         self._force_palette = bool(force_palette)
         if self._force_palette:
             palette_mode = "percell"
@@ -97,24 +93,18 @@ class MCMDisplayMode(CharDisplayMode):
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
-        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
-        # When on, compose() measures nearest-color in Lab (perceptually uniform)
-        # instead of the brightness-weighted BGR metric. The channel_boost + gray
-        # penalty shaping still applies (they keep flat desaturated regions from
-        # fragmenting to gray and hold C64-friendly hues); only the distance
-        # space changes. The penalty is in d² units, so it's scaled to the Lab
-        # metric's smaller magnitude. See palette.quantize_distances_for.
+        # The gray penalty is in d² units, so it is rescaled to the Lab
+        # metric's smaller magnitude when `perceptual` is on.
         self._perceptual = bool(perceptual)
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._last_bg: np.ndarray | None = None
-        # grayscale uses a fixed bg slot assignment so the per-cell screen
-        # nibbles don't shuffle frame-to-frame — see GRAYSCALE_* comment up top.
+        # A fixed bg slot assignment, so the per-cell screen nibbles do not
+        # shuffle frame to frame.
         self._fixed_bg: np.ndarray | None = (
             np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if palette_mode == "grayscale" else None
         )
-        # EMA-smoothed counts for cheap/vivid picks; see base.PALETTE_PICK_EMA_ALPHA.
         self._smoothed_counts: np.ndarray | None = None
 
     def set_palette_mode(self, api, palette_mode: str, *, force_palette: bool | None = None) -> str:
@@ -131,9 +121,6 @@ class MCMDisplayMode(CharDisplayMode):
         self._fixed_bg = (
             np.array(GRAYSCALE_MCM_BGS, dtype=np.int64) if palette_mode == "grayscale" else None
         )
-        # Reset EMA + last-bg so the new mode's slot picks don't blend with
-        # the previous mode's accumulated counts and so border/bg get
-        # re-pushed on the next frame.
         self._smoothed_counts = None
         self._last_bg = None
         api.invalidate_cache()
@@ -145,7 +132,6 @@ class MCMDisplayMode(CharDisplayMode):
         )
         return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
-    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
     @property
     def dither_strength(self) -> float:
         return self._dither_strength
@@ -167,14 +153,9 @@ class MCMDisplayMode(CharDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        # Re-upload the charset on every setup(), not just the first. The
-        # charset lives at $3000, which falls inside the $2000-$3F3F bitmap
-        # area that hires/mhires scenes write to. In a looping multi-scene
-        # playlist this MCMDisplayMode instance is reused across loops, so an
-        # intervening bitmap scene clobbers $3000 between two appearances of
-        # this scene — a one-time upload would then leave stale bitmap bytes
-        # as the character set (visible as a corrupted charset). It's a single
-        # 2 KB write at scene-entry time, so re-uploading is cheap.
+        # Every setup(), not just the first: the charset at $3000 sits inside
+        # the $2000-$3F3F bitmap area hires/mhires write to, so an intervening
+        # bitmap scene in a looping playlist leaves stale bitmap bytes here.
         charset = bytearray(2048)
         for i in range(256):
             tl, tr, bl, br = (i >> 6) & 3, (i >> 4) & 3, (i >> 2) & 3, i & 3
@@ -183,12 +164,8 @@ class MCMDisplayMode(CharDisplayMode):
             charset[i * 8 : i * 8 + 4] = [row_top] * 4
             charset[i * 8 + 4 : i * 8 + 8] = [row_bot] * 4
         api.write_memory_file("3000", bytes(charset))
-        # Clear-then-reveal (see PETSCIIDisplayMode.setup / engage_bitmap_mode):
-        # screen code 0x00 selects bg slot 0 for every sub-pixel, so pinning
-        # $D020-$D023 to black too guarantees that slot is actually black —
-        # otherwise the reveal would show a clean-but-colored field under
-        # whatever bg0-2/border the previous scene left behind. $D011 flips
-        # last, once the clean black field is fully in place.
+        # Clear-then-reveal: screen code 0x00 selects bg slot 0 for every
+        # sub-pixel, so $D020-$D023 are pinned black too and $D011 flips last.
         clear_char_screen(api, screen_code=0x00)
         api.write_memory("d018", "1c")
         api.write_memory("d016", "18")
@@ -200,8 +177,8 @@ class MCMDisplayMode(CharDisplayMode):
         assert self.frame_target_size is not None
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         if self._force_palette and self._color_map is not None:
-            # Forced-palette remap: emit exact C64 colors and skip the faithful
-            # shaping stages + gray penalty (the remap already chose each color).
+            # The remap already chose each color, so the shaping stages and the
+            # gray penalty are skipped.
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             all_d = quantize_distances(flat)  # (4000, 16)
         else:
@@ -209,7 +186,6 @@ class MCMDisplayMode(CharDisplayMode):
             if fit is not None:
                 img = apply_color_fit(img, fit)
             img = boost_saturation(img, self._sat_factor)
-            # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
@@ -217,11 +193,9 @@ class MCMDisplayMode(CharDisplayMode):
                 w, h = self.frame_target_size
                 offset = offset_fn(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            # Single distance matrix (with gray penalty, scaled to the active
-            # metric) shared across all downstream decisions — per-pixel argmin,
-            # the bg picker, and the per-cell fg search all need to agree on which
-            # palette entry "wins" for a given pixel, so apply the bias once at
-            # the top. In-place add avoids a second ~256 KB allocation each frame.
+            # One distance matrix for every downstream decision — per-pixel
+            # argmin, bg picker and per-cell fg search must agree on which entry
+            # wins — so the bias is applied once, in place.
             all_d = quantize_distances_for(flat, perceptual=self._perceptual)  # (4000, 16)
             all_d += self._gray_penalty * self._penalty_scale
         per_pixel = np.argmin(all_d, axis=1)
@@ -246,9 +220,9 @@ class MCMDisplayMode(CharDisplayMode):
         bg_d = d_grid[:, :, bg]  # (1000, 4, 3)
         fg_d = d_grid[:, :, :8]  # (1000, 4, 8)
 
-        # For each (cell, pixel, fg_candidate), pick the best of {bg0,bg1,bg2,fg}.
-        # The best-bg choice is fg-independent — collapse it first to skip the
-        # (1000, 4, 8, 4) tensor the naive concat+argmin would build.
+        # Best of {bg0,bg1,bg2,fg} per (cell, pixel, fg_candidate). The best-bg
+        # choice is fg-independent, so collapsing it first skips the
+        # (1000, 4, 8, 4) tensor a concat+argmin would build.
         bg_argmin = bg_d.argmin(axis=2)  # (1000, 4)  -> 0/1/2
         bg_min = bg_d.min(axis=2)[:, :, None]  # (1000, 4, 1)
         minv = np.minimum(fg_d, bg_min)  # (1000, 4, 8)
@@ -257,12 +231,9 @@ class MCMDisplayMode(CharDisplayMode):
 
         force_palette_active = self._force_palette and self._color_map is not None
         if self._dither_method in ("floyd-steinberg", "atkinson") and not force_palette_active:
-            # Re-dither each cell's own 2×2 pixels against its resolved
-            # candidate set {bg0, bg1, bg2, fg} — candidate SELECTION (bg,
-            # best_fg above) stays on the EMA-smoothed histogram for temporal
-            # stability; only the per-pixel fill dithers. Candidate order
-            # matches the fa code convention (0/1/2 = bg slot, 3 = fg), so the
-            # returned code IS fa directly.
+            # Only the per-pixel fill dithers; candidate selection stays on the
+            # EMA-smoothed histogram. Candidate order matches the fa code
+            # convention (0/1/2 = bg slot, 3 = fg), so the returned code IS fa.
             pixels_cell = (
                 flat.reshape(50, 80, 3)
                 .reshape(25, 2, 40, 2, 3)
@@ -287,8 +258,8 @@ class MCMDisplayMode(CharDisplayMode):
         screen = ((fa[:, 0] << 6) | (fa[:, 1] << 4) | (fa[:, 2] << 2) | fa[:, 3]).astype(np.uint8)
         color = (best_fg + 8).astype(np.uint8)  # high bit = multicolor
 
-        # text surface present for the buffers contract; MCM rejects PETSCII
-        # text overlays (color-RAM bit 3 = multicolor), so nothing paints it.
+        # Present for the buffers contract only: MCM rejects PETSCII text
+        # overlays (color-RAM bit 3 = multicolor), so nothing paints it.
         return {"screen": screen, "color": color, "bg": bg, "text": CharTextSurface(screen, color)}
 
     def push(self, api: C64Backend, buffers: MCMComposeBuffers) -> None:

@@ -13,8 +13,7 @@ def _cam(index, name, vid=None, pid=None, backend=1200):
     return CameraInfo(index=index, name=name, vid=vid, pid=pid, backend=backend)
 
 
-# A representative macOS enumeration: a built-in cam (no USB IDs), an Elgato
-# Cam Link 4K, and a virtual camera.
+# A representative macOS enumeration; the built-in cam reports no USB IDs.
 FACETIME = _cam(0, "FaceTime HD Camera")
 CAMLINK = _cam(1, "Cam Link 4K", vid=0x0FD9, pid=0x0066)
 OBSVIRT = _cam(2, "OBS Virtual Camera")

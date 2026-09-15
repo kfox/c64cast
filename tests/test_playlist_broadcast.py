@@ -46,9 +46,8 @@ class _FakeScene:
         self.duration_s = 10.0
         self.target_fps: float | None = None
         self.overlays: list = []
-        # MagicMock's auto-spec returns a Mock for any attribute, which
-        # _frame_time_for then tries to compare to 0 and explodes. Pin
-        # the attributes the playlist actually reads to real values.
+        # MagicMock's auto-spec answers any attribute with a Mock, which
+        # _frame_time_for then compares to 0 and explodes.
         self.display_mode = MagicMock()
         self.display_mode.default_target_fps = None
         # A real Scene always has one, and `safe_setup` re-stamps the run's
@@ -71,8 +70,8 @@ class _FakeScene:
         return self._still_active
 
     def bind_orchestrator(self, orch, *, conductor: bool, index: int) -> None:
-        # Mirrors Scene.bind_orchestrator — the coordinator stamps roles
-        # through this method now, not by poking privates.
+        # Mirrors Scene.bind_orchestrator, the method the coordinator stamps
+        # roles through.
         self._orchestrator = orch
         self._is_conductor = conductor
         self._system_index = index
@@ -147,7 +146,6 @@ class RunOneFrameTest(unittest.TestCase):
         with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.run_one_frame(scene, 0.0)
         self.assertTrue(scene.is_done)
-        # skip_event is cleared after handling.
         self.assertFalse(pl.skip_event.is_set())
 
 
@@ -183,8 +181,7 @@ class BroadcastInterruptTest(unittest.TestCase):
         orch = _FakeOrchestrator()
         interrupt, resume = self._wire_broadcast(pl, orch, follower)
 
-        # Schedule a resume after a few process_frame calls so the
-        # broadcast loop exits naturally.
+        # Resume after a few process_frame calls so the broadcast loop exits.
         def stop_after_three():
             while follower.process_calls < 3:
                 pass
@@ -222,9 +219,8 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertFalse(follower._is_conductor)
 
     def test_paused_playlist_is_force_resumed(self):
-        # The follower being paused when the broadcast hits is an
-        # acknowledged edge case: force-resume + run the broadcast +
-        # leave un-paused after.
+        # A follower paused when the broadcast hits is an acknowledged edge
+        # case: force-resume, run the broadcast, leave un-paused after.
         pl = _build_playlist()
         pl.pause_event.set()
         follower = _FakeScene("follower")
@@ -266,17 +262,15 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertTrue(any("no follower scene factory" in line for line in cap.output))
 
     def test_follower_with_orchestrate_cfg_does_not_re_install_conductor(self):
-        # Regression for the phase-2 verification bug: when a follower's
-        # fallback SceneCfg is the conductor's cfg (no local override),
-        # cfg.orchestrate=true on the follower side would clobber the
-        # follower stamps with a fresh conductor install. _safe_setup's
-        # _maybe_install_conductor must skip when scene._orchestrator
-        # is already set.
+        # Regression: when a follower's fallback SceneCfg is the conductor's
+        # cfg (no local override), cfg.orchestrate=true on the follower side
+        # clobbered the follower stamps with a fresh conductor install, so
+        # _maybe_install_conductor must skip a scene that has an orchestrator.
         from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="follower")
-        # Build the ensemble with our follower's name in it so the
-        # broadcast machinery resolves indices cleanly.
+        # The follower's name has to be in the ensemble for the broadcast
+        # machinery to resolve indices.
         ens = Ensemble(stacks=[_fake_ensemble_stack("follower")], stop_event=pl.stop_event)
         pl.ensemble = ens
         # Stamp a fake scene as if _handle_broadcast_interrupt already ran.
@@ -286,22 +280,17 @@ class BroadcastInterruptTest(unittest.TestCase):
         scene._orchestrator = _FakeOrchestrator()  # type: ignore[attr-defined]
         scene._is_conductor = False  # type: ignore[attr-defined]
         scene._system_index = 0  # type: ignore[attr-defined]
-        # Calling _maybe_install_conductor must be a no-op — the scene
-        # already has an orchestrator and is in follower role.
+        # A no-op: the scene already has an orchestrator and is a follower.
         pl.ensemble_coord.maybe_install_conductor(scene)
-        # _is_conductor must NOT have been flipped back to True.
         self.assertFalse(scene._is_conductor)
-        # active_orchestrator must NOT have been touched.
         self.assertIsNone(ens.active_orchestrator)
 
     def test_conductor_teardown_clears_per_scene_stamps(self):
-        # The conductor's Scene instance is reused across playlist loops
-        # (and across single-scene mode iterations). _safe_teardown must
-        # therefore clear scene._orchestrator + scene._is_conductor so
-        # the next _safe_setup → _maybe_install_conductor re-installs a
-        # fresh orchestrator. Without this, ensemble.active_orchestrator
-        # stays None on the 2nd+ broadcast and every follower drops the
-        # interrupt as "no active orch".
+        # The conductor's Scene instance is reused across playlist loops and
+        # single-scene iterations, so safe_teardown has to clear
+        # scene._orchestrator and scene._is_conductor: without that,
+        # active_orchestrator stays None from the 2nd broadcast on and every
+        # follower drops the interrupt as "no active orch".
         from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="conductor")
@@ -322,12 +311,9 @@ class BroadcastInterruptTest(unittest.TestCase):
         self.assertFalse(scene.__dict__.get("_is_conductor"))
 
     def test_conductor_re_setup_reinstalls_orchestrator(self):
-        # End-to-end: after teardown of a conductor scene, calling
-        # _maybe_install_conductor again on the SAME scene instance must
-        # produce a fresh orchestrator wired into ensemble.active_orchestrator
-        # (regression for the "subsequent broadcasts only paint the rightmost
-        # screen" bug — followers couldn't see the broadcast because the
-        # ensemble slot was empty after the first run).
+        # Regression for "subsequent broadcasts only paint the rightmost
+        # screen": the ensemble slot was empty after the first run, so
+        # followers never saw the broadcast.
         from c64cast.app.config import SceneCfg
 
         pl = _build_playlist(name="conductor")
@@ -336,9 +322,8 @@ class BroadcastInterruptTest(unittest.TestCase):
         scene = _FakeScene("morning-hello")
         scene._cfg = SceneCfg(type="blank", name="morning-hello", orchestrate=True)
 
-        # The Playlist's _maybe_install_conductor needs an Orchestrator
-        # subclass that claims this cfg. Register a minimal one for the
-        # test (the registry is global; we clean up after).
+        # maybe_install_conductor needs an Orchestrator subclass that claims
+        # this cfg; the registry is global, so the fake is cleaned up after.
         from c64cast.app import orchestrator as orch_mod
 
         class _TestOrch(orch_mod.Orchestrator):
@@ -351,20 +336,17 @@ class BroadcastInterruptTest(unittest.TestCase):
 
         orch_mod._REGISTRY.append(_TestOrch)
         try:
-            # First setup: fresh install.
             pl.ensemble_coord.maybe_install_conductor(scene)
             first_orch = ens.active_orchestrator
             self.assertIsInstance(first_orch, _TestOrch)
             self.assertIs(scene.__dict__["_orchestrator"], first_orch)
             self.assertTrue(scene.__dict__["_is_conductor"])
 
-            # Simulate end-of-broadcast teardown.
             pl.safe_teardown(scene)
             self.assertIsNone(ens.active_orchestrator)
 
-            # Second setup on the same Scene instance: must install a
-            # FRESH orchestrator into the ensemble slot, not silently
-            # leave it None.
+            # A second setup on the same Scene instance must install a fresh
+            # orchestrator into the ensemble slot, not leave it None.
             pl.ensemble_coord.maybe_install_conductor(scene)
             second_orch = ens.active_orchestrator
             self.assertIsInstance(second_orch, _TestOrch)
@@ -379,11 +361,9 @@ class BroadcastInterruptTest(unittest.TestCase):
         follower = _FakeScene("follower")
         orch = _FakeOrchestrator()
         _, _ = self._wire_broadcast(pl, orch, follower)
-        # Don't set resume; set stop_event instead.
         pl.stop_event.set()
         with self.assertLogs("c64cast.app.playlist", level="INFO"):
             pl.ensemble_coord.handle_broadcast_interrupt()
-        # Follower was set up, ran zero or more frames, and was torn down.
         self.assertEqual(follower.setup_calls, 1)
         self.assertEqual(follower.teardown_calls, 1)
 

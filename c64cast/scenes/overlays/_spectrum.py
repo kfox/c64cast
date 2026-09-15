@@ -1,43 +1,13 @@
 """Shared band-magnitude source for the spectrum-analyzer overlays.
 
-Both spectrum overlays (`spectrum_petscii`, `spectrum_bitmap`) answer the same
-question every frame — "how much energy is in each of N log-spaced bands right
-now?" — and differ only in how they draw the answer. That question is answered
-here, once, by `_SpectrumBands.bands_now(scene)`.
+`_SpectrumBands.bands_now(scene)` answers "how much energy is in each of N
+log-spaced bands right now?" once for both `spectrum_petscii` and
+`spectrum_bitmap`, in four tiers: `scene.features().bands`, SID voice synthesis,
+a direct FFT of an attached `AudioStreamer`, then zeros. Magnitudes come back
+nominally in [0, 1] with `gain` already applied; a caller that maps them to a
+pixel/row height does its own clipping.
 
-**Why the scene, not the AudioStreamer.** The original implementation FFT'd
-`AudioStreamer.get_recent_samples()` inside the overlay, which made it
-`REQUIRES_AUDIO` and therefore blank on a SID/waveform scene (the chip makes the
-sound; there is no streamer) while duplicating analysis on a mic/file scene (the
-`audio_features.AudioFeatureStream` behind those already ran the identical FFT).
-`scene.features()` is the source-agnostic seam — every reactive scene returns a
-`modulation.MusicModulation` there — so the overlays read that first and keep the
-FFT only as a fallback.
-
-Four tiers, in precedence order:
-
-1. **`features().bands`** — a real spectrum, already Hann → rfft → per-band mean
-   → `log1p`-compressed by the upstream analyzer over the *pre-DSP* tap. The
-   mic and audio-file paths land here. Rebinned to this overlay's band count.
-2. **Voice synthesis** — the SID path (`music_features.SidFeatureStream`,
-   `waveform.WaveformScene.features`) reports envelopes and oscillator
-   frequencies, *not* a spectrum, so its `bands` is empty by design (see
-   modulation.py). Rather than leave a SID tune blank, place each gated voice's
-   real frequency into a log-spaced Hz band. This is a three-oscillator
-   approximation of a spectrum, not an FFT of one — which for a chiptune is
-   most of what the spectrum actually is. It lives here rather than in the SID
-   feature producers deliberately: filling `MusicModulation.bands` upstream
-   would make `bass`/`mid`/`treble` non-zero on the SID path and change every
-   existing SID-reactive generator (see the byte-identical note in
-   modulation.py).
-3. **The legacy FFT** — `features()` is None but an `AudioStreamer` is attached
-   (a plain `reactive = false` mic scene, or a webcam scene with audio on).
-   Math unchanged from the pre-features implementation.
-4. **Zeros** — no data source. The overlays paint nothing rather than erroring,
-   so a spectrum overlay on a silent scene is inert, not fatal.
-
-Magnitudes come back nominally in [0, 1] with `gain` already applied; a caller
-that maps them to a pixel/row height does its own clipping.
+See docs/architecture/scenes.md#the-shared-spectrum-band-source-overlays_spectrumpy.
 """
 
 from __future__ import annotations
@@ -59,8 +29,8 @@ log = logging.getLogger(__name__)
 
 N_BANDS = 8
 
-# Lowest → highest frequency band color, shared by both spectrum overlays so a
-# given band is the same color whether it's drawn as chars or as bitmap pixels.
+# Shared by both spectrum overlays, so a band is the same color whether it is
+# drawn as chars or as bitmap pixels.
 BAND_COLORS = np.array(
     [
         C64_COLORS["red"],  # band 0 — lowest
@@ -75,18 +45,16 @@ BAND_COLORS = np.array(
     dtype=np.uint8,
 )
 
-# Frequency span the SID voice-synthesis tier maps across its bands. The FFT
-# tiers get their edges from the analyzer's bin geometry (band_edges), which is
-# tied to a sample rate; a SID voice arrives as an absolute frequency in Hz, so
-# it needs its own span. 40 Hz–8 kHz covers the SID's musical range with the low
-# end sitting just under a typical bass line's fundamental.
+# The voice-synthesis tier needs its own span: the FFT tiers take their edges
+# from the analyzer's bin geometry, which is tied to a sample rate, while a SID
+# voice arrives as an absolute frequency in Hz. 40 Hz–8 kHz covers the SID's
+# musical range, the low end just under a typical bass line's fundamental.
 VOICE_BAND_LO_HZ = 40.0
 VOICE_BAND_HI_HZ = 8000.0
 
-# How much of a voice's level spills into the two adjacent bands. With only
-# three oscillators across eight bands, hard single-band spikes read as
-# disconnected blips; a modest skirt makes them read as a spectrum without
-# implying resolution that isn't there.
+# How much of a voice's level spills into the two adjacent bands: with three
+# oscillators across eight bands, hard single-band spikes read as disconnected
+# blips.
 _VOICE_SPILL = 0.45
 
 
@@ -102,8 +70,6 @@ def rebin(bands: tuple[float, ...] | np.ndarray, n_out: int) -> np.ndarray:
         return np.zeros(n_out, dtype=np.float32)
     if src.size == 1:
         return np.full(n_out, src[0], dtype=np.float32)
-    # Map both onto [0, 1] so the first and last bands stay pinned to the
-    # spectrum's ends regardless of the count change.
     src_x = np.linspace(0.0, 1.0, src.size, dtype=np.float32)
     out_x = np.linspace(0.0, 1.0, n_out, dtype=np.float32)
     return np.interp(out_x, src_x, src).astype(np.float32)
@@ -119,9 +85,7 @@ def voice_bands(feat: MusicModulation, n_out: int) -> np.ndarray:
     zero-frequency voice contributes nothing.
 
     `MusicModulation` carries only an aggregate `level` (the mean of the voice
-    envelopes), not per-voice envelopes, so every lit bar shares a height and
-    the motion the eye reads is the *frequency* motion — the bass holding low
-    while the lead walks up the bands."""
+    envelopes), not per-voice envelopes, so every lit bar shares a height."""
     out = np.zeros(n_out, dtype=np.float32)
     level = float(feat.level)
     if level <= 0.0:
@@ -160,8 +124,6 @@ class _SpectrumBands:
         self._edges = band_edges(self.n_bands, FFT_SIZE)
         self._warned_no_source = False
 
-    # ---- the one data source ------------------------------------------------
-
     def bands_now(self, scene: Scene | None) -> np.ndarray:
         """Band magnitudes for this frame, nominally in [0, 1], `gain` applied.
         See the module docstring for the four-tier precedence."""
@@ -179,10 +141,9 @@ class _SpectrumBands:
     def _fft_bands(self) -> np.ndarray:
         """The pre-features path: FFT the streamer's post-DSP sample tap.
 
-        Deliberately the *post*-DSP tap (unlike `audio_features`' analysis
-        sink): with no upstream analyzer to defer to, this is a scope on what
-        the C64 is actually playing. Math is unchanged from before the features
-        tiers existed."""
+        This is the *post*-DSP tap, unlike `audio_features`' analysis sink:
+        with no upstream analyzer to defer to, it is a scope on what the C64 is
+        actually playing."""
         samples = self.audio.get_recent_samples(FFT_SIZE)
         if samples.size < FFT_SIZE:
             return np.zeros(self.n_bands, dtype=np.float32)
@@ -193,16 +154,13 @@ class _SpectrumBands:
             if hi <= lo:
                 continue
             mags[i] = spec[lo:hi].mean()
-        # Normalize: log-compress so loud signals don't dwarf quiet ones.
-        # FFT magnitudes scale with FFT_SIZE; divide first.
+        # FFT magnitudes scale with FFT_SIZE, so divide before compressing.
         mags = mags / (FFT_SIZE * 0.5)
         return np.log1p(mags * 100.0 * self.gain)
 
     def _warn_no_source_once(self, scene: Scene | None) -> None:
-        """Say so — once — when neither tier can supply data. The overlay used
-        to be refused at build time by `REQUIRES_AUDIO`; now that it's valid on
-        scenes with no streamer, a silent no-op would otherwise look like a
-        rendering bug."""
+        """Say so — once — when no tier can supply data; on a scene with no
+        streamer a silent no-op would otherwise look like a rendering bug."""
         if self._warned_no_source:
             return
         self._warned_no_source = True

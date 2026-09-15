@@ -51,40 +51,29 @@ class SystemStack:
     audio: AudioStreamer | None
     source: WebcamSource | None
     playlist: Playlist
-    # None when the backend can't read C64 memory (an older TeensyROM firmware
-    # without ReadC64Mem) — no physical-keyboard control surface; the control
-    # plane stands in. The Ultimate and cycle-clean TR+ both read.
+    # None when the backend can't read C64 memory (a TeensyROM firmware without
+    # ReadC64Mem) — the control plane stands in for the physical keyboard.
     key_poller: CommodoreKeyPoller | None
     # None unless [vision].enabled — webcam hand-gesture control surface.
     vision_controller: VisionController | None = None
-    # Startup probe verdict: True iff the U64's REU is Enabled. Resolves the
-    # [video].use_reu_staged "auto" setting at scene-build time (including
-    # SIGHUP/control-plane reloads + ensemble follower scenes, which rebuild
-    # scenes after the initial probe). False under --skip-probe or a failed
-    # query, so "auto" degrades to host-DMA rather than freezing video.
+    # Startup probe verdict, resolving [video].use_reu_staged "auto" at
+    # scene-build time. False under --skip-probe or a failed query, so "auto"
+    # degrades to host-DMA rather than freezing video.
     reu_available: bool = False
-    # REU config fields auto-provisioned for this run (hw_provision.provision_reu),
-    # mapping field name -> the original value to restore at teardown. None
-    # when nothing was changed (REU already enabled+sized, auto_reu off, a
-    # no-REU backend, or --skip-probe). The change is volatile firmware state,
-    # so a missed restore still clears on the next power-cycle.
+    # hw_provision.provision_reu: field name -> the original value to restore at
+    # teardown, None when nothing was changed. Volatile firmware state, so a
+    # missed restore still clears on the next power-cycle.
     reu_restore: dict[str, str] | None = None
-    # Startup probe verdict: True iff the U64's Ultimate Audio FPGA PCM sampler
-    # is exposed + routed. Resolves [audio].backend for video scenes at
-    # build-time (incl. SIGHUP/control-plane reloads + ensemble followers).
-    # False under --skip-probe / a failed query / a no-sampler backend, so the
-    # backend degrades to the 4-bit DAC rather than producing silence.
+    # Startup probe verdict, resolving [audio].backend for video scenes at
+    # build time. False under --skip-probe / a failed query / a no-sampler
+    # backend, so the backend degrades to the 4-bit DAC rather than silence.
     sampler_available: bool = False
-    # Sampler config fields auto-provisioned for this run (hw_provision.provision_sampler),
-    # composite-keyed "category\x1ffield" -> original, restored at teardown. None
-    # when nothing changed (already enabled, no-sampler backend, or --skip-probe).
+    # hw_provision.provision_sampler: composite-keyed "category\x1ffield" ->
+    # original, restored at teardown, None when nothing changed.
     sampler_restore: dict[str, str] | None = None
-    # Video-output fields auto-provisioned for this run (System Mode and/or
-    # HDMI Scan Resolution — hw_provision.provision_video_output), field name ->
-    # the original label to restore at teardown. None when nothing changed
-    # (sid_video_mode off + hdmi_scan_resolution auto/keep, timing already
-    # right, a non-U64 backend, or --skip-probe). Volatile, so a missed restore
-    # clears on power-cycle.
+    # hw_provision.provision_video_output (System Mode and/or HDMI Scan
+    # Resolution): field name -> the original label to restore at teardown, None
+    # when nothing changed. Volatile, so a missed restore clears on power-cycle.
     video_output_restore: dict[str, str] | None = None
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None

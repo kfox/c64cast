@@ -5,10 +5,8 @@ just SC_SPACE everywhere with configurable border + background. Used
 as a clean canvas for overlays (e.g. big_text title cards).
 """
 
-# FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
-# argument-type complaints across the file rather than spraying per-call
-# ignores. compose(None) is allowed at runtime even though the annotated
-# signature wants an ndarray.
+# FakeAPI is a duck-typed stub of Ultimate64API, and compose(None) is allowed
+# at runtime even though the annotated signature wants an ndarray.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -41,7 +39,6 @@ class BlankDisplayModeTest(unittest.TestCase):
         out = m.compose()
         self.assertEqual(out["screen"].shape, (1000,))
         self.assertEqual(out["color"].shape, (1000,))
-        # Every cell is SC_SPACE (0x20).
         self.assertTrue((out["screen"] == 0x20).all())
         # Every cell's FG = background, so SC_SPACE renders invisibly until
         # an overlay paints over it.
@@ -71,7 +68,6 @@ class BlankDisplayModeTest(unittest.TestCase):
         m.push(api, m.compose())
         self.assertEqual(len(api.regions[0x0400]), 1000)
         self.assertEqual(len(api.regions[0xD800]), 1000)
-        # Every screen byte = 0x20, every color byte = 6.
         self.assertTrue(all(b == 0x20 for b in api.regions[0x0400]))
         self.assertTrue(all(b == 6 for b in api.regions[0xD800]))
 
@@ -137,9 +133,7 @@ class BlankSceneTest(unittest.TestCase):
         scene = BlankScene(api, audio=None, display_mode=mode, audio_cfg=MagicMock(), name="Blank")
         scene.duration_s = 0.1
         scene.setup()
-        # First frame: well under duration.
         self.assertTrue(scene.process_frame(scene.start_time + 0.01))
-        # Past duration: scene done.
         self.assertFalse(scene.process_frame(scene.start_time + 0.5))
         scene.teardown()
 

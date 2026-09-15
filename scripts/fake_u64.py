@@ -44,9 +44,8 @@ from urllib.parse import parse_qs, urlsplit
 log = logging.getLogger("fake_u64")
 
 
-# Mirror of c64cast/hw/socket_dma.py opcodes. Duplicated here so the
-# stub stays standalone (no c64cast import — useful when the stub
-# is run on a different machine for genuine multi-host testing).
+# Mirror of c64cast/hw/socket_dma.py opcodes, duplicated so the stub imports
+# no c64cast and can run on a different machine.
 CMD_KEYB = 0xFF03
 CMD_RESET = 0xFF04
 CMD_DMAWRITE = 0xFF06
@@ -61,9 +60,7 @@ class WriteLog:
     def __init__(self, path: str | None):
         self._path = path
         self._lock = threading.Lock()
-        # Process-lifetime handle (closed in self.close() at shutdown);
-        # a with-block doesn't fit the open-in-__init__/close-in-close
-        # ownership pattern.
+        # Process-lifetime handle, closed in close().
         self._fh = (
             open(path, "w", buffering=1)  # noqa: SIM115
             if path
@@ -157,11 +154,11 @@ class DMAHandler(socketserver.BaseRequestHandler):
 
 
 class FakeU64DMAServer(socketserver.ThreadingTCPServer):
-    """Threading TCP server so multiple Ultimate64API instances (e.g.
-    one render + one audio socket per system, or multiple fakes
-    multiplexed on different ports) can all run against this stub
-    process — though c64cast itself only opens one socket per
-    Ultimate64API today."""
+    """Threading TCP server, so several client sockets can share the stub.
+
+    More permissive than the hardware: the U64's DMA service takes one
+    connection at a time (docs/caveats.md).
+    """
 
     allow_reuse_address = True
     daemon_threads = True
@@ -178,22 +175,18 @@ class HTTPHandler(BaseHTTPRequestHandler):
     server_version = "FakeU64/0.1"
 
     def log_message(self, fmt: str, *args) -> None:
-        # Quiet the default per-request stderr noise; we have our own
-        # logger that's easier to grep.
         log.debug("HTTP: " + fmt, *args)
 
     def do_GET(self) -> None:
         parts = urlsplit(self.path)
         if parts.path == "/":
-            # Probe.
             self._ok(b"FakeU64\n", "text/plain")
             return
         if parts.path == "/v1/machine:readmem":
             qs = parse_qs(parts.query)
             length = int(qs.get("length", ["1"])[0])
-            # Return zeros. The keyboard poller reads $028D at 10 Hz
-            # and treats zero as "no modifier keys pressed", which is
-            # what we want — no spurious pause/resume from the fake.
+            # Zeros: the keyboard poller reads $028D and takes zero as
+            # "no modifier keys pressed".
             self._ok(bytes(length), "application/octet-stream")
             return
         self.send_error(404)
@@ -207,8 +200,7 @@ class HTTPHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
-        # Drain the request body even if we ignore it — clients hang
-        # waiting for the response otherwise.
+        # Drain the body even though it is ignored: clients hang otherwise.
         length = int(self.headers.get("Content-Length", "0"))
         if length:
             self.rfile.read(length)

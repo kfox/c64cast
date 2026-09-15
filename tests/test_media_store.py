@@ -39,10 +39,9 @@ class StoreTestCase(unittest.TestCase):
 
 class SpecTest(unittest.TestCase):
     def test_a_root_spelled_as_only_slashes_specs_from_the_root_not_cwd(self):
-        # `rstrip("/")` on a spelling of just "/" empties out entirely; the
-        # fallback has to land back on "/", not "." (which would silently
-        # point a listed spec at the process's cwd instead of the filesystem
-        # root).
+        # `rstrip("/")` on a spelling of just "/" empties out entirely; the fallback
+        # has to land back on "/", not "." (which would point a listed spec at the
+        # process's cwd instead of the filesystem root).
         root = media_store.MediaRoot(spelling="/", path=Path("/"))
         self.assertEqual(media_store._spec(root, ("etc", "motd")), "/etc/motd")
 
@@ -56,10 +55,9 @@ class RootsTest(StoreTestCase):
         self.assertEqual([r.path for r in store.roots], [self.assets])
 
     def test_the_same_root_twice_is_listed_once(self):
-        # `cwd=self.tmp`: an unmentioned write kind still falls back to its
-        # default directory, and a bare `MediaStore()` would resolve that
-        # default against the real process cwd — this very repository, which
-        # happens to ship real `assets/videos` etc. under it.
+        # `cwd=self.tmp`: an unmentioned write kind still falls back to its default
+        # directory, and a bare `MediaStore()` would resolve that against the real
+        # process cwd — this repository, which ships real `assets/videos` under it.
         with quiet_logging():
             store = media_store.MediaStore(
                 read_only=[str(self.assets), str(self.assets)], cwd=self.tmp
@@ -67,11 +65,9 @@ class RootsTest(StoreTestCase):
         self.assertEqual(len(store.roots), 1)
 
     def test_empty_write_table_defaults_to_the_four_asset_dirs(self):
-        # Relative to cwd, same as the loader's own unset-`file =` default —
-        # exercised here via an explicit `cwd` so the test doesn't depend on
-        # the process's actual working directory. Only one of the four
-        # defaults exists in this fixture, so the other three log a
-        # dropped-root warning — incidental to what this test checks.
+        # Relative to cwd, same as the loader's own unset-`file =` default; an
+        # explicit `cwd` keeps it off the process's real one. Only one of the four
+        # defaults exists in this fixture, so the other three log a dropped-root warning.
         (self.tmp / "assets" / "videos").mkdir()
         with quiet_logging():
             store = media_store.MediaStore(cwd=self.tmp)
@@ -81,9 +77,8 @@ class RootsTest(StoreTestCase):
         home = self.tmp / "home"
         home.mkdir()
         (home / "clip.mp4").write_bytes(b"")
-        # `os.path.expanduser` reads $HOME on POSIX and $USERPROFILE first on
-        # Windows (falling back to $HOMEDRIVE+$HOMEPATH, then $HOME) — both
-        # are set so this is deterministic on every CI runner.
+        # `os.path.expanduser` reads $HOME on POSIX and $USERPROFILE first on Windows;
+        # both are set so this is deterministic on every CI runner.
         with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
             with quiet_logging():
                 store = media_store.MediaStore(read_only=["~"], cwd=self.tmp)
@@ -106,9 +101,8 @@ class WritableTest(StoreTestCase):
         self.assertFalse(store.roots[0].writable)
 
     def test_the_same_path_in_both_lists_keeps_its_writable_root(self):
-        # Write roots resolve first, so a path named in both lists ends up
-        # `writable` — "write paths first" in the docstring is also why an
-        # upload's own directory sorts to the front of a listing.
+        # Write roots resolve first, so a path named in both lists ends up `writable`;
+        # "write paths first" is also why an upload's directory sorts to the front.
         with quiet_logging():
             store = media_store.MediaStore(
                 read_write={"video": str(self.assets)},
@@ -128,12 +122,9 @@ class ListingTest(StoreTestCase):
         sub = self.assets / "more"
         sub.mkdir()
         (sub / "another.mp4").write_bytes(b"w")
-        # Root spelled relative to `cwd`, so specs come out as `assets/...`
-        # rather than an absolute path — the spelling a saved config would use.
-        # `cwd=self.tmp` keeps the write table's own default kinds (unset here)
-        # from resolving against the real process cwd; none of their default
-        # directories exist under `self.tmp`, so quiet_logging swallows the
-        # dropped-root warnings that follow from that.
+        # Root spelled relative to `cwd`, so specs come out as `assets/...` — the
+        # spelling a saved config would use. The write table's default kinds have no
+        # directories under `self.tmp`, so quiet_logging swallows their warnings.
         with quiet_logging():
             self.store = media_store.MediaStore(read_only=["assets"], cwd=self.tmp)
 
@@ -174,13 +165,10 @@ class SymlinkEscapeTest(StoreTestCase):
         self.assertEqual(specs, [])
 
     def test_a_directory_whose_only_match_is_an_escaping_symlink_is_not_listed_either(self):
-        # `_candidates` used to yield the containing directory from the raw,
-        # unfiltered hit list before the per-file jail check ran below it —
-        # so a directory whose only kind-matching member was an escaping
-        # symlink was still offered as an entry, and `resolve_file_spec`
-        # treats a listed directory as a randomizer that follows exactly
-        # that symlink at scene setup. Both the file and the directory must
-        # be absent here, not just the file.
+        # `_candidates` used to yield the containing directory from the raw hit list
+        # before the per-file jail check ran, so a directory whose only kind-matching
+        # member was an escaping symlink was still offered — and `resolve_file_spec`
+        # treats a listed directory as a randomizer that follows exactly that symlink.
         outside = self.tmp / "outside.mp4"
         outside.write_bytes(b"secret")
         (self.assets / "escape.mp4").symlink_to(outside)
@@ -212,10 +200,9 @@ class TruncationTest(StoreTestCase):
         self.assertLessEqual(len(out["entries"]), media_store.MAX_FILES)
 
     def test_a_query_matching_nothing_still_sets_truncated_past_the_scan_ceiling(self):
-        # Before `_MAX_SCAN`, a `q` matching nothing never tripped
-        # `len(entries) >= MAX_FILES` (nothing was ever added to `entries`),
-        # so the scan walked every candidate with no way for the response to
-        # say it was unbounded.
+        # Before `_MAX_SCAN`, a `q` matching nothing never tripped `len(entries) >=
+        # MAX_FILES` (nothing was ever added to `entries`), so the scan walked every
+        # candidate with no way for the response to say it was unbounded.
         with mock.patch.object(media_store, "_MAX_SCAN", 5):
             for i in range(10):
                 (self.assets / f"clip{i}.mp4").write_bytes(b"")
@@ -273,10 +260,9 @@ class DestinationTest(StoreTestCase):
             self.store.destination("clip\x00.mp4")
 
     def test_rejects_a_windows_drive_relative_name(self):
-        # `PureWindowsPath('D:/media') / 'C:evil.mp4'` discards the left
-        # operand entirely, so a name shaped like this has to be refused by
-        # itself — no separator survives that join for the earlier checks
-        # to catch.
+        # `PureWindowsPath('D:/media') / 'C:evil.mp4'` discards the left operand
+        # entirely, so a name shaped like this has to be refused by itself — no
+        # separator survives that join for the earlier checks to catch.
         with self.assertRaises(media_store.MediaNameRejected):
             self.store.destination("C:evil.mp4")
 
@@ -292,10 +278,9 @@ class DestinationTest(StoreTestCase):
         self.assertIn("not configured", str(ctx.exception))
 
     def test_a_default_kind_whose_directory_is_absent_says_so_distinctly(self):
-        # "sid" defaults to `assets/sids`, which this fixture never creates —
-        # the host *is* configured, only the directory is missing, and the
-        # message should say that rather than "not configured" (which would
-        # send an operator looking for a setting that's already correct).
+        # "sid" defaults to `assets/sids`, which this fixture never creates — the host
+        # *is* configured, only the directory is missing, and "not configured" would
+        # send an operator looking for a setting that is already correct.
         with self.assertRaises(media_store.MediaNotUploadable) as ctx:
             self.store.destination("tune.sid")
         self.assertIn("does not exist", str(ctx.exception))
@@ -377,10 +362,9 @@ class ReceiveTest(StoreTestCase):
         self.assertEqual(sorted(p.name for p in self.videos.iterdir()), ["clip-2.mp4", "clip.mp4"])
 
     def test_a_lengthened_name_past_the_byte_cap_is_rejected_not_left_to_os_replace(self):
-        # `_unique_name` can lengthen an already-at-the-cap incoming name past
+        # `_unique_name` can lengthen an already-at-the-cap name past
         # `_MAX_NAME_BYTES` with its `-2` suffix; that has to be caught before
-        # `os.replace`, not left to fail with a raw, unmapped `OSError` for
-        # whatever `ENAMETOOLONG` reads like on the host filesystem.
+        # `os.replace` rather than surfacing as a raw, unmapped `ENAMETOOLONG`.
         long_name = ("a" * 251) + ".mp4"  # exactly _MAX_NAME_BYTES bytes
         (self.videos / long_name).write_bytes(b"already here")
         with self.assertLogs("c64cast.app.media_store", level="WARNING"):
@@ -390,9 +374,8 @@ class ReceiveTest(StoreTestCase):
         self.assertEqual([p.name for p in self.videos.iterdir()], [long_name])
 
     def test_a_commit_time_oserror_is_wrapped_as_a_typed_refusal_and_cleans_up(self):
-        # `os.replace` (disk full, a name the filesystem itself refuses) used
-        # to escape `receive` as a raw `OSError` that no caller's
-        # `MediaStoreError` mapping could classify.
+        # `os.replace` (disk full, a name the filesystem refuses) used to escape
+        # `receive` as a raw `OSError` no `MediaStoreError` mapping could classify.
         with mock.patch.object(media_store.os, "fsync", side_effect=OSError("disk full")):
             with self.assertLogs("c64cast.app.media_store", level="WARNING"):
                 with self.assertRaises(media_store.MediaStoreError):

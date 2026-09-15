@@ -79,10 +79,8 @@ class NetworkOverlay(CornerTextOverlay):
 
     def setup(self, api, scene):
         super().setup(api, scene)
-        # Parse the U64 URL once so we know what to ping. The api object
-        # is the scene's, not ours — derive from base_url. Backends without
-        # a REST base URL (e.g. TeensyROM) leave the ping target unset; the
-        # "ping" item then degrades to a dash instead of crashing setup.
+        # A backend with no REST base URL (TeensyROM) leaves the ping target
+        # unset, and the "ping" item then reads as a dash.
         base_url = getattr(api, "base_url", None)
         if base_url:
             parsed = urlparse(base_url)

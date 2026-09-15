@@ -2,47 +2,24 @@
 """PreToolUse(Bash) hook — keep package management and type/lint checks on the
 project's sanctioned entry points.
 
-Three shapes of command silently do the wrong thing in this repo, and all three
-are documented traps rather than style preferences:
+Three shapes of command silently do the wrong thing in this repo:
 
-  * **`pip` / `uv pip`** — CLAUDE.md: "Setup is `uv sync --all-extras` — never
-    `uv pip` and never raw `pip`". `uv pip install` writes into whatever
-    interpreter `UV_PYTHON`/mise happens to point at instead of resolving the
-    project's dependency groups, which is the mise/`UV_PYTHON` trap described in
-    CONTRIBUTING.md → "Development setup".
+  * **`pip` / `uv pip`** — setup is `uv sync --all-extras`. `uv pip install`
+    writes into whatever interpreter `UV_PYTHON`/mise happens to point at
+    instead of resolving the project's dependency groups (CONTRIBUTING.md ->
+    "Development setup").
   * **a bare `mypy` / `pyright` / `ruff` / `black`** — the repo's gate is
     `pyright` basic tree-wide *plus* `mypy --strict` on a specific set of
-    state-bearing modules (CONTRIBUTING.md → "The pre-PR gate"). Invoking one
-    checker by hand on one file answers a different question than the gate does,
-    and skips the pinned tool version the Makefile routes through.
+    state-bearing modules (CONTRIBUTING.md -> "The pre-PR gate"), so one checker
+    run by hand answers a different question and skips the pinned version.
   * **`python`/`python3` running project code** — the `make` targets go through
-    `PY ?= uv run python` so they hit the uv-synced env from any shell. A bare
-    `python3 -m c64cast …` or `python3 tests/…` in an agent shell misses it (the
-    recurring "works in CI, missing cv2 locally" symptom).
+    `PY ?= uv run python`, which a bare interpreter misses.
 
-Sibling hooks cover the neighboring cases: `redirect-to-make-test.py` owns raw
-`unittest`/`pytest` invocations, and `redirect-bash-search.py` owns unbounded
-searches and whole-file `cat`. This hook deliberately leaves alone anything the
-traps don't apply to — a `python3` one-liner that doesn't import `c64cast`,
-`scripts/diags/*.py` (standalone probes, run directly by shebang or under `uv
-run`), and any `make` target.
-
-A `uv run` prefix exempts the interpreter case only: `uv run python -m c64cast`
-passes, because the trap there is purely which interpreter resolves. It does not
-exempt the four checkers — `uv run mypy` gets the pinned version but still
-answers a different question than the gate does, which is the objection.
-
-Every deny names the exact replacement command, because the point is to redirect
-the work, not to refuse it.
-
-Wire-up (.claude/settings.json):
-
-    {"hooks": {"PreToolUse": [
-      {"matcher": "Bash", "hooks": [
-        {"type": "command",
-         "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-uv.py\""}
-      ]}
-    ]}}
+A `uv run` prefix exempts the interpreter case only, not the four checkers.
+Left alone: a `python3` one-liner that does not import `c64cast`,
+`scripts/diags/*.py`, and any `make` target. Sibling hooks own the neighboring
+cases: `redirect-to-make-test.py` for raw `unittest`/`pytest`, and
+`redirect-bash-search.py` for unbounded searches and whole-file `cat`.
 """
 
 from __future__ import annotations
@@ -52,7 +29,6 @@ import shlex
 import sys
 
 PIP_CMDS = {"pip", "pip3"}
-# Checker -> the make target that runs it the way the pre-PR gate does.
 CHECKER_TARGETS = {
     "mypy": "make typecheck",
     "pyright": "make typecheck",
@@ -60,9 +36,6 @@ CHECKER_TARGETS = {
     "black": "make fmt",
 }
 PYTHON_CMDS = {"python", "python3"}
-# A `-m` module or path argument in one of these namespaces means project code,
-# which needs the synced env. `scripts/` is exempt: the diag probes there are
-# standalone entry points run both directly and under `uv run`.
 PROJECT_ROOTS = ("c64cast", "tests")
 
 PIP_DENY = (
@@ -152,7 +125,7 @@ def _touches_project_code(args: list[str]) -> bool:
 def verdict(argv: list[str]) -> str | None:
     argv, uv = _peel(argv)
     if not argv or argv[0] == "make":
-        return None  # the sanctioned path
+        return None
 
     if _is_pip(argv):
         return PIP_DENY

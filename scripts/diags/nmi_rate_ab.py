@@ -85,7 +85,6 @@ def save_wav(path: str, mono: np.ndarray, sr: int) -> None:
         w.writeframes(pcm.tobytes())
 
 
-# --- effective-R probe (overrun ceiling) ---------------------------------
 class RProbe:
     """Background poller of the NMI read pointer → measured consumer rate R.
 
@@ -217,7 +216,6 @@ def play_one(
     return wav, r, rate
 
 
-# --- two-domain analysis -------------------------------------------------
 def _load(path: str) -> np.ndarray:
     with wave.open(path, "rb") as w:
         n = w.getnframes()
@@ -296,7 +294,7 @@ def _envelope(x: np.ndarray, sr: int) -> np.ndarray:
     env = np.empty_like(x)
     acc = 0.0
     rect = np.abs(x)
-    for i in range(x.size):  # small captures; readable over vectorized IIR
+    for i in range(x.size):
         acc += alpha * (rect[i] - acc)
         env[i] = acc
     return env
@@ -338,7 +336,6 @@ def _plot(a: np.ndarray, b: np.ndarray, rate_a: int, rate_b: int, tag: str) -> N
     print(f"  plot -> {png}")
 
 
-# --- System Mode reconfigure ---------------------------------------------
 def ensure_system_mode(url: str, mode: str) -> None:
     cur = (d.rest_get_config(SYS_CATEGORY, url) or {}).get(SYS_SETTING)
     print(f"[sys] current System Mode = {cur!r}, want {mode!r}")

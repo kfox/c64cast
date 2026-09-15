@@ -60,7 +60,6 @@ def _json_type(type_str: str) -> dict[str, Any]:
         else:
             # Unknown annotation — leave unconstrained rather than wrong.
             return {}
-    # De-dup while preserving order.
     seen: list[str] = []
     for t in json_types:
         if t not in seen:
@@ -84,17 +83,12 @@ def _field_schema(
     if choices:
         json_type = sch.get("type")
         if json_type == "array":
-            # For a list field (e.g. `effects: list[str]`), the choices constrain
-            # the array's *items*, not the array value itself — otherwise the
-            # schema would (wrongly) require the whole list to equal one of the
-            # choice strings.
+            # `choices` constrains a list field's *items*; a top-level enum
+            # would require the whole list to equal one choice string.
             sch["items"] = {"type": "string", "enum": list(choices)}
         elif isinstance(json_type, list):
-            # A union (e.g. `sid_play_rate: str | float`): `choices` only names
-            # the string branch's legal values. A top-level `enum` would apply
-            # to the whole union and reject every value from the other
-            # branch(es) — exactly the documented numeric form this field's
-            # own help text describes.
+            # In a union (`sid_play_rate: str | float`) `choices` names only the
+            # string branch, so a top-level enum would reject the other branches.
             del sch["type"]
             sch["anyOf"] = [
                 {"type": "string", "enum": list(choices)},
@@ -161,8 +155,7 @@ def _overlay_schema() -> dict[str, Any]:
 def _scenes_schema() -> dict[str, Any]:
     """Array-item schema for [[scenes]]: all SceneCfg fields, plus per-type
     if/then that narrows the `display` enum to what each scene type supports."""
-    # The full SceneCfg field set is the union across types (each type only
-    # carries its applicable subset via `applies_to`).
+    # The union across types: each type carries only its `applies_to` subset.
     field_docs: dict[str, introspect.FieldDoc] = {}
     for sd in introspect.scene_types():
         for fd in sd.fields:
@@ -179,9 +172,8 @@ def _scenes_schema() -> dict[str, Any]:
                 "items": _overlay_schema(),
             }
         elif fd.name == "color":
-            # [scenes.color]: the same object shape as the [color] section
-            # itself (reusing _section_schema keeps the two from drifting),
-            # under the scene field's own help text.
+            # [scenes.color] reuses _section_schema so it cannot drift from the
+            # [color] section's own shape.
             props["color"] = {**_section_schema(color_section), "description": fd.help}
         else:
             props[fd.name] = _field_schema(

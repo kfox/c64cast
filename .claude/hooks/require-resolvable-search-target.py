@@ -9,31 +9,17 @@ configured `Read()` deny rule. This project denies `Read()` on `~/.ssh`,
 resolve cannot be proven either way, and the classifier falls back to asking
 the user — even though `Bash(grep:*)` is allowlisted. Two shapes trigger it:
 
-  * a **relative path operand after a `cd`** — `cd /repo && grep -n foo src/x.py`
-    reads "grep on 'src/x.py' after a cd would search a directory that cannot be
-    determined here"; and
+  * a **relative path operand after a `cd`** — `cd /repo && grep -n foo src/x.py`;
   * **no path operand at all** — `grep -rn foo` (or `grep -rn foo --include=*.py`,
-    where the trailing flag is mistaken for the target) falls back to `.`, which
-    after a `cd` is equally undeterminable.
+    where the trailing flag is mistaken for the target), which falls back to `.`.
 
-Telling agents to pass absolute paths does not hold up under load; a hook does.
-A `deny` here is handed back to the *agent*, which retries with a correct shape,
-and the user sees nothing. That is the whole point: this hook exists to move a
-correction from the user's terminal into the agent's loop.
+A deny is handed back to the agent, which retries with a correct shape, and the
+user sees nothing.
 
-Deliberately narrow. It fires only when a `cd` is present *and* a search command
-in the same line has an unresolvable target. A search with absolute operands, a
-search with no `cd`, and every non-search command pass untouched — as does
-anything with a heredoc or command substitution, which are not worth parsing.
-
-Wire-up (.claude/settings.json):
-
-    {"hooks": {"PreToolUse": [
-      {"matcher": "Bash", "hooks": [
-        {"type": "command",
-         "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-resolvable-search-target.py\""}
-      ]}
-    ]}}
+Fires only when a `cd` is present *and* a search command in the same line has an
+unresolvable target. A search with absolute operands, a search with no `cd`, and
+every non-search command pass untouched — as does anything with a heredoc or
+command substitution.
 """
 
 from __future__ import annotations
@@ -45,13 +31,9 @@ import sys
 GREP_LIKE = {"grep", "egrep", "fgrep", "rg", "ack", "ag"}
 FIND_LIKE = {"find", "fd", "fdfind"}
 SEARCH = GREP_LIKE | FIND_LIKE
-# Splitting on these is enough to find a `cd` and each command in a pipeline.
 SEPARATORS = ("&&", "||", "|", ";", "&")
-# Not worth parsing; never block on them.
 BAILOUT = ("<<", "$(", "`")
-# grep flags that take a separate value, so the next token is not a path.
 GREP_VALUE_FLAGS = {"-e", "-f", "-m", "--regexp", "--file", "--max-count", "-A", "-B", "-C"}
-# The subset of the above that supplies the pattern, so every bare operand is a path.
 GREP_PATTERN_FLAGS = {"-e", "-f", "--regexp", "--file"}
 
 
@@ -128,11 +110,11 @@ def verdict(cmd: str) -> str | None:
     if not segs:
         return None
     if not any(strip_env(argv)[:1] == ["cd"] for argv, _ in segs):
-        return None  # no `cd`, so relative operands resolve against the session cwd
+        return None
 
     for argv, reads_stdin in segs:
         if reads_stdin:
-            continue  # searches its input, not the filesystem
+            continue
         paths = path_operands(argv)
         if paths is None:
             continue

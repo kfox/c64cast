@@ -47,7 +47,6 @@ class FakeSocket:
         self.timeout = None
         self.sockopts: list[tuple] = []
 
-    # The SocketDMAClient configures the socket; record what it does.
     def settimeout(self, t):
         self.timeout = t
 
@@ -110,11 +109,9 @@ class ConnectAndIdentifyTest(unittest.TestCase):
         # Reply: AUTHENTICATE ack (0x01) then IDENTIFY length+payload.
         fake = FakeSocket([b"\x01", _IDENT_REPLY])
         c = _client_with(fake, password="hunter2")
-        # First command on the wire should be AUTHENTICATE with the password.
         auth_header = struct.pack("<HH", CMD_AUTHENTICATE, len("hunter2"))
         self.assertEqual(fake.sent[:4], auth_header)
         self.assertEqual(bytes(fake.sent[4:11]), b"hunter2")
-        # Then IDENTIFY.
         ident_header = struct.pack("<HH", CMD_IDENTIFY, 0)
         self.assertEqual(fake.sent[11:15], ident_header)
         self.assertEqual(c.product, "*** Ultimate 64-II ***")
@@ -131,7 +128,6 @@ class ConnectAndIdentifyTest(unittest.TestCase):
         # password="" should NOT trigger AUTHENTICATE — same as None.
         fake = FakeSocket([_IDENT_REPLY])
         _client_with(fake, password="")
-        # Only IDENTIFY on the wire — no AUTHENTICATE.
         self.assertEqual(fake.sent[:4], struct.pack("<HH", CMD_IDENTIFY, 0))
 
 
@@ -142,8 +138,8 @@ class WireEncodingTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeSocket([_IDENT_REPLY])
         self.client = _client_with(self.fake)
-        # Drop the connect-time IDENTIFY bytes so subsequent assertions
-        # are positioned at the start of the per-test command.
+        # Drop the connect-time IDENTIFY bytes so assertions start at the command
+        # each test issues.
         self.connect_len = len(self.fake.sent)
 
     def _new(self) -> bytes:
@@ -185,11 +181,9 @@ class WireEncodingTest(unittest.TestCase):
         self.assertEqual(self._new(), b"")
 
     def test_reuwrite_encoding(self):
-        # REUWRITE carries a 24-bit little-endian REU offset (3 bytes, not
-        # the 16-bit C64 address DMAWRITE uses) before the data. Every REU
-        # audio/video/mic preload rides on this command; elsewhere it's
-        # only exercised through FakeSocketDMA, so the call is verified
-        # but the bytes never were.
+        # REUWRITE carries a 24-bit little-endian REU offset (3 bytes, not the
+        # 16-bit C64 address DMAWRITE uses) before the data. Every REU preload rides
+        # on it, but elsewhere only FakeSocketDMA sees the call, never the bytes.
         self.client.reuwrite(0x012345, b"\xaa\xbb")
         expected = (
             struct.pack("<HH", CMD_REUWRITE, 5)  # 3 offset + 2 data
@@ -221,10 +215,9 @@ class FlushTest(unittest.TestCase):
         self.assertEqual(flushed, struct.pack("<HH", CMD_IDENTIFY, 0))
 
     def test_flush_timeout_closes_the_socket_instead_of_leaving_it_desynced(self):
-        # TimeoutError is an OSError subclass, so flush()'s except arm used
-        # to re-raise with self._sock still assigned and an IDENTIFY reply
-        # possibly still in flight — the next flush would then read that
-        # stale reply as its own, permanently one reply behind.
+        # TimeoutError is an OSError subclass, so flush()'s except arm re-raised
+        # with self._sock still assigned and an IDENTIFY reply possibly in flight —
+        # the next flush read that stale reply as its own, permanently one behind.
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
 
@@ -334,18 +327,16 @@ class IdentifySanitizationTest(unittest.TestCase):
 
 class CumulativeReadDeadlineTest(unittest.TestCase):
     def test_a_dribbling_peer_times_out_after_one_io_timeout_total_not_per_byte(self):
-        # Each individual recv() arrives well inside io_timeout, but the
-        # reply as a whole never finishes — the read must still give up
-        # after one cumulative io_timeout rather than resetting the clock
-        # on every byte.
+        # Each individual recv() arrives well inside io_timeout, but the reply as a
+        # whole never finishes — the read must give up after one cumulative
+        # io_timeout rather than resetting the clock on every byte.
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
         c.io_timeout = 0.05
 
         class DribblingSocket(FakeSocket):
-            # Every individual recv() is instant — a per-recv timeout alone
-            # would never fire — but each delivers only one byte, so the
-            # *sequence* of them takes longer than io_timeout overall.
+            # Every recv() lands inside io_timeout, so a per-recv timeout alone
+            # never fires, but each delivers one byte and the sequence overruns.
             def recv(self, n):
                 time.sleep(0.02)
                 return b"\x05"
@@ -365,7 +356,6 @@ class ReconnectTest(unittest.TestCase):
         c = _client_with(fake1)
         fake1.fail_sendalls_remaining = 1  # the next sendall will throw
 
-        # Pre-load a second FakeSocket for the reconnect.
         fake2 = FakeSocket([_IDENT_REPLY])
         # The reconnect path logs at debug (it self-heals here, so it never
         # reaches backend.py's escalating failure ladder) — capture it (so
@@ -385,10 +375,9 @@ class ReconnectTest(unittest.TestCase):
         self.assertTrue(fake1.closed)
 
     def test_second_failure_propagates(self):
-        # The original sendall fails, and so does the reconnect's own
-        # handshake (fake2's first sendall is its IDENTIFY, not the
-        # retried DMAWRITE) — that now surfaces as SocketDMAError, not a
-        # raw OSError escaping past connect()'s documented contract.
+        # The original sendall fails, and so does the reconnect's own handshake
+        # (fake2's first sendall is its IDENTIFY, not the retried DMAWRITE) — that
+        # surfaces as SocketDMAError, not a raw OSError past connect()'s contract.
         fake1 = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake1)
         fake1.fail_sendalls_remaining = 1
@@ -436,20 +425,16 @@ class ReconnectTest(unittest.TestCase):
         self.assertTrue(fake2.closed)
 
     def test_reconnect_identify_timeout_clears_socket_and_next_call_reconnects(self):
-        # Repro of the production crash: a send times out, reconnect
-        # succeeds at the TCP layer but the U64 doesn't reply to the
-        # post-handshake IDENTIFY (e.g. the Command Interface stalled).
-        # The first dmawrite should raise SocketDMAError; self._sock
-        # must be cleared so the *next* dmawrite reconnects fresh
-        # rather than asserting on a missing socket or blocking forever
-        # on the half-open one.
+        # Repro of the production crash: a send times out, reconnect succeeds at the
+        # TCP layer but the U64 never answers the post-handshake IDENTIFY (Command
+        # Interface stalled). The first dmawrite raises SocketDMAError and clears
+        # self._sock, so the next one reconnects fresh instead of blocking.
         fake1 = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake1)
         fake1.fail_sendalls_remaining = 1  # provoke reconnect
 
-        # Reconnect TCP succeeds; recv hangs (simulate by returning b"" so
-        # _recv_exact_locked raises ConnectionError, OR by raising
-        # TimeoutError directly). TimeoutError matches the real failure mode.
+        # Reconnect TCP succeeds but recv hangs. TimeoutError matches the real
+        # failure mode; returning b"" would raise ConnectionError instead.
         class TimeoutOnRecvSocket(FakeSocket):
             def recv(self, n):
                 raise TimeoutError("timed out")
@@ -463,24 +448,19 @@ class ReconnectTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
                 with self.assertRaises(SocketDMAError):
                     c.dmawrite(0xD020, b"\x0e")
-            # The half-open socket must be cleaned up — otherwise the
-            # next call would either trip the `assert self._sock is not
-            # None` or block on the unanswered IDENTIFY still in the
-            # server's FIFO.
+            # The half-open socket must be cleaned up, or the next call trips
+            # `assert self._sock is not None` or blocks on the unanswered IDENTIFY.
             self.assertIsNone(c._sock)
             self.assertTrue(fake2.closed)
 
-            # Second dmawrite reconnects via fake3 and succeeds.
             c.dmawrite(0xD020, b"\x0e")
         self.assertIn(b"\x06\xff\x03\x00\x20\xd0\x0e", bytes(fake3.sent))
 
 
 class ThreadSafetyTest(unittest.TestCase):
     def test_two_threads_dont_interleave_commands(self):
-        # If the lock weren't held across sendall, threads could write
-        # half of one command + half of another, producing a corrupted
-        # stream. With the lock, the recorded bytes must decompose
-        # cleanly into N well-formed commands.
+        # Without the lock held across sendall, two threads could write half of one
+        # command and half of another; with it, the stream decomposes cleanly.
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
 
@@ -489,8 +469,7 @@ class ThreadSafetyTest(unittest.TestCase):
 
         def burst(thread_idx: int):
             for i in range(N_PER_THREAD):
-                # 4-byte payload that's unambiguously identifiable per
-                # thread so we can audit ordering later.
+                # A 4-byte payload identifiable per thread, so ordering is auditable.
                 c.dmawrite(0xC800, bytes([thread_idx, i & 0xFF, 0xAA, 0x55]))
 
         threads = [threading.Thread(target=burst, args=(t,)) for t in range(N_THREADS)]
@@ -499,7 +478,6 @@ class ThreadSafetyTest(unittest.TestCase):
         for t in threads:
             t.join()
 
-        # Parse the recorded stream as a sequence of complete commands.
         stream = bytes(fake.sent)
         # Skip the connect-time IDENTIFY (4 bytes header + 0 payload).
         i = 4
@@ -527,8 +505,8 @@ class LatencyTest(unittest.TestCase):
     def test_latency_summary_populates(self):
         fake = FakeSocket([_IDENT_REPLY])
         c = _client_with(fake)
-        # Seed the rolling window directly — exercising the math, not
-        # real wall-clock sendall costs.
+        # Seed the rolling window directly — this exercises the math, not real
+        # wall-clock sendall costs.
         for v in [0.001, 0.002, 0.003, 0.004, 0.005]:
             c._latencies.append(v)
         avg, p50, p95, mx, n = c.latency_summary()
@@ -553,8 +531,6 @@ class LatencyTest(unittest.TestCase):
         t0 = time.perf_counter()
         c.dmawrite(0xD020, b"\x0e")
         self.assertGreater(c.latency_summary()[4], 0)  # n > 0
-        # Sample should be a sensible non-negative number not larger
-        # than wall time of the test so far.
         avg = c.latency_summary()[0]
         self.assertGreaterEqual(avg, 0.0)
         self.assertLess(avg, time.perf_counter() - t0 + 0.1)

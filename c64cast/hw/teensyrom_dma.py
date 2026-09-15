@@ -8,14 +8,11 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
 0x9B7F`). c64cast uses this subset:
 
   * **WriteC64Mem `0x64FB`** — sequential DMA write into C64 address space.
-    The hot path; carries all rendering + audio programming. (Present in the
-    author's test build; may not be in older shipping firmware.)
-  * **ReadC64Mem `0x64FD`** — sequential DMA read back from C64 address space
-    (addr + len -> ack -> `len` data bytes). Backs `read_memory`, which gates
-    the keyboard poller + launcher idle-detect. Added in the same cycle-clean
+    The hot path; carries all rendering + audio programming.
+  * **ReadC64Mem `0x64FD`** — sequential DMA read back (addr + len -> ack ->
+    `len` data bytes). Backs `read_memory`. Added in the same cycle-clean
     firmware that made WriteC64Mem safe over a running interpreter (TR+ fw
-    v0.7.2.5); older builds NAK/timeout it, so the backend probes for it at
-    connect rather than assuming it.
+    v0.7.2.5); older builds NAK/timeout it, so the backend probes at connect.
   * **Reset `0x64EE`** — reset the C64 (boots to the TR menu). Responds with
     a text line, not a binary ack.
   * **PostFile `0x64BB`** — upload a file to SD/USB. Requires the TR menu to
@@ -23,18 +20,7 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
   * **LaunchFile `0x6444`** — launch a file already on storage.
   * **FWCheck `0x64E0` / Ping `0x6455`** — liveness + firmware-type probe.
 
-**Wire byte order is asymmetric** (confirmed on TeensyROM+ v0.7.2.4 + in the
-firmware source):
-  * **Host -> TR (commands):** 16-bit tokens + every multi-byte field are
-    big-endian / MSB-first — `inVal = (inVal<<8) | read()` in the dispatcher,
-    `GetUInt` reads the high byte first.
-  * **TR -> host (replies):** tokens are little-endian / LSB-first —
-    `SendU16` writes `val & 0xff` then `val >> 8`. So an Ack (0x64CC) arrives
-    on the wire as `CC 64`; parsing it big-endian yields 0xCC64 and makes a
-    successful write look like an error.
-We therefore send big-endian and parse replies little-endian. The smoke test
-after wiring: write one byte to `$D020` and confirm the border color changes
-(a byte-swapped *address* would land in RAM and leave the border untouched).
+Wire byte order is asymmetric — see `TRClient._u16` / `_read_token`.
 
 The TR also emits unsolicited status text/tokens around reset + menu
 transitions (e.g. a GoodSID token after boot); `TRClient._drain_stale` clears
@@ -44,6 +30,8 @@ Two transports share the framing via the `TRTransport` byte-I/O interface:
 `SerialTransport` (pyserial, the `tr` extra) and `TcpTransport` (stdlib
 socket, port 2112). pyserial is imported lazily so the module loads without
 the extra installed.
+
+See docs/architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race.
 """
 
 from __future__ import annotations
@@ -62,7 +50,7 @@ log = logging.getLogger(__name__)
 DEFAULT_TCP_PORT = 2112
 DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 
-# ---- protocol tokens (Common_Defs.h) --------------------------------------
+# Protocol tokens (Common_Defs.h).
 TOK_WRITE_C64_MEM = 0x64FB
 TOK_READ_C64_MEM = 0x64FD
 TOK_RESET_C64 = 0x64EE
@@ -78,18 +66,14 @@ TOK_FW_MINIMAL = 0x64E1
 TOK_FW_FULL = 0x64E2
 
 # PostFile / LaunchFile storage selector (RegMenuTypes). PostFile supports
-# USB + SD only; Teensy is launch-target-only.
+# USB + SD only; Teensy (RegMenuTypes 2) is launch-target-only.
 DRIVE_USB = 0
 DRIVE_SD = 1
-# (RegMenuTypes also defines Teensy = 2, but it's launch-target-only — never a
-# PostFile destination — so c64cast has no use for it.)
 
 # Hard ceiling on a single drain_text() call, independent of the quiet-window
-# reset that both transports do on every byte that arrives. A misbehaving or
-# hostile device that trickles bytes faster than quiet_s forever (a stuck
-# chatter loop, or a deliberate drip) would otherwise keep drain_text -- and
-# the TRClient._lock every write/read command also needs -- from ever
-# returning.
+# reset both transports do on every byte that arrives: a device trickling
+# bytes faster than quiet_s forever would otherwise hold TRClient._lock, which
+# every write/read command also needs.
 _DRAIN_MAX_S = 5.0
 _DRAIN_MAX_BYTES = 65536
 
@@ -132,9 +116,6 @@ class TRBusyError(TRError):
     running program" apart from a hard failure."""
 
 
-# ---------------------------------------------------------------------------
-# Transports
-# ---------------------------------------------------------------------------
 class TRTransport(ABC):
     """Byte-level link to a TR. Implementations guarantee `recv_exact` blocks
     until exactly n bytes arrive or the io timeout elapses (the ack handshake
@@ -177,15 +158,13 @@ class TRTransport(ABC):
         return None
 
 
-# The TeensyROM is a Teensy 4.1 enumerating as a USB-CDC device under PJRC's
-# USB vendor id 0x16C0; the TeensyROM firmware's USB type reports product id
-# 0x0489. We identify the board by (VID, PID) rather than by device-node name
-# because that pair is the only stable, cross-platform key: macOS names the
-# node /dev/cu.usbmodem<serial>, Linux /dev/ttyACM*, and Windows COM<N> — none
-# of them derivable from each other. Where the OS also surfaces the USB product
-# string ("TeensyROM"), a name match is accepted as a fallback; Windows' generic
-# usbser.sys driver drops that string (product is None, description is the bare
-# "USB Serial Device (COMn)"), which is exactly why the (VID, PID) key leads.
+# The TeensyROM is a Teensy 4.1 USB-CDC device under PJRC's vendor id 0x16C0;
+# the TeensyROM firmware's USB type reports product id 0x0489. (VID, PID) is
+# the only stable cross-platform key — macOS names the node
+# /dev/cu.usbmodem<serial>, Linux /dev/ttyACM*, Windows COM<N>. The USB product
+# string ("TeensyROM") is a fallback match only: Windows' generic usbser.sys
+# driver drops it, leaving product None and description "USB Serial Device
+# (COMn)".
 _TEENSY_USB_VID = 0x16C0
 _TEENSYROM_USB_PID = 0x0489
 _TEENSYROM_PRODUCT_NAME = "teensyrom"  # matched case-insensitively
@@ -312,10 +291,9 @@ class SerialTransport(TRTransport):
             chunk = self._ser.read(n - len(buf))  # type: ignore[attr-defined]
             if chunk:
                 buf.extend(chunk)
-            # Checked every iteration, not only when chunk is empty: a link
-            # that trickles in at least one byte per read() call would
-            # otherwise never trip this, holding TRClient._lock indefinitely
-            # (violates the ABC's own "n bytes or the io timeout" contract).
+            # Checked every iteration, not only on an empty chunk: a link
+            # trickling one byte per read() would otherwise never trip it and
+            # would hold TRClient._lock past the ABC's io-timeout contract.
             if len(buf) < n and time.monotonic() > deadline:
                 raise TRError(f"serial read timed out ({len(buf)}/{n} bytes)")
         return bytes(buf)
@@ -325,11 +303,9 @@ class SerialTransport(TRTransport):
         buf = bytearray()
         hard_deadline = time.monotonic() + _DRAIN_MAX_S
         quiet_deadline = time.monotonic() + quiet_s
-        # read(64) blocks up to self._ser.timeout waiting for ANY bytes, which
-        # stays fixed at io_timeout (2s default) from __init__ -- without this
-        # override, the common "nothing to drain" case pays a full io_timeout
-        # stall instead of returning after quiet_s, on every delete_file/
-        # post_file/launch_file/connect call.
+        # read(64) blocks up to self._ser.timeout — io_timeout (2s) from
+        # __init__ — so without this override the common "nothing to drain"
+        # case stalls a full io_timeout on every command instead of quiet_s.
         prev_timeout = self._ser.timeout  # type: ignore[attr-defined]
         self._ser.timeout = quiet_s  # type: ignore[attr-defined]
         try:
@@ -401,11 +377,9 @@ class TcpTransport(TRTransport):
     def recv_exact(self, n: int) -> bytes:
         assert self._sock is not None
         buf = bytearray()
-        # Each recv() gets its own fresh io_timeout budget from the socket's
-        # settimeout() at connect time, so a peer that delivers at least one
-        # byte within every io_timeout window (never a fully empty read)
-        # would never trip a per-call TimeoutError. Tracked here as a
-        # cumulative deadline instead, checked every iteration.
+        # Each recv() gets a fresh io_timeout budget from the socket's
+        # settimeout(), so a peer delivering one byte per window would never
+        # trip a per-call TimeoutError. Tracked as a cumulative deadline.
         deadline = time.monotonic() + self.io_timeout
         while len(buf) < n:
             try:
@@ -457,9 +431,6 @@ class TcpTransport(TRTransport):
         return f"tcp {self.host}:{self.port}"
 
 
-# ---------------------------------------------------------------------------
-# Client
-# ---------------------------------------------------------------------------
 class TRClient:
     """Frames TR protocol commands over a `TRTransport`. Thread-safe *per
     command*: a lock serializes each command's own send+ack so render and
@@ -488,7 +459,6 @@ class TRClient:
         self._latencies: deque[float] = deque(maxlen=256)
         self.firmware = "unknown"  # "full" | "minimal" | "unknown"
 
-    # ---- connect / close -------------------------------------------------
     def connect(self) -> None:
         """Open the transport and best-effort probe the firmware type.
 
@@ -510,14 +480,13 @@ class TRClient:
         with self._lock:
             self.transport.close()
 
-    # ---- low-level framing -----------------------------------------------
-    # IMPORTANT asymmetry, confirmed on hardware (TeensyROM+ v0.7.2.4) and in
-    # the firmware source: the TR *reads* command tokens + multi-byte fields
-    # MSB-first (dispatcher `(inVal<<8)|read()`, `GetUInt`), but *sends* its
-    # replies LSB-first (`SendU16` writes `val&0xff` then `val>>8`). So we
-    # send big-endian and parse replies little-endian. Getting the reply
-    # parse wrong makes a real Ack (0x64CC, on the wire `CC 64`) read as
-    # 0xCC64 and look like an error even though the write executed.
+    # Wire byte order is asymmetric, confirmed on hardware (TeensyROM+
+    # v0.7.2.4) and in the firmware source: the TR *reads* command tokens and
+    # multi-byte fields MSB-first (dispatcher `(inVal<<8)|read()`, `GetUInt`)
+    # but *sends* replies LSB-first (`SendU16` writes `val&0xff` then
+    # `val>>8`). Send big-endian, parse replies little-endian — parsed the
+    # other way a real Ack (0x64CC, on the wire `CC 64`) reads as 0xCC64 and
+    # an executed write looks like a failure.
     @staticmethod
     def _u16(value: int) -> bytes:
         """16-bit big-endian (MSB first) — command tokens + fields."""
@@ -550,16 +519,13 @@ class TRClient:
         tok = self._read_token()
         if tok == TOK_ACK:
             return
-        # Resync before raising: a rejected command is followed by an error
-        # text line (e.g. "Busy!", "Not enough room", "Failed to ensure
-        # directory"), and a stale read offset would otherwise make every
-        # subsequent ack misalign and cascade. Drain the trailing bytes (both
-        # to resync AND to surface the reason) so the next command starts clean.
+        # A rejected command is followed by an error text line ("Busy!", "Not
+        # enough room", "Failed to ensure directory"); draining it both resyncs
+        # the stream and surfaces the reason.
         detail = self.transport.drain_text(0.15).strip()
         suffix = f" — {detail}" if detail else ""
         # The firmware signals "program running / menu not active" with a
-        # "Busy!" text line (often alongside a Fail/Retry token); promote it to
-        # TRBusyError so callers can distinguish it from a hard failure.
+        # "Busy!" text line, often alongside a Fail/Retry token.
         if "busy" in detail.lower():
             raise TRBusyError(f"{what}: TR busy{suffix}")
         if tok == TOK_FAIL:
@@ -578,7 +544,6 @@ class TRClient:
             return "minimal"
         return "unknown"
 
-    # ---- public commands -------------------------------------------------
     def write_segment(self, addr: int, data: bytes) -> None:
         """One WriteC64Mem command: token + addr(BE) + len(BE) + data, then
         read and verify the ack. Raises TRError on NAK/timeout."""
@@ -691,7 +656,6 @@ class TRClient:
         Ultimate's DMA-flush barrier."""
         return
 
-    # ---- diagnostics -----------------------------------------------------
     def latency_summary(self) -> tuple[float, float, float, float, int]:
         with self._lock:
             snap = list(self._latencies)

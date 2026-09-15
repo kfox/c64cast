@@ -8,57 +8,25 @@ control** it with no c64cast-specific client.
 
 The mapping (WLED's control model → c64cast):
 
-* **effects list ↔ scenes** — the WLED "effect" dropdown lists the playlist's
-  scene names; selecting one (``seg[].fx``) jumps that system's playlist to it.
-* **on ↔ transport, brightness ↔ real dim (independent axes)** — ``on=false``
-  pauses, ``on=true`` resumes; that is the *only* transport control. ``bri`` is a
-  *real* output dim, fully decoupled from transport: the effective brightness
-  (master ``bri`` × the segment's ``bri``, each 0..255) is pushed onto the
-  playlist + live display mode as ``user_dim``, which folds into the fade LUT so
-  the C64 screen visibly darkens; ``bri=0`` dims all the way to black but does
-  **not** pause. (Earlier ``bri=0`` paused — which reset the machine to BASIC
-  mid-drag; brightness now never touches transport, and power/brightness are
-  independent so power-on always resumes at the current brightness.)
+* **effects list ↔ scenes** — ``seg[].fx`` jumps that system's playlist.
+* **on ↔ transport, brightness ↔ real dim** — two independent axes. ``on``
+  pauses/resumes and is the only transport control; ``bri`` (master × segment,
+  each 0..255) rides onto the playlist and live display mode as ``user_dim``,
+  so ``bri=0`` dims to black without pausing.
 * **speed / intensity sliders ↔ live params** — ``sx``/``ix`` drive the current
-  scene's declared ``LIVE_PARAMS`` (the same seam `midi_control` sweeps), so a
-  generator's speed/scale respond to the app's sliders. No-op when the current
-  scene declares no matching param.
-* **palette dropdown ↔ ``[color].palette_mode``** — the WLED palette list is the
-  c64cast palette modes (percell/cheap/vivid/grayscale); selecting one (``pal``)
-  live-swaps the current scene's mode via ``DisplayMode.set_palette_mode`` AND
-  clears any active color-picker force (the "back to normal" path). No-op on
-  scenes whose mode has no ``set_palette_mode`` (hires/petscii/blank).
-* **color picker ↔ forced palette** — the up-to-3 ``col`` slots are snapped to
-  their nearest C64 colors and the current scene is remapped to *only* those
-  (``[color].force_palette`` posterize), live, via ``set_color_map`` + the mode's
-  force toggle. Applies on mcm/mhires; echo-only elsewhere.
+  scene's declared ``LIVE_PARAMS``, the same seam `midi_control` sweeps.
+* **palette dropdown ↔ ``[color].palette_mode``** — ``pal`` live-swaps the mode
+  via ``DisplayMode.set_palette_mode`` and clears any color-picker force.
+* **color picker ↔ forced palette** — the up-to-3 ``col`` slots snap to their
+  nearest C64 colors and posterize the scene to only those, via
+  ``set_color_map`` plus the mode's force toggle. mcm/mhires only.
 
-``pal`` and ``col`` drive the *same* C64 palette (mutually exclusive), but the
-WLED app re-POSTs the full segment on every change, so each is applied only when
-it changed from the last-echoed value. The WS ``/ws`` handler also pushes state
-proactively on a timeout (real WLED does), so an autonomous scene change reaches
-connected apps rather than leaving the Scene field stale.
+One WLED segment per system, in ensemble order; top-level ``on``/``bri`` are the
+master switch across all of them. Runs the FastAPI app on the shared uvicorn
+wrapper (`control_plane.ControlServer`) and registers an mDNS service via
+``zeroconf``; needs the ``wled`` extra.
 
-Not every control acts on every scene (palette/color are no-ops on hires/blank;
-sx/ix only move a scene's declared ``LIVE_PARAMS``). We can't disable controls in
-the third-party WLED app — it renders a fixed set — but our own ``/`` page can:
-each segment carries a ``c64`` vendor key (``_seg_caps``) of per-control booleans
-and the page grays out the dead palette/color/slider controls. Scene, power and
-brightness always apply, so they're never gated. The hints ride the ``/json``
-poll + the WS push, so they refresh on auto-advance for free; WLED clients ignore
-the unknown seg key.
-
-**Ensemble = one WLED segment per system.** Segment *i* maps to the *i*-th
-system (ensemble order); a single-system run is one segment. Top-level ``on`` /
-``bri`` apply to every system at once (WLED's master switch); per-segment fields
-target that one system. The WLED effect list is shared (WLED has one global
-effect array): it's built from the first system's scenes and a segment's ``fx``
-indexes into it, clamped to that system's own scene count.
-
-Runs the FastAPI app on the shared uvicorn wrapper (`control_plane.ControlServer`)
-and registers an mDNS service via ``zeroconf``. Needs the ``wled`` extra
-(zeroconf + fastapi + uvicorn); a graceful ``RuntimeError`` names the missing
-piece, mirroring the control-plane pattern.
+See docs/architecture/wled.md#wled_devicepy--virtual-wled-device--control-surface-wled-bridge-mode-1.
 """
 
 import asyncio
@@ -79,12 +47,11 @@ from c64cast.control.transport import JsonSlotStore, warn_if_legacy_presets_orph
 from c64cast.video.modes import PALETTE_MODES
 from c64cast.video.palette import build_fixed_color_map, nearest_palette_index
 
-# NOTE: this module deliberately does NOT use `from __future__ import
-# annotations`. The FastAPI route handlers below annotate params with types
-# imported *inside* build_wled_app (Request / WebSocket); with stringized
-# annotations FastAPI can't resolve those local names from module globals and
-# would mis-read `request` as a query param and skip WebSocket injection. Real
-# (eagerly-evaluated) annotations resolve against the enclosing function scope.
+# Do not add `from __future__ import annotations` here. The FastAPI route
+# handlers below annotate params with types imported *inside* build_wled_app
+# (Request / WebSocket); under stringized annotations FastAPI resolves them
+# against module globals, where those names do not exist, and so mis-reads
+# `request` as a query param and skips WebSocket injection.
 
 log = logging.getLogger(__name__)
 
@@ -94,9 +61,8 @@ WLED_SERVICE_TYPE = "_wled._tcp.local."
 _SLIDER_MAX = 255.0
 
 # How often a connected WS client is checked for out-of-band state changes
-# (playlist auto-advance, a queued jump landing) and pushed a fresh state if it
-# moved. Real WLED pushes proactively; without this the app's Scene field goes
-# stale between the user's own actions. Also bounds receive_json's blocking wait.
+# (playlist auto-advance, a queued jump landing) and pushed a fresh state.
+# Real WLED pushes proactively. Also bounds receive_json's blocking wait.
 _WS_PUSH_INTERVAL_S = 1.5
 
 # The WLED palette list is the c64cast palette modes (modes.PALETTE_MODES),
@@ -104,49 +70,38 @@ _WS_PUSH_INTERVAL_S = 1.5
 # WLED `pal` index resolves straight back to a mode name.
 _WLED_PALETTES = [m.title() for m in PALETTE_MODES]
 
-# WLED info payload cosmetics — enough for real clients (app / python-wled /
-# Home Assistant) to parse us as a WLED device. We pin a plausible firmware
-# version and identify the product as c64cast.
+# Enough WLED info-payload cosmetics for real clients (app / python-wled /
+# Home Assistant) to parse this as a WLED device.
 _WLED_VERSION = "16.0.1"
-# `vid` is a WLED build-date "version id". Two distinct client uses: feature/
-# minimum-version gates compare it against a floor, and — the one that bites us —
-# the WLED app/UI caches the effect + palette lists keyed on (vid, palcount) and
-# only re-fetches when one changes (verified in WLED's index.js: the `wledPalx`
-# cache check is `d.vid == lastinfo.vid && d.pcount == lastinfo.palcount`). Our
-# effect list is the scene playlist, which changes between configs, so a *fixed*
-# vid leaves the app showing a stale scene dropdown. We therefore report
-# `_WLED_VID_BASE + hash(effect+palette names)` (see `WledBridge._content_vid`):
-# a new scene/palette set yields a new vid → the app drops its cache and
-# re-fetches, no manual clear. Kept >= the base and 7-digit/date-shaped so the
-# minimum-version gates still pass, and this does NOT touch `ver` (the string the
-# app's upgrade nag compares), so no spurious "please upgrade".
+# `vid` is a WLED build-date "version id" with two client uses: version gates
+# compare it against a floor, and the app/UI caches the effect + palette lists
+# keyed on (vid, palcount), re-fetching only when one changes (WLED's index.js:
+# `d.vid == lastinfo.vid && d.pcount == lastinfo.palcount`). Since the effect
+# list is the scene playlist, `WledBridge._content_vid` reports
+# `_WLED_VID_BASE + hash(effect+palette names)`, kept >= the base and
+# 7-digit/date-shaped so the version gates still pass. It must not touch `ver`,
+# which is what the app's upgrade nag compares.
 _WLED_VID_BASE = 2606010
 _WLED_VID_SPREAD = 100000  # content-hash offset range added on top of the base
 
 # Which of the current scene's LIVE_PARAMS the WLED speed / intensity sliders
-# drive, in priority order — the first one the scene declares wins. Kept small
-# and predictable (the common generative knobs); extend as more scenes expose
-# params. A slider with no matching param on the current scene is a silent no-op.
+# drive, in priority order: the first one the scene declares wins, and a slider
+# matching none is a silent no-op.
 _SX_TARGETS = ("source.speed", "source.scroll_speed", "effect.decay")
 
 
-# Source-first preserves the existing generator behavior; `scene.gain` reaches
-# the scope scenes (WaveformScene/MidiScene/AsidScene), which *are* the
-# renderer and so have no source/effect holder — see the `scene` prefix in
-# live_tune.resolve_holder.
+# Source-first preserves generator behavior; `scene.gain` reaches the scope
+# scenes (WaveformScene/MidiScene/AsidScene), which are the renderer and so
+# have no source/effect holder — see live_tune.resolve_holder's `scene` prefix.
 _IX_TARGETS = ("source.scale", "source.intensity", "effect.intensity", "scene.gain")
 
 
-# Real WLED serves its own control UI at "/" (a full SPA). Several third-party
-# WLED companion apps (macOS/iOS "shell" apps in particular) don't reimplement
-# controls natively — they open a WebView pointed at the device's own "/" and
-# render whatever comes back. With no route there, FastAPI's default 404 body
-# renders as literal on-screen text and every control (power aside) is
-# invisible in that app, even though fx/sx/ix are functionally wired via
-# /json/state. This is a small hand-rolled page (fetch-driven against our own
-# /json endpoints) covering exactly what the backend currently acts on —
-# transport, effect select, speed/intensity — so it and any browser pointed at
-# the device have something usable. No inline JS libs / CDN deps.
+# Real WLED serves its own control UI at "/", and third-party WLED companion
+# apps (macOS/iOS shell apps especially) just open a WebView pointed at it. With
+# no route there, FastAPI's 404 body renders as literal on-screen text and every
+# control but power is invisible in those apps even though fx/sx/ix are wired
+# via /json/state. Hence this fetch-driven page over our own /json endpoints,
+# with no inline JS libs or CDN deps.
 def index_page_html() -> str:
     """The device page, read once from the packaged ``wled_index.html`` with
     the shared live-socket client spliced in.
@@ -283,32 +238,29 @@ def _apply_force_colors(pl: Playlist, cols: Any) -> None:
     if not indices:
         return
     if len(indices) < 2:
-        # A single picked color needs a partner for any contrast: black, or
-        # white if black itself was the pick.
+        # A single picked color needs a partner for contrast: black, or white
+        # if black itself was the pick.
         indices.append(1 if indices[0] == 0 else 0)
     cmap = build_fixed_color_map(indices)
     if cmap is None:
         return
     mode.set_color_map(cmap)
-    # A forced palette pairs with "percell" — the invariant MCM's ctor and the
-    # SHIFT cycle both hold. Forcing chromatic colors while, say, grayscale is
-    # active would let grayscale's chromatic penalty + fixed gray backgrounds
-    # fight the picked colors (they'd render flat gray), so snap to percell.
+    # A forced palette pairs with "percell", the pairing MCM's ctor and the
+    # SHIFT cycle both hold: under grayscale the chromatic penalty and fixed
+    # gray backgrounds would render the picked colors flat gray.
     mode.set_palette_mode(api, "percell", force_palette=True)
 
 
-# Where WLED presets are persisted — one JSON file per device name, under
-# `paths.presets_dir()` (<data root>/presets), resolved at use time so it works
-# from a repo checkout or an installed wheel (and honors
-# $C64CAST_DATA_DIR). Machine/taste-specific captured data, never committed.
+# One JSON file per device name under `paths.presets_dir()`, resolved at use
+# time so it honors $C64CAST_DATA_DIR from a checkout or an installed wheel.
 
 # WLED preset ids are 1..250; id 0 is the reserved empty slot and is never stored.
 _PRESET_ID_MIN = 1
 _PRESET_ID_MAX = 250
 
-# The only attacker-controlled field in a saved preset (the segment dict is
-# built server-side from echo state) — clamped so an unauthenticated LAN
-# client can't grow the presets file without bound.
+# The only attacker-controlled field in a saved preset — the segment dict is
+# built server-side from echo state — so it is clamped to keep an
+# unauthenticated LAN client from growing the presets file without bound.
 _MAX_PRESET_NAME_LEN = 64
 
 
@@ -365,9 +317,8 @@ class WledBridge:
             raise ValueError("WledBridge needs at least one system")
         self._systems = systems
         self._name = name
-        # Real WLED "mac" is 12 hex digits; some clients validate/parse it as
-        # such. Derive a stable pseudo-MAC from the name rather than embedding
-        # non-hex characters.
+        # Real WLED "mac" is 12 hex digits and some clients parse it as such,
+        # so derive a stable pseudo-MAC from the name.
         self._mac = hashlib.md5(name.encode(), usedforsecurity=False).hexdigest()[:12]
         self._uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"c64cast-{name}"))
         self._lock = threading.Lock()
@@ -391,14 +342,12 @@ class WledBridge:
             for _ in systems
         ]
 
-    # -- reads ---------------------------------------------------------------
-
     def _effects(self) -> list[str]:
         """Shared WLED effect list = the first system's scene names (WLED has one
         global effect array). Never empty (WLED effect 0 must exist)."""
         scenes = self._systems[0][1].scenes
-        # `wled_label` is a stable, randomization-aware name (a random SID pool
-        # names itself as a pool, not the rotating current tune) — see Scene.
+        # `wled_label` is randomization-aware: a random SID pool names itself
+        # as a pool, not as the rotating current tune.
         names = [getattr(s, "wled_label", None) or s.name for s in scenes]
         return names or ["Solid"]
 
@@ -406,9 +355,7 @@ class WledBridge:
         return self._effects()
 
     def palettes(self) -> list[str]:
-        # The WLED "palette" list is the c64cast palette modes (per-cell slot
-        # allocation strategies) — index-stable so `seg[].pal` maps to a mode.
-        # Selecting one live-swaps the current scene's mode (see _apply_palette).
+        # Index-stable, so `seg[].pal` maps back to a palette mode.
         return _WLED_PALETTES
 
     def _content_vid(self) -> int:
@@ -468,10 +415,8 @@ class WledBridge:
             "o1": False,
             "o2": False,
             "o3": False,
-            # Vendor extension: per-control applicability hints for our own `/`
-            # page (grays out palette/color/sliders that can't act on the current
-            # scene). WLED clients ignore unknown seg keys — verified they still
-            # parse the payload; the load-bearing check lives in the HW test.
+            # Vendor extension: per-control applicability hints the `/` page
+            # grays controls out with. WLED clients ignore unknown seg keys.
             "c64": _seg_caps(pl),
         }
 
@@ -523,7 +468,7 @@ class WledBridge:
             "maps": [{"id": 0}],
             "wifi": {"bssid": "", "rssi": -50, "signal": 100, "channel": 1},
             # `pmt` = presets-file modification time; WLED clients cache
-            # /presets.json against it and re-fetch when it bumps (on save/delete).
+            # /presets.json against it and re-fetch when it bumps.
             "fs": {"u": 0, "t": 0, "pmt": self._presets.mtime_ns() // 1_000_000},
             "ndc": nseg,
             "arch": "esp32",
@@ -546,8 +491,6 @@ class WledBridge:
             "effects": self.effects(),
             "palettes": self.palettes(),
         }
-
-    # -- writes --------------------------------------------------------------
 
     @staticmethod
     def _set_playing(pl: Playlist, playing: bool) -> None:
@@ -589,8 +532,8 @@ class WledBridge:
         name, pl = self._systems[i]
         echo = self._seg_echo[i]
         # Transport is the Power toggle only: a segment plays when master-on and
-        # its own `on`. Brightness never gates transport (see _apply_dim), so a
-        # `bri` change alone leaves play/pause untouched — it just dims.
+        # its own `on`. Brightness never gates transport, so a `bri` change alone
+        # only dims.
         seg_on = bool(seg.get("on", True))
         if "bri" in seg:
             echo["bri"] = max(0, min(255, int(seg["bri"])))
@@ -599,9 +542,8 @@ class WledBridge:
         # A per-segment brightness change is a real output dim (bri=0 → black).
         if "bri" in seg:
             self._apply_dim(i)
-        # Effect selection → scene jump (clamped to this system's scenes). Skip a
-        # jump to the already-current scene: it would needlessly restart it (a
-        # redundant re-select, or a preset recall capturing the current scene).
+        # Clamped to this system's scenes. A jump to the already-current scene
+        # is skipped, since it would restart it.
         if "fx" in seg:
             fx = int(seg["fx"])
             if 0 <= fx < len(pl.scenes) and fx != pl.index and not pl.single_scene:
@@ -609,22 +551,19 @@ class WledBridge:
                     pl.request_jump(fx, skip_interstitial=True)
                 except ValueError:
                     log.debug("wled: fx %d out of range for %s", fx, name)
-        # Sliders → live params + echo.
         if "sx" in seg:
             echo["sx"] = max(0, min(255, int(seg["sx"])))
             _set_live_param(pl, _SX_TARGETS, echo["sx"])
         if "ix" in seg:
             echo["ix"] = max(0, min(255, int(seg["ix"])))
             _set_live_param(pl, _IX_TARGETS, echo["ix"])
-        # Palette dropdown → palette_mode swap (+ clears any color-picker force),
-        # and color picker → forced palette. Both map onto the *same* C64 palette,
-        # so they're mutually exclusive intents — but the WLED app re-POSTs the
-        # full segment (pal AND col) on every change. Acting on an unchanged field
-        # would let the echoed `col` clobber a palette pick (and vice versa), so
-        # only apply the field that actually *changed* from what we last echoed.
-        # `force_palcol` (preset recall) bypasses that guard — a recall is a
-        # deliberate apply, not the app's incidental full-segment re-POST, so it
-        # must restore the stored palette/color even when the echo already matches.
+        # `pal` and `col` map onto the *same* C64 palette and are mutually
+        # exclusive intents, but the WLED app re-POSTs the full segment (both
+        # fields) on every change, so acting on an unchanged field would let the
+        # echoed `col` clobber a palette pick and vice versa. Only the field that
+        # changed from the last echo is applied. `force_palcol` (preset recall)
+        # bypasses that guard, since a recall must restore the stored
+        # palette/color even when the echo already matches.
         if "pal" in seg:
             new_pal = int(seg["pal"])
             changed = new_pal != echo["pal"]
@@ -658,8 +597,8 @@ class WledBridge:
                     self._recall_preset_locked(pid)
                     return
                 # ps <= 0 → "no preset"; fall through as a manual change.
-            # Any genuine manual change clears the active-preset marker — WLED
-            # resets state.ps to -1 once you touch a control after a recall.
+            # WLED resets state.ps to -1 once a control is touched after a
+            # recall, so a genuine manual change clears the marker.
             self._active_preset = -1
             self._apply_locked(partial)
 
@@ -674,8 +613,7 @@ class WledBridge:
             self._global_bri = max(0, min(255, int(partial["bri"])))
         if "on" in partial:
             master_on = bool(partial["on"])
-        # Transport is driven by Power (`on`) alone — brightness only dims
-        # (bri=0 = black, not pause), so a `bri`-only POST never pauses.
+        # Power (`on`) alone drives transport; bri=0 is black, not pause.
         master_playing = master_on
 
         segs = partial.get("seg")
@@ -690,14 +628,12 @@ class WledBridge:
             # Master power with no per-segment detail → all systems.
             for i in range(len(self._systems)):
                 self._set_playing(self._systems[i][1], master_playing)
-        # The master brightness scales every segment's effective dim, so a
-        # top-level `bri` change re-dims all systems — including any whose
-        # own `bri` wasn't in this POST (_apply_dim reads the echoed seg bri).
+        # Master brightness scales every segment's effective dim, so this
+        # re-dims all systems, including any whose own `bri` was not in this
+        # POST (_apply_dim reads the echoed seg bri).
         if master_bri_changed:
             for i in range(len(self._systems)):
                 self._apply_dim(i)
-
-    # -- presets -------------------------------------------------------------
 
     def presets_json(self) -> dict[str, Any]:
         """The `/presets.json` payload: WLED's preset map with id 0 reserved."""
@@ -744,11 +680,10 @@ class WledBridge:
     def _save_preset_locked(self, partial: Mapping[str, Any]) -> None:
         pid = int(partial.get("psave", 0))
         if not _PRESET_ID_MIN <= pid <= _PRESET_ID_MAX:
-            # Out of range in either direction (unset, or a stale/invalid id
-            # from a client whose own free-slot count disagreed with ours) —
-            # reassign through the real free-slot search rather than either
-            # silently no-op'ing (JsonSlotStore.save rejects an out-of-range
-            # slot) or falling through to a fixed id that might already exist.
+            # Unset, or a stale id from a client whose free-slot count
+            # disagreed with ours. Reassign through the real free-slot search:
+            # JsonSlotStore.save rejects an out-of-range slot, and a fixed
+            # fallback id might already exist.
             pid = self._presets.next_free_id()
             if pid == 0:
                 return  # store is full: nothing to reassign to
@@ -765,9 +700,9 @@ class WledBridge:
         preset = self._presets.all().get(str(pid))
         if not preset:
             return
-        # Best-effort immediate apply (perfect for a same-scene preset; the `/`
-        # page replays cross-scene sliders/pal/col over WS once the target scene
-        # is live). force_palcol so a stored palette/color restores past the guard.
+        # Best-effort immediate apply; the `/` page replays cross-scene
+        # sliders/pal/col over WS once the target scene is live. force_palcol so
+        # a stored palette/color restores past the only-when-changed guard.
         self._apply_locked(preset, force_palcol=True)
         self._active_preset = pid
 
@@ -871,7 +806,6 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     @app.get("/json/si")
     def json_si() -> dict[str, Any]:
-        # WLED's lightweight poll: state + info only.
         return {"state": bridge.state_dict(), "info": bridge.info_dict()}
 
     @app.get("/json/eff")
@@ -889,9 +823,8 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
 
     async def _apply_body(request: Request) -> dict[str, Any]:
         if _is_cross_origin(request):
-            # A browser page on another origin (or reached via DNS rebinding)
-            # POSTing here needs no CORS preflight since the body just looks
-            # like a simple text/plain request — reject before it's parsed.
+            # A cross-origin POST here needs no CORS preflight, since the body
+            # looks like a simple text/plain request. Reject before parsing.
             raise HTTPException(status_code=403, detail="cross-origin request rejected")
         body = await request.json()
         if isinstance(body, Mapping):
@@ -917,32 +850,27 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         # Before `accept`, and for the same reason `POST /json` checks: this
-        # socket *applies commands* (`bridge.apply` below), so it is a write
-        # surface, and a WebSocket handshake is exempt from CORS entirely —
-        # no preflight exists for a browser to fail. Only the POST path was
-        # guarded, which left the larger hole open: any page the operator
-        # happens to visit could open `ws://<host>:8080/ws` and pause the run,
-        # jump scenes, sweep live params or write presets. Binding to loopback
-        # does not help — that is the origin such a page reaches most easily.
-        # Closing *before* accept makes uvicorn answer the handshake with an
-        # HTTP 403, the one status a client can tell apart from "the server
-        # went away" (see `auth`'s module docstring).
+        # socket applies commands (`bridge.apply` below), so it is a write
+        # surface, and a WebSocket handshake is exempt from CORS entirely — no
+        # preflight exists for a browser to fail, and a loopback bind is the
+        # origin such a page reaches most easily. Closing before accept makes
+        # uvicorn answer the handshake with an HTTP 403, the one status a client
+        # can tell apart from "the server went away" (see `auth`'s module
+        # docstring).
         if _is_cross_origin(websocket):
             log.warning("wled: refused a cross-origin websocket handshake")
             await websocket.close(code=_WS_POLICY_VIOLATION)
             return
         await websocket.accept()
         ws_clients.add(websocket)
-        # WLED sends the full state+info on connect.
         await websocket.send_json({"state": bridge.state_dict(), "info": bridge.info_dict()})
         last_pushed = bridge.state_dict()
         try:
             while True:
-                # Race an incoming command against a short timeout: on a message,
-                # apply it and broadcast; on timeout, push state IF it changed on
-                # its own (playlist auto-advance, a queued jump landing) — real
-                # WLED pushes state proactively, and the app's Scene field goes
-                # stale without it since we're not driven by an external client.
+                # Race an incoming command against a short timeout; on timeout,
+                # push state if it changed on its own (playlist auto-advance, a
+                # queued jump landing). Real WLED pushes state proactively, and
+                # nothing else drives this socket.
                 try:
                     msg = await asyncio.wait_for(
                         websocket.receive_json(), timeout=_WS_PUSH_INTERVAL_S
@@ -953,8 +881,8 @@ def build_wled_app(bridge: WledBridge, port: int = 80):
                         last_pushed = cur
                         await _broadcast_state()
                     continue
-                # WLED wraps commands variously; accept a bare state object or
-                # {"state": {...}} and ignore control frames we don't model.
+                # WLED wraps commands variously: accept a bare state object or
+                # {"state": {...}}.
                 payload = msg.get("state", msg) if isinstance(msg, Mapping) else None
                 if isinstance(payload, Mapping):
                     bridge.apply(payload)
@@ -993,7 +921,7 @@ class WledDeviceServer:
             ) from e
         ip = _local_ip()
         # Advertise the real LAN IP even when bound to 0.0.0.0, so discovery
-        # clients get a reachable A record + the actual port via the SRV record.
+        # clients get a reachable A record and the actual port in the SRV record.
         self._zc = Zeroconf()
         self._info = ServiceInfo(
             WLED_SERVICE_TYPE,
@@ -1011,8 +939,8 @@ class WledDeviceServer:
         try:
             self._register_mdns()
         except Exception:
-            # A discovery failure must not take down the (already-serving) HTTP
-            # API — the device is still reachable by IP:port, just not auto-found.
+            # The HTTP API is already serving and stays reachable by IP:port;
+            # only auto-discovery is lost.
             log.exception("WLED device: mDNS advertisement failed (API still serving)")
 
     def stop(self) -> None:

@@ -10,15 +10,11 @@
 
   let open = $state(false);
 
-  /** The last line, which is what the collapsed bar shows. A save refused or a
-   *  scene that failed mid-show is the host's own account of what happened, and
-   *  it used to live on one screen — so the reader was on Configs or Live and
-   *  the explanation was a tab away. */
+  /** The last line, which is what the collapsed bar shows. */
   const latest = $derived(lines.length ? lines[lines.length - 1] : null);
 
   const BAD = new Set(["ERROR", "CRITICAL"]);
-  /** Errors since the drawer was last opened, so the bar can say there is a
-   *  reason to open it without shouting about a log that is merely long. */
+  /** Errors since the drawer was last opened. */
   let seen = $state(0);
   const unread = $derived(lines.filter((l) => l.seq > seen && BAD.has(l.level)).length);
 
@@ -28,9 +24,6 @@
   }
 </script>
 
-<!-- Fixed rather than in the flow: the log is the same log on every screen, and
-     a reader who wants it while a show is running should not have to leave the
-     controls to read it. -->
 <div class="fixed inset-x-0 bottom-0 z-10 border-t border-[var(--edge)] bg-[var(--panel)]">
   <div class="mx-auto max-w-5xl px-4 sm:px-6">
     <button

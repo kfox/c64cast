@@ -78,8 +78,8 @@ class BlendTableTest(unittest.TestCase):
 
     def test_pair_yield_at_each_tier(self):
         # The numbers each tolerance rests on, against the VIC-II rendering that
-        # is the process palette here. A change to the middle columns is a
-        # change to how much scored flicker the setting admits.
+        # is the process palette here. A change to the middle columns is a change
+        # to how much scored flicker the setting admits.
         for cap, clean, subtle, visible in (
             (0.05, 3, 6, 9),
             (DEFAULT_LUMA_DELTA, 3, 8, 12),
@@ -388,7 +388,7 @@ class FlickerFollowsPaletteTest(unittest.TestCase):
         which two colors fuse, which is why this cannot be computed once."""
         # Over the full capped set, not the warm-excluded one: the exclusion
         # removes the same four colors on every machine, so filtering first
-        # would test how much of the disagreement it happens to have deleted.
+        # would measure only how much of the disagreement it deleted.
         palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
         pepto = set(flicker.blend_pairs(DEFAULT_LUMA_DELTA, tolerance=ALL_TIERS))
         palette.set_host_palette(palette.U64_PALETTE_BGR, name="u64")
@@ -936,10 +936,9 @@ class FlickerMirrorTest(unittest.TestCase):
         fb.on_write(VIC_BANK_2.SCREEN, bytes([0x10]) * 1000)
         fb.on_write(VIC_BANK_2.SCREEN_ALT, bytes([0x10]) * 1000)
         fb.on_write(FRAME_TRACKER_ADDR + FLICKER_TRACKER_OFF_BANK, bytes([DD00_BANK_2]))
-        # White fused with itself, off by a rounding count from the sRGB<->
-        # linear round trip (see test_renders_the_fused_color_in_linear_light) —
-        # not the point here; the point is that it's white/bank-2 at all,
-        # rather than stale black/bank-0.
+        # White fused with itself, off by a rounding count from the sRGB/linear
+        # round trip. The point is that it is white/bank-2 at all, not stale
+        # black/bank-0.
         pixel = fb.render()[100, 160]
         self.assertTrue(np.all(pixel >= 254), f"expected near-white (bank 2), got {pixel}")
 

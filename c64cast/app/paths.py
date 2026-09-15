@@ -225,10 +225,6 @@ def web_viewer_token_path() -> Path:
     return data_root() / "web_viewer_token"
 
 
-# ---------------------------------------------------------------------------
-# Packaged (read-only) resources
-# ---------------------------------------------------------------------------
-
 EXAMPLE_PREFIX = "example:"
 
 

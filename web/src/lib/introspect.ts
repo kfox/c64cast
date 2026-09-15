@@ -10,14 +10,10 @@ import type {
   Swatch,
 } from "./types";
 
-/** The introspection document, fetched at most once per page load.
- *
- * It is ~150 KB and it describes the *code*: every config field's help,
- * choices, default and `apply`, every scene type's fields already filtered by
- * `applies_to`. None of that can change while the host process is up, so a
- * screen re-mounting must not re-fetch it. The promise itself is the cache —
- * two screens mounting at once share one request — and a failure clears it so
- * a retry is possible. */
+/** The introspection document, fetched at most once per page load. It
+ *  describes the *code*, which cannot change while the host process is up. The
+ *  promise itself is the cache, so two screens mounting at once share one
+ *  request; a failure clears it so a retry is possible. */
 let cached: Promise<DocIndex> | null = null;
 
 export function documentation(): Promise<DocIndex> {
@@ -54,9 +50,9 @@ export class DocIndex {
     }
     for (const scene of doc.scene_types) {
       this.#sceneTypes.set(scene.name, scene);
-      // Scene fields share a namespace with nothing else, and the same field
-      // name means different things on different scene types (`source` on
-      // `generative` is not `source` on `wled`), so the type is part of the key.
+      // The same field name means different things on different scene types
+      // (`source` on `generative` is not `source` on `wled`), so the type is
+      // part of the key.
       for (const field of scene.fields) this.#fields.set(`scene:${scene.name}.${field.name}`, field);
     }
     for (const overlay of doc.overlays) {
@@ -90,13 +86,10 @@ export class DocIndex {
   }
 }
 
-/** One `GET /api/media` per kind, cached for the page's lifetime the same
- *  way `documentation()` caches the introspection document — a media kind
- *  describes what's on disk right now rather than the code, but re-listing
- *  it on every scene render would mean one request per field per keystroke.
- *  Returns the whole index, `truncated` included, so a mount-time listing
- *  past `MAX_FILES` says so before anyone has typed a search. A failure
- *  clears its cache entry so a later attempt can retry. */
+/** One `GET /api/media` per kind, cached for the page's lifetime the same way
+ *  `documentation()` caches the introspection document. Returns the whole
+ *  index, `truncated` included, so a mount-time listing past `MAX_FILES` says
+ *  so. A failure clears its cache entry so a later attempt can retry. */
 const mediaCache = new Map<string, Promise<MediaIndex>>();
 
 export function mediaOfKind(kind: string): Promise<MediaIndex> {
@@ -112,17 +105,15 @@ export function mediaOfKind(kind: string): Promise<MediaIndex> {
 }
 
 /** Drop a kind's cached listing so the next `mediaOfKind` re-fetches it —
- *  called after an upload, which otherwise would not appear in any datalist
- *  until the page reloaded (this cache is the only reason it wouldn't). */
+ *  called after an upload, which would otherwise not appear in any datalist
+ *  until the page reloaded. */
 export function forgetMedia(kind: string): void {
   mediaCache.delete(kind);
 }
 
 /** A live query against a media kind, uncached — `mediaOfKind`'s cache is for
- *  the unfiltered listing everyone reads on mount; a query fires on a
- *  debounce and freshness beats a map keyed by every prefix somebody typed.
- *  Returns the whole index, `truncated` included, so a search past
- *  `MAX_FILES` still says so. */
+ *  the unfiltered listing everyone reads on mount. Returns the whole index,
+ *  `truncated` included, so a search past `MAX_FILES` still says so. */
 export function searchMedia(kind: string, q: string): Promise<MediaIndex> {
   return api.media(kind, q);
 }
@@ -130,10 +121,9 @@ export function searchMedia(kind: string, q: string): Promise<MediaIndex> {
 export type FieldKind = "bool" | "int" | "float" | "str" | "complex";
 
 /** The wizard's `field_kind()` (c64cast/app/wizard.py), which classifies a
- *  declared type into how it should be presented. Duplicated rather than
- *  served because it is five lines of string matching over data the API
- *  already sends; the ordering is the part worth copying exactly — `float`
- *  before `int` so `"float"` is not read as containing `int`. */
+ *  declared type into how it should be presented. The ordering is the part
+ *  that has to match: `float` before `int`, so `"float"` is not read as
+ *  containing `int`. */
 export function fieldKind(type: string): FieldKind {
   const t = type.toLowerCase();
   if (t.includes("list") || t.includes("dict")) return "complex";
@@ -164,10 +154,10 @@ export function unionMembers(type: string): string[] {
 }
 
 /** Every kind a declared type accepts, in declaration order, without repeats
- *  (`wizard.field_kinds()`). `fieldKind` classifies the type as a whole, which
- *  is all a one-question prompt can act on; a form has room for the union, and
- *  losing half of one is how `border` (`int | str`) ends up a number box under
- *  help text that says you may write "light blue". */
+ *  (`wizard.field_kinds()`). `fieldKind` classifies the type as a whole; a
+ *  form has room for the whole union, and losing half of one is how `border`
+ *  (`int | str`) ends up a number box under help text that says you may write
+ *  "light blue". */
 export function fieldKinds(type: string): FieldKind[] {
   return [...new Set(unionMembers(type).map(fieldKind))];
 }

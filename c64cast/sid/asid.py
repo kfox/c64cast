@@ -1,60 +1,64 @@
 """ASID protocol decoder — ASID MIDI SysEx payloads → SID register updates.
 
-The ASID protocol (spec: https://github.com/thomasj/asid-protocol) streams SID register
-writes frame-by-frame over MIDI SysEx; the receiving unit's SID chip
-synthesizes the sound. Each message is ``F0 2D <cmd> <payload...> F7``; mido
-hands us the bytes between ``F0`` and ``F7`` as ``msg.data``, i.e.
-``(0x2D, cmd, *payload)``.
+Each message is ``F0 2D <cmd> <payload...> F7``; mido hands us the bytes between
+``F0`` and ``F7`` as ``msg.data``, i.e. ``(0x2D, cmd, *payload)``. Spec:
+https://github.com/thomasj/asid-protocol.
 
-This module is a **pure** decoder — no mido, no hardware — so it's trivially
-unit-testable: feed a byte sequence, assert the resulting register map. The
-:class:`~c64cast.sid.asid_scene.AsidScene` owns the MIDI port, the register shadow,
-the DMA writes, and the oscilloscope.
+A **pure** decoder: no mido, no hardware, no module state.
 
-Honored: ``0x4E`` register data (the workhorse — SID chip 0), the multi-SID
-streams ``0x50``-``0x5F`` (SID2..SID17, same packed format → chips 1..16),
-``0x4C``/``0x4D`` start/stop, ``0x4F`` character display, ``0x31`` speed
-(PAL/NTSC + multiplier + buffering bit), ``0x32`` SID type (per chip), and the
-``0x30`` timing recipe (per-register write order + inter-write wait cycles,
-decoded into :attr:`AsidUpdate.timing_recipe`). OPL-FM (``0x60``) is recognized
-but dropped (no OPL). Every register/type update carries a ``chip_index`` so the
-scene can route it to the matching SID address (see :mod:`c64cast.sid.asid_sidmap`
-for the U64 address map). See docs/architecture.md for the rationale.
-
-The ``0x30`` recipe used to be dropped: the coalesced flush path applies the
-whole register image at once, so the plain write order sufficed. The buffered
-C64-side ring player (see :mod:`c64cast.sid.asid_player`) *does* honor it — it
-replays each frame's writes on the real SID in the recipe's order with the
-recipe's inter-write waits — so the decoder now surfaces it.
-
-The ASID ``0x4E`` payload orders the three voice control registers last
-(register IDs 22-27) so a frame can carry a *second* write to each control
-register — the gate-off→gate-on "hard restart" trick players use to re-attack
-an already-gated voice. We surface the first control value in
-:attr:`AsidUpdate.control_first` so the scene can emit it before the coalesced
-block write (which lands the second/final value), preserving the pulse a real
-SID needs.
+See docs/architecture/sid.md#asidpy--the-pure-decoder.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+
+from c64cast._wire_log import LogThrottle
+
+log = logging.getLogger("c64cast.sid.asid")
+
+
+def new_recipe_log() -> LogThrottle:
+    """One ASID stream's report budget for the over-cap ``0x30`` warning.
+
+    The warning is chosen by the sender — the smallest message that trips it is
+    62 bytes — so it is throttled rather than logged per message; see
+    :mod:`c64cast._wire_log`. A factory rather than a module-level instance
+    because the rule there is O(1) per *stream* and a decoder is a free
+    function: the throttle comes from whatever owns the stream, one
+    :class:`~c64cast.sid.asid_scene.AsidScene` per MIDI port. A module-level
+    instance would be O(1) per *process*, so in ensemble mode one system's flood
+    would suppress another system's first report.
+
+    The logger is this module's, so a record lands where a reader of
+    ``c64cast.sid.asid`` expects it whoever built the throttle.
+    """
+    return LogThrottle(log)
+
 
 # SysEx manufacturer id chosen by Elektron for ASID (45 = 0x2D).
 ASID_MANUFACTURER_ID = 0x2D
 
-# Commands (see spec/protocol.md).
 CMD_TIMING = 0x30  # SID write order & inter-write wait recipe
 CMD_SPEED = 0x31  # PAL/NTSC + speed multiplier + frame delta + buffering bit
 CMD_SID_TYPE = 0x32  # 6581 / 8580
-CMD_START = 0x4C  # start playback
-CMD_STOP = 0x4D  # stop playback
+CMD_START = 0x4C
+CMD_STOP = 0x4D
 CMD_REG = 0x4E  # SID register data (the workhorse)
-CMD_CHARS = 0x4F  # display characters
-CMD_MULTI_SID_LO = 0x50  # SID2 .. SID17 register data (dropped)
+CMD_CHARS = 0x4F
+CMD_MULTI_SID_LO = 0x50  # SID2 .. SID17 register data (chips 1..16)
 CMD_MULTI_SID_HI = 0x5F
-CMD_OPL = 0x60  # OPL-FM register data (dropped)
+CMD_OPL = 0x60  # OPL-FM register data
+
+# The highest chip index the protocol can name: 0x5F = SID17 = chip 16.
+MAX_CHIP_INDEX = CMD_MULTI_SID_HI - CMD_MULTI_SID_LO + 1
+
+# A SID write *order*: no longer than the register table, each ASID register id
+# named at most once. Neither bound is on the wire, and both are load-bearing —
+# see docs/architecture/sid.md#asidpy--the-pure-decoder.
+MAX_TIMING_RECIPE_PAIRS = 28
 
 # ASID register ID (0-27) → SID register offset from $D400. IDs 0-21 are the
 # 22 non-control registers in $D4xx order (skipping the control regs);
@@ -71,7 +75,6 @@ _ASID_REG_TO_OFFSET: tuple[int, ...] = (
 )
 # fmt: on
 
-# Voice control-register ID ranges within _ASID_REG_TO_OFFSET.
 _CTRL_FIRST_BASE = 22  # ids 22,23,24 → voice 0,1,2 (first write)
 _CTRL_SECOND_BASE = 25  # ids 25,26,27 → voice 0,1,2 (second write)
 
@@ -94,23 +97,28 @@ class AsidUpdate:
     playing: bool | None = None  # 0x4C start (True) / 0x4D stop (False)
     system: str | None = None  # "PAL" | "NTSC" (0x31)
     speed_multiplier: int | None = None  # 1..16 (0x31)
-    frame_delta_us: int | None = None  # 0x31, 0 if unspecified
+    frame_delta_us: int | None = None  # 0x31, None when the payload carries no delta
     buffering_requested: bool | None = None  # 0x31 data0 bit 6 (host asks the client to buffer)
     chip_type: str | None = None  # "6581" | "8580" for chip `chip_index` (0x32)
     chip_index: int = 0  # SID chip this update targets: 0 = 0x4E, k = 0x50+(k-1); also 0x32
     # 0x30 write-order/wait recipe: ordered (asid_reg_id, wait_cycles) pairs, one
     # per write-order position. wait_cycles (0..255) is the C64-cycle delay to
-    # apply AFTER that register's write. Empty list = no recipe carried.
+    # apply AFTER that register's write. Empty list = no recipe carried. At most
+    # MAX_TIMING_RECIPE_PAIRS entries, each register id appearing at most once.
     timing_recipe: list[tuple[int, int]] = field(default_factory=list)
-    dropped: bool = False  # command recognized but not applied (OPL-FM)
+    dropped: bool = False  # not applied: OPL-FM, or an unrecognized command byte
 
 
-def decode(data: Sequence[int]) -> AsidUpdate | None:
+def decode(data: Sequence[int], *, recipe_log: LogThrottle) -> AsidUpdate | None:
     """Decode one ASID SysEx payload (``msg.data`` from mido, i.e. the bytes
     between ``F0`` and ``F7``, starting with the ``0x2D`` manufacturer id).
 
     Returns an :class:`AsidUpdate`, or ``None`` if this isn't an ASID message
     (wrong/absent manufacturer id) so the caller can ignore foreign SysEx.
+
+    ``recipe_log`` is this stream's budget for the one warning a sender can
+    provoke here — :func:`new_recipe_log` builds one, and it is required rather
+    than defaulted so a new caller has to answer which stream it is reading.
     """
     if len(data) < 2 or data[0] != ASID_MANUFACTURER_ID:
         return None
@@ -119,8 +127,7 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
     if cmd == CMD_REG:
         return _decode_registers(payload, chip_index=0)
     if CMD_MULTI_SID_LO <= cmd <= CMD_MULTI_SID_HI:
-        # 0x50 = SID2 (chip 1) .. 0x5F = SID17 (chip 16). Same packed format
-        # as 0x4E, just targeting a higher chip index.
+        # 0x50 = SID2 (chip 1) .. 0x5F = SID17 (chip 16), same packed format as 0x4E.
         return _decode_registers(payload, chip_index=cmd - CMD_MULTI_SID_LO + 1)
     if cmd == CMD_START:
         return AsidUpdate(command=cmd, playing=True)
@@ -133,9 +140,8 @@ def decode(data: Sequence[int]) -> AsidUpdate | None:
     if cmd == CMD_SID_TYPE:
         return _decode_sid_type(payload)
     if cmd == CMD_TIMING:
-        return _decode_timing(payload)
-    # Recognized-but-unsupported (OPL-FM) and anything unknown: flag as dropped
-    # so the scene can warn once and move on.
+        return _decode_timing(payload, recipe_log)
+    # The default branch: recognized-but-unsupported (OPL-FM) and anything unknown.
     return AsidUpdate(command=cmd, dropped=True)
 
 
@@ -174,9 +180,8 @@ def _decode_registers(payload: Sequence[int], *, chip_index: int) -> AsidUpdate:
             first_ctrl[reg_id - _CTRL_FIRST_BASE] = value
         elif _CTRL_SECOND_BASE <= reg_id < _CTRL_SECOND_BASE + 3:
             second_ctrl[reg_id - _CTRL_SECOND_BASE] = value
-    # Hard restart: a voice with both a first and a *differing* second control
-    # write in this frame. The first value (gate off / test) must reach the
-    # chip before the final one, so surface it for the two-phase emit.
+    # Hard restart: the first value (gate off / test) must reach the chip before
+    # the final one, so surface it for the two-phase emit.
     for voice, fval in first_ctrl.items():
         sval = second_ctrl.get(voice)
         if sval is not None and sval != fval:
@@ -204,19 +209,39 @@ def _decode_speed(payload: Sequence[int]) -> AsidUpdate:
     return update
 
 
-def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
+def _decode_timing(payload: Sequence[int], recipe_log: LogThrottle) -> AsidUpdate:
     """Decode a 0x30 recipe into ordered ``(asid_reg_id, wait_cycles)`` pairs.
 
-    The payload is up to 28 two-byte pairs; pair *i* gives the ASID register id
-    to write at write-order position *i* (``data0`` bits 0-5) and the cycle delay
-    to apply after it (``data0`` bit 6 = wait bit 7, ``data1`` bits 0-6 = wait
-    bits 0-6 → 0..255). Truncated/odd-length payloads decode the whole pairs
-    present and stop (the caller falls back to the default order for the rest)."""
+    The payload is up to :data:`MAX_TIMING_RECIPE_PAIRS` two-byte pairs; pair *i*
+    gives the ASID register id to write at write-order position *i* (``data0``
+    bits 0-5) and the cycle delay to apply after it (``data0`` bit 6 = wait bit
+    7, ``data1`` bits 0-6 = wait bits 0-6 → 0..255). Truncated/odd-length
+    payloads decode the whole pairs present and stop (the caller falls back to
+    the default order for the rest).
+
+    Pairs past the cap are dropped with a throttled warning (the sender picks
+    how often this fires, so the report is O(1) per stream — see
+    :mod:`c64cast._wire_log`, and `recipe_log` is what makes "per stream" true
+    rather than per process), and a register id repeated in the order keeps
+    its first position — see :data:`MAX_TIMING_RECIPE_PAIRS` for why both bounds
+    have to be enforced here, at the wire boundary."""
     update = AsidUpdate(command=CMD_TIMING)
-    for i in range(0, len(payload) - 1, 2):
+    pairs = len(payload) // 2
+    if pairs > MAX_TIMING_RECIPE_PAIRS:
+        recipe_log.warn(
+            "asid: 0x30 timing recipe carries %d pairs; keeping the first %d "
+            "(a SID write order can be no longer than the register table)",
+            pairs,
+            MAX_TIMING_RECIPE_PAIRS,
+        )
+    seen: set[int] = set()
+    for i in range(0, min(len(payload), 2 * MAX_TIMING_RECIPE_PAIRS) - 1, 2):
         data0 = payload[i]
         data1 = payload[i + 1]
         reg_id = data0 & 0x3F
+        if reg_id in seen:
+            continue  # a write order names each register once; first wins
+        seen.add(reg_id)
         wait = (((data0 >> 6) & 0x01) << 7) | (data1 & 0x7F)
         update.timing_recipe.append((reg_id, wait))
     return update
@@ -225,7 +250,8 @@ def _decode_timing(payload: Sequence[int]) -> AsidUpdate:
 def _decode_sid_type(payload: Sequence[int]) -> AsidUpdate:
     update = AsidUpdate(command=CMD_SID_TYPE)
     if len(payload) >= 2:
-        # data0 = chip index (0 = SID1), data1 bit0 = 0:6581 / 1:8580.
-        update.chip_index = payload[0]
+        # data0 = chip index (0 = SID1), data1 bit0 = 0:6581 / 1:8580. mido hands
+        # up a full 0..127 data byte; clamp to the multi-SID commands' range.
+        update.chip_index = min(payload[0], MAX_CHIP_INDEX)
         update.chip_type = "8580" if (payload[1] & 0x01) else "6581"
     return update

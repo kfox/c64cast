@@ -1,18 +1,17 @@
 """The web console's HTTP + WebSocket API (`--serve`).
 
-The control plane answers questions about a session that already exists —
-pause it, skip a scene, reload its config. These routes are the layer above:
-they *create* and destroy sessions, so the server can outlive any show and a
-browser can drive a machine that is currently doing nothing at all. They are
-registered onto the same FastAPI app as `/status` and `/perf`, behind the same
-token gate, because the whole point of a host console is one address.
+The control plane answers questions about a session that already exists — pause
+it, skip a scene, reload its config. These routes are the layer above: they
+*create* and destroy sessions, so the server can outlive any show and a browser
+can drive a machine that is currently doing nothing at all. They are registered
+onto the same FastAPI app as `/status` and `/perf`, behind the same token gate,
+because the whole point of a host console is one address.
 
 Three shapes of answer, and which one a route gives is the design:
 
 * **202 Accepted** for ``start`` / ``stop`` / ``switch``. Building a session
   blocks for many seconds on hardware; the supervisor claims the transition and
-  returns, and the caller watches ``/api/ws`` for what happened. A route that
-  waited would hold a request open across a machine reset.
+  returns, and the caller watches ``/api/ws`` for what happened.
 * **409 Conflict** when the supervisor is busy — mapped from
   :class:`~c64cast.app.serve.SupervisorBusy`, never from a state check here.
   Reading the state and then acting on it is a race with the reap poller; the
@@ -22,50 +21,37 @@ Three shapes of answer, and which one a route gives is the design:
   the request that would have failed twenty seconds into a build fails
   immediately instead, with the supervisor still idle.
 
-The state feed is the ``/perf`` payload with a ``session`` key added, so a
-console that already renders the performance surface gains the supervisor for
-free. Log lines ride along by sequence number rather than as a re-sent tail:
-the push cadence is ~3/sec and re-sending 500 lines each time would dwarf
-everything else on the socket.
+The state feed is the ``/perf`` payload with a ``session`` key added. Log lines
+ride along by sequence number rather than as a re-sent tail: at ~3 pushes/sec,
+re-sending 500 lines each time would dwarf everything else on the socket.
 
-``/api/configs`` is the other half: browse, read and edit the host's configs, so
-a show can be authored and then started without a shell. Two ways to save, and
-the split matters: ``PUT`` takes the text a client composed (the raw editor),
-while ``PATCH`` takes named field edits and lets the server compose the text
-through the config dataclasses (the generated form). Every path goes through
-:class:`~c64cast.app.config_store.ConfigStore`, which is also what turns the
-``config`` a start request may name into something safe to hand the loader —
-the jail is not repeated here, because a second copy of it is a second thing to
-get wrong.
-
-Reading **one** config (``GET /api/configs/{ref}``) is the single route here
-that needs more authorization than its verb carries: the store hands back the
-file's raw text, secrets included, so it calls
-:func:`~c64cast.control.auth.require_full` and a ``viewer`` gets a ``403``. The
-index, the media listing and the screen stay readable by a viewer, which is
-what a read-only link is for.
-
-``/api/media`` is the other half: what a `file =` field could point at, and
-where a dropped or picked file lands, from
-:class:`~c64cast.app.media_store.MediaStore`. ``GET`` browses; ``PUT
-/api/media/{name}`` uploads, streamed straight to disk rather than buffered
-into memory (see the module's own docstring for why) and refused rather than
-allowed to overwrite anything already there.
+``/api/configs`` browses, reads and edits the host's configs, so a show can be
+authored and then started without a shell. ``PUT`` takes the text a client
+composed (the raw editor); ``PATCH`` takes named field edits and lets the server
+compose the text through the config dataclasses (the generated form). Every
+path goes through :class:`~c64cast.app.config_store.ConfigStore`, so the root
+jail is not repeated here. Reading **one** config (``GET /api/configs/{ref}``)
+is the single route whose verb does not carry its whole authorization: the
+store hands back the file's raw text, secrets included, so it calls
+:func:`~c64cast.control.auth.require_full` and a ``viewer`` gets a ``403``.
+``/api/media`` is the same for media files, with ``PUT /api/media/{name}``
+streamed straight to disk rather than buffered into memory, and refused rather
+than allowed to overwrite anything already there.
 
 ``/api/session/live-tune`` is where those two halves meet. A one-shot run asks
-"save these knob changes?" at exit; a daemon has no exit and no terminal, and a
-host that rewrote every show file it stopped would be unusable — so under
-``--serve`` the tracker records and nothing acts on it. This route is what acts
-on it, on a tap rather than on a shutdown. It is a config write and lives here
-rather than on the performance socket for that reason: it takes the store's
-refusals, its 422 report and its backup sibling, and a socket frame has nowhere
-to put a status code.
+"save these knob changes?" at exit; under ``--serve`` the tracker records and
+nothing acts on it, and this route is what acts on it, on a tap rather than on
+a shutdown. It is a config write and lives here rather than on the performance
+socket for that reason: it takes the store's refusals, its 422 report and its
+backup sibling, and a socket frame has nowhere to put a status code.
 
 Like :mod:`perf_console` and :mod:`auth`, this module deliberately does **not**
 ``from __future__ import annotations``: the WebSocket route annotates its
 parameter with a name imported inside :func:`register_web_routes`, and
 stringized annotations would make FastAPI mis-read it as a query parameter and
 skip the injection entirely.
+
+See docs/architecture/control.md#web_apipy--the-web-consoles-api--the-host---serve.
 """
 
 import asyncio
@@ -332,11 +318,11 @@ def register_web_routes(
     screen = ScreenFeed(lambda: {name: pl.api for name, pl in playlists().items()})
 
     # Built once: ~150 KB of JSON assembled by walking every config dataclass,
-    # every scene type and every overlay. It describes the code, not the run,
-    # so it cannot change while the process is up. The lock is what makes
-    # "once" true: `api_introspect` is a sync `def`, so FastAPI runs it in the
-    # threadpool and two cold-cache requests would otherwise both walk the
-    # whole model, under the GIL, on the process serving the state socket.
+    # every scene type and every overlay. It describes the code, not the run, so
+    # it cannot change while the process is up. The lock is what makes "once"
+    # true: `api_introspect` is a sync `def`, so two cold-cache requests would
+    # otherwise both walk the whole model in the threadpool, under the GIL, on
+    # the process serving the state socket.
     introspection: dict[str, Any] = {}
     introspection_lock = threading.Lock()
 
@@ -505,12 +491,9 @@ def register_web_routes(
 
         # The watch is held by the *response*, not by the generator: acquired
         # here and released by a background task, which Starlette runs once the
-        # body is done however it ended. Putting the release in the generator's
-        # own `finally` is the obvious thing and it does not work — the
-        # generator runs on a worker thread, a disconnect cancels the async task
-        # while that thread is inside it, and closing it from there raises
-        # rather than unwinding. See `ScreenFeed.release`. The stream slot rides
-        # the same background task for the same reason.
+        # body is done however it ended. A release in the generator's own
+        # `finally` does not work — see `ScreenFeed.release`. The stream slot
+        # rides the same background task for the same reason.
         def _done() -> None:
             screen.release(name)
             streams.release()
@@ -674,8 +657,6 @@ def register_web_routes(
         out["kept_out"] = [r["target"] for r in rows if r["field"] is None]
         return out
 
-    # -- favorites + recents --------------------------------------------------
-
     @app.get("/api/library")
     def api_library() -> dict[str, Any]:
         return library.as_dict()
@@ -687,8 +668,6 @@ def register_web_routes(
         if not ref:
             raise HTTPException(400, 'a favorite needs a "ref"')
         return {"favorites": library.set_favorite(ref, bool(body.get("on", True)))}
-
-    # -- the config browser -------------------------------------------------
 
     @app.get("/api/configs")
     def api_configs() -> dict[str, Any]:
@@ -710,18 +689,17 @@ def register_web_routes(
     # `viewer` token is refused with no code at all: `auth.READ_METHODS`
     # covers only GET/HEAD/OPTIONS, so a PUT never reaches this function.
     #
-    # Each `write` (and the commit `receive` runs on a clean exit — fsync,
-    # then the rename) is blocking disk I/O, so it's pushed through
-    # `run_in_executor` same as `_until_gone` does for frame encoding: this
-    # is the one event loop also serving the control websocket and status
+    # Each `write` (and the commit `receive` runs on a clean exit — fsync, then
+    # the rename) is blocking disk I/O, so it goes through `run_in_executor`:
+    # this is the one event loop also serving the control websocket and status
     # polling for a show that may be running right now.
     #
-    # The context-manager protocol is driven by hand for that offload, and
-    # three of its contracts are load-bearing here: `__exit__(None, None,
-    # None)` *is* the commit, `handle.result` is only meaningful after that
-    # commit has returned, and a failure mid-body still needs `__exit__` called
-    # with the exception triple to clean the part file up. Turning these back
-    # into a `with` block would block the event loop on fsync.
+    # The context-manager protocol is driven by hand for that offload, and three
+    # of its contracts are load-bearing here: `__exit__(None, None, None)` *is*
+    # the commit, `handle.result` is only meaningful after that commit has
+    # returned, and a failure mid-body still needs `__exit__` called with the
+    # exception triple to clean the part file up. Turning these back into a
+    # `with` block would block the event loop on fsync.
     @app.put("/api/media/{name}")
     async def api_media_upload(name: str, request: Request) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
@@ -872,8 +850,6 @@ def register_web_routes(
         except ConfigStoreError as e:
             raise _store_error(e) from e
 
-    # -- the state feed -----------------------------------------------------
-
     def _apply_command(cmd: Mapping[str, Any]) -> bool:
         """Session commands over the socket, falling through to the
         performance engine for everything else — one inbound channel, so a
@@ -907,11 +883,9 @@ def register_web_routes(
 
     # The console's own state feed rides the same `ConsoleFeed` loop `/perf/ws`
     # does — the cadence, the exception ladder, the off-the-loop frame build,
-    # the dispatch guard and the socket cap all live there, once. What is local
-    # to this route is the payload (this console also renders the supervisor's
-    # session state and the log tail) and the dispatcher (`_apply_command`
-    # falls through to the performance bridge for anything that isn't a session
-    # verb).
+    # the dispatch guard and the socket cap all live there, once. Local to this
+    # route are the payload (the supervisor's session state and the log tail)
+    # and the dispatcher.
     sent_seq = 0 if log_buffer is None else max(0, log_buffer.seq - _LOG_BACKLOG)
 
     def _console_frame(scope: Mapping[str, Any]) -> dict[str, Any]:
@@ -927,8 +901,7 @@ def register_web_routes(
 
     # Cheap, and the only regular tick this process has: it is what stops a
     # video stream whose watchers have gone or whose show has ended. A timer of
-    # its own would be a thread paid for at idle to notice that nothing is
-    # happening.
+    # its own would be a thread paid for at idle.
     console_feed = ConsoleFeed(
         "web console",
         build_frame=_console_frame,

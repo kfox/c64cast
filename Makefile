@@ -1,25 +1,3 @@
-# One-stop targets for local dev. Mirrors what CI runs.
-#
-# Usage:
-#   make            # = make help
-#   make sync       # uv sync --all-extras (refresh the project env)
-#   make lint       # ruff check
-#   make fmt        # ruff format
-#   make test       # unittest suite (whole tree, parallel across cores)
-#   make test T=tests.test_midi_scene   # just that module/class/method
-#   make coverage   # tests under coverage -> report + HTML + coverage.xml + JUnit XML
-#   make typecheck  # mypy --strict on hot modules + pyright across the tree
-#   make doctor     # offline env + config diagnostics (catches a desynced .venv)
-#   make bench      # async write-pipeline benchmark
-#   make check      # lint + typecheck + test (pre-PR gate)
-#   make preflight  # full CI mirror: lint + test + platform type-checks + docs/web
-#   make clean      # remove build artifacts
-#
-# Everything runs through `uv run`, so the synced project env is used regardless
-# of whether direnv/mise has activated `.venv` in the current shell. That's the
-# fix for "works in CI, missing cv2 locally": no target depends on a bare
-# `python` that might resolve to the wrong interpreter. Override the interpreter
-# with `make test PY=python` if you really want to.
 PY ?= uv run python
 
 # Arms the test suite's filesystem sandbox: `site` imports
@@ -27,10 +5,8 @@ PY ?= uv run python
 # unittest_parallel's worker processes as well as in the parent.
 TEST_ENV := PYTHONPATH=tests
 
-# Local runs sync the project env first (all extras) so the interpreter always
-# has the full dependency set. CI sets $CI and manages its own pinned env
-# (`uv sync --frozen …`), so the prereq is skipped there — don't override CI's
-# deliberate install.
+# CI manages its own pinned env (`uv sync --frozen …`), so the prereq is
+# skipped there.
 SYNC := $(if $(CI),,sync)
 
 HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
@@ -38,24 +14,20 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
+	mutation-ready \
+	mutation-check \
         guide reference card books guide-figures reference-figures \
         reference-appendices site site-check
 
-# Books (docs/<book>/*.md + book.toml) are rendered by Typst, which is an
-# external binary rather than a Python package. The two faces (Jost*,
-# Inconsolata) are OFL and committed under docs/shared/fonts/, so --font-path
-# is unconditional: a PDF must not change appearance based on what fonts a
-# given machine happens to have installed. --root makes the leading slash in
-# the template's own paths mean the repo root.
+# `--font-path` is unconditional so a PDF does not change appearance with the
+# fonts a machine happens to have installed; `--root .` makes the leading slash
+# in the template's own paths mean the repo root.
 BOOK_FONTS  := docs/shared/fonts
 TYPST_FLAGS  = --root . --font-path $(BOOK_FONTS)
 
-# Each book is a directory plus the artifact basename its book.toml declares.
-# The basename is spelled in both places rather than parsed out of the TOML
-# here: `clean` has to know the filenames without running Python, and a sed
-# that silently matched nothing would render `docs/card/.pdf`. The two
-# spellings are held together by a test instead — test_book_build.py fails if
-# the Makefile does not name every book under docs/.
+# Each basename is spelled here as well as in the book's own book.toml;
+# tests/test_book_build.py fails if the Makefile does not name every book
+# under docs/.
 GUIDE_DIR   := docs/guide
 GUIDE_BOOK  := c64cast-users-guide
 
@@ -68,8 +40,7 @@ CARD_BOOK   := c64cast-performance-card
 BOOK_ARTS   := $(GUIDE_DIR)/$(GUIDE_BOOK) $(REF_DIR)/$(REF_BOOK) $(CARD_DIR)/$(CARD_BOOK)
 
 # Markdown -> Typst -> PDF for one book: $(1) is its directory, $(2) the
-# artifact basename its book.toml declares. Typst is not a Python dependency,
-# so say so plainly rather than failing with "command not found".
+# artifact basename its book.toml declares.
 define render-book
 	@command -v typst >/dev/null 2>&1 || { \
 	  echo "Rendering a book needs the typst binary, which is not a Python package."; \
@@ -81,20 +52,13 @@ define render-book
 	@echo "wrote $(1)/$(2).pdf"
 endef
 
-# pyright and mypy spell the same three platforms differently (pyright:
-# Linux/Darwin/Windows; mypy: linux/darwin/win32), so each caller passes its
-# own list rather than the function guessing a mapping.
 PYRIGHT_PLATFORMS := Linux Darwin Windows
 MYPY_PLATFORMS    := linux darwin win32
 
-# Run a type checker once per platform, in parallel, and fail if any platform
-# does: $(1) = display name for the echo line, $(2) = the `uv run ...`
-# command up to and including its platform flag (no trailing value — that's
-# appended per job), $(3) = that tool's platform list. GNU parallel isn't a
-# hard dependency (brew install parallel) so xargs -P is the fallback; both
-# branches tag each line with its platform so a failure is traceable to which
-# of the three actually broke, and both stop at the first failure instead of
-# running all three to completion on a doomed check.
+# Run a type checker once per platform, in parallel, failing at the first
+# failure: $(1) = display name for the echo line, $(2) = the `uv run ...`
+# command up to and including its platform flag (no trailing value — that is
+# appended per job), $(3) = that tool's platform list.
 define check-platforms
 	@if [ -n "$(HAS_PARALLEL)" ]; then \
 	  echo "$(1): checking $(3) with GNU parallel..."; \
@@ -109,8 +73,10 @@ endef
 help:
 	@echo "targets:"
 	@echo "  sync       uv sync --all-extras (refresh the project env)"
-	@echo "  lint       ruff check"
+	@echo "  lint       ruff check + ruff format --check"
 	@echo "  fmt        ruff format"
+	@echo "  mutation-ready  hash-based .pyc invalidation, so a mutation pass cannot read stale bytecode"
+	@echo "  mutation-check  verify the tree is still armed (a clean/worktree/sync un-arms it silently)"
 	@echo "  test       unittest suite, parallel (T=tests.test_foo runs just that, serial)"
 	@echo "  coverage   coverage report + HTML + coverage.xml + JUnit XML"
 	@echo "  typecheck  mypy --strict (api/audio/playlist) + pyright (whole tree)"
@@ -128,7 +94,7 @@ help:
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
-	@echo "  preflight  lint + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
+	@echo "  preflight  lint + hygiene hooks + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
 	@echo "  clean      remove build artifacts"
 
 sync:
@@ -136,16 +102,25 @@ sync:
 
 lint: $(SYNC)
 	uv run ruff check .
+	uv run ruff format --check .
 
 fmt:
 	uv run ruff format .
 
-# `make test` runs the whole suite in parallel (unittest_parallel forks one
-# process per test module — still stdlib unittest, ~3x faster since the suite
-# is mostly blocked on socket/thread waits that now overlap across cores).
-# `make test T=tests.test_midi_scene` (or a class/method, e.g.
-# T=tests.test_midi_scene.MidiSceneTest.test_x) runs just that, serially — the
-# parallel runner discovers by directory, not by dotted path.
+# Default .pyc validation keys on the source's mtime truncated to whole
+# seconds plus its size, so a mutation applied and reverted within one second
+# runs stale bytecode and reports green. `-f` is required: compileall otherwise
+# skips any file whose timestamp cache is still valid.
+mutation-ready: $(SYNC)
+	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+
+# Arming is not durable: a `make clean`, a fresh worktree, a uv sync that moves
+# the Python minor, or `make test PY=python` all un-arm the tree silently. Run
+# this at the moment a mutation proof's green is about to be believed.
+mutation-check: $(SYNC)
+	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+
 test: $(SYNC)
 	$(if $(T),$(TEST_ENV) $(PY) -m unittest $(T),$(TEST_ENV) $(PY) -m unittest_parallel -s tests)
 
@@ -156,28 +131,19 @@ typecheck: $(SYNC)
 	uv run mypy --strict
 	uv run pyright
 
-# Offline self-check: the env probe (interpreter / hard-dep import / uv.lock
-# drift) plus the config diagnostics. `--skip-probe` keeps it hardware-free.
 doctor: $(SYNC)
 	$(PY) -m c64cast --doctor --skip-probe
 
 bench:
 	$(PY) scripts/bench.py
 
-# Regenerate the committed JSON schema. It lives under the package (and so
-# ships in the wheel) because every example config's `#:schema ../data/…`
-# directive resolves against it, in a checkout and in an install alike.
-# tests/test_schema.py fails if the committed file drifts from this output, so
-# run this after changing any config dataclass field or overlay constructor.
+# tests/test_schema.py fails if the committed schema drifts from this output,
+# so run this after changing any config dataclass field or overlay constructor.
 schema:
 	$(PY) -m c64cast --print-schema > c64cast/data/c64cast.schema.json
 
-# Rebuild the web console. Its output is committed under c64cast/web/dist so an
-# install never needs Node — which means a source change and its rebuilt bundle
-# belong in the same commit, and CI reruns this and fails on a diff. `npm ci`
-# rather than `npm install`: the lockfile is the pinned build, exactly as
-# uv.lock is for Python. Node is not a Python package, so say so plainly rather
-# than failing with "command not found".
+# c64cast/web/dist is committed build output, so a source change and its
+# rebuilt bundle belong in the same commit — CI reruns this and fails on a diff.
 web:
 	@command -v npm >/dev/null 2>&1 || { \
 	  echo "Building the web console needs Node, which is not a Python package."; \
@@ -186,14 +152,11 @@ web:
 	  exit 1; }
 	cd web && npm ci --no-audit --no-fund && npm run build && npm test
 
-# Redraw the guide's placeholder figures. Real captures saved over the same
-# filenames are detected and left alone; see the script's --force-all escape.
+# Real captures saved over the same filenames are left alone; the script's
+# --force-all is the escape.
 guide-figures: $(SYNC)
 	$(PY) scripts/make_guide_figures.py
 
-# Redraw the reference guide's five diagrams. Unlike the guide's figures these
-# are drawings rather than captures, so there is nothing to preserve: the
-# script is the source and the PNGs are its committed output.
 reference-figures: $(SYNC)
 	$(PY) scripts/make_reference_diagrams.py
 
@@ -208,16 +171,6 @@ card: $(SYNC)
 
 books: guide reference card
 
-# The documentation site: the same Markdown as the books, plus the README and
-# the standalone user docs, rendered as HTML into $(SITE_DIR). No typst and no
-# project env — the builder is stdlib-only, which is why pages.yml runs it
-# through `uv run --no-project` exactly as the release renders the books.
-#
-#   make site && python -m http.server -d $(SITE_DIR) 8000
-#
-# `site-check` parses every source and writes nothing; CI runs it on a pull
-# request, which is the only thing that proves a book still renders before
-# release day.
 SITE_DIR := docs/_site
 
 site:
@@ -226,40 +179,19 @@ site:
 site-check:
 	$(PY) scripts/build_site.py --check
 
-# Rewrite the Programmer's Reference Guide's generated appendices (A-I), its
-# index and the performance card's live-target table from the config metadata.
-# Unlike the books themselves this needs the project env, since it imports
-# c64cast — which is exactly why it is a separate script from build_book.py,
-# and why its output is committed: the release renders the PDFs with
-# `uv run --no-project`.
-# tests/test_reference_appendices.py fails if the committed files drift from
-# this output, so run it after changing any config field, overlay, generator,
-# effect, CLI flag, example config or install extra — and after renaming a
-# section, which moves an anchor the index links at.
+# tests/test_reference_appendices.py fails if the committed appendices drift
+# from this output, so run it after changing any config field, overlay,
+# generator, effect, CLI flag, example config or install extra — and after
+# renaming a section, which moves an anchor the index links at.
 reference-appendices: $(SYNC)
 	$(PY) scripts/gen_reference_appendices.py
 
 check: lint typecheck test
 
-# Full pre-PR gate: mirrors every CI job, not just lint+typecheck+test.
-#
-# pyright/mypy are static analyzers — they read source text and never run
-# it — so re-running them with an explicit platform flag reproduces CI's
-# `types` job (which checks the Linux/Darwin/Windows *views*, all three from
-# ubuntu-latest runners) without needing three machines. check-platforms
-# (defined above) runs all three explicitly, in parallel since three
-# sequential pyright/mypy passes add up — that sweep already includes
-# whichever platform is the host, so preflight depends on lint+test rather
-# than on check (which would run typecheck's own host-only pyright/mypy pass
-# a fourth, redundant, time).
-#
-# The book-parse loop and site-check mirror the `docs` job; rebuilding the web
-# console and diffing it against the committed bundle mirrors the `web` job.
-# `check` alone skips all of the above.
-#
-# What preflight still can't reproduce is CI's OS x Python-version test
-# matrix (`lint-and-test`) — that needs the actual runners, not a local flag.
+# Mirrors every CI job except the OS x Python-version test matrix
+# (`lint-and-test`), which needs the actual runners rather than a local flag.
 preflight: lint test
+	SKIP=ruff,ruff-format,pyright,unittest uv run --locked pre-commit run --all-files
 	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
 	$(call check-platforms,mypy --strict,uv run mypy --strict --platform,$(MYPY_PLATFORMS))
 	@for book in docs/*/book.toml; do \

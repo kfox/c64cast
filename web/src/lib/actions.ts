@@ -19,16 +19,8 @@ export class PreflightRefused extends Error {
 /** Start `ref` (or switch to it if a show is already running), and arm the
  *  shell to jump to Live once it actually comes up.
  *
- * The one place this happens, so every launch surface — the Session screen's
- * own Start/Switch buttons, a favorite's quick-launch, a double-click in the
- * config list — behaves the same way and the shell only has to watch one flag.
- * Left set on failure is wrong (there is nothing to jump to), so a caller that
- * shows its own error only needs to catch and report; this always clears it
- * first.
- *
- * Pre-flights `ref` before ever claiming the transition: the same check a
- * refused start answers with, asked ahead of time so every problem in the
- * config shows up at once instead of one refusal per click. */
+ *  Pre-flights `ref` first and throws `PreflightRefused` rather than claiming
+ *  the transition; the arm flag is cleared again on any failure. */
 export async function launch(host: Console, ref: string): Promise<void> {
   host.expectingStart = true;
   try {
@@ -41,13 +33,11 @@ export async function launch(host: Console, ref: string): Promise<void> {
   }
 }
 
-/** Fetch the shared favorites/recents library — Session and Config screens
- *  both show it, so both refresh it the same way. */
+/** Fetch the shared favorites/recents library. */
 export const fetchLibrary = (): Promise<LibraryState> => api.library();
 
-/** Toggle `ref`'s favorite state and fold the result into `library`, so a
- *  caller's own state assignment doesn't have to re-derive the merge.
- *  Returns `library` unchanged if it hasn't loaded yet. */
+/** Toggle `ref`'s favorite state and fold the result into `library`. Returns
+ *  `library` unchanged if it hasn't loaded yet. */
 export async function withToggledFavorite(
   library: LibraryState | null,
   ref: string,

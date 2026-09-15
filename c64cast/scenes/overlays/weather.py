@@ -26,8 +26,7 @@ from .corner_text import CornerTextOverlay
 
 log = logging.getLogger(__name__)
 
-# Compact 5-char weather labels by WMO code (Open-Meteo).
-# Anything missing → "MIST" (the catch-all for "atmospheric weirdness").
+# Compact 5-char labels by Open-Meteo WMO code; anything missing reads "MIST".
 WMO_CODES = {
     0: "CLEAR",
     1: "FAIR ",
@@ -129,8 +128,8 @@ class WeatherOverlay(CornerTextOverlay):
             raise ValueError("weather: wttr.in requires location")
         if units.upper() not in ("F", "C"):
             raise ValueError("weather: units must be 'F' or 'C'")
-        # Render-side refresh fast (cheap change-detection); the actual API
-        # poll honors refresh_minutes via the background thread.
+        # A fast render-side refresh is only change-detection; the API poll
+        # honors refresh_minutes on the background thread.
         super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=1.0)
         self.provider = provider
         self.lat = lat
@@ -140,8 +139,8 @@ class WeatherOverlay(CornerTextOverlay):
         self.poll_interval_s = max(60.0, float(refresh_minutes) * 60.0)
         self._cached = "--"
         self._lock = threading.Lock()
-        # First fetch runs immediately so the user isn't stuck on "--" for
-        # the whole first interval; subsequent fetches honor the cadence.
+        # The first fetch runs immediately, or the display reads "--" for a
+        # whole interval; later ones honor the cadence.
         self._poll = PollThread(self._poll_once, period=self.poll_interval_s, name="weather-poll")
 
     def _fetch_once(self) -> str:

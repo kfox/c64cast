@@ -38,13 +38,11 @@ class MandelbrotSource(GenerativeSource):
     _HALF_WIDTH = 1.75  # starting view half-width; frames the whole set
     _ZOOM_LIMIT = 1.0e13  # stays well inside float64's precision floor
     _HUE_SCALE = 3.0  # hue cycles per full pass through the smooth iteration count
-    # The escape-time loop is the one generator whose per-frame cost scales
-    # with pixel count rather than a couple of cheap elementwise ops, and the
-    # eventual C64 quantization (16-color, 320x200 at best) throws away detail
-    # far finer than this anyway — so compute at half resolution per axis
-    # (1/4 the points) and let cv2.resize upscale the finished BGR frame
-    # (never the HSV field — hue is circular, so linear-interpolating it
-    # would blend the wrong way across the 0/179 wrap).
+    # The escape-time loop's cost scales with pixel count, and the C64
+    # quantization throws away detail far finer than this, so the field is
+    # computed at half resolution per axis and cv2.resize upscales the finished
+    # BGR frame — never the HSV field, whose circular hue would interpolate the
+    # wrong way across the 0/179 wrap.
     _CALC_DIVISOR = 2
 
     def __init__(
@@ -62,9 +60,8 @@ class MandelbrotSource(GenerativeSource):
         ch = max(1, height // self._CALC_DIVISOR)
         self._calc_size = (width, height)  # (w, h) for cv2.resize's dsize
         ys, xs = np.mgrid[0:ch, 0:cw].astype(np.float64)
-        # Offsets from center in units of half the frame WIDTH (for both axes)
-        # so the shorter height naturally narrows the view vertically instead
-        # of stretching the fractal.
+        # Both axes are offsets from center in units of half the frame WIDTH, so
+        # the shorter height narrows the view instead of stretching the fractal.
         self._px = (xs - cw / 2.0) / (cw / 2.0)
         self._py = (ys - ch / 2.0) / (cw / 2.0)
 
@@ -86,8 +83,8 @@ class MandelbrotSource(GenerativeSource):
             mag = np.abs(z)
             newly = active & (mag > 2.0)
             if newly.any():
-                # Smooth (continuous) iteration count — the standard
-                # log-log correction that removes escape-time banding.
+                # The standard log-log correction to a continuous iteration
+                # count, which removes escape-time banding.
                 smooth[newly] = i + 1 - np.log2(np.log2(mag[newly]))
                 escaped[newly] = True
                 active[newly] = False

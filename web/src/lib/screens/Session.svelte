@@ -17,8 +17,7 @@
     host: Console;
     router: Router;
     /** The config this browser has picked, shared with every other tab —
-     *  owned by the shell (`App.svelte`) rather than local state, so a config
-     *  picked here is still selected after a trip to the Editor and back. */
+     *  owned by the shell (`App.svelte`), not by this screen. */
     selected: string;
     onselect: (ref: string) => void;
   }
@@ -28,17 +27,14 @@
   let library = $state<LibraryState | null>(null);
   let problem = $state("");
   // A pre-flight refusal's full report, alongside `problem`'s one-line
-  // summary — set only when the failure is one of those, cleared by every
-  // other action so a stale report doesn't survive past it.
+  // summary — cleared by every other action.
   let report = $state<ValidationReport | null>(null);
   // Set while an action is in flight. The supervisor answers 202 the instant
-  // it claims the transition, so this only covers the request itself — what
-  // happens next is the state feed's job, and the badge is where it shows.
+  // it claims the transition, so this covers only the request itself.
   let sending = $state(false);
 
   // The shell's tab-bar Start button has nowhere of its own to show a
-  // refusal; it stashes one on the host and this screen claims it once, the
-  // instant it's routed to.
+  // refusal; it stashes one on the host, and this screen claims it once.
   $effect(() => {
     if (host.launchProblem) {
       problem = host.launchProblem.message;
@@ -48,8 +44,8 @@
   });
 
   const status = $derived(host.session);
-  // Not `state`: a variable of that name makes `$state` read as a store
-  // reference, and the rune stops resolving in this component.
+  // Not named `state`: the rune stops resolving in a component that shadows
+  // the name.
   const phase = $derived(status?.state ?? "idle");
   const startable = $derived(phase === "idle" || phase === "error");
   const running = $derived(phase === "running");
@@ -134,11 +130,9 @@
 {/snippet}
 
 <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
-  <!-- `min-w-0` on every grid item, here and on the other screens: a grid item
-       is min-content-sized by default, so one long log line or one unbroken
-       path makes the *page* wider than the phone it is being read on and every
-       screen scrolls sideways. The panels that hold wide content scroll it
-       themselves; this is what lets them. -->
+  <!-- `min-w-0` on every grid item, here and on the other screens: a grid
+       item is min-content-sized by default, so one long log line or unbroken
+       path would make the whole *page* wider than the phone reading it. -->
   <section class="panel min-w-0 p-5 lg:col-start-1">
     <header class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-lg font-semibold">Session</h2>
@@ -201,7 +195,7 @@
         <div class="flex flex-wrap gap-2">
           {#if running}
             <!-- Never an implicit stop: replacing a running show is `switch`,
-                 which is the one place stop → settle → start is sequenced. -->
+                 the one place stop → settle → start is sequenced. -->
             <Button
               variant="primary"
               disabled={busy}
@@ -226,8 +220,6 @@
         </div>
       </div>
 
-      <!-- Sharing the console has meant sharing the token that can stop the
-           show; the read-only role existed with no way to hand one out. -->
       <div class="mt-6 border-t border-[var(--edge)] pt-4">
         <h3 class="mb-2 text-sm font-semibold tracking-wide uppercase">Share</h3>
         <ViewerLink />

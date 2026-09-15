@@ -43,11 +43,6 @@ class BumpError(Exception):
     """A problem that must stop the release. Message is operator-readable."""
 
 
-# ---------------------------------------------------------------------------
-# Reading current state
-# ---------------------------------------------------------------------------
-
-
 def pyproject_version(text: str | None = None) -> str:
     """The version currently declared in `pyproject.toml`."""
     if text is None:
@@ -91,11 +86,6 @@ def section_body(changelog: str, version: str) -> str:
         body = LINK_REF_RE.sub("", changelog[start:end])
         return body.strip() + "\n"
     raise BumpError(f"CHANGELOG.md has no '## [{version}]' section")
-
-
-# ---------------------------------------------------------------------------
-# Rewrites
-# ---------------------------------------------------------------------------
 
 
 def apply_pyproject(text: str, version: str) -> str:
@@ -164,11 +154,6 @@ def relock() -> None:
         raise BumpError(f"`uv lock` failed (exit {exc.returncode})") from None
 
 
-# ---------------------------------------------------------------------------
-# Modes
-# ---------------------------------------------------------------------------
-
-
 def check(version: str) -> list[str]:
     """Problems that would make releasing `version` from this tree wrong."""
     problems: list[str] = []
@@ -197,7 +182,6 @@ def bump(version: str, date: str, do_lock: bool) -> None:
     pyproject = PYPROJECT.read_text(encoding="utf-8")
     changelog = CHANGELOG.read_text(encoding="utf-8")
 
-    # Both rewrites computed before either is written.
     new_pyproject = apply_pyproject(pyproject, version)
     new_changelog = apply_changelog(changelog, version, date)
 

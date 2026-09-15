@@ -88,7 +88,6 @@ def _envelope_spectrum(sig: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray
     k = 200
     env = np.convolve(env, np.ones(k) / k, mode="same")
     env = env - env.mean()
-    # Window + FFT
     win = np.hanning(len(env))
     spec = np.abs(np.fft.rfft(env * win))
     freqs = np.fft.rfftfreq(len(env), 1.0 / sr)

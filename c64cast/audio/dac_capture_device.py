@@ -1,14 +1,12 @@
-"""Finding and probing the audio-capture input for ``--calibrate-dac``.
-
-The measurement needs the input the C64's audio actually arrives on — almost
-always an HDMI capture device — and the penalty for guessing wrong is
-expensive: the system default input is usually the on-board microphone, which
-records room noise for ~50 s and measures like a dead chip. So device
-selection (:func:`find_capture_device` + the name hints), format probing
+"""Finding and probing the audio-capture input for ``--calibrate-dac``:
+device selection (:func:`find_capture_device`), format probing
 (:func:`resolve_capture_format`), and the failure text that names the device
-recorded from and lists the alternatives (:func:`capture_fault_message`) live
-together here. sounddevice is imported inside each function, so importing
-this module costs nothing when the ``mic`` extra is absent.
+recorded from and lists the alternatives (:func:`capture_fault_message`).
+
+sounddevice is imported inside each function, so importing this module costs
+nothing when the ``mic`` extra is absent.
+
+See docs/architecture/audio.md#picking-the-capture-device.
 """
 
 from __future__ import annotations
@@ -49,6 +47,7 @@ CAPTURE_NAME_HINTS = (
 
 def looks_like_capture_input(name: str) -> bool:
     """Whether an input device's name identifies it as video-capture hardware.
+
     Used to pick one automatically, and to warn when the fallback lands on
     something that is probably a microphone."""
     low = name.lower()
@@ -58,10 +57,7 @@ def looks_like_capture_input(name: str) -> bool:
 def find_capture_device(preferred: int | None) -> int:
     """Resolve the capture device index: `preferred` if given, else the first
     input-capable device whose name looks like video-capture hardware
-    (:data:`CAPTURE_NAME_HINTS`, in order), else the system default input.
-
-    The hints are tried in order rather than scanning devices once, so a rig
-    with both a Cam Link and some other HDMI input still picks the Cam Link."""
+    (:data:`CAPTURE_NAME_HINTS`, in order), else the system default input."""
     import sounddevice as sd
 
     if preferred is not None:
@@ -93,19 +89,14 @@ def _input_device_list() -> str:
 
 def pick_device_hint(lead: str = "Pick one with") -> str:
     """The "and here are your inputs" footer every capture-device failure ends
-    with. ``lead`` carries the sentence into it, so the call sites differ only
-    in their verb instead of each restating the flag and the listing."""
+    with; ``lead`` carries the calling sentence into it."""
     return f"{lead} --audio-device N:\n{_input_device_list()}"
 
 
 def capture_fault_message(dev: int, reason: str, peak: float, saved: Path | None = None) -> str:
-    """The message a capture that doesn't contain the slot ring fails with.
-
-    Everything upstream of this can only say *what* it saw — "found 1 ring sync
-    marker", "the passes disagree by 100 %" — and that reads like a bug in the
-    measurement when it is almost always the rig. So the failure names the
-    device it recorded from, states how loud that recording was, and lists the
-    inputs to pick from instead."""
+    """The message a capture that doesn't contain the slot ring fails with:
+    the device it recorded from, how loud that recording was, the likely
+    causes in order, and the inputs to pick from instead."""
     import sounddevice as sd
 
     try:
@@ -139,22 +130,13 @@ def resolve_capture_format(dev: int) -> CaptureFormat:
     """Probe `dev` for a workable (channels, samplerate), preferring stereo at
     :data:`CAP_SR` and widening from there.
 
-    Capture hardware is not all Cam Link. A mono-only UVC input rejects
-    ``channels=2`` with PortAudio's generic -9998 "Invalid number of channels",
-    and the cheap MacroSilicon-based HDMI→USB dongles are commonly 96 kHz-only
-    — either of which used to abort a calibration run with a raw
-    ``PortAudioError`` traceback, because the capture was hardcoded to stereo at
-    48 kHz. Neither restriction actually prevents a measurement: the levels are
-    read off one folded-to-mono channel, and every step of
-    :func:`extract_slot_levels` derives its timing from the rate it is handed.
+    Rate is the outer loop — a 48 kHz mono capture beats a 96 kHz stereo one.
+    The device's own ``default_samplerate`` is tried right after `CAP_SR`,
+    ahead of :data:`CAP_SR_FALLBACKS`. Mirrors
+    ``AudioStreamer._open_input_stream``'s channel fallback for the mic path.
 
-    Rate is the outer loop — a 48 kHz mono capture beats a 96 kHz stereo one,
-    since the fallback rates are the compromise and the channel fold is free.
-    The device's own ``default_samplerate`` is tried right after `CAP_SR`, ahead
-    of the static fallbacks, so an unusual device still gets its native rate.
-    ``check_input_settings`` probes without opening a stream, so a rejected
-    combination costs nothing. Mirrors ``AudioStreamer._open_input_stream``'s
-    channel fallback for the mic path.
+    Raises :class:`CaptureUnavailableError` when no combination is accepted.
+    See docs/architecture/audio.md#resolving-the-capture-format.
     """
     import sounddevice as sd
 

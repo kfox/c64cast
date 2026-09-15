@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Launch c64cast with a config, capture A/V ground-truth from the Cam Link,
-then tear down and reset the machine. This is the harness that kept getting
-re-created as ``/tmp/run_and_capture.sh`` — committed here so it stops drifting.
+then tear down and reset the machine.
 
     scripts/diags/run_and_capture.py --config /tmp/wave_tol.toml -t 20
     scripts/diags/run_and_capture.py --config c.toml -t 30 --frames 6
@@ -17,10 +16,10 @@ multi-second window, and it inherits the device's 1080p default, whose 25 fps
 aliases onto a 25 Hz alternation. The two answer different questions, so a
 "does it alternate, and cleanly?" run usually wants both.
 
-Ordering matters (and is the reason a shared harness beats ad-hoc shells):
-the audio capture starts BEFORE c64cast so the ~5s boot + first-PLAY window
-isn't missed; frames are grabbed across the run; on exit c64cast is stopped
-and — unless --no-reset — the machine is reset (the standing end-of-test rule).
+Ordering matters: the audio capture starts BEFORE c64cast so the ~5s boot +
+first-PLAY window isn't missed; frames are grabbed across the run; on exit
+c64cast is stopped and — unless --no-reset — the machine is reset (the
+standing end-of-test rule).
 
 Outputs (audio wav + frames + a label) land under scripts/diags/out/.
 Uses the same interpreter (.venv) to spawn `-m c64cast`.
@@ -262,7 +261,6 @@ def main() -> int:
                 d.save_image(frame, p)  # downscaled to ~960px (cheap to read back)
                 print(f"[frame] {p}")
                 grabbed += 1
-        # idle out the remainder
         remaining = args.seconds + boot_margin - (time.time() - t0)
         if remaining > 0:
             time.sleep(remaining)
@@ -290,7 +288,6 @@ def main() -> int:
             ok = d.machine_reset(args.url)
             print(f"[reset] {args.url}: {'OK' if ok else 'FAILED — RESET THE MACHINE BY HAND'}")
 
-    # Analyze audio if we have any.
     if audio_proc is not None:
         from audio_capture import analyze  # reuse the volumedetect summary
 

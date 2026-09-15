@@ -10,9 +10,8 @@
     multi?: boolean;
     value: unknown;
     disabled?: boolean;
-    /** A color name, or the list of them. Names rather than indices because a
-     *  name is the half of `int | str` the form could not reach before, and it
-     *  is the half that still reads as a color a year later. */
+    /** A color name, or the list of them — names rather than indices, the
+     *  half of `int | str` that still reads as a color a year later. */
     onpick: (value: unknown) => void;
   }
 
@@ -44,8 +43,7 @@
     const on = new Set(picked);
     if (on.has(swatch.index)) on.delete(swatch.index);
     else on.add(swatch.index);
-    // Palette order, not click order: the value is a set of allowed colors,
-    // and a stable order keeps the saved file from churning on a re-pick.
+    // Palette order, not click order, so a re-pick does not churn the file.
     onpick(palette.filter((s) => on.has(s.index)).map((s) => s.name));
   }
 </script>
@@ -78,8 +76,9 @@
 
 <p class="mt-1 text-xs text-[var(--ink-dim)]">
   {#if unknown.length}
-    <!-- Never silently re-selected: the loader takes spellings this picker
-         cannot place, and dropping one would edit the file by being looked at. -->
+    <!-- Shown, never silently re-selected: the loader takes spellings this
+         picker cannot place, and dropping one would edit the file by being
+         looked at. -->
     <span class="text-c64-yellow">
       {unknown.map((v) => JSON.stringify(v)).join(", ")}
       {unknown.length === 1 ? "is not a name this picker knows" : "are not names this picker knows"}

@@ -71,9 +71,8 @@ from .session import (  # noqa: F401 — re-exports; see the module docstring
 
 log = logging.getLogger("c64cast")
 
-# The command's own name, in the parser and in `--version`'s output. Spelled
-# once rather than as argparse's `%(prog)s`, which makes argparse %-format the
-# whole version string — and a `%` in an install path (legal on Windows) would
+# Spelled out rather than argparse's `%(prog)s`, which makes argparse %-format
+# the whole version string — a `%` in an install path (legal on Windows) would
 # then raise on the way to the screen.
 PROG = "c64cast"
 
@@ -113,11 +112,9 @@ def _version_text() -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # Pull defaults from the config dataclasses so help text stays in sync
-    # with the actual fallback values. CLI options use default=None at the
-    # argparse layer so merge_cli() can distinguish "not provided" from
-    # "explicitly set to the default"; the `(default: ...)` shown in --help
-    # is the value the merge cascade lands on when nothing overrides it.
+    # Help text reads its `(default: ...)` off the config dataclasses, while
+    # every option's argparse default stays None so `merge_cli` can tell "not
+    # provided" from "explicitly set to the default".
     u64_def = cfgmod.Ultimate64Cfg()
     video_def = cfgmod.VideoCfg()
     audio_def = cfgmod.AudioCfg()
@@ -530,25 +527,19 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-# CLI flags that don't make sense in ensemble mode (they pick a single
-# system's hardware; the per-system TOML is the right place to set them).
+# Flags that pick a single system's hardware, so ensemble mode rejects them and
+# takes them from the per-system TOMLs instead.
 _PER_SYSTEM_CLI_FLAGS: tuple[tuple[str, str], ...] = (
     ("url", "--url"),
     ("device", "--device"),
 )
 
-# The config-free, hardware-free terminal commands: each answers/acts on one
-# flag and exits, without ever reaching load_master or make_backend. One
-# table rather than a copy-pasted `if args.x: return run_x(...)` per command
-# means a new one can't forget to reach main()'s exception mapping below (a
-# bad -u target given to --save-settings used to escape as a traceback
-# instead of the exit-2 usage error connect.py's docstring promises) and
-# can't be dispatched with logging still unconfigured (main() now configures
-# it once, immediately after parse_args, before this loop runs). Each
-# predicate mirrors the flag's original `if` condition exactly — most are
-# plain `store_true` booleans, but `--install-char-rom` takes a path (falsy
-# on an empty string, unlike `is not None`), which is why this is a
-# predicate per entry rather than one `getattr(args, dest)` truth test.
+# The config-free, hardware-free terminal commands: each acts on one flag and
+# exits without reaching load_master or make_backend. A table rather than a
+# chain of `if args.x: return run_x(...)`, so a new command cannot miss the
+# loop's exit-2 exception mapping. A predicate per entry rather than one
+# `getattr(args, dest)` test because `--install-char-rom` takes a path, which is
+# falsy on an empty string where `is not None` is not.
 _TERMINAL_COMMANDS: tuple[
     tuple[Callable[[argparse.Namespace], bool], Callable[[argparse.Namespace], int]], ...
 ] = (
@@ -628,14 +619,12 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
 
     loaded = cfgmod.load_master(args.config)
     if not args.doctor:
-        # --doctor renders these as CONFIG rows in the report body instead;
-        # logging here too would print each one twice, once as the preamble
-        # noise this reporting exists to get away from.
+        # --doctor renders these as CONFIG rows instead, so logging here too
+        # would print each one twice.
         _log_unknown_keys(loaded.unknown_keys)
 
-    # CLI flags apply to every per-system config. In ensemble mode reject the
-    # flags that pick one system's hardware — `[ultimate64].url` (the -u target)
-    # and `[video].device` are per-system identity and must come from the TOMLs.
+    # CLI flags apply to every per-system config, so ensemble mode rejects the
+    # ones that would give every system the same hardware identity.
     if loaded.is_ensemble:
         offending = [
             flag for dest, flag in _PER_SYSTEM_CLI_FLAGS if getattr(args, dest, None) is not None
@@ -648,9 +637,8 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
             )
 
     cfgs = [cfgmod.merge_cli(c, args) for c in loaded.cfgs]
-    # Scheme-aware connection target overrides the single system's connection
-    # fields (env honored as a fallback). Ensemble systems keep their TOML
-    # identity — the per-system-flag guard above already rejected a CLI target.
+    # Ensemble systems keep their TOML identity; the guard above already
+    # rejected a CLI target for them.
     if not loaded.is_ensemble:
         target = args.url or os.environ.get("C64CAST_URL")
         if target:
@@ -686,24 +674,11 @@ def _run_session(
     except StackBuildError as e:
         return e.exit_code
 
-    # SIGINT + SIGTERM -> graceful shutdown down the same path. Ctrl+C used to
-    # ride the default handler's KeyboardInterrupt, which lands wherever the
-    # main thread happens to be — including inside the teardown `finally`, where
-    # a second impatient Ctrl+C would abandon the run's final reset and leave the
-    # machine mid-session behind a traceback. A handler can't land mid-teardown,
-    # and setting stop_event means an in-flight DMA finishes rather than being
-    # cut (killing mid-DMA is what wedges the hardware into needing a power
-    # cycle). The second signal restores the default disposition for whichever
-    # one arrived — SIGINT or SIGTERM — rather than exiting on the spot, so a
-    # third is what actually kills. A repeated SIGTERM (what a service manager
-    # sends) needs this exactly as much as a repeated Ctrl+C does.
-    # SIGHUP -> reload TOML config (only the [interstitial] + [playlist] +
-    # [[scenes]] sections take effect; [audio], [video], [ultimate64] are
-    # set at startup and reloading them would require restarting threads).
-    #
-    # Installed here rather than in session.py because signal.signal raises
-    # ValueError off the main thread: a session built from a worker (a
-    # long-lived host) must not inherit this.
+    # SIGINT/SIGTERM -> graceful shutdown, SIGHUP -> reload the sections
+    # `config.RELOADABLE_SECTIONS` names plus the scene list. Installed here and
+    # not in session.py because `signal.signal` raises off the main thread, so a
+    # session built from a worker must not inherit handler installation. The
+    # three-strike shape is in docs/architecture/config.md#clipy.
     _on_stop_signal = session.make_stop_signal_handler(sess.stop_event.set, verb="stopping")
 
     def _on_sighup(_signum, _frame):
@@ -712,10 +687,9 @@ def _run_session(
 
     signal.signal(signal.SIGTERM, _on_stop_signal)
     signal.signal(signal.SIGINT, _on_stop_signal)
-    # Windows has no SIGHUP, so config reload is POSIX-only (POST /reload on the
-    # control plane is the portable equivalent). Keep the getattr: naming the
-    # attribute directly fails pyright when it runs *on* Windows, where the name
-    # is absent from the signal stubs and a hasattr() guard doesn't narrow it.
+    # Windows has no SIGHUP (POST /reload is the portable equivalent). The
+    # getattr stays: naming the attribute fails pyright when it runs *on*
+    # Windows, where a `hasattr` guard does not narrow it either.
     sighup = getattr(signal, "SIGHUP", None)
     if sighup is not None:
         signal.signal(sighup, _on_sighup)
@@ -733,18 +707,15 @@ def _run_session(
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    # Configured immediately, before any dispatch: every command below this
-    # point logs (some via a wizard that runs for minutes), and a stray-TOML-
-    # key warning from _resolve_configs fires before load_master returns —
-    # all of it needs a handler installed (and --log-file wired up) from the
-    # very first line, not just once a config happens to be loaded.
+    # Before any dispatch: every command below logs, some for minutes, and a
+    # stray-TOML-key warning fires before `load_master` even returns.
     configure_logging(args.verbose or 0, args.log_file)
 
     if args.list_devices:
         return list_devices()
 
-    # Introspection commands describe the config surface itself — no config
-    # file, no hardware. Dispatch before load_master so they work anywhere.
+    # No config file and no hardware, so they dispatch before `load_master` and
+    # work from anywhere.
     intro_rc = run_introspection(args)
     if intro_rc is not None:
         return intro_rc
@@ -754,10 +725,8 @@ def main(argv=None) -> int:
             if wants_this(args):
                 return run_this(args)
     except (ValueError, RuntimeError) as e:
-        # Mirrors _resolve_configs' mapping below: e.g. --save-settings'
-        # parse_connection_uri can raise ConnectionURIError (a ValueError) on
-        # a bad -u target, and its docstring promises that lands here as the
-        # usual usage-error exit rather than as a traceback.
+        # The same mapping `_resolve_configs` gets below, so a bad -u target
+        # given to --save-settings exits 2 rather than raising a traceback.
         log.error("%s", e)
         return 2
 
@@ -767,24 +736,16 @@ def main(argv=None) -> int:
         log.error("%s", e)
         return 5
     except (_CliUsageError, ValueError, RuntimeError) as e:
-        # -v/-vv already set the root level to DEBUG above, so this reaches
-        # the terminal/--log-file when asked for — configure_logging() itself
-        # can't do it since ValueError/RuntimeError also cover genuine
-        # internal defects raised from deep in load_master/merge_cli/
-        # quickcast.build_config, not just user typos, and those deserve a
-        # traceback to bisect by.
+        # ValueError/RuntimeError also cover genuine internal defects raised
+        # from deep in load_master/merge_cli, so -v recovers a traceback.
         log.debug("config resolution failed", exc_info=True)
         log.error("%s", e)
         return 2
-    # Logging is process-wide; use the first stack's debug settings (they
-    # already share defaults via the master cascade unless explicitly
-    # overridden).
+    # Logging is process-wide, so the first stack's [debug] settings govern.
     configure_logging(cfgs[0].debug.verbose, cfgs[0].debug.log_file)
 
-    # Quick-playback feedback: warn only when we're really on the built-in
-    # default (no -u/env AND machine settings didn't supply a connection);
-    # otherwise note the connection came from machine settings. Then log which
-    # backend we resolved.
+    # Warn only on the genuine built-in default: no -u, no env, and no
+    # connection from machine settings either.
     if args.inputs:
         if not (args.url or os.environ.get("C64CAST_URL")):
             if _connection_is_builtin_default(cfgs[0]):
@@ -806,8 +767,8 @@ def main(argv=None) -> int:
         )
 
     if args.dump_char_rom:
-        # Needs hardware, so it dispatches here (with configs resolved) rather
-        # than up with the config-free commands. Single-system operation.
+        # Needs hardware, so it dispatches here rather than up with the
+        # config-free commands.
         if len(cfgs) > 1:
             log.warning(
                 "--dump-char-rom operates on one system; dumping from the first (%s)",
@@ -816,8 +777,6 @@ def main(argv=None) -> int:
         return run_dump_char_rom(cfgs[0])
 
     if args.calibrate_dac:
-        # Measure + persist the per-system DAC table, then exit.
-        # Single-system operation.
         if len(cfgs) > 1:
             log.warning(
                 "--calibrate-dac operates on one system; calibrating the first (%s)",
@@ -828,10 +787,9 @@ def main(argv=None) -> int:
     if args.doctor:
         return run_doctor(loaded, cfgs)
 
-    # The web console replaces the process model rather than adding a surface
-    # to it: the server starts first and owns every session that follows, so
-    # `--serve` and `[web].enabled` are the same switch. [web] is process-wide
-    # (like [control]), hence the master in ensemble mode.
+    # The web console replaces the process model rather than adding a surface to
+    # it — the server starts first and owns every session — so `--serve` and
+    # `[web].enabled` are one switch. [web] is process-wide, hence the master.
     web_cfg = loaded.master_web if loaded.is_ensemble else cfgs[0].web
     if args.serve:
         web_cfg.enabled = True
@@ -861,15 +819,13 @@ def main(argv=None) -> int:
     return _run_session(args, loaded, cfgs)
 
 
-# How long ensure_exit gives lingering threads to finish on their own before
-# forcing the issue. Generous enough that a thread mid-unwind still gets a
-# clean exit (atexit handlers, flushed buffers); short enough that a truly
-# stuck one doesn't keep the operator waiting twice.
+# How long `ensure_exit` gives lingering threads to finish before forcing the
+# issue: long enough for a thread mid-unwind to exit cleanly, short enough not
+# to keep the operator waiting twice.
 FORCE_EXIT_GRACE_S = 5.0
 
-# How often ensure_exit re-checks _lingering_threads() during the grace
-# period. Mirrors session._JOIN_POLL_S: short enough to notice a thread
-# finishing promptly, long enough not to spin.
+# How often `ensure_exit` re-checks `_lingering_threads()`. Mirrors
+# `session._JOIN_POLL_S`.
 _EXIT_POLL_S = 0.2
 
 

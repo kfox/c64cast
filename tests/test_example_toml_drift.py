@@ -56,15 +56,13 @@ _SECTION_DC = {
 #   songlengths_file — points at an HVSC DB the user supplies; path is local.
 #   log_file        — headless-run convenience; not part of the showcase.
 #   frame_numbers   — a video-flicker diagnostic aid; not part of the showcase.
-#   hue_corrections — a list-of-tables; the built-in purple-rescue default is
-#                     the showcase. Shown commented in the [color] block (an
-#                     uncommented band would double-apply the default boost).
+#   hue_corrections — the built-in purple-rescue default is the showcase; shown
+#                     commented in [color] (uncommented would double-apply it).
 #   pre_emphasis    — default is None (source-aware auto: mic 0.7 / line 0.6),
-#                     not representable as a TOML value. Shown commented in
-#                     [dsp]; an uncommented number would force all sources.
-#   dac_calibration_profile — default is None (auto-derive from device
-#                     identity); a name is only needed for a roaming
-#                     TeensyROM+. Shown commented in [audio].
+#                     not representable as a TOML value; shown commented in [dsp].
+#   dac_calibration_profile — default is None (auto-derived from device identity);
+#                     a name is only needed for a roaming TeensyROM+. Shown
+#                     commented in [audio].
 _COVERAGE_EXEMPT = {
     ("ultimate64", "dma_password"),
     ("playlist", "songlengths_file"),
@@ -73,18 +71,16 @@ _COVERAGE_EXEMPT = {
     ("color", "hue_corrections"),
     ("dsp", "pre_emphasis"),
     ("audio", "dac_calibration_profile"),
-    # An unset charset_path means "use the character ROM c64cast dumped off
-    # your own C64", which is what we want every user on — so the reference
-    # documents it as a commented-out override rather than a live key that
-    # would point everyone at a file only the author has.
+    # An unset charset_path means "use the character ROM c64cast dumped off your
+    # own C64", so the reference documents it as a commented-out override rather
+    # than a live key pointing everyone at a file only the author has.
     ("preview", "charset_path"),
-    # cc_map_is_default is a non-persisted internal tracking flag (compare=False,
-    # metadata.internal) — it's set from whether a cc_map key was authored, never
-    # written to TOML. See MidiControlCfg.
+    # A non-persisted internal tracking flag (compare=False, metadata.internal):
+    # set from whether a cc_map key was authored, never written to TOML.
     ("midi_control", "cc_map_is_default"),
-    # setup_wizard is appliance-only (a pre-provisioned OS image sets it, never
-    # a config someone hand-writes) — documenting it as a live example key would
-    # invite exactly the "leave this on" mistake SECURITY.md warns against.
+    # Appliance-only (a pre-provisioned OS image sets it, never a hand-written
+    # config); a live example key would invite the "leave this on" mistake.
+    # See SECURITY.md.
     ("web", "setup_wizard"),
 }
 
@@ -130,8 +126,7 @@ class ForwardStrictnessTest(unittest.TestCase):
 
     def test_clip_keys_are_real(self):
         # [[performance.clips]] tables carry SceneCfg scene-spec fields plus the
-        # launch/pad keys; _validate_clips is the authority (unknown keys, bad
-        # slot/launch/quantize/pad). Every shipped config's grid must pass it.
+        # launch/pad keys; _validate_clips is the authority, and every grid must pass.
         for path in _all_configs():
             clips = _load(path).get("performance", {}).get("clips", [])
             if not clips:
@@ -155,9 +150,8 @@ class ForwardStrictnessTest(unittest.TestCase):
                     )
 
     def test_scenes_color_keys_are_real(self):
-        # No `_SECTION_DC` walk covers this — [scenes.color]'s keys are nested
-        # a level deeper than a plain [[scenes]] key, so nothing else here
-        # checks them against ColorCfg's actual fields.
+        # No `_SECTION_DC` walk covers this — [scenes.color]'s keys nest a level
+        # deeper than a plain [[scenes]] key, so nothing else checks them here.
         valid = {f.name for f in dataclasses.fields(cfgmod.ColorCfg)}
         for path in _all_configs():
             for s in _load(path).get("scenes", []):

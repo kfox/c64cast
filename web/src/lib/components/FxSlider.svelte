@@ -35,8 +35,8 @@
   }
 
   // A pointer drag on a range input does not always leave it focused (Safari
-  // on iOS does not), so the hold is released when the gesture ends unless the
-  // keyboard is what is driving it.
+  // on iOS does not), so the hold is released at the end of the gesture unless
+  // the keyboard is driving it.
   function settle(event: Event): void {
     held = (event.currentTarget as HTMLInputElement).matches(":focus");
   }
@@ -44,8 +44,8 @@
 
 <div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)_auto] items-center gap-3">
   <!-- `aria-label` rather than a `<label for>`: a param name is unique within
-       its layer but not across the rack, and two layers with an `amount` would
-       otherwise share an id. -->
+       its layer but not across the rack, so two layers with an `amount` would
+       share an id. -->
   <span class="truncate font-mono text-xs text-[var(--ink-dim)]">{param.name}</span>
   <input
     aria-label={param.name}

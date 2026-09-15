@@ -26,10 +26,8 @@ class BlankDisplayMode(CharDisplayMode):
     name = "blank"
     is_petscii_compatible = True
 
-    # Live-tune surface (see DisplayMode.LIVE_CHOICES): a performer's border/
-    # background picks are the "visual color/palette picker" on the Live tab
-    # (Live DJ/VJ Phase 7) — `vocabulary="c64color"` (introspect.live_targets)
-    # is what tells the console to render swatches instead of a <select>.
+    # introspect.live_targets tags these `vocabulary="c64color"`, which is what
+    # makes the console render swatches instead of a <select>.
     LIVE_CHOICES = {
         "border": tuple(C64_COLORS.keys()),
         "background": tuple(C64_COLORS.keys()),
@@ -38,18 +36,12 @@ class BlankDisplayMode(CharDisplayMode):
     def __init__(self, border: int = 0, background: int = 0, *, use_reu_staged: bool = False):
         self.border = int(border) & 0x0F
         self.background = int(background) & 0x0F
-        # Opt-in REU-staged screen RAM push. Blank scenes are typically
-        # static (overlays paint over a near-constant background), so the
-        # delta cache makes the default path almost zero-traffic — REU
-        # staging is mostly useful here for testing the pipeline or when
-        # a busy overlay (big_text, scrolling spectrum) forces frequent
-        # full-screen rewrites.
         self.use_reu_staged = use_reu_staged
 
     def setup(self, api):
         super().setup(api)
-        # Clear-then-reveal (see PETSCIIDisplayMode.setup / engage_bitmap_mode):
-        # blank the screen before the register pokes, flip $D011 last.
+        # Clear-then-reveal: blank the screen before the register pokes and
+        # flip $D011 last, so a scene switch never shows stale glyphs.
         clear_char_screen(api)
         api.write_memory("d018", "14")
         api.write_memory("d016", "08")
@@ -73,11 +65,9 @@ class BlankDisplayMode(CharDisplayMode):
         return f"background {color_display_name(self.background)}"
 
     def compose(self, frame=None) -> ComposeBuffers:
-        # frame ignored — blank mode has no video input. Pass through so
-        # the scene's `_render_with_overlays(None, t)` path still works.
         screen = np.full(1000, 0x20, dtype=np.uint8)  # SC_SPACE
-        # Color RAM is the FG color of every cell. Default to background
-        # so SC_SPACE renders invisibly until an overlay paints over it.
+        # Color RAM is every cell's FG; at `background` the spaces are invisible
+        # until an overlay paints over them.
         color = np.full(1000, self.background, dtype=np.uint8)
         return {"screen": screen, "color": color, "text": CharTextSurface(screen, color)}
 

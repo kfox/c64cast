@@ -72,7 +72,6 @@ class SampleTapTest(unittest.TestCase):
         # Should hold the *last* SAMPLE_TAP_SIZE samples.
         out = s.get_recent_samples(SAMPLE_TAP_SIZE)
         self.assertEqual(len(out), SAMPLE_TAP_SIZE)
-        # First few samples of `out` should match the corresponding tail of `big`.
         np.testing.assert_allclose(out, big[-SAMPLE_TAP_SIZE:], rtol=1e-5)
 
     def test_empty_push_noop(self):
@@ -101,9 +100,8 @@ class EncodeAndEnqueueTest(unittest.TestCase):
         self.assertIn(blob[1], (0, 1))
 
     def test_dither_suppressed_for_exact_zero_input(self):
-        # Suppression of dither at floats == 0 is a load-bearing property
-        # of _encode_and_enqueue — mic / AVFileSource noise gates zero the
-        # noise floor; dither must not re-introduce noise there.
+        # Suppression of dither at floats == 0 is load-bearing: mic / AVFileSource
+        # noise gates zero the noise floor, and dither must not re-introduce it.
         s = new_streamer()
         s._encode_and_enqueue(np.zeros(1024, dtype=np.float32))
         blob = s.q.get()
@@ -165,9 +163,8 @@ class DacCurveEncodeTest(unittest.TestCase):
         self.assertEqual(blob[1], MAHONEY_ULTISID[0])
 
     def test_bytes_exceed_4bit_range(self):
-        # The whole point: curve bytes use the full 0..255 $D418 range, not
-        # the 0..15 volume nibble. A mid-amplitude sweep must produce a byte
-        # with bits set above the low nibble.
+        # Curve bytes use the full 0..255 $D418 range, not the 0..15 volume nibble,
+        # so a mid-amplitude sweep must set bits above the low nibble.
         s = self._curved_streamer()
         s.dither_enabled = False
         s._encode_and_enqueue(np.linspace(-1, 1, 256, dtype=np.float32))
@@ -180,13 +177,10 @@ class WorkerBatchingTest(unittest.TestCase):
         s = new_streamer()
         s.running = True
         s.chunk_size = 64
-        # Pre-load the queue with one full chunk's worth as a single blob.
         s.q.put(bytes([7] * 64))
         s._queued_samples = 64
-        # Run the worker briefly.
         t = threading.Thread(target=s._worker, args=(s._worker_generation,), daemon=True)
         t.start()
-        # Wait for the chunk to be flushed.
         import time
 
         for _ in range(50):
@@ -195,7 +189,6 @@ class WorkerBatchingTest(unittest.TestCase):
             time.sleep(0.01)
         s.running = False
         t.join(timeout=1.0)
-        # First write should contain at least one POST with a chunk.
         self.assertGreater(
             len(cast(Any, s.api).writes), 0, "worker should have posted at least one chunk"
         )
@@ -223,10 +216,9 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = False
         t.join(timeout=1.0)
         writes = cast(Any, s.api).writes
-        # Reassembled body across the first 4 writes should equal the
-        # original 50 sample bytes (the 4th write fills to chunk_size with
-        # NEUTRAL pad once underrun kicks in after prebuffer; we only
-        # check the first 50 bytes).
+        # Reassembled body across the first 4 writes equals the original 50 sample
+        # bytes (the 4th write pads to chunk_size with NEUTRAL once underrun kicks
+        # in after prebuffer, so only the first 50 are checked).
         body = b"".join(data for _, data in writes)
         self.assertGreaterEqual(len(body), 50)
         self.assertEqual(body[:50], bytes(range(50)))
@@ -246,8 +238,7 @@ class WorkerBatchingTest(unittest.TestCase):
         s.running = True
         s.chunk_size = 64
         s.sample_rate = 8000  # → chunk_period = 8 ms
-        # Stub the NMI timer start — FakeAPI is happy with the regs writes
-        # but we don't care about them for this test.
+        # FakeAPI accepts the regs writes; the NMI timer is not this test's subject.
         s._start_nmi_timer = lambda: None  # type: ignore[method-assign]
         # 100 full chunks of real audio queued ahead — far more than the
         # worker can ship in the test window if it actually paces itself.
@@ -264,13 +255,11 @@ class WorkerBatchingTest(unittest.TestCase):
         elapsed = time.monotonic() - t0
 
         writes = cast(Any, s.api).writes
-        # Budget derived from the window that actually elapsed, not the 80 ms we
-        # asked for: `time.sleep` only guarantees a floor, a loaded runner
-        # stretches it, and a correctly-paced worker legitimately ships more
-        # chunks in a longer window — so a fixed cap here fails on pacing being
-        # right. Expected is 3 prebuffer + one write per chunk period; the 2x
-        # factor is jitter allowance and still catches the regression, which
-        # drained at DMA speed — 4-5 writes per chunk period, not one.
+        # Budget derived from the window that actually elapsed, not the 80 ms asked
+        # for: `time.sleep` guarantees only a floor, and a correctly-paced worker
+        # legitimately ships more chunks in a longer window. Expected is 3 prebuffer
+        # + one write per chunk period; the 2x factor is jitter allowance and still
+        # catches the regression, which drained at DMA speed (4-5 per period).
         chunk_period = s.chunk_size / s.sample_rate  # 8 ms
         cap = 3 + 2 * max(1, round(elapsed / chunk_period))
         self.assertLess(
@@ -279,12 +268,10 @@ class WorkerBatchingTest(unittest.TestCase):
             f"worker wrote {len(writes)} chunks in {elapsed * 1e3:.0f} ms "
             f"(cap {cap}) — pacing regression?",
         )
-        # Sanity: prebuffer must have fired (≥ 3 writes) so we're actually
-        # exercising the paced post-prebuffer path. _total_slots counts the drip
-        # scheduler's slots, so it is 0 unless _drip_chunk itself ran — asserted
-        # because a worker that dies right after prebuffer satisfies the write
-        # cap above trivially, which is how this test spent several releases
-        # passing against a thread that had already crashed.
+        # The prebuffer must have fired (>= 3 writes) so the paced post-prebuffer
+        # path is actually exercised. _total_slots counts the drip scheduler's
+        # slots, so it is 0 unless _drip_chunk ran — asserted because a worker that
+        # dies right after prebuffer satisfies the write cap above trivially.
         self.assertGreaterEqual(len(writes), 3)
         self.assertGreater(s._total_slots, 0)
 
@@ -414,8 +401,8 @@ class EffectiveRateTest(unittest.TestCase):
         self.assertTrue(s.q.empty())
 
     def test_stop_still_drains_and_zeroes(self):
-        # stop() now routes its drain through _drain_queue_samples; the queue
-        # must still empty and the counters reset (refactor regression guard).
+        # stop() routes its drain through _drain_queue_samples; the queue must
+        # still empty and the counters reset.
         s = new_streamer()
         s.running = False
         s._reu_pump_armed = False
@@ -442,7 +429,6 @@ class StompSpanTests(unittest.TestCase):
         start, length = spans[0]
         self.assertEqual(start, r + STOMP_GUARD_BYTES)
         self.assertEqual(length, (w - r) - STOMP_GUARD_BYTES)
-        # Entirely inside the ring.
         self.assertGreaterEqual(start, RING_BUFFER_ADDR)
         self.assertLessEqual(start + length, RING_BUFFER_END)
 

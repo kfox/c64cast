@@ -1,40 +1,26 @@
 """Waveform scene — plays a SID file on the U64 and visualizes the three
 SID voices' waveforms in real-time across the full screen.
 
-The U64's real SID chip plays the tune (via ``api.run_sid_player``, which
-DMAs the SID payload + a small player MC into C64 RAM and runs a tiny
-BASIC SYS stub — see api.py for the details). The U64's FPGA SID is
-faithful to real hardware: SID I/O is write-only and reads of $D400-
-$D418 return open-bus zeros, so we can't ask the U64 what the SID is
-doing right now. Instead, ``SidHostEmu`` runs the same SID file in
-parallel on a host-side py65 6502 emulator and traps writes to $D400-
-$D418 into a 25-byte shadow. The poll thread reads that shadow at
-system rate (60 NTSC / 50 PAL) to feed ``SIDEmulator``, which mirrors
-per-voice state and emits the per-frame oscilloscope traces. Audio
-remains U64-native; the host emulator's would-be audio is discarded.
+The real SID chip plays the tune (``api.run_sid_player``). SID I/O is
+write-only and reads of $D400-$D418 return open-bus zeros, so live register
+state comes instead from ``SidHostEmu``, which runs the same file on a
+host-side py65 6502 and traps $D4xx writes into a 25-byte shadow; the poll
+thread reads that shadow at the tune's *effective PLAY rate* and feeds
+``SIDEmulator``, which emits the per-frame oscilloscope traces.
 
-Display is 320×200 hires bitmap. Three strips of 56 rows each; one
-pixel per column per voice. Bottom 24 rows carry two text lines — the
-title row (song title + composer) and the metadata row ("SONG xx/yy" +
-copyright, then the SID's clock + chip, e.g. "PAL 8580"; a clock that
-differs from the current playback system shows as "PAL→NTSC") — rendered
-directly into the bitmap from the C64 character ROM (see TITLE_ROW /
-META_ROW).
+Display is 320x200 hires bitmap: three strips of 56 rows, one pixel per column
+per voice, with the bottom 24 rows carrying a title row (song title + composer)
+and a metadata row ("SONG xx/yy" + copyright, then the SID's clock + chip; a
+clock differing from the playback system shows as "PAL→NTSC"). Coloring is
+``per_voice`` (a fixed color each) or ``per_waveform`` (by waveform select).
 
-Coloring:
-  * ``per_voice``    — each voice gets a fixed color from `voice_colors`.
-  * ``per_waveform`` — each voice colors by its current waveform select
-                      (triangle/sawtooth/pulse/noise/off). Colors come
-                      from `waveform_colors`.
+The scene runs until ``duration_s`` elapses — the SID-play endpoint surfaces no
+"finished" signal — or until ``_check_end_of_tune`` sees ``END_SILENCE_S`` of
+all-voice silence after the tune has sounded, whichever comes first. SHIFT
+cycles to the next subtune on multi-song SIDs (see ``cycle_style``), skipping
+subtunes the SongLengths DB flags as shorter than ``MIN_CYCLE_SUBTUNE_S``.
 
-The scene runs until ``duration_s`` elapses (the U64 SID-play endpoint
-doesn't surface a 'finished' signal; pick a duration that matches the
-tune length, or use SongLengths data if you have it).
-
-SHIFT cycles to the next subtune on multi-song SIDs (see ``cycle_style``).
-Cycle skips subtunes the SongLengths DB flags as shorter than
-``MIN_CYCLE_SUBTUNE_S`` (typically game SFX); startup honors the
-configured ``song`` regardless of length.
+See docs/architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene.
 """
 
 from __future__ import annotations
@@ -44,12 +30,14 @@ import os
 import random
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
@@ -61,20 +49,28 @@ from c64cast.video.palette import C64_COLORS
 from .emusid_mixer import apply_emusid_model, apply_emusid_routing
 from .sid_autoconfig import plan_model_config_for_header, required_models_for
 
-# SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
-# _play_bank_for_footprints moved to sid_host_emu.py (so SidFileAudioSource can
-# reuse them without importing the oscilloscope renderer). Imported here for
-# WaveformScene's own use AND re-exported for back-compat: config and tests
-# historically do `from .waveform import parse_sid_header / _play_bank_for_footprints`.
+# Several of these are re-exported for back-compat: tests/test_waveform.py
+# imports parse_sid_header / _play_bank_for_footprints from this module.
 from .sid_host_emu import (
+    ANALYSIS_BUDGET_S,
+    PREFLIGHT_TICKS,
+    FootprintSample,
+    HostEmuBudget,
     SidHostEmu,
     _overlaps,
     _play_bank_for_footprints,
     _sid_payload_extent,
+    analyze_placement,
+    describe_pass_cost,
+    detect_play_rate_hz,
     detect_sid_addresses,
+    init_truncation_notice,
     parse_sid_header,
+    play_preflight_failure,
     ram_play_access_footprint,
     ram_write_footprint,
+    run_catchup_passes,
+    sustainable_poll_period_s,
 )
 from .sid_hw_config import (
     SidHwSession,
@@ -88,11 +84,11 @@ from .sid_resolved import host_chip_fit, log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_waveform
 
-# The 3-voice oscilloscope renderer (layout consts, glyph + text-layout
-# helpers, VIC hires bring-up, and the per-voice render paths) lives in
-# voice_scope.py so MidiScene can share it. Several names are re-exported
-# (imported-unused here) because scene_factory._validate_waveform + tests/test_waveform
-# import them from this module historically.
+# The 3-voice oscilloscope renderer lives in voice_scope.py so MidiScene can
+# share it. The imported-unused names are re-exported because tests still reach
+# them through this module: tests/test_waveform.py imports BITMAP_STRIPS /
+# BITMAP_W / _layout_lcr / _PERSISTENCE_RANDOM_CHOICES, and
+# tests/test_introspect.py reads TIME_BASE_NAMES / PERSISTENCE_NAMES off it.
 from .voice_scope import (
     _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
     BITMAP_STRIPS,  # noqa: F401  (re-exported)
@@ -112,6 +108,7 @@ from .voice_scope import (
     _layout_lcr,  # noqa: F401  (re-exported; tests import from this module)
     _layout_lr,
     _mirror_glyph_h,
+    restore_char_mode_display,
 )
 
 if TYPE_CHECKING:
@@ -120,59 +117,45 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Placeholder char embedded in the metadata line at the system-mismatch arrow
-# position. Never appears in real SID text (title/composer/copyright are
-# printable), so _paint_metadata_row can swap it for the mirrored right-arrow
-# glyph without colliding with genuine content.
+# Placeholder at the system-mismatch arrow position. Never appears in real SID
+# text (title/composer/copyright are printable), so _paint_metadata_row can swap
+# it for the mirrored right-arrow glyph without colliding with real content.
 _SYSTEM_MISMATCH_ARROW = "\x01"
 
 # Bank 1 display addresses. The audio ring at $4000-$5FFF is dormant during a
-# waveform scene (the SID plays on the real chip; setup() stops the ring), so
-# bank 1 is a usable display target — except its low half is typically covered
-# by the SID payload. Put the bitmap at $6000 (bank+$2000) and the screen
-# matrix at $5400 (bank+$1400), both above a payload that ends below $6000.
+# waveform scene (setup() stops it), so bank 1 is usable — but its low half is
+# typically covered by the SID payload, so the bitmap goes at $6000 (bank+$2000)
+# and the screen matrix at $5400 (bank+$1400), above a payload ending below
+# $6000.
 _BANK1_SCREEN = 0x5400
 _BANK1_BITMAP = 0x6000
 D018_BANK1 = 0x58  # matrix nibble 5 ($1400) + bitmap bit 3 ($2000)
 
-# Low-RAM window cleared before a hard-relaunch cycle (see cycle_style). A
-# C64 reset's RAMTAS zeroes $0002-$03FF; some tunes (Times of Lore 2-11)
-# leave scratch here that the next subtune's INIT mis-reads, so we zero it
-# to mimic a fresh machine without the visible boot reset. $00/$01 (the CPU
-# port) are left alone. HW-verified necessary on Times of Lore.
+# Cleared before a hard-relaunch cycle (see cycle_style) to mimic a C64 reset's
+# RAMTAS, which zeroes $0002-$03FF: some tunes leave scratch here that the next
+# subtune's INIT mis-reads. $00/$01 (the CPU port) are left alone. HW-verified
+# necessary on Times of Lore.
 _LOW_RAM_CLEAR_LO = 0x0002
 _LOW_RAM_CLEAR_HI = 0x0400  # exclusive
 
-# Candidate VIC banks for the waveform display, in preference order:
-# (screen_base, bitmap_base, dd00_value, d018_value). Bank 0 is the default;
-# bank 2 is the first fallback when the payload/footprint occupies bank 0's
-# display; bank 1 is the last resort (Galway's Times of Lore subtunes 2-11
-# put live song data in bank 2's $B400, leaving only bank 1 free). Bank 3
-# ($C000-$FFFF) overlaps I/O + the player/audio handlers, so it's omitted.
+# Candidate VIC banks in preference order: (screen_base, bitmap_base,
+# dd00_value, d018_value). Bank 1 is the last resort (Galway's Times of Lore
+# subtunes 2-11 put live song data in bank 2's $B400, leaving only bank 1 free).
+# Bank 3 ($C000-$FFFF) overlaps I/O and the player/audio handlers, so it is
+# omitted.
 _DISPLAY_BANKS = (
     (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
     (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
     (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1),
 )
 
-# Upper bound on subtunes scanned by _choose_unified_display_layout. Each
-# subtune costs one host-emu footprint run (~0.25 s), all paid once at
-# setup(); the cap keeps a high-song-count SID from stalling startup. Above
-# it, setup() keeps the per-subtune relocation behavior (still correct, just
-# may move the display bank mid-cycle). Times of Lore (11 songs) fits.
+# Upper bound on subtunes scanned by _choose_unified_display_layout. Each costs
+# one host-emu footprint run (~0.25 s typically), and this cap bounds the
+# *count* only — the seconds are bounded by sid_host_emu.ANALYSIS_BUDGET_S,
+# which setup() opens once and threads through the whole scan. Above the cap,
+# setup() keeps the per-subtune relocation behavior, which may move the display
+# bank mid-cycle. Times of Lore (11 songs) fits.
 _UNIFIED_LAYOUT_MAX_SONGS = 16
-
-
-# ---------------------------------------------------------------------------
-# Display-bank selection
-#
-# The SidHeader / parse_sid_header / _sid_payload_extent / _overlaps /
-# _play_bank_for_footprints helpers moved to sid_host_emu.py (so the
-# composable SidFileAudioSource can reuse them without importing the
-# oscilloscope renderer); they're re-imported above for back-compat. The
-# bank-choice helpers below stay here — they're specific to WaveformScene's
-# relocatable display.
-# ---------------------------------------------------------------------------
 
 
 def _bank_payload_feasible(
@@ -184,6 +167,32 @@ def _bank_payload_feasible(
         _overlaps(payload_lo, payload_hi, screen_base, SCREEN.N_CELLS)
         or _overlaps(payload_lo, payload_hi, bitmap_base, SCREEN.BITMAP_BYTES)
     )
+
+
+def _held_back_reason(exhausted: bool, examined: int, n: int) -> str:
+    """Why the walk fell back to a candidate it had passed over.
+
+    Three endings, not two. `_MAX_CYCLE_CANDIDATES` caps the walk at 16, so on
+    a tune with more subtunes than that the loop can run out of iterations with
+    candidates never looked at — and saying "no later candidate offered a whole
+    one" there asserts something about subtunes nothing sampled."""
+    if exhausted:
+        return "the analysis budget ran out first"
+    if examined < n - 1:
+        return f"the walk stopped after {examined} of {n - 1} candidates"
+    return "no later candidate offered a whole one"
+
+
+def _partial_footprint_names(write_complete: bool, access_complete: bool) -> str:
+    """Which footprint(s) came back a prefix, for the log line that says why
+    the PLAY `$01` bank fell back to the address heuristic. Both can be, and
+    naming only the write side understates the reason."""
+    partial = [
+        name
+        for name, complete in (("write", write_complete), ("PLAY-access", access_complete))
+        if not complete
+    ]
+    return " and ".join(partial)
 
 
 def _any_display_bank_fits_payload(payload_lo: int, payload_hi: int) -> bool:
@@ -226,7 +235,11 @@ def _choose_display_layout(
 
 
 def _choose_unified_display_layout(
-    sid_bytes: bytes, payload_lo: int, payload_hi: int, num_songs: int
+    sid_bytes: bytes,
+    payload_lo: int,
+    payload_hi: int,
+    num_songs: int,
+    budget: HostEmuBudget,
 ) -> tuple[int, int, int, int] | None:
     """Pick ONE VIC bank free for the UNION of every subtune's PLAY-access
     footprint, so SHIFT-cycling never has to relocate the display.
@@ -242,77 +255,73 @@ def _choose_unified_display_layout(
 
     Returns the shared layout, or None when no single bank fits all subtunes
     (caller falls back to per-subtune `_choose_display_layout`). Cost is one
-    host-emu footprint run per subtune; the caller bounds the song count."""
+    host-emu footprint run per subtune, all charged to the caller's shared
+    `budget`; the caller also bounds the song count.
+
+    Returns None as soon as any subtune's footprint is incomplete, or the
+    budget runs out mid-scan. The pin is only sound if the union really covers
+    every subtune: it *suppresses* the per-subtune re-check in
+    `_cycle_pick_candidate`, so a union built from a prefix of one subtune's
+    behavior would silently paint the bitmap over live song data for the whole
+    tune. Falling back to the per-subtune choice costs nothing but a possible
+    bank move on a SHIFT."""
     union = np.zeros(0x10000, dtype=np.uint8)
     for song in range(1, num_songs + 1):
-        fp = ram_play_access_footprint(sid_bytes, song=song)
-        union |= np.frombuffer(bytes(fp), dtype=np.uint8)
+        sample = ram_play_access_footprint(sid_bytes, song=song, budget=budget)
+        if not sample.complete:
+            log.info(
+                "waveform: no unified display bank — subtune %d/%d's PLAY footprint is "
+                "only a partial sample, so the union can't be trusted for the others; "
+                "choosing the display bank per subtune instead",
+                song,
+                num_songs,
+            )
+            return None
+        union |= np.frombuffer(bytes(sample.ram), dtype=np.uint8)
     try:
         return _choose_display_layout(payload_lo, payload_hi, union.tobytes())
     except ValueError:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Waveform scene
-# ---------------------------------------------------------------------------
-
-
 class WaveformScene(VoiceScopeRenderer, Scene):
     WANTS_AUDIO_LOCK = True
 
-    # SHIFT-cycle "is this subtune worth showing" floor. Many SIDs carry
-    # game SFX as their tail subtunes (1-3 s blips); landing on one shows
-    # a flat scope trace for the bulk of the displayed time. When the
-    # SongLengths DB knows a candidate's length and it falls below this
-    # threshold, cycle_style advances again. Only applies on SHIFT —
-    # startup honors whatever song the user configured, no matter how
-    # short — and only when duration_s wasn't explicitly pinned by the
-    # user (an explicit duration is itself a strong "play this" signal).
+    # SHIFT-cycle "is this subtune worth showing" floor: many SIDs carry game
+    # SFX as their tail subtunes (1-3 s blips). Applies only on SHIFT, and only
+    # when the user did not pin duration_s.
     MIN_CYCLE_SUBTUNE_S = 5.0
 
-    # End-of-tune silence detection. When all three voice envelopes sit
-    # below ENV_SILENCE_EPS continuously for END_SILENCE_S seconds — after
-    # the tune has produced at least some sound — the scene ends so the
-    # playlist advances (single-scene mode replays from INIT) instead of
-    # holding a frozen flat scope. The window is generous so brief musical
-    # rests don't trip it; it only ever shortens playback.
+    # All three voice envelopes below ENV_SILENCE_EPS for END_SILENCE_S, after
+    # the tune has sounded at least once, ends the scene. The window is generous
+    # so brief musical rests do not trip it.
     END_SILENCE_S = 6.0
     ENV_SILENCE_EPS = 1e-3
 
-    # Used by _resolve_duration_for_current_sid when neither an explicit
-    # duration_s nor a songlengths DB match is available.
     FALLBACK_DURATION_S = 180.0
 
-    # Host-emu PLAY pre-flight. After loading a tune we run this many PLAY
-    # passes; if EVERY one bails at the host emulator's cycle cap (instead
-    # of returning normally in the usual ~1-2k cycles), the tune spins on a
-    # raster/IRQ this pure-Python 6502 never provides. Such a tune can't be
-    # rendered faithfully by the scope AND would hang the C64-side player —
-    # its `SEI; JSR init` sits with IRQs masked, so the kernal IRQ never
-    # fires, $028D stops updating, and the machine goes dead/silent (the
-    # Hollywood Poker Pro failure). Reject it so the picker skips to the
-    # next candidate. 50 passes ≈ 1 s of PLAY @ 50 Hz — long enough to be
-    # unambiguous, short enough that a healthy tune adds only ~5 ms.
-    _PLAY_PREFLIGHT_TICKS = 50
+    # The gate itself is sid_host_emu.play_preflight_failure, shared with
+    # SidFileAudioSource; this scene runs it against the live `_host_emu` it is
+    # about to render from rather than a throwaway. Aliasing PREFLIGHT_TICKS
+    # keeps the tuning constant from drifting between the two callers.
+    _PLAY_PREFLIGHT_TICKS = PREFLIGHT_TICKS
 
-    # Upper bound on PLAY ticks the poll thread will execute in a single
-    # wakeup to catch the host emulator up to wall-clock (see _poll_regs).
-    # A py65 PLAY pass is ~0.2 ms, so 120 ticks (~2 s of music) cost ~25 ms
-    # — bounds the burst after a long stall/suspend while still resyncing
-    # within a couple of wakeups (throughput is ~4500 ticks/s, far above
-    # the 50/60 Hz target). The normal startup catch-up is only ~6-18 ticks.
+    # Upper bound on subtunes the SHIFT-cycle walk footprints before taking the
+    # first candidate. Each rejected candidate costs a full
+    # ram_play_access_footprint on the main render thread, and `num_songs` is a
+    # raw 16-bit header field nothing else bounds.
+    _MAX_CYCLE_CANDIDATES = 16
+
+    # Upper bounds on one poll-thread wakeup's catch-up work (see _poll_regs).
+    # The tick count bounds the burst after a long stall: a py65 PLAY pass is
+    # ~0.2 ms for an ordinary tune, so 120 ticks (~2 s of music) cost ~25 ms, and
+    # normal startup catch-up is 6-18 ticks. A count is not a time budget, and
+    # the tune sets both the cost of a tick (a legal PLAY measured 15.8 ms, so
+    # the same batch is 1.9 s) and the rate it is sized against (play_rate_hz
+    # honors a CIA #1 Timer A latch up to 8x the video rate). So the batch also
+    # stops once it has spent this fraction of one poll period.
     _MAX_CATCHUP_TICKS = 120
-
-    # PLAY passes to run when probing a tune's effective PLAY rate (see
-    # _detect_play_rate_hz). Many multispeed players program CIA #1 Timer A
-    # from PLAY, not INIT — Galway's Times of Lore is a ~2x multispeed whose
-    # Timer A latch is only written on the FIRST PLAY pass. play_rate_hz reads
-    # that latch, so the true rate is unknowable until PLAY has run at least
-    # once. The probe stops as soon as a multispeed write appears; a vsync tune
-    # (no Timer A write) runs all passes and falls back to the video rate. 64
-    # passes (~1 s @ 60 Hz) costs only a few ms on a throwaway host emu.
-    _RATE_PROBE_TICKS = 64
+    _MAX_CATCHUP_PERIOD_FRACTION = 0.5
 
     def __init__(
         self,
@@ -356,70 +365,56 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     wallclock-locked behavior of the prior implementation.
         """
         from c64cast.app.scene_factory import SID_EXTS, resolve_file_spec
-        # Knob validation (color_mode/time_base/auto_cycles/persistence/
-        # scroll_columns) now lives in VoiceScopeRenderer._init_scope_knobs,
-        # called below after the file load + super().__init__.
 
-        # Stash the spec + config args so each setup() can re-pick (and so
-        # cycle_style() can re-resolve the per-song duration the same way
-        # __init__ does the first one).
+        # Stashed so each setup() can re-pick and cycle_style() can re-resolve
+        # the per-song duration the same way __init__ does the first one.
         self.file_spec = file
         self._song_arg = song
         self.songlengths_db = songlengths_db
         self._explicit_duration_s = duration_s
-        # [ultimate64].sid_model, already resolved to a plain string by the
-        # caller (sid_autoconfig.resolve_sid_model_cfg) — see
-        # _apply_sid_hw_config. "auto"/"6581"/"8580"/"off".
+        # "auto"/"6581"/"8580"/"off", already resolved to a plain string by
+        # sid_autoconfig.resolve_sid_model_cfg. See _apply_sid_hw_config.
         self._sid_model = sid_model
         # [ultimate64].sid_panning — empty/None means the auto spread.
         self._sid_panning = list(sid_panning or ())
         # [ultimate64].sid_volume — empty/None means "0 dB for a source that
         # would otherwise be inaudible, leave a deliberate level alone".
         self._sid_volume = list(sid_volume or ())
-        # The pool picker needs the backend profile ([hardware].host_sid_* and
-        # the capability flags) and runs below, before super().__init__ has set
-        # self.api.
+        # The pool picker needs the backend profile and runs before
+        # super().__init__ has set self.api.
         self._pick_api = api
 
-        # Initial resolution: __init__ raises on bad specs (mirrors
-        # validate_scene_cfg). Also raises if every candidate fails the
-        # payload-extent check below. setup() re-picks from a fresh
+        # (file, subtune) pairs whose truncated INIT has been reported. Declared
+        # before the load below, which is what fills it.
+        self._init_truncation_reported: set[tuple[str, int]] = set()
+
+        # Raises on a bad spec (mirroring validate_scene_cfg) and when every
+        # candidate fails the payload-extent check. setup() re-picks from a fresh
         # rescan, so directory contents can change between iterations.
         self._candidates = resolve_file_spec(file, SID_EXTS, label="waveform")
         self._pick_and_load_sid()
 
         name = self.header.name.strip() or os.path.splitext(os.path.basename(self._sid_file))[0]
         super().__init__(api, audio, None, f"SID: {name} #{self.song}")
-        # True when prepare_next() has already picked+loaded this
-        # iteration's tune (and refreshed self.name); setup() then skips
-        # the re-pick to avoid loading the SID twice. See
-        # VideoScene._prepared for the full rationale.
+        # prepare_next() already picked+loaded this iteration's tune, so setup()
+        # skips the re-pick. See VideoScene._prepared.
         self._prepared = False
-        # Default to HALF the system video rate (30 NTSC / 25 PAL). An
-        # oscilloscope reads fine at half-rate (see the Cam Link captures in
-        # the framerate/DMA investigation), and a half-integer divisor keeps
-        # the render an exact submultiple of the video standard so the
-        # wallclock phase-lock below stays clean. Critically it halves the
-        # per-frame DMA write volume: each frame pushes 3 voice bitmap strips
-        # that nearly all change every frame, so full rate is ~170 writes/s —
-        # right at the ~200/s DMA ceiling. HW-verified 2026-06-09: at ~170/s
-        # into a bank-2-relocated display ($A000-$BFFF, used when the SID
-        # payload overlaps bank 0's bitmap) the U64 power-cycles itself
-        # mid-tune (Times_of_Lore); at half rate (~90/s) the same tune plays
-        # its full length cleanly. See docs/caveats.md. An explicit
-        # target_fps (CLI/TOML) still wins. The host-emu poll rate is
-        # independent (self._video_hz below) and stays at the full video rate
-        # so the scope keeps tracking every PLAY tick.
+
+        # Default target_fps: HALF the video rate, and an exact submultiple of it
+        # so the wallclock phase-lock stays clean. It halves the per-frame DMA
+        # write volume: three voice bitmap strips nearly all change every frame,
+        # so full rate is ~170 writes/s, right at the ~200/s DMA ceiling. HW-verified 2026-06-09: at
+        # ~170/s into a bank-2-relocated display ($A000-$BFFF) the U64
+        # power-cycles itself mid-tune (Times_of_Lore); at half rate (~90/s) the
+        # same tune plays its full length. See docs/caveats.md. The host-emu poll
+        # rate is independent and stays at the full video rate.
         if target_fps is None:
             target_fps = 25.0 if system.upper() == "PAL" else 30.0
         self.target_fps = float(target_fps)
         self.system = system
         self.duration_s = float(self._resolve_duration_for_current_sid())
-        # Visualization knobs + per-voice render modes + persistent buffers.
-        # One displayed row of waveform covers exactly one display frame of
-        # audio time (frame_time_s) — locks the trace's visible phase to
-        # wall-clock. Validates color_mode/time_base/auto_cycles/persistence/
-        # scroll_columns and raises ValueError on any bad value.
+        # One displayed row of waveform covers exactly one display frame of audio
+        # time (frame_time_s), locking the trace's visible phase to wall-clock.
         self._init_scope_knobs(
             color_mode=color_mode,
             voice_colors=voice_colors,
@@ -431,72 +426,58 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             frame_time_s=1.0 / self.target_fps,
         )
 
-        # One SIDEmulator + scope window per SID chip the tune drives (multi-SID
-        # tunes show all chips' voices side by side). Single-SID is one window,
-        # byte-identical to the pre-multi-SID renderer. Rebuilt per setup() pick.
+        # One SIDEmulator + scope window per SID chip the tune drives, rebuilt on
+        # every setup() pick.
         self._reg_buf: bytes | None = None
         self._reg_lock = threading.Lock()
         self._rebuild_scope_for_sids()
-        # U64 multi-SID hardware config (address map for the tune's extra SID
-        # chips). Snapshotted before we change it, restored on teardown. Only
-        # touched for multi-SID tunes on a config-capable backend (U64).
+        # Snapshotted before the address map changes, restored on teardown.
         self._sid_session = SidHwSession(self.api)
-        # Default the poll rate to the system video rate — that's the
-        # SID's effective PLAY-per-frame cadence on a kernal IRQ, so
-        # matching it keeps the host emulator's writes in step with
-        # what the real 6510 is doing on the U64.
-        # PLAY tick rate. The host emulator must advance the song at the
-        # SAME rate the real U64 calls PLAY, or the scope drifts out of sync
-        # with the audio. That's the video rate for vsync tunes, but a
-        # CIA-timed (multispeed) tune programs its own faster rate — resolved
-        # per-tune from the host emulator in _resolve_poll_rate(). An explicit
-        # reg_poll_hz pins the rate and disables auto-detection.
+        # The host emulator must advance the song at the SAME rate the real
+        # machine calls PLAY or the scope drifts out of sync with the audio: the
+        # video rate for a vsync tune, its own faster rate for a CIA-timed
+        # multispeed one, resolved per tune in _resolve_poll_rate(). Pinning
+        # reg_poll_hz pins the rate but does not disable the probe, which is also
+        # what prices a PLAY pass for the poll-period floor.
         self._user_reg_poll_hz = reg_poll_hz
-        # Current playback system's video standard ("PAL"/"NTSC"), surfaced in
-        # the metadata row alongside the SID's composed-for standard so a
-        # mismatch (e.g. a PAL tune on this NTSC machine) is visible.
+        # Surfaced in the metadata row alongside the SID's composed-for standard
+        # so a mismatch is visible.
         self._system = "PAL" if system.upper() == "PAL" else "NTSC"
         self._sid_play_rate = sid_play_rate
-        # The rate a VSYNC tune's PLAY actually runs at on this machine. NOT
-        # the video frame rate: PLAY rides the kernal jiffy IRQ, which is ~60 Hz
-        # on both standards unless [ultimate64].sid_play_rate retunes it. The
-        # backend is the authority (it does the retuning); re-read in setup()
-        # once the tune is loaded and the rate is settled.
+        # NOT the video frame rate: a vsync tune's PLAY rides the kernal jiffy
+        # IRQ, ~60 Hz on both standards unless [ultimate64].sid_play_rate retunes
+        # it. The backend does the retuning and is the authority; re-read in
+        # setup() once the rate is settled.
         self._video_hz = api.sid_vsync_play_rate_hz()
-        # Host-emu clock anchor. The poll thread derives its PLAY-tick count
-        # from wall-clock elapsed since the real SID started (set in setup()
-        # after run_sid_player), not from the number of poll wakeups — see
-        # _poll_regs. Set before the poll thread is built so they always exist.
+        # The poll thread derives its PLAY-tick count from wall-clock elapsed
+        # since the real SID started, not from the number of poll wakeups.
         self._sid_start_time = 0.0
         self._ticks_done = 0
+        # One-shot latch for _warn_catchup_behind: the condition persists for as
+        # long as the tune does, so it must not log per wakeup. Re-armed wherever
+        # a new tune or subtune starts, since the next one's PLAY may be
+        # affordable where this one's was not.
+        self._catchup_warned = False
         self._resolve_poll_rate()
 
         self.start_time = 0.0
-        # (Per-(voice, chip) last-waveform tracking for per_waveform color
-        # transitions is initialized in _rebuild_scope_for_sids, called above.)
-        # End-of-tune silence detection (Part 3): arm only after the tune
-        # has actually produced sound, then end the scene after a sustained
-        # all-voices-silent window so a short non-looping subtune doesn't
-        # hold a frozen flat scope for the rest of duration_s.
+        # Armed only once the tune has produced sound, so a short non-looping
+        # subtune does not hold a frozen flat scope for the rest of duration_s.
         self._ever_sounded = False
         self._silence_since: float | None = None
 
-        # Display location (VIC bank), resolved per-tune in setup() by
-        # _choose_display_layout and re-resolved per-subtune in cycle_style().
-        # Defaults to bank 0; relocates to bank 2 or bank 1 when the tune's
-        # payload/footprint occupies bank 0's display.
+        # Resolved per tune in setup() by _choose_display_layout and per subtune
+        # in cycle_style(); relocates off bank 0 when the payload or footprint
+        # occupies its display.
         self._screen_base: int = VIC_BANK_0.SCREEN
         self._bitmap_base: int = VIC_BANK_0.BITMAP
         self._dd00: int = CIA2.PORT_A_BANK_0
         self._d018: int = D018_HIRES_BITMAP
-        # One display bank free for the UNION of every subtune's PLAY
-        # footprint, so SHIFT-cycling never relocates the display (kills the
-        # garbled-text glitch on a live bank move — e.g. Times of Lore song 1
-        # on bank 2 vs songs 2-11 on bank 1). Computed once per SID in setup()
-        # and reused by cycle_style for every subtune. None = no single bank
-        # fits all subtunes (or num_songs out of range) → per-subtune
-        # relocation fallback. _unified_layout_for caches the SID path so the
-        # hard-relaunch re-setup() and pool re-picks recompute only on change.
+        # One display bank free for the UNION of every subtune's PLAY footprint,
+        # so SHIFT-cycling never relocates the display — a live bank move garbles
+        # the matrix. None = no single bank fits all subtunes, so the per-subtune
+        # relocation fallback applies. _unified_layout_for caches the SID path so
+        # a re-setup() with an unchanged pick does not recompute.
         self._unified_layout: tuple[int, int, int, int] | None = None
         self._unified_layout_for: str | None = None
         # Whether the song currently playing needs $01=$36 (BASIC out) for its
@@ -507,11 +488,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         # setup() and cycle_style. See cycle_style.
         self._current_needs_basic_out: bool = False
 
-    # ---- SID selection / loading -------------------------------------------
-
-    # Each candidate gets one attempt; on a payload-extent rejection we
-    # log and move on to the next. Bounded so a directory full of bad SIDs
-    # eventually surfaces as a hard failure instead of silent retry.
+    # Bounded so a directory full of bad SIDs surfaces as a hard failure instead
+    # of a silent retry.
     _MAX_PICK_ATTEMPTS = 8
 
     # Enough of a candidate to answer "does this tune fit this machine's SID
@@ -526,11 +504,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         return resolve_file_spec(self.file_spec, SID_EXTS, label="waveform")
 
-    def _load_sid_file(self, path: str) -> None:
+    def _load_sid_file(self, path: str, budget: HostEmuBudget | None = None) -> None:
         """Load + parse + validate one SID at `path`. Raises ValueError on
         any rejection (header parse, song-out-of-range, payload overlap).
         On success sets self._sid_file, self.sid_bytes, self.header,
-        self.song, self._host_emu and self._song_num_width."""
+        self.song, self._host_emu and self._song_num_width.
+
+        `budget` is the pool walk's shared analysis budget — see
+        _pick_and_load_sid."""
         if not os.path.exists(path):
             raise ValueError(f"waveform: SID file not found: {path}")
         with open(path, "rb") as f:
@@ -541,15 +522,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 f"waveform: song {self._song_arg} out of range "
                 f"0..{header.num_songs} for {os.path.basename(path)}"
             )
-        # Refuse only SIDs whose payload would clobber EVERY candidate VIC
-        # bank's display regions — i.e. no bank can host the hires bitmap +
-        # screen RAM. The display relocates to bank 2 ($8400/$A000) or bank 1
-        # ($5400/$6000) when the payload overlaps bank 0's ($0400/$2000); only
-        # tunes spanning every bank (e.g. Last_Ninja_2 $2700-$CF8F) are
-        # hopeless. The footprint-aware bank choice is made at setup() by
-        # _choose_display_layout — this is just the cheap payload-only
-        # pre-filter that lets bad candidates be skipped in a multi-file pool.
-        # See _DISPLAY_BANKS.
+        # The cheap payload-only pre-filter, so a bad candidate can be skipped in
+        # a multi-file pool; the footprint-aware bank choice happens at setup().
+        # Only a tune spanning every bank (e.g. Last_Ninja_2 $2700-$CF8F) is
+        # hopeless. See _DISPLAY_BANKS.
         payload_lo, payload_hi = _sid_payload_extent(sid_bytes)
         if not _any_display_bank_fits_payload(payload_lo, payload_hi):
             raise ValueError(
@@ -564,44 +540,80 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.sid_bytes = sid_bytes
         self.header = header
         self.song = self._song_arg if self._song_arg > 0 else header.start_song
-        # How many SID chips this tune drives, and their $Dxxx bases (chip 0 =
-        # $D400). From the PSID v3/v4 header, raised by an ``_NSID.sid`` filename
-        # hint. A multi-SID tune gets one scope window + one host-emu shadow per
-        # chip; on the U64 the extra SID cores are mapped in setup(). See
-        # detect_sid_addresses.
+        # From the PSID v3/v4 header, raised by an ``_NSID.sid`` filename hint.
+        # See detect_sid_addresses.
         self._sid_addresses = detect_sid_addresses(path, sid_bytes)
         self._n_sids = len(self._sid_addresses)
-        # The host emulator runs the same SID file in parallel on a
-        # pure-Python 6502 so we can recover live $D4xx register state
-        # — the U64's SID is faithful to real hardware (writes only,
-        # reads return 0). Construction loads + runs INIT once; each
-        # tick_play() advances one PLAY pass. A multi-SID tune shadows every
-        # chip's register bank. See sid_host_emu.py.
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
-        # PLAY pre-flight: reject tunes whose PLAY spins past the cycle cap
-        # on every pass (see _PLAY_PREFLIGHT_TICKS). Done here so the picker
-        # skips them and a single-file scene aborts with a clear message,
-        # rather than the C64-side player hanging the machine at setup().
-        capped_all = True
-        for _ in range(self._PLAY_PREFLIGHT_TICKS):
-            self._host_emu.tick_play()
-            if not self._host_emu.last_routine_capped:
-                capped_all = False
-                break
-        if capped_all:
-            raise ValueError(
-                f"waveform: {os.path.basename(path)} PLAY never completes "
-                f"within the host emulator's cycle cap over "
-                f"{self._PLAY_PREFLIGHT_TICKS} passes — the tune spins on a "
-                f"raster/IRQ the player environment doesn't provide; it would "
-                f"hang the C64-side player (silent + unresponsive). Refused."
-            )
-        # The pre-flight advanced the emulator by up to one non-capped PLAY
-        # pass (it breaks on the first that returns). That ~20 ms head start
-        # is cosmetically irrelevant to the scope and not worth a rebuild.
-        # Song-number column width is derived from num_songs — recompute
-        # so multi-pick scenes get the right padding per chosen SID.
+        self._host_emu = self._build_host_emu(self.song, budget)
+        self._report_init_truncation(self._host_emu, self.song)
+        # Recomputed so a multi-pick scene gets the right padding per SID.
         self._song_num_width = len(str(max(self.header.num_songs, 1)))
+
+    def _build_host_emu(self, song: int, budget: HostEmuBudget | None = None) -> SidHostEmu:
+        """Build the parallel host emulator for `song` and pre-flight its PLAY.
+
+        Raises ValueError when PLAY bails out of its budget on every one of
+        `_PLAY_PREFLIGHT_TICKS` passes: such a tune spins on a raster/IRQ this
+        pure-Python 6502 never provides, so the scope can't render it faithfully
+        AND the C64-side player would hang — its `SEI; JSR init` sits with IRQs
+        masked, so the kernal IRQ never fires, $028D stops updating, and the
+        machine goes dead/silent (the Hollywood Poker Pro failure). A tune whose
+        PLAY merely uses an opcode py65 can't execute is NOT refused here — see
+        sid_host_emu.play_preflight_failure for why, and FootprintSample for
+        what it does cost such a tune.
+
+        Every construction site goes through here — the initial load, the
+        SHIFT cue, and the $37→$36 hard relaunch — because INIT and PLAY are
+        separate 6502 entry points per subtune: song 1 passing the gate says
+        nothing about song 2, and the cue path used to re-INIT the real
+        machine on an ungated subtune.
+
+        The pre-flight leaves the emulator advanced by however many passes it
+        took to reach a verdict. That head start is cosmetically irrelevant to
+        the scope and not worth a rebuild.
+
+        `budget` charges the INIT and the pre-flight passes to the caller's
+        analysis budget. A pool walk passes one, because the per-pass cycle cap
+        alone let a directory of crafted tunes cost ~1.1 s per candidate for
+        _MAX_PICK_ATTEMPTS candidates on the thread that draws frames."""
+        emu = SidHostEmu(self.sid_bytes, song=song, sid_bases=self._sid_addresses, budget=budget)
+        refusal = play_preflight_failure(emu, self._PLAY_PREFLIGHT_TICKS, budget)
+        if refusal is not None:
+            raise ValueError(
+                f"waveform: {os.path.basename(self._sid_file)} song {song} {refusal}. Refused."
+            )
+        return emu
+
+    def _report_init_truncation(self, emu: SidHostEmu, song: int) -> None:
+        """Say once that a subtune is being rendered from a truncated INIT.
+
+        Called only where a tune is committed to — after `_load_sid_file`'s
+        emulator is the scene's, and after a SHIFT cue's replacement survives
+        its pre-flight — and never from `_build_host_emu`. The pool walk calls
+        that once per candidate under one shared budget, so warning there
+        announced tunes the walk then discarded, and blamed a later candidate
+        for an INIT that capped because earlier candidates had spent the
+        budget.
+
+        Deduped per (file, subtune) because the SHIFT cue rebuilds the
+        emulator every time it is pressed, and the same cue re-pressed is the
+        same fact. A different subtune is a different INIT and does get its
+        own line. Same reason `_report_undecodable_opcode` warns once per
+        emulator: the pre-flight alone runs 50 passes.
+        """
+        notice = init_truncation_notice(emu)
+        if notice is None:
+            return
+        key = (self._sid_file, song)
+        if key in self._init_truncation_reported:
+            return
+        self._init_truncation_reported.add(key)
+        log.warning(
+            "waveform: %s song %d: %s; the scope may not match what the SID plays",
+            os.path.basename(self._sid_file),
+            song,
+            notice,
+        )
 
     def _host_fit_of(self, path: str) -> bool | None:
         """One candidate's host-chip verdict from its PSID header alone, or
@@ -640,9 +652,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         for path in pool:
             fit = self._host_fit_of(path)
             if fit is None:
-                # No-opinion is a property of the machine's declarations, not
-                # of this tune, so the first candidate settles it for all of
-                # them — no point reading the rest of the headers.
+                # No-opinion is a property of the machine's declarations rather
+                # than of this tune, so the first candidate settles it for all.
                 return pool
             (fits if fit else misses).append(path)
         if not misses:
@@ -673,15 +684,24 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
         The shuffle happens before `_order_by_host_fit` so that mode's grouping
         is a bias on top of a random order, not a reordering that would make one
-        tune the deterministic pick for a whole class of machines."""
+        tune the deterministic pick for a whole class of machines.
+
+        ONE analysis budget covers the whole walk, not one per candidate. Each
+        candidate costs an INIT plus _PLAY_PREFLIGHT_TICKS PLAY passes, and the
+        tune sets what those cost — a directory of crafted tunes measured ~1.1 s
+        each, so _MAX_PICK_ATTEMPTS of them bound the walk only at ~8.8 s. With
+        a shared budget, a pool that expensive runs out of candidates instead of
+        running out of the show; the raise below is the same "none could be
+        loaded" the caller already handles."""
         self._candidates = self._resolve_candidates()
         pool = list(self._candidates)
         random.shuffle(pool)
         pool = self._order_by_host_fit(pool)
+        budget = HostEmuBudget()
         last_error: Exception | None = None
         for path in pool[: self._MAX_PICK_ATTEMPTS]:
             try:
-                self._load_sid_file(path)
+                self._load_sid_file(path, budget)
             except ValueError as e:
                 log.warning("waveform: skipping %s: %s", os.path.basename(path), e)
                 last_error = e
@@ -693,9 +713,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     len(self._candidates),
                 )
             return
-        # Every attempted candidate failed validation. Re-raise the last
-        # error so the caller (validate_scene_cfg or setup) sees a real
-        # message instead of a generic "no SID loaded".
+        # Re-raise the last error so the caller sees a real message rather than
+        # a generic "no SID loaded".
         raise ValueError(
             f"waveform: file spec {self.file_spec!r} resolved to "
             f"{len(self._candidates)} candidate(s) but none could be "
@@ -714,8 +733,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._emulators = [SIDEmulator(system=self.system) for _ in range(n)]
         self.emulator = self._emulators[0]
         self._set_window_count(n)
-        # Per-(voice, chip) last waveform-select, for per_waveform color-change
-        # detection. -1 forces the first paint.
+        # -1 forces the first paint.
         self._last_window_wave: list[list[int]] = [[-1] * n for _ in range(3)]
 
     def _resolve_duration_for_current_sid(self) -> float:
@@ -733,9 +751,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     looked_up,
                 )
                 return float(looked_up)
-            # A DB is available but this tune/subtune isn't in it — worth a
-            # warning (unlike "no DB configured at all", which is the
-            # expected, silent state for anyone without HVSC's SongLengths.md5).
+            # A DB is configured but this tune is not in it. "No DB at all" is
+            # the expected silent state for anyone without HVSC's SongLengths.md5.
             log.warning(
                 "waveform: %s #%d not found in songlengths DB — using %.0fs fallback duration",
                 os.path.basename(self._sid_file),
@@ -746,17 +763,12 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
     @property
     def wled_label(self) -> str:
-        # A multi-entry pool re-picks a different SID each setup(), so self.name
-        # (the currently-loaded tune) is a moving target. Present the WLED effect
-        # list + preset defaults with a stable pool label instead, so the
-        # dropdown doesn't churn and a preset named from it doesn't promise the
-        # one tune that was loaded at save time. A single fixed tune keeps its
-        # real title.
+        # A multi-entry pool re-picks each setup(), so self.name is a moving
+        # target: a stable pool label keeps the WLED dropdown from churning and
+        # keeps a preset named from it from promising one tune.
         if len(self._candidates) > 1:
             return "SID: random pool"
         return self.name
-
-    # ---- bring-up / bring-down ---------------------------------------------
 
     def _repick_sid(self) -> bool:
         """Multi-entry pool: re-pick + load a tune so directories rotate
@@ -784,13 +796,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
 
     def setup(self):
         self.is_done = False
-        # Multi-entry pool: re-pick so directories rotate between
-        # iterations (skipped when prepare_next() already did it this
-        # iteration). Single-entry pool: keep __init__'s pick (and any
-        # cycle_style mutation of self.song) — re-loading the same SID is
-        # wasted work and would reset the subtune to start_song each
-        # repeat. On total failure (every candidate rejected, or
-        # directory now empty) log and let the playlist advance.
+        # A single-entry pool keeps __init__'s pick and any cycle_style mutation
+        # of self.song: re-loading the same SID would reset the subtune to
+        # start_song on every repeat.
         if self._prepared:
             self._prepared = False
         elif len(self._candidates) > 1 and not self._repick_sid():
@@ -798,16 +806,14 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.is_done = True
             return
         self.start_time = time.time()
-        # Reflow the scope to the (possibly re-picked) tune's SID count before
-        # any painting — a pool re-pick may have loaded a tune with a different
-        # number of chips.
+        # Before any painting: a pool re-pick may have loaded a tune with a
+        # different chip count.
         self._rebuild_scope_for_sids()
         self._ever_sounded = False
         self._silence_since = None
         overlay_names = [getattr(ov, "name", type(ov).__name__) for ov in self.overlays]
         ov_str = ", ".join(overlay_names) if overlay_names else "no overlays"
-        # Surface the resolved knobs so a `persistence = "random"` config
-        # leaves a trace of which preset actually got picked.
+        # So a `persistence = "random"` config leaves a trace of the pick.
         persist_label = self.persistence
         if self.persistence_config == RANDOM_PERSISTENCE:
             persist_label = f"{self.persistence} (random)"
@@ -824,54 +830,57 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             ov_str,
         )
 
-        # Stop our 4-bit DAC streaming if it's running — the SID is about
-        # to write $D418 itself.
+        # The SID is about to write $D418 itself.
         if self.audio is not None:
             try:
                 self.audio.stop()
             except Exception:
                 log.exception("waveform: pre-SID audio stop failed")
 
-        # Footprint the tune on a throwaway host emu in two views:
-        #   * the full INIT+PLAY *write* footprint places the player's
-        #     relocation hole (the player MC must survive INIT too — tunes
-        #     like Beat_Dis use the page past their payload as INIT scratch).
-        #   * the PLAY *read+write* footprint drives the display-bank choice:
-        #     the bitmap is painted after INIT and refreshed every frame, so
-        #     a region the tune only scratches at INIT is paintable — but a
-        #     region PLAY *reads* every frame is live data we must not
-        #     clobber. Galway's Times of Lore copies a per-song block into
-        #     bank 2's $B400 at INIT and reads it back there on every PLAY;
-        #     the write-only view missed that read and clobbered it.
-        footprint = ram_write_footprint(self.sid_bytes, song=self.song)
-        display_footprint = ram_play_access_footprint(self.sid_bytes, song=self.song)
+        # Two footprint views on a throwaway host emu:
+        #   * the INIT+PLAY *write* footprint places the player's relocation hole
+        #     (the player MC must survive INIT too — tunes like Beat_Dis use the
+        #     page past their payload as INIT scratch).
+        #   * the PLAY *read+write* footprint drives the display-bank choice: the
+        #     bitmap is painted after INIT and refreshed every frame, so a region
+        #     the tune only scratches at INIT is paintable, but a region PLAY
+        #     *reads* every frame is live data. Galway's Times of Lore copies a
+        #     per-song block into bank 2's $B400 at INIT and reads it back there
+        #     on every PLAY, which the write-only view cannot see.
+        #
+        # One budget covers the whole analysis — both runs here and the
+        # per-subtune scan below. analyze_placement owns what a truncated sample
+        # is allowed to place.
+        budget = HostEmuBudget()
+        placement = analyze_placement(
+            self.sid_bytes,
+            song=self.song,
+            budget=budget,
+            what=f"waveform: {os.path.basename(self._sid_file)} song {self.song}",
+        )
+        footprint = placement.avoid
+        display_footprint = placement.display
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
 
-        # For a multi-song SID, try to pin ONE display bank free for the union
-        # of every subtune's PLAY footprint so SHIFT-cycling never relocates
-        # the display (the bank move on a live cycle garbles the matrix — e.g.
-        # Times of Lore song 1 wants bank 2, songs 2-11 want bank 1). Cached
-        # per SID path: the hard-relaunch re-setup() and an unchanged pool pick
-        # reuse it; a different SID (pool re-pick) recomputes. Bounded by song
-        # count so a many-subtune SID doesn't stall startup. None = no single
-        # bank fits all → fall through to the per-subtune choice below.
+        # Pin ONE display bank free for the union of every subtune's PLAY
+        # footprint, so SHIFT-cycling never relocates the display: a bank move on
+        # a live cycle garbles the matrix, and Times of Lore song 1 wants bank 2
+        # while songs 2-11 want bank 1. Cached per SID path. None = no single
+        # bank fits all, so the per-subtune choice below applies.
         n_songs = self.header.num_songs
         if 1 < n_songs <= _UNIFIED_LAYOUT_MAX_SONGS:
             if self._unified_layout_for != self._sid_file:
                 self._unified_layout = _choose_unified_display_layout(
-                    self.sid_bytes, payload_lo, payload_hi, n_songs
+                    self.sid_bytes, payload_lo, payload_hi, n_songs, budget
                 )
                 self._unified_layout_for = self._sid_file
         else:
             self._unified_layout = None
             self._unified_layout_for = None
 
-        # Choose the VIC bank for the display: the unified bank when one fits
-        # all subtunes, else bank 0 ($0400/$2000) by default, relocating to
-        # bank 2 ($8400/$A000) or bank 1 ($5400/$6000) when the payload or PLAY
-        # access footprint occupies it. $DD00 selects the bank and $D018 the
-        # sub-bank screen/bitmap offset. On no free bank, abort the scene
-        # (playlist advances) — same graceful path as a playback failure.
+        # $DD00 selects the bank and $D018 the sub-bank screen/bitmap offset. On
+        # no free bank, abort the scene so the playlist advances — the same
+        # graceful path as a playback failure.
         try:
             if self._unified_layout is not None:
                 (self._screen_base, self._bitmap_base, self._dd00, self._d018) = (
@@ -909,9 +918,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 payload_hi,
             )
 
-        # Build the player "avoid" bitmap: the tune's footprint + this
-        # scene's CHOSEN display regions + the audio ring. Slice-assignment
-        # keeps it cheap.
+        # The player must avoid the tune's footprint, this scene's chosen display
+        # regions, and the audio ring.
         avoid = bytearray(footprint)
         for lo, hi in (
             (self._screen_base, self._screen_base + SCREEN.N_CELLS),
@@ -920,33 +928,25 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         ):
             avoid[lo:hi] = b"\x01" * (hi - lo)
 
-        # Decide the PLAY $01 bank: $36 (BASIC out) when this subtune reads
-        # live song data from RAM under BASIC ROM (e.g. ToL 2-11 at $B400),
-        # else None (heuristic). See _play_bank_for_footprints.
-        play_bank = _play_bank_for_footprints(footprint, display_footprint)
+        # $36 (BASIC out) when this subtune reads live song data from RAM under
+        # BASIC ROM, else None for the address heuristic. Derived inside
+        # analyze_placement so a prefix footprint cannot produce one.
+        play_bank = placement.play_bank
         self._current_needs_basic_out = play_bank == CPU.PORT_BASIC_OUT
 
-        # Multi-SID: map the U64's extra SID chips to this tune's own addresses
-        # BEFORE the C64-side player runs INIT, so INIT's writes to the extra
-        # chips land on mapped cores rather than open bus. No-op for single-SID
-        # or on a backend without a SID config API (the scope still shows every
-        # chip; only $D400 sounds). Restored in teardown.
+        # Map the extra SID chips BEFORE the C64-side player runs INIT, so INIT's
+        # writes to them land on mapped cores rather than open bus. On a backend
+        # without a SID config API the scope still shows every chip and only
+        # $D400 sounds. Restored in teardown.
         self._apply_sid_hw_config()
 
-        # Upload the SID payload + tiny player MC, DEFERRING the audible start
-        # so the oscilloscope is on screen before the first note (the whole
-        # point of this scene — show the waveforms *during* playback, not just
-        # play a tune). The real 6510 then drives INIT + PLAY on a CIA #1 IRQ
-        # that chains to kernal $EA31, so display + keyboard scan stay under our
-        # control. See api.run_sid_player for the layout.
-        #
-        # Backend ordering differs and both are honored by defer_audio /
-        # begin_sid_audio: the TeensyROM loads the player silent and only starts
-        # it (a $0314 vector-swap) at begin_sid_audio, so the scope is up first;
-        # the Ultimate's run_prg is a synchronous reset that re-inits VIC to text
-        # mode, so it starts audio here and we (re)assert the bitmap right after
-        # (begin_sid_audio is a no-op there). Either way the scope is painted
-        # before — or within a frame of — the audio.
+        # The audible start is deferred so the oscilloscope is on screen before
+        # the first note. Backend ordering differs and defer_audio /
+        # begin_sid_audio honor both: the TeensyROM loads the player silent and
+        # starts it with a $0314 vector-swap at begin_sid_audio; the Ultimate's
+        # run_prg is a synchronous reset that re-inits VIC to text mode, so it
+        # starts audio here and the bitmap is re-asserted right after
+        # (begin_sid_audio is a no-op there). See api.run_sid_player.
         try:
             self.api.run_sid_player(
                 self.sid_bytes,
@@ -967,30 +967,25 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.is_done = True
             return
 
-        # Configure VIC for hires bitmap mode FIRST, while the SID is still
-        # silent on a deferring backend. Paints over the full screen so no scene
-        # state from before matters.
+        # Before the audio release below, while the SID is still silent on a
+        # deferring backend.
         self.api.invalidate_cache()
         self._setup_hires()
 
-        # Now release audio (no-op if it already started synchronously). Anchor
-        # the host-emu clock to when the real SID actually started — the backend
-        # records it (TR: this instant; U64: during run_sid_player, before
-        # _setup_hires). The poll thread derives its PLAY-tick count from
-        # wall-clock elapsed since this anchor, so it stays locked to the audio
-        # rather than drifting. See _poll_regs.
+        # The host-emu clock is anchored to when the real SID actually started,
+        # which the backend records (TR: this instant; U64: during
+        # run_sid_player, before _setup_hires), so the poll thread's PLAY-tick
+        # count stays locked to the audio rather than drifting.
         self.api.begin_sid_audio()
         self._sid_start_time = self.api.sid_audio_start_time() or time.time()
         self._ticks_done = 0
+        self._catchup_warned = False
 
-        # Resolve the host-emu PLAY rate for this tune (vsync vs CIA
-        # multispeed) and (re)build the poll thread at that period — the
-        # pool re-pick above may have loaded a different tune. Then start it.
         # Re-read the vsync rate first: run_sid_player has settled whether this
-        # tune's PLAY was retuned to its native frame rate or left on the
-        # kernal jiffy, and the scope has to advance the song at whichever won.
+        # tune's PLAY was retuned to its native frame rate or left on the kernal
+        # jiffy, and the scope has to advance the song at whichever won.
         self._video_hz = self.api.sid_vsync_play_rate_hz()
-        self._resolve_poll_rate()
+        self._resolve_poll_rate(budget)
         self._poll.start()
 
     def _apply_sid_hw_config(self) -> None:
@@ -1059,7 +1054,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         sid_map, model_blind = self._plan_multi_sid_map() if self._n_sids >= 2 else (None, False)
 
         # A single-SID tune has nothing to route, and the canonical fallback
-        # layout routes without consulting models — both still need the
+        # layout routes without consulting models, so both still need the
         # standalone model pass. The model-aware planner has already matched.
         wants_model_pass = self._sid_model != "off" and (sid_map is None or model_blind)
         model_plan = None
@@ -1081,8 +1076,8 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             )
             if wants_model_pass:
                 # Addressing just moved and this layout was chosen blind to the
-                # header — re-derive the model plan against the NOW-current
-                # addressing so it sees where each chip actually landed.
+                # header, so the model plan is re-derived against the now-current
+                # addressing to see where each chip actually landed.
                 model_plan = plan_model_config_for_header(self.api, self.header, self._sid_model)
 
         if model_plan:
@@ -1095,7 +1090,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _required_sid_models(self) -> tuple[str | None, ...]:
         """The chip model each of the tune's chips requires, parallel to
         `_sid_addresses` (which detect_sid_addresses may resolve to a different
-        count than the raw header declares)."""
+        count than the raw header declares) — except under
+        `sid_model = "off"`, where `required_models_for` returns an EMPTY tuple
+        regardless of chip count because model matching is disabled entirely.
+        Index it only after checking, or the parallelism will not hold."""
         return required_models_for(
             self._sid_model, self.header.sid_models, len(self._sid_addresses)
         )
@@ -1115,10 +1113,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if sid_map is not None:
             return sid_map, False
 
-        # The tune's exact addresses aren't realizable on 2 sockets + 2 cores;
-        # fall back to the canonical layout so at least the consecutive-address
-        # chips sound (the scope stays correct regardless — it's driven by the
-        # host emu, not the hardware map).
+        # The tune's exact addresses are not realizable on 2 sockets + 2 cores,
+        # so the canonical layout at least lets the consecutive-address chips
+        # sound. The scope is driven by the host emu, not the hardware map, so it
+        # stays correct either way.
         log.warning(
             "waveform: SID addresses %s not exactly realizable on this U64 — "
             "using canonical %d-SID layout (some chips may be silent)",
@@ -1160,42 +1158,40 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._sid_session.restore()
 
     def teardown(self):
-        super().teardown()
-        self._poll.stop()
-        # Order: vector first, then silence, then the SID-config restore. If
-        # silence happened before the vector restore, the IRQ could fire
-        # between the volume-clear and gate-clears, rewriting both. Every
-        # tune chip is silenced at the address it played (mirroring
-        # AsidScene.teardown), and only THEN is the config restored: the
-        # restore may re-point a U2+ emulated SID at its home base, and a
-        # side moved home mid-note keeps ringing where no write can ever
-        # reach it — a machine reset does not clear the emulation's voice
-        # state (HW-verified). Flush after the vector write so it has
-        # actually landed before the silence writes; flush after silence so
-        # the SID is genuinely quiet before the next scene begins.
-        try:
-            self.api.restore_kernal_irq_vector()
-            # Then CIA #1 Timer A back to the kernal default, undoing any
-            # PLAY-rate retune, so the jiffy clock / SCNKEY / cursor blink
-            # resume at ~60 Hz for the next scene. Vector first for the same
-            # reason as the ordering note above. No-op when never retuned.
-            self.api.restore_kernal_play_rate()
-            self.api.flush()
-            for base in self._sid_addresses:
-                if base != SID.BASE:
-                    self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
-            self.api.silence_sid()
-            # Restore VIC bank 0 + the default $D018 so the next scene's
-            # bank-0 display renders (a no-op when we never relocated; the
-            # next scene's mode setup also writes $D018, but restore it for
-            # symmetry). Mirrors modes.py teardown.
-            self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-            self.api.write_memory("d018", f"{D018_HIRES_BITMAP:02X}")
-            self.api.flush()
-        except Exception:
-            log.exception("waveform: teardown silence/restore failed")
-        finally:
-            self._restore_sid_hw_config()
+        # Order: vector first, then silence, then the SID-config restore.
+        # Silencing before the vector restore lets the IRQ fire between the
+        # volume-clear and the gate-clears and rewrite both. Every tune chip is
+        # silenced at the address it played, and only THEN is the config
+        # restored: the restore may re-point a U2+ emulated SID at its home base,
+        # and a side moved home mid-note keeps ringing where no write can reach
+        # it — a machine reset does not clear the emulation's voice state
+        # (HW-verified). The flushes make each step land before the next.
+        #
+        # The PLAY-rate restore puts CIA #1 Timer A back to the kernal default so
+        # the jiffy clock / SCNKEY / cursor blink resume at ~60 Hz for the next
+        # scene. No-op when never retuned.
+        steps: list[tuple[str, Callable[[], object]]] = [
+            ("base teardown", super().teardown),
+            ("poll stop", self._poll.stop),
+            ("kernal IRQ vector restore", self.api.restore_kernal_irq_vector),
+            ("kernal PLAY rate restore", self.api.restore_kernal_play_rate),
+            ("flush vector restore", self.api.flush),
+        ]
+        steps += [
+            (f"silence SID at ${base:04X}", partial(self._silence_chip, base))
+            for base in self._sid_addresses
+            if base != SID.BASE
+        ]
+        steps += [
+            ("primary SID silence", self.api.silence_sid),
+            ("char-mode display restore", partial(restore_char_mode_display, self.api)),
+            ("flush silence", self.api.flush),
+            ("SID hardware config restore", self._restore_sid_hw_config),
+        ]
+        run_teardown_steps(log, type(self).__name__, steps)
+
+    def _silence_chip(self, base: int) -> None:
+        self.api.write_regs(f"{base:04X}", *bytes(SID_REG_COUNT))
 
     def cycle_style(self, api: C64Backend) -> str | None:
         """SHIFT handler: advance to the next subtune in the SID.
@@ -1231,30 +1227,72 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             return None
 
         self._cycle_silence_current()
-        new_song, chosen_duration, chosen_layout, chosen_access_fp = self._cycle_pick_candidate(n)
+        # One budget for everything this SHIFT press emulates — the candidate
+        # walk and the chosen subtune's write footprint. Per-run deadlines would
+        # let _MAX_CYCLE_CANDIDATES rejections cost 16 of them on the render
+        # thread, which is the freeze the candidate cap exists to bound.
+        budget = HostEmuBudget()
+        new_song, chosen_duration, chosen_layout, chosen_access_fp = self._cycle_pick_candidate(
+            n, budget
+        )
 
-        # Decide the new subtune's PLAY $01 bank (only for a chosen,
-        # renderable candidate — the write footprint run is skipped for the
-        # degenerate all-rejected fallback, where cue restores the heuristic
-        # default). $36 when PLAY reads RAM the tune wrote under BASIC ROM.
+        # $36 when PLAY reads RAM the tune wrote under BASIC ROM. Only for a
+        # chosen, renderable candidate: the write footprint run is skipped for
+        # the all-rejected fallback, where cue restores the heuristic default.
         chosen_play_bank: int | None = None
         if chosen_access_fp is not None:
-            write_fp = ram_write_footprint(self.sid_bytes, song=new_song)
-            chosen_play_bank = _play_bank_for_footprints(write_fp, chosen_access_fp)
+            write_fp = ram_write_footprint(self.sid_bytes, song=new_song, budget=budget)
+            if write_fp.complete and chosen_access_fp.complete:
+                chosen_play_bank = _play_bank_for_footprints(write_fp.ram, chosen_access_fp.ram)
+            else:
+                # A prefix on EITHER side can create or destroy the
+                # under-BASIC-ROM intersection, and getting $36 wrong on a cue is
+                # a silent tune. None is the address heuristic, the same default
+                # the all-rejected path takes. The access side reaches here only
+                # when a unified layout is pinned; without one, such a candidate
+                # was already skipped above.
+                log.info(
+                    "waveform: cycle keeping the default PLAY $01 bank for song %d/%d "
+                    "— its %s footprint is only a partial sample",
+                    new_song,
+                    n,
+                    _partial_footprint_names(write_fp.complete, chosen_access_fp.complete),
+                )
 
-        # Stop the poll thread so it can't tick the host emulator while we
-        # rebuild it. (The outgoing subtune was already silenced first, before
-        # the candidate footprinting.)
+        # So it cannot tick the host emulator while that is being rebuilt. The
+        # outgoing subtune was already silenced, before the candidate
+        # footprinting.
         self._poll.stop()
+
+        # Built and pre-flighted BEFORE anything re-INITs the real machine: each
+        # subtune is its own INIT/PLAY pair, so a tune whose song 1 passed the
+        # load-time gate can still hand song 2 a PLAY that dead-machines the
+        # C64-side player. Not charged to this SHIFT's budget, which bounds work
+        # whose COUNT the file sets: this is one INIT plus one pre-flight, and a
+        # budget the walk already spent would turn "the search took too long"
+        # into "the scene is over", since a refused pre-flight aborts.
+        try:
+            new_emu = self._build_host_emu(new_song)
+        except ValueError as e:
+            log.error("waveform: %s — scene aborting rather than cueing it.", e)
+            self.is_done = True
+            return None
 
         new_needs_basic_out = chosen_play_bank == CPU.PORT_BASIC_OUT
         if new_needs_basic_out and not self._current_needs_basic_out:
-            return self._cycle_hard_relaunch(new_song, chosen_duration, n)
+            relaunched = self._cycle_hard_relaunch(new_song, chosen_duration, n, new_emu)
+            if relaunched is not None:
+                self._report_init_truncation(new_emu, new_song)
+            return relaunched
 
         if not self._cycle_cue(api, new_song, chosen_play_bank):
             return None
         self._current_needs_basic_out = new_needs_basic_out
-        self._cycle_rebuild_emulator(new_song, chosen_duration)
+        self._cycle_rebuild_emulator(new_emu, chosen_duration)
+        # After the cue, not before it: _cycle_cue and _cycle_hard_relaunch can
+        # both still bail out with is_done set, and this must not announce a
+        # scope that will never be drawn — the dedupe key would be spent on it.
+        self._report_init_truncation(new_emu, new_song)
         self._cycle_reset_render_state()
         self._cycle_repoint_display(chosen_layout)
         return f"song {self.song}/{n}"
@@ -1282,26 +1320,63 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             log.exception("waveform: cycle pre-silence failed")
 
     def _cycle_pick_candidate(
-        self, n: int
-    ) -> tuple[int, float | None, tuple[int, int, int, int] | None, bytearray | None]:
+        self, n: int, budget: HostEmuBudget
+    ) -> tuple[int, float | None, tuple[int, int, int, int] | None, FootprintSample | None]:
         """Walk candidates from the next subtune, skipping ones that are too
         short (SFX, when the DB knows) or un-renderable (no free VIC bank for
         this subtune's PLAY footprint). Returns ``(new_song, duration, layout,
         access_footprint)``; the chosen subtune's layout is captured so the
-        caller doesn't re-footprint it. Bounded at n-1 attempts: if every
-        candidate is rejected, the first is returned with layout=None so SHIFT
-        still changes the song and keeps the current display bank (the new
-        subtune may render imperfectly, but audio plays)."""
+        caller doesn't re-footprint it. Bounded at n-1 attempts, at
+        _MAX_CYCLE_CANDIDATES, and at `budget`: if every candidate is rejected
+        (or either bound is hit), the first is returned with layout=None so
+        SHIFT still changes the song and keeps the current display bank (the
+        new subtune may render imperfectly, but audio plays).
+
+        A candidate whose PLAY footprint came back incomplete is rejected the
+        same way an unrenderable one is — but only when a bank is about to be
+        chosen from it. The bitmap is a prefix, so that bank can be RAM the
+        subtune is live in, and unlike setup's one-off choice this one is made
+        while the audience is watching. When `_unified_layout` pinned one bank
+        for every subtune at setup, nothing is chosen from this sample and
+        that reason does not apply: the candidate is kept, and its only other
+        consumer — the caller's PLAY `$01` bank intersection — refuses a
+        prefix on its own, exactly as it already does for a prefix *write*
+        footprint. Discarding the subtune there was stricter than the safe
+        fallback it already had, and it cost a playable subtune per prefix.
+        It is still the *last* choice under a pin, though: a prefix-sampled
+        candidate is held back and only used when no later candidate offers a
+        whole sample, since a whole one yields a measured `$01` bank and a
+        prefix leaves the address heuristic to guess."""
         payload_lo, payload_hi = _sid_payload_extent(self.sid_bytes)
         first_candidate = (self.song % n) + 1
         new_song = first_candidate
         chosen_duration: float | None = None
         chosen_layout: tuple[int, int, int, int] | None = None
-        chosen_access_fp: bytearray | None = None
+        chosen_access_fp: FootprintSample | None = None
         skipped_short: list[tuple[int, float]] = []
         skipped_unrender: list[int] = []
+        skipped_partial: list[int] = []
+        # Passed over under a pin rather than skipped: still named, or the walk
+        # spends footprint time on candidates the log never mentions. Every other
+        # rejection here logs its own reason.
+        held_partial: list[int] = []
+        # A pinned-layout candidate whose sample is a prefix: usable, but only
+        # if nothing better turns up. See the docstring.
+        held_back: tuple[int, float | None, FootprintSample] | None = None
         candidate = first_candidate
-        for _ in range(n - 1):
+        exhausted = False
+        chose = False
+        took_held_back = False
+        # The loop has three endings and the log has to tell them apart: a spent
+        # budget, the candidate cap running out with subtunes left unexamined,
+        # and every candidate actually looked at. Only the third licenses "no
+        # later candidate offered a whole one".
+        examined = 0
+        for _ in range(min(n - 1, self._MAX_CYCLE_CANDIDATES)):
+            if budget.expired():
+                exhausted = True
+                break
+            examined += 1
             looked_up: float | None = None
             if self._explicit_duration_s is None and self.songlengths_db is not None:
                 looked_up = self.songlengths_db.lookup(self.sid_bytes, candidate)
@@ -1309,17 +1384,34 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                     skipped_short.append((candidate, looked_up))
                     candidate = (candidate % n) + 1
                     continue
-            fp = ram_play_access_footprint(self.sid_bytes, song=candidate)
+            sample = ram_play_access_footprint(self.sid_bytes, song=candidate, budget=budget)
             if self._unified_layout is not None:
-                # One bank was pinned for every subtune at setup() — never
-                # relocate (a per-subtune _choose_display_layout could pick an
-                # earlier-preference bank and reintroduce the live bank move
-                # this pin exists to avoid). The union fits every subtune, so
-                # no candidate is unrenderable here.
+                # One bank was pinned for every subtune at setup(), so nothing
+                # relocates: a per-subtune _choose_display_layout could pick an
+                # earlier-preference bank and reintroduce the live bank move this
+                # pin exists to avoid. The union fits every subtune, so no
+                # candidate is unrenderable here, and nothing is placed from this
+                # sample, so a prefix does not disqualify it — the caller's PLAY
+                # $01 bank step refuses the prefix instead.
+                if not sample.complete:
+                    if held_back is None:
+                        held_back = (candidate, looked_up, sample)
+                    held_partial.append(candidate)
+                    candidate = (candidate % n) + 1
+                    continue
                 layout = self._unified_layout
+            elif not sample.complete:
+                # Same answer an unrenderable candidate gets: this footprint is a
+                # prefix, so a bank chosen from it may be RAM the subtune is live
+                # in, and the bitmap would paint over song data for as long as it
+                # plays. Skipping costs a candidate; there are more, and the
+                # all-rejected fallback keeps the bank already on screen.
+                skipped_partial.append(candidate)
+                candidate = (candidate % n) + 1
+                continue
             else:
                 try:
-                    layout = _choose_display_layout(payload_lo, payload_hi, fp)
+                    layout = _choose_display_layout(payload_lo, payload_hi, sample.ram)
                 except ValueError:
                     skipped_unrender.append(candidate)
                     candidate = (candidate % n) + 1
@@ -1327,8 +1419,27 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             new_song = candidate
             chosen_duration = looked_up
             chosen_layout = layout
-            chosen_access_fp = fp
+            chosen_access_fp = sample
+            chose = True
             break
+
+        # Not a `for ... else`: the budget-expired `break` above would skip it,
+        # and that is the pass most likely to be holding a candidate back — a
+        # spent budget is itself what truncates a sample into the prefix that
+        # got it held. The held-back subtune beats the all-rejected fallback
+        # below either way: it carries the pinned layout and a real sample,
+        # where the fallback keeps whatever bank is on screen and has none.
+        if not chose and held_back is not None:
+            new_song, chosen_duration, chosen_access_fp = held_back
+            chosen_layout = self._unified_layout
+            log.info(
+                "waveform: cycle taking song %d/%d on a partial PLAY footprint — %s, "
+                "and the pinned display bank does not come from it",
+                new_song,
+                n,
+                _held_back_reason(exhausted, examined, n),
+            )
+            took_held_back = True
 
         for sn, sl in skipped_short:
             log.info(
@@ -1344,10 +1455,42 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 sn,
                 n,
             )
+        for sn in skipped_partial:
+            log.info(
+                "waveform: cycle skipping song %d/%d (its PLAY footprint is only a "
+                "partial sample — placing the display bank from it isn't safe)",
+                sn,
+                n,
+            )
+        for sn in held_partial:
+            if sn == new_song:
+                continue  # the held-back line above already named it
+            log.info(
+                "waveform: cycle passing over song %d/%d (its PLAY footprint is only a "
+                "partial sample — playable under the pinned bank, but a whole sample "
+                "is preferred)",
+                sn,
+                n,
+            )
+        if exhausted:
+            # The two endings differ in what the display does, which is the
+            # part an operator sees: a held-back candidate carries the pinned
+            # layout, so nothing moves; with nothing held back the walk has no
+            # layout at all and the bank already on screen stays.
+            log.warning(
+                "waveform: cycle candidate search gave up after %.1fs of host emulation "
+                "— taking song %d/%d and %s",
+                ANALYSIS_BUDGET_S,
+                new_song,
+                n,
+                "keeping its pinned display bank"
+                if took_held_back
+                else "keeping the current display bank",
+            )
         return new_song, chosen_duration, chosen_layout, chosen_access_fp
 
     def _cycle_hard_relaunch(
-        self, new_song: int, chosen_duration: float | None, n: int
+        self, new_song: int, chosen_duration: float | None, n: int, new_emu: SidHostEmu
     ) -> str | None:
         """The $37→$36 crossing: a hard relaunch, needed only when ENTERING the
         under-BASIC-ROM group ($36) from a song that didn't need it.
@@ -1359,8 +1502,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         RAM (what a reset's RAMTAS zeroes), then let setup() re-DMA a pristine
         payload + re-run the full player startup + rebuild display/emu/poll.
         NOT a machine reset — just a brief VIC-mode flash from run_prg.
-        Everything else uses the fast, flicker-free cue path."""
+        Everything else uses the fast, flicker-free cue path.
+
+        `new_emu` is installed here because setup() constructs no host
+        emulator: its only load path is `_load_sid_file`, which `_prepared`
+        below deliberately suppresses. Leaving the old one in place left the
+        scope rendering the previous subtune's registers under the new song's
+        audio — and `_check_end_of_tune` watching the wrong song's envelopes
+        decay, so the scene could end early."""
         self.song = new_song
+        self._host_emu = new_emu
         try:
             self.api.write_memory_file(
                 f"{_LOW_RAM_CLEAR_LO:04X}", bytes(_LOW_RAM_CLEAR_HI - _LOW_RAM_CLEAR_LO)
@@ -1368,9 +1519,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             self.api.flush()
         except Exception:
             log.exception("waveform: cycle low-RAM clear failed")
-        # _prepared keeps self.song (no pool re-pick). setup() re-chooses
-        # the display bank + play_bank, re-DMAs payload, re-runs player,
-        # rebuilds host emu + poll, and resets start_time (full duration).
+        # _prepared keeps self.song (no pool re-pick); setup() re-chooses the
+        # display bank + play_bank, re-DMAs the payload, re-runs the player,
+        # rebuilds host emu + poll, and resets start_time to the full duration.
         self._prepared = True
         self.setup()
         if self.is_done:
@@ -1406,15 +1557,16 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self.song = new_song
         return True
 
-    def _cycle_rebuild_emulator(self, new_song: int, chosen_duration: float | None) -> None:
-        """Rebuild the host emulator on the new song and re-resolve duration.
+    def _cycle_rebuild_emulator(self, new_emu: SidHostEmu, chosen_duration: float | None) -> None:
+        """Install the new song's host emulator (built + pre-flighted by
+        cycle_style before the cue) and re-resolve duration.
         Explicit user value always wins. Otherwise use the length the skip
         loop already looked up (so we don't re-query the DB for the same
         song). On a DB miss or all-skipped fall-through, keep the prior
         duration_s — per-song lookup miss shouldn't truncate, and the
         all-skipped case is rare enough that "use whatever we had" is the
         least-surprising fallback."""
-        self._host_emu = SidHostEmu(self.sid_bytes, song=self.song, sid_bases=self._sid_addresses)
+        self._host_emu = new_emu
         if self._explicit_duration_s is not None:
             self.duration_s = float(self._explicit_duration_s)
         elif chosen_duration is not None:
@@ -1434,7 +1586,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         buffers — the U64 bitmap catches up on the next _render_hires());
         re-anchor the host-emu clock (the re-INIT stub runs on the next
         kernal IRQ, ~1 frame, so the new subtune's PLAY tick 0 lines up with
-        now; see _poll_regs); and rebuild + restart the poll thread at the
+        now; see _poll_regs); re-arm the one-shot catch-up warning, since the
+        new subtune's PLAY may be affordable where the old one's was not; and
+        rebuild + restart the poll thread at the
         new subtune's PLAY rate (it may be vsync vs the old one's CIA
         multispeed — _resolve_poll_rate builds a fresh PollThread; stop+start
         is the supported restart pattern)."""
@@ -1455,8 +1609,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 self._last_y[i] = None
         self._sid_start_time = now
         self._ticks_done = 0
+        self._catchup_warned = False
         # The new subtune may carry a different PSID speed flag, so the cue's
-        # re-tune decision may have landed differently — re-read the rate.
+        # re-tune decision may have landed differently.
         self._video_hz = self.api.sid_vsync_play_rate_hz()
         self._resolve_poll_rate()
         self._poll.start()
@@ -1491,42 +1646,61 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         else:
             self._paint_metadata_row()
 
-    def _detect_play_rate_hz(self) -> float:
-        """Return the current subtune's effective PLAY rate in Hz.
+    def _detect_play_rate_hz(
+        self, budget: HostEmuBudget | None = None
+    ) -> tuple[float, float | None]:
+        """Return ``(rate_hz, pass_cost_s)`` for the current tune.
 
-        A user-pinned reg_poll_hz wins outright. Otherwise probe the rate on a
-        THROWAWAY host emulator: many multispeed players program CIA #1 Timer A
-        from their PLAY routine rather than INIT (Galway's Times of Lore writes
-        it on the first PLAY — a ~2x multispeed), so SidHostEmu.play_rate_hz
-        only reports the true rate once PLAY has run at least once. Reading the
-        rate straight after a fresh INIT (which is exactly what cycle_style and
-        a pool re-pick do) therefore mis-detects such tunes as plain vsync and
-        ticks the scope at HALF the song's real rate — the voices then come in
-        on screen progressively later than you hear them (worst for late
-        entrants), the classic post-cycle "warped + delayed" scope.
+        The rate is probed on a THROWAWAY host emulator: many multispeed
+        players program CIA #1 Timer A from their PLAY routine rather than
+        INIT (Galway's Times of Lore writes it on the first PLAY — a ~2x
+        multispeed), so SidHostEmu.play_rate_hz only reports the true rate
+        once PLAY has run at least once. Reading it straight after a fresh
+        INIT — which is exactly what cycle_style and a pool re-pick do —
+        mis-detects such tunes as plain vsync and ticks the scope at HALF the
+        song's real rate: the voices then come in on screen progressively
+        later than you hear them (worst for late entrants), the classic
+        post-cycle "warped + delayed" scope.
 
         The probe runs on its own emu so the scene's real host emu keeps its
-        exact song position (the wall-clock catch-up in _poll_regs owns that),
-        and it's cheap: one INIT + a few PLAY passes (~a few ms). It stops the
-        instant a multispeed rate appears; a genuine vsync tune writes no
-        Timer A, runs all _RATE_PROBE_TICKS passes, and returns video_hz.
-
+        exact song position (the wall-clock catch-up in _poll_regs owns that).
         On the fresh-launch path the scene's own host emu was already
         PLAY-pre-flighted by _load_sid_file, so it would self-detect — but
         probing unconditionally keeps every entry point (init, setup re-pick,
-        SHIFT cycle) on one correct code path."""
-        if self._user_reg_poll_hz is not None:
-            return float(self._user_reg_poll_hz)
-        probe = SidHostEmu(self.sid_bytes, song=self.song)
-        rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
-        for _ in range(self._RATE_PROBE_TICKS):
-            if abs(rate - self._video_hz) > 0.5:
-                break  # multispeed Timer A latch seen — rate is known
-            probe.tick_play()
-            rate = probe.play_rate_hz(self._video_hz, self.emulator.clock)
-        return float(rate)
+        SHIFT cycle) on one correct code path.
 
-    def _resolve_poll_rate(self) -> None:
+        A pinned reg_poll_hz wins the RATE outright, but does not skip the
+        probe: what a PLAY pass costs is a property of the tune and the host,
+        not of who chose the tick rate, and it is what _resolve_poll_rate
+        floors the poll period against. Pinning 400 Hz does not make a 10 ms
+        pass affordable.
+
+        `budget` is the caller's analysis budget: the probe's INIT and its
+        passes are host emulation this tune's analysis performs, so setup()
+        passes its own rather than letting one setup draw ANALYSIS_BUDGET_S
+        twice. A budget already spent costs the probe its measurement and falls
+        the rate back to video — the cost the first paragraph prices. None
+        opens a fresh one, for the callers with no analysis to charge it to:
+        __init__, and cycle_style's subtune switch, whose budget bounds a walk
+        whose length the file chooses (see the note at its _build_host_emu
+        call).
+
+        See sid_host_emu.detect_play_rate_hz for the loop and for what
+        `pass_cost_s = None` means."""
+        if budget is None:
+            budget = HostEmuBudget()
+        probe = SidHostEmu(self.sid_bytes, song=self.song, budget=budget)
+        rate, pass_cost_s = detect_play_rate_hz(
+            probe,
+            video_hz=self._video_hz,
+            clock_hz=self.emulator.clock,
+            budget=budget,
+        )
+        if self._user_reg_poll_hz is not None:
+            return float(self._user_reg_poll_hz), pass_cost_s
+        return rate, pass_cost_s
+
+    def _resolve_poll_rate(self, budget: HostEmuBudget | None = None) -> None:
         """Set the host-emu PLAY tick rate to the current tune's real rate and
         (re)build the poll thread at that period.
 
@@ -1536,15 +1710,17 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         song at the same rate or the scope drifts behind the audio (a late-
         entering voice appears on screen well after you hear it). The rate is
         derived from the host emulator (which has run INIT) via
-        SidHostEmu.play_rate_hz, using the U64's system clock. An explicit
-        user reg_poll_hz pins the rate and skips detection.
+        SidHostEmu.play_rate_hz, using the U64's system clock. A pinned
+        reg_poll_hz wins the rate; it does not skip the probe, which is also
+        what prices a PLAY pass for the period floor below.
 
         Called from __init__ and again whenever the tune changes (setup()'s
         pool re-pick, cycle_style()'s subtune switch) since the new tune may
         have a different rate. run_first=True so the first wakeup catches the
         host emulator up immediately (covering the _setup_hires bitmap-clear
-        gap). See _poll_regs for the wall-clock catch-up model."""
-        rate = self._detect_play_rate_hz()
+        gap). See _poll_regs for the wall-clock catch-up model, and
+        _detect_play_rate_hz for what `budget` charges the probe to."""
+        rate, pass_cost_s = self._detect_play_rate_hz(budget)
         if self._user_reg_poll_hz is None and abs(rate - self._video_hz) > 0.5:
             log.info(
                 "waveform: %s is CIA-timed (multispeed) — host "
@@ -1555,11 +1731,35 @@ class WaveformScene(VoiceScopeRenderer, Scene):
                 rate / self._video_hz,
             )
         self._reg_poll_hz = float(rate)
-        # Per-PLAY-tick dt used to advance the ADSR envelope — must match the
-        # tick rate so the envelope tracks wall-clock.
+        # Must match the tick RATE, so the envelope tracks the song rather than
+        # the thread.
         self._poll_dt = 1.0 / max(rate, 5.0)
+        # How often the thread actually wakes: normally the same number, but
+        # floored so one measured PLAY pass fits inside
+        # _MAX_CATCHUP_PERIOD_FRACTION of it. The tune sets both the rate and the
+        # pass cost, and a 400 Hz CIA latch against a 10 ms pass would make one
+        # indivisible pass 4x the whole period, so the batch's time bound would
+        # bound nothing and the thread would run back to back under the GIL.
+        # Stretching the wakeups makes the scope fall behind the audio, which
+        # _warn_catchup_behind reports and the audience can see; a saturated core
+        # is neither.
+        self._poll_period = sustainable_poll_period_s(
+            self._poll_dt, pass_cost_s, self._MAX_CATCHUP_PERIOD_FRACTION
+        )
+        if self._poll_period > self._poll_dt:
+            log.warning(
+                "waveform: %s song %d — %s, more than this "
+                "tune's %.1f Hz PLAY rate allows; waking the host emulator every "
+                "%.1f ms instead so the render thread keeps its share of the CPU. "
+                "The oscilloscope will lag the audio.",
+                os.path.basename(self._sid_file),
+                self.song,
+                describe_pass_cost(pass_cost_s),
+                rate,
+                self._poll_period * 1000.0,
+            )
         self._poll = PollThread(
-            self._poll_regs, period=self._poll_dt, name="sid-reg-poll", run_first=True
+            self._poll_regs, period=self._poll_period, name="sid-reg-poll", run_first=True
         )
 
     def _poll_regs(self) -> None:
@@ -1591,21 +1791,54 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             # Ahead of (or exactly on) schedule — let wall-clock catch up.
             return
         n = min(n, self._MAX_CATCHUP_TICKS)
-        for _ in range(n):
-            self._host_emu.tick_play()
-            # One shadow + emulator per SID chip. Single-SID is the bank-0 path;
-            # a multi-SID tune updates every chip window's source. Register
-            # tracking + ADSR advance run per caught-up tick so no gate edge is
-            # missed. _reg_buf mirrors the primary chip for back-compat readers.
-            with self._reg_lock:
-                for bank, emu in enumerate(self._emulators):
-                    snapshot = self._host_emu.regs(bank)
-                    emu.update_registers(snapshot, retrigger=self._host_emu.retriggers(bank))
-                    emu.advance_envelopes(self._poll_dt)
-                self._reg_buf = self._host_emu.regs(0)
-        self._ticks_done += n
+        batch = run_catchup_passes(
+            self._host_emu,
+            self._absorb_play_tick,
+            ticks=n,
+            seconds=self._poll_period * self._MAX_CATCHUP_PERIOD_FRACTION,
+        )
+        self._ticks_done += batch.passes
+        if batch.passes < n or batch.overran:
+            self._warn_catchup_behind(target - self._ticks_done)
 
-    # ---- VIC setup ---------------------------------------------------------
+    def _absorb_play_tick(self) -> None:
+        """Fold the host emulator's post-PLAY state into every chip's scope
+        emulator. One shadow + emulator per SID chip: single-SID is the bank-0
+        path, a multi-SID tune updates every chip window's source. `_reg_buf`
+        mirrors the primary chip for back-compat readers.
+
+        The lock is taken per tick rather than once around the catch-up batch
+        on purpose: the render thread wants the same lock, and holding it
+        across a whole burst would starve exactly the thread the batch's time
+        bound exists to protect."""
+        with self._reg_lock:
+            for bank, emu in enumerate(self._emulators):
+                snapshot = self._host_emu.regs(bank)
+                emu.update_registers(snapshot, retrigger=self._host_emu.retriggers(bank))
+                emu.advance_envelopes(self._poll_dt)
+            self._reg_buf = self._host_emu.regs(0)
+
+    def _warn_catchup_behind(self, shortfall: int) -> None:
+        """Say once that this tune's PLAY is too expensive to emulate in real
+        time. The scope falls behind the audio from here on; nothing else is
+        wrong, so this is a one-shot warning rather than a per-wakeup log.
+
+        Fires on a short batch AND on a batch that overran its time bound while
+        still running every pass it was asked for — with one pass requested,
+        those look identical in the pass count, and only the second says a
+        single indivisible PLAY outlasts the bound."""
+        if self._catchup_warned:
+            return
+        self._catchup_warned = True
+        log.warning(
+            "waveform: %s song %d — the host emulator can't keep up with its own PLAY "
+            "rate (%.1f Hz, %d ticks behind after a catch-up batch that used its whole "
+            "time bound); the oscilloscope will lag the audio",
+            os.path.basename(self._sid_file),
+            self.song,
+            self._reg_poll_hz,
+            max(shortfall, 0),
+        )
 
     def _apply_display_bank(self):
         """Point VIC at the current display bank ($DD00/$D018), clear its
@@ -1624,8 +1857,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     def _setup_hires(self):
         self._apply_display_bank()
         self._alloc_scope_buffers()
-
-    # ---- per-frame render --------------------------------------------------
 
     def features(self) -> MusicModulation | None:
         """Live music features from the primary SID emulator, for process-wide
@@ -1663,25 +1894,21 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         if (current_time - self.start_time) >= self.duration_s:
             return False
 
-        # Register tracking + ADSR advancement happen on the poll thread now
-        # (see _poll_regs). Here we only read the resulting voice state under
-        # the lock to drive coloring + the end-of-tune silence check. Per-window
-        # controls (one column per SID chip) so per_waveform coloring is
-        # per-(voice, chip); env levels span every chip so the silence check
-        # doesn't end a tune whose primary chip rests while another plays.
+        # Register tracking and ADSR advancement happen on the poll thread (see
+        # _poll_regs); this only reads the resulting voice state under the lock.
+        # Env levels span every chip so the silence check does not end a tune
+        # whose primary chip rests while another plays.
         window_emus = self._scope_emulators()
         with self._reg_lock:
             window_controls = [[emu.voices[v].control for emu in window_emus] for v in range(3)]
             env_levels = [v.envelope_level for emu in self._emulators for v in emu.voices]
 
-        # End-of-tune detection: a short non-looping subtune that has gone
-        # fully silent ends the scene early instead of holding a flat scope.
+        # A short non-looping subtune that has gone fully silent ends the scene
+        # early instead of holding a flat scope.
         if self._check_end_of_tune(current_time, env_levels):
             return False
 
-        # Per-waveform color updates (only emit when a window's waveform select
-        # actually changes — change-detection avoids the cost in normal frames).
-        # For single-SID this is byte-identical to the prior per-voice repaint.
+        # Emitted only when a window's waveform select actually changes.
         if self.color_mode == "per_waveform":
             for v_idx in range(3):
                 changed = False
@@ -1721,8 +1948,6 @@ class WaveformScene(VoiceScopeRenderer, Scene):
             )
             return True
         return False
-
-    # ---- hires text rows ---------------------------------------------------
 
     def _build_title_line(self) -> str:
         """Return the 40-char title row: song title left-justified, composer

@@ -23,9 +23,9 @@ from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import max_safe_sample_rate
 
-# The doctor loads configs, and loading reads the machine-settings file — so
-# point $C64CAST_SETTINGS at a missing path for the module. Tests that want a
-# machine layer write their own file and re-patch over this.
+# The doctor loads configs, and loading reads the machine-settings file, so point
+# $C64CAST_SETTINGS at a missing path for the module. Tests that want a machine
+# layer write their own file and re-patch over this.
 _iso = MachineSettingsIsolation()
 
 
@@ -199,9 +199,8 @@ class CrossSystemOrchestrationTest(unittest.TestCase):
         return master_path
 
     def test_conductor_with_no_follower_warns(self):
-        # `right` has a conductor 'morning-hello'; `left` has no scene by
-        # that name. We use big_text-shaped scenes so the orchestrator
-        # resolves cleanly.
+        # `right` has a conductor 'morning-hello'; `left` has no scene by that name.
+        # Both use big_text-shaped scenes, so nothing but the missing follower warns.
         right = textwrap.dedent("""
             [ultimate64]
             url = "http://right.lan"
@@ -284,8 +283,7 @@ class ExtrasProbeTest(unittest.TestCase):
     def test_missing_extra_hint_suits_an_installed_package(self):
         # `uv sync` is meaningless without a project to sync: an installed user
         # re-runs the tool install, and it names `[all]` because extras do not
-        # accumulate. Every extra is installed in the dev env, so force one
-        # missing.
+        # accumulate. Every extra is installed in the dev env, so force one missing.
         real = doctor.importlib.util.find_spec
 
         def fake(name, *a, **kw):
@@ -502,10 +500,8 @@ class ReuStatusProbeTest(unittest.TestCase):
         reu = [d for d in diags if d.subject.endswith("(REU)")]
         self.assertEqual(len(reu), 1)
         self.assertEqual(reu[0].level, "error", "REU disabled + opt-in + auto_reu off = error")
-        # Message names which config flag and what fails silently:
         self.assertIn("Disabled", reu[0].message)
         self.assertIn("silently", reu[0].message)
-        # Hint points the user at auto_reu AND the U64 menu path:
         self.assertIsNotNone(reu[0].hint)
         assert reu[0].hint is not None  # narrow for type checker
         self.assertIn("auto_reu", reu[0].hint)
@@ -552,7 +548,6 @@ class ReuStatusProbeTest(unittest.TestCase):
         self.assertEqual(len(reu), 1)
         self.assertEqual(reu[0].level, "warn")
         self.assertIn("REST query", reu[0].message)
-        # Hint still actionable when we can't tell:
         assert reu[0].hint is not None
         self.assertIn("RAM Expansion Unit", reu[0].hint)
 
@@ -738,10 +733,8 @@ class PrintReportTest(unittest.TestCase):
         self.assertIn("[ERR ]", buf.getvalue())
 
     def test_midi_control_category_is_rendered(self):
-        # Regression: category_order previously omitted "midi_control", so
-        # a midi_control Diagnostic was silently dropped from the printed
-        # report (still counted in the ok/warn/error totals, but invisible
-        # to the reader — the worst kind of drift, since nothing failed).
+        # Regression: category_order omitted "midi_control", so such a Diagnostic
+        # was dropped from the printed report while still counting in the totals.
         diags = [doctor.Diagnostic("ok", "midi_control", "midi_control", "11 entries")]
         buf = io.StringIO()
         doctor.print_report(diags, file=buf)
@@ -749,11 +742,8 @@ class PrintReportTest(unittest.TestCase):
         self.assertIn("11 entries", buf.getvalue())
 
     def test_every_category_used_in_source_is_in_category_order(self):
-        # General drift guard: every category="..." literal doctor.py
-        # actually constructs a Diagnostic with must be covered by
-        # print_report's category_order, or it silently vanishes from the
-        # printed report (same failure class as the midi_control omission
-        # above — this test would have caught it).
+        # Every category="..." literal doctor.py constructs a Diagnostic with must
+        # be in print_report's category_order, or it vanishes from the report.
         import inspect
         import re
 
@@ -821,8 +811,8 @@ class EnvironmentProbeTest(unittest.TestCase):
 
     def test_interpreter_mismatch_warns(self):
         # A live but wrong interpreter (not the project .venv) should warn — the
-        # exact "bare python resolved somewhere else" trap. Only meaningful when
-        # the project .venv exists to compare against (it does in dev/CI).
+        # "bare python resolved somewhere else" trap. Only meaningful when the
+        # project .venv exists to compare against (it does in dev/CI).
         if not (doctor._REPO_ROOT / ".venv").exists():
             self.skipTest("no project .venv to compare against")
         with (
@@ -855,8 +845,7 @@ class EnvironmentProbeTest(unittest.TestCase):
     def test_uv_lock_probe_is_skipped_outside_a_source_checkout(self):
         # For an installed package _REPO_ROOT is site-packages, which has no
         # pyproject.toml. `uv lock --check` exits nonzero there for "no project
-        # found" exactly as it does for real drift, so running it told installed
-        # users their lockfile had drifted from a file they don't have.
+        # found" exactly as it does for real drift.
         with (
             mock.patch.object(doctor, "_running_from_checkout", return_value=False),
             mock.patch.object(doctor, "_probe_uv_lock") as probe,
@@ -1174,9 +1163,8 @@ class DataDirsProbeTest(unittest.TestCase):
         self.assertTrue(all(data in d.message for d in diags))
 
     def test_never_warns_about_legacy_repo_files(self):
-        # Even with stale calibration AND preset files at the legacy repo
-        # location, the doctor probe stays silent (both are surfaced at use
-        # time now, not here).
+        # Even with stale calibration AND preset files at the legacy repo location,
+        # the probe stays silent — both are surfaced at use time, not here.
         legacy = os.path.join(self._tmp.name, "repo")
         data = os.path.join(self._tmp.name, "data")
         for sub in (("calibration", "dac"), ("presets",)):
@@ -1361,8 +1349,8 @@ class UnknownKeyDiagnosticTest(unittest.TestCase):
         self.assertEqual(doctor._validate_unknown_keys(loaded), [])
 
     def test_config_rows_render_and_count_as_warnings(self):
-        # The point of the change: it shows up under a CONFIG heading and in
-        # the summary tally, not as a line above the report.
+        # It shows up under a CONFIG heading and in the summary tally, rather than
+        # as a line above the report.
         buf = io.StringIO()
         code = doctor.print_report(
             doctor._validate_unknown_keys(_load('[color]\npalette_mode = "x"\n')), file=buf
@@ -1441,9 +1429,8 @@ class SceneColorOverrideDiagnosticTest(unittest.TestCase):
         self.assertIn("[[scenes]][0].color.dither", diags[0].message)
 
     def test_a_bad_scene_override_does_not_hide_other_scenes_diagnostics(self):
-        # Scene "broken"'s override is invalid; scene "fine" has none. "fine"
-        # must still get its resolution "ok" diagnostic instead of the whole
-        # system's per-scene report being skipped after the first bad scene.
+        # Scene "broken"'s override is invalid; scene "fine" has none and must still
+        # get its resolution "ok" diagnostic rather than being skipped after it.
         loaded = _load(
             '[[scenes]]\nname = "broken"\ntype = "video"\nfile = "a.mp4"\n'
             '  [scenes.color]\n  dither = "bogus"\n\n'

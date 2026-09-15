@@ -92,22 +92,17 @@ class BlueNoiseOffsetTest(unittest.TestCase):
         self.assertEqual(off.shape, (13, 5))
 
     def test_is_a_full_rank_permutation(self):
-        # The baked tile must cover every rank 0..N-1 exactly once — a
-        # corrupted/truncated bake would silently produce a degenerate
-        # (non-blue-noise) threshold set.
+        # The baked tile must cover every rank 0..N-1 exactly once — a truncated
+        # bake would silently produce a degenerate (non-blue-noise) threshold set.
         size = dither._BLUE_NOISE_SIZE
         ranks = sorted(dither._BLUE_NOISE.astype(np.int64).ravel().tolist())
         self.assertEqual(ranks, list(range(size * size)))
 
     def test_spectrum_is_not_dominated_by_a_single_harmonic_unlike_bayer(self):
-        # The whole point of blue noise over Bayer: no visible grid/cross-
-        # hatch. Threshold each offset at its median to get a binary pattern
-        # (the same construction ordered dither performs at render time) and
-        # compare each one's power-spectrum peak concentration. Bayer's
-        # regular 8x8 tiling is a near-perfect comb — almost all non-DC
-        # energy sits in a single harmonic bin, which is exactly the
-        # concentrated periodicity the eye reads as a grid. Blue noise
-        # spreads its energy across many bins with no dominant peak.
+        # The point of blue noise over Bayer: no visible grid/cross-hatch. Threshold
+        # each offset at its median (the construction ordered dither performs at
+        # render time) and compare power-spectrum peak concentration. Bayer's regular
+        # 8x8 tiling is a near-perfect comb; blue noise has no dominant peak.
         size = dither._BLUE_NOISE_SIZE
 
         def peak_energy_fraction(offset: np.ndarray) -> float:
@@ -152,18 +147,16 @@ class ErrorDiffuseTest(unittest.TestCase):
                 np.testing.assert_array_equal(codes_white, np.ones((4, 4), dtype=np.uint8))
 
     def test_mid_gray_dithers_a_mix_of_both_candidates(self):
-        # A flat 50% gray field has no information a single nearest-candidate
-        # pick could use, so error diffusion should spread the two candidates
-        # roughly evenly rather than collapsing to one.
+        # A flat 50% gray field has no information a single nearest-candidate pick
+        # could use, so error diffusion should spread the two candidates evenly.
         gray = np.full((16, 16, 3), 127.5, dtype=np.float32)
         codes = dither.error_diffuse(gray, self._CANDIDATES, "floyd-steinberg")
         frac_white = float(codes.mean())
         self.assertTrue(0.3 < frac_white < 0.7, frac_white)
 
     def test_strength_zero_never_diffuses_error(self):
-        # strength=0 means every pixel is judged independently (no error
-        # carried to neighbors), so a flat field always resolves to the
-        # single nearest candidate for every pixel.
+        # strength=0 judges every pixel independently (no error carried to
+        # neighbors), so a flat field resolves to the single nearest candidate.
         gray_below_mid = np.full((6, 6, 3), 100.0, dtype=np.float32)
         codes = dither.error_diffuse(gray_below_mid, self._CANDIDATES, "atkinson", strength=0.0)
         np.testing.assert_array_equal(codes, np.zeros((6, 6), dtype=np.uint8))
@@ -190,9 +183,8 @@ class ErrorDiffuseCellsTest(unittest.TestCase):
                 self.assertTrue(bool((codes < k).all()))
 
     def test_matches_error_diffuse_for_a_single_cell(self):
-        # error_diffuse_cells batched over N=1 cell must reduce to the same
-        # result as the single-image error_diffuse primitive (same math,
-        # different looping structure).
+        # error_diffuse_cells batched over N=1 cell must reduce to the single-image
+        # error_diffuse primitive (same math, different looping structure).
         rng = np.random.default_rng(2)
         img = rng.uniform(0, 255, size=(6, 5, 3)).astype(np.float32)
         cand = np.array([[10, 20, 30], [200, 210, 220], [100, 90, 80]], dtype=np.float32)
@@ -203,9 +195,8 @@ class ErrorDiffuseCellsTest(unittest.TestCase):
                 np.testing.assert_array_equal(single, batched)
 
     def test_no_diffusion_across_cell_boundary(self):
-        # Two cells with identical pixel content but DIFFERENT candidate sets
-        # must dither independently — a bug that let error leak across the
-        # batch (cell) axis would make cell 1's result depend on cell 0's.
+        # Two cells with identical pixel content but DIFFERENT candidate sets must
+        # dither independently — error leaking across the batch axis would couple them.
         content = np.full((2, 3, 3, 3), 128.0, dtype=np.float32)
         cand_a = np.array([[0, 0, 0], [255, 255, 255]], dtype=np.float32)
         cand_b = np.array([[100, 100, 100], [150, 150, 150]], dtype=np.float32)

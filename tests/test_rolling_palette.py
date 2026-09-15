@@ -51,7 +51,6 @@ class DriverPublishTest(unittest.TestCase):
         self.addCleanup(fp.stop)
         fp.start()
         fp.submit_frame(_two_color(2, 6))
-        # Give the worker a few cycles to sample + bake + publish.
         deadline = time.time() + 2.0
         cmap: ColorMap | None = None
         while time.time() < deadline:
@@ -74,15 +73,15 @@ class DriverPublishTest(unittest.TestCase):
             if fp.poll_colormap() is not None:
                 break
             time.sleep(0.03)
-        # Immediately after consuming a published map, the next poll is empty
-        # (a stable, unchanged palette doesn't re-publish).
+        # A stable, unchanged palette does not re-publish, so the poll after a
+        # consumed map is empty.
         self.assertIsNone(fp.poll_colormap())
 
     def test_stop_is_idempotent_and_joins(self):
         fp = RollingForcePalette(n_colors=2, sample_interval_s=0.03)
         fp.start()
         fp.stop()
-        fp.stop()  # second stop is a no-op
+        fp.stop()
         self.assertFalse(fp._poll.is_running())
 
 
@@ -99,13 +98,11 @@ class SceneGatingTest(unittest.TestCase):
         applying_mode = SimpleNamespace(_force_palette=True, set_color_map=lambda c: None)
         plain_mode = SimpleNamespace(_force_palette=False)
 
-        # No color, or a mode that doesn't apply force_palette → nothing starts.
         self.assertIsNone(_maybe_start_rolling_palette(scene, None, applying_mode))  # type: ignore[arg-type]
         self.assertIsNone(
             _maybe_start_rolling_palette(scene, ColorCfg(force_palette=True), plain_mode)  # type: ignore[arg-type]
         )
 
-        # force_palette on + an applying mode → a started driver (stop it).
         fp = _maybe_start_rolling_palette(
             scene,  # type: ignore[arg-type]
             ColorCfg(force_palette=True, force_palette_colors=4),
@@ -124,11 +121,9 @@ class SceneGatingTest(unittest.TestCase):
         mode = SimpleNamespace(set_color_map=installed.append)
         frame = _solid(2)
 
-        # None driver → no-op, no raise.
         _apply_rolling_palette(None, mode, frame)  # type: ignore[arg-type]
         self.assertEqual(installed, [])
 
-        # A driver that yields a map → it gets installed; the frame is submitted.
         dummy = ColorMap(lut=np.zeros((2, 2, 2), dtype=np.uint8), shift=3, indices=(2, 6))
         submitted: list[np.ndarray] = []
         stub = SimpleNamespace(submit_frame=submitted.append, poll_colormap=lambda: dummy)

@@ -69,10 +69,9 @@ class SilenceNativeStderrTest(_Fd2PipeTestCase):
         self.assertEqual(self.read_all(), b"heard")
 
     def test_no_fd_leak_across_many_enter_exit_cycles(self):
-        # A leak on either failure path (saved outside the try, devnull's
-        # close after a dup2 that could raise) shows up as fd numbers
-        # climbing — a probe fd opened before and after should land on the
-        # same number, since the OS hands out the lowest free one.
+        # The OS hands out the lowest free fd, so a leak on either failure
+        # path shows up as a probe fd opened before and after landing on
+        # different numbers.
         probe = os.open(os.devnull, os.O_RDONLY)
         os.close(probe)
         for _ in range(200):
@@ -89,8 +88,7 @@ class SilenceNativeStderrTest(_Fd2PipeTestCase):
             with self.assertRaises(OSError):
                 with silence_native_stderr():
                     pass
-        # fd 2 must still be the pipe's write end — the failed attempt never
-        # touched it — and the `saved` dup from the failed attempt must be closed.
+        # The failed attempt must have left fd 2 alone and closed its `saved` dup.
         os.write(2, b"still wired to the pipe")
         self.assertEqual(self.read_all(), b"still wired to the pipe")
         probe_after = os.open(os.devnull, os.O_RDONLY)
@@ -109,11 +107,10 @@ class SilenceNativeStderrTest(_Fd2PipeTestCase):
         self.assertEqual(self.read_all(), b"")
 
     def test_overlapping_non_nested_calls_restore_real_stderr_once_both_exit(self):
-        # The exact shape of the reported bug: entry order A, B and exit
-        # order A, B (B — the *second* entrant — is also the *last* exiter).
-        # The buggy version had B's own `os.dup(2)` capture A's /dev/null
-        # redirect as its "saved" fd, so B's exit pinned fd 2 to /dev/null
-        # for good. The depth counter must make B's entry a no-op instead.
+        # Entry order A, B and exit order A, B, so the second entrant is also
+        # the last exiter: B's own `os.dup(2)` captured A's /dev/null redirect
+        # as its "saved" fd and B's exit pinned fd 2 to /dev/null for good.
+        # The depth counter has to make B's entry a no-op.
         a_entered = threading.Event()
         b_entered = threading.Event()
         a_exited = threading.Event()

@@ -7,18 +7,17 @@ slideshow / generative) supports them with no per-scene wiring. The transform
 runs at full source resolution; for time-varying or feedback effects the scene
 passes the current time `t` and resets effect state at scene setup.
 
-Music-reactive path: `apply` also takes an optional `MusicModulation` snapshot
-(the same struct generators read — level / onset / beat_phase). When present, an
-effect modulates itself from it (a transient punches the zoom, splits the RGB
-channels, lengthens the trail). When it's `None` — every non-music-reactive
-scene today, since only `SourceScene` with a SID audio source produces a feature
-stream — each effect falls back to its baseline behavior, and the zoom/shift
-effects fall back to the identity transform. So the unmodulated path is
-byte-stable and the offline renderer / determinism tests stay valid.
+`apply` also takes an optional `MusicModulation` snapshot (the same struct
+generators read). When present, an effect modulates itself from it; when it is
+`None` each effect falls back to its baseline behavior, and the zoom/shift
+effects to the identity transform, so the unmodulated path stays byte-stable for
+the offline renderer and the determinism tests.
 
 Effects are registered by name and built via `build_effect(name)`. Add a
 `@register("name")` subclass of `FrameEffect` and it shows up in config
 discovery + the `_EFFECT_CHOICES` list (a drift test pins the match).
+
+See docs/architecture/scenes.md#effectspy--the-frameeffect-registry.
 """
 
 from __future__ import annotations
@@ -67,39 +66,28 @@ class FrameEffect:
     others ignore the arg. The `modulation is None` path must stay byte-stable
     (the determinism guard the offline renderer + tests rely on).
 
-    **Layer chain (Live DJ/VJ Phase 3).** A scene holds an ordered
-    `scene.effects` list, applied in order in `scenes._render_with_overlays`.
-    Two per-layer knobs live on the base so every effect gets them for free:
-
-    * `enabled` — a bypass toggle. When False the render loop skips the layer
-      entirely (the identity transform), so a `fx_toggle` MIDI action can drop a
-      layer out and back in live. It's a plain bool write (GIL-atomic, like a
-      LIVE_PARAM), and the bypassed path is byte-for-byte identity, so the
-      determinism guard holds with any subset of layers disabled.
-    * `mod_source` — which `MusicModulation` feeder drives this reactive layer:
-      `"audio"` (the scene's SID feature stream, the historical behavior),
-      `"clock"` (the Phase-1 `TempoClock` via `scene.clock_modulation`, so an
-      effect locks to MIDI/tap tempo with no new effect code), or `"off"` (never
-      react — always the `modulation is None` baseline). The render loop reads it
-      and hands each layer the matching snapshot; a non-reactive effect ignores
-      the arg regardless."""
+    A scene holds an ordered `scene.effects` list, applied in order in
+    `scenes._render_with_overlays`; the two per-layer knobs below live here so
+    every effect gets them. See
+    docs/architecture/scenes.md#the-layerable-chain-live-djvj-phase-3.
+    """
 
     name = "base"
 
-    # Bypass toggle (fx_toggle). True = apply; False = skip (identity). A plain
-    # attribute so the reader-thread flip is GIL-atomic; the skip happens in the
-    # render loop, not inside apply(), so a disabled layer is exact identity.
+    # Bypass toggle (fx_toggle). A plain attribute, so the reader-thread flip is
+    # GIL-atomic, and the skip happens in the render loop rather than inside
+    # apply(), so a disabled layer is exact identity.
     enabled: bool = True
 
-    # Which MusicModulation feeder drives this layer: "audio" (SID feature
-    # stream), "clock" (the TempoClock beat grid), or "off" (never react). Set
-    # per-scene by config.build_scene; resolved in scenes._render_with_overlays.
+    # Which MusicModulation feeder drives this layer: "audio" (the scene's
+    # feature stream), "clock" (the TempoClock beat grid), or "off" (never
+    # react). Set per-scene by config.build_scene.
     mod_source: str = "audio"
 
-    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep.
-    # midi_control.py scales into this range and setattr()s directly —
-    # only declare independent single-numeric fields here (a plain
-    # setattr is GIL-atomic; a value split across two fields wouldn't be).
+    # name -> (min, max) for a CC-style [0, 1] sweep. midi_control.py scales
+    # into the range and setattr()s directly, so only independent
+    # single-numeric fields belong here: a plain setattr is GIL-atomic, and a
+    # value split across two fields would not be.
     LIVE_PARAMS: dict[str, tuple[float, float]] = {}
 
     def apply(
@@ -122,9 +110,8 @@ class TrailsEffect(FrameEffect):
     Reactive: a transient (`onset`) and sustained loudness (`level`) lengthen the
     tail momentarily, so the trail blooms on the beat and tightens between hits.
     The effective decay is clamped below 1.0 (a decay of 1 never fades). With no
-    modulation the decay is exactly the configured `decay` — unchanged behavior."""
+    modulation the decay is exactly the configured `decay`."""
 
-    # Reactive decay boosts (None path uses the configured decay verbatim).
     _ONSET_DECAY = 0.12  # extra decay (longer tail) at a full transient
     _LEVEL_DECAY = 0.06  # extra decay from sustained loudness
     _MAX_DECAY = 0.97  # hard ceiling — must stay < 1 or the tail never fades
@@ -163,16 +150,15 @@ class PulseEffect(FrameEffect):
 
     With no modulation (or a scale that rounds to 1.0) it's the identity
     transform, so a non-reactive scene that selects `pulse` sees its frame
-    unchanged — nothing to react to, nothing happens.
+    unchanged.
 
     `intensity` scales the whole reaction (the sx/ix live knob); 1.0 is the
-    baseline. Since the effect is inert without modulation, this slider is a
-    visible no-op on a non-reactive scene (nothing to scale)."""
+    baseline. The effect being inert without modulation, that slider is a
+    visible no-op on a non-reactive scene."""
 
     _ONSET_ZOOM = 0.18  # +18% scale at a full transient (the on-beat punch)
     _LEVEL_ZOOM = 0.06  # steady zoom from loudness
 
-    # Live-tunable reaction depth; 1.0 == the historical fixed response.
     LIVE_PARAMS = {"intensity": (0.0, 2.5)}
 
     def __init__(self, intensity: float = 1.0):
@@ -193,8 +179,8 @@ class PulseEffect(FrameEffect):
         cw = int(round(w / scale))
         if ch < 1 or cw < 1 or (ch == h and cw == w):
             return frame
-        # Center-crop a smaller window and stretch it back to full size — the
-        # content grows toward the edges (a zoom-in punch) without shifting.
+        # A center crop stretched back to full size: the content grows toward
+        # the edges without shifting.
         y0 = (h - ch) // 2
         x0 = (w - cw) // 2
         crop = frame[y0 : y0 + ch, x0 : x0 + cw]
@@ -215,7 +201,6 @@ class RgbShiftEffect(FrameEffect):
     _ONSET_SHIFT = 6.0  # px of R/B separation at a full transient
     _LEVEL_SHIFT = 2.0  # steady separation from loudness
 
-    # Live-tunable reaction depth; 1.0 == the historical fixed response.
     LIVE_PARAMS = {"intensity": (0.0, 2.5)}
 
     def __init__(self, intensity: float = 1.0):
@@ -234,9 +219,9 @@ class RgbShiftEffect(FrameEffect):
         )
         if shift <= 0:
             return frame
-        # BGR: channel 0 = blue, channel 2 = red. Roll them opposite ways; G
-        # stays put so the image core reads through the colored fringes. np.roll
-        # wraps a thin column at the edges, which reads as part of the glitch.
+        # BGR: channel 0 = blue, channel 2 = red, rolled opposite ways with G
+        # left put, so the image core reads through the colored fringes.
+        # np.roll's wrapped edge column reads as part of the glitch.
         out = frame.copy()
         out[..., 0] = np.roll(frame[..., 0], shift, axis=1)
         out[..., 2] = np.roll(frame[..., 2], -shift, axis=1)
@@ -250,16 +235,13 @@ class BlurEffect(FrameEffect):
     (WLED leans on `SEGMENT.blur` throughout its 2D effects).
 
     Unlike `pulse`/`rgb_shift`, this is NOT reactive-only: the default
-    `intensity` is 0.0, so it's a no-op on any scene that doesn't explicitly
-    set a nonzero value — the "identity without modulation" guarantee comes
-    from the base value, not from `modulation is None`. A reactive scene adds
-    an onset kick on top of the configured base, the same "base + kick" shape
-    `trails` uses. Stateless (no `reset()` override needed).
+    `intensity` is 0.0, so the "identity without modulation" guarantee comes
+    from the base value rather than from `modulation is None`, and a reactive
+    scene adds an onset kick on top of the configured base. Stateless.
 
-    `intensity` is used directly as `cv2.GaussianBlur`'s `sigmaX` (kernel size
-    is auto-derived by cv2 from sigma) — named `intensity` rather than a
-    blur-specific name like `radius` so it lands on the existing WLED/MIDI
-    `effect.intensity` live-param convention with no bridge code changes."""
+    `intensity` is used directly as `cv2.GaussianBlur`'s `sigmaX` (cv2 derives
+    the kernel size from sigma), and is named for the `effect.intensity`
+    live-param convention rather than for blur."""
 
     _ONSET_KICK = 3.0  # extra sigma at a full transient, on top of the base
 
@@ -307,12 +289,12 @@ class StrobeEffect(FrameEffect):
     ) -> np.ndarray:
         if modulation is None or self.duty >= 1.0:
             return frame
-        # Cycle phase in [0,1): `rate` strobes per beat. `beat_phase` is the
-        # monotonic beat integral, jitter-immune, so the flash never stutters.
+        # `beat_phase` is the monotonic beat integral, jitter-immune, so the
+        # flash never stutters.
         cycle = (modulation.beat_phase * max(1.0, self.rate)) % 1.0
         if cycle < self.duty:
-            return frame  # lit portion of the cycle
-        # Dark portion — a fresh black frame (never mutate the caller's buffer).
+            return frame
+        # A fresh black frame: never mutate the caller's buffer.
         return np.zeros_like(frame)
 
 
@@ -322,10 +304,7 @@ class InvertEffect(FrameEffect):
     `mix` in [0,1] sets how far — 1.0 (default) is a full invert, 0.0 a no-op —
     so a knob can crossfade the negative in, and a `fx_toggle` can flick the
     whole layer. Not reactive: `mix` is a static/live value, independent of
-    `modulation`, so the effect is byte-stable on every scene.
-
-    Vectorized: the inverse is `255 - frame`, and the blend is an integer
-    `cv2.addWeighted`, so there's no per-pixel Python."""
+    `modulation`, so the effect is byte-stable on every scene."""
 
     LIVE_PARAMS = {"mix": (0.0, 1.0)}
 
@@ -352,19 +331,18 @@ class MirrorEffect(FrameEffect):
     four-way kaleidoscope). Not reactive; byte-stable on every scene.
 
     The one effect in the family with a `LIVE_CHOICES` discrete knob rather than
-    a scalar — a note/pad mapped to `effect.axis` cycles the fold, a CC buckets
-    across the three. Mirrors the `mode.<name>` choice mechanism
-    (`set_live_choice`/`get_live_choice`), so `midi_control._apply_param` drives
-    it with no effect-specific code."""
+    a scalar: a note/pad mapped to `effect.axis` cycles the fold, a CC buckets
+    across the three."""
 
     LIVE_CHOICES = {"axis": ("horizontal", "vertical", "quad")}
 
     def __init__(self, axis: str = "horizontal"):
         self.axis = axis if axis in self.LIVE_CHOICES["axis"] else "horizontal"
 
-    # Live-choice plumbing (mirrors DisplayMode's set/get_live_choice contract
-    # that midi_control._apply_param and the WLED bridge expect). `api` is unused
-    # (an effect writes no VIC registers) but kept in the signature for parity.
+    # DisplayMode's set/get_live_choice contract, which
+    # midi_control._apply_param and the WLED bridge drive with no
+    # effect-specific code. `api` is unused — an effect writes no VIC registers
+    # — and kept for parity with that contract.
     def set_live_choice(self, api: object, name: str, value: str) -> str | None:
         if name == "axis" and value in self.LIVE_CHOICES["axis"]:
             self.axis = value
@@ -384,7 +362,6 @@ class MirrorEffect(FrameEffect):
             w = out.shape[1]
             half = w // 2
             if half > 0:
-                # Reflect the left half onto the right (mirror about center-x).
                 out[:, w - half :] = out[:, :half][:, ::-1]
         if axis in ("vertical", "quad"):
             out = out if out is not frame else out.copy()
@@ -400,11 +377,7 @@ class PosterizeEffect(FrameEffect):
     """Level crush: quantizes each channel to `levels` steps, flattening the
     image into hard poster bands (a look that also pre-simplifies the frame for
     the C64 palette reduction downstream). `levels` in [2,32]; low values band
-    hard, high values approach the source. Not reactive; byte-stable.
-
-    Integer-only quantization (`(px // step) * step`, snapped to the band
-    center-ish top) so it's a cheap vectorized numpy op with no float round-trip
-    per pixel."""
+    hard, high values approach the source. Not reactive; byte-stable."""
 
     LIVE_PARAMS = {"levels": (2.0, 32.0)}
 
@@ -417,9 +390,9 @@ class PosterizeEffect(FrameEffect):
         levels = int(round(self.levels))
         if levels >= 256 or levels <= 1:
             return frame
-        # Map 0..255 into `levels` bands, then expand each band back to the full
-        # range so the brightest band reaches 255 (a plain floor would cap below
-        # white). uint16 intermediate avoids the multiply overflowing uint8.
+        # Each band expands back to the full range so the brightest reaches 255,
+        # where a plain floor would cap below white. The uint16 intermediate
+        # keeps the multiply from overflowing uint8.
         step = 256 // levels
         if step <= 1:
             return frame

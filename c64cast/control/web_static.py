@@ -1,40 +1,12 @@
 """Serving the built web console.
 
-The console's sources live in ``web/`` at the repo root and are compiled by
-Vite into ``c64cast/web/dist/``, which is **committed** and shipped as package
-data. That is the whole reason this module is three routes rather than a build
-integration: a ``uv sync`` install has no Node, no ``npm``, and no network, and
-the console still has to come up. Node is required to *change* the UI, never to
-run it.
+The console's sources live in ``web/`` and Vite compiles them into
+``c64cast/web/dist/``, which is **committed** and shipped as package data, so a
+``uv sync`` install with no Node still gets a console. :func:`mount_web_app`
+registers three routes and must be registered **last**, after every API route,
+because the third is a catch-all.
 
-Registered last, after every API route, because the fallback is a catch-all.
-FastAPI matches in registration order, so ``/api/session`` reaches its handler
-and ``/anything-else`` reaches the app shell — which is what lets the client
-grow routes later without a server change. What the catch-all refuses is read
-off ``app.routes`` at mount time rather than listed: a mistyped
-``/api/sessions`` answering ``200`` with a page of HTML is a worse failure than
-a ``404`` — a ``fetch`` would parse it as success — and a hand-written list of
-the paths to protect would be a second copy of the route table.
-
-Assets are served by hand rather than by ``StaticFiles`` for one reason:
-:mod:`vite.config.ts` gives them **fixed names** (``assets/app.js``), so a
-browser that cached one across an upgrade would run the old console against the
-new API. ``no-cache`` on every response makes each load revalidate, which on a
-LAN costs a round trip and buys correctness. Content-hashed names would be the
-other answer, and were rejected: they add a file to git on every rebuild and
-leave the old one behind, which makes a committed artifact unreviewable.
-
-Serving by hand means owning the traversal question, and the answer here is to
-not have one: the bundle's files are **cataloged at mount time** and a request
-looks its name up as a dictionary key. Nothing a client sends ever becomes a
-path component, so there is no ``..`` to normalize and no containment check to
-get subtly wrong — and no static analyzer has to be persuaded that the check
-was correct.
-
-Nothing here is behind its own auth check. The app is mounted onto an app the
-token middleware already wraps, so the shell is gated exactly like the API it
-talks to — a browser reaches the console by way of ``/api/login?token=…``,
-which sets the cookie and redirects.
+See docs/architecture/control.md#web_staticpy--the-consoles-built-ui-committed-and-served.
 """
 
 from __future__ import annotations
@@ -68,10 +40,7 @@ _CONTENT_TYPES = {
 def owned_segments(app: Any) -> frozenset[str]:
     """The first path segment of every route already on ``app``.
 
-    Read off the app rather than listed here, because a list would be a second
-    copy of the route table: every path the server answers is registered before
-    the console is mounted, so this is exact by construction and a route added
-    to :mod:`web_api` tomorrow is covered without anybody remembering."""
+    Exact only when called after every other route is registered."""
     segments = set()
     for route in getattr(app, "routes", []):
         path = str(getattr(route, "path", ""))
@@ -95,13 +64,10 @@ def _asset_catalog(dist: Path) -> dict[str, tuple[Path, str]]:
     """The bundle's servable asset files, keyed by the name a request may ask
     for.
 
-    Cataloged once rather than resolved per request, so a request *names a key*
-    and never contributes a path component: there is no traversal question to
-    answer, and no ``is_relative_to`` check standing between a user string and
-    the filesystem. The bundle is a handful of files with fixed names, so the
-    map is cheap and complete. A rebuild while the host is up therefore needs a
-    restart — which is what ``npm run dev`` is for, and not something a
-    deployment does."""
+    Cataloged once rather than resolved per request: a request *names a key*
+    and never contributes a path component, so there is no traversal to
+    normalize and no containment check to get subtly wrong. A rebuild while
+    the host is up therefore needs a restart."""
     assets = (dist / ASSETS_NAME).resolve()
     if not assets.is_dir():
         return {}
@@ -117,13 +83,11 @@ def shell_paths(directory: Path | None = None) -> tuple[str, ...]:
     """Every exact path a browser needs to load the console shell and nothing
     more — ``/`` and each of the bundle's assets — or ``()`` with no bundle.
 
-    Read off the same catalog :func:`mount_web_app` serves from, because the
-    one caller is :func:`c64cast.app.serve.build_daemon_app` handing them to
+    Read off the same catalog :func:`mount_web_app` serves from. The one
+    caller is :func:`c64cast.app.serve.build_daemon_app`, handing them to
     ``TokenAuthMiddleware``'s exact-match ``public_paths`` during the appliance
     setup window (:mod:`c64cast.control.setup_gate`), where the shell has to
-    load before any credential exists. A hand-written list here would be a
-    second copy of the bundle's file names, and one that goes stale silently:
-    the page would come up with no stylesheet."""
+    load before any credential exists."""
     dist = bundle_dir(directory)
     if dist is None:
         return ()
@@ -138,11 +102,8 @@ def landing_path(directory: Path | None = None) -> str:
     read-only link the console hands out — a shared link that landed somewhere
     else would be a second answer to the same question.
 
-    ``directory`` for the same reason every other function here takes one: this
-    used to probe :data:`DIST_DIR` unconditionally, so a host mounted with
-    ``mount_web_app(app, directory=other)`` served the console fine and then
-    answered ``/perf`` to all three of its callers — the one function in this
-    module whose answer could not be made to agree with what was mounted."""
+    ``directory`` must be the one :func:`mount_web_app` was given, or this
+    answers for a bundle that is not the one being served."""
     return "/" if bundle_dir(directory) is not None else "/perf"
 
 
@@ -166,9 +127,8 @@ def mount_web_app(app: Any, *, directory: Path | None = None) -> bool:
 
     index = dist / INDEX_NAME
     catalog = _asset_catalog(dist)
-    # Plus the asset prefix itself: a path under it that no file backs is a
-    # broken bundle, not a client route, and answering it with the shell would
-    # hide that behind a page that loads and does nothing.
+    # The asset prefix too: an unbacked path under it is a broken bundle, not
+    # a client route.
     reserved = owned_segments(app) | {ASSETS_NAME}
 
     def _no_cache(path: Path, media_type: str) -> Response:

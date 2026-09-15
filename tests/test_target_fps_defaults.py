@@ -71,8 +71,8 @@ class FramePushDefaultFpsTest(unittest.TestCase):
         )
 
     def test_always_fresh_does_not_change_bitmap_behavior(self):
-        # Bitmap already capped on has_digitized_audio alone; the new flag must
-        # not perturb any of those answers.
+        # Bitmap is already capped on has_digitized_audio alone, and the flag
+        # must not perturb any of those answers.
         for digi, off_bus, want in (
             (True, False, 20.0),
             (False, False, 30.0),
@@ -113,12 +113,10 @@ class FramePushDefaultFpsTest(unittest.TestCase):
         self.assertIsNone(_frame_push_default_fps(_mode(False), False, "NTSC", off_bus_audio=True))
 
     def test_on_bus_digitized_audio_wins_over_off_bus(self):
-        # The two flags are contractually mutually exclusive (a scene's audio
-        # is on the $D418 DAC or off-bus in the sampler, never both) and every
-        # caller constructs the pair that way — but the docstring used to claim
-        # off_bus_audio "beats has_digitized when both could apply", which the
-        # first statement contradicts. Pin the answer the code gives: the 20 fps
-        # cap protects the on-bus stream, which is the one that can tear.
+        # The two flags are mutually exclusive — a scene's audio is on the
+        # $D418 DAC or off-bus in the sampler, never both — and this pins the
+        # answer the code gives: the 20 fps cap protects the on-bus stream,
+        # which is the one that can tear.
         self.assertEqual(
             _frame_push_default_fps(_mode(True), True, "NTSC", off_bus_audio=True), 20.0
         )
@@ -137,8 +135,7 @@ class _BuildSceneFpsBase(unittest.TestCase):
         from c64cast.video.video import WebcamSource
 
         self.api = cast(Ultimate64API, FakeAPI())
-        # The streamer is only stored on the scene here (setup() is never
-        # called), so a bare sentinel is enough — matches the ensemble tests.
+        # setup() is never called here, so a bare sentinel is enough.
         self.audio = cast(AudioStreamer, object())
         self.source = cast(WebcamSource, object())
 
@@ -272,11 +269,9 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         self.assertEqual(scene.target_fps, 30.0)
 
     def test_none_source_bitmap_takes_the_tear_cap(self):
-        # audio_source = none drives no DAC, but the half-rate bitmap cap was
-        # never about the DAC — it is host-DMA tear on a ~9-10 KB frame push,
-        # and a generator renders a fresh one every tick with no dedup. This
-        # used to pin None on the reasoning "no DAC → not in scope", which no
-        # other builder applies: _build_wled has no audio at all and caps.
+        # audio_source = none drives no DAC, but the half-rate bitmap cap is
+        # not about the DAC: it is host-DMA tear on a ~9-10 KB frame push,
+        # and a generator renders a fresh one every tick with no dedup.
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="none", display="mhires"
         )
@@ -291,9 +286,7 @@ class GenerativeFpsDefaultTest(_BuildSceneFpsBase):
         self.assertIsNone(scene.target_fps)
 
     def test_listen_source_bitmap_takes_the_tear_cap(self):
-        # Same reasoning as `none`, in the separate listen-only builder — which
-        # set no target_fps at all, reasoning there was "no DAC stream to
-        # frame-cap against".
+        # Same reasoning as `none`, in the separate listen-only builder.
         s = cfgmod.SceneCfg(
             type="generative", source="plasma", audio_source="listen", display="mhires"
         )
@@ -366,8 +359,8 @@ class InterleavedVideoFpsTest(_BuildSceneFpsBase):
             cfgmod.SceneCfg(type="blank", name="b"),
         ]
         # Pretend PyAV is present so interleaving runs without the extra.
-        # Patched on scene_factory, which binds ensure_pyav at import time —
-        # patching it in c64cast.video.video wouldn't reach the factory's copy.
+        # scene_factory binds ensure_pyav at import time, so patching
+        # c64cast.video.video would not reach the factory's copy.
         with mock.patch.object(scene_factory, "ensure_pyav", return_value=True):
             built = scene_factory.scenes_from_config(cfg, self.api, audio, None)
         return [s for s in built if isinstance(s, VideoScene)]

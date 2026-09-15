@@ -1,38 +1,29 @@
 """Camera-as-input: turn the webcam into a gesture/landmark input device.
 
-Architectural sibling to [keyboard.py](c64cast/control/keyboard.py)'s
-`CommodoreKeyPoller`. A background thread reads frames from the shared
-`WebcamSource` broker, runs hand tracking, and translates hand *gestures* into
-the same `pause`/`resume`/`skip`/`cycle` thread events the keyboard poller and
-the HTTP control plane feed — so the Playlist run loop can't tell which control
-surface a press came from. It also exposes the raw hand *landmarks*
-(`latest_hands()`) as continuous state for future consumers (fingerpainting,
-pose/face scenes).
-
-Gesture → control mapping mirrors the keyboard semantics exactly:
+Architectural sibling to :class:`c64cast.control.keyboard.CommodoreKeyPoller`.
+A background thread reads frames from the shared `WebcamSource` broker, runs
+hand tracking, and translates hand *gestures* into the same
+`pause`/`resume`/`skip`/`cycle` thread events the keyboard poller and the HTTP
+control plane feed. `latest_hands()` exposes the raw landmarks as continuous
+state.
 
   * PINCH (thumb+index) pressed (running)        → pause_event
   * PINCH held `hold_threshold_s` while paused   → resume_event
   * SWIPE (fast horizontal wrist motion)         → skip_event   (running only)
   * OPEN_HAND (all fingers extended) (running)   → cycle_event
 
-**Performance mode (Live DJ/VJ Phase 6).** With a Playlist bound via
-`bind_performance()` (gated on `[vision].performance`), the RUNNING-state
-gestures instead drive the clip-launch grid — a hands-free performance surface:
+With a Playlist bound via `bind_performance()` (gated on
+`[vision].performance`) the RUNNING-state gestures instead drive the
+clip-launch grid: SWIPE launches the next clip slot, PINCH-held and
+OPEN_HAND-held bypass effect layers 0 and 1. Both paths bottom out in the same
+thread-safe hand-offs the MIDI/web surfaces use, so no scene is rebuilt on the
+poll thread.
 
-  * SWIPE      → `pl.performance.advance_clip()` (launch the next clip slot)
-  * PINCH held → `pl.toggle_effect_layer(0)`     (bypass effect layer 0)
-  * OPEN_HAND held → `pl.toggle_effect_layer(1)` (bypass effect layer 1)
+The hand tracker is pluggable behind the `GestureRecognizer` protocol;
+`MediaPipeHandRecognizer` is lazy-imported so the rest of the app and the whole
+test suite run without the `vision` extra.
 
-Both paths bottom out in the same thread-safe hand-offs the MIDI/web surfaces
-use (an enqueued `ClipEvent`, a GIL-atomic `enabled` flip) — no scene mutation
-on the poll thread. The paused-state pinch-hold-to-resume gesture is unchanged.
-
-The hand tracker is pluggable behind the `GestureRecognizer` protocol; the
-shipped implementation is `MediaPipeHandRecognizer` (MediaPipe Tasks
-HandLandmarker), lazy-imported so the rest of the app and the whole test suite
-run without the `vision` extra installed. Tests inject a scripted fake
-recognizer + fake source, the same way `test_keyboard.py` scripts `$028D`.
+See docs/architecture/control.md#visionpy--webcam-gesture-control-optional-camera-as-input.
 """
 
 from __future__ import annotations
@@ -79,21 +70,18 @@ MP_MAX_WIDTH = 640
 # this many ticks first so the entry transient (landmarks settling) is ignored.
 SWIPE_SETTLE_FRAMES = 2
 
-# A swipe must persist at least this many consecutive ticks. 1 = a single fast
-# horizontal frame fires (the horizontal-dominance + settle gates already reject
-# vertical raises and entry transients, so a 2-frame requirement just made
-# deliberate swipes feel sluggish).
+# A swipe must persist at least this many consecutive ticks. 1: the
+# horizontal-dominance and settle gates already reject vertical raises and entry
+# transients, and a 2-frame requirement made deliberate swipes feel sluggish.
 SWIPE_MIN_FRAMES = 1
 
-# Held poses (pinch / open hand) only accrue their dwell while the wrist is
-# moving slower than this (normalized frame-widths/sec). Generous enough that a
-# deliberately-held hand can drift a fair bit, low enough that a hand reaching /
-# waving / gesturing-while-talking doesn't rack up cycles. Sits below
-# swipe_velocity so "still pose" and "fast swipe" don't overlap.
+# Held poses (pinch / open hand) only accrue dwell while the wrist moves slower
+# than this (normalized frame-widths/sec) — so a hand reaching, waving or
+# gesturing while talking doesn't rack up cycles. Sits below swipe_velocity so
+# "still pose" and "fast swipe" don't overlap.
 STILL_SPEED = 0.35
 
-# Default download URL for the HandLandmarker model bundle (printed in the
-# error when the model file is missing).
+# Printed in the error when the model file is missing.
 MODEL_DOWNLOAD_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
@@ -134,11 +122,6 @@ class GestureRecognizer(Protocol):
     def close(self) -> None: ...
 
 
-# ---------------------------------------------------------------------------
-# Pure gesture classification (no mediapipe, no camera — directly unit-tested).
-# ---------------------------------------------------------------------------
-
-
 def _dist(a: np.ndarray, b: np.ndarray) -> float:
     # 2D (x,y) distance in normalized frame units; depth (z) ignored so the
     # pinch threshold is a stable on-screen distance regardless of hand depth.
@@ -172,9 +155,8 @@ def count_extended_fingers(hand: HandState) -> int:
 
 
 # A pinch must have the hand otherwise OPEN (this many of the four fingers
-# extended). Thumb-near-index alone can't tell a deliberate pinch sign from a
-# fist/closed hand — and a closed hand on its way up (raise → open) would
-# otherwise read as a pinch and fire an unwanted pause. HW-observed: a
+# extended): thumb-near-index alone cannot tell a deliberate pinch from a fist,
+# and a closed hand on its way up would fire an unwanted pause. HW-observed: a
 # deliberate pinch reads 4 extended fingers, a fist reads 0.
 PINCH_MIN_EXTENDED = 3
 
@@ -189,10 +171,6 @@ def classify_static(hand: HandState, *, pinch_threshold: float) -> Gesture:
         return Gesture.OPEN_HAND
     return Gesture.NONE
 
-
-# ---------------------------------------------------------------------------
-# MediaPipe-backed recognizer (lazy import — needs the `vision` extra).
-# ---------------------------------------------------------------------------
 
 _mp: Any = None
 _MP_AVAILABLE: bool | None = None  # tri-state: None = not yet probed
@@ -257,26 +235,23 @@ class MediaPipeHandRecognizer:
             min_tracking_confidence=min_tracking_confidence,
             running_mode=mp_vision.RunningMode.VIDEO,
         )
-        # create_from_options emits the GL/XNNPACK/feedback noise; the warm-up
+        # create_from_options emits the GL/XNNPACK noise and the warm-up
         # inference (timestamp 0; real ticks always land at > 0) emits the
-        # landmark_projection warning. Run both inside the fd silence so all of
-        # mediapipe's startup chatter is swallowed here on the main thread.
+        # landmark_projection warning — both inside the fd silence, on the main
+        # thread.
         with silence_native_stderr():
             self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
             warm = self._mp_image(
                 image_format=self._image_format.SRGB, data=np.zeros((64, 64, 3), dtype=np.uint8)
             )
             self._landmarker.detect_for_video(warm, 0)
-        # VIDEO mode requires strictly increasing timestamps per instance. The
-        # warm-up consumed 0; track the last value so process() can never feed
-        # a stale or equal timestamp regardless of the caller's clock.
+        # VIDEO mode requires strictly increasing timestamps per instance, and
+        # the warm-up consumed 0.
         self._last_ts_ms = 0
 
     def process(self, frame: np.ndarray, timestamp_ms: int) -> HandState | None:
-        # Hand tracking doesn't need full sensor resolution — a 1080p webcam
-        # frame is ~9x the pixels of a 640-wide one and makes inference (and the
-        # CPU it steals from the render pipeline) much heavier. Downscale first;
-        # landmarks come back normalized [0,1], so coordinates are unaffected.
+        # Downscale first: landmarks come back normalized [0,1], so coordinates
+        # are unaffected.
         h, w = frame.shape[:2]
         if w > MP_MAX_WIDTH:
             scale = MP_MAX_WIDTH / w
@@ -286,9 +261,8 @@ class MediaPipeHandRecognizer:
         # cv2 frames are BGR; MediaPipe wants RGB.
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = self._mp_image(image_format=self._image_format.SRGB, data=rgb)
-        # Clamp to strictly increasing — honor the caller's clock when it's
-        # ahead, else bump by 1ms (guards the first call vs the ts=0 warm-up and
-        # any same-millisecond collisions).
+        # Strictly increasing: honor the caller's clock when it's ahead, else
+        # bump by 1ms (guards the ts=0 warm-up and same-millisecond collisions).
         ts = max(timestamp_ms, self._last_ts_ms + 1)
         self._last_ts_ms = ts
         result = self._landmarker.detect_for_video(mp_image, ts)
@@ -303,11 +277,6 @@ class MediaPipeHandRecognizer:
 
     def close(self) -> None:
         self._landmarker.close()
-
-
-# ---------------------------------------------------------------------------
-# VisionController — sibling to CommodoreKeyPoller.
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -365,10 +334,8 @@ class VisionController:
         self.hold_threshold_s = hold_threshold_s
         self.gesture_cooldown_s = gesture_cooldown_s
         # A pose (pinch / open hand) must be held STILL this many ticks before
-        # it fires — the dwell gate (see STILL_SPEED). It separates a held pose
-        # (pause / cycle) from a hand merely passing through that pose, and from
-        # a busy/moving hand that happens to be open. Swipe is motion, not a
-        # pose, so it bypasses the gate.
+        # it fires (see STILL_SPEED), which separates a held pose from a hand
+        # passing through it. Swipe is motion, not a pose, so it bypasses this.
         self._dwell_frames = max(1, round(gesture_dwell_s / poll_interval_s))
         self.pinch_threshold = pinch_threshold
         # swipe_velocity is in normalized frame-widths per second. HW-tuned:
@@ -380,14 +347,11 @@ class VisionController:
         self._resume_event: threading.Event | None = None
         self._skip_event: threading.Event | None = None
         self._cycle_event: threading.Event | None = None
-        # Optional performance binding (Live DJ/VJ Phase 6). When set (via
-        # bind_performance, gated on [vision].performance), the RUNNING-state
-        # gestures drive the clip-launch grid instead of transport: swipe =
-        # advance to the next clip, pinch-hold = bypass fx layer 0, open-hand-hold
-        # = bypass fx layer 1. Kept as a duck-typed handle (the Playlist) so
-        # vision.py stays import-light — it only calls `.performance.advance_clip`
-        # (enqueue-only, thread-safe) and `.toggle_effect_layer` (a GIL-atomic
-        # bool write), never mutating a scene on this poll thread.
+        # Optional performance binding: when set, the RUNNING-state gestures
+        # drive the clip-launch grid instead of transport. A duck-typed handle
+        # (the Playlist) so vision.py stays import-light — it calls only
+        # `.performance.advance_clip` (enqueue-only) and `.toggle_effect_layer`
+        # (a GIL-atomic bool write), never mutating a scene on this thread.
         self._perf: Any = None
         # Continuous-state snapshot for future consumers (fingerpainting).
         self._state_lock = threading.Lock()

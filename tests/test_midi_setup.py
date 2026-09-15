@@ -37,7 +37,6 @@ def _defaults() -> list[dict]:
     return [dict(d) for d in _DEFAULT_MIDI_CC_MAP]
 
 
-# --------------------------------------------------- ControllerProfileStore ----
 class ControllerProfileStoreTests(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as d:
@@ -75,7 +74,6 @@ class ControllerProfileStoreTests(unittest.TestCase):
     def test_slug_stability(self):
         self.assertEqual(slugify_port("KeyLab mkII 49:MIDI 1"), "keylab-mkii-49-midi-1")
         self.assertEqual(slugify_port("!!!"), "controller")  # empty slug fallback
-        # path derives from slug and is deterministic
         self.assertEqual(
             controller_profile_path("KeyLab").name,
             make_controller_profile_store("KeyLab").path.name,
@@ -96,7 +94,6 @@ class ControllerProfileStoreTests(unittest.TestCase):
             self.assertEqual(ControllerProfileStore(p).feedback(), {})
 
 
-# ------------------------------------------------- LED feedback (Phase 4) -------
 class ProfileFeedbackLoaderTests(unittest.TestCase):
     """midi_control._load_profile_feedback resolves a profile's feedback block
     the same way the mapping loader resolves mappings."""
@@ -128,7 +125,6 @@ class ProfileFeedbackLoaderTests(unittest.TestCase):
             self.assertEqual(mc._load_profile_feedback("grid", "Unrelated", base).get("fx_on"), 7)
 
 
-# ------------------------------------------------------ merge precedence -------
 class MergePrecedenceTests(unittest.TestCase):
     """The subtle bit: defaults < profile < explicit cc_map, while cc_map=[]
     still disables the shipped defaults. Table-driven over resolve_effective_cc_map."""
@@ -151,15 +147,13 @@ class MergePrecedenceTests(unittest.TestCase):
             self.assertEqual(m[("note", 36)].action, "skip")  # shipped default intact
 
     def test_is_default_plus_profile_reclaims(self):
-        # A profile reclaims note 36 (a shipped default) because defaults+profile
-        # → later (profile) wins.
+        # defaults+profile → later (profile) wins, so note 36 is reclaimed.
         prof = [{"type": "note", "number": 36, "action": "jump", "scene": 7}]
         with tempfile.TemporaryDirectory() as d:
             base = self._dir_with_profile(d, "MyPort", prof)
             m = self._resolve(_defaults(), True, "auto", "USB MyPort 1", base)
             self.assertEqual(m[("note", 36)].action, "jump")
             self.assertEqual(m[("note", 36)].scene, 7)
-            # a non-reclaimed default still present
             self.assertEqual(m[("note", 37)].action, "cycle_style")
 
     def test_explicit_cc_map_wins_over_profile(self):
@@ -203,7 +197,6 @@ class MergePrecedenceTests(unittest.TestCase):
             self.assertEqual(m[("note", 36)].action, "skip")  # no match → defaults
 
 
-# --------------------------------------------------- wizard pure helpers -------
 class WizardHelperTests(unittest.TestCase):
     def test_detect_encoder_relative(self):
         self.assertTrue(midi_setup.detect_encoder([1, 2, 1, 3, 2]))
@@ -231,8 +224,7 @@ class WizardHelperTests(unittest.TestCase):
         self.assertEqual(midi_setup.values_for(evs, "cc", 13), [3, 5])
 
     def test_mmc_entry_from_sysex_classification(self):
-        # A transport button that emits MMC classifies as ("mmc", cmd) and builds
-        # a type:"mmc" entry — auto-recognized, no separate step.
+        # An MMC transport button classifies as ("mmc", cmd) and builds a "mmc" entry.
         msg = types.SimpleNamespace(type="sysex", data=(0x7F, 0x7F, 0x06, 0x02))
         c = mc.classify_message(msg)
         self.assertEqual(c, ("mmc", 0x02, 127, True))
@@ -250,8 +242,7 @@ class WizardHelperTests(unittest.TestCase):
         self.assertEqual(out[0]["action"], "cycle_style")
 
     def test_build_feedback_block_defaults_and_overrides(self):
-        # Defaults come from FeedbackMap; a valid override wins, a bad one is
-        # dropped; the port is included when given.
+        # Defaults come from FeedbackMap; a valid override wins, a bad one is dropped.
         block = midi_setup.build_feedback_block(
             port="Launchpad OUT", overrides={"active": 5, "loaded": 999, "bogus": 1}
         )
@@ -282,7 +273,6 @@ class WizardHelperTests(unittest.TestCase):
         mc._parse_cc_map(maps)  # runtime parser must accept them too
 
 
-# ------------------------------------------------- introspect.live_targets -----
 class LiveTargetsDriftTests(unittest.TestCase):
     """live_targets() must expose exactly the LIVE_PARAMS/LIVE_CHOICES declared
     across the effect/generator/mode/scope registries — same spirit as the
@@ -334,7 +324,6 @@ class LiveTargetsDriftTests(unittest.TestCase):
         self.assertEqual(groups, {"Color pipeline", "Effect", "Generator", "Scope"})
 
 
-# ------------------------------------------------------- osd.position ----------
 class _OsdScene:
     def __init__(self):
         from c64cast.scenes import scenes
@@ -381,9 +370,8 @@ class PlaylistCycleOsdTests(unittest.TestCase):
         self.assertTrue(s.osd.enabled, "the static config gate must be left alone")
 
     def test_tap_while_config_disabled_reenables(self):
-        # The capability re-pointing the hide at `suppressed` alone would have
-        # cost: one tap brings up an OSD that [midi_control].osd = "off" had
-        # disabled.
+        # Re-pointing the hide at `suppressed` alone would have cost this: one tap
+        # brings up an OSD that [midi_control].osd = "off" had disabled.
         s = _OsdScene()
         s.osd.enabled = False
         ns = self._stand_in(s)
@@ -431,7 +419,6 @@ class OsdPositionDispatchTests(unittest.TestCase):
         self.assertEqual(pl.calls, [False, True, False])
 
 
-# ---------------------------------------------------- config round-trip --------
 class ConfigFieldTests(unittest.TestCase):
     def test_controller_profile_round_trips(self):
         from c64cast.app import config_serialize

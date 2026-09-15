@@ -15,9 +15,10 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-from _fakes import make_psid
+from _fakes import FakeTime, make_psid
 
 from c64cast.app import config as cfgmod
+from c64cast.hw import api
 from c64cast.hw import teensyrom_api as tr_api
 from c64cast.hw.api import _DEFAULT_PLAYER_LAYOUT
 from c64cast.hw.backend import TEENSYROM_PROFILE, BackendCapabilityError, make_backend
@@ -53,7 +54,6 @@ class LoopbackTransport(TRTransport):
         self._stale = bytearray()  # unsolicited/text (drain_text)
         self.closed = False
 
-    # test helpers
     def queue_token(self, tok: int) -> None:
         # Firmware sends replies little-endian (LSB first).
         self._inbox += bytes([tok & 0xFF, (tok >> 8) & 0xFF])
@@ -64,7 +64,6 @@ class LoopbackTransport(TRTransport):
     def queue_stale(self, data: bytes) -> None:
         self._stale += data
 
-    # TRTransport
     def connect(self) -> None:
         pass
 
@@ -91,9 +90,8 @@ class LoopbackTransport(TRTransport):
         return "loopback"
 
 
-# The clear-loop bring-up's launch choreography: DeleteFile + PostFile ack
-# 5 times, LaunchFile 2. One place for the protocol's internal ack count so
-# a wire change moves one number instead of breaking every bring-up test.
+# Launch choreography acks: DeleteFile + PostFile 5, LaunchFile 2. One place for
+# the count, so a wire change moves one number rather than every bring-up test.
 _BRINGUP_LAUNCH_ACKS = 7
 
 
@@ -119,7 +117,7 @@ class FramingTest(unittest.TestCase):
         self.client = TRClient(self.t)
 
     def test_write_segment_is_big_endian_with_ack(self):
-        # The single most important contract: token + addr + len are MSB-first.
+        # token + addr + len are MSB-first.
         self.t.queue_token(TOK_ACK)
         self.client.write_segment(0xD020, b"\x0e")
         # 0x64FB, addr $D020, len 1, data 0x0E
@@ -136,7 +134,7 @@ class FramingTest(unittest.TestCase):
         self.client.write_segment(0xD020, b"\x02")  # must NOT raise
 
     def test_big_endian_ack_bytes_are_rejected(self):
-        # The pre-fix bug: bytes 64 CC parsed little-endian = 0xCC64, not an ack.
+        # Bytes 64 CC parsed little-endian = 0xCC64, not an ack.
         self.t.queue_raw(b"\x64\xcc")
         with self.assertRaises(TRError):
             self.client.write_segment(0xD020, b"\x02")
@@ -149,7 +147,6 @@ class FramingTest(unittest.TestCase):
         out = self.client.read_segment(0xFFFC, 2)
         self.assertEqual(self.t.sent, bytes([0x64, 0xFD, 0xFF, 0xFC, 0x00, 0x02]))
         self.assertEqual(out, b"\xe2\xfc")
-        # Sanity: the token constant matches the wire bytes.
         self.assertEqual(TOK_READ_C64_MEM, 0x64FD)
 
     def test_read_segment_nak_raises(self):
@@ -158,8 +155,7 @@ class FramingTest(unittest.TestCase):
             self.client.read_segment(0x028D, 1)
 
     def test_read_segment_ack_parsed_little_endian(self):
-        # Ack 0x64CC arrives LSB-first (CC 64); a big-endian parse would make
-        # a valid read look like an error before the data is even read.
+        # Ack 0x64CC arrives LSB-first (CC 64); a BE parse reads valid data as error.
         self.t.queue_raw(b"\xcc\x64")
         self.t.queue_raw(b"\x05")
         self.assertEqual(self.client.read_segment(0x028D, 1), b"\x05")
@@ -301,9 +297,8 @@ class BackendTest(unittest.TestCase):
     def _backend(self, read: bool = True):
         t = LoopbackTransport()
         t.queue_token(TOK_FW_FULL)  # consumed by connect()'s fw_check
-        # __init__ probes ReadC64Mem (a 2-byte $FFFC read). Feed a successful
-        # round-trip (read=True) so supports_read stays set, or a NAK
-        # (read=False) so it downgrades to the old read-free behavior.
+        # __init__ probes ReadC64Mem (a 2-byte $FFFC read): read=True feeds a
+        # successful round-trip, read=False a NAK that downgrades supports_read.
         if read:
             t.queue_token(TOK_ACK)  # probe ack
             t.queue_raw(b"\xe2\xfc")  # 2 ROM bytes ($FFFC)
@@ -314,8 +309,7 @@ class BackendTest(unittest.TestCase):
 
     def test_emit_chunks_large_writes(self):
         b, t = self._backend()
-        # A payload larger than MAX_SEGMENT_BYTES splits into multiple acked
-        # segments; queue one ack per expected segment.
+        # A payload over MAX_SEGMENT_BYTES splits into acked segments — one ack each.
         n_segments = 3
         size = b.tr.MAX_SEGMENT_BYTES * (n_segments - 1) + 5
         for _ in range(n_segments):
@@ -332,14 +326,12 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(b.stats["errors"], 1)
 
     def test_read_probe_sets_supports_read(self):
-        # A firmware that answers the ReadC64Mem probe keeps supports_read True
-        # (so cli.py builds the keyboard poller).
+        # Answering the probe keeps supports_read True, so cli.py builds the poller.
         b, _ = self._backend(read=True)
         self.assertTrue(b.profile.supports_read)
 
     def test_read_probe_downgrades_on_old_firmware(self):
-        # A firmware that NAKs the probe is honestly reported as read-free,
-        # so callers fall back to the control plane instead of polling forever.
+        # A NAK reports read-free, so callers fall back to the control plane.
         b, _ = self._backend(read=False)
         self.assertFalse(b.profile.supports_read)
 
@@ -349,13 +341,11 @@ class BackendTest(unittest.TestCase):
         t.queue_raw(b"\x42")  # the byte living at $028D
         out = b.read_memory(0x028D, 1)
         self.assertEqual(out, b"\x42")
-        # The ReadC64Mem command (token + addr BE + len BE) is the tail of the
-        # wire output, after the connect + probe prefix.
+        # The ReadC64Mem frame is the tail, after the connect + probe prefix.
         self.assertTrue(bytes(t.sent).endswith(b"\x64\xfd\x02\x8d\x00\x01"))
 
     def test_read_memory_returns_none_on_nak(self):
-        # keyboard.py + the menu poller depend on None (never a raise) meaning
-        # "couldn't tell" so a blip doesn't crash the playlist.
+        # keyboard.py + the menu poller need None (never a raise) for "couldn't tell".
         b, t = self._backend()
         t.queue_token(TOK_FAIL)
         self.assertIsNone(b.read_memory(0x028D, 1))
@@ -366,14 +356,13 @@ class BackendTest(unittest.TestCase):
         self.assertIsNone(b.read_memory(0x028D, 1))
 
     def test_reu_write_unsupported(self):
-        # The TR has no REUWRITE opcode (supports_reu False); reu_write stays on
-        # the ABC's raising default so the experimental REU paths gate on it.
+        # The TR has no REUWRITE opcode, so reu_write stays on the ABC's raising
+        # default and the experimental REU paths gate on it.
         b, _ = self._backend()
         self.assertFalse(b.profile.supports_reu)
         with self.assertRaises(BackendCapabilityError):
             b.reu_write(0, b"\x00")
 
-    # ---- SID player -------------------------------------------------------
     @staticmethod
     def _make_sid(*, load=0x1000, init=0x1003, play=0x1006, num_songs=1, payload_len=64):
         """This file's defaults over the shared PSID builder."""
@@ -382,11 +371,9 @@ class BackendTest(unittest.TestCase):
         )
 
     def test_run_sid_player_loads_then_vector_swaps(self):
-        # Default (defer_audio False): DMA payload + player MC + re-INIT stub,
-        # then a pure-DMA $0314/$0315 vector-swap to the re-INIT stub (which the
-        # next kernal IRQ runs to JSR init + install the PLAY handler). NO reset,
-        # NO LaunchFile, NO PostFile mid-stream — the player is started exactly
-        # like a subtune cue, over the running IRQ-enabled clear-loop.
+        # Default (defer_audio False): DMA payload + player MC + re-INIT stub, then a
+        # pure-DMA $0314/$0315 swap to the stub, which the next kernal IRQ runs. No
+        # reset, no LaunchFile, no PostFile — started exactly like a subtune cue.
         b, t = self._backend(read=True)
         for _ in range(4):  # 3 blob writes + 1 vector-swap write
             t.queue_token(TOK_ACK)
@@ -406,10 +393,9 @@ class BackendTest(unittest.TestCase):
         self.assertNotIn(b"\x64\xbb", sent)  # no PostFile
 
     def test_run_sid_player_defers_audio_until_begin(self):
-        # defer_audio=True (WaveformScene): run_sid_player loads the player but
-        # leaves it SILENT — no $0314 swap, no divider tune — so the caller can
-        # paint the scope first. begin_sid_audio then does the vector-swap that
-        # actually starts INIT/PLAY. This is the "waveforms before audio" path.
+        # defer_audio=True (WaveformScene) loads the player but leaves it silent — no
+        # $0314 swap, no divider tune — so the caller paints the scope first;
+        # begin_sid_audio then does the swap that starts INIT/PLAY.
         b, t = self._backend(read=True)
         for _ in range(3):  # 3 blob writes only
             t.queue_token(TOK_ACK)
@@ -434,27 +420,24 @@ class BackendTest(unittest.TestCase):
         self.assertIsNotNone(b.sid_audio_start_time())
 
     def test_run_sid_player_gated_on_read_support(self):
-        # The vector-swap launch needs the IRQ-enabled idle (cycle-clean fw,
-        # proxied by supports_read). On older firmware the spin-stub idle masks
-        # IRQs, so the swap would never fire — run_sid_player raises rather than
-        # play silently.
+        # The vector-swap launch needs the IRQ-enabled idle (cycle-clean firmware,
+        # proxied by supports_read). The older spin-stub idle masks IRQs, so the swap
+        # would never fire — raise rather than play silently.
         b, _ = self._backend(read=False)
         with self.assertRaises(BackendCapabilityError):
             b.run_sid_player(self._make_sid())
 
     def test_tune_play_divider_reads_cia1_on_tr(self):
-        # Reads now work on TR, so the PLAY-rate divider auto-tune runs for real
-        # (it degraded to N=1 on the read-free TR). Feed a CIA #1 Timer A latch
-        # of $4000 (~61 Hz PLAY) -> divider 2, patched at the player MC.
+        # A CIA #1 Timer A latch of $4000 (~61 Hz PLAY) → divider 2, patched at the
+        # player MC. On read-free firmware the auto-tune degrades to N=1.
         b, t = self._backend(read=True)
         b._sid_player_layout = _DEFAULT_PLAYER_LAYOUT
-        # One ack + 2 data bytes per latch sample; count from the constant so
-        # a change to the sample burst doesn't silently starve this fake.
+        # One ack + 2 data bytes per latch sample; count from the constant.
         for _ in range(b._DIVIDER_LATCH_SAMPLES):
             t.queue_token(TOK_ACK)
             t.queue_raw(b"\x00\x40")  # $4000 little-endian on the wire
         t.queue_token(TOK_ACK)  # divider write
-        with mock.patch("c64cast.hw.api.time.sleep"):
+        with mock.patch.object(api, "time", FakeTime(sleep=None)):
             n = b._tune_play_divider()
         self.assertEqual(n, 2)
         # Divider byte patched at player_base + DIVIDER_OFFSET ($C300+59=$C33B).
@@ -476,16 +459,11 @@ class BackendTest(unittest.TestCase):
         self.assertNotIn(b"\x64\xbb", sent)  # no PostFile
 
     def test_bring_up_clear_loop_when_read_supported(self):
-        # Cycle-clean firmware (supports_read True) launches the IRQ-enabled
-        # BASIC clear-loop: DeleteFile -> PostFile -> LaunchFile, then (like the
-        # spin path) DMA-clears the screen to wipe the loader "RUNNING.."/READY
-        # text TR LaunchFile leaves behind. NO write to BLNSW ($00CC) — the
-        # clear loop is what stops the cursor, and poking $CC never held.
-        # NO spin MC write to $C000 and NO $D011 blanking (the display stays on
-        # — DEN-off would hang the DMA). The SID player needs no pre-uploaded
-        # stub anymore (it starts via a pure-DMA $0314 swap), so bring-up is just
-        # the clear-loop. Acks: 5 (delete+post clear-loop) + 2 (launch) +
-        # 1 (CURLIN probe read) + 1 (screen clear).
+        # Cycle-clean firmware (supports_read True) launches the IRQ-enabled BASIC
+        # clear-loop: DeleteFile → PostFile → LaunchFile, then a DMA screen clear to
+        # wipe the loader's "RUNNING.."/READY text. No BLNSW ($00CC) write — the clear
+        # loop is what stops the cursor, and poking $CC never held. No spin MC and no
+        # $D011 blanking: DEN-off would hang the DMA. Acks: 5 + 2 + 1 probe + 1 clear.
         b, t = self._backend(read=True)
         _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
@@ -497,17 +475,14 @@ class BackendTest(unittest.TestCase):
         self.assertNotIn(b"\x64\xfb\xd0\x11", sent)  # display never blanked ($D011)
         self.assertIn(b"\x64\xfb\x04\x00", sent)  # screen-clear to $0400
         self.assertNotIn(b"\x64\xfb\x00\xcc", sent)  # BLNSW ($00CC) never written
-        # The clear-loop PRG was deleted-then-posted-then-launched.
         _assert_token_order(self, sent, b"\x64\xcf", b"\x64\xbb", b"\x64\x44")
 
     def test_bring_up_repairs_a_clear_loop_that_did_not_run(self):
-        # The usual TR outcome (HW-measured): LaunchFile leaves the program body
-        # at $0801 with its link pointer zeroed, so BASIC sees an empty program,
-        # RUN returns to READY, and the machine sits in the editor's input-wait
-        # loop — which copies NDX into BLNSW every pass, making the cursor blink
-        # unstoppable by any write to $CC. Bring-up must detect that (CURLIN
-        # reads as direct mode) and repair it: re-DMA the program, fix VARTAB,
-        # and type RUN into the keyboard buffer.
+        # The usual TR outcome (HW-measured): LaunchFile leaves the program body at
+        # $0801 with its link pointer zeroed, so BASIC sees an empty program, RUN
+        # returns to READY, and the machine sits in the editor's input-wait loop —
+        # which copies NDX into BLNSW every pass, so no write to $CC stops the cursor.
+        # Bring-up detects that via CURLIN and repairs: re-DMA, fix VARTAB, type RUN.
         b, t = self._backend(read=True)
         _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
@@ -517,7 +492,7 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertIn(b"\x64\xfb\x08\x01", sent)  # program body re-DMA'd to $0801
@@ -527,27 +502,24 @@ class BackendTest(unittest.TestCase):
         self.assertIn(b"\x64\xfb\x00\xc6", sent)  # NDX ($C6) set to the count
 
     def test_bring_up_does_not_type_into_a_running_clear_loop(self):
-        # Typing RUN into a program that IS looping leaves the keystrokes sitting
-        # in KEYD, where the keyboard poller reads them as menu input (RETURN is
-        # a nav code). So the repair only fires when BASIC is really at READY.
+        # Typing RUN into a program that IS looping leaves keystrokes in KEYD, where
+        # the keyboard poller reads them as menu input (RETURN is a nav code).
         b, t = self._backend(read=True)
         _queue_bringup_acks(t)
         t.queue_token(TOK_ACK)  # CURLIN probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20 -> already looping
         t.queue_token(TOK_ACK)
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         sent = bytes(t.sent)
         self.assertNotIn(b"RUN\r", sent)
         self.assertNotIn(b"\x64\xfb\x02\x77", sent)  # nothing typed into KEYD
 
     def test_basic_is_at_ready_reads_curlin(self):
-        # HW-measured on a TeensyROM+, both states captured off the same machine:
-        # at the READY prompt CURLIN reads $0000, and running the clear loop it
-        # reads $0014 (line 20). The widely-repeated "$FF in the high byte means
-        # direct mode" shorthand did NOT hold here, and testing for it matched
-        # neither state — which made every probe answer "running", so the repair
-        # was skipped and the cursor blinked. Accept both spellings of "no line".
+        # HW-measured on a TeensyROM+, both states off the same machine: at READY
+        # CURLIN reads $0000, running the clear loop it reads $0014 (line 20). The
+        # "$FF in the high byte means direct mode" shorthand matched neither state, so
+        # every probe answered "running". Accept both spellings of "no line".
         for hi, lo, expected in (
             (0x00, 0x00, True),  # measured at READY
             (0x00, 0x14, False),  # measured running the clear loop, line 20
@@ -562,20 +534,16 @@ class BackendTest(unittest.TestCase):
                 self.assertIs(b._basic_is_at_ready(), expected)
 
     def test_basic_is_at_ready_is_none_when_unreadable(self):
-        # An unreadable probe must not be mistaken for either state — the caller
-        # skips the repair rather than typing RUN into an unknown machine.
+        # An unreadable probe must not be mistaken for either state.
         b, t = self._backend(read=True)
         t.queue_token(TOK_FAIL)
         self.assertIsNone(b._basic_is_at_ready())
 
     def test_bring_up_drains_the_loaders_console_text_before_probing(self):
-        # LaunchFile acks and *then* streams its own console text back over the
-        # same link, including a C64 reset. HW-measured: with only a fixed sleep
-        # in between, the next command's reply misaligned with that text and came
-        # back as the ASCII of "...mote Launch:" — so the CURLIN probe failed,
-        # _basic_is_at_ready went None, and the repair was silently skipped,
-        # leaving BASIC in the editor with a blinking cursor. Bring-up must drain
-        # to silence first.
+        # LaunchFile acks and then streams its own console text back over the same
+        # link, including a C64 reset. HW-measured: with only a fixed sleep, the next
+        # reply misaligned with that text and came back as the ASCII of
+        # "...mote Launch:", so the CURLIN probe failed and the repair was skipped.
         b, t = self._backend(read=True)
         t.queue_stale(b"Remote Launch:\rF: clearloop.prg\rResetting C64\r")
         _queue_bringup_acks(t)
@@ -586,16 +554,15 @@ class BackendTest(unittest.TestCase):
         t.queue_token(TOK_ACK)  # CURLIN re-probe read
         t.queue_raw(b"\x14\x00")  # ...CURLIN = line 20: the loop is running
         t.queue_token(TOK_ACK)  # screen clear
-        with mock.patch.object(tr_api.time, "sleep"):
+        with mock.patch.object(tr_api, "time", FakeTime(sleep=None)):
             b.run_basic_clear_loop()
         self.assertEqual(bytes(t._stale), b"")  # chatter consumed, not left to desync
         self.assertIn(b"RUN\r", bytes(t.sent))  # ...so the repair actually ran
 
     def test_bring_up_spin_stub_when_read_unsupported(self):
-        # Old firmware (supports_read False) falls back to the spin stub: DMA
-        # the spin MC to $C000, then DeleteFile -> PostFile -> LaunchFile the
-        # SYS stub, then DMA-clear the screen. Acks: 1 (spin) +
-        # 5 (delete+post spin stub) + 2 (launch) + 1 (screen clear) = 9.
+        # Old firmware (supports_read False) falls back to the spin stub: DMA the spin
+        # MC to $C000, then DeleteFile → PostFile → LaunchFile the SYS stub, then
+        # DMA-clear the screen. Acks: 1 + 5 + 2 + 1 = 9.
         b, t = self._backend(read=False)
         t.queue_token(TOK_ACK)  # spin MC write
         _queue_bringup_acks(t)
@@ -609,14 +576,11 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(sent[i_write : i_write + 4], b"\x64\xfb\xc0\x00")
 
     def test_pause_idle_clears_screen_keeping_display_on(self):
-        # On TR a pause must (1) NOT reset — a reset lands at the TeensyROM
-        # menu, freezing $028D and stranding the resume-hold; and (2) NOT turn
-        # the VIC display off — DEN=0 removes badlines, hanging the cycle-clean
-        # DMA so reads/writes time out (HW-confirmed, wedges the TR). So it
-        # clears screen RAM (spaces) with DEN left ON. Asserts: WriteC64Mem to
-        # $0400 (clear), and NO ResetC64, NO $D011 (blank), NO $00CC (BLNSW —
-        # the clear loop already running underneath is what holds the cursor
-        # off, and poking $CC never worked).
+        # A pause on TR must not reset — a reset lands at the TeensyROM menu, freezing
+        # $028D and stranding the resume-hold — and must not turn the VIC display off:
+        # DEN=0 removes badlines, hanging the cycle-clean DMA (HW-confirmed, wedges
+        # the TR). So it clears screen RAM with DEN on: WriteC64Mem to $0400, and no
+        # ResetC64, no $D011, no $00CC (the running clear loop holds the cursor off).
         b, t = self._backend(read=True)
         t.queue_token(TOK_ACK)  # screen-clear write (<4096 -> 1 seg)
         b.pause_idle()
@@ -643,13 +607,12 @@ class BackendTest(unittest.TestCase):
         self.assertIn(b"\x64\x44", bytes(t.sent))  # launch still happened
 
     def test_semantic_helpers_are_pure_writes(self):
-        # silence_sid / disable_case_switch are inherited from the buffered
-        # base and work on any write-capable backend.
+        # silence_sid / disable_case_switch come from the buffered base and work on
+        # any write-capable backend.
         b, t = self._backend()
         for _ in range(10):
             t.queue_token(TOK_ACK)
         b.disable_case_switch()  # $0291 = $80
-        # last write_segment frame ends with the value byte 0x80
         self.assertEqual(b.stats["writes"], 1)
 
     def test_probe_returns_the_status_line(self):
@@ -658,9 +621,8 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(b.probe(), "TR ready")
 
     def test_probe_returns_none_on_an_empty_reply_instead_of_faking_liveness(self):
-        # ping()'s drain_text never raises on a timeout, so a hung/disconnected
-        # TR that sends back zero bytes must be reported as "couldn't tell",
-        # not fabricated into a firmware-label success string.
+        # ping()'s drain_text never raises on a timeout, so a TR that sends back zero
+        # bytes must report "couldn't tell", not a fabricated firmware-label success.
         b, _ = self._backend()
         self.assertIsNone(b.probe())
 
@@ -671,10 +633,9 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(b.describe_device(), "TeensyROM+ (full firmware, loopback)")
 
     def test_settle_after_launch_goes_through_the_client_lock(self):
-        # _settle_after_launch runs after launch_file() has already released
-        # the lock; it must reacquire it via drain_after_command rather than
-        # reading self.tr.transport directly, or a concurrent keyboard-poller
-        # read_memory() could steal these bytes (or vice versa).
+        # _settle_after_launch runs after launch_file() released the lock, so it must
+        # reacquire via drain_after_command rather than touching self.tr.transport —
+        # a concurrent keyboard-poller read_memory() could otherwise steal the bytes.
         b, t = self._backend()
         seen_locked = []
         orig = t.drain_text
@@ -718,9 +679,8 @@ class SerialTransportDeadlineTest(unittest.TestCase):
     a couple of tests use to force real wall-clock progress."""
 
     def test_drain_text_overrides_ser_timeout_to_quiet_s_and_restores_it(self):
-        # Without this, read(64) blocks up to the fixed io_timeout (2s)
-        # waiting for any bytes, so the common "nothing to drain" case would
-        # pay a 2s stall instead of returning after quiet_s.
+        # Without this, read(64) blocks up to the fixed io_timeout (2s) waiting for
+        # any bytes, so the common "nothing to drain" case stalls 2s.
         transport = SerialTransport("COM_FAKE")
         fake = _FakeSerial()
         transport._ser = fake
@@ -746,9 +706,8 @@ class SerialTransportDeadlineTest(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
-        # The old code only checked its deadline when a read() returned
-        # nothing; a link that delivers >=1 byte on every call never tripped
-        # it and could hold TRClient._lock indefinitely.
+        # Checking the deadline only when read() returns nothing means a link that
+        # delivers >=1 byte per call never trips it, holding TRClient._lock forever.
         transport = SerialTransport("COM_FAKE", io_timeout=0.05)
         transport._ser = _FakeSerial([b"x"] * 10_000, delay_s=0.01)
         start = time.monotonic()
@@ -805,9 +764,8 @@ class TcpTransportDeadlineTest(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
     def test_recv_exact_times_out_on_a_byte_at_a_time_trickle(self):
-        # Unlike SerialTransport's (buggy) attempt, the old code tracked no
-        # deadline at all here -- every individual recv() got its own fresh
-        # per-call timeout budget, so a trickling peer never tripped anything.
+        # Without a tracked deadline, every recv() gets a fresh per-call timeout
+        # budget, so a trickling peer never trips anything.
         transport = TcpTransport("host", io_timeout=0.05)
         transport._sock = _FakeSocket([b"x"] * 10_000, delay_s=0.01)  # type: ignore[assignment]
         start = time.monotonic()
@@ -935,9 +893,8 @@ class TRSerialAutodetectTest(unittest.TestCase):
 
 class MakeBackendTest(unittest.TestCase):
     def test_serial_requires_port_when_autodetect_fails(self):
-        # With no explicit serial_port and nothing auto-detected, make_backend
-        # raises a clear error. (Patch auto-detect to None so the test is
-        # deterministic on a Mac that actually has a TR attached.)
+        # Patch auto-detect to None so the test is deterministic on a Mac that
+        # actually has a TR attached.
         cfg = cfgmod.Config()
         cfg.hardware.backend = "teensyrom"
         cfg.teensyrom.transport = "serial"
@@ -949,8 +906,6 @@ class MakeBackendTest(unittest.TestCase):
             make_backend(cfg)
 
     def test_serial_auto_detects_device_when_unset(self):
-        # serial_port unset -> make_backend resolves it via auto-detect and
-        # builds the SerialTransport against the discovered node.
         cfg = cfgmod.Config()
         cfg.hardware.backend = "teensyrom"
         cfg.teensyrom.transport = "serial"
@@ -971,11 +926,9 @@ class MakeBackendTest(unittest.TestCase):
         ):
             make_backend(cfg)
         self.assertEqual(captured["port"], "/dev/cu.usbmodemAUTO1")
-        # The resolved device must be written back onto the config too —
-        # dac_calibration_store.resolve_calibration_key only looks up the
-        # board's USB serial number when serial_port is set, so leaving it
-        # empty here would collide two different TR+ boards on one host
-        # onto the same "tr-serial-auto" calibration file.
+        # The resolved device is written back onto the config: resolve_calibration_key
+        # only looks up the board's USB serial number when serial_port is set, so two
+        # TR+ boards on one host would share one "tr-serial-auto" calibration file.
         self.assertEqual(cfg.teensyrom.serial_port, "/dev/cu.usbmodemAUTO1")
 
     def test_explicit_serial_port_skips_autodetect(self):

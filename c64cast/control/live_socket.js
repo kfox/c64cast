@@ -1,22 +1,9 @@
-/* A live-state WebSocket with a polling fallback, shared by the two
- * hand-written control pages: the `/perf` console (control/perf_console.html)
- * and the WLED bridge's own device page (wled/wled_index.html).
+/* A receive-only live-state WebSocket with a polling fallback.
  *
- * Both do the same thing — open a receive-only socket for state pushes, fall
- * back to polling an HTTP endpoint while it is down, and reconnect with
- * backoff — and both used to carry their own copy of it. The copies drifted:
- * different reconnect delays, and for a while neither backed off at all, so
- * every phone left open on a downed host hammered it at a fixed rate. That is
- * precisely the load `perf_console.MAX_CONSOLE_SOCKETS` exists to bound, and
- * a fix applied to one page kept missing the other.
- *
- * Spliced into both pages at render time by control/page_assets.py rather than
- * served as its own file: each page stays one self-contained document with no
- * second request and no third-party resource, which is what lets the console's
- * response headers be as strict as they are.
- *
- * The socket is receive-only in both callers — everything they send goes over
- * fetch — so nothing outside needs a handle on it.
+ * Shared by the two hand-written control pages — the `/perf` console
+ * (control/perf_console.html) and the WLED bridge's device page
+ * (wled/wled_index.html) — and spliced into each at render time by
+ * control/page_assets.py, never served as its own file.
  */
 
 const WS_RETRY_MIN_MS = 500;
@@ -46,9 +33,6 @@ function liveSocket({ path, onMessage, onOpen, poll, pollMs }) {
     }
   }
 
-  // Back off rather than retry forever at a fixed interval, and retry after a
-  // construction failure too — that branch used to fall back to polling and
-  // never try the socket again for the life of the page.
   function retry() {
     retryMs = retryMs ? Math.min(retryMs * 2, WS_RETRY_MAX_MS) : WS_RETRY_MIN_MS;
     setTimeout(start, retryMs);
@@ -68,11 +52,6 @@ function liveSocket({ path, onMessage, onOpen, poll, pollMs }) {
       stopFallback();
       if (onOpen) onOpen();
     };
-    // Only the parse is guarded. The console's own handler used to sit inside
-    // this try as well, so a throw while applying a frame was swallowed; here
-    // it reaches the browser console instead. Deliberate: the socket survives
-    // an uncaught handler error either way, so the old shape bought a skipped
-    // repaint at the price of hiding the reason for it.
     ws.onmessage = (ev) => {
       let frame;
       try {

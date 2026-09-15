@@ -1,44 +1,32 @@
 """Live-performance transport + live-tune plumbing.
 
-Phase 1 of the MIDI live-tune feature (see docs/architecture.md → "Live
-performance") shipped the pieces that don't need a transport engine:
-
 - :func:`atomic_write_text` — the crash-safe "temp file in the same dir +
-  ``os.replace``" write, factored out of :class:`wled_device.PresetStore` so the
-  loop-preset store (Phase 3) and the config save-back below share one
-  implementation instead of duplicating it.
+  ``os.replace``" write, shared with :class:`wled_device.PresetStore` and the
+  stores below rather than duplicated.
 - :class:`LiveTuneTracker` — records every live parameter change a performer
-  makes (a knob sweep, a choice cycle) so the exit save-back flow can write the
-  final values back into the run's TOML — the ``[color]`` section for the knobs
-  the whole show shares, the scene's own ``[[scenes]]`` block for the ones a
-  scene owns — or print a pasteable snippet for a quick-playback run that has no
-  file.
+  makes (a knob sweep, a choice cycle) so the exit save-back can write the final
+  values back into the run's TOML — the ``[color]`` section for the knobs the
+  whole show shares, the scene's own ``[[scenes]]`` block for the ones a scene
+  owns — or print a pasteable snippet for a quick-playback run with no file.
+- :class:`TransportEvent` / :class:`TransportSession` — DJ-style control of a
+  playing :class:`~c64cast.scenes.scenes.VideoScene` (pause in place,
+  seek/scrub, RW/FF with acceleration, an A/B loop, the record workflow and the
+  loop-preset pads). A thread-safe queue the MIDI reader thread enqueues into
+  and :meth:`TransportSession.tick` drains once per frame from
+  :meth:`~c64cast.app.playlist.Playlist.run_one_frame`, dispatching against
+  whatever scene is current via a duck-typed ``transport_*`` surface — so all
+  scene/DMA-adjacent mutation stays on the playlist thread.
+- :class:`LoopPresetStore` / :class:`ControllerProfileStore` — per-video loop
+  slots, and the ``--midi-setup`` wizard's learned profiles (one JSON file per
+  controller under :func:`paths.controllers_dir`), both on the same
+  tolerant-load / atomic-write shape.
 
-Phase 2 adds the actual transport session — DJ-style control of a playing
-:class:`~c64cast.scenes.scenes.VideoScene` (pause in place, seek/scrub, RW/FF with
-acceleration, an A/B loop) driven from the same ``[midi_control]`` surface
-Phase 1 built:
+Kept import-light (stdlib plus the leaf :mod:`c64cast.app.paths`, which itself
+imports nothing from the package; ``Config``/``Playlist``/``Scene`` referenced
+under TYPE_CHECKING) so playlist.py and scenes.py can pull it in without a
+cycle.
 
-- :class:`TransportEvent` / :class:`TransportSession` — a thread-safe queue
-  the MIDI reader thread enqueues into (:mod:`midi_control`'s reader thread,
-  never the playlist thread) and :meth:`TransportSession.tick` drains once per
-  frame from :meth:`~c64cast.app.playlist.Playlist.run_one_frame`, dispatching
-  against whatever scene is current via a duck-typed ``transport_*`` surface
-  (see :class:`~c64cast.scenes.scenes.VideoScene`). Held rw/ff notes accelerate over
-  time; this keeps all scene/DMA-adjacent mutation on the playlist thread,
-  matching the module's existing rule for :class:`LiveTuneTracker`.
-
-Phase 3 adds the record workflow + loop preset slots: a Record/Stop button
-pair driving the same ``_loop_a``/``_loop_b``/``_loop_state`` state machine
-``transport_loop_toggle`` already used, a red border while a loop is armed,
-and Stop-held+pad / Record-held+pad chords (save / clear) into a per-video
-:class:`LoopPresetStore`. Phase 5 adds :class:`ControllerProfileStore` — the
-``--midi-setup`` learn wizard's output, one JSON file per controller under
-:func:`paths.controllers_dir`, cloned from the same tolerant-load / atomic-write
-shape. Kept import-light (stdlib
-plus the leaf :mod:`c64cast.app.paths` module, which itself imports nothing from
-the package; ``Config``/``Playlist``/``Scene`` referenced under TYPE_CHECKING)
-so it can be pulled in from playlist.py (and now scenes.py) without a cycle.
+See docs/architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5.
 """
 
 from __future__ import annotations
@@ -186,18 +174,13 @@ class JsonSlotStore:
 
 
 # Live-tune targets whose `mode.<field>` name maps back to a field of the same
-# (or a renamed) name on the global [color] section. Live tuning drives the
-# running DisplayMode; the save-back writes the tuned value into the Config so
-# the next run starts there. `dither_method` on the mode is `[color].dither` in
-# the config (the config knob also accepts "auto", which the build step resolves
-# to a concrete method — writing the concrete method back is intentional: it
-# pins what the performer actually dialed in).
-#
-# `mode.cell_pick` is `[color].hires_cell_pick` — a second renaming, and one
-# that went missing for a while: the knob was declared live-tunable, turned fine
-# from every surface, and recorded a change no save-back could ever write.
-# tests/test_live_tune.py's drift test now holds this map to the mode registries
-# so the next such knob can't ship half-connected.
+# (or a renamed) name on the global [color] section: live tuning drives the
+# running DisplayMode, and the save-back writes the tuned value into the Config
+# so the next run starts there. Two renamings — `mode.dither_method` is
+# `[color].dither` (the config knob also accepts "auto"; writing the concrete
+# method back pins what the performer dialed in), `mode.cell_pick` is
+# `[color].hires_cell_pick`. tests/test_live_tune.py's drift test holds this map
+# to the mode registries, so a knob cannot ship live-tunable with no save-back.
 _MODE_FIELD_TO_COLOR: dict[str, str] = {
     "dither_strength": "dither_strength",
     "motion_smoothing": "motion_smoothing",
@@ -209,20 +192,18 @@ _MODE_FIELD_TO_COLOR: dict[str, str] = {
 }
 
 # Live-tune targets whose config home is one `[[scenes]]` block rather than the
-# shared [color] section: {mode field: scene field}. These are recorded with the
-# index of the scene that was playing when the knob moved, and a save-back writes
-# that block and no other — the same knob turned during two scenes is two
-# entries, because it is two settings.
+# shared [color] section: {mode field: scene field}. Recorded with the index of
+# the scene that was playing when the knob moved, and a save-back writes that
+# block and no other — the same knob turned during two scenes is two entries.
 _MODE_FIELD_TO_SCENE: dict[str, str] = {
     "palette_mode": "palette_mode",
     "border": "border",
     "background": "background",
 }
 
-# The live-tunable mode params that deliberately have no config field at all,
-# and why. The drift test above allows exactly these; anything else missing from
-# both maps is an oversight, not a decision. Empty today — `palette_mode` was the
-# only member until it grew the per-scene home above.
+# The live-tunable mode params that deliberately have no config field at all.
+# The drift test above allows exactly these; anything else missing from both
+# maps is an oversight, not a decision.
 MODE_FIELDS_WITH_NO_CONFIG_HOME: frozenset[str] = frozenset()
 
 # ColorCfg field names a `_MODE_FIELD_TO_COLOR` target may map to — used to
@@ -511,8 +492,7 @@ def _toml_value(v: Any) -> str:
 
 # Held-action ramp (rw/ff): media-seconds covered per real second at hold
 # duration `elapsed`. Starts near 1x and doubles every _RAMP_DOUBLE_S seconds,
-# capped at _MAX_HOLD_SPEED — fine control on a quick tap, fast travel on a
-# long hold. HW-tuned constants, see the transport design doc.
+# capped at _MAX_HOLD_SPEED. HW-tuned.
 _MAX_HOLD_SPEED = 30.0
 _RAMP_DOUBLE_S = 0.75
 # Relative jog: media-seconds moved per encoder tick.
@@ -522,11 +502,10 @@ _HOLD_ACTIONS = ("rw", "ff")
 
 # Record/Stop are single-button hold-tracked modifiers for the loop_slot pad
 # chords (Stop-held+pad = save, Record-held+pad = clear) — distinct from
-# _HOLD_ACTIONS above, which drives the continuous rw/ff seek ramp. A held
-# flag auto-expires after this many seconds even with no release, because an
-# MMC-sourced Record/Stop press (see midi_control._dispatch) never generates
-# a release event at all — without an expiry, one MMC press would wedge
-# every later pad press as a chord for the rest of the session.
+# _HOLD_ACTIONS above. A held flag auto-expires after this many seconds even
+# with no release, because an MMC-sourced Record/Stop press never generates a
+# release event at all, and one such press would otherwise wedge every later
+# pad press as a chord for the rest of the session.
 _CHORD_HOLD_WINDOW_S = 5.0
 
 
@@ -597,8 +576,7 @@ class TransportSession:
         self._held: dict[str, float] = {}
         self._last_tick: float | None = None
         # Record/Stop hold state for the loop_slot pad chords — wall-time the
-        # button was pressed, or None when released/expired. See
-        # _CHORD_HOLD_WINDOW_S.
+        # button was pressed, or None when released/expired.
         self._record_held_since: float | None = None
         self._stop_held_since: float | None = None
 
@@ -640,10 +618,9 @@ class TransportSession:
             else:
                 self._held.pop(event.action, None)
             return
-        # Record/Stop chord bookkeeping — same "survives no current scene"
-        # rule as rw/ff above — but these ALSO have a one-shot press action
-        # (arm / the 3-way stop state machine), so they fall through to the
-        # dispatch below instead of returning early.
+        # Record/Stop chord bookkeeping — same "survives no current scene" rule
+        # as rw/ff above, but these ALSO have a one-shot press action, so they
+        # fall through to the dispatch below instead of returning early.
         if event.action == "record":
             self._record_held_since = now if event.pressed else None
         elif event.action == "stop":
@@ -723,16 +700,11 @@ class TransportSession:
         seek(target)
 
 
-# ---- Loop preset store (Phase 3) -------------------------------------------
-#
-# One JSON file per video under `paths.loop_presets_dir()`
-# (<data root>/presets/loops), resolved at use time so it works from a repo
-# checkout or an installed wheel (and honors $C64CAST_DATA_DIR).
-# Keyed by a path-move-tolerant identity: local files hash on basename+size
-# (survives a move, not a content edit — the same tradeoff
-# wled_device.PresetStore already accepts for its own presets); URL-backed
-# scenes hash on the URL itself. Slots are pad numbers (small positive ints);
-# b=None means "loop to end of file".
+# One JSON file per video under `paths.loop_presets_dir()`, keyed by a
+# path-move-tolerant identity: local files hash on basename+size (survives a
+# move, not a content edit — the tradeoff wled_device.PresetStore already
+# accepts), URL-backed scenes hash on the URL. Slots are pad numbers (small
+# positive ints); b=None means "loop to end of file".
 
 
 def _video_identity(filepath: str) -> tuple[str, int | None]:
@@ -824,11 +796,10 @@ def make_loop_preset_store(filepath: str) -> LoopPresetStore:
 
 
 # One-time heads-up when presets are stranded at the old repo `presets/` dir.
-# This replaces the removed `--doctor` migration nudge with a use-site log: it
-# fires from the preset-store resolvers (WLED / looks / loops) the first time
+# Fires from the preset-store resolvers (WLED / looks / loops) the first time
 # any of them runs, so a user who never touches presets never sees it. Presets
-# moved to the canonical data dir (paths.presets_dir()), so files left behind
-# in a source checkout are simply no longer read.
+# now live under paths.presets_dir(); files left in a source checkout are no
+# longer read.
 _warned_legacy_presets = False
 
 

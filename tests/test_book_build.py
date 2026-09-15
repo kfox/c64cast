@@ -103,14 +103,13 @@ class InlineConversionTest(unittest.TestCase):
 
     def test_backslash_escape_does_not_open_emphasis(self):
         # Without escape handling the lone `*` pairs with the next one and
-        # italicises everything between, silently swallowing the prose.
+        # italicizes everything between, silently swallowing the prose.
         out = convert(r"Jost\* and *real* emphasis").strip()
         self.assertEqual(out, r"Jost\* and _real_ emphasis")
 
     def test_inline_code_uses_raw_markup_not_a_call(self):
-        # A `#raw(...)` call ends in `)`, and Typst reads a following `.` as
-        # the start of a field access -- which put a stray gap before the full
-        # stop in "the file `LICENSE`." Backtick markup cannot chain.
+        # A `#raw(...)` call ends in `)` and Typst reads a following `.` as
+        # the start of a field access, so backtick markup cannot chain.
         out = convert("the file `LICENSE`.").strip()
         self.assertEqual(out, "the file `LICENSE`.")
         self.assertNotIn("#raw(", out)
@@ -260,7 +259,7 @@ class BlockConversionTest(unittest.TestCase):
 
     def test_index_directive_sets_locators_as_pages(self):
         # The Markdown links a term at the section that discusses it, because
-        # a section title is the only locator github.com has. On paper the
+        # a section title is the only locator github.com has; on paper the
         # answer to "where" is a page, and the same link resolves to one.
         anchors = frozenset({"sec-99-test-alpha", "sec-99-test-beta"})
         out = convert(
@@ -291,8 +290,8 @@ class BlockConversionTest(unittest.TestCase):
 
     def test_a_long_index_term_can_wrap_inside_its_column(self):
         # `hue_corrections_replace_defaults` has no space to break at and ran
-        # over the locator column; each underscore now carries a zero-width
-        # break opportunity, in the .typ only.
+        # over the locator column, so each underscore carries a zero-width
+        # break opportunity — in the .typ only.
         out = convert(
             "<!-- table: index -->\n| Term | See |\n|---|---|\n"
             "| `hue_corrections_replace_defaults` | [A (1)](#a) |\n",
@@ -322,10 +321,9 @@ class BlockConversionTest(unittest.TestCase):
             convert("![](img/logo-cover.png)")
 
     def test_figure_path_is_rewritten_root_relative(self):
-        # The book writes `img/x.png`, but the `image()` call it lands in is in
-        # docs/shared/template.typ -- and Typst resolves a relative path
-        # against the file the call is written in. A book-relative path would
-        # be looked for next to the template, where nothing lives.
+        # The book writes `img/x.png`, but the `image()` call it lands in is
+        # in docs/shared/template.typ, and Typst resolves a relative path
+        # against the file the call is written in.
         out = convert("![A caption.](img/logo-cover.png)").strip()
         self.assertIn('#screenshot("/docs/guide/img/logo-cover.png"', out)
 
@@ -376,9 +374,8 @@ class SectionAnchorTest(unittest.TestCase):
         self.assertEqual(slugs, ["real"])
 
     def test_the_label_names_the_file_not_the_chapter_number(self):
-        # Keyed on the filename so renumbering a chapter does not silently
-        # retarget every link into it -- and so the two `## Generators`
-        # sections, in different files, stay apart.
+        # Keyed on the filename, so renumbering a chapter does not retarget
+        # every link into it and the two `## Generators` sections stay apart.
         self.assertEqual(
             bd.section_label("04-display-pipeline", "fades"), "sec-04-display-pipeline-fades"
         )
@@ -430,9 +427,8 @@ class SectionAnchorTest(unittest.TestCase):
 
     def test_the_pre_pass_finds_exactly_what_the_converter_emits(self):
         # The anchor set is read from the Markdown by regex and the labels are
-        # emitted by the converter. Two readings of the same file, and a link
-        # that passes the first check and misses the second is a dead link in
-        # print -- so they are pinned to each other.
+        # emitted by the converter: a link that passes the first reading and
+        # misses the second is a dead link in print.
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):
                 paths = bd.discover_chapters(book_dir)
@@ -508,22 +504,18 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("#toc()", typst)
         self.assertIn("#chapter(", typst)
         # Applied as show rules, not called. Both contain a `set page`, which
-        # in Typst reaches only to the end of the block it is written in — so
-        # `#mainmatter()` switched the printed folio (the footer reads a state)
-        # and left the PDF's own page labels roman for the whole book.
+        # in Typst reaches only to the end of the block it is written in, so
+        # `#mainmatter()` moved the printed folio while leaving the PDF's own
+        # page labels roman for the whole book.
         self.assertIn("#show: frontmatter", typst)
         self.assertIn("#show: mainmatter", typst)
 
     def test_a_guide_without_a_colophon_says_so(self):
-        # Every other book problem exits with an `error:` line. A missing
-        # colophon used to come out as a raw FileNotFoundError traceback,
-        # which the guide never hit because it has always had one -- but a
-        # second book starts life without it.
+        # Every other book problem exits with an `error:` line; a missing
+        # colophon arrived as a raw FileNotFoundError traceback instead.
         book_dir = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        # Built from LAYOUT_KEYS rather than spelled out, so this stays a test
-        # about the colophon. Listing the keys by hand meant that adding a
-        # required one (`volume`, for the second book's cover) failed here
-        # instead -- on the wrong error, from a test that never mentions it.
+        # Built from LAYOUT_KEYS rather than spelled out, so adding a required
+        # key does not fail this test on the wrong error.
         keys = dict.fromkeys(bd.LAYOUT_KEYS["guide"], "x") | {"logo": "logo.png"}
         body = "\n".join(f'{key} = "{value}"' for key, value in keys.items())
         (book_dir / "book.toml").write_text(
@@ -553,8 +545,8 @@ class LayoutTest(unittest.TestCase):
         )
         (book_dir / "01-targets.md").write_text("# Live targets\n\n## Transport\n\nText.\n")
 
-        # Paths are spelled relative to the repo root, so a scratch book has to
-        # stand in as one.
+        # Paths are spelled relative to the repo root, so a scratch book has
+        # to stand in as one.
         with mock.patch.object(bd, "REPO_ROOT", book_dir):
             typst = bg.build(book_dir)
 
@@ -616,8 +608,7 @@ class BookSourcesTest(unittest.TestCase):
 
     def test_every_referenced_figure_exists(self):
         # load_chapter() raises on a missing figure, so reaching the assert
-        # means they all resolved; the count guards against a book quietly
-        # losing its illustrations.
+        # means they all resolved; the count guards a book quietly losing them.
         found = 0
         for path in _chapters():
             text = path.read_text(encoding="utf-8")
@@ -632,15 +623,13 @@ class BookSourcesTest(unittest.TestCase):
                 self.assertTrue(bg.build(book_dir))
 
     def test_no_listing_is_wider_than_the_page(self):
-        # Typst wraps an over-long line in a code block rather than complaining,
-        # and a wrapped listing does not look broken -- it looks like a second
-        # line of output the program never printed. `--profile`'s sample came
-        # out as six lines of four, and a class definition wrapped mid-signature
-        # in the middle of Chapter 7. Nothing catches that but a measure.
+        # Typst wraps an over-long line in a code block rather than
+        # complaining, and a wrapped listing reads as a second line of output
+        # the program never printed. Nothing catches that but a measure.
         #
-        # A line whose longest unbreakable run is already wider than the measure
-        # is exempt: the schema directive in the User's Guide is a URL that has
-        # to be copied verbatim, and no reflowing will shorten it.
+        # A line whose longest unbreakable run is already wider than the
+        # measure is exempt: the schema directive in the User's Guide is a URL
+        # that has to be copied verbatim.
         for book_dir in _BOOK_DIRS:
             width = bg.CODE_WIDTH[bd.load_book_toml(book_dir)["layout"]]
             for path in bd.discover_chapters(book_dir):
@@ -660,10 +649,8 @@ class BookSourcesTest(unittest.TestCase):
 
     def test_the_makefile_knows_every_book(self):
         # A book's directory and artifact basename are spelled in both its
-        # book.toml and the Makefile, which renders it and cleans up after it.
-        # The Makefile cannot read the TOML without either a Python it must not
-        # need for `clean` or a sed that fails silently, so the two spellings
-        # are held together here instead.
+        # book.toml and the Makefile, which cannot read the TOML without a
+        # Python it must not need for `clean`, so the two are held together here.
         makefile = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         for book_dir in _BOOK_DIRS:
             with self.subTest(book=book_dir.name):

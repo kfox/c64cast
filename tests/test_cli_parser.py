@@ -48,9 +48,8 @@ DOCUMENTED_GROUPS = {
 
 def _run(argv: list[str]) -> tuple[int, str]:
     # quiet_logging() undoes any root-logger reconfiguration a config-free
-    # command's configure_logging() call performs — without it, that
-    # handler outlives this test and every later INFO record in the same
-    # worker process prints to the console (see _fakes.quiet_logging).
+    # command's configure_logging() performs; without it that handler outlives
+    # this test and every later INFO record in the worker process prints.
     buf = io.StringIO()
     with quiet_logging(), contextlib.redirect_stdout(buf):
         rc = main(argv)
@@ -59,12 +58,10 @@ def _run(argv: list[str]) -> tuple[int, str]:
 
 class ParserContractTest(unittest.TestCase):
     def test_every_config_bearing_flag_defaults_to_none(self):
-        # The merge_cli contract: default=None is how the cascade tells
-        # "not provided" from "explicitly set to the default value". A flag
-        # added with a real argparse default would silently override the
-        # TOML on every run. Only the config-free command switches
-        # (--doctor, --list-* and friends, all store_true) and the MEDIA
-        # positional are allowed a non-None default.
+        # The merge_cli contract: default=None is how the cascade tells "not
+        # provided" from "explicitly set to the default value". Only the config-free
+        # command switches (--doctor, --list-* and friends, all store_true) and the
+        # MEDIA positional are allowed a non-None default.
         ns = build_parser().parse_args([])
         self.assertEqual(ns.inputs, [], "positional MEDIA defaults to an empty list")
         for dest, value in vars(ns).items():
@@ -73,9 +70,8 @@ class ParserContractTest(unittest.TestCase):
             self.assertIsNone(value, f"--{dest} must default to None for merge_cli")
 
     def test_every_mapped_flag_defaults_to_none(self):
-        # The flags CLI_TO_CFG maps into config fields are exactly the ones
-        # the None contract exists for — pin them individually so a False
-        # default can't hide behind the store_true exemption above.
+        # CLI_TO_CFG's mapped flags are exactly what the None contract exists for;
+        # pin them individually so a False default can't hide behind store_true.
         from c64cast.app.config import CLI_TO_CFG
 
         ns = build_parser().parse_args([])
@@ -110,9 +106,8 @@ class ParserContractTest(unittest.TestCase):
         self.assertEqual(ns.inputs, ["clip.mp4", "tune.sid"])
 
     def test_version_names_the_install_it_runs_from(self):
-        # "I upgraded and it still reports the old version" is answered by the
-        # path, not the number: it names the environment the PATH command
-        # actually points into. argparse prints --version to stdout and exits.
+        # "I upgraded and it still reports the old version" is answered by the path,
+        # not the number. argparse prints --version to stdout and exits.
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             build_parser().parse_args(["--version"])
@@ -121,15 +116,13 @@ class ParserContractTest(unittest.TestCase):
         self.assertIn(str(Path(c64cast.__file__).resolve().parent.parent), printed)
 
     def test_version_text_carries_no_percent_for_argparse_to_expand(self):
-        # argparse %-formats the version string only when it contains
-        # "%(prog)", which is why this one spells the program name out: an
-        # install path with a literal % in it would otherwise raise here.
+        # argparse %-formats the version string only when it contains "%(prog)",
+        # which is why this one spells the program name out.
         self.assertNotIn("%(prog)", _version_text())
 
     def test_print_schema_path_names_this_installs_schema(self):
         # The line an editor is pointed at has to name the schema *this* build
-        # generates — that is what stops it from going stale on the next
-        # upgrade, which rewrites exactly that file.
+        # generates; the next upgrade rewrites exactly that file.
         rc, out = _run(["--print-schema-path"])
         self.assertEqual(rc, 0)
         resolved = Path(os.path.abspath(out.strip()))
@@ -137,8 +130,7 @@ class ParserContractTest(unittest.TestCase):
 
     def test_print_schema_path_answers_for_the_config_it_is_given(self):
         # Relative-vs-absolute depends on where the config sits (see
-        # config_serialize.schema_directive_for), so the command has to honor
-        # --config rather than assume ./c64cast.toml.
+        # config_serialize.schema_directive_for), so this must honor --config.
         with tempfile.TemporaryDirectory() as d:
             cfg = os.path.join(d, "show.toml")
             rc, out = _run(["--config", cfg, "--print-schema-path"])
@@ -151,18 +143,16 @@ class ParserContractTest(unittest.TestCase):
         self.assertNotIn("#:schema", _run(["--print-schema-path"])[1])
 
     def test_check_for_updates_dispatches_before_config_load(self):
-        # Mocked at the upgrade.py boundary (not requests/subprocess) so this
-        # stays a dispatch-order test, not a re-test of the PyPI query itself
-        # (that's test_upgrade.py's job) — and never touches the network.
+        # Mocked at the upgrade.py boundary (not requests/subprocess) so this stays
+        # a dispatch-order test, not a re-test of the PyPI query, and never networks.
         with mock.patch.object(upgrade, "latest_release", return_value="0.3.0"):
             rc, out = _run(["--check-for-updates"])
         self.assertEqual(rc, 0)
         self.assertIn("up to date", out)
 
     def test_check_for_updates_write_state_records_the_answer(self):
-        # The write path itself (round trip, tolerant read) is
-        # test_update_state.py's job; this only pins that the flag reaches it
-        # with the same answer this invocation printed.
+        # The write path itself is test_update_state.py's job; this pins only that
+        # the flag reaches it with the same answer this invocation printed.
         with tempfile.TemporaryDirectory() as d:
             state_path = Path(d) / "update_check.json"
             with (
@@ -180,10 +170,8 @@ class ParserContractTest(unittest.TestCase):
         self.assertIs(recorded.newer, True)
 
     def test_write_state_with_pypi_unreachable_keeps_the_last_answer(self):
-        # A check that couldn't reach PyPI learned only when it ran.
-        # Recording its empty hands would retract a pending upgrade over one
-        # lost DNS lookup, and leave it retracted until a later check
-        # succeeded — a day away on the appliance's timer.
+        # A check that couldn't reach PyPI learned only when it ran. Recording its
+        # empty hands would retract a pending upgrade over one lost DNS lookup.
         from c64cast.app.update_state import UpdateCheck, read_update_state, write_update_state
 
         err = io.StringIO()
@@ -311,9 +299,8 @@ class ParserContractTest(unittest.TestCase):
                     rc, out = _run(["--reset-setup", "--config", str(Path(d) / "missing.toml")])
             self.assertEqual(rc, 0)
             self.assertFalse(marker.exists())
-            # The reopen marker is what `serve._setup_pending` reads: without
-            # it a host that already names a connection target refuses to
-            # reopen the unauthenticated form.
+            # The reopen marker is what `serve._setup_pending` reads: without it a
+            # host that already names a connection target refuses to reopen the form.
             self.assertTrue(reopen.is_file())
         self.assertIn(str(marker), out)
 

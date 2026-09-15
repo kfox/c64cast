@@ -28,12 +28,13 @@ the `__attribute__((packed))` `audioSyncPacket`, V2 header ``"00002"``):
 44 bytes, little-endian (the ESP32 is LE). `struct.calcsize` asserts the size at
 import so a format typo can't ship silently.
 
-Mapping rationale (see docs/architecture.md): the SID has no FFT, but it *does*
-expose per-voice oscillator frequency + gate, which is exactly what a 16-band
-graphic-EQ wants — each sounding voice lights the GEQ bin its note falls in, at
-the tune's current envelope level. `samplePeak` (the transient flag most WLED
-audio effects key off) is derived by the *broadcaster* from note onsets, so it
-fires even for a source that reports `onset == 0` (WaveformScene).
+The SID has no FFT but does expose per-voice oscillator frequency + gate, so
+each sounding voice lights the GEQ bin its note falls in at the tune's current
+envelope level. `samplePeak`, the transient flag most WLED audio effects key
+off, is derived by the *broadcaster* from note onsets, so it fires even for a
+source that reports `onset == 0` (WaveformScene).
+
+See docs/architecture/wled.md#wled_syncpy--wled-audio-sync-broadcast-wled-bridge-mode-3.
 """
 
 from __future__ import annotations
@@ -63,9 +64,8 @@ assert struct.calcsize(_PACKET_FMT) == 44, "WLED audioSyncPacket must be 44 byte
 
 _NUM_GEQ = 16  # WLED NUM_GEQ_CHANNELS
 
-# GEQ band span: log-spaced 40 Hz .. 10 kHz across the 16 bins. Covers the SID's
-# musical range; the exact edges only affect which bin a note lights, not
-# correctness.
+# GEQ band span: log-spaced 40 Hz .. 10 kHz across the 16 bins, covering the
+# SID's musical range. The exact edges only affect which bin a note lights.
 _GEQ_LO_HZ = 40.0
 _GEQ_HI_HZ = 10000.0
 _GEQ_LOG_SPAN = math.log(_GEQ_HI_HZ / _GEQ_LO_HZ)
@@ -74,8 +74,8 @@ _GEQ_LOG_SPAN = math.log(_GEQ_HI_HZ / _GEQ_LO_HZ)
 _MAJOR_PEAK_MIN_HZ = 1.0
 _MAJOR_PEAK_MAX_HZ = 11025.0
 
-# onset >= this reads as a transient (samplePeak). Onset spikes to 1.0 on a note
-# attack and decays, so 0.5 catches the attack for the frame or two it's hot.
+# onset >= this reads as a transient (samplePeak). Onset spikes to 1.0 on a
+# note attack and decays, so 0.5 catches the attack while it is hot.
 _ONSET_PEAK_THRESHOLD = 0.5
 
 
@@ -104,8 +104,8 @@ def build_audio_sync_packet(mod: MusicModulation, sample_peak: bool) -> bytes:
             continue
         b = _freq_to_geq_bin(freq)
         fft[b] = max(fft[b], mag)
-        # Dominant partial: the highest-frequency active voice (the lead, most
-        # often) — we have no per-voice amplitude to rank by.
+        # Dominant partial: the highest-frequency active voice, since there is
+        # no per-voice amplitude to rank by.
         if freq > major_peak:
             major_peak = freq
     major_peak = max(_MAJOR_PEAK_MIN_HZ, min(_MAJOR_PEAK_MAX_HZ, major_peak))

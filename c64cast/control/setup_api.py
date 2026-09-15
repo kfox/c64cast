@@ -3,45 +3,31 @@
 Registered only while :mod:`c64cast.control.setup_gate` has setup pending (see
 ``serve.build_daemon_app``): once ``setup.json`` exists the app is rebuilt
 without either module, so there is nothing here to disable at request time.
-That is also why this asks for as little as possible — a connection target and
-a token choice — rather than growing into a second config editor: everything
-else is already reachable through the console's own Settings screen once
-setup hands over to it. The form itself is a screen of the ordinary console
-bundle (``web/src/lib/screens/Setup.svelte``), reachable because
-``setup_gate`` leaves the shell and its assets alone; this module is only its
-API.
+The form itself is a screen of the ordinary console bundle
+(``web/src/lib/screens/Setup.svelte``); this module is only its API.
 
 **No second parser, no second serializer, no second writer.** The connection
-target goes through :func:`c64cast.app.connect.parse_connection_uri`, the same
-one ``-u``, ``--save-settings`` and quickcast use, and lands in machine
-settings through :func:`c64cast.app.config_serialize.save_machine_settings` —
-the same function ``cli_commands.run_save_settings`` calls, not a hand-copy of
-its shape. That distinction is the whole point: this module used to *assert* in
-prose that it mirrored the CLI's save path "exactly" while missing the one
-guard that path had, and the result was a form that erased every secret already
-in ``settings.toml`` (the ``dma_password`` a password-protected U64 needs, and
-the ``[web] token`` pin ``token_settable`` exists to protect) on the first
-successful POST. The seed-and-overlay is still per-caller, because each
-overlays something different; everything from the serialize onward is shared.
+target goes through :func:`c64cast.app.connect.parse_connection_uri` — the same
+one ``-u``, ``--save-settings`` and quickcast use — and lands in machine
+settings through :func:`c64cast.app.config_serialize.save_machine_settings`,
+the same function ``cli_commands.run_save_settings`` calls. A hand-copy of that
+writer's shape once dropped every secret already in ``settings.toml``.
 
 **No credential leaves here until setup completes.** ``GET`` reports only
-whether the token is *settable*; it never carries the token itself, because
-anyone on the LAN can call it while the window is open. The full token rides
-back exactly once, in the ``login_url`` of a successful ``POST`` — by then the
-caller is the one who configured the box, which is the trust model SECURITY.md
-describes for this window, and it is also the only way an appliance admin with
-no console access can ever learn it.
-
-A token is settable only when the host generated it. One named in
-``[web].token``, ``[web].token_file`` or ``$C64CAST_WEB_TOKEN`` outranks the
-generated file that :func:`_write_token` writes, so accepting a replacement
-would answer "ok" and then lock the admin out on the next restart; that case is
-refused here and shown as a disabled field in the form.
+whether the token is *settable* and never the token itself, because anyone on
+the LAN can call it while the window is open; the full token rides back exactly
+once, in the ``login_url`` of a successful ``POST``. A token is settable only
+when the host generated it — one named in ``[web].token``, ``[web].token_file``
+or ``$C64CAST_WEB_TOKEN`` outranks the file :func:`_write_token` writes, so
+accepting a replacement would answer "ok" and lock the admin out on the next
+restart.
 
 Deliberately does **not** ``from __future__ import annotations``, for the same
 reason :mod:`c64cast.control.auth` doesn't: the routes below annotate a
 ``Request`` parameter, and a stringized annotation resolved against a name
 that was imported *inside* the registering function would not resolve at all.
+
+See docs/architecture/control.md#setup_gatepy--setup_apipy--the-appliance-first-run-setup-window.
 """
 
 import json
@@ -66,10 +52,9 @@ from .web_static import landing_path
 
 log = logging.getLogger(__name__)
 
-# `MIN_TOKEN_LENGTH` is imported above rather than declared here, and is named
-# in `__all__` because this module's callers and tests still spell it here: the
-# policy itself belongs to `auth`, since one enforced on one of four entry
-# points is a policy nobody owns.
+# `MIN_TOKEN_LENGTH` is imported rather than declared here, and named in
+# `__all__` because this module's callers and tests still spell it here: the
+# policy belongs to `auth`.
 __all__ = ["MIN_TOKEN_LENGTH", "SetupRefused", "login_url", "register_setup_routes"]
 
 
@@ -97,16 +82,11 @@ def _token_from(body: dict[str, Any], *, settable: bool) -> str:
     telling somebody to type a longer one would be advice that cannot work.
 
     **Stripped before every check**, because the two ends of this contract
-    disagreed otherwise: :func:`_write_token` persists what it is given and
-    ``serve._generated_token`` reads that file back with ``.strip()``. A token
-    pasted from a password manager with a trailing space went out in
-    ``login_url`` urlencoded *with* the space and came back after the restart
-    without it, so the one link an appliance admin was handed answered 401
-    forever — and a whitespace-only token of 16 characters passed the length
-    check, stripped to ``""`` on read, and made the host mint a brand-new
-    credential nobody has ever seen with the setup window already closed. An
-    interior newline is refused for the adjacent reason: ``_write_token`` adds
-    its own, so the file's shape would be ambiguous."""
+    disagree otherwise: :func:`_write_token` persists what it is given and
+    ``serve._generated_token`` reads that file back with ``.strip()``, so an
+    untrimmed token goes out in ``login_url`` and comes back different — and a
+    whitespace-only one would pass the length check and strip to ``""``. An
+    interior newline is refused because ``_write_token`` appends its own."""
     chosen = body.get("token")
     if chosen is None or chosen == "":
         return ""
@@ -192,10 +172,9 @@ def register_setup_routes(
         try:
             body = json.loads(await read_body(request))
         except BodyTooLarge as e:
-            # This route is unauthenticated while the window is open, so the
-            # body has to be refused before it is resident (see `read_body`),
-            # and the cap it tripped is the operator's business, not the
-            # caller's.
+            # Unauthenticated while the window is open, so the body has to be
+            # refused before it is resident (see `read_body`); the cap it
+            # tripped is the operator's business, not the caller's.
             log.debug("setup body refused: %s", e)
             return JSONResponse({"ok": False, "error": BODY_TOO_LARGE_ERROR}, status_code=413)
         except Exception:
@@ -208,35 +187,22 @@ def register_setup_routes(
         except SetupRefused as e:
             # Every message that reaches here is authored prose, not a
             # traceback: `SetupRefused` is raised only in this module and in
-            # `_connection_from`, which relays `ConnectionURIError`, and every
-            # one of those is an f-string in `connect.py` quoting nothing but
-            # the target the caller just submitted. The detail is the point —
-            # "u64:// needs a host (e.g. u64://192.168.2.64)" is the same
-            # advice `-u` prints, and it is all an admin staring at a refused
+            # `_connection_from`, which relays `ConnectionURIError` — f-strings
+            # in `connect.py` quoting nothing but the target just submitted.
+            # The detail is the point: it is all an admin staring at a refused
             # form has to go on. CodeQL flags `str()` of any caught exception
             # and cannot tell the two apart, hence the waiver.
             #
-            # The marker goes on its **own line, immediately above** the line
-            # it waives. That is not style — it is the only form that works.
-            # `CodeQlSuppressionComment` in CodeQL's
+            # The marker must stay on its **own line, immediately above** the
+            # line it waives. `CodeQlSuppressionComment` in CodeQL's
             # `shared/util/codeql/util/suppression/AlertSuppression.qll` only
-            # constructs when *no AST node precedes the comment on its line*, so
-            # a trailing `# codeql[...]` never becomes a suppression at all; and
-            # its `covers` is `startline - 1`, so the one it does form applies
-            # to the **next** line. (Same-line placement belongs to `lgtm[...]`,
-            # and to Python's `noqa`.)
+            # constructs when no AST node precedes the comment on its line, so
+            # a trailing `# codeql[...]` is inert; and its `covers` is
+            # `startline - 1`, so the one it does form applies to the next
+            # line. (Same-line placement belongs to `lgtm[...]` and `noqa`.)
             #
-            # This waiver used to trail the argument, so it suppressed nothing:
-            # `AlertSuppression.ql` emitted no entry, the `dismiss-alerts` step
-            # in `codeql.yml` logged "Indexed 15 alerts" and dismissed zero, and
-            # every waiver in this repo was in fact being closed by hand — which
-            # is the exact fragility that step exists to remove.
-            #
-            # Moving a marker shifts the flagged line and therefore mints a new
-            # alert number. That is expected and is not evidence the placement
-            # is wrong; the replacement is dismissed on the next `main` run,
-            # since `dismiss-alerts` is `main`-only and code scanning itself
-            # records SARIF suppressions without acting on them.
+            # Moving a marker shifts the flagged line and mints a new alert
+            # number; the replacement is dismissed on the next `main` run.
             return JSONResponse(
                 # codeql[py/stack-trace-exposure]
                 {"ok": False, "error": str(e)},
@@ -245,9 +211,7 @@ def register_setup_routes(
 
         # The connection first, then the token, then the marker. The token used
         # to go first, so a full disk or a read-only settings dir left the
-        # host's credential already replaced by one the 500 never handed back —
-        # on a box whose only interface is this form, a self-inflicted lockout
-        # window even though the retry stays possible.
+        # host's credential already replaced by one the 500 never handed back.
         try:
             _write_connection(spec)
             if chosen:
@@ -255,10 +219,9 @@ def register_setup_routes(
             _mark_complete(target)
         except OSError as e:
             # The admin's only interface is this form, so a bare 500 with
-            # FastAPI's empty body leaves them with no next step. Name the path
-            # instead: `e.filename` is the file that could not be written, and
-            # `strerror` is the OS's own reason, neither of which is a
-            # traceback.
+            # FastAPI's empty body leaves them with no next step. `e.filename`
+            # is the file that could not be written and `strerror` the OS's own
+            # reason, neither of which is a traceback.
             log.exception("web console: setup could not write its state")
             return JSONResponse(
                 {

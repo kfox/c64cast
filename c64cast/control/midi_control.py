@@ -1,50 +1,30 @@
-"""Process-wide MIDI control surface for live performance: scene jumps,
-style cycling, transport, and live effect/generator parameter sweeps from
-a MIDI controller — turns a playlist run into something a performer can
-drive in real time.
+"""Process-wide MIDI control surface for live performance: scene jumps, style
+cycling, transport, and live effect/generator parameter sweeps from a MIDI
+controller.
 
-Unlike :mod:`midi_scene` (a *Scene* that plays the SID directly and is only
-live while that scene is on screen), this is a standalone service that runs
-for the whole process, mirroring :mod:`control_plane`'s "one server for the
-whole ensemble" shape. It opens its OWN ``mido.open_input()`` — mido ports
-are exclusive opens, so this is always a second port, never shared with a
-running :class:`~c64cast.sid.midi_scene.MidiScene` even on the same physical
-controller (route the controller to two virtual MIDI ports, or use OS-level
-MIDI Thru, if you want one physical device to feed both).
+Unlike :mod:`c64cast.sid.midi_scene` (a *Scene*, live only while it is on
+screen), this is a standalone service that runs for the whole process. It opens
+its OWN ``mido.open_input()`` — mido ports are exclusive opens, so this is
+always a second port, never shared with a running
+:class:`~c64cast.sid.midi_scene.MidiScene` even on the same physical controller
+(route the controller to two virtual MIDI ports, or use OS-level MIDI Thru, if
+you want one physical device to feed both).
 
-Every action bottoms out in one of two cheap, already-existing mechanisms:
+**Nothing here rebuilds a scene or touches the DMA socket on the reader
+thread.** A discrete action sets a :class:`~c64cast.app.playlist.Playlist`
+``threading.Event`` or enqueues onto the transport / performance queues the
+playlist thread drains; a continuous parameter sweep is a plain unlocked
+``setattr()`` the render loop picks up on its next read. So there is nothing to
+coalesce: every message is dispatched immediately, on a 1 ms poll.
 
-- Discrete actions (pause/resume/skip/cycle_style/jump) set a
-  :class:`~c64cast.app.playlist.Playlist` ``threading.Event`` — the same
-  mechanism :mod:`control_plane` and :mod:`keyboard` already use. Picked up
-  at the next clean frame boundary (one frame period, worst case).
-- Continuous parameter sweeps (a CC mapped to an effect/generator's
-  ``LIVE_PARAMS`` entry) are a direct, unlocked ``setattr()`` onto the
-  running scene's ``effect``/``source`` — no Event, no frame-boundary wait,
-  picked up on the render loop's very next read of that attribute. This is
-  the cheapest path in the system.
-
-Because neither path touches the DMA socket from this module's reader
-thread (unlike :class:`~c64cast.sid.midi_scene.MidiScene`, which writes SID
-registers directly), there is nothing to coalesce: every message is
-dispatched immediately. The 1ms poll interval mirrors ``MidiScene._reader``
-for the same reason it was chosen there — it keeps latency tight — but
-without that class's ``_CONTROL_FLUSH_INTERVAL_S`` throttle, since there's
-no DMA burst risk here to guard against.
-
-Ensemble targeting is by MIDI channel: channel *N* (1-based) addresses the
-Nth system in ensemble order, and a reserved broadcast channel (default 16)
+Ensemble targeting is by MIDI channel: channel *N* (1-based) addresses the Nth
+system in ensemble order, and a reserved broadcast channel (default 16)
 addresses every system at once. A performer retargets by switching their
-controller's transmit channel — zero app-side round trip, unlike a menu.
-Single-system mode ignores channel entirely.
-
-Out of scope (see the midi_control.py section of docs/architecture.md):
-anything that would need a scene rebuild (display-mode switches, scene-type
-changes) — those cost real network/DMA setup time and are categorically
-wrong for a live-hit control. Only Playlist-level Events and
-``LIVE_PARAMS``-declared single-numeric-attribute writes are exposed.
+controller's transmit channel. Single-system mode ignores channel entirely.
 
 Requires the `midi` extra (``uv tool install --force 'c64cast[all]'``).
+
+See docs/architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance.
 """
 
 from __future__ import annotations
@@ -59,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
 from c64cast._pollthread import PollThread
+from c64cast._wire_log import LogThrottle
 
 from . import live_tune
 from .transport import TransportEvent
@@ -69,11 +50,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# mido + the availability flag come from the shared guarded import
-# (c64cast._midi); the clock/output port openers below still use the module
-# handle directly.
-
 _CC_TYPES = ("cc", "note", "pc", "mmc")
+# Mirrors config._MIDI_ACTION_CHOICES; tests/test_midi_control.py asserts the
+# two sets match.
 _ACTIONS = (
     "pause",
     "resume",
@@ -82,47 +61,33 @@ _ACTIONS = (
     "cycle_style",
     "jump",
     "param",
-    # DJ-style video transport (MIDI live-tune Phase 2 — see transport.py's
-    # TransportSession, which these all bottom out in).
+    # DJ-style video transport; these all bottom out in transport.py's
+    # TransportSession.
     "transport.play_pause",
     "transport.stop",
     "transport.loop_toggle",
     "transport.rw",
     "transport.ff",
     "transport.jog",
-    # Record workflow + loop preset pads (MIDI live-tune Phase 3).
-    # transport.record arms a loop (same _loop_a/_loop_b/_loop_state machine
-    # transport.loop_toggle drives); loop_slot recalls/saves/clears a
-    # per-video loop preset (save/clear are the Stop-held/Record-held pad
-    # chords — see TransportSession._dispatch).
+    # transport.record arms a loop (the same _loop_a/_loop_b/_loop_state machine
+    # transport.loop_toggle drives); loop_slot recalls/saves/clears a per-video
+    # loop preset (save/clear are the Stop-held / Record-held pad chords — see
+    # TransportSession._dispatch).
     "transport.record",
     "loop_slot",
-    # Live OSD toggle (MIDI live-tune Phase 5). Press-only: a tap flips the OSD
-    # top/bottom, a double-tap (<_OSD_DOUBLE_TAP_S) hides it, a tap while hidden
-    # re-enables it. Mirrored in config._MIDI_ACTION_CHOICES.
+    # Press-only: a tap flips the OSD top/bottom, a double-tap
+    # (<_OSD_DOUBLE_TAP_S) hides it, a tap while hidden re-enables it.
     "osd.position",
-    # Tap tempo (Live-performance Phase 1). Press-only: each hit feeds
-    # pl.tempo.tap(), which averages the inter-tap intervals into a live BPM for
-    # the internal beat grid. In-memory only, no DMA. Mirrored in
-    # config._MIDI_ACTION_CHOICES.
+    # Press-only: each hit feeds pl.tempo.tap().
     "tempo_tap",
-    # Clip launch (Live-performance Phase 2): note/PC/pad -> clip `slot`, fired
-    # quantized to pl.tempo. Enqueues a ClipEvent onto pl.performance (drained on
-    # the playlist thread — no scene mutation here). Release-aware (gate/toggle);
-    # see _RELEASE_AWARE_ACTIONS. Mirrored in config._MIDI_ACTION_CHOICES.
+    # note/PC/pad -> clip `slot`, fired quantized to pl.tempo. Release-aware
+    # for a gate clip; see _RELEASE_AWARE_ACTIONS.
     "clip_launch",
-    # Effect-layer bypass toggle (Live-performance Phase 3): flips the `enabled`
-    # flag of effect layer `slot` (0-based) on the current scene. A latched
-    # toggle — each press flips; releases ignored (press-only, not in
-    # _RELEASE_AWARE_ACTIONS). The `enabled` write is GIL-atomic (a plain bool),
-    # so it runs on the reader thread with no queue (like osd.position /
-    # tempo_tap). Mirrored in config._MIDI_ACTION_CHOICES.
+    # Flips the `enabled` flag of effect layer `slot` (0-based) on the current
+    # scene. A latched toggle: each press flips, releases are ignored.
     "fx_toggle",
-    # Look snapshot / recall pads (Live-performance Phase 6): `look_save` captures
-    # the active clip + effect-chain state to look `slot`; `look_recall` re-fires
-    # it (relaunch the clip + re-apply the effect state). Both press-only, needing
-    # an int `slot` >= 1; enqueued onto pl.performance (drained on the playlist
-    # thread — no scene mutation here). Mirrored in config._MIDI_ACTION_CHOICES.
+    # `look_save` captures the active clip + effect-chain state to look `slot`;
+    # `look_recall` re-fires it. Both press-only, needing an int `slot` >= 1.
     "look_save",
     "look_recall",
 )
@@ -131,12 +96,10 @@ _ACTIONS = (
 # seconds hides the OSD instead of toggling its corner).
 _OSD_DOUBLE_TAP_S = 0.4
 
-# Actions where a note release (note_off / note_on velocity==0) carries meaning
-# — every other action ignores releases entirely (a release is dropped in
-# _dispatch unless the action is in here). Covers the transport hold actions
-# (stopping a held rw/ff ramp, ending a Record/Stop hold for the loop_slot pad
-# chords) plus clip_launch (a gate clip plays while held; a toggle needs the
-# release delivered too, harmlessly ignored by the engine).
+# Actions where a note release (note_off / note_on velocity==0) carries meaning;
+# a release for anything else is dropped in _dispatch. Covers the transport hold
+# actions (a held rw/ff ramp, a Record/Stop hold for the loop_slot pad chords)
+# plus clip_launch (a gate clip plays while held).
 _RELEASE_AWARE_ACTIONS = (
     "transport.rw",
     "transport.ff",
@@ -145,13 +108,11 @@ _RELEASE_AWARE_ACTIONS = (
     "clip_launch",
 )
 
-# MMC (MIDI Machine Control) transport command bytes this module recognizes,
-# from the SysEx frame `F0 7F <dev> 06 <cmd> F7`: 01 stop, 02 play, 04 FF,
-# 05 RW, 06 record, 09 pause. Shared between cc_map validation and the
-# runtime SysEx parser so they can't drift. Note: an MMC frame never carries
-# a release, so a record/stop mapped to `mmc` can't reliably drive the
-# loop_slot pad chords (Stop-held+pad / Record-held+pad) — those need a
-# `note` mapping; see TransportSession's _CHORD_HOLD_WINDOW_S auto-expiry.
+# MMC (MIDI Machine Control) transport command bytes, from the SysEx frame
+# `F0 7F <dev> 06 <cmd> F7`: 01 stop, 02 play, 04 FF, 05 RW, 06 record,
+# 09 pause. Shared between cc_map validation and the runtime SysEx parser. An
+# MMC frame never carries a release, so a record/stop mapped to `mmc` cannot
+# drive the loop_slot pad chords — those need a `note` mapping.
 _MMC_COMMANDS = frozenset({0x01, 0x02, 0x04, 0x05, 0x06, 0x09})
 
 # 1ms poll — mirrors MidiScene._reader's interval ("keeps note latency
@@ -378,24 +339,20 @@ def resolve_effective_cc_map(
     return [*profile, *base_cc_map]
 
 
-# ---- LED feedback (Live DJ/VJ Phase 4) --------------------------------------
-#
 # A grid controller (Launchpad / APC / KeyLab pads) lights a pad by sending it a
-# note-on to the pad's own note number, with the VELOCITY selecting a color. That
-# velocity->color convention is a property of the *controller*, not the show, so
-# it lives in the learned controller profile (a `feedback` block written by
-# --midi-setup) rather than the config; the shipped defaults below are
-# Launchpad-X programmer-mode palette indices. `[performance].midi_feedback`
-# enables the output and `[performance].feedback_port` (or the profile's own
-# `port`) picks the MIDI-OUT device.
+# note-on to the pad's own note number, with the VELOCITY selecting a color.
+# That velocity->color convention is a property of the *controller*, so it lives
+# in the learned controller profile's `feedback` block rather than the config;
+# the shipped defaults below are Launchpad-X programmer-mode palette indices.
+# `[performance].midi_feedback` enables the output and
+# `[performance].feedback_port` (or the profile's own `port`) picks the device.
 #
 # The "armed / counting-in" blink is done host-side by the feedback thread
 # alternating the pad between the `armed` color and `off`, so it needs no
 # controller-specific pulse/flash channel and works on any grid.
 
-# Feedback poll cadence (20 Hz) and the armed-pad blink half-period. Both are
-# cheap in-memory reads + at most a handful of note-ons per second, nowhere near
-# any MIDI ceiling (and never a DMA touch).
+# Feedback poll cadence (20 Hz) and the armed-pad blink half-period: cheap
+# in-memory reads plus a handful of note-ons per second, never a DMA touch.
 _LED_POLL_INTERVAL_S = 0.05
 _LED_BLINK_HALF_PERIOD_S = 0.25
 
@@ -506,11 +463,10 @@ class MidiControlListener:
         self.port_name = port
         self.broadcast_channel = broadcast_channel
         self.jump_transition = jump_transition
-        # The config's cc_map is kept raw so start() can layer the controller
-        # profile onto it *after* the port opens (the "auto" profile match needs
-        # the resolved port name). Parsed up front too, so a listener that's built
-        # but never started (or has controller_profile="off") still has a usable
-        # mapping — start() re-parses the effective list once the port is known.
+        # Kept raw so start() can layer the controller profile on *after* the
+        # port opens (the "auto" match needs the resolved port name). Parsed up
+        # front too, so a listener built but never started still has a usable
+        # mapping.
         self._base_cc_map = cc_map
         self._cc_map_is_default = cc_map_is_default
         self._controller_profile = controller_profile
@@ -518,10 +474,10 @@ class MidiControlListener:
         self._mapping = _parse_cc_map(cc_map)
         self._midi_port: Any = None
         self._opened_port_name: str | None = None
-        # Optional dedicated MIDI clock port (Live-performance Phase 1): when the
-        # external clock arrives on a different port than the control surface,
-        # this second input is opened with its own reader thread that only feeds
-        # the tempo grid. None (the usual case) = clock rides the control port.
+        # Optional dedicated MIDI clock port: when the external clock arrives on
+        # a different port than the control surface, this second input gets its
+        # own reader thread that only feeds the tempo grid. None = clock rides
+        # the control port.
         self.clock_port_name = clock_port
         self._clock_port: Any = None
         # One PollThread per reader; the clock/feedback ones only start when
@@ -536,14 +492,25 @@ class MidiControlListener:
             self._feedback_reader, name="midi-led-feedback", manual=True, join_timeout=1.0
         )
         self._warned_channels: set[int] = set()
+        # A dispatch/clock-feed failure is per *message*, and the message comes
+        # off the wire: a controller sending something this build mishandles
+        # would buy a full traceback per message inside an unbounded
+        # `iter_pending()` drain, on the thread a performer's next pad press
+        # waits behind. One throttle per reader, so a jammed dispatch cannot
+        # swallow the clock port's first report.
+        self._dispatch_errors = LogThrottle(log)
+        self._clock_feed_errors = LogThrottle(log)
+        # `_apply` raising is per *message* too, and a held pad or a swept CC
+        # repeats it at the controller's rate. One throttle for the site, not
+        # one per (action, system).
+        self._action_errors = LogThrottle(log)
         # Per-playlist last-tap time for the osd.position double-tap detection.
         self._osd_last_tap: dict[str, float] = {}
-        # LED feedback to a grid controller (Live DJ/VJ Phase 4). Opens a MIDI
-        # OUTPUT port (this module is otherwise input-only) and a poll thread that
-        # lights pads for loaded/armed/active clips + enabled effect layers. All
-        # of it is a no-op unless `feedback_enabled`. The velocity convention
-        # (`_fmap`) comes from the matched controller profile's `feedback` block
-        # (start() resolves it), falling back to the shipped Launchpad defaults.
+        # Opens a MIDI OUTPUT port (this module is otherwise input-only) and a
+        # poll thread that lights pads for loaded/armed/active clips + enabled
+        # effect layers; a no-op unless `feedback_enabled`. The velocity
+        # convention (`_fmap`) comes from the matched controller profile,
+        # falling back to the shipped Launchpad defaults.
         self._feedback_enabled = feedback_enabled
         self._feedback_port = feedback_port
         self._feedback_profile_port: str | None = None
@@ -554,7 +521,6 @@ class MidiControlListener:
         self._led_clip_pads: list[tuple[int, int]] = []  # (note, clip slot)
         self._led_fx_pads: list[tuple[int, int]] = []  # (note, effect layer)
 
-    # ---- MIDI plumbing --------------------------------------------------
     def _open_port(self) -> None:
         self._midi_port, self._opened_port_name = open_input_port(
             self.port_name, label="midi_control"
@@ -566,8 +532,7 @@ class MidiControlListener:
         self._open_port()
         # Now the port name is known, layer the controller profile onto the
         # config's cc_map (shipped-defaults < profile < explicit — see
-        # resolve_effective_cc_map) and re-parse. "off" / no matching profile is
-        # a no-op that just re-parses the base mapping.
+        # resolve_effective_cc_map) and re-parse.
         try:
             effective = resolve_effective_cc_map(
                 self._base_cc_map,
@@ -665,7 +630,6 @@ class MidiControlListener:
             return
         log.info("midi_control: opened dedicated MIDI clock port %r", match)
 
-    # ---- LED feedback (Phase 4) -------------------------------------------
     def _setup_feedback(self) -> None:
         """Resolve the controller profile's LED velocity convention, build the
         managed-pad lists from the effective mapping, and open the MIDI OUT port.
@@ -833,7 +797,7 @@ class MidiControlListener:
                     try:
                         self._dispatch(msg)
                     except Exception:
-                        log.exception("midi_control: dispatch failed for %r", msg)
+                        self._dispatch_errors.exception("midi_control: dispatch failed for %r", msg)
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control reader crashed")
@@ -851,12 +815,13 @@ class MidiControlListener:
                     try:
                         self._feed_tempo(msg)
                     except Exception:
-                        log.exception("midi_control: clock feed failed for %r", msg)
+                        self._clock_feed_errors.exception(
+                            "midi_control: clock feed failed for %r", msg
+                        )
                 time.sleep(_POLL_INTERVAL_S)
         except Exception:
             log.exception("midi_control clock reader crashed")
 
-    # ---- dispatch ---------------------------------------------------------
     def _targets(self, msg: Any) -> list[Playlist]:
         """channel == broadcast_channel-1 -> every playlist; other channel N
         (0-based) -> the Nth playlist in ensemble order if in range, else no
@@ -913,7 +878,7 @@ class MidiControlListener:
             try:
                 self._apply(pl, mapping, value, pressed)
             except Exception:
-                log.exception(
+                self._action_errors.exception(
                     "midi_control: action %r failed on system %r", mapping.action, pl.name
                 )
 
@@ -935,38 +900,33 @@ class MidiControlListener:
         elif action == "param":
             self._apply_param(pl, mapping.target, value, mapping.kind)
         elif action == "osd.position":
-            # Press-only (releases already dropped in _dispatch). A tap toggles
-            # the OSD corner; a second tap within _OSD_DOUBLE_TAP_S hides it; a
-            # tap while hidden re-enables it. Double-tap timing is tracked per
-            # target playlist. OsdState mutation is thread-safe, so this runs
-            # directly on the reader thread (no transport queue needed).
+            # A tap toggles the OSD corner; a second tap within
+            # _OSD_DOUBLE_TAP_S hides it; a tap while hidden re-enables it.
+            # Timing is tracked per target playlist.
             now = time.monotonic()
             last = self._osd_last_tap.get(pl.name, 0.0)
             self._osd_last_tap[pl.name] = now
             pl.cycle_osd(double_tap=(now - last) < _OSD_DOUBLE_TAP_S)
         elif action == "tempo_tap":
-            # Press-only (releases dropped in _dispatch). Feeds the internal beat
-            # grid's tap-tempo averager — in-memory only, no DMA. Runs directly
-            # on the reader thread (TempoClock.tap is self-locked).
+            # Feeds the internal beat grid's tap-tempo averager. TempoClock.tap
+            # is self-locked, so it runs directly on the reader thread.
             pl.tempo.tap(time.monotonic())
         elif action == "clip_launch":
-            # Enqueue only — the launch engine drains this on the playlist thread
-            # (arm → background build → quantized swap), never mutating scenes
-            # here on the reader thread. Release delivered for gate/toggle.
+            # The launch engine drains this on the playlist thread (arm →
+            # background build → quantized swap). Release delivered for
+            # gate/toggle.
             from .performance import ClipEvent
 
             pl.performance.enqueue(ClipEvent(slot=mapping.slot or 0, pressed=pressed))
         elif action == "fx_toggle":
-            # Flip effect layer `slot`'s bypass on the current scene. A plain
-            # bool write (GIL-atomic), so it runs directly on the reader thread —
-            # no scene rebuild, no DMA, no transport queue. Latched: only presses
-            # act (releases already dropped in _dispatch); out-of-range slot or a
-            # scene with no such layer is a silent no-op.
+            # A plain bool write (GIL-atomic), so it runs directly on the reader
+            # thread. Latched: only presses act; an out-of-range slot or a scene
+            # with no such layer is a silent no-op.
             self._toggle_effect_layer(pl, mapping.slot or 0)
         elif action in ("look_save", "look_recall"):
-            # Enqueue only (Phase 6) — the snapshot/recall runs on the playlist
-            # thread in PerformanceSession.service (reads/writes the scene there),
-            # never here on the reader thread. Press-only.
+            # The snapshot/recall runs on the playlist thread in
+            # PerformanceSession.service, which is where the scene is read and
+            # written.
             pl.performance.enqueue_look(mapping.slot or 1, save=action == "look_save")
         elif action == "loop_slot":
             # Enqueue only — same rule as the transport.* branch below.
@@ -979,9 +939,7 @@ class MidiControlListener:
                 )
             )
         elif action.startswith("transport."):
-            # Enqueue only — scene/DMA mutation happens on the playlist
-            # thread inside TransportSession.tick, never here on the MIDI
-            # reader thread.
+            # Applied on the playlist thread inside TransportSession.tick.
             pl.transport.enqueue(
                 TransportEvent(
                     action=action.removeprefix("transport."),

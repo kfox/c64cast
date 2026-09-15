@@ -120,7 +120,8 @@ class MountTest(unittest.TestCase):
     def test_nothing_is_cached(self) -> None:
         # The filenames are fixed rather than content-hashed, so a cached copy
         # would survive an upgrade and run yesterday's console against today's
-        # API. See web_static's module docstring for why the trade goes this way.
+        # API. See docs/architecture/control.md → "web_static.py — the console's
+        # built UI, committed and served" for why the trade goes this way.
         client = self._client()
         for path in ("/", "/assets/app.js", "/assets/app.css"):
             with self.subTest(path=path):
@@ -134,10 +135,9 @@ class MountTest(unittest.TestCase):
         self.assertEqual(self._client().get("/assets/secrets.txt").status_code, 404)
 
     def test_an_asset_cannot_escape_the_bundle(self) -> None:
-        # Nothing a client sends becomes a path component — the name is looked
-        # up in the catalog — so this is a missing key rather than a traversal
-        # that was caught. A client collapses a literal `..` in a URL before
-        # sending it, so the form that reaches the route is percent-encoded.
+        # Nothing a client sends becomes a path component — the name is looked up
+        # in the catalog — so this is a missing key, not a caught traversal. A
+        # client collapses a literal `..` before sending, hence the encoded form.
         outside = Path(self._tmp.name).parent / "outside.js"
         outside.write_text("nope", encoding="utf-8")
         self.addCleanup(outside.unlink)
@@ -145,9 +145,8 @@ class MountTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_the_catalog_is_a_snapshot_taken_at_mount(self) -> None:
-        # The consequence of cataloging rather than resolving: a rebuild under
-        # a running host needs a restart. That is the dev-server's job, and it
-        # is the price of the route never touching a client-supplied path.
+        # The consequence of cataloging rather than resolving: a rebuild under a
+        # running host needs a restart. That is the dev-server's job.
         client = self._client()
         (self.dist / "assets" / "late.js").write_text("later", encoding="utf-8")
         self.assertEqual(client.get("/assets/late.js").status_code, 404)
@@ -197,9 +196,8 @@ class ShellPathsTest(unittest.TestCase):
             )
 
     def test_a_file_the_server_would_not_serve_is_not_listed(self) -> None:
-        # Same allowlist `mount_web_app` catalogs by: a path offered to the
-        # token gate that the asset route then 404s would be an exemption for
-        # nothing.
+        # Same allowlist `mount_web_app` catalogs by: a path offered to the token
+        # gate that the asset route then 404s would exempt nothing.
         with TemporaryDirectory() as tmp:
             root = _bundle(Path(tmp))
             (root / "assets" / "notes.txt").write_text("nope", encoding="utf-8")
@@ -222,8 +220,7 @@ class LandingPathTest(unittest.TestCase):
     def test_no_bundle_falls_back_to_the_perf_page(self) -> None:
         # It used to probe the packaged DIST_DIR unconditionally, so a host
         # mounted with `mount_web_app(app, directory=other)` served the console
-        # fine and then sent everyone to /perf — the one function here whose
-        # answer could not be made to agree with what was mounted.
+        # fine and then sent everyone to /perf.
         with TemporaryDirectory() as tmp:
             self.assertEqual(web_static.landing_path(Path(tmp) / "never-built"), "/perf")
 

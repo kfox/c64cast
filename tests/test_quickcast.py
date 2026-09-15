@@ -26,10 +26,8 @@ from c64cast.app.cli import _resolve_configs, build_parser
 from c64cast.app.config import CLI_TO_CFG
 from c64cast.app.scene_factory import resolve_file_spec
 
-# Quick playback inherits the machine-settings layer (quickcast.build_config);
-# isolate the module from any real ~/.config/c64cast/settings.toml so the
-# "keeps the built-in default when unset" tests are hermetic. Tests that set
-# their own $C64CAST_SETTINGS nest cleanly under this.
+# Quick playback inherits the machine-settings layer (quickcast.build_config),
+# so isolate the module from any real ~/.config/c64cast/settings.toml.
 _settings_isolation = MachineSettingsIsolation()
 
 
@@ -233,11 +231,9 @@ class BuildConfigTest(unittest.TestCase):
         the moment it is added.
         """
         args = _parse(["a.mp4"])
-        # A value that is distinguishable from every default, per field type.
-        # A field with a `choices` vocabulary takes another member of it rather
-        # than a made-up string: merge_cli is the last layer and now re-runs the
-        # section validators, so a junk value is refused there (which is the
-        # point — a CLI flag used to write past every load-time check).
+        # A value that is distinguishable from every default, per field type. A
+        # field with a `choices` vocabulary takes another member of it: merge_cli is
+        # the last layer and re-runs the section validators, so junk is refused there.
         fields_by_section = {
             name: {f.name: f for f in dataclasses.fields(getattr(quickcast.Config(), name))}
             for name in {section for section, _ in CLI_TO_CFG.values()}
@@ -414,10 +410,9 @@ class ResolveMediaUrlTest(unittest.TestCase):
         self.assertIn("yt-dlp", str(cm.exception))
 
     def test_ytdlp_extraction_failure_raises_clean_value_error(self):
-        # An unavailable/private/removed video (or any other extraction
-        # failure) must surface as a clean ValueError, not the raw
-        # yt_dlp.DownloadError — that's the one cli.build_stack's existing
-        # scene-build error handler catches without dumping a traceback.
+        # An unavailable/private/removed video (or any other extraction failure)
+        # must surface as a clean ValueError, not the raw yt_dlp.DownloadError —
+        # that is what cli.build_stack's scene-build handler catches tracebackless.
         class FakeDownloadError(Exception):
             pass
 
@@ -432,9 +427,8 @@ class ResolveMediaUrlTest(unittest.TestCase):
                 return False
 
             def extract_info(self, url, download):  # noqa: ARG002
-                # Mirrors real yt-dlp's report_error(), which wraps "ERROR:"
-                # in ANSI color codes whenever it thinks its stderr is a tty
-                # — regardless of quiet/logger — unless `no_color` is set.
+                # Mirrors real yt-dlp's report_error(), which wraps "ERROR:" in ANSI
+                # color whenever it thinks its stderr is a tty, unless `no_color` is set.
                 raise FakeDownloadError(
                     "\x1b[0;31mERROR:\x1b[0m [youtube] abc: This video is not available"
                 )

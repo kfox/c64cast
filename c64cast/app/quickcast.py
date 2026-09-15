@@ -71,9 +71,7 @@ class ResolvedMedia:
     uploader: str | None = None
     license: str | None = None
     webpage_url: str | None = None
-    # Set only by resolve_video_url, from the URL's own t=/start=/#t=
-    # timestamp — resolve_media_url has no notion of "video scene" and
-    # never touches this field.
+    # Set only by resolve_video_url, from the URL's own t=/start=/#t= timestamp.
     start_s: float | None = None
 
 
@@ -103,9 +101,9 @@ class _YtDlpLog:
         log.debug("yt-dlp: %s", msg)
 
 
-# Extension group → scene type. The first match wins; groups are disjoint.
-# Audio maps to the sentinel "audio", turned into a generative + audio_source =
-# "file" scene by _make_scene (a plasma visual reacting to the decoded track).
+# Extension group → scene type; the first match wins and the groups are
+# disjoint. "audio" is a sentinel `_make_scene` turns into a generative scene
+# with audio_source = "file".
 _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (VIDEO_EXTS, "video"),
     (SID_EXTS, "waveform"),
@@ -116,31 +114,27 @@ _GROUP_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 
 # The generator an audio-file scene reacts with (a good all-round reactive look).
 _AUDIO_GENERATOR = "plasma"
-# Display for an audio-file scene: a char mode keeps the 4-bit DAC path clean
-# (no bitmap DMA competing with the audio ring), and reacts well.
+# A char mode keeps the 4-bit DAC path clean — no bitmap DMA competing with
+# the audio ring.
 _AUDIO_DISPLAY = "mcm"
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-# Timestamp grammar for URL start offsets: bare seconds ("90", "90.5") or the
-# YouTube [Nh][Nm][Ns] form ("90s", "1m30s", "1h2m3s", "1h"). At least one of
-# h/m/s must be present for the unit form to match.
+# The YouTube [Nh][Nm][Ns] start-offset form ("90s", "1m30s", "1h2m3s", "1h");
+# bare seconds ("90", "90.5") are parsed separately.
 _TIMESTR_HMS_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECASE)
 
-# Display mode for video/slideshow scenes. mhires is the richest bitmap mode
-# and suits arbitrary film/photo content (matches SceneCfg's own unset-display
-# resolution for video, see config.resolve_scene_display); kept as an
-# explicit constant here since quickcast also applies it to slideshow (whose
-# SceneCfg default resolution differs — see scene_factory._resolve_slideshow_display)
-# and needs a concrete value to fall back on when `-d/--display` isn't passed.
+# Display mode for video *and* slideshow scenes when `-d/--display` isn't
+# passed. Explicit rather than deferred because the two have different
+# unset-display resolutions (config.resolve_scene_display versus
+# scene_factory._resolve_slideshow_display).
 _DEFAULT_VIDEO_DISPLAY = "mhires"
 
-# Scene types that accept a `duration_s` override from `-t/--duration`.
-# Video rejects it (video-driven); launcher treats it as an idle timeout
-# (surprising for a playback shortcut), so both are excluded. "audio" honors it
-# as a cap over the track's natural length.
+# Scene types that accept a `duration_s` override from `-t/--duration`. Video
+# rejects it outright; launcher would read it as an idle timeout. "audio" honors
+# it as a cap over the track's natural length.
 _DURATION_TYPES = ("waveform", "slideshow", "audio")
 
 
@@ -181,7 +175,6 @@ def _parse_start_offset(url: str) -> float | None:
             offset = _parse_timestr(values[0])
             if offset is not None:
                 return offset
-    # `#t=90` / `#t=1m30s` fragment form.
     frag = parts.fragment
     if frag.lower().startswith("t="):
         return _parse_timestr(frag[2:])
@@ -265,9 +258,8 @@ def classify_local(arg: str, *, display: str | None, duration_s: float | None) -
     """Turn a local file / directory / glob argument into a SceneCfg. The
     original dir/glob spec is preserved as ``file`` so the scene re-resolves and
     random-picks at setup."""
-    # An existing file wins over glob interpretation — filenames containing
-    # `[`/`]`/`*`/`?` (e.g. YouTube-style `name [videoid].mp4`) would otherwise
-    # be mistaken for glob patterns. Mirrors resolve_file_spec's ordering.
+    # An existing file wins over glob interpretation, so a name containing
+    # `[`/`]`/`*`/`?` is not mistaken for a pattern. Mirrors resolve_file_spec.
     if os.path.isfile(arg):
         scene_type = _scene_type_for_file(arg)
         return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
@@ -284,8 +276,8 @@ def classify_local(arg: str, *, display: str | None, duration_s: float | None) -
             raise ValueError(f"glob {arg!r} matched no files")
         scene_type = _scene_type_for_paths(paths, label=f"glob {arg!r}")
         return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
-    # Non-existent literal path: classify by extension and let the scene's
-    # setup() report a clear "file not found" if it's still missing at play time.
+    # A path that does not exist yet: classify by extension and let the scene's
+    # setup() report "file not found" if it is still missing at play time.
     scene_type = _scene_type_for_file(arg)
     return _make_scene(scene_type, arg, display=display, duration_s=duration_s)
 
@@ -327,38 +319,31 @@ def resolve_media_url(url: str) -> ResolvedMedia:
         "no_warnings": True,
         "format": "best[vcodec!=none][acodec!=none]/best",
         "logger": _YtDlpLog(),
-        # Bounded, because this call is reached from inside `build_scene` —
-        # i.e. after `session.build_stack` has opened the link and reset the
-        # machine. With no timeout (and nothing in the tree calling
-        # `socket.setdefaulttimeout`), a host that completes the handshake and
-        # then never answers held the C64 reset with the DMA socket open until
-        # the process was killed, and under `serve.py` the supervisor stayed
-        # STARTING so `POST /api/session/stop` could not end it either.
+        # Bounded because this runs inside `build_scene`, after
+        # `session.build_stack` has opened the link and reset the machine. With
+        # no timeout, a host that completed the handshake and then never answered
+        # held the C64 in reset until the process was killed, and left `serve.py`
+        # stuck in STARTING where `POST /api/session/stop` could not end it.
         "socket_timeout": URL_RESOLVE_TIMEOUT_S,
         "retries": 2,
-        # Without this, YoutubeDL._format_err wraps "ERROR: " (and other
-        # colored text) in raw ANSI escapes whenever it thinks its stderr is
-        # a tty — which lands in the DownloadError message below regardless
-        # of quiet/logger, and would otherwise leak into our own log output.
+        # `YoutubeDL._format_err` wraps "ERROR: " in raw ANSI escapes whenever it
+        # thinks its stderr is a tty, and those land in the DownloadError message
+        # below regardless of quiet/logger.
         "no_color": True,
     }
     try:
-        # yt_dlp is an optional, untyped dependency — the call is dynamically typed.
         with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
             info = ydl.extract_info(url, download=False)
-    # yt_dlp.DownloadError, not yt_dlp.utils.DownloadError (its defining
-    # module) — a plain `import yt_dlp` doesn't pull in the `utils`
-    # submodule, and yt_dlp's __init__ re-exports the exception itself.
+    # `yt_dlp.DownloadError`, not `yt_dlp.utils.DownloadError` (its defining
+    # module): a plain `import yt_dlp` does not pull in `utils`, and yt_dlp's
+    # `__init__` re-exports the exception.
     except yt_dlp.DownloadError as e:  # pyright: ignore[reportAttributeAccessIssue]
-        # yt-dlp's own message is already prefixed "ERROR: " (see
-        # YoutubeDL.report_error) — drop it so it doesn't double up with
-        # ours. Also strip any ANSI escapes as a belt-and-braces guard,
-        # since `no_color` should already prevent them above.
+        # `YoutubeDL.report_error` already prefixes "ERROR: "; dropping it keeps
+        # ours from doubling up.
         reason = _ANSI_RE.sub("", str(e)).removeprefix("ERROR: ")
         raise ValueError(f"could not resolve {url!r}: {reason}") from e
     if info is None:
         raise ValueError(f"could not resolve media URL: {url}")
-    # A playlist/page URL yields entries; take the first playable one.
     entries = info.get("entries")
     if entries is not None:
         playable = [e for e in entries if e]
@@ -439,20 +424,15 @@ def build_config(args: argparse.Namespace) -> Config:
     the shared :mod:`c64cast.app.connect` decomposer — the same scheme-aware path
     the config-driven CLI uses — rather than being treated as a bare URL."""
     cfg = Config()
-    # Machine settings (connection, capture device, SID model, …) are the
-    # lowest layer, applied before the arg-driven field sets below — so quick
-    # playback inherits them, and an explicit -u/--url still wins (it's applied
-    # after). See config.apply_machine_settings.
+    # The lowest layer, applied before the arg-driven field sets below, so quick
+    # playback inherits it and an explicit -u/--url still wins.
     apply_machine_settings(cfg)
-    # Quick-playback policy: each argument plays once, in order, no videos
-    # interleaved. Set *before* merge_cli so `--loop` still overrides it.
+    # Each argument plays once, in order. Set before merge_cli so `--loop` wins.
     cfg.playlist.loop = False
     cfg.playlist.interleave_videos = False
 
     # Every remaining CLI flag, through the same merge the config-driven path
-    # uses. Hand-picking a subset here silently dropped the rest — `-D`,
-    # `--sample-rate`, `--dac-calibration-profile`, `--frame-numbers` and the
-    # DMA-password env var among them.
+    # uses — hand-picking a subset here silently drops the rest.
     merge_cli(cfg, args)
 
     target = args.url or os.environ.get("C64CAST_URL")

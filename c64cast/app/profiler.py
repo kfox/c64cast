@@ -33,21 +33,18 @@ from contextlib import contextmanager
 
 log = logging.getLogger("c64cast")
 
-# Longest scene name rendered into a summary line. Scene names come from
-# media content — a directory-spec scene renames itself per pick, and a
-# video scene prefers the container's own `title` tag — so the profiler
-# treats one as untrusted text: capped here, and repr'd in _format_line so
-# an embedded newline can't forge a second log record.
+# A scene name can come from media content (a container's own `title` tag),
+# so it is untrusted text: capped here, and repr'd in `_format_line` so an
+# embedded newline cannot forge a second log record.
 _MAX_SCENE_NAME = 64
 
-# How many consecutive idle summary ticks a scene's buckets survive before
-# they are dropped. Two ticks (~20s at the default interval) keeps a briefly
-# paused scene's window intact while bounding _stats on a long run, whose
-# scene names are per-file and therefore unbounded in number.
+# Idle summary ticks a scene's buckets survive before being dropped. Two
+# (~20 s at the default interval) keeps a briefly paused scene's window while
+# bounding `_stats`, whose per-file scene names are unbounded in number.
 _IDLE_TICKS_BEFORE_DROP = 2
 
-# Printed first, in this order, so the columns stay stable across lines.
-# Any other stage a caller opens is printed after them rather than dropped.
+# Printed first and in this order so columns stay stable; any other stage a
+# caller opens is printed after them rather than dropped.
 _KNOWN_STAGES = ("cpu_render", "compose", "overlay_compose", "push", "render", "wait")
 
 # Recorded per scene but rendered by _format_line's own count formatting.
@@ -141,16 +138,12 @@ class FrameProfiler:
                 "instrumented, but no summary will ever be printed",
                 interval,
             )
-        # Two-level dict: scene_name -> stage_name -> _Stats. Scene-level
-        # keys always include "frame_total"; counts go under "writes" /
-        # "bytes".
+        # scene_name -> stage_name -> _Stats; every scene has "frame_total",
+        # and counts go under "writes" / "bytes".
         self._stats: dict[str, dict[str, _Stats]] = {}
         self._last_emit: float = 0.0
-        # Liveness bookkeeping for emit_if_due: frames recorded per scene,
-        # what that count was at the scene's last summary line, and how many
-        # summary ticks it has been idle for. Without these, every scene the
-        # process has ever rendered re-prints its final 64 samples on every
-        # tick, forever, and _stats grows one bucket per distinct scene name.
+        # Liveness bookkeeping for emit_if_due: frames recorded per scene, that
+        # count at the scene's last summary line, and idle ticks since.
         self._frames: dict[str, int] = {}
         self._emitted_frames: dict[str, int] = {}
         self._idle_ticks: dict[str, int] = {}
@@ -185,16 +178,14 @@ class FrameProfiler:
 
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
-        # If no frame is open we still time but record nothing — guards
-        # against profiler use outside the Playlist loop (e.g. setup).
+        # Outside an open frame (setup, say) the stage is timed but not recorded.
         t0 = time.perf_counter()
         try:
             yield
         finally:
             dt = time.perf_counter() - t0
             if self._cur_scene is not None:
-                # Sum so nested calls to the same stage in one frame
-                # accumulate (currently only "overlay_compose" iterates).
+                # Summed, so repeated calls to one stage in a frame accumulate.
                 self._cur_stages[name] = self._cur_stages.get(name, 0.0) + dt
 
     def record_counts(self, writes: int, bytes_: int) -> None:
@@ -258,9 +249,8 @@ class FrameProfiler:
         if frame_stats is None or frame_stats.count() == 0:
             return None
         n = frame_stats.count()
-        # !r, not raw: a scene name can carry a media file's own title tag,
-        # and an interior newline in one would otherwise write a second,
-        # fully forged record into the operator's --log-file.
+        # !r, not raw: an interior newline in a media file's own title tag would
+        # otherwise write a second, forged record into the operator's --log-file.
         parts: list[str] = [
             f"profile[{scene_name[:_MAX_SCENE_NAME]!r}] n={n}",
             f"frame {self._fmt_ms(frame_stats.summary())}",
@@ -280,7 +270,6 @@ class FrameProfiler:
         return " | ".join(parts)
 
 
-# Module-global accessor — see module docstring for the rationale.
 _current: NullProfiler | FrameProfiler = NullProfiler()
 
 

@@ -9,22 +9,25 @@ at teardown. The read-side helpers resolve the "auto" settings
 [audio].backend), and `wants_reu`/`wants_sampler` are the single statement of
 which config shapes need each feature — doctor's REU/sampler probes import
 them, so the `--doctor` report and the provisioner can never disagree about
-what a run requires. This block lived in doctor.py until the name stopped
-fitting: diagnostics observe, this module mutates the machine.
+what a run requires.
 
 Everything is Ultimate-only and best-effort. Gates on `profile.supports_*`
 make each entry point a no-op on backends without the feature (TeensyROM), a
 `--skip-probe` run never writes config it couldn't first read back, and a
 failed REST call logs + degrades instead of failing the run.
+
+See docs/architecture/hardware-io.md#hw_provisionpy--live-reu--sampler-auto-provisioning.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Sequence
 from typing import NamedTuple
 
 from c64cast.app.config import Config
+from c64cast.hw import uci
 
 from .backend import SYSTEM_MODE_CATEGORY
 
@@ -86,26 +89,20 @@ def wants_reu(cfg: Config) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if cfg.audio.use_reu_pump:
         reasons.append("[audio].use_reu_pump = true")
-    # Only an EXPLICIT `use_reu_staged = true` is a hard REU requirement. The
-    # default "auto" is self-healing (config.resolve_use_reu_staged falls back
-    # to host-DMA when REU is off), so it must NOT make the doctor demand REU —
-    # `is True` excludes both the "auto" string and any other truthy value.
+    # Only an EXPLICIT `use_reu_staged = true` is a hard REU requirement: the
+    # default "auto" self-heals to host-DMA when the REU is off, so it must not
+    # make the doctor demand one. `is True` excludes the truthy "auto" string.
     if cfg.video.use_reu_staged is True:
         reasons.append("[video].use_reu_staged = true")
-    # The Ultimate Audio sampler streams its PCM ring out of REU SDRAM, so a run
-    # that will use it needs the REU enabled + sized. Provisioning it also makes
-    # "auto" video resolve to the tear-free REU bank-swap path — and since the
-    # sampler runs off the C64 bus with no $0314 IRQ, REU-staged video and the
-    # sampler coexist cleanly (no NMI/IRQ contention). Forward ref to
+    # The Ultimate Audio sampler streams its PCM ring out of REU SDRAM, so a
+    # run that will use it needs the REU enabled + sized. Forward ref to
     # wants_sampler (both are module-level; resolved at call time).
     wants_samp, _ = wants_sampler(cfg)
     if wants_samp:
         reasons.append("[audio].backend sampler (REU-backed PCM ring)")
-    # A buffered ASID scene streams frame-slots out of a REU ring, so a run with
-    # one (asid_buffered_player auto/on) needs the REU enabled + sized. "auto"
-    # only turns on where an REU exists — and provision_reu is itself gated on
-    # supports_reu — so both auto and on are a genuine want here (unlike video's
-    # self-healing use_reu_staged = "auto").
+    # A buffered ASID scene streams frame-slots out of a REU ring, so a run
+    # with one (asid_buffered_player auto/on) needs the REU enabled + sized.
+    # Unlike video's self-healing "auto", both auto and on are a hard want.
     if any(s.type == "asid" and s.asid_buffered_player in ("auto", "on") for s in cfg.scenes):
         reasons.append("[[scenes]] asid with asid_buffered_player (REU ring player)")
     return bool(reasons), reasons
@@ -118,12 +115,9 @@ REU_ENABLED_FIELD = "RAM Expansion Unit"
 REU_SIZE_FIELD = "REU Size"
 
 # The firmware's "REU Size" enum labels (1541ultimate software/io/c64/c64.cc
-# reu_size[]) → capacity in bytes. Used to (a) decide whether the U64's current
-# REU is large enough for c64cast's staged offsets and (b) pick the size to
-# provision. c64cast's highest REU offset is the video staging region near
-# 14 MB (modes_irq.REU_VIDEO_BITMAP_COLOR_BASE = $E13000); the audio mic ring sits
-# near 1 MB. 16 MB covers every offset and is FPGA-backed (free), so the
-# provisioner always sizes to the max when it enables the REU.
+# reu_size[]) → capacity in bytes. c64cast's highest REU offset is the video
+# staging region near 14 MB (modes_irq.REU_VIDEO_BITMAP_COLOR_BASE =
+# $E13000), and 16 MB is FPGA-backed, so the provisioner always sizes to max.
 _REU_SIZE_BYTES: dict[str, int] = {
     "128 KB": 128 << 10,
     "256 KB": 256 << 10,
@@ -267,24 +261,23 @@ def reu_is_enabled(api: object) -> bool | None:
     return section.get(REU_ENABLED_FIELD) == "Enabled"
 
 
-# ---- Ultimate Audio FPGA PCM sampler ($DF20-$DFFF) ----------------------
-# The $DF20 I/O map lives in "C64 and Cartridge Settings"; the stereo mixer
-# routing/level in a mixer category. The presence of these config keys is how
-# we detect that the firmware exposes the sampler at all (sampler.py).
+# Ultimate Audio FPGA PCM sampler ($DF20-$DFFF). The $DF20 I/O map lives in
+# "C64 and Cartridge Settings"; the stereo mixer routing/level in a mixer
+# category. The presence of these config keys is the only way to detect that
+# the firmware exposes the sampler at all (sampler.py).
 _SAMPLER_MAP_CATEGORY = REU_CONFIG_CATEGORY  # "C64 and Cartridge Settings"
 _SAMPLER_MAP_FIELD = "Map Ultimate Audio $DF20-DFFF"
 # The category carrying the "Vol Sampler L/R" channels differs across the
 # Ultimate family: the U64 has a dedicated "Audio Mixer"; the Ultimate II+
 # (firmware 3.x) folds the same fields into "Audio Output Settings". Probed in
-# order — first category actually carrying the fields wins — because the
-# firmware answers a GET for a category it doesn't have with HTTP 200 and an
-# empty body rather than an error, so a single fixed name would silently read
-# "sampler absent" on the other device.
+# order because the firmware answers a GET for a category it doesn't have with
+# HTTP 200 and an empty body, so a fixed name reads "sampler absent" on the
+# other device.
 _SAMPLER_MIXER_CATEGORIES = ("Audio Mixer", "Audio Output Settings")
 _SAMPLER_VOL_FIELDS = ("Vol Sampler L", "Vol Sampler R")
 # The mixer volume enum's audible "0 dB" label. The firmware's volumes[] table
 # (u64_config.cc) stores it with a LEADING SPACE (" 0 dB", index 24); the REST
-# GET returns it verbatim and the PUT expects the same label, so match it.
+# GET returns it verbatim and the PUT expects the same label.
 _SAMPLER_VOL_AUDIBLE = " 0 dB"
 SAMPLER_VOL_OFF = "OFF"
 # Composite restore-key separator: provision_sampler spans two config
@@ -459,22 +452,16 @@ def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
             log.info("sampler: restored %s = %s", fieldname, value)
 
 
-# ---- System Mode (PAL/NTSC machine timing) --------------------------------
-# The Ultimate's "System Mode" enum names look like they select a video
-# standard. They do not: the *suffix* selects the machine timing and the
-# *prefix* selects only the analog chroma encoding. From the firmware's
-# timing table (1541ultimate software/u64/color_timings.cc), cross-checked by
-# measuring phi2 + the VIC raster line count on a real unit:
+# The Ultimate's "System Mode" labels do not select a video standard: the
+# *suffix* selects machine timing and the *prefix* only the analog chroma
+# encoding (firmware 1541ultimate software/u64/color_timings.cc, cross-checked
+# by measuring phi2 + the VIC raster line count on a real unit):
 #
 #   PAL, NTSC-50, NTSC-50/L  -> 63 cycles/line, 312 lines, phi2 985248  (PAL)
 #   NTSC, PAL-60, PAL-60/L   -> 65 cycles/line, 263 lines, phi2 1022727 (NTSC)
 #
-# So "NTSC-50" is a PAL-timed machine emitting NTSC color, and "PAL-60" is an
-# NTSC-timed machine emitting PAL color. Over HDMI the pairs are
-# indistinguishable. The "/L" variants differ only in the color-burst phase
-# table (~0.1% fast) and matter to analog output alone.
-#
-# The mapping therefore looks backwards on purpose — do not "fix" it.
+# The table below therefore looks backwards and is not. See
+# docs/architecture/sid.md#system-timing--palntsc-play-rate-and-the-ultimates-system-mode.
 SYSTEM_MODE_FIELD = "System Mode"
 
 SYSTEM_MODE_TIMING: dict[str, str] = {
@@ -488,14 +475,9 @@ SYSTEM_MODE_TIMING: dict[str, str] = {
 
 # Which System Mode to select for a target timing, by analog chroma preference.
 # Keyed (timing, chroma) -> firmware label. Over HDMI both columns are the same
-# picture; the choice only matters on the composite/S-Video output.
-#
-# On composite the four hybrids are the classic non-standard combinations
-# (color_timings.cc): "PAL-60" is PAL chroma at a 60 Hz field rate (c_pal_60_*,
-# no VIDEO_FMT_NTSC_ENCODING), "NTSC-50" is NTSC chroma at 50 Hz
-# (c_ntsc_50_*). Preserving the chroma keeps a set able to DECODE COLOR, but
-# the field rate still changes underneath it — a single-standard analog display
-# may simply not lock. PAL-60 is the more widely tolerated of the two.
+# picture; the choice only matters on the composite/S-Video output, where the two
+# hybrids (NTSC-50, PAL-60) are the classic non-standard combinations and PAL-60
+# is the more widely tolerated.
 SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
     ("PAL", "pal"): "PAL",
     ("PAL", "ntsc"): "NTSC-50",
@@ -503,40 +485,29 @@ SYSTEM_MODE_FOR: dict[tuple[str, str], str] = {
     ("NTSC", "ntsc"): "NTSC",
 }
 
-# The "/L" hybrids lock the color subcarrier to an exact line ratio instead of
-# free-running it, and the firmware calls them the "best timing match to
-# original C64" — c_pal_60_281_5 / c_ntsc_50_228_5 carry slightly LONGER
-# periods (84422 / 81385) than their free-running siblings (84372 / 81300), so
-# it is the PLAIN hybrids that run ~0.1% fast, not the locked ones.
-#
-# There is deliberately no attempt to carry a /L choice across a retime: every
-# /L mode IS a hybrid, and retiming a hybrid always lands on the other
-# standard's plain mode, which has no locked form ("PAL" and "NTSC" are already
-# standard-locked). A composite user who picked /L for its accuracy therefore
-# loses it for the duration of a `sid_video_mode` run and gets it back at
-# teardown — one more reason that setting is opt-in.
+# A /L choice is not carried across a retime: every /L mode is a hybrid, and
+# retiming a hybrid lands on the other standard's plain mode, which has no
+# locked form. See docs/architecture/sid.md#system-timing--palntsc-play-rate-and-the-ultimates-system-mode.
 
 # The HDMI upscaler, in the same category. Present only on the newer U64 board
 # (firmware u64_config.cc guards it behind `#if U64 == 2`), so the read has to
-# tolerate it being absent rather than assume it.
-#
-# It matters here because of how capture devices behave, not how the C64 does:
-# at SD, PAL timing puts 576p50 on the wire, and some HDMI capture devices
-# cannot lock to it — the picture tears or rolls. The same machine upscaled to
-# 720p50/1080p50 captures cleanly on the same device (HW-verified on two
-# different capture devices, which disagreed at SD and agreed at HD).
+# tolerate it being absent. It matters because of capture devices, not the C64:
+# at SD, PAL timing puts 576p50 on the wire and some HDMI capture devices
+# cannot lock to it, while the same machine upscaled to 720p50/1080p50 captures
+# cleanly (HW-verified on two capture devices that disagreed at SD and agreed
+# at HD).
 HDMI_RESOLUTION_FIELD = "HDMI Scan Resolution"
 
 # The Ultimate's loaded palette file, in the same category as System Mode.
 # Empty means the firmware is driving its built-in table (which is what
 # palette.U64_PALETTE_BGR transcribes); non-empty names a .vpl the user loaded
 # onto the machine, whose contents live in the Ultimate's own flash and are not
-# reachable over the REST API.
+# reachable over the REST API — `read_active_palette` asks the machine itself
+# for the colors.
 PALETTE_FIELD = "Palette Definition"
 HDMI_RESOLUTION_SD = "SD (480p/576p)"
-# What "auto" raises SD to. 720p50 rather than 1080p50: it is the lower of the
-# two HW-verified modes, so it asks less of both the upscaler and the capture
-# card. The four "PC" modes are exposed but NOT verified under PAL timing.
+# What "auto" raises SD to: the lower of the two HW-verified modes. The four
+# "PC" modes are exposed but not verified under PAL timing.
 HDMI_RESOLUTION_AUTO_TARGET = "HD (720p)"
 # The firmware's scan_modes[] labels, in order (u64_config.cc).
 HDMI_RESOLUTION_CHOICES: tuple[str, ...] = (
@@ -548,17 +519,13 @@ HDMI_RESOLUTION_CHOICES: tuple[str, ...] = (
     "PC 1280 x 1024",
 )
 
-# Escape hatch, worth naming wherever we tell a user we changed their video
-# mode: holding C= plus P (PAL) or N (NTSC) at Ultimate boot forces System Mode
-# back, for a display or capture device that can't show what it was set to. The
-# firmware scans the keyboard once during configurator init and overrides
-# CFG_SYSTEM_MODE (u64_config.cc: key 0x10 -> index 0 = PAL, 0x0E -> index 1 =
-# NTSC). CTRL works identically — keyboard_c64.cc's modifier_map gives C= and
-# CTRL distinct bits, but keymaps[] points both at the same keymap_control
-# table, which is where those two codes come from.
-#
-# It resets ONLY System Mode, not the scan resolution — but every write this
-# module makes is volatile, so a power-cycle clears those regardless.
+# Holding C= (or CTRL) plus P (PAL) or N (NTSC) at Ultimate boot forces System
+# Mode back, for a display or capture device that can't show what it was set
+# to: the firmware scans the keyboard once during configurator init and
+# overrides CFG_SYSTEM_MODE (u64_config.cc: key 0x10 -> index 0 = PAL, 0x0E ->
+# index 1 = NTSC). C= and CTRL are interchangeable because keyboard_c64.cc's
+# keymaps[] points both modifiers, and every combination of them, at one
+# keymap_control table. It resets System Mode only, not the scan resolution.
 SYSTEM_MODE_BOOT_OVERRIDE_HINT = (
     "If a video mode leaves you with no picture, hold C= and P (PAL) or C= and "
     "N (NTSC) at Ultimate boot to force System Mode back; c64cast's changes are "
@@ -706,9 +673,8 @@ def _switch_system_mode(api: object, cfg: Config, current: str, restore: dict[st
     want_timing = "NTSC" if cfg.ultimate64.system.upper() == "NTSC" else "PAL"
     if cur_timing == want_timing:
         return False
-    # Keep the analog chroma encoding the machine is already set for — a user
-    # on composite has chosen it deliberately, and over HDMI it makes no
-    # difference either way.
+    # Keep the analog chroma encoding the machine is already set for; over
+    # HDMI it makes no difference either way.
     chroma = "ntsc" if current.startswith("NTSC") else "pal"
     target = SYSTEM_MODE_FOR[(want_timing, chroma)]
     try:
@@ -799,8 +765,7 @@ def resolve_system(cfg: Config, api: object) -> None:
 
     if profile is None:
         return
-    # The profile was built from the pre-resolution value; rebuild what derives
-    # from it.
+    # The profile was built from the pre-resolution value.
     system = cfg.ultimate64.system.upper()
     host_model, host_model_assumed = resolve_host_sid_model(cfg.hardware.host_sid_model, system)
     if profile.host_sid_chips:
@@ -830,6 +795,33 @@ def read_palette_definition(api: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def read_active_palette(api: object) -> tuple[tuple[int, int, int], ...] | None:
+    """The 16 colors this Ultimate is driving right now, as a BGR table, or
+    None when it can't say (older firmware, a backend with no memory bus, a
+    failed read).
+
+    Unlike `read_palette_definition` this answers with the colors themselves,
+    so a machine carrying a custom .vpl reports what it actually emits.
+    """
+    if not all(hasattr(api, attr) for attr in ("read_memory", "write_memory", "flush")):
+        return None
+    rgb = uci.read_palette_rgb(api)  # type: ignore[arg-type]
+    if rgb is None:
+        return None
+    return tuple((b, g, r) for r, g, b in rgb)
+
+
+def live_palette_name(table: Sequence[Sequence[int]]) -> str:
+    """A name for a live-read palette that changes when its colors do.
+
+    Two machines reporting different colors would otherwise both be called
+    `u64-live`, and the ensemble mismatch warning names the two palettes it is
+    comparing.
+    """
+    digest = hashlib.sha256(bytes(v & 0xFF for color in table for v in color)).hexdigest()
+    return f"u64-live:{digest[:6]}"
+
+
 def resolve_palette(cfg: Config, api: object) -> None:
     """Settle `[hardware].host_palette` and point the render pipeline at the
     colors this machine emits.
@@ -842,21 +834,22 @@ def resolve_palette(cfg: Config, api: object) -> None:
     eligibility all measure distances against it.
 
     A configured value always wins, and is the only way to describe a machine
-    that can't answer: a real C64 behind a TeensyROM+, or an Ultimate carrying a
-    custom .vpl (whose contents live in the machine's flash, out of REST's
-    reach — so point host_palette at a local copy of the same file).
+    that can't answer: a real C64 behind a TeensyROM+, or an Ultimate whose
+    firmware predates the UCI palette command, where a custom .vpl lives in
+    flash out of reach and host_palette has to point at a local copy of it.
     """
-    from c64cast.video.palette import active_host_palette_name, set_host_palette
+    import numpy as np
+
+    from c64cast.video.palette import C64_PALETTE_BGR, active_host_palette_name, set_host_palette
 
     global _palette_resolved
     name, table = _resolve_palette_table(cfg, api)
     if _palette_resolved:
         # The active palette is process-wide (see `palette.set_host_palette`),
         # so an ensemble of machines that render the 16 colors differently can
-        # only be right about one of them. Say which, rather than letting the
-        # second machine quietly inherit the first machine's colors.
+        # only be right about one of them.
         active = active_host_palette_name()
-        if active != name:
+        if not np.array_equal(np.asarray(table, dtype=np.float32), C64_PALETTE_BGR):
             log.warning(
                 "ensemble: this system's palette (%s) differs from the one "
                 "already in effect (%s), and the color pipeline holds one "
@@ -888,17 +881,23 @@ def _resolve_palette_table(cfg: Config, api: object) -> tuple[str, Sequence[Sequ
         log.debug("[hardware].host_palette = auto -> pepto (real VIC-II assumed)")
         return "pepto", HOST_PALETTES["pepto"]
 
+    live = read_active_palette(api)
+    if live is not None:
+        name = live_palette_name(live)
+        log.info("[hardware].host_palette = auto -> %s (live, read over UCI)", name)
+        return name, live
+
     loaded = read_palette_definition(api)
     if loaded:
         log.warning(
             "[hardware].host_palette = auto: this Ultimate has the custom "
-            "palette %r loaded, which it won't serve over the network — "
-            "assuming the built-in table instead, so colors will be matched "
-            "against the wrong 16. Point host_palette at a local copy of that "
-            ".vpl to fix it.",
+            "palette %r loaded, and did not answer the UCI read that would "
+            "have returned it — assuming the built-in table instead, so colors "
+            "will be matched against the wrong 16. Point host_palette at a "
+            "local copy of that .vpl to fix it.",
             loaded,
         )
-    log.info("[hardware].host_palette = auto -> u64 (read from the machine)")
+    log.info("[hardware].host_palette = auto -> u64 (built-in table)")
     return "u64", HOST_PALETTES["u64"]
 
 

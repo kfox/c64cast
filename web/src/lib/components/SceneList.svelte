@@ -10,8 +10,7 @@
   let { scenes, readOnly = false, onjump }: Props = $props();
 
   /** Seconds as the playlist would say them. A scene with no duration runs
-   *  until its source ends, which is a fact about the scene rather than a
-   *  missing number, so it says so. */
+   *  until its source ends, and says so rather than showing a blank. */
   function length(seconds: number | null): string {
     if (seconds === null) return "until it ends";
     if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -23,8 +22,6 @@
 {#if scenes.length === 0}
   <p class="text-sm text-[var(--ink-dim)]">This show has no scenes.</p>
 {:else}
-  <!-- Bounded and scrolled: a playlist can be a hundred scenes long and this
-       sits beside the controls somebody is actually holding. -->
   <ol class="max-h-72 space-y-1 overflow-y-auto">
     {#each scenes as scene (scene.index)}
       <li>

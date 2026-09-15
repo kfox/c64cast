@@ -55,9 +55,6 @@ class HaloSource(GenerativeSource):
         self._ys = ys
         rng = np.random.default_rng(0x4A10)
         self._orbit_rate = rng.uniform(0.5, 1.3, self._N_HALOS)
-        # Evenly spaced at t=0 (full-frame coverage from the first frame);
-        # each halo's distinct orbit_rate then drifts them in and out of
-        # alignment over time rather than clustering by luck of a random draw.
         self._orbit_phase = np.arange(self._N_HALOS) * (2.0 * math.pi / self._N_HALOS)
         self._pulse_rate = rng.uniform(0.6, 1.6, self._N_HALOS)
         self._pulse_phase = rng.uniform(0.0, 2.0 * math.pi, self._N_HALOS)

@@ -6,7 +6,7 @@ against the template, and a committed PNG no longer being what the script
 draws. Neither shows up in a build -- the book renders a wrong-colored or
 out-of-date figure perfectly happily.
 
-Pixels are deliberately not compared. Pillow's rasteriser is not stable across
+Pixels are deliberately not compared. Pillow's rasterizer is not stable across
 versions, so a byte-for-byte drift test fails on an unrelated dependency bump;
 what is compared is the geometry the script asks for and the shot list it
 writes.
@@ -49,8 +49,7 @@ md = _load_diagrams()
 class PaletteTest(unittest.TestCase):
     def test_the_palette_still_matches_the_template(self):
         # The script cannot import the Typst template, so it holds its own copy
-        # of the four colors the books are set in. A figure drawn in last
-        # season's blue looks fine on its own and wrong on the page.
+        # of the four colors the books are set in.
         typ = _TEMPLATE.read_text(encoding="utf-8")
         for name, color in (
             ("accent", md.ACCENT),

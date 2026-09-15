@@ -36,9 +36,6 @@ class PETSCIIDisplayMode(CharDisplayMode):
     name = "petscii"
     is_petscii_compatible = True
     frame_target_size = (40, 25)
-    # Live-tune surface: petscii applies the adaptive color fit and picks
-    # nearest-palette per cell, so auto_fit_strength + color_match are live; it
-    # has no dither / per-cell / palette_mode axis.
     LIVE_PARAMS = {"auto_fit_strength": (0.0, 1.0)}
     LIVE_CHOICES = {"color_match": COLOR_MATCH_MODES}
 
@@ -55,39 +52,25 @@ class PETSCIIDisplayMode(CharDisplayMode):
     ):
         validate_style(style)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
-        # Threaded into each style's per-cell color pick; styles decide their
-        # own glyph/luma independently of the color metric.
         self._perceptual = bool(perceptual)
         self._configured_style = style  # may be "random" sentinel
-        # Resolve "random" lazily at setup() so each scene instance
-        # (including single-scene loops via teardown+setup) picks fresh.
         self._style_name = style if style != RANDOM_STYLE else pick_random_style_name()
         self._style = make_style(self._style_name)
-        # Global [color] shaping passed through to whichever style is active —
-        # styles run their own per-cell quantization but share this pre-quant
-        # stage (channel boost + hue corrections) with the bitmap modes.
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
-        # Opt-in REU-staged screen RAM push. See push_screen_via_reu and
-        # the REU_VIDEO_SCREEN_BASE block in modes_irq.py for details + caveats.
-        # Color RAM stays on the DMAWRITE delta path regardless.
+        # Screen RAM only; color RAM stays on the DMAWRITE delta path.
         self.use_reu_staged = use_reu_staged
 
     def setup(self, api):
         super().setup(api)
-        # Clear-then-reveal (mirrors engage_bitmap_mode): blank $0400/$D800
-        # BEFORE the register pokes, and flip $D011 LAST, so a scene switch
-        # never shows the previous scene's stale glyphs/colors — especially
-        # coming from a bitmap scene, whose screen RAM holds nibble-packed
-        # colors that would otherwise render as garbled characters here.
+        # Clear-then-reveal: blank $0400/$D800 BEFORE the register pokes and
+        # flip $D011 LAST, so a scene switch never shows the previous scene's
+        # stale glyphs — a bitmap scene leaves nibble-packed colors in $0400.
         clear_char_screen(api)
         api.write_memory("d018", "14")
         api.write_memory("d016", "08")
-        # Each style declares its own border + background; push them now
-        # so we don't carry the previous scene's choices into the first
-        # frame. Bordr + bg are contiguous at $D020-$D021.
+        # $D020-$D021 are contiguous, so one write_regs covers both.
         api.write_regs("d020", self._style.border, self._style.background)
         api.write_memory("d011", "1b")
 

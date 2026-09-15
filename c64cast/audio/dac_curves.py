@@ -2,64 +2,21 @@
 digi technique, plus the resolver that maps a ``[audio].dac_curve`` name to a
 table (or ``None`` for the legacy linear 4-bit path).
 
-Background — the Mahoney technique
-----------------------------------
-Pex 'Mahoney' Tufvesson's 2014 technique parks all three SID voices as steady
-DC sources (pulse + TEST + GATE, ADSR sustained) with voices 1+2 routed through
-the analog filter, then writes the **full 8-bit ``$D418`` byte** per sample:
-the volume nibble (bits 0-3) *plus* the filter-mode bits HP/BP/LP (4-6) and the
-"voice-3 OFF" bit (7). Those upper bits additively/subtractively re-route the
-parked DC voices, so the master mixer emits ~256 distinct, strongly non-linear
-output levels instead of the 16 the volume nibble alone gives — roughly 6-7
-*effective* bits (Wothke's measurement; not literally 8). The per-sample cost is
-still a single ``STA $D418``, so the NMI DAC handler is unchanged: only the byte
-values written to the ring differ (0..255 instead of 0..15).
+A "sidtable" is the inverse map used at encode time: ``sidtable[i]`` is the
+``$D418`` byte whose *measured* output level is nearest the i-th of 256
+uniform target levels spanning the SID's measured [min, max], and
+:data:`NEUTRAL_INDEX` is the neutral / mid-scale entry (silence).
 
-A "sidtable" here is the inverse map used at encode time: ``sidtable[i]`` is the
-``$D418`` byte whose *measured* output level is nearest the i-th of 256 uniform
-target levels spanning the SID's measured [min, max]. Index 128 is the neutral /
-mid-scale entry (silence), the DAC analog of the linear path's centered rest
-value.
-
-Why only the emulated (UltiSID) table ships baked
--------------------------------------------------
-HW measurement (2026-08-06, Cam Link capture;
-``scripts/diags/mahoney_slot_ring_probe.py --source ultisid1``, 18 rings merged
-over two runs). Supersedes the 2026-07-02 measurement, whose *curve* it
-reproduces at corr 0.99957 — the emulated core really was what that pass
-captured — but whose *table* it does not: the levels→code fold has been
-rewritten since, and the old bytes are non-monotonic through the curve they
-came from (27 backward steps, worst −1.73% of span, against 0 for these).
-
-* The U64's emulated **UltiSID** curve is deterministic across every unit and
-  the 6581/8580 model knob does not affect the digi transfer (6581 vs 8580
-  byte-identical, corr 0.99999) — so **one** baked ``mahoney_ultisid`` table
-  generalizes perfectly. Its curve is all-positive, a valid digi shape with
-  silence at a mid-level code.
-* Measuring it needs the core **isolated and unmuted**. Address routing alone
-  is not enough: the Audio Mixer carries an independent per-source level, and a
-  rig that has only ever used socketed chips ships ``Vol UltiSid 1 = OFF``. That
-  yields a capture at the noise floor, which is indistinguishable from a bring-up
-  failure rather than obviously being a routing one.
-* **Physical 6581 chips vary enormously** chip-to-chip (two chips: curve corr
-  0.738; one chip's table on the other → ~29% RMS level error), dominated by the
-  analog filter. A single baked physical-6581 table cannot generalize, so
-  physical chips get **per-unit calibration** instead of a shipped table (a
-  deferred follow-up; see the project notes / ``--calibrate-dac`` sketch).
-
-Credits: Pex 'Mahoney' Tufvesson (the technique + white paper §XIV env block),
-Jürgen Wothke (websid effective-bit analysis), Antonio Savona / Broken Bytes
-(the 48 kHz $D418 article), and CodeBase64.
+See docs/architecture/audio.md#audiodac_curve--mahoney-8-bit-d418-companding
+and docs/architecture/audio.md#table-selection-auto-and-per-system-calibration.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-# Emulated UltiSID amplitude(0..255) → $D418 byte, measured on the U64 FPGA
-# UltiSID with the Mahoney SID env and "Digis Level = Medium" (the default).
-# Deterministic across units; see scripts/diags/mahoney_measured_tables.json
-# (ultisid.sidtable) for the source of record and the raw signed-level curve.
+# Emulated UltiSID amplitude(0..255) → $D418 byte, HW-measured 2026-08-06;
+# source of record: scripts/diags/mahoney_measured_tables.json (ultisid.sidtable).
 MAHONEY_ULTISID: Final[bytes] = bytes(
     (
         0,
@@ -321,22 +278,14 @@ MAHONEY_ULTISID: Final[bytes] = bytes(
     )
 )
 
-# Registry keyed by [audio].dac_curve value. "linear" is intentionally absent:
-# it resolves to None (the legacy 4-bit path). New baked tables go here.
 _DAC_CURVE_TABLES: Final[dict[str, bytes]] = {
     "mahoney_ultisid": MAHONEY_ULTISID,
 }
 
-# The neutral / mid-scale index shared by every companding table: encode maps a
-# zero-amplitude (silence) sample to this amplitude index, and the ring is
-# prefilled/padded with sidtable[NEUTRAL_INDEX].
 NEUTRAL_INDEX: Final = 128
 
-# Config choices for the introspection/schema layer (single source of truth).
-# "auto" (default) and "calibrated" are *system-aware* choices resolved at
-# runtime by dac_curve_resolve.resolve_dac_curve_for_backend (they depend on the
-# connected backend and whether a per-unit calibration exists); the baked-table
-# names ("linear", "mahoney_ultisid") resolve here in resolve_dac_curve.
+# Source of truth for the introspection/schema layer. "auto" and "calibrated"
+# are system-aware and resolve only via dac_curve_resolve, not resolve_dac_curve.
 DAC_CURVE_CHOICES: Final[list[str]] = ["auto", "linear", *_DAC_CURVE_TABLES, "calibrated"]
 
 

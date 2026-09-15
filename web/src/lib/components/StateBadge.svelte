@@ -3,16 +3,13 @@
 
   interface Props {
     state: SessionState;
-    /** Dimmed when the socket is down: the state shown is the last one heard,
-     *  which is worth saying without throwing it away. */
+    /** Dimmed when the socket is down, since the state shown is the last one
+     *  heard. */
     stale?: boolean;
   }
 
   let { state, stale = false }: Props = $props();
 
-  // `starting` and `stopping` share the in-transit look on purpose — what the
-  // operator needs from across a room is "settled or moving", and the word
-  // itself says which direction.
   const tone: Record<SessionState, string> = {
     idle: "text-[var(--ink-dim)] border-[var(--edge)]",
     starting: "text-c64-yellow border-c64-yellow/50",

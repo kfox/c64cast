@@ -3,11 +3,9 @@ override / live device identity / offline fallback), schema-v2 persistence +
 per-socket entry selection, the socket-isolation config PUTs, the
 system-aware "auto"/"calibrated" resolver, and the slot-ring measurement
 primitive — ring construction, level extraction from a simulated capture, and
-the ladder fold. No real hardware; the capture is synthesised."""
+the ladder fold. No real hardware; the capture is synthesized."""
 
-# FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
-# file-wide so the test focus stays on behavior rather than type wrapping
-# (same convention as test_waveform.py).
+# FakeAPI duck-types C64Backend rather than subclassing it.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -130,8 +128,7 @@ class DataDirIsolated(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        # Redirect the whole data root at the env layer (paths.calibration_dir()
-        # is resolved from $C64CAST_DATA_DIR); no module global to patch.
+        # paths.calibration_dir() resolves $C64CAST_DATA_DIR; no module global to patch.
         self._env = patch.dict(os.environ, {"C64CAST_DATA_DIR": self._tmp.name})
         self._env.start()
 
@@ -249,10 +246,8 @@ class ResolveKeyTest(DataDirIsolated):
                 self.assertEqual(dcs.resolve_calibration_key(cfg), "profile-x")
 
     def test_profile_naming_a_file_is_used_as_a_path(self):
-        # A path is the only way to point one backend's run at a calibration
-        # filed under another's device identity (a TR+ in a U64's cart port
-        # driving the SID the Ultimate already measured). Sanitizing it into a
-        # key instead folds every separator to '_' and matches no file.
+        # A path points one run at a calibration filed under another backend's device
+        # identity; sanitized to a key, every separator folds to '_' and matches no file.
         cfg = _tr_serial_cfg()
         cfg.audio.dac_calibration_profile = "/data/c64cast/calibration/dac/ultimate-5D327C.json"
         self.assertEqual(
@@ -292,8 +287,7 @@ class PersistenceTest(DataDirIsolated):
         self.assertEqual(entry["raw_signed_levels"][1], [1, round(-127 / 300.0, 8)])
 
     def test_raw_levels_omitted_when_absent_and_file_still_loads(self):
-        # raw_signed_levels is additive under the same schema: a result carrying none
-        # writes the pre-existing key set, and readers only need `sidtable`.
+        # raw_signed_levels is additive under the same schema; readers need only `sidtable`.
         cfg = _u64_cfg()
         path = self.save(cfg, {"default": _result(0)})
         entry = json.loads(path.read_text())["sids"]["default"]
@@ -301,11 +295,8 @@ class PersistenceTest(DataDirIsolated):
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(256))
 
     def test_default_entry_says_the_sid_was_never_identified(self):
-        # Only the Ultimate exposes the socket map, so every other link files its
-        # measurement under "default" with detected=None — right on a one-SID
-        # machine, a blend of two chips on a machine with a second one or with
-        # mirroring on. Neither the file nor this side can tell them apart, so
-        # the assumption has to be stated where the table is chosen.
+        # Only the Ultimate exposes the socket map; every other link files under
+        # "default" with detected=None — one chip, or a blend of two.
         cfg = _tr_serial_cfg()
         be = FakeAPI()  # profile.supports_config False, like the real TR
         dcs.save_calibration(
@@ -319,9 +310,8 @@ class PersistenceTest(DataDirIsolated):
         self.assertIn("assumes one SID", "\n".join(logs.output))
 
     def test_default_entry_from_a_link_that_can_identify_stays_quiet(self):
-        # A backend with the socket map either resolved the identity or chose not
-        # to write per-socket entries — knowingly, either way. Saying it there
-        # would fire on every Ultimate run whose file predates per-socket entries.
+        # A backend with the socket map either resolved the identity or chose not to
+        # write per-socket entries; a warning would fire on every file predating them.
         cfg = _u64_cfg()
         be = FakeAPI()
         be.profile = HardwareProfile(
@@ -344,8 +334,7 @@ class PersistenceTest(DataDirIsolated):
         self.assertEqual(dcs.load_calibrated_table(cfg), bytes(range(256)))
 
     def test_save_honors_a_path_profile_and_loads_back(self):
-        # --calibrate-dac and playback must agree on where the file lives, so a
-        # path profile has to steer the write as well as the read.
+        # --calibrate-dac and playback must agree on where the file lives.
         cfg = _u64_cfg()
         dest = Path(self._tmp.name) / "elsewhere" / "breadbin.json"
         cfg.audio.dac_calibration_profile = str(dest)
@@ -579,7 +568,6 @@ class MissingCalibrationLogTest(DataDirIsolated):
             dcr.resolve_dac_curve_for_backend(_tr_serial_cfg())
 
     def test_live_calibration_present_is_silent(self):
-        # A hit doesn't warn.
         cfg = _u64_cfg()
         self.save(cfg, {"default": _result(0)})
         with self.assertNoLogs("c64cast.audio.dac_curve_resolve", level="INFO"):
@@ -659,8 +647,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         self.assertIn("socket 2", "\n".join(cm.output))
 
     def test_ultisid_at_d400_still_gets_the_baked_table(self):
-        # Nothing physical answers $D400, so the baked table is the *matched*
-        # one and stays the right default.
+        # Nothing physical answers $D400, so the baked table is the *matched* one.
         cfg = _u64_cfg()
         label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_ultisid_at_d400())
         self.assertEqual(label, "mahoney_ultisid")
@@ -673,8 +660,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         self.assertEqual(label, "mahoney_ultisid")
 
     def test_calibration_for_that_socket_still_wins(self):
-        # The guard is a fallback, not a veto: a table measured on the chip
-        # that owns $D400 is exactly what should be used.
+        # The guard is a fallback, not a veto: a table measured on the $D400 owner wins.
         cfg = _u64_cfg()
         self.save(cfg, {"1": _result(1), "2": _result(2)})
         label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
@@ -689,7 +675,7 @@ class AutoCurveD400OwnershipTest(DataDirIsolated):
         self.assertEqual(table, MAHONEY_ULTISID)
 
     def test_explicit_mahoney_is_not_second_guessed(self):
-        # The guard only shapes "auto". A user who named the curve meant it.
+        # The guard only shapes "auto".
         cfg = _u64_cfg()
         cfg.audio.dac_curve = "mahoney_ultisid"
         label, table = dcr.resolve_dac_curve_for_backend(cfg, be=_socket_at_d400(1))
@@ -709,9 +695,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         return cfg, FakeAPI()  # profile.supports_config False, like the real TR
 
     def test_a_two_socket_file_is_not_discarded_by_a_link_that_cannot_ask(self):
-        # The regression: "can't read who owns $D400" was treated as the same
-        # answer as "an UltiSID owns it", so a good file resolved to nothing and
-        # playback silently dropped to the 4-bit linear DAC.
+        # The regression: "can't read who owns $D400" was treated as "an UltiSID owns
+        # it", so a good file resolved to nothing and playback dropped to the 4-bit DAC.
         cfg, be = self._tr()
         self.save(cfg, be=be, entries={"1": _result(1), "2": _result(2)})
         with self.assertLogs("c64cast.audio.dac_calibration_store", level="WARNING"):
@@ -749,9 +734,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
             self.assertEqual(dcs.load_calibrated_table(cfg, be=be), bytes([1] * 256))
 
     def test_the_ultimate_still_refuses_a_physical_table_when_an_ultisid_owns_d400(self):
-        # The live answer stays authoritative, including its None. Guarding this
-        # because the "unknown" path added beside it must not become a way for a
-        # physical-chip table to reach an emulated core.
+        # The live answer stays authoritative, including its None: the "unknown" path
+        # beside it must not let a physical-chip table reach an emulated core.
         cfg = _u64_cfg()
         api = _ultisid_at_d400()
         dcs.save_calibration(
@@ -761,9 +745,8 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         self.assertIsNone(dcs.load_calibrated_table(cfg, be=api))
 
     def test_offline_selection_is_unchanged(self):
-        # be=None can't confirm the identity key either; --doctor reports that
-        # separately, so an offline miss must stay a miss rather than acquiring
-        # an assumption of its own.
+        # be=None can't confirm the identity key either, so an offline miss must stay
+        # a miss rather than acquiring an assumption of its own.
         cfg = _u64_cfg()
         dcs.save_calibration(
             cfg,
@@ -779,8 +762,7 @@ class CrossBackendSocketSelectionTest(DataDirIsolated):
         self.assertEqual(json.loads(path.read_text())["d400_socket"], 2)
 
     def test_a_run_that_could_not_read_the_owner_writes_no_claim(self):
-        # Absent, not null: an older file and a link that can't ask are the same
-        # state, and both have to read back as "unknown".
+        # Absent, not null: an older file and a link that can't ask are the same state.
         cfg = _u64_cfg()
         path = self.save(cfg, {"1": _result(1)})
         self.assertNotIn("d400_socket", json.loads(path.read_text()))
@@ -833,7 +815,7 @@ class SlotRingLayoutTest(unittest.TestCase):
 class SlotRingExtractionTest(unittest.TestCase):
     """The extraction is where a calibration goes stably wrong: an open-loop
     slot grid reads mid-plateau on a drifting baseline and returns levels that
-    repeat perfectly and mean nothing. These drive it from a synthesised
+    repeat perfectly and mean nothing. These drive it from a synthesized
     capture with a known answer."""
 
     def test_recovers_known_levels_through_ac_coupling(self):
@@ -881,8 +863,7 @@ class SlotRingExtractionTest(unittest.TestCase):
         self.assertGreater(got.diagnostics["nmi_rate_implied_hz"], NMI_TRUE * 1.05)
 
     def test_pass_spread_flags_a_capture_the_grid_could_not_hold(self):
-        # Every pass measures the same levels, so disagreement between them is
-        # the one symptom that separates a mistracked capture from a real curve.
+        # Every pass measures the same levels; disagreement means a mistracked capture.
         codes = [dsr.ANCHOR_CODE, *range(40)]
         cap, _ = _simulate(codes)
         self.assertLess(
@@ -982,9 +963,8 @@ class RingCaptureGateTest(unittest.TestCase):
                 dsr.read_ring_capture(cap, 41, RING)
         msg = str(ctx.exception)
         self.assertIn("1.85%", msg)
-        # Distinct from the noise message: this one has to say the ring is real
-        # but unsteady, or it reads as "your capture device is wrong" and sends
-        # the user to re-cable a rig that is already correct.
+        # Must say the ring is real but unsteady, or it reads as "your capture device
+        # is wrong" and sends the user to re-cable a rig that is already correct.
         self.assertIn("not replaying the same levels", msg)
 
     def test_the_unsteady_advice_does_not_send_the_user_to_the_cabling(self):
@@ -1003,9 +983,8 @@ class RingCaptureGateTest(unittest.TestCase):
         )
         self.assertIn("input is right", msg)
         self.assertNotIn("--audio-device", msg)
-        # The one class of cause the tool cannot clear for the user: over a link
-        # with no config API it mutes nothing, so anything else up in the
-        # machine's mixer lands in the measurement.
+        # The one cause the tool cannot clear: over a link with no config API it mutes
+        # nothing, so anything up in the machine's mixer lands in the measurement.
         self.assertIn("nothing is muted for you", msg)
 
     def test_a_drifting_level_is_not_blamed_on_the_mixer(self):
@@ -1181,8 +1160,7 @@ class RingCaptureGateTest(unittest.TestCase):
 
 class MergeMeasurementsTest(unittest.TestCase):
     def test_rings_are_rescaled_onto_the_common_anchor(self):
-        # Two rings whose capture gain differs by 2x must still merge to one
-        # consistent set of levels — the anchor code is what ties them together.
+        # Rings whose capture gain differs by 2x merge via the shared anchor code.
         a = dsr.SlotLevels(np.array([1.0, 0.5, 0.25]), np.zeros((2, 3)), {})
         b = dsr.SlotLevels(np.array([2.0, 1.0, -1.0]), np.zeros((2, 3)), {})
         raw, metrics = dsr.merge_measurements([([1, 2], a), ([3, 4], b)])
@@ -1231,7 +1209,6 @@ class Volume0SelfTestTest(DataDirIsolated):
         sidtable, metrics = dsr.build_sidtable_from_levels(raw)
         self.assertIsNone(sidtable)
         self.assertGreater(metrics["volume0_selftest_worst"], dsr.SELFTEST_TOLERANCE)
-        # Still fully diagnosable: the metrics survive the rejection.
         self.assertIn("signed_span", metrics)
         self.assertEqual(len(metrics["volume0_selftest"]), 16)
 
@@ -1361,7 +1338,6 @@ class FindCaptureDeviceTest(unittest.TestCase):
     def test_falls_back_to_the_system_default_when_nothing_is_recognized(self):
         fake = _FakeSD([_dev("Speakers", 0), _dev("Line In", 2)], default_input=1)
         self.assertEqual(self._run(fake), 1)
-        # …and that fallback is exactly what run_calibration warns about.
         self.assertFalse(dcap.looks_like_capture_input("Line In"))
         self.assertTrue(dcap.looks_like_capture_input("Cam Link 4K"))
 

@@ -5,7 +5,7 @@
 
   interface Props {
     /** Which system's screen. Part of the stream URL, so switching systems
-     *  swaps the `<img>` src and the host swaps which machine it watches. */
+     *  swaps the `<img>` src and with it the machine the host watches. */
     system: string;
     /** Whether this host can show a picture at all — false on a machine with
      *  no VIC of its own, and on a host with the screen turned off. */
@@ -14,16 +14,14 @@
 
   let { system, available }: Props = $props();
 
-  // Off by default. The picture is the machine's own video stream and the host
-  // only asks for it while somebody is watching, so opening this panel is the
-  // act that starts a couple of megabytes a second moving — worth a tap rather
-  // than something every idle console does.
+  // Off by default: the host holds the machine's video stream up only while
+  // somebody is watching, so opening this panel is what starts it.
   let watching = $state(false);
   let broken = $state("");
 
-  // A cache-buster per start: `multipart/x-mixed-replace` is a normal response
-  // to a browser's cache, and reusing the URL after a stop can serve the last
-  // frame of the old stream forever instead of opening a new one.
+  // Cache-buster: `multipart/x-mixed-replace` is an ordinary response to a
+  // browser's cache, so reusing the URL can re-serve the old stream's last
+  // frame instead of opening a new one.
   let epoch = $state(0);
   const src = $derived(
     `/api/screen/stream?system=${encodeURIComponent(system)}&t=${epoch}`,
@@ -39,8 +37,8 @@
     watching = false;
   }
 
-  // Leaving the screen stops the stream: the `<img>` is what holds the
-  // connection open, so removing it is what releases the machine.
+  // The `<img>` is what holds the connection open, so removing it is what
+  // stops the host streaming this machine.
   onDestroy(stop);
 
   async function snapshot(): Promise<void> {
@@ -75,9 +73,6 @@
       TeensyROM+ has no video path at all.
     </p>
   {:else if watching}
-    <!-- One `<img>` is the entire client: the host answers
-         `multipart/x-mixed-replace`, so the browser swaps frames itself with
-         no script, no socket and no decoder in this page. -->
     <img
       {src}
       alt="The Commodore's screen, live"

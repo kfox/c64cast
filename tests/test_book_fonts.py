@@ -50,11 +50,6 @@ def _load_build_book():
 bg = _load_build_book()
 
 
-# ---------------------------------------------------------------------------
-# A minimal TrueType cmap reader
-# ---------------------------------------------------------------------------
-
-
 def _tables(data: bytes) -> dict[str, int]:
     """Offset of each sfnt table, by tag."""
     count = struct.unpack(">H", data[4:6])[0]
@@ -122,9 +117,6 @@ def font_coverage(path: Path) -> set[int]:
     return covered
 
 
-# ---------------------------------------------------------------------------
-
-
 def book_sources() -> list[Path]:
     """Every Markdown file that becomes part of a book."""
     out: list[Path] = []
@@ -145,8 +137,8 @@ class FontCoverageTest(unittest.TestCase):
             self.covered |= font_coverage(font)
 
     def test_the_reader_agrees_with_what_the_faces_are_known_to_have(self):
-        # A cmap parser that returned the empty set, or every code point, would
-        # make the real test below vacuous in either direction.
+        # A parser returning the empty set, or every code point, would make the
+        # real test below vacuous in either direction.
         self.assertTrue({ord(c) for c in "abcXYZ0189 .,;-—…"} <= self.covered)
         self.assertNotIn(0x21D2, self.covered)  # ⇒, in neither face
         self.assertNotIn(0x1F600, self.covered)
@@ -170,8 +162,8 @@ class FontCoverageTest(unittest.TestCase):
         )
 
     def test_the_template_names_only_vendored_faces(self):
-        # The guarantee above is only worth anything if the template cannot ask
-        # for a family that is not in the directory this test measured.
+        # The guarantee above holds only if the template cannot name a family
+        # outside the directory this test measured.
         source = _TEMPLATE.read_text(encoding="utf-8")
         families = set(re.findall(r"^#let (?:body|mono)-font = \((.*)\)$", source, re.M))
         self.assertTrue(families, "template no longer declares its font stacks as tuples")

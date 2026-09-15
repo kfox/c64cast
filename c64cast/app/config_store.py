@@ -272,11 +272,9 @@ def _media_warnings(cfgs: Sequence[cfgmod.Config], names: Sequence[str]) -> list
     an ensemble. Reported in the same report the console already renders, so
     the answer arrives before the C64 is opened and reset rather than seconds
     into the run."""
-    # Deferred, not for a cycle (there isn't one — scene_factory never imports
-    # this module): `scene_factory` and `session` pull the optional hardware
-    # extras (cv2, sounddevice, mediapipe) transitively, which a ConfigStore
-    # caller that never validates (e.g. `--list-examples`) shouldn't have to
-    # have installed.
+    # Deferred for weight, not a cycle: `scene_factory` and `session` pull the
+    # optional hardware extras transitively, which a ConfigStore caller that never
+    # validates should not need installed.
     from .scene_factory import missing_media
 
     out: list[dict[str, Any]] = []
@@ -433,10 +431,8 @@ def describe(cfg: cfgmod.Config, baseline: cfgmod.Config | None = None) -> dict[
                 "name": sc.name,
                 "fields": scene_fields,
                 "overlays": [_value(ov) for ov in sc.overlays],
-                # [scenes.color]: the scene's own sparse override, not merged
-                # with the global [color] section — a console renders this
-                # alongside the [color] section's own form and shows which
-                # keys this scene has claimed.
+                # The scene's own sparse override, unmerged with the global [color]
+                # section, so a console can show which keys this scene claimed.
                 "color": dict(sc.color),
             }
         )
@@ -457,19 +453,15 @@ def _editable_fields() -> dict[str, frozenset[str]]:
 def _editable_scene_fields(scene_type: str) -> frozenset[str]:
     for st in introspect.scene_types():
         if st.name == scene_type:
-            # `overlays` and `color` are each in the form as their own key
-            # rather than a plain field, so `describe` drops them from the
-            # field list — but both are still scene fields a plain edit can
-            # replace wholesale (a nested `{scene, subsection: "color", ...}`
-            # edit is the other way into `color`, one key at a time — see
-            # `_apply_edit`).
+            # `describe` drops `overlays` and `color` from the field list, each
+            # being its own form key, but a plain edit can still replace either
+            # wholesale (a nested `{scene, subsection: "color", ...}` edit is the
+            # other way into `color`, one key at a time).
             #
-            # `type` is *not* editable, and it is the one field that has to be
-            # named to say so. It decides which of the other fields mean
-            # anything, so changing it here doesn't edit the scene — it
-            # reinterprets it, and the re-serialize then drops every field the
-            # new type has no use for. That is a structural change and belongs
-            # with the text editor, next to adding and removing scenes.
+            # `type` is *not* editable, and has to be named to say so: it decides
+            # which of the other fields mean anything, so changing it reinterprets
+            # the scene and the re-serialize drops every field the new type has no
+            # use for. That belongs with the text editor.
             return frozenset({fd.name for fd in st.fields} | {"overlays"}) - {"type"}
     raise EditRejected(f"unknown scene type {scene_type!r}")
 
@@ -643,15 +635,12 @@ class ConfigStore:
         self._roots = tuple(resolved)
         self._by_label = {r.label: r for r in self._roots}
         self._ref_for_cache: tuple[str, str | None] | None = None
-        # The packaged examples have their own trailing read-only root (added
-        # just above). A run started from a source checkout has cwd at the repo
-        # root, and that root's walk would otherwise descend into
-        # `c64cast/examples/` and list every packaged config a *second* time —
-        # as a writable file under the cwd root, which the console's "Examples"
-        # toggle keys on `readonly` and so cannot hide. Pruned from every other
-        # root's walk in `_walk`, but only while the read-only root is present
-        # to carry them: with `include_examples=False` there is nothing else
-        # listing them and the prune would drop them outright.
+        # The packaged examples have their own trailing read-only root. A run from
+        # a source checkout has cwd at the repo root, whose walk would otherwise
+        # list every packaged config a *second* time as a writable file the
+        # console's `readonly`-keyed "Examples" toggle cannot hide. `_walk` prunes
+        # them from every other root, but only while the read-only root is there to
+        # carry them: under `include_examples=False` the prune would drop them.
         examples_root = next((r for r in self._roots if r.readonly), None)
         self._packaged_examples: Path | None = examples_root.path if examples_root else None
 
@@ -677,8 +666,6 @@ class ConfigStore:
     @property
     def roots(self) -> tuple[Root, ...]:
         return self._roots
-
-    # -- refs ---------------------------------------------------------------
 
     @staticmethod
     def _ref_parts(ref: str) -> list[str]:
@@ -772,8 +759,6 @@ class ConfigStore:
                 raise PathRejected(f"{ref!r} is a read-only example — duplicate it to edit")
         return path
 
-    # -- listing ------------------------------------------------------------
-
     def index(self) -> dict[str, Any]:
         """Every config under every root, plus the roots themselves."""
         files: list[dict[str, Any]] = []
@@ -813,9 +798,8 @@ class ConfigStore:
             resolved_here = here.resolve()
             if prune is not None and (resolved_here == prune or prune in resolved_here.parents):
                 continue
-            # A subdirectory (never the root itself) that only ever holds a
-            # checkout's own tooling — see NON_CONFIG_DIRS. `root.path` is
-            # already resolved, so `here` is under it.
+            # A subdirectory, never the root itself, holding only a checkout's own
+            # tooling. `root.path` is already resolved, so `here` is under it.
             if any(part in NON_CONFIG_DIRS for part in here.relative_to(root.path).parts):
                 continue
             for name in sorted(filenames):
@@ -824,15 +808,12 @@ class ConfigStore:
                 if name in NON_CONFIG_NAMES:
                     continue
                 path = here / name
-                # `followlinks=False` keeps the walk out of symlinked
-                # *directories*, but a symlinked file is an ordinary entry —
-                # and listing one that `read` would then refuse is worse than
-                # not listing it.
+                # `followlinks=False` keeps the walk out of symlinked *directories*,
+                # but a symlinked file is an ordinary entry — and listing one `read`
+                # would then refuse is worse than not listing it.
                 if not path.resolve().is_relative_to(root.path):
                     continue
                 yield path
-
-    # -- read ---------------------------------------------------------------
 
     def read(self, ref: str) -> dict[str, Any]:
         """The file's text, plus whatever the loader can say about it.
@@ -877,9 +858,8 @@ class ConfigStore:
             return out
         out["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
         if loaded.is_ensemble:
-            # Masters are authored across several files and `config_serialize`
-            # refuses them by design, so there is no form to generate — the raw
-            # text editor is the whole story for one.
+            # `config_serialize` refuses a master by design, so there is no form to
+            # generate and the raw text editor is the whole story.
             out["kind"] = "ensemble"
             out["systems"] = list(loaded.names)
             return out
@@ -935,8 +915,6 @@ class ConfigStore:
             if not any(candidate.resolve().is_relative_to(r.path) for r in self._roots):
                 return "an [ensemble] system names a config outside the config roots"
         return None
-
-    # -- validate + write ---------------------------------------------------
 
     def validate_text(
         self, text: str, ref: str | None = None, *, partial: bool = False
@@ -1008,12 +986,9 @@ class ConfigStore:
         tmp: Path | None = None
         try:
             if _load_path is None:
-                # mkstemp and the write that follows share one `except`: both
-                # sit inside this `try`, ahead of its own `finally` below, so
-                # a write failure (ENOSPC, a remount to read-only) is refused
-                # the same way a denied mkstemp already was, rather than
-                # propagating as a bare OSError with the half-written scratch
-                # file left behind for `finally` to clean up.
+                # mkstemp and the write that follows share one `except`, so a write
+                # failure (ENOSPC, a remount to read-only) is refused the same way a
+                # denied mkstemp is, rather than propagating as a bare OSError.
                 try:
                     fd, tmp_name = tempfile.mkstemp(
                         prefix=".c64cast-check-", suffix=SUFFIX, dir=base_dir
@@ -1022,19 +997,15 @@ class ConfigStore:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write(text)
                 except OSError as e:
-                    # `base_dir` is the target's own (possibly read-only-by-
-                    # policy, or on a wheel install genuinely unwritable)
-                    # directory — see the docstring for why it has to be that
-                    # one.
+                    # `base_dir` is the target's own directory, which can be
+                    # unwritable; the docstring says why it has to be that one.
                     raise PathRejected(f"cannot check a config in {base_dir}: {e}") from e
             load_path = tmp if _load_path is None else _load_path
             unplayable: list[dict[str, Any]] = []
             with _capture_errors() as messages:
                 try:
                     loaded = cfgmod.load_master(str(load_path))
-                    # Same deferral reason as `_media_warnings`: no cycle, just
-                    # keeping session's/scene_factory's heavy optional extras
-                    # off a caller that never validates.
+                    # Deferred for the same reason as in `_media_warnings`.
                     from .scene_factory import MediaNotChosen
                     from .session import SessionConfigError, validate_configs
 
@@ -1045,22 +1016,19 @@ class ConfigStore:
                             "; ".join(messages)
                             or f"config did not validate (exit code {e.exit_code})"
                         )
-                        # `from e` all the way down, so the pre-flight's own
-                        # cause is the question — asked of the type rather than
-                        # of the prose, which is a user-facing string and moves.
+                        # `from e` all the way down, so the cause is asked of the
+                        # type rather than of the prose, which moves.
                         if partial and isinstance(e.__cause__, MediaNotChosen):
                             unplayable = [_unplayable_warning(detail)]
                         else:
                             report["error"] = detail
                             report["messages"] = list(messages)
                             report["unknown_keys"] = _unknown_dicts(loaded.unknown_keys)
-                            # The file itself parsed fine — validate_configs
-                            # is what refused — so the doctor pass still has
-                            # something to look at.
+                            # The file parsed; `validate_configs` is what refused, so
+                            # the doctor pass still has something to look at.
                             return self._blame_layers(report, text), loaded
                 except (cfgmod.ConfigError, ValueError) as e:
-                    # The scratch name is an implementation detail; the caller
-                    # asked about their file.
+                    # The scratch name is an implementation detail.
                     report["error"] = str(e).replace(str(load_path), ref or "the config")
                     report["messages"] = list(messages)
                     return self._blame_layers(report, text), None
@@ -1092,8 +1060,8 @@ class ConfigStore:
         report, loaded = self._validate_text_and_load(self._read_text(path), ref, _load_path=path)
         if loaded is None:
             return report
-        # Deferred for the same reason as the imports above — `doctor` pulls
-        # its own probes' optional extras, and only this pre-flight touches it.
+        # Deferred as above: `doctor` pulls its probes' optional extras, and only
+        # this pre-flight touches it.
         from .doctor import validate_load_result
 
         report["diagnostics"] = [
@@ -1155,8 +1123,7 @@ class ConfigStore:
             "backup": backup,
             "unknown_keys": report["unknown_keys"],
             "systems": report["systems"],
-            # Carried through a save as well as a check: the answer to "will
-            # this run?" is the same either way, and a save is the moment
+            # Carried through a save as well as a check: a save is the moment
             # somebody stops looking at the check.
             "warnings": report["warnings"],
         }
@@ -1292,9 +1259,8 @@ class ConfigStore:
         if copy_of is not None:
             text = self._read_text(self.resolve(copy_of))
         else:
-            # Two separate calls, not one shared instance: `base` is mutated
-            # in place by build_multi_config, and dumps() needs an untouched
-            # baseline to diff against — mirrors wizard.py's _run_single/_run_multi.
+            # Two calls, not one instance: `build_multi_config` mutates `base` in
+            # place and `dumps()` needs an untouched baseline to diff against.
             baseline = cfgmod.machine_baseline()
             cfg = wizard.build_multi_config(
                 scenes=[cfgmod.SceneCfg(type="blank")],
@@ -1351,9 +1317,8 @@ class ConfigStore:
                 "serializer refuses them by design). Edit the per-system configs."
             )
         cfg = loaded.cfgs[0]
-        # Measured against the machine layer, not a blank Config: a password in
-        # the machine-settings file is legal and is not something *this* file
-        # carries, so it must not block editing this file.
+        # Against the machine layer, not a blank Config: a password in the
+        # machine-settings file is legal and is not carried by *this* file.
         baseline = cfgmod.machine_baseline()
         for section, name in sorted(config_serialize.SECRET_FIELDS):
             if getattr(getattr(cfg, section), name) != getattr(getattr(baseline, section), name):
@@ -1373,11 +1338,9 @@ class ConfigStore:
                 baseline=baseline,
             )
         except (config_serialize.SerializeError, TypeError, AttributeError, ValueError) as e:
-            # Belt-and-braces beyond `SerializeError`: `_apply_edit` type-checks
-            # a container field's shape before `setattr` (see its docstring),
-            # but an edit reaching a scalar field with the wrong JSON type
-            # (e.g. a list where `_fmt_value` expects a string) still has to
-            # come back as this 4xx rather than an unhandled 500.
+            # `_apply_edit` type-checks a container field's shape before `setattr`,
+            # but an edit reaching a scalar field with the wrong JSON type still has
+            # to come back as this 4xx rather than an unhandled 500.
             raise EditRejected(f"{ref} can't be written back: {e}") from e
         out = self.write(ref, text, partial=True)
         out["result"] = result

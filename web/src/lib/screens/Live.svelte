@@ -27,41 +27,35 @@
   let { host, router }: Props = $props();
 
   const systems = $derived(host.systems);
-  // The system in the address bar, or the first one running. An ensemble's
-  // second machine is worth being able to bookmark from a phone; a name that no
-  // longer matches (the show changed underneath the link) falls back rather
-  // than showing nothing.
+  // The system in the address bar, or the first one running — a name that no
+  // longer matches falls back rather than showing nothing.
   const current = $derived(systems.find((s) => s.name === router.tail) ?? systems[0] ?? null);
 
-  /** Every control is dead while the socket is down, because a command sent
-   *  into a closed socket is dropped without a word — better to show it. */
+  /** Every control is dead while the socket is down: `Console.send` drops a
+   *  command into a closed socket without a word. */
   const frozen = $derived(host.readOnly || !host.connected);
 
-  /** Which machines can show a picture, asked once per screen mount. It is a
-   *  fact about the hardware, so it cannot change while the host is up — and
-   *  asking starts nothing, since the stream comes up when the `<img>` opens
-   *  and goes down when it closes. */
+  /** Which machines can show a picture, asked once per screen mount — a fact
+   *  about the hardware, and asking starts no stream. */
   let screens = $state<Record<string, boolean>>({});
   const screenReady = $derived(current !== null && screens[current.name] === true);
 
-  // The live palette, for the Tune panel's `c64color` knobs (border/
-  // background, Live DJ/VJ Phase 7) — same cached fetch the Editor uses, so
-  // opening Live first costs one request and opening it second costs none.
+  // The live palette, for the Tune panel's `c64color` knobs (border and
+  // background) — the same cached fetch the Editor uses.
   let docs = $state<DocIndex | null>(null);
 
   onMount(async () => {
     try {
       screens = (await api.screen()).systems;
     } catch {
-      // A host too old to know the route, or one that answered badly: the
-      // panel then says the machine cannot show a picture, which is true of
-      // this pairing even if not of the machine.
+      // A host too old to know the route, or one that answered badly — the
+      // panel then says this machine cannot show a picture.
       screens = {};
     }
     try {
       docs = await documentation();
     } catch {
-      // No palette yet — the knob falls back to a <select>, still writable.
+      // No palette — the knob falls back to a <select>, still writable.
     }
   });
 
@@ -70,13 +64,10 @@
     host.send({ ...cmd, system: current.name });
   }
 
-  // Off by default: a shortcut nobody knows about isn't a feature, but a list
-  // open by default on every visit is clutter for anyone who already does.
   let showKeys = $state(false);
 
-  /** Ctrl/Alt/Meta only — Shift stays out, or a plain `?` (`Shift+/` on a US
-   *  layout) could never reach the help toggle, and Caps Lock would read as
-   *  a shortcut for no reason. */
+  /** Ctrl/Alt/Meta only: a plain `?` is `Shift+/` on a US layout, and Caps
+   *  Lock reports the letters Shift would. */
   function hasModifier(event: KeyboardEvent): boolean {
     return event.ctrlKey || event.altKey || event.metaKey;
   }
@@ -88,17 +79,14 @@
     );
   }
 
-  // `[`/`]` only: which held keys actually got a press sent, so their release
-  // fires on keyup even if focus moved to a button or field in between —
-  // otherwise the rewind/fast-forward it started never lets go. Tracked here
-  // rather than trusting the keyup event's own target, the same way
-  // TransportBar's own hold buttons use `onpointercancel` rather than trusting
-  // the pointer still being over the button it started on.
+  // `[`/`]` only: which held keys actually got a press sent, so the release
+  // still fires on keyup after focus has moved to a button or field —
+  // otherwise the rewind or fast-forward it started never lets go.
   const heldKeys = new Set<string>();
 
   function onWindowKeydown(event: KeyboardEvent): void {
-    // Auto-repeat would spam a one-shot verb (pause/resume, tap, a clip
-    // launch) many times a second while a key is just held down.
+    // Auto-repeat would fire a one-shot verb (pause/resume, tap, a clip
+    // launch) many times a second under a held key.
     if (event.repeat || fromTypingTarget(event) || current === null) return;
     if (event.key === "?") {
       event.preventDefault();
@@ -125,10 +113,9 @@
     for (const cmd of commands) send(cmd);
   }
 
-  // The keyboard equivalent of TransportBar's `onpointercancel`: if the
-  // window loses focus mid-hold (alt-tab, a browser dialog), no keyup ever
-  // arrives to release rw/ff, so release everything still held the moment
-  // focus goes away instead of leaving the show rewinding indefinitely.
+  // The keyboard equivalent of TransportBar's `onpointercancel`: a window that
+  // loses focus mid-hold (alt-tab, a browser dialog) never sees the keyup, so
+  // rw/ff would run on indefinitely.
   function onWindowBlur(): void {
     for (const key of heldKeys) {
       heldKeys.delete(key);
@@ -137,9 +124,6 @@
     }
   }
 
-  // Starting a show from here is a shortcut back to the Session screen's own
-  // button, kept because "nothing is running" and "start something" are one
-  // gesture apart in intent and were two screens apart in fact.
   let starting = $state(false);
   let problem = $state("");
 
@@ -156,10 +140,9 @@
   }
 </script>
 
-<!-- The app's first global key handler. Keydown bails on its own for a typing
-     target, a modifier, a repeat, or nothing running; keyup and blur only act
-     on a key this component itself put a press on — so all three are safe to
-     keep mounted for the whole screen rather than only once a show is up. -->
+<!-- Keydown bails on its own for a typing target, a modifier, a repeat, or
+     nothing running; keyup and blur act only on a key this component put a
+     press on — so all three are safe to keep mounted for the whole screen. -->
 <svelte:window onkeydown={onWindowKeydown} onkeyup={onWindowKeyup} onblur={onWindowBlur} />
 
 {#if current === null}
@@ -302,13 +285,10 @@
       </p>
     {/if}
 
-    <!-- Above the controls, because it is what the controls are *for*: every
-         other panel here changes something you could until now only verify by
-         looking at the television. -->
     <ScreenView system={current.name} available={screenReady} />
 
-    <!-- `items-start` so a short clip grid does not stretch to the height of a
-         long effect rack, which on a two-effect show is most of the panel. -->
+    <!-- `items-start` so a short clip grid does not stretch to the height of
+         a long effect rack. -->
     <div class="grid items-start gap-4 lg:grid-cols-2">
       <section class="panel min-w-0 p-5">
         <h2 class="mb-3 text-lg font-semibold">Clips</h2>
@@ -329,10 +309,8 @@
         />
       </section>
 
-      <!-- The color pipeline, the generator and the scope: the knobs a MIDI
-           controller and the on-C64 menu have always reached and the browser
-           did not. Generated from what the *running scene* declares, so every
-           control here writes somewhere. -->
+      <!-- Generated from what the *running scene* declares, so every control
+           here writes somewhere. -->
       <section class="panel min-w-0 p-5 lg:col-span-2">
         <h2 class="mb-3 text-lg font-semibold">Tune</h2>
         <TunePanel

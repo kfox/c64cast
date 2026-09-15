@@ -7,88 +7,11 @@ owns the *color* half of that: which pairs are eligible, what they look like
 fused, and how to quantize a frame against the widened palette. The C64-side
 alternation lives in `modes_irq.FLICKER_SWAP_IRQ_HANDLER`.
 
-Two gates decide the eligible set, and they answer different questions.
+Eligibility is measured rather than modeled: `SCORED_FLICKER` is a blind
+scoring run, `[color].flicker_tolerance` is a cut across it, and
+`[color].flicker_max_luma_delta` is an advisory photosensitivity cap on top.
 
-**ΔY is the safety cap, and only that.** `[color].flicker_max_luma_delta` bounds
-the *absolute* difference in linear luminance — not a contrast ratio, and not the
-8-bit `PALETTE_LUMA` delta. A ratio was the first attempt and it fails in the one
-place it matters. Michelson divides by the pair's mean luminance, so it is
-maximally wrong where the eye is least sensitive: black against anything scores
-1.0 by construction, which categorically refused Black+Blue, Black+Brown and
-Black+Dark Gray (all under 0.07 ΔY, all of which fuse cleanly), while admitting
-Cyan+Yellow at 0.26 ΔY on an Ultimate 64 — as violent a flicker as anything on
-the test chart. The 8-bit delta is wrong for a different reason: it is Rec.601 on
-gamma-encoded values, so it misreads the dark end in the opposite direction.
-
-What the cap is *for* is photosensitivity, and that justification stands by
-itself: a blended area alternates at 25 Hz (PAL) / 30 Hz (NTSC), inside the
-ITU-R BT.1702 risk band, where the hazard is governed by luminance modulation
-depth. `FLASH_CRITERION_LUMA_DELTA` marks where modulation depth approaches the
-20%-of-peak-white level that guidance is written around.
-
-It **advises rather than refuses**. An earlier version clamped to it, which put
-a computed threshold above a pair a human had looked at and accepted — the same
-mistake the fitted eligibility rules made, in the one place where being wrong
-withholds something already verified. Exceeding it logs a warning and proceeds;
-what is admitted is still bounded by the scored table, so a wide cap cannot
-reach anything unscored.
-
-What the cap is **not** is a predictor of whether a pair fuses — and neither is
-anything else derived from the two colors. Every pair the hard clamp admits was
-scored by eye, blind, and against those verdicts ΔY reaches r=+0.26, Δchroma
-+0.04, mean luminance −0.04, and the best multi-term fit an adjusted R² of 0.18
-over n=33. A warmth axis was tried and removed: fitted to an earlier, smaller run
-in which Red, Purple, Orange and Light Red all scored high, it reached r=+0.32 on
-the blind run — no better than the ΔY rule it replaced — while excluding five of
-the eight steadiest pairs. Warm *solids* do not flicker (all seven hidden solid
-controls scored none, Red and Orange among them) and warm+warm pairs fuse well;
-what the earlier run had actually picked up was warm against neutral.
-
-**So eligibility is measured rather than modeled.** `SCORED_FLICKER` is that
-blind run, one tier per pair, and `[color].flicker_tolerance` is a cut across it.
-A pair with no entry is never admitted at any tolerance. On the Ultimate 64
-table that costs nothing — the scored set is exactly what the hard clamp allows
-— but the VIC-II rendering shifts luminances enough to bring five unscored pairs
-under the clamp, Cyan+Yellow among them, which the U64 run never had to judge
-because ΔY refused it there. `scripts/diags/flicker_score_grid.py` is how the
-table grows.
-
-The tiers are one observer, one sitting, who placed the mild/moderate and
-moderate/intense boundaries at ±1. `"clean"` is the cut that does not rest on
-either boundary.
-
-**The scoring path is not bounded by the table it feeds.** Filtering by tier is
-right for playback and exactly wrong for the tool that produces the tiers: a
-pair scored `intense`, or never scored at all, is in no table and so cannot be
-put on screen to be judged, which would make a wrong tier permanent and a new
-palette unscorable. `[color].flicker_score_pairs` replaces the pair set outright
-with an explicit list, ignoring both the tier data and the luma cap. It is a
-diagnostic input rather than a tuning knob — `scripts/diags/flicker_score_grid.py`
-writes it per page — and it cannot switch blending on by itself, so reaching it
-still means passing every structural gate.
-
-**Tiers travel across palettes; ΔY does not.** ΔY is measured against the
-*active* palette, so which pairs are even candidates follows `host_palette` —
-what fuses is a statement about the light one machine emits, not a property of
-"the C64 palette", which is why the tables here are rebuilt on a palette swap
-rather than computed once at import. The scored tiers are then applied to
-whatever palette is active, which is an extrapolation: they were collected on an
-Ultimate 64, and a custom `host_palette` far from either shipped table
-invalidates them.
-
-**Fused color is the linear-light average, not the sRGB average.** The eye
-integrates emitted light over the two fields, so the mix has to happen after
-sRGB decode. Averaging the encoded values instead makes every blend read too
-dark, worst on the high-contrast pairs where the gamma curve is steepest.
-
-No tolerance admits the tier scored `intense`. Those ten pairs are kept in the
-table because they are what was seen, but measured against the plain palette
-they reconstruct no better than `"visible"` does — under 0.1% on every fixture —
-so a setting for them would trade flicker for nothing.
-
-Note that the luma cap still binds before the tolerance does: at the 0.075
-default on an Ultimate 64, `"clean"` reaches 5 of its 8 pairs, the other 3
-sitting between 0.075 and 0.12.
+See docs/architecture/video-color.md#colorflicker_tolerance--temporal-color-blending.
 """
 
 from __future__ import annotations
@@ -109,27 +32,21 @@ from c64cast.video.palette import (
     resolve_color,
 )
 
-# Rec.709 luminance weights in OpenCV's BGR channel order, applied to
-# linear-light values. Distinct from palette.PALETTE_LUMA, which is Rec.601 on
-# *encoded* sRGB — fine for ordering a cell's colors dark→light, wrong for
-# deciding whether two colors will visibly flicker against each other.
+# Rec.709 weights in OpenCV's BGR channel order, applied to linear-light
+# values. Not palette.PALETTE_LUMA, which is Rec.601 on *encoded* sRGB.
 _LUMA_WEIGHTS_BGR = np.array([0.0722, 0.7152, 0.2126], dtype=np.float32)
 
-# Linear-luminance delta past which the arming path warns about modulation
-# depth. Set from the flash criterion and not from anything observed to fuse: a
-# pair here modulates 12% of peak white at the field rate, against the 20% the
-# photosensitivity guidance is written around. Advisory — clamping to it was
-# rejected for putting a computed number above a verdict made by eye.
+# Linear-luminance delta at which a pair modulates 12% of peak white at the
+# field rate, against the 20% the ITU-R BT.1702 guidance is written around.
+# Advisory: arming warns past it and proceeds.
 FLASH_CRITERION_LUMA_DELTA = 0.12
 
-# Past here the modulation depth is close enough to that criterion that the
-# arming path says so rather than letting it through silently.
 WARN_LUMA_DELTA = 0.10
 
-# The blind scoring run: every pair the hard clamp admits on an Ultimate 64,
-# rated by eye with positions shuffled, pools separated, and hidden solid
-# negative controls. Keys are (lower index, higher index). This is data, not a
-# rule — an earlier fitted metric is why it exists; see the module docstring.
+# Blind scoring run on an Ultimate 64: every pair the 0.12 clamp admits, rated
+# by eye with positions shuffled, pools separated, and hidden solid negative
+# controls. Keys are (lower index, higher index). Grown by
+# scripts/diags/flicker_score_grid.py.
 SCORED_FLICKER: dict[tuple[int, int], str] = {
     (6, 9): "none",
     (2, 4): "verymild",
@@ -166,12 +83,11 @@ SCORED_FLICKER: dict[tuple[int, int], str] = {
     (10, 14): "intense",
 }
 
-# The scale the run was scored on, quietest first.
+# Quietest first; FLICKER_TOLERANCES cuts across this order by index.
 FLICKER_TIERS = ("none", "verymild", "mild", "moderate", "intense")
 
-# `[color].flicker_tolerance` values, and the worst tier each one admits.
-# Named apart from the tiers because one pair scored "none", which a tolerance
-# called "none" would have to exclude and include at the same time.
+# `[color].flicker_tolerance` values, and the worst FLICKER_TIERS index each
+# admits. Named apart from the tier names because one pair scored "none".
 FLICKER_TOLERANCES: dict[str, int] = {
     "off": -1,
     "clean": 1,  # none + very mild
@@ -180,8 +96,7 @@ FLICKER_TOLERANCES: dict[str, int] = {
 }
 DEFAULT_TOLERANCE = "off"
 
-# Below this the pair fuses to something a solid color already covers, so it
-# costs a page write and buys nothing. In OpenCV 8-bit Lab units.
+# Minimum distance from every solid, in OpenCV 8-bit Lab units.
 MIN_BLEND_LAB_GAIN = 4.0
 
 
@@ -358,9 +273,7 @@ class BlendTable:
 
         Zero over the first 16. Ranks which of a cell's blends to give up when a
         slot that cannot alternate has to be filled from them: the cheapest is
-        the blend that was closest to a real color anyway, so it was buying the
-        least. Content-independent, which is the point — ranking by pixel count
-        instead would let EMA jitter reshuffle the slots on a static cell.
+        the blend that was closest to a real color anyway.
         """
         ent = _to_lab(self.bgr)
         return np.linalg.norm(ent - ent[self.nearest_solid], axis=1).astype(np.float32)
@@ -372,20 +285,13 @@ class BlendTable:
         ]
 
 
-# Table construction costs a few hundred Lab conversions, and a live-tuned
-# max_luma_delta would otherwise rebuild it every frame.
+# Keyed by every input a table depends on, because a live-tuned tolerance or cap
+# must land on the next frame rather than on the next palette swap.
 _TABLE_CACHE: dict[tuple[float, str, tuple[tuple[int, int], ...] | None], BlendTable] = {}
 
 
 def _rebuild_palette_tables() -> None:
-    """Re-derive everything keyed to the palette after a host-palette swap.
-
-    Which pairs fuse is a statement about the luminances the display actually
-    emits, so a machine with a different table has a different eligible set —
-    not a rescaled one. Stale tables here would silently admit pairs that
-    flicker on that machine, which is the one failure this module exists to
-    prevent, hence the registration rather than a lazily-checked cache key.
-    """
+    """Re-derive everything keyed to the palette after a host-palette swap."""
     global _PALETTE_LINEAR, _PALETTE_Y, _PALETTE_LAB
     _PALETTE_LINEAR = _srgb_to_linear(C64_PALETTE_BGR)
     _PALETTE_Y = _PALETTE_LINEAR @ _LUMA_WEIGHTS_BGR
@@ -405,8 +311,8 @@ def build_blend_table(
     """The widened palette at this cap and tolerance. Cached per settings pair.
 
     `score_pairs` replaces the eligible set outright — no tier filter, no luma
-    cap, no gain floor. Only the scoring grid passes it; see the module
-    docstring for why that tool must not be bounded by the table it feeds.
+    cap, no gain floor. Only `scripts/diags/flicker_score_grid.py` passes it,
+    so the tool that produces the tiers is not bounded by them.
     """
     delta = round(float(max_luma_delta), 4)
     override = tuple(score_pairs) if score_pairs is not None else None

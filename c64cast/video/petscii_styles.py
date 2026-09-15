@@ -5,10 +5,7 @@ Each style maps a 25×40 BGR source image (post cv2.resize) to a pair of
 name; PETSCIIDisplayMode picks one at construction (from config) and can
 rotate to the next via cycle_style() on a SHIFT press.
 
-The styles deliberately span "informative" (default) → "abstract" (random
-glyph, color-only) because the 40×25 grid loses too much detail for
-strict photo-faithfulness anyway. The wild styles compensate by giving
-the eye geometric texture or saturated color blocks instead.
+See docs/architecture/video-color.md#petscii_stylespy.
 """
 
 from __future__ import annotations
@@ -31,11 +28,8 @@ from .palette import (
 
 log = logging.getLogger(__name__)
 
-# A "random" style at config-load time picks one of these at scene setup.
-# Listed in cycle order; cycle_style() advances modulo this tuple. The
-# "random" sentinel itself is NOT in the cycle list — it's a one-shot
-# pick at startup, after which cycling proceeds through the concrete
-# styles from wherever the random pick landed.
+# Cycle order: cycle_style() advances modulo this tuple. The "random" sentinel
+# is not a member — it resolves to one of these at setup().
 STYLE_NAMES = (
     "default",
     "halftone",
@@ -47,7 +41,6 @@ STYLE_NAMES = (
     "color_only",
 )
 
-# Pseudonym for the "pick a concrete style at setup" sentinel.
 RANDOM_STYLE = "random"
 
 
@@ -58,11 +51,6 @@ def validate_style(name: str) -> None:
         raise ValueError(
             f"petscii style must be one of {(*STYLE_NAMES, RANDOM_STYLE)}, got {name!r}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _luma(img: np.ndarray) -> np.ndarray:
@@ -118,16 +106,10 @@ def _quantize_to_spectrum(
     d = quantize_distances_for(
         _shaped_flat(img, channel_boost, hue_corrections), perceptual=perceptual
     )
-    # Restrict argmin to the spectrum columns by setting all others to inf.
     mask = np.full(16, np.inf, dtype=np.float32)
     mask[C64_SPECTRUM_INDICES] = 0.0
     d += mask
     return np.argmin(d, axis=1).astype(np.uint8)
-
-
-# ---------------------------------------------------------------------------
-# Style base + concrete styles
-# ---------------------------------------------------------------------------
 
 
 class PetsciiStyle:
@@ -182,9 +164,7 @@ class HalftoneStyle(PetsciiStyle):
     """5-level block-coverage ramp. Chunky, high-contrast geometric look."""
 
     name = "halftone"
-    # Picked by visual coverage: blank → bottom-quarter → bottom-half →
-    # right-half → full. Exact char choices vary by ROM but all read as
-    # increasingly-filled cells.
+    # blank → bottom-quarter → bottom-half → right-half → full.
     CHARS = np.array(
         [0x20, 0x6C, 0x64, 0x61, 0xA0],
         dtype=np.uint8,
@@ -235,7 +215,7 @@ class RandomGlyphStyle(PetsciiStyle):
         self._screen: np.ndarray | None = None
 
     def reset(self):
-        # Stable per-cell pick; same seed → same arrangement on cycle re-entry.
+        # Fixed seed: the same arrangement on every cycle re-entry.
         rng = np.random.default_rng(seed=0xC64A1A5)
         self._screen = self.GLYPHS[rng.integers(0, len(self.GLYPHS), size=1000)]
 
@@ -280,24 +260,20 @@ class InversePopStyle(PetsciiStyle):
     curated 4-color pop-art palette."""
 
     name = "inverse_pop"
-    # Pop-art-y high-contrast 4-color set: white, light red, cyan, yellow.
+    # white, light red, cyan, yellow.
     POP_PALETTE_INDICES = np.array([1, 10, 3, 7], dtype=np.uint8)
-    background = 0  # black background; FG colors do all the heavy lifting
-    # palette-index → pop-slot LUT, keyed by perceptual (built lazily in compose).
+    background = 0  # black
+    # palette index → pop-slot LUT, keyed by `perceptual`, built in compose().
     _LUT_CACHE: dict[bool, np.ndarray] = {}
 
     def compose(self, img, channel_boost, hue_corrections, perceptual=False):
         luma = _luma(img)
-        # Threshold at 128 → all-or-nothing fill.
         screen = np.where(luma >= 128, SCREEN.SC_FULL_BLOCK, SCREEN.SC_SPACE).astype(np.uint8)
-        # Quantize the boosted color, then map to nearest of the 4 pop
-        # picks using a precomputed pairwise distance table.
         boosted = boost_saturation(img, 1.8)
         flat = _shaped_flat(boosted, channel_boost, hue_corrections)
         pix_idx = quantize_flat_for(flat, perceptual=perceptual).astype(np.int64)
-        # 16-entry LUT: each palette index → its closest pop_palette entry, in
-        # the active metric. Cached per-metric (cheap 16×16 build); the RGB and
-        # perceptual LUTs can disagree on which pop color a given index snaps to.
+        # Cached per metric: the RGB and perceptual LUTs can disagree on which
+        # pop color a given index snaps to.
         lut_cache = InversePopStyle._LUT_CACHE
         lut = lut_cache.get(perceptual)
         if lut is None:
@@ -315,9 +291,7 @@ class HatchStyle(PetsciiStyle):
     """Luma → 5-level cross-hatch shading. Sketchy, line-art look."""
 
     name = "hatch"
-    # blank → "/" → "\" → "X" → full. Picked from the upper-ROM graphics
-    # block; some readers may render these slightly differently but the
-    # progression-of-density reads correctly.
+    # blank → "/" → "\" → "X" → full.
     CHARS = np.array(
         [0x20, 0x4E, 0x4D, 0x58, 0xA0],
         dtype=np.uint8,
@@ -343,10 +317,6 @@ class ColorOnlyStyle(PetsciiStyle):
         color = _quantize_color(img, channel_boost, hue_corrections, perceptual)
         return screen, color
 
-
-# ---------------------------------------------------------------------------
-# Registry + factory
-# ---------------------------------------------------------------------------
 
 _STYLE_REGISTRY: dict[str, type[PetsciiStyle]] = {
     "default": DefaultStyle,
@@ -378,7 +348,4 @@ def pick_random_style_name() -> str:
     """Pick a concrete style name uniformly at random from STYLE_NAMES.
     Called by PETSCIIDisplayMode at setup() when configured with the
     'random' sentinel — afterwards cycle_style() proceeds from there."""
-    # Drop into numpy's default RNG so the per-process pick is stable
-    # enough for testing if anyone seeds the global, while still being
-    # genuinely-random in production.
     return str(np.random.default_rng().choice(STYLE_NAMES))

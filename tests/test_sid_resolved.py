@@ -319,9 +319,8 @@ class LogDeclaredAudioTest(unittest.TestCase):
 
     def test_u2plus_shape_uses_the_declared_fallback(self):
         # A U2+ after the connect-time capability probe: it HAS a config API
-        # (supports_config) but not the multi-SID surface — the read-back must
-        # not be attempted (its categories aren't there) and the declared
-        # verdict must fire instead.
+        # (supports_config) but not the multi-SID surface, so the read-back must
+        # not be attempted and the declared verdict fires instead.
         from c64cast.hw.backend import HardwareProfile
 
         api = FakeAPI()
@@ -407,9 +406,8 @@ class EmuSurfaceResolvedTest(unittest.TestCase):
         self.assertEqual(cm.records[-1].levelname, "WARNING")
 
     def test_output_split_names_the_consequence_and_the_remedy(self):
-        # The symptom reaches the user as sound — a tune going thin through the
-        # monitor while the config log says everything matched — and the
-        # obvious reading of that is a failing SID. Say otherwise explicitly.
+        # The symptom reaches the user as sound — a tune going thin while the
+        # config log says everything matched — which reads as a failing SID.
         with self.assertLogs("c64cast.sid.sid_resolved", level="INFO") as cm:
             sr.log_resolved_audio(self._api(host_model="6581", curve="8580"), (0xD400,), ("8580",))
         guidance = " ".join(r.getMessage() for r in cm.records)

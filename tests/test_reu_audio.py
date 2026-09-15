@@ -136,9 +136,8 @@ class ReuIrqHandlerTest(unittest.TestCase):
 
     def test_handler_length_is_known(self):
         # If the handler grows or shrinks, the BCC offset (currently +10) may
-        # need recomputation to reach the trailing PLA. The audio module asserts
-        # this length at import time, but assert again here so a test failure
-        # in the test suite catches the issue too.
+        # need recomputation to reach the trailing PLA. The audio module also
+        # asserts this length at import time.
         self.assertEqual(len(REU_IRQ_HANDLER), 37)
 
     def test_bcc_lands_on_pla(self):
@@ -272,7 +271,6 @@ class StartForReuStagedTest(unittest.TestCase):
         # it comes after the REU register init ($DF02, $DF04, etc.).
         # write_regs stores under the base key; the vector patch is at $0314.
         self.assertIn("0314", fake.regs)
-        # Confirm value is REU_PUMP_HANDLER_ADDR ($C100).
         self.assertEqual(
             fake.regs["0314"], (REU_PUMP_HANDLER_ADDR & 0xFF, (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
         )
@@ -373,7 +371,6 @@ class ReuStopTeardownTest(unittest.TestCase):
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
-        # Pre-condition: $0314 points at our handler
         self.assertEqual(
             fake.regs["0314"], (REU_PUMP_HANDLER_ADDR & 0xFF, (REU_PUMP_HANDLER_ADDR >> 8) & 0xFF)
         )
@@ -386,8 +383,7 @@ class ReuStopTeardownTest(unittest.TestCase):
         s = _new_streamer()
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
         s.stop()
-        # Calling stop() a second time must not raise even though the
-        # REU pump state has already been torn down.
+        # The REU pump state has already been torn down.
         s.stop()
         self.assertFalse(s._reu_pump_armed)
 
@@ -437,12 +433,11 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         uploaded = fake.mem_files[f"{REU_PUMP_HANDLER_ADDR:04X}"]
         # Same length as the tracked variant; only chunk-size patches differ.
         self.assertEqual(len(uploaded), len(REU_IRQ_HANDLER_TRACKED))
-        # And the tracker is seeded at $C200.
         self.assertIn(f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}", fake.memories)
 
     def test_default_hook_uploads_plain_handler(self):
-        # Inverse: solo audio path (no merged dispatcher) keeps the
-        # proven plain handler. Don't risk regression on the baseline.
+        # Inverse: the solo audio path (no merged dispatcher) keeps the plain
+        # handler.
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE)
@@ -478,11 +473,10 @@ class StartForReuStagedSkipVectorHookTest(unittest.TestCase):
         self.assertEqual(fake.mem_files[key], REU_PUMP_BODY_SUBROUTINE)
 
     def test_skip_hook_uploads_body_before_entry(self):
-        # The pump body must be in place BEFORE the $C100 entry replaces
-        # the JMP $EA31 stub the bank-swap installer left there — else a
-        # CIA #1 IRQ that fires between the entry write and the body
-        # write would JSR into uninitialized RAM. Easiest correct order
-        # is body upload first.
+        # The pump body must be in place BEFORE the $C100 entry replaces the
+        # JMP $EA31 stub the bank-swap installer left there: a CIA #1 IRQ firing
+        # between the entry write and the body write would JSR into
+        # uninitialized RAM.
         from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 
         s = _new_streamer()

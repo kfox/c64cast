@@ -2,13 +2,13 @@
 
 This is the per-module reference for the `c64cast/` tree: the design rationale, hardware constraints, and edge-case history behind each module — the *why*, and the dead ends, that the code alone doesn't carry. Read the relevant section before modifying a module, and update it in the same change set when you change that module's behavior.
 
-The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and four private cross-cutting utilities (`_pollthread.py`, `_native_io.py`, `_midi.py`, `_redact.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
+The reference is split by topic area below. Each `##` section within a topic file covers one module, or a cluster of closely-related modules. Since 2026-08 the package tree mirrors these topic areas on disk — one subpackage per area (`hw/`, `audio/`, `video/`, `scenes/`, `sid/`, `control/`, `wled/`, `app/`), with only the entry point and six private cross-cutting utilities (`_pollthread.py`, `_native_io.py`, `_midi.py`, `_redact.py`, `_teardown.py`, `_wire_log.py`) at the package root. Section headings keep the module's bare filename, so anchors predate — and survive — the move.
 
 For end-user configuration see [the Programmer’s Reference Guide](reference/README.md), for known limitations [caveats.md](caveats.md), and for adding a new Scene/Overlay/DisplayMode/Background [extending.md](extending.md).
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`, `hw/uci.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
@@ -29,6 +29,8 @@ the two lists account for every module in the tree.
 | `_native_io.py` | [Config, CLI & ensemble](architecture/config.md#_native_iopy--fd-level-stderr-muting) |
 | `_pollthread.py` | [Config, CLI & ensemble](architecture/config.md#_pollthreadpy--the-background-loop-idiom) |
 | `_redact.py` | [Config, CLI & ensemble](architecture/config.md#_redactpy--keeping-the-console-token-off-the-durable-log-paths) |
+| `_teardown.py` | [Config, CLI & ensemble](architecture/config.md#_teardownpy--a-teardowns-steps-are-independent-guarantees) |
+| `_wire_log.py` | [Config, CLI & ensemble](architecture/config.md#_wire_logpy--wire-triggered-logging-is-o1-per-stream) |
 | `hw/api.py` | [Hardware I/O & transports](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient) |
 | `sid/asid.py` | [SID playback & the oscilloscope](architecture/sid.md#asidpy--asid_scenepy--asidscene-asid-client--real-sid--oscilloscope) |
 | `sid/asid_player.py` | [SID playback & the oscilloscope](architecture/sid.md#asid_playerpy--buffered-c64-side-ring-player) |
@@ -131,6 +133,7 @@ the two lists account for every module in the tree.
 | Startup: BASIC clear-and-loop program | [Hardware I/O & transports](architecture/hardware-io.md#startup-basic-clear-and-loop-program) |
 | `hw/teensyrom_api.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_apipy--the-teensyrom-backend) |
 | `hw/teensyrom_dma.py` | [Hardware I/O & transports](architecture/hardware-io.md#teensyrom_dmapy--teensyrom-link-errors--the-launcher-upload-race) |
+| `hw/uci.py` | [Hardware I/O & transports](architecture/hardware-io.md#ucipy--the-ultimate-command-interface-at-df1c-df1f) |
 | `scenes/text_surface.py` | [Scenes, sources & overlays](architecture/scenes.md#overlays) |
 | `control/transport.py` | [Control surfaces & live performance](architecture/control.md#transportpy--live-tune-tracker--save-back-phase-1--dj-transport-engine-phase-2--record-workflow--loop-presets-phase-3--controller-profiles-phase-5) |
 | `app/update_state.py` | [Config, CLI & ensemble](architecture/config.md#update_statepy) |

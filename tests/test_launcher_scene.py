@@ -55,7 +55,6 @@ class IdleTimeoutTest(unittest.TestCase):
             scene.duration_s = 60.0
             scene.start_time = 0.0
             scene._last_input_t = 19.0  # input is "recent" at t=21
-            # Ceiling wins regardless of recent input.
             self.assertFalse(scene.process_frame(21.0))
 
 

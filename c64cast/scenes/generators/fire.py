@@ -29,15 +29,15 @@ class FireSource(GenerativeSource):
     the yellow/white end of COLORMAP_HOT, so the fire visibly leaps on the beat
     — the most legible music reaction after 16-color quantization."""
 
-    # Scroll period (texture rows). The flames rise one full period per
-    # period/scroll_speed seconds; a tall period keeps the motion organic.
+    # Texture rows: the flames rise one full period per period/scroll_speed
+    # seconds, and a tall period keeps the motion organic.
     _PERIOD = 256
-    # Reactive gains (None path uses gain=1, flare=0 — plain rising fire).
+    # Reactive gains; the None path uses gain=1, flare=0 — plain rising fire.
     _LEVEL_HEIGHT = 0.85  # extra heat gain at full level (taller, hotter flames)
     _ONSET_FLARE = 0.80  # extra heat gain on a full-strength transient
 
-    # `intensity` scales the overall heat/flame height (the ix live knob),
-    # applied on top of the reactive gain. 1.0 == the historical baseline.
+    # `intensity` scales the overall heat/flame height, on top of the reactive
+    # gain above.
     LIVE_PARAMS = {"scroll_speed": (0.0, 4.0), "intensity": (0.2, 2.0)}
 
     def __init__(
@@ -58,8 +58,8 @@ class FireSource(GenerativeSource):
             width,
             octaves=[(4, 3, 1.0), (8, 6, 0.6), (16, 12, 0.35), (32, 24, 0.2)],
         )
-        # Bottom-hot vertical gradient: 0 at the top row, 1 at the bottom.
-        # The 1.2 power pulls the flame tips down a touch so they taper.
+        # Bottom-hot: 0 at the top row, 1 at the bottom. The 1.2 power pulls the
+        # flame tips down a touch so they taper.
         grad = np.linspace(0.0, 1.0, height, dtype=np.float32) ** 1.2
         self._grad = grad[:, None]  # (H, 1)
 

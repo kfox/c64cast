@@ -313,7 +313,7 @@ In order of what they buy against what they cost:
    audiences PETSCII is the point.
 2. **`target_fps`.** Halving it halves everything.
 3. **The dither method.** The error-diffusion methods are per-pixel loops; the
-   ordered family is one vectorised operation. That is a `compose` cost, not a
+   ordered family is one vectorized operation. That is a `compose` cost, not a
    `push` cost.
 4. **`cell_strategy`.** `error-min` scores twenty color trios per cell —
    excellent for a slideshow, unnecessary for motion.

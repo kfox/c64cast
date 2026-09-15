@@ -14,22 +14,20 @@ The index is the same model read the other way round, crossed with the book's
 own prose: every name the program can utter, against the sections that discuss
 it. See :func:`build_index`.
 
-The output is committed Markdown, not Typst, for two reasons. The books are
-rendered to GitHub Pages from these same sources, so nothing may live only in
-the PDF; and ``scripts/build_book.py`` is deliberately stdlib-only (the release
-workflow runs it under ``uv run --no-project``) while this script imports
-``c64cast`` and everything it drags in. Keeping them separate means the release
-never has to resolve the project environment to build a book.
+The output is committed Markdown, not Typst: the books are rendered to GitHub
+Pages from these same sources, and ``scripts/build_book.py`` is stdlib-only
+(the release workflow runs it under ``uv run --no-project``) while this script
+imports ``c64cast``.
 
 Both facts about the output are load-bearing:
 
   * every file carries ``generated: true`` in its front matter, which is how
     :func:`main` finds the ones it owns and how a human editing one is warned;
   * the prose is written for *both* renderers -- it has to survive
-    ``build_book.py``'s deliberately small Markdown subset (which rejects what
-    it cannot translate rather than dropping it) and still read correctly on
-    github.com. :func:`cell` and :func:`prose` below are what make help text
-    written for a terminal safe in a table.
+    ``build_book.py``'s small Markdown subset (which rejects what it cannot
+    translate rather than dropping it) and still read correctly on github.com.
+    :func:`cell` and :func:`prose` below are what make help text written for a
+    terminal safe in a table.
 
 Adding an appendix means adding one entry to :data:`APPENDICES`.
 """
@@ -61,9 +59,8 @@ def _script_module(name: str) -> ModuleType:
     """A sibling module under ``scripts/``, loaded by path.
 
     The index writes a link per locator, and a link resolves only if the anchor
-    it names is spelled exactly the way the converter spells it. Borrowing
-    ``heading_slug`` rather than reimplementing GitHub's rule a second time is
-    what stops the two from drifting into a book full of dead links.
+    it names is spelled the way the converter spells it, so ``heading_slug`` is
+    borrowed rather than reimplemented.
 
     scripts/ is not a package, so neither ``import`` nor ``sys.path`` can be
     relied on -- this module is loaded by path itself, from the tests. An
@@ -82,31 +79,25 @@ def _script_module(name: str) -> ModuleType:
     return module
 
 
-# The dialect (slugs, front matter, chapter discovery) and the Typst renderer
-# that measures a listing against the page it will be set on.
+# The dialect (slugs, front matter, chapter discovery), and the Typst renderer
+# for the measure a listing is held to.
 bd = _script_module("bookdoc")
 bb = _script_module("build_book")
 
 # A default longer than this is summarized rather than printed. Only one field
-# hits it -- [midi_control].cc_map, whose shipped default is two dozen mappings
-# and 2,500 characters. A table cell is the wrong place to read that; the
-# pointer next to it is a better answer than a wall that pushes the column out.
+# hits it: [midi_control].cc_map, two dozen mappings and 2,500 characters.
 _MAX_DEFAULT = 56
 
 
-# ---------------------------------------------------------------------------
-# Markdown-safe text
-# ---------------------------------------------------------------------------
-#
 # Help strings are written for `--describe` on a terminal, where nothing is
 # markup. Two of those habits are hostile to a Markdown table, and both are
-# fixed here rather than by rewording config.py: the help a reader sees in the
-# book should be the help the program prints.
+# fixed here rather than by rewording config.py, so the help in the book is the
+# help the program prints.
 
 # The optional `-x/` prefix takes a short flag and its long form as one run:
 # help text writes the pair as `-u/--url`, and backticking only the second half
-# gives `-u/`--url``, which is safe but reads like a typo. The lookbehind keeps
-# a run from starting mid-token -- `---` and a trailing `foo--bar` are not flags.
+# gives `-u/`--url``. The lookbehind keeps a run from starting mid-token --
+# `---` and a trailing `foo--bar` are not flags.
 _FLAG_RE = re.compile(r"(?<![\w`-])((?:-[A-Za-z]/)?--[a-z][a-z0-9-]*)")
 _CODE_SPAN_RE = re.compile(r"(`+[^`]*`+)")
 
@@ -194,24 +185,19 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     return out + [""]
 
 
-# ---------------------------------------------------------------------------
-# The two senses of "live"
-# ---------------------------------------------------------------------------
-#
-# Two different powers wear the same word. Appendix F's targets move under a
-# MIDI knob, a pad or the web console mid-show; `apply="live"` is the metadata
-# the on-C64 menu builds its panel from (`overlays/menu.py`). One mark for both
-# would read as one power, so they are worded apart here and the introduction's
-# Notation section says which is which.
+# Two different powers wear the same word: Appendix F's targets move under a
+# MIDI knob, a pad or the web console mid-show, while `apply="live"` is the
+# metadata the on-C64 menu builds its panel from (`overlays/menu.py`). They are
+# marked apart here, and the introduction's Notation section says which is
+# which.
 
 # Configuration field -> the live-tune target that moves it. Keyed by
 # `(section, field)`, where the section `scenes` is a `[[scenes]]` key.
 #
 # Written out rather than matched on the bare name: `[color].dither` is
-# `mode.dither_method`, so a name match would miss it -- and it would mark
-# `[audio].dither`, which is a 4-bit DAC's noise shaping and has nothing to do
-# with the display pipeline. tests/test_reference_appendices.py resolves both
-# sides of every entry.
+# `mode.dither_method`, which a name match would miss, and it would wrongly
+# mark `[audio].dither`, a 4-bit DAC's noise shaping.
+# tests/test_reference_appendices.py resolves both sides of every entry.
 _LIVE_TUNABLE: dict[tuple[str, str], str] = {
     ("color", "auto_fit_strength"): "mode.auto_fit_strength",
     ("color", "dither"): "mode.dither_method",
@@ -288,27 +274,17 @@ def typed(fd: introspect.FieldDoc | introspect.ParamDoc) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Worked fragments
-# ---------------------------------------------------------------------------
-#
-# A table of settings says what each one means and nothing about where it is
-# written, which leaves a reader who has found the right knob still holding a
-# name and no file. Every appendix that documents something configurable opens
-# its section with the two or three lines that put it in a file.
-#
-# The fragments are generated from the same model as the tables under them, so
-# a renamed field cannot leave a stale example behind it. Values are defaults,
-# never invented: a snippet showing `file = "clip.mp4"` would be the one line
-# on the page that the program had never agreed to.
+# Every appendix that documents something configurable opens its section with
+# the two or three lines that put a setting in a file. The fragments come from
+# the same model as the tables under them, and their values are defaults, never
+# invented.
 
-# How wide a fragment's lines may be before the PDF wraps them. Borrowed from
-# `build_book.py`, which is where the measure is derived and where the test
-# that holds every listing in every book to it reads the number from.
+# How wide a fragment's lines may be before the PDF wraps them. From
+# `build_book.py`, where the measure is derived and where the test that holds
+# every listing to it reads the number from.
 CODE_WIDTH = bb.CODE_WIDTH["guide"]
 
-# Settings per fragment. Enough to show the shape; past this it stops being an
-# illustration and starts being a configuration file the reader has to read.
+# Settings per fragment: enough to show the shape, not a file to read.
 _SNIPPET_KEYS = 4
 
 
@@ -359,8 +335,8 @@ def snippet(
     for line, (_, _, comment) in zip(body, rows, strict=True):
         padded = f"{line.ljust(width)}  # {comment}" if comment else line
         out.append(padded if len(padded) <= CODE_WIDTH else line)
-    # Last, not first: a note naming a key the lines above do not set reads as
-    # a caption on the block rather than as a correction to it.
+    # Last, so a note naming a key the lines above do not set reads as a
+    # caption on the block.
     if required:
         names = ", ".join(required)
         tail = "have no defaults" if len(required) > 1 else "has no default"
@@ -402,14 +378,12 @@ def sample_rows(
 def scalar_range(lo: float, hi: float) -> str:
     """A live parameter's range, set as a literal.
 
-    In the body face its digits stand a good deal taller than the mono name
-    beside them -- Jost's figures reach 0.700em against Inconsolata's 0.623em
-    -- and a column of ranges read as the largest thing in the table. As a
-    literal the whole column is one face, which is also what it is: values.
+    A literal, so the column is one face with the names beside it. In the body
+    face a column of ranges would read as the largest thing in the table:
+    Jost's figures reach 0.700em against Inconsolata's 0.623em.
 
-    The dash keeps its spaces. `-2–2` is two characters of punctuation running
-    together and reads as one glyph nobody can name; `-2 – 2` is a range with
-    a negative low end.
+    The dash keeps its spaces: `-2–2` runs two characters of punctuation
+    together, while `-2 – 2` is a range with a negative low end.
     """
     return code(f"{lo:g} – {hi:g}")
 
@@ -457,17 +431,9 @@ def front_matter(number: str, title: str, blurb: str) -> list[str]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Appendix A -- configuration sections and fields
-# ---------------------------------------------------------------------------
-
-
 def appendix_config() -> list[str]:
-    # Alphabetical. `config_sections()` is in declaration order, which is the
-    # order the annotated example file reads in and is a reasonable narrative;
-    # an appendix is not read in order, it is looked things up in, and twenty
-    # sections in an order the reader cannot predict means paging through all
-    # of them to find `[wled]`.
+    # Alphabetical: `config_sections()` is in declaration order, which an
+    # appendix is not read in.
     sections = sorted(introspect.config_sections(), key=lambda s: s.name)
     total = sum(len(s.fields) for s in sections)
     out = front_matter(
@@ -494,17 +460,10 @@ def appendix_config() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Appendix B -- scene types
-# ---------------------------------------------------------------------------
-
-
 def appendix_scenes() -> list[str]:
     # Alphabetical, for the reason Appendix A is; see the note there.
     types = sorted(introspect.scene_types(), key=lambda s: s.name)
-    # A field carried by every type is a property of scenes in general, not of
-    # any one of them. Printing all six ten times would bury the handful of
-    # keys that actually distinguish a waveform scene from a launcher.
+    # A field carried by every type is a property of scenes in general.
     takers: dict[str, list[str]] = {}
     for sd in types:
         for fd in sd.fields:
@@ -514,9 +473,7 @@ def appendix_scenes() -> list[str]:
         return next(fd for sd in types for fd in sd.fields if fd.name == name)
 
     common = [fd for fd in types[0].fields if len(takers[fd.name]) == len(types)]
-    # A key that all but one type takes is a general property with an exception,
-    # and an exception is a sentence. `duration_s` is a key of nine of the ten,
-    # and printed in each of them it was sixty identical words nine times over.
+    # A key all but one type takes is a general property with an exception.
     absentee: dict[str, str] = {
         name: next(sd.name for sd in types if sd.name not in who)
         for name, who in takers.items()
@@ -541,10 +498,8 @@ def appendix_scenes() -> list[str]:
         ),
         "",
     ]
-    # No fragment here. The common keys have no shape of their own -- a
-    # `[[scenes]]` block is always one of the ten types below, and a fragment
-    # written around this list would have to pick a `type` at random and print
-    # it as though it were the general case.
+    # No fragment here: a `[[scenes]]` block is always one of the types below,
+    # so a general one would have to invent a `type`.
     out += fields_table("Key", [[typed(fd), describe("scenes", fd)] for fd in common])
 
     for missing in dict.fromkeys(absentee.values()):
@@ -555,9 +510,6 @@ def appendix_scenes() -> list[str]:
         )
 
     for sd in types:
-        # The name alone. `type = "webcam"` is how it is written in a file, but
-        # as a heading it repeats the key ten times and reads as syntax where
-        # the reader is scanning for a name.
         out += [f"## `{sd.name}`", ""]
         if sd.help:
             out += [prose(sd.help), ""]
@@ -575,11 +527,6 @@ def appendix_scenes() -> list[str]:
         else:
             out += [prose("No keys beyond the common ones above."), ""]
     return out
-
-
-# ---------------------------------------------------------------------------
-# Appendix C -- overlays
-# ---------------------------------------------------------------------------
 
 
 def appendix_overlays() -> list[str]:
@@ -610,8 +557,7 @@ def appendix_overlays() -> list[str]:
         if notes:
             out += [prose("Restrictions: " + "; ".join(notes) + "."), ""]
         # Indented two spaces, as the packaged examples write it: an overlay
-        # table is nested inside the scene it decorates, and the indentation is
-        # what says so at a glance in a file TOML itself reads flat.
+        # table nests inside the scene it decorates, though TOML reads it flat.
         out += snippet(
             "[[scenes.overlays]]",
             sample_rows(od.params, first=[("type", f'"{od.name}"', "")]),
@@ -620,11 +566,6 @@ def appendix_overlays() -> list[str]:
         )
         out += fields_table("Parameter", [[typed(p), cell(p.help)] for p in od.params])
     return out
-
-
-# ---------------------------------------------------------------------------
-# Appendix D -- the compatibility matrix
-# ---------------------------------------------------------------------------
 
 
 def appendix_compat() -> list[str]:
@@ -651,10 +592,8 @@ def appendix_compat() -> list[str]:
         ),
         "",
     ]
-    # By the rule and not by the overlay. A row each put "needs a text-capable
-    # mode (petscii/blank/hires/mhires)" on the page ten times, which is the
-    # same sentence read ten times to learn one thing; the reader who wants to
-    # know about one overlay has the matrix above.
+    # Grouped by rule, not by overlay: the matrix above already answers what
+    # one overlay can do.
     reasons: dict[str, list[str]] = {}
     for ov, oks in rows:
         if all(oks):
@@ -669,11 +608,6 @@ def appendix_compat() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Appendix E -- generators and effects
-# ---------------------------------------------------------------------------
-
-
 def _live_params(cls: type) -> list[str]:
     """What a knob can reach on this generator or effect, one per line.
 
@@ -681,11 +615,9 @@ def _live_params(cls: type) -> list[str]:
     with the name, and a generator with four of them would otherwise set as a
     paragraph of mono in a column narrower than the paragraph.
 
-    The holder is *not* repeated on every line. It was, so that a line could be
-    copied into a `cc_map` unchanged -- but it is the same word on all fifty of
-    them, and at 1.5in `source.scroll_speed` is the entry that decides the
-    column's width for the sake of a prefix the reader already knows from the
-    heading. The section above each table gives it once.
+    The holder is not repeated on every line -- it is the same word on all of
+    them, and it would decide the column's width. The section above each table
+    gives it once.
     """
     params: dict[str, tuple[float, float]] = getattr(cls, "LIVE_PARAMS", {}) or {}
     choices: dict[str, tuple[str, ...]] = getattr(cls, "LIVE_CHOICES", {}) or {}
@@ -694,10 +626,9 @@ def _live_params(cls: type) -> list[str]:
     return bits
 
 
-# The names the two fragments in Appendix E are written around. Constants
-# rather than "whatever the registry lists first", so the examples stay the
-# ones worth showing; tests/test_reference_appendices.py resolves each against
-# its registry, so a rename cannot leave a fragment naming nothing.
+# The names the two fragments in Appendix E are written around, pinned rather
+# than taken from whatever the registry lists first.
+# tests/test_reference_appendices.py resolves each against its registry.
 _SAMPLE_GENERATOR = "plasma"
 _SAMPLE_EFFECTS = ("mirror", "trails")
 
@@ -776,11 +707,6 @@ def appendix_generators() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Appendix F -- live-tune targets
-# ---------------------------------------------------------------------------
-
-
 def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[str]]:
     """One row per target, named without its holder.
 
@@ -794,10 +720,6 @@ def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[
             span = scalar_range(t.lo, t.hi) if t.lo is not None and t.hi is not None else ""
         else:
             span = ", ".join(code(c) for c in t.choices)
-        # The kind is a literal too. Left in the body face it was the one
-        # proportional column in a table of mono, and Jost against Inconsolata
-        # at an equal size reads as a larger word -- so `scalar` was the
-        # loudest thing in a row, which is not what a reader is looking for.
         name = t.target.rpartition(".")[2]
         rows.append([code(name), code(t.kind), span, ", ".join(code(o) for o in t.owners)])
     return rows
@@ -806,11 +728,10 @@ def _live_target_rows(targets: Sequence[introspect.LiveTargetDoc]) -> list[list[
 # The target the appendix's fragment is written around; a test resolves it.
 _SAMPLE_TARGET = "effect.decay"
 
-# What each holder is, in the words chapter 6's own holder table uses. The
-# picker group (`LiveTargetDoc.group`) is a label for a tab -- "Effect" under a
-# heading reading `effect` says nothing -- and a section that now carries half
-# of every target under it owes the reader a sentence about what it holds.
-# tests/test_reference_appendices.py checks the keys against the registries.
+# What each holder is, in the words chapter 6's own holder table uses, because
+# the picker group (`LiveTargetDoc.group`) is a tab label rather than a
+# description. tests/test_reference_appendices.py checks the keys against the
+# registries.
 _HOLDER_GLOSS: dict[str, str] = {
     "mode": "The display mode's color pipeline",
     "effect": "An effect in the scene's chain",
@@ -848,10 +769,8 @@ def appendix_live_targets() -> list[str]:
         ),
         "",
     ]
-    # Headed by the holder rather than by the group it is picked under, because
-    # the heading is now carrying the half of every target the rows no longer
-    # spell -- and `mode` is the word that has to be joined to `dither_strength`
-    # to make one. The group name is the sentence under it.
+    # Headed by the holder, which is the half of the target the rows no longer
+    # spell: `mode` joins `dither_strength` to make one.
     for holder in dict.fromkeys(t.holder for t in targets):
         mine = [t for t in targets if t.holder == holder]
         out += [f"## `{holder}`", ""]
@@ -861,11 +780,6 @@ def appendix_live_targets() -> list[str]:
             ["Parameter", "Kind", "Range or values", "Declared by"], _live_target_rows(mine)
         )
     return out
-
-
-# ---------------------------------------------------------------------------
-# Appendix G -- command-line flags
-# ---------------------------------------------------------------------------
 
 
 def appendix_cli() -> list[str]:
@@ -887,8 +801,6 @@ def appendix_cli() -> list[str]:
             names = ", ".join(code(s) for s in action.option_strings) or code(
                 str(action.metavar or action.dest)
             )
-            # A switch takes nothing, and a second line saying so under every
-            # one of them is a column of em dashes the reader has to look past.
             if action.nargs == 0 or not action.option_strings:
                 takes = ""
             elif action.choices:
@@ -898,11 +810,6 @@ def appendix_cli() -> list[str]:
             rows.append([identity(names, takes), cell(action.help or "")])
         out += fields_table("Flag", rows)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Appendix H -- packaged example configurations
-# ---------------------------------------------------------------------------
 
 
 def appendix_examples() -> list[str]:
@@ -934,11 +841,6 @@ def appendix_examples() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Appendix I -- optional install extras
-# ---------------------------------------------------------------------------
-
-
 def _extra_requirements() -> dict[str, list[str]]:
     """`[project.optional-dependencies]`, read out of pyproject.toml.
 
@@ -952,9 +854,8 @@ def _extra_requirements() -> dict[str, list[str]]:
 
 def appendix_extras() -> list[str]:
     requirements = _extra_requirements()
-    # `doctor._EXTRAS` already pairs each extra with the module that has to
-    # import and a line on what it buys -- it is what `--doctor` probes with,
-    # so an appendix built from it says what the program says.
+    # `doctor._EXTRAS` pairs each extra with the module that has to import and
+    # a line on what it buys, and is what `--doctor` probes with.
     # tests/test_packaging_metadata.py holds it to the pyproject key set.
     extras = sorted(doctor._EXTRAS)
     out = front_matter(
@@ -982,14 +883,8 @@ def appendix_extras() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# The index
-# ---------------------------------------------------------------------------
-#
-# Two halves, and both are mechanical. The terms come from the same
-# introspection the appendices are built from, so the index cannot list a
-# setting the program does not have. The locators come from the book's own
-# Markdown, so it cannot point at a section that is not there.
+# Both halves are mechanical: the terms come from the same introspection the
+# appendices are built from, and the locators from the book's own Markdown.
 
 INDEX_PATH = REFERENCE_DIR / "30-index.md"
 
@@ -1002,8 +897,7 @@ _INDEX_STOP_WORDS = frozenset({"auto", "true", "false", "none", "on", "off", "ra
 # accident -- `id`, `hz`, a short flag's single letter. `fps` sits just above.
 _MIN_TERM_LEN = 3
 
-# Locators per term. The fourth is never the one you wanted, and the column it
-# has to fit in is about three inches.
+# Locators per term, in a column about three inches wide.
 _MAX_LOCATORS = 3
 
 
@@ -1166,24 +1060,13 @@ def code_terms() -> dict[str, Term]:
     return terms
 
 
-# Plain-language entries, hand-picked.
+# Plain-language entries, hand-picked: a word somebody would try who does not
+# yet know what c64cast calls the thing. Anything the program spells itself is
+# already in `code_terms` and is skipped below rather than entered twice.
 #
-# The index used to enter every section title in the prose chapters, and it was
-# the wrong half of the book: a title is a topic, topics are what the contents
-# page is for, and nobody has ever looked up "One Surface for the Whole
-# Ensemble". What a reader looks up is a *word* -- "camera", not "Choosing a
-# Camera" -- and arrives at every section that discusses it.
-#
-# Kept short and deliberately basic. Each has to be a word somebody would try
-# who does not yet know what c64cast calls the thing; anything the program
-# spells itself is already in `code_terms` and is skipped below rather than
-# entered twice.
-#
-# Each maps the entry as it prints to the stem the prose is searched for, which
-# are the same word most of the time. They part where the book only ever
-# inflects it -- nothing says "double buffering", but "double-buffered" is
-# everywhere -- and an entry that reads as a noun should not have to be spelled
-# as the participle to find itself.
+# Each maps the entry as it prints to the stem the prose is searched for. They
+# part where the book only ever inflects it -- nothing says "double buffering",
+# but "double-buffered" is everywhere.
 _CONCEPTS: dict[str, str] = {
     "beat grid": "beat grid",
     "camera": "camera",
@@ -1269,8 +1152,8 @@ def scan(
         fenced = False
         for lineno, line in enumerate(body.split("\n")):
             if line.strip().startswith("```"):
-                # An example configuration names half the program. Indexing
-                # what a listing happens to contain would bury the discussion.
+                # Fenced listings are skipped: an example configuration names
+                # half the program, which would bury the discussion.
                 fenced = not fenced
                 continue
             if fenced:
@@ -1286,18 +1169,16 @@ def scan(
             else:
                 continue
             found = mentions(text)
-            # A plain-language term is matched in the prose itself, not in a
-            # code span: it is in the index precisely because the program never
-            # says it. Spans are blanked first so `dithering` is credited to
-            # the sentence about dithering and not to every `dither` in a table.
+            # A plain-language term is matched in the prose, not in a code
+            # span: spans are blanked first so `dithering` is credited to the
+            # sentence about dithering and not to every `dither` in a table.
             bare = _CODE_SPAN_SCAN_RE.sub(" ", text)
             found |= {term for term, pattern in patterns.items() if pattern.search(bare)}
             slug, title = section
             # Appendix A writes a field bare inside the section it belongs to,
             # so `dither` under `## [color]` is where `color.dither` is
-            # defined. Offering the qualified spelling here is what gives the
-            # qualified entries their table locator; a slug that is not a
-            # section name forms nothing the term table will match.
+            # defined; offering the qualified spelling here is what gives a
+            # qualified entry its locator.
             found |= {f"{slug}.{name}" for name in found}
             for name in found:
                 term_doc = codes.get(name) or concepts.get(name)
@@ -1370,19 +1251,13 @@ def build_index() -> list[str]:
     ]
     for letter, group in _by_letter(entries):
         out += [f"## {letter}", ""]
-        # Not :func:`identity`, which emboldens. An appendix bolds a name to
-        # part it from the type and default stacked under it; an index entry is
-        # one line and has nothing to be parted from, so bold said nothing --
-        # and it said it in two faces at once. Jost Bold against Inconsolata
-        # Bold at the same nominal size is a visibly heavier, wider letter, so
-        # a column of `dither_strength` with "dithering" among them read as two
-        # sizes of type. Set plain, the two faces sit together.
+        # Not :func:`identity`: an index entry is one line, with no type or
+        # default under it to be parted from.
         rows = [
             [term.display, ", ".join(loc.markdown() for loc in found[term.key])] for term in group
         ]
-        # `table: index` and not `table: fields`: same widths, and the locators
-        # are additionally resolved to the pages they land on. See `_locators`
-        # in scripts/build_book.py.
+        # `table: index` and not `table: fields`: same widths, and the
+        # locators are resolved to pages. See `_locators` in build_book.py.
         out += fields_table("Term", rows, description="See", directive="table: index")
     return out
 
@@ -1401,11 +1276,6 @@ def _by_letter(entries: Sequence[Term]) -> list[tuple[str, list[Term]]]:
     return sorted(groups.items(), key=lambda kv: (kv[0].isalpha(), kv[0]))
 
 
-# ---------------------------------------------------------------------------
-# The performance card's live-target table
-# ---------------------------------------------------------------------------
-
-
 def declared_by(target: introspect.LiveTargetDoc) -> str:
     """Who owns a live target, in the card's column.
 
@@ -1421,8 +1291,8 @@ def declared_by(target: introspect.LiveTargetDoc) -> str:
     minority — an inversion the reader has to undo is worth a line saved, not
     a line broken even on.
     """
-    # A holder of one — `scene` — would otherwise read `all`, which is true and
-    # useless: the name is the thing the reader is matching against the screen.
+    # A holder of one — `scene` — would otherwise read `all`: true, and not
+    # the name the reader is matching against the screen.
     if len(target.owners) == 1:
         return code(target.owners[0])
     missing = [name for name in _holder_members(target.holder) if name not in target.owners]
@@ -1470,16 +1340,10 @@ def card_live_targets() -> list[str]:
                 else code(f"{len(t.choices)} values")
             )
             rows.append([code(t.target.rpartition(".")[2]), span, declared_by(t)])
-        # The holder heads the column rather than every cell under it. Appendix
-        # F can afford a sentence saying it; a card cannot afford four, and the
-        # column heading is where a prefix common to the whole column belongs.
+        # The holder heads the column rather than every cell under it.
         out += table([code(mine[0].holder + "."), "Range", "Declared by"], rows)
     return out
 
-
-# ---------------------------------------------------------------------------
-# Assembly
-# ---------------------------------------------------------------------------
 
 # filename -> builder. The numeric prefixes continue the book's chapter
 # sequence; `build_book.py` orders by them and reads the letter off front

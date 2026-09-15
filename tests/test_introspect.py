@@ -171,9 +171,9 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
 
     def test_audio_source_choices_pinned(self):
-        # No registry backs the AudioSource family (it's a fixed protocol set);
-        # pin the literal so a new value can't be added to the SceneCfg field
-        # metadata without build_scene learning to construct it.
+        # No registry backs the AudioSource family, so pin the literal: a new
+        # value must not reach SceneCfg metadata without build_scene learning
+        # to construct it.
         self.assertEqual(cfgmod._AUDIO_SOURCE_CHOICES, ("none", "mic", "listen", "file", "sid"))
         # SceneCfg metadata must match the constant.
         from dataclasses import fields
@@ -183,9 +183,9 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         self.assertEqual(meta["applies_to"], ("generative",))
 
     def test_audio_backend_choices_pinned(self):
-        # The video-audio backend selector is a fixed literal set (no registry):
-        # pin it so a new value can't be added to AudioCfg.backend metadata
-        # without resolve_audio_backend + build_scene learning to honor it.
+        # The video-audio backend selector is a fixed literal set, pinned so a
+        # new value cannot reach AudioCfg.backend metadata without
+        # resolve_audio_backend + build_scene honoring it.
         self.assertEqual(cfgmod.AUDIO_BACKEND_CHOICES, ("auto", "dac", "sampler"))
         from dataclasses import fields
 
@@ -204,7 +204,7 @@ class AppliesToTest(unittest.TestCase):
         self.assertNotIn("midi_waveform", names)
 
     def test_midi_includes_scope_knobs_and_midi_fields(self):
-        # MidiScene now shares the bitmap oscilloscope, so the scope knobs
+        # MidiScene shares the bitmap oscilloscope, so the scope knobs
         # (time_base etc.) apply to it as well as its own midi_* fields.
         midi = next(s for s in introspect.scene_types() if s.name == "midi")
         names = {f.name for f in midi.fields}
@@ -221,7 +221,7 @@ class AppliesToTest(unittest.TestCase):
         self.assertIn("source", names)
         self.assertIn("audio_source", names)
         self.assertIn("effect", names)
-        # file + song now surface for generative (used when audio_source = sid).
+        # file + song surface for generative, used when audio_source = sid.
         self.assertIn("file", names)
         self.assertIn("song", names)
 
@@ -232,9 +232,9 @@ class AppliesToTest(unittest.TestCase):
 
     def test_overlays_is_offered_on_every_type_that_accepts_one(self):
         # `overlays` is universal except on `launcher`, where
-        # scene_factory._validate_launcher hard-rejects it (the launched program
-        # owns screen + color RAM). Offering it there let --describe, the wizard
-        # and the web console build a scene the loader refuses.
+        # scene_factory._validate_launcher hard-rejects it (the launched
+        # program owns screen + color RAM), so offering it there would let
+        # --describe, the wizard and the web console build a rejected scene.
         for s in introspect.scene_types():
             names = {f.name for f in s.fields}
             self.assertEqual("overlays" in names, s.name != "launcher", s.name)
@@ -292,7 +292,7 @@ class VocabularyTest(unittest.TestCase):
 
     def test_every_field_whose_values_are_c64_color_names_declares_it(self):
         # Without it the console renders a free-text box, so a fuzzy-matchable
-        # color name has to be typed blind and a typo surfaces at scene build.
+        # color name is typed blind and a typo surfaces at scene build.
         for name in ("border", "background", "voice_colors", "waveform_colors"):
             self.assertEqual(self._scene_field(name).vocabulary, "c64color", name)
         sections = {f.name: f for s in introspect.config_sections() for f in s.fields}
@@ -306,10 +306,10 @@ class MetadataVocabularyTest(unittest.TestCase):
     something reads the values it declares."""
 
     def test_applies_to_names_scene_types_and_only_scene_types(self):
-        # The key used to carry three vocabularies under one documented
-        # meaning: scene types on SceneCfg, *display mode* names on the
-        # ColorCfg flicker trio, and a *backend* name on two Ultimate64Cfg
-        # fields — inert only because today's consumers iterate SceneCfg.
+        # The key names three vocabularies across the tree — scene types on
+        # SceneCfg, display modes on the ColorCfg flicker trio, a backend on
+        # two Ultimate64Cfg fields — inert only while consumers iterate
+        # SceneCfg.
         for f in dataclasses.fields(cfgmod.SceneCfg):
             for value in f.metadata.get("applies_to", ()):
                 self.assertIn(value, cfgmod.SCENE_TYPES, f"{f.name}: {value}")
@@ -322,8 +322,8 @@ class MetadataVocabularyTest(unittest.TestCase):
 
     def test_every_apply_value_is_a_declared_one(self):
         # introspect reads the key as md.get("apply", "rebuild"), so a
-        # misspelling ("Live") silently downgrades a live-tunable knob to
-        # read-only on the web console with no error and no test failure.
+        # misspelling silently downgrades a live-tunable knob to read-only
+        # with no error and no test failure.
         probe = cfgmod.Config()
         holders = [
             cfgmod.SceneCfg,
@@ -341,8 +341,7 @@ class MetadataVocabularyTest(unittest.TestCase):
 
     def test_the_cc_map_help_documents_every_action_it_accepts(self):
         # cc_map is a list[dict], so its help is the only surface --describe,
-        # the schema and the wizard can show for the `action` vocabulary — and
-        # the hand-written enumeration had fallen four actions behind.
+        # the schema and the wizard can show for the `action` vocabulary.
         help_text = {f.name: f for f in dataclasses.fields(cfgmod.MidiControlCfg)}[
             "cc_map"
         ].metadata["help"]
@@ -385,8 +384,8 @@ class PaletteSwatchTest(unittest.TestCase):
         self.assertEqual(len(swatches), 16)
         for index, swatch in enumerate(swatches):
             self.assertEqual(swatch["index"], index)
-            # Both spellings have to survive the loader, because the picker
-            # writes one of them into a config.
+            # Both spellings have to survive the loader, because the picker writes
+            # one of them into a config.
             self.assertEqual(resolve_color(swatch["name"]), index)
             self.assertEqual(resolve_color(swatch["label"]), index)
             self.assertRegex(swatch["hex"], r"^#[0-9a-f]{6}$")

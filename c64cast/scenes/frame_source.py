@@ -6,10 +6,9 @@ with a display mode (which quantizes the frame to the C64) and an audio source,
 so generative art, a still image, a webcam feed, etc. all flow through one path
 — the display mode is orthogonal to the source.
 
-The pre-existing concrete sources in video.py (WebcamSource / AVFileSource)
-predate this protocol and keep their own shapes; adapting them onto it is a
-later migration. New sources (generators.py) implement the protocol directly,
-typically via `BaseFrameSource`.
+The concrete sources in video.py (WebcamSource / AVFileSource) do not implement
+this protocol and keep their own shapes; the sources in generators/ implement it
+directly, typically via `BaseFrameSource`.
 """
 
 from __future__ import annotations

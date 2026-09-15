@@ -34,9 +34,6 @@ def _ddp(offset: int, payload: bytes, *, push: bool = True) -> bytes:
     return struct.pack(">BBBBIH", flags, 0, 0, 1, offset, len(payload)) + payload
 
 
-# --- DDP parser -------------------------------------------------------------
-
-
 class DdpParserTest(unittest.TestCase):
     def test_single_packet(self):
         pkt = parse_ddp(_ddp(0, bytes([1, 2, 3, 4, 5, 6])))
@@ -78,9 +75,6 @@ class DdpParserTest(unittest.TestCase):
         self.assertEqual(pkt.payload, payload)
 
 
-# --- WLED realtime parser ---------------------------------------------------
-
-
 class WledRealtimeParserTest(unittest.TestCase):
     def test_drgb(self):
         # proto=2, timeout, then RGB triples from pixel 0.
@@ -113,9 +107,6 @@ class WledRealtimeParserTest(unittest.TestCase):
         self.assertEqual(w, [(0, 1, 2, 3)])
 
 
-# --- assembler --------------------------------------------------------------
-
-
 class AssemblerTest(unittest.TestCase):
     def test_ddp_bytes_to_bgr(self):
         a = PixelFrameAssembler(2, 1)
@@ -146,9 +137,6 @@ class AssemblerTest(unittest.TestCase):
         f = a.snapshot_bgr()
         self.assertEqual(list(f[0, 0]), [30, 20, 10])
         self.assertEqual(list(f[0, 1]), [60, 50, 40])
-
-
-# --- the teardown bell ------------------------------------------------------
 
 
 class WakeupPipeTest(unittest.TestCase):
@@ -186,9 +174,9 @@ class WakeupPipeTest(unittest.TestCase):
         return server, client
 
     def test_a_hijacked_pair_is_discarded_and_logged(self):
-        # What the Windows emulation permits: it accepts on a loopback listener
-        # without checking who connected, so a local process that wins the race
-        # owns the bell — and a rung bell ends the receive thread while
+        # The Windows emulation accepts on a loopback listener without
+        # checking who connected, so a local process that wins the race owns
+        # the bell, and a rung bell ends the receive thread while
         # WLEDSource.read goes on serving the last frame it got.
         rx = self._receiver()
         ours, _ours_peer = self._inet_pair()
@@ -216,9 +204,6 @@ class WakeupPipeTest(unittest.TestCase):
         self.addCleanup(rx._close_wakeup)
         self.assertIsNotNone(rx._wake_r)
         self.assertIsNotNone(rx._wake_w)
-
-
-# --- receiver over loopback -------------------------------------------------
 
 
 class ReceiverTest(unittest.TestCase):
@@ -302,7 +287,7 @@ class ReceiverTest(unittest.TestCase):
         self._wait_frame(rx)
 
     def test_publish_skipped_within_budget(self):
-        # Deterministic, no socket/thread timing: calling _publish() twice in
+        # Deterministic, no socket/thread timing: two _publish() calls in
         # quick succession must not re-snapshot the buffer the second time.
         rx = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=0, wled_port=0)
         rx._publish()
@@ -336,7 +321,6 @@ class ReceiverTest(unittest.TestCase):
         self.assertTrue(any("rejected" in r.getMessage() for r in cm.records))
 
     def test_bind_conflict_reports_error(self):
-        # Occupy a port, then a receiver told to use it fails to start.
         blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         blocker.bind(("127.0.0.1", 0))
         self.addCleanup(blocker.close)
@@ -373,8 +357,8 @@ class ReceiverTest(unittest.TestCase):
 
     def test_stop_joins_without_a_timeout_warning(self):
         # The worker parks in select for _SELECT_TIMEOUT, only 2x under
-        # PollThread's 0.5 s join, so teardown used to warn "did not stop
-        # within 0.5s" whenever a loaded box ate that margin.
+        # PollThread's 0.5 s join, so a loaded box eating that margin drew a
+        # "did not stop within 0.5s" warning.
         rx = self._make()
         with self.assertNoLogs("c64cast._pollthread", level="WARNING"):
             rx.stop()
@@ -395,13 +379,9 @@ class ReceiverTest(unittest.TestCase):
                 old.getsockname()  # closed, not leaked
 
 
-# --- WLEDSource lifecycle ---------------------------------------------------
-
-
 class WLEDSourceTest(unittest.TestCase):
     def test_lifecycle_none_until_frame(self):
         src = WLEDSource(2, 1, host="127.0.0.1")
-        # Rebind the receiver onto ephemeral ports before setup.
         src._receiver = WledPixelReceiver(2, 1, host="127.0.0.1", ddp_port=0, wled_port=0)
         src.setup()
         self.addCleanup(src.teardown)
@@ -430,9 +410,6 @@ class WLEDSourceTest(unittest.TestCase):
             src.setup()
         self.addCleanup(src.teardown)
         self.assertTrue(src.finished)  # scene will self-abort
-
-
-# --- config wiring ----------------------------------------------------------
 
 
 class _DummyAPI:

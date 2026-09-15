@@ -1,13 +1,9 @@
 """Scrolling text overlay.
 
 Reserves one row of the 40-col PETSCII screen and scrolls a sequence of
-ScrollMessage entries through it. Direct screen-code writes (no CV2
-rasterizing) — characters are stable at integer cell positions, so
-flicker is bounded by the cell-shift rate.
-
-Paints into the scene's composed screen+color buffers (compose-based
-overlay), so the scene + this overlay produce one upload per frame with
-no flicker."""
+ScrollMessage entries through it. Characters sit at integer cell positions,
+written as screen codes into the scene's composed screen+color buffers, so the
+scene and the overlay upload once per frame together."""
 
 from __future__ import annotations
 
@@ -79,7 +75,7 @@ class ScrollingTextOverlay(Overlay):
         self.row = row
         self.speed = float(speed_cells_per_s)
         self.bg_color = resolve_color(bg_color, default=C64_COLORS["black"])
-        # Accept either ScrollMessage instances or dicts (TOML inline tables).
+        # A dict here is a TOML inline table.
         self.messages: list[ScrollMessage] = []
         for m in messages:
             if isinstance(m, ScrollMessage):
@@ -88,13 +84,10 @@ class ScrollingTextOverlay(Overlay):
                 self.messages.append(ScrollMessage(**m))
             else:
                 raise ValueError(f"scrolling_text: bad message {m!r}")
-        # Pre-resolve color indices and pre-encode screen codes.
         self._encoded: list[tuple[bytes, int]] = []
         for m in self.messages:
             color_idx = resolve_color(m.color, default=C64_COLORS["white"])
             self._encoded.append((ascii_to_screen(m.text), color_idx))
-        # Per-message durations: scroll-in + pause + scroll-out, padded by
-        # pre_delay so consecutive messages don't crowd each other.
         self._durations = [self._duration_for(m) for m in self.messages]
         self.start_time = 0.0
 
@@ -108,8 +101,6 @@ class ScrollingTextOverlay(Overlay):
 
     def setup(self, api, scene):
         self.start_time = time.time()
-
-    # ---- frame computation ---------------------------------------------------
 
     def _active_message(self, elapsed: float):
         """Walk the message list looking for which one is active now and how
@@ -140,7 +131,6 @@ class ScrollingTextOverlay(Overlay):
             self._paste(row, text, x0, width)
             return row
 
-        # default: scroll right → left
         x = width - int(t * self.speed)
         self._paste(row, text, x, width)
         return row
@@ -164,7 +154,6 @@ class ScrollingTextOverlay(Overlay):
         msg, idx, local_t = self._active_message(elapsed)
         row = self._row_for(msg, idx, local_t, width)
         _, color_idx = self._encoded[idx]
-        # Color row: every non-space cell gets msg color, spaces get bg_color
-        # so the row reads as a band of bg cells where the text isn't.
+        # Spaces take bg_color, so the row reads as a band behind the text.
         colors = np.where(row != SC_SPACE, color_idx, self.bg_color).astype(np.int64)
         surface.paint_run(self.row, 0, row, colors, self.bg_color)

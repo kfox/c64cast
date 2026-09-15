@@ -9,11 +9,11 @@ small oracle here and assert the realized instance addresses match the planner's
 
 from __future__ import annotations
 
+import itertools
 import unittest
 
+from c64cast.hw.c64 import RESERVED_IO_WINDOWS
 from c64cast.sid import asid_sidmap as m
-
-# --- firmware address-math oracle (port of u64_config.cc) --------------------
 
 # sid_split enum → split_bits (offset-space bits, i.e. address bits >> 4).
 _SPLIT_BITS = {
@@ -143,6 +143,28 @@ def _realized_addresses(sm: m.SidMap) -> set[int]:
     return {addr for addrs in _realized_by_source(sm).values() for addr in addrs}
 
 
+# Target sets the address-driven planner is swept over: consecutive runs, a
+# split across two pages, a cartridge-I/O base, and one that doesn't start at
+# $D400 (a PSID header need not).
+_TARGET_SETS: tuple[tuple[int, ...], ...] = (
+    (0xD400,),
+    (0xD400, 0xD420),
+    (0xD400, 0xD420, 0xD440),
+    (0xD400, 0xD420, 0xD440, 0xD460),
+    (0xD400, 0xD420, 0xD500, 0xD520),
+    (0xD400, 0xD500),
+    (0xD400, 0xDE00),
+    (0xD420, 0xD440),
+)
+_SOCKET_MODEL_COMBOS: tuple[tuple[str | None, str | None], ...] = (
+    (None, None),
+    ("6581", None),
+    (None, "6581"),
+    ("6581", "6581"),
+    ("8580", "6581"),
+)
+
+
 class RealizationOracleTest(unittest.TestCase):
     """Every planned map must realize each routed chip on the source that plans
     to play it, with no aliasing beyond the deliberate LED mirrors."""
@@ -187,6 +209,197 @@ class RealizationOracleTest(unittest.TestCase):
                         self._assert_realizable(sm)
                         self._assert_only_mirrors_alias(sm)
 
+    def test_for_addresses_over_target_sets_and_socket_models(self):
+        """The same oracle over the *other* planner.
+
+        It used to run against `plan_sid_map` only — which gets socket/core
+        non-collision for free by moving cores to the $D5xx page — while
+        `plan_sid_map_for_addresses`, the one that runs for every .sid file with
+        a multi-SID header, went unchecked. That is why a 4-SID header whose
+        first base matched a socketed chip's model could enable SID Socket 1 at
+        $D400 *and* place a 1/2-split UltiSID core over it.
+        """
+        for addresses in _TARGET_SETS:
+            for socket_models in _SOCKET_MODEL_COMBOS:
+                for required in ((), ("6581",) * 8, ("8580",) * 8):
+                    sm = m.plan_sid_map_for_addresses(
+                        addresses, socket_models=socket_models, required_models=required
+                    )
+                    if sm is None:
+                        continue
+                    with self.subTest(a=addresses, s=socket_models, r=required[:1]):
+                        self._assert_realizable(sm)
+                        self._assert_only_mirrors_alias(sm)
+
+    def test_a_split_core_never_covers_an_enabled_sockets_address(self):
+        # The repro: the firmware aligns a 1/2-split core's base down to $D400,
+        # pulling its window back over the socket the planner just enabled, so
+        # chip 0 sounds on the real chip and the core at once.
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440, 0xD460),
+            socket_models=("6581", None),
+            required_models=("6581",) * 4,
+        )
+        assert sm is not None
+        self._assert_realizable(sm)
+        self._assert_only_mirrors_alias(sm)
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
+
+
+def _instances_on_reserved_io(sm: m.SidMap) -> list[int]:
+    """Every address the firmware would make some source answer at (via the
+    _realize_core oracle, not the planner's own arithmetic) whose $20-granular
+    span overlaps I/O c64cast drives itself."""
+    return sorted(
+        {
+            addr
+            for addrs in _realized_by_source(sm).values()
+            for addr in addrs
+            if any(addr <= high and addr + 0x1F >= low for low, high in RESERVED_IO_WINDOWS)
+        }
+    )
+
+
+class ReservedIoTest(unittest.TestCase):
+    """No plan may put a SID where c64cast's own hardware answers.
+
+    The firmware force-aligns a split core's base DOWNWARD, so what the planner
+    emits is not what a caller declared — and the declared-address guard in
+    `sid_host_emu._decode_extra_sid_addr` never sees the emitted base. A PSID v4
+    header with second/third SID bytes $F2 and $F6 declares $DF20 and $DF60,
+    both spec-legal, and the 1/4 split that covers them realized at $DF00: a
+    live REST PUT putting a SID on the REU's status/command/address/length
+    registers, which the DAC audio pump and the ASID ring player both drive and
+    which the audio NMI handler reads $DF03 back from mid-transfer. Two bytes of
+    a downloaded `.sid` chose it.
+    """
+
+    def test_the_reserved_windows_are_the_devices_they_name(self):
+        # LITERAL on purpose: every other assertion in this class asks whether a
+        # plan landed in RESERVED_IO_WINDOWS, so emptying that tuple left the class
+        # green while the planner based a core on $DF20. $DF00-$DF0A is the REU's
+        # status/command/address/length file; $DF20-$DFFF is the Ultimate Audio
+        # sampler's seven 32-byte channel files.
+        self.assertEqual(RESERVED_IO_WINDOWS, ((0xDF00, 0xDF0A), (0xDF20, 0xDFFF)))
+
+    def test_every_dfxx_base_is_refused_outright(self):
+        # Literal inputs, literal expectation, no reference to the tuple under
+        # test: with the REU on $DF00 and the sampler filling the rest of the page,
+        # no $20-granular base in $DFxx can carry a chip.
+        for base in range(0xDF00, 0xE000, 0x20):
+            with self.subTest(base=hex(base)):
+                self.assertIsNone(m.plan_sid_map_for_addresses((base,)))
+                self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, base)))
+        # The page below it is untouched — the guard is a carve-out, not a ban
+        # on the cartridge window.
+        for base in range(0xDE00, 0xDF00, 0x20):
+            with self.subTest(base=hex(base)):
+                self.assertIsNotNone(m.plan_sid_map_for_addresses((0xD400, base)))
+
+    def test_a_window_inside_one_instance_span_is_still_reached(self):
+        # An instance answers its whole $20, not the 25 SID registers, so a
+        # reserved window starting mid-span still has to be caught. Both windows
+        # are $20-aligned today, which makes the span and the base equivalent —
+        # this is what keeps the wider test honest if one moves.
+        self.assertTrue(m._reaches_reserved_io(0xDE00, ((0xDE04, 0xDE0A),)))
+        self.assertTrue(m._reaches_reserved_io(0xDE00, ((0xDE1F, 0xDE1F),)))
+        self.assertFalse(m._reaches_reserved_io(0xDE00, ((0xDE20, 0xDE2A),)))
+        self.assertFalse(m._reaches_reserved_io(0xDE20, ((0xDE04, 0xDE1F),)))
+
+    def test_the_header_pair_that_aligned_a_core_onto_the_reu_is_refused(self):
+        # The exploit as run: $D400 + the two declared cartridge bases. No split
+        # level covers them clear of $DF00, so the planner refuses — WaveformScene
+        # then warns and falls back to the canonical layout.
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60)))
+
+    def test_every_target_in_a_split_window_realizes_that_windows_base(self):
+        # The retry comment's proof that dropping a socket claim cannot rescue a
+        # reserved-window exhaustion rests on this: every target inside a window
+        # realizes the *same* base, so it walks the same instances past the
+        # reserved check either way.
+        #
+        # Asserted through `_align_down` itself rather than the `cap * stride ==
+        # align` identity, which is necessary and not sufficient: `_align_down`
+        # masks, so it is alignment only for a power-of-two `align`, and a
+        # `(3, 0x60)` level would satisfy the identity while landing $D420 on
+        # itself. The identity is kept as the second assertion because the
+        # comment cites the width too.
+        for split, cap, align in m._SPLIT_LEVELS:
+            with self.subTest(split=split):
+                self.assertEqual(cap * m._SPLIT_STRIDE, align, "window is not align wide")
+                for target in range(0xD000, 0x10000):
+                    base = m._align_down(target, align)
+                    window = [base + k * m._SPLIT_STRIDE for k in range(cap)]
+                    for instance in window:
+                        self.assertEqual(
+                            m._align_down(instance, align),
+                            base,
+                            f"${instance:04X} in the window of ${base:04X} realizes "
+                            f"a different base at {split}",
+                        )
+
+    def test_giving_the_socket_up_does_not_rescue_a_reserved_window(self):
+        # Same targets, one field varied: a socket that carries a chip for $D400.
+        # The caller drops the claim and re-plans when the cores run out of levels,
+        # but that cannot help here: $DF20's realized base is $DF20 at the `Off`
+        # level and $DF00 at the two wider ones, and all three sit inside
+        # RESERVED_IO_WINDOWS whether or not $D400 is claimed. The retry addresses
+        # `blocked` and only `blocked`.
+        self.assertIsNone(
+            m.plan_sid_map_for_addresses((0xD400, 0xDF20, 0xDF60), socket_models=("6581", None))
+        )
+
+    def test_a_core_alone_is_never_based_on_reserved_io(self):
+        # One field varied: the pair, and whether a socket is in play at all.
+        # A near miss that still lands a core on a reserved register would make
+        # the fix a speed bump.
+        for targets in (
+            (0xD400, 0xDF20, 0xDF40),
+            (0xD400, 0xDF40, 0xDF60),
+            (0xD400, 0xDFC0, 0xDFE0),
+            (0xD400, 0xDF80, 0xDFE0),
+            (0xDF20,),
+            (0xDF00,),
+            (0xDFE0,),
+            (0xDE00, 0xDF20),
+        ):
+            for socket_models in ((None, None), ("6581", "6581")):
+                sm = m.plan_sid_map_for_addresses(targets, socket_models=socket_models)
+                with self.subTest(t=[hex(t) for t in targets], s=socket_models):
+                    if sm is None:
+                        continue
+                    self.assertEqual(_instances_on_reserved_io(sm), [], sm.config)
+
+    def test_no_target_set_at_all_can_place_a_core_on_reserved_io(self):
+        """Close the class rather than the two bytes that opened it: sweep every
+        1-, 2- and 3-target set drawn from every base the firmware's own enum
+        permits, through both planners, and assert the *realized* instances
+        clear every reserved window. The declared-address guard is the first
+        line; this is the one that holds when alignment moves the base."""
+        every_base = [
+            base
+            for low, high in m._ULTISID_BASE_WINDOWS
+            for base in range(low, high + 1, m._SPLIT_STRIDE)
+        ]
+        for size in (1, 2, 3):
+            for targets in itertools.combinations(every_base, size):
+                for socket_models in ((None, None), ("6581", "6581")):
+                    sm = m.plan_sid_map_for_addresses(targets, socket_models=socket_models)
+                    if sm is None:
+                        continue
+                    landed = _instances_on_reserved_io(sm)
+                    if landed:  # subTest per case would cost more than the sweep
+                        self.fail(
+                            f"{[hex(t) for t in targets]} / {socket_models} realized "
+                            f"{[hex(a) for a in landed]} in {sm.config}"
+                        )
+        for n in range(1, m.MAX_SIDS + 1):
+            for s1 in (False, True):
+                for s2 in (False, True):
+                    sm = m.plan_sid_map(n, socket1_present=s1, socket2_present=s2)
+                    with self.subTest(n=n, s1=s1, s2=s2):
+                        self.assertEqual(_instances_on_reserved_io(sm), [], sm.config)
+
 
 class PlanForAddressesTest(unittest.TestCase):
     """plan_sid_map_for_addresses: realize a SID file's *own* fixed chip
@@ -230,6 +443,18 @@ class PlanForAddressesTest(unittest.TestCase):
 
     def test_empty_returns_none(self):
         self.assertIsNone(m.plan_sid_map_for_addresses(()))
+
+    def test_core_base_outside_the_firmware_enum_is_unrealizable(self):
+        # The base is bounded below ($D400) and now above: the firmware's
+        # u64_sid_base[] enum covers $D400-$D7E0 and $DE00-$DFE0 only, so a
+        # header-chosen target elsewhere must fall back, not be PUT verbatim.
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xDA00,)))
+        self.assertIsNone(m.plan_sid_map_for_addresses((0xD400, 0xD800)))
+        # Both ends of the legal windows still plan — except the top of the
+        # cartridge one, which RESERVED_IO_WINDOWS trims (see ReservedIoTest);
+        # $DEE0 is the highest base whose $20 span clears the REU at $DF00.
+        for legal in (0xD400, 0xD7E0, 0xDE00, 0xDEE0):
+            self.assertIsNotNone(m.plan_sid_map_for_addresses((legal,)), hex(legal))
 
 
 class ModelAwareRoutingTest(unittest.TestCase):
@@ -294,6 +519,28 @@ class ModelAwareRoutingTest(unittest.TestCase):
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID1_ADDR)], "$D400")
         self.assertEqual(sm.config[(m.CAT_ADDRESSING, m.ITEM_ULTISID2_ADDR)], "$D420")
 
+    def test_a_claim_that_boxes_the_cores_in_is_given_up_for_the_map(self):
+        # The one thing the socket-give-up retry is for. Socket 1 carries a chip,
+        # so it claims $D400, and the other three addresses defeat all three
+        # levels: `Off` gives one address per core and there are only two cores,
+        # while the $40- and $80-aligned levels both align back onto $D400 and are
+        # rejected as `blocked`. Measured per level, since "blocked at every level"
+        # would be the wrong reason for the first one.
+        self.assertIsNone(
+            m._plan_ultisid_cores([0xD420, 0xD440, 0xD460], blocked=frozenset({0xD400}))
+        )
+
+        # So the claim is dropped rather than the map. Asserted on what the caller
+        # can observe: every chip is answered, by a core rather than the socket,
+        # and the socket is disabled despite carrying a 6581.
+        sm = m.plan_sid_map_for_addresses(
+            (0xD400, 0xD420, 0xD440, 0xD460), socket_models=("6581", None)
+        )
+        assert sm is not None
+        self.assertEqual(sm.addresses, (0xD400, 0xD420, 0xD440, 0xD460))
+        self.assertEqual(sm.sources, ("ultisid1", "ultisid1", "ultisid2", "ultisid2"))
+        self.assertEqual(sm.config[(m.CAT_SOCKETS, m.ITEM_SOCKET1_EN)], "Disabled")
+
 
 class SidMapSourcesTest(unittest.TestCase):
     """`sources` names the audio source realizing each chip, parallel to
@@ -319,11 +566,19 @@ class SidMapSourcesTest(unittest.TestCase):
         sm = m.plan_sid_map(2)
         self.assertEqual(sm.sources, ("ultisid1", "ultisid2"))
 
-    def test_through_four_chips_every_source_is_distinct(self):
-        # The pannable-independently guarantee sid_panning documents.
+    def test_through_four_chips_every_source_is_distinct_with_both_sockets(self):
+        # The pannable-independently guarantee sid_panning documents — which
+        # holds only when both sockets are populated. See the no-socket case
+        # below for what the ordinary ASID stream on a stock U64 actually gets.
         for n in range(1, 5):
             sm = m.plan_sid_map(n, socket1_present=True, socket2_present=True)
             self.assertEqual(len(set(sm.sources)), n, sm.sources)
+
+    def test_with_no_socket_in_play_sharing_starts_at_three_chips(self):
+        # Two UltiSID cores are the only sources, so the third chip doubles onto a
+        # split core and shares its pan.
+        self.assertEqual(m.plan_sid_map(2).sources, ("ultisid1", "ultisid2"))
+        self.assertEqual(m.plan_sid_map(3).sources, ("ultisid1", "ultisid1", "ultisid2"))
 
     def test_split_core_hosts_several_chips_on_one_source(self):
         sm = m.plan_sid_map(6, socket1_present=True, socket2_present=True)

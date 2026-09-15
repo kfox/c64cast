@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import unittest
 
+from _fakes import frozen_throttle, frozen_throttles
+
 from c64cast.sid import asid
 
 
@@ -34,10 +36,15 @@ def _reg_msg(values: dict[int, int]) -> tuple[int, ...]:
     return (asid.ASID_MANUFACTURER_ID, asid.CMD_REG, *mask, *msb, *data)
 
 
-def _ok(msg) -> asid.AsidUpdate:
+def _ok(msg, recipe_log=None) -> asid.AsidUpdate:
     """decode() the message and assert it's a recognized ASID message (narrows
-    the Optional for the type checker)."""
-    u = asid.decode(msg)
+    the Optional for the type checker).
+
+    `recipe_log` is the caller's when it asserts on the throttle and a fresh
+    one otherwise — fresh rather than shared, so one test's over-cap report
+    cannot spend another test's budget. That is the same per-stream reasoning
+    the parameter exists for in production, applied to tests."""
+    u = asid.decode(msg, recipe_log=recipe_log or asid.new_recipe_log())
     assert u is not None
     return u
 
@@ -45,22 +52,31 @@ def _ok(msg) -> asid.AsidUpdate:
 class DecodeDispatchTest(unittest.TestCase):
     def test_non_asid_sysex_returns_none(self):
         # Wrong manufacturer id (0x7E = universal non-realtime).
-        self.assertIsNone(asid.decode((0x7E, 0x00, 0x01)))
+        self.assertIsNone(asid.decode((0x7E, 0x00, 0x01), recipe_log=asid.new_recipe_log()))
 
     def test_too_short_returns_none(self):
-        self.assertIsNone(asid.decode((asid.ASID_MANUFACTURER_ID,)))
+        self.assertIsNone(
+            asid.decode((asid.ASID_MANUFACTURER_ID,), recipe_log=asid.new_recipe_log())
+        )
 
     def test_start_stop(self):
         self.assertIs(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_START)).playing, True)
         self.assertIs(_ok((asid.ASID_MANUFACTURER_ID, asid.CMD_STOP)).playing, False)
 
     def test_unsupported_commands_dropped(self):
-        # Multi-SID (0x50-0x5F) is honored (see MultiSidTest) and the timing
-        # recipe (0x30) is now decoded (see TimingRecipeTest); only OPL-FM
-        # remains dropped.
+        # OPL-FM is the recognized-but-unsupported command; multi-SID
+        # (0x50-0x5F) and the timing recipe (0x30) are decoded.
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_OPL, 0x00))
         self.assertTrue(u.dropped, "OPL-FM should be dropped")
         self.assertFalse(u.regs)
+
+    def test_unknown_command_falls_through_to_dropped(self):
+        # Untrusted network/MIDI SysEx: any unrecognized command, not just
+        # 0x60, must come back inert rather than half-apply.
+        u = _ok((asid.ASID_MANUFACTURER_ID, 0x33, 0x7F, 0x7F))
+        self.assertTrue(u.dropped)
+        self.assertFalse(u.regs)
+        self.assertEqual(u.command, 0x33)
 
 
 class MultiSidTest(unittest.TestCase):
@@ -83,7 +99,6 @@ class MultiSidTest(unittest.TestCase):
             self.assertEqual(u.regs, {0x01: 0x12})
 
     def test_multi_sid_hard_restart_still_decodes(self):
-        # The double-control-write hard restart works per chip.
         payload = (
             asid.ASID_MANUFACTURER_ID,
             asid.CMD_MULTI_SID_LO,
@@ -108,7 +123,7 @@ class RegisterDataTest(unittest.TestCase):
         self.assertEqual(u.regs[0x00], 0xFF)
 
     def test_filter_and_volume_offsets(self):
-        # ids 21..24 → $D415..$D418 (offsets 0x15..0x18).
+        # ids 18..21 → $D415..$D418 (offsets 0x15..0x18).
         u = _ok(_reg_msg({18: 0xAA, 19: 0x0B, 20: 0xF7, 21: 0x1F}))
         self.assertEqual(u.regs[0x15], 0xAA)  # FC_LO
         self.assertEqual(u.regs[0x16], 0x0B)  # FC_HI
@@ -119,12 +134,11 @@ class RegisterDataTest(unittest.TestCase):
         # id 22 = voice-1 control (first write) → offset 0x04.
         u = _ok(_reg_msg({22: 0x41}))
         self.assertEqual(u.regs[0x04], 0x41)
-        self.assertFalse(u.control_first)  # no second write → not a hard restart
+        self.assertFalse(u.control_first)
 
     def test_hard_restart_double_control_write(self):
-        # Voice 1: first control write (gate off, id 22) then a differing
-        # second write (gate on + waveform, id 25). Final block value = second;
-        # the first surfaces in control_first for the two-phase emit.
+        # Voice 1: control write id 22 (gate off) then id 25 (gate on +
+        # waveform); the block keeps the second, control_first the first.
         u = _ok(_reg_msg({22: 0x08, 25: 0x41}))
         self.assertEqual(u.regs[0x04], 0x41)
         self.assertEqual(u.control_first, {0: 0x08})
@@ -186,10 +200,20 @@ class OtherCommandsTest(unittest.TestCase):
         )
 
     def test_sid_type_secondary_chip_carries_index(self):
-        # Chip index 1 (a second SID) reports its own type against chip_index 1.
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 1, 1))
         self.assertEqual(u.chip_index, 1)
         self.assertEqual(u.chip_type, "8580")
+
+    def test_sid_type_chip_index_is_clamped_to_the_protocol_range(self):
+        # mido hands up a full 0..127 data byte; 0x7F is past any chip index
+        # the multi-SID commands can produce.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SID_TYPE, 0x7F, 0))
+        self.assertEqual(u.chip_index, asid.MAX_CHIP_INDEX)
+
+    def test_short_speed_payload_leaves_frame_delta_unset(self):
+        # None (not 0) is how the consumer picks the speed-multiplier path.
+        u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x01))
+        self.assertIsNone(u.frame_delta_us)
 
 
 class TimingRecipeTest(unittest.TestCase):
@@ -215,7 +239,7 @@ class TimingRecipeTest(unittest.TestCase):
         self.assertEqual(_ok(payload).timing_recipe, [(0, 10)])
 
     def test_odd_trailing_byte_ignored(self):
-        # A dangling half-pair is dropped (whole pairs only).
+        # The trailing 0x03 is a dangling half-pair; whole pairs only.
         payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x02, 0x00, 0x03)
         self.assertEqual(_ok(payload).timing_recipe, [(2, 0)])
 
@@ -223,6 +247,73 @@ class TimingRecipeTest(unittest.TestCase):
         u = _ok((asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING))
         self.assertEqual(u.timing_recipe, [])
         self.assertFalse(u.dropped)
+
+    def test_repeated_register_id_keeps_only_its_first_position(self):
+        # A repeated id would make serialize_frame emit that register once per
+        # occurrence, so op count would track recipe length, not write count.
+        payload = (asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING, 0x00, 0x0A, 0x01, 0x00, 0x00, 0x14)
+        self.assertEqual(_ok(payload).timing_recipe, [(0, 10), (1, 0)])
+
+    def test_overlong_payload_is_capped_at_the_write_order_length(self):
+        # SysEx has no length limit on a virtual/network MIDI port and the
+        # recipe persists until the next 0x30, so one uncapped message would
+        # amplify every later frame. 400 distinct ids against a cap of 28.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(400):
+            payload += [i & 0x3F, 0x00]
+        with self.assertLogs("c64cast.sid.asid", "WARNING") as caught:
+            recipe = _ok(tuple(payload)).timing_recipe
+        self.assertEqual(len(recipe), asid.MAX_TIMING_RECIPE_PAIRS)
+        self.assertIn("timing recipe carries 400 pairs", caught.output[0])
+
+    def test_a_repeated_over_cap_recipe_reports_once_not_once_per_message(self):
+        # The decoder retires ~105,000 over-cap messages a second, so one
+        # WARNING each is 18 MB/s into an unrotated --log-file: the report
+        # has to be O(1) per stream.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
+            payload += [i & 0x3F, 0x00]
+        self.assertEqual(len(payload) - 2, 58)  # 29 pairs, 62 bytes with F0/F7
+        throttle = frozen_throttle(asid.log)
+        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
+            for _ in range(500):
+                self.assertEqual(
+                    len(_ok(tuple(payload), recipe_log=throttle).timing_recipe),
+                    asid.MAX_TIMING_RECIPE_PAIRS,
+                )
+        self.assertEqual(len(caught.records), 1)
+        self.assertEqual(caught.records[0].levelname, "WARNING")
+
+    def test_each_call_for_a_stream_budget_answers_with_a_new_one(self):
+        self.assertIsNot(asid.new_recipe_log(), asid.new_recipe_log())
+
+    def test_one_streams_flood_does_not_spend_another_streams_budget(self):
+        # Regression: with one module-level throttle, stream A's flood spent
+        # the single report and stream B — another system on its own MIDI port
+        # in the same process — never reported its first over-cap recipe.
+        # Both throttles are frozen, so neither window ever closes.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
+        for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
+            payload += [i & 0x3F, 0x00]
+        with frozen_throttles(asid):
+            stream_a = asid.new_recipe_log()
+            stream_b = asid.new_recipe_log()
+
+        with self.assertLogs("c64cast.sid.asid", "DEBUG") as caught:
+            for _ in range(500):
+                _ok(tuple(payload), recipe_log=stream_a)
+            spent_by_a = len(caught.records)
+            _ok(tuple(payload), recipe_log=stream_b)
+
+        self.assertEqual(spent_by_a, 1)
+        self.assertEqual(len(caught.records), 2)
+        self.assertEqual([r.levelname for r in caught.records], ["WARNING", "WARNING"])
+
+    def test_capped_and_deduped_recipe_cannot_outgrow_a_slot(self):
+        # 28 pairs (a spec-legal length) all naming id 0 must not yield 28
+        # entries for one register.
+        payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING] + [0x00, 0x00] * 28
+        self.assertEqual(_ok(tuple(payload)).timing_recipe, [(0, 0)])
 
 
 if __name__ == "__main__":

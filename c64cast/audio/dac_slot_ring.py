@@ -9,79 +9,17 @@ captures in tests. The run orchestration that produces real captures
 :mod:`c64cast.audio.dac_calibration`; picking and probing the capture device is
 :mod:`c64cast.audio.dac_capture_device`.
 
-Measurement method: one slot ring, signed levels read directly
----------------------------------------------------------------
 The SID → capture path is AC-coupled (~8.5 Hz measured), so a static code
 produces no steady signal and a level can only be read as a *change*. The ring
-therefore holds ``SLOT_SAMPLES``-long slots alternating ``[code][ref]``, with
-``ref = $00`` — master volume 0, i.e. silence — behind a leading run of
-``SYNC_SLOTS`` reference slots that marks where a pass begins. See
-:func:`build_slot_ring`.
+therefore holds ``SLOT_SAMPLES``-long slots alternating ``[code][ref]`` with
+``ref = $00`` (master volume 0), behind a leading run of ``SYNC_SLOTS``
+reference slots marking where a pass begins; :func:`extract_slot_levels`
+locates the pass boundaries, tracks the slot grid edge by edge, undoes the AC
+coupling, and differences each code slot against the reference slots
+bracketing it.
 
-Every code is then measured against the *same* baseline inside one capture, so
-its signed level comes straight off the waveform and no sign has to be inferred.
-:func:`extract_slot_levels` locates the pass boundaries, tracks the slot grid
-edge by edge, undoes the AC coupling, and differences each code slot against the
-reference slots bracketing it. A ring holds 112 codes, so 256 codes take 3 rings
-of ~5 s rather than 512 separate captures.
-
-**This replaced a two-reference scheme** that toggled each code against ``$00``
-*and* ``$0F`` at 500 Hz and took the FFT amplitude as ``|L(code) − L(ref)|``,
-inferring each sign from which of ``p + q`` or ``q − p`` came closer to ``lmax``.
-That primitive did not return consistent levels: on a 6581 whose filter path is
-alive it missed the volume-0 ground truth below by 52 %, and 89 of its 256 codes
-violated the triangle inequality ``p + q ≥ lmax`` by up to 51 % of ``lmax`` — so
-no 1-D embedding of those numbers existed and the sign inference was not
-ill-conditioned but unfounded. It was exactly reproducible (Pearson +0.9992
-against a curve measured three weeks earlier), independent of toggle frequency
-from 500 Hz down to 31.25 Hz, and reproduced within a single capture, ruling out
-noise, drift, capture gain, clipping and stereo folding. Reading levels directly
-sidesteps the whole construction; the same chip now passes the ground truth at
-1.3 %.
-
-Stereo capture is folded to mono by averaging, so the SID pan setting only
-scales all measurements uniformly and cancels in the normalized ladder — no
-mixer changes needed.
-
-Context dependence, and why every code is measured three times
----------------------------------------------------------------
-A 6581's output for a ``$D418`` byte is not quite a function of that byte alone.
-Measured on a socketed 6581 by planting one probe code at twelve positions in an
-otherwise ordinary ring: a positive code reads **20 % lower** at the end of a
-ring pass than at its start, a negative code 2 % *higher*, and the apparent level
-correlates at |r| ≈ 0.9 with the mean level of the surrounding slots. It is in
-the raw waveform, before any processing, so it is the chip's operating point
-sliding with the accumulated signal, not a measurement artifact.
-
-Measure each code at one fixed slot and that bias is baked into the ladder,
-ordered by code, looking exactly like curve structure — the tell is that the
-volume ramp within a nibble band stops being monotone. So the whole code set is
-measured :data:`MEASURE_ROUNDS` times, each round rotating every ring's slot
-order by another fraction of a ring, and the readings are averaged: every code
-then carries the same mean context, which is a common scale factor, and the
-ladder is scale-invariant. Three rounds lands within one ladder step of a
-six-round reference (max 0.9 % of span, rms 0.2 %); one round is off by 5.2 %
-and leaves six non-monotone codes. ``context_spread_frac`` records how far a
-code moved between rounds — the honest bound on how well *any* static table can
-describe this chip.
-
-The volume-0 self-test (why a calibration can be rejected)
-----------------------------------------------------------
-The 16 codes ``$h0`` set the master volume nibble to 0, so their output level is
-``$00``'s *whatever* the upper nibble does: ``L($h0)`` must measure zero, for
-every ``h``, with no model assumptions at all.
-:func:`build_sidtable_from_levels` checks that and refuses to emit a ladder when
-the worst one exceeds :data:`SELFTEST_TOLERANCE`; ``run_calibration`` then
-persists ``raw_signed_levels`` + ``metrics`` for the socket but no ``sidtable``,
-so playback degrades to the baked/linear curve instead of to a wrong table. That
-matters because the failure is otherwise silent — a badly reconstructed ladder
-looks exactly like a good one and plays back worse than no calibration at all.
-
-On the socketed 6581 the residual is ~1 %, and it is not noise: it tracks the
-filter routing bits (LP set → ≈ 1 % of full scale, no filter → ≈ 0.1 %) and does
-not move when the plateau read window is widened from 8 to 72 samples, so it is
-the chip's filter path leaking a little DC past a volume DAC set to zero rather
-than anything the measurement is doing wrong.
+See docs/architecture/audio.md#the-slot-ring-reading-signed-levels-directly,
+#why-every-code-is-measured-three-times, and #the-volume-0-self-test.
 """
 
 from __future__ import annotations
@@ -522,11 +460,9 @@ def extract_slot_levels(
         raise MeasurementError("no complete ring pass fell inside the capture window")
 
     passes = np.vstack(per_pass)
-    # Median, not mean, across passes. Individual slots glitch: on every refused
-    # capture examined, 1-6 codes out of ~86 read far off on exactly one pass
-    # while the other 80-odd agreed to 0.004%. A mean folds that outlier into the
-    # code's level and the error survives into the ladder — which is what a wrong
-    # entry sounds like. With three passes the median discards it outright.
+    # Median, not mean: individual slots glitch (1-6 codes of ~86 read far off
+    # on exactly one pass, the rest agreeing to 0.004%), and a mean folds that
+    # outlier straight into the ladder.
     levels = np.median(passes, axis=0) if passes.shape[0] >= 3 else passes.mean(axis=0)
     scale_ref = float(np.max(np.abs(levels))) or 1.0
     tracked_slot_p = float(np.mean(pitches))
@@ -537,28 +473,21 @@ def extract_slot_levels(
         "slot_period_samples": round(tracked_slot_p, 4),
         "nmi_rate_implied_hz": round(SLOT_SAMPLES * sr / tracked_slot_p, 2),
         "anchor_fit_rms_samples": round(anchor_rms, 2),
-        # Worst single slot. Kept because it names the biggest error in the ring,
-        # but it is NOT the trust metric: it is a max over ~86 codes, so one
-        # transient glitch out of ~260 readings pins it at 1-2% while the ring as
-        # a whole is replaying to 0.004%. Gating on it failed good runs.
+        # Worst single slot — names the biggest error, but NOT the trust
+        # metric: a max over ~86 codes is pinned by one transient glitch.
         "pass_spread_frac": round(float(np.max(passes.std(axis=0))) / scale_ref, 5),
-        # The trust metric: the 95th percentile of the same per-code spread. A
-        # handful of glitched slots cannot move it, but a ring that genuinely is
-        # not replaying moves every code and so moves this too.
+        # The trust metric: the 95th percentile of the same per-code spread.
         "pass_spread_p95_frac": round(
             float(np.percentile(passes.std(axis=0), _SPREAD_TRUST_PERCENTILE)) / scale_ref, 5
         ),
         "pass_outlier_codes": int((passes.std(axis=0) / scale_ref > RING_SPREAD_HEALTHY).sum()),
-        # What that spread is made of (:func:`_pass_gain_decomposition`). The level
-        # the whole ring came back at on each lap, how far those move, and the
-        # disagreement still there once each lap is rescaled to the others —
-        # a residual well under pass_spread_frac means the ring replayed fine and
-        # only the level it was measured through was moving.
+        # What that spread is made of: a residual well under pass_spread_frac
+        # means the ring replayed fine and only the measured level moved.
         "pass_gains": [round(float(g), 5) for g in gains],
         "pass_gain_span_frac": round(float(np.max(gains) - np.min(gains)), 5),
         "pass_residual_frac": round(residual_frac, 5),
-        # The fitted AC-coupling corner, as a sanity check on the capture rig:
-        # k = 1/(τ·fs), so f_c = k·fs/2π. Expect a few Hz to a few tens of Hz.
+        # Fitted AC-coupling corner: k = 1/(τ·fs), so f_c = k·fs/2π. A sane rig
+        # reads a few Hz to a few tens of Hz.
         "ac_coupling_hz": round(float(np.mean(dc_gains)) * sr / (2 * np.pi), 2),
     }
     return SlotLevels(levels=levels, per_pass=passes, diagnostics=diagnostics)
@@ -662,9 +591,8 @@ def _track_slot_grid(
                     pred += _TRACK_ALPHA * d
         off += rate
         starts[s] = pred
-    # The sync gap carries no edges to track, so extrapolate backwards from the
-    # anchor at the nominal pitch. Only the single ref slot at SYNC_SLOTS-1 is
-    # ever read (it brackets the first code), one slot from the anchor.
+    # The sync gap carries no edges, so extrapolate backwards from the anchor
+    # at the nominal pitch. Only the ref slot at SYNC_SLOTS-1 is ever read.
     for s in range(SYNC_SLOTS - 1, -1, -1):
         starts[s] = anchor - (SYNC_SLOTS - s) * geom.slot_period
     return starts, float(np.median(np.diff(starts[SYNC_SLOTS:])))
@@ -807,8 +735,7 @@ def _ladder_metrics(achieved: np.ndarray, targets: np.ndarray, span: float) -> d
     below = float(srt[srt <= 0].max()) if np.any(srt <= 0) else 0.0
     above = float(srt[srt >= 0].min()) if np.any(srt >= 0) else 0.0
     return {
-        # A perfect 256-step ladder is 8 bits; rms == 0 means every target was
-        # hit exactly, which only happens on synthetic input.
+        # A perfect 256-step ladder is 8 bits; rms == 0 only on synthetic input.
         "ladder_bits": round(float(np.log2(span / (rms * np.sqrt(12)))), 2) if rms else 8.0,
         "ladder_rms_err_frac": round(rms / span, 5),
         "ladder_max_err_frac": round(float(np.max(np.abs(resid))) / span, 5),

@@ -151,9 +151,6 @@ MOD_BANDS: tuple[tuple[str, float, float], ...] = (
 )
 
 
-# ---- C64 bring-up ---------------------------------------------------------
-
-
 def latch_for(rate: int, system: str) -> int:
     """CIA #2 Timer A latch (period = latch+1 cycles) for `rate` — the same math
     as ``NmiTimer.nominal_latch``."""
@@ -210,9 +207,6 @@ def arm(be, rate: int, system: str) -> None:
 
 def disarm(be) -> None:
     be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
-
-
-# ---- background writer ----------------------------------------------------
 
 
 def _sleep_until(deadline: float) -> None:
@@ -312,9 +306,6 @@ class BackgroundWriter:
         if self._thread:
             self._thread.join(timeout=5.0)
         return self.stats
-
-
-# ---- analysis -------------------------------------------------------------
 
 
 def analytic_band(x: np.ndarray, sr: int, f0: float, half_width: float) -> np.ndarray:
@@ -455,9 +446,6 @@ def analyze(mono: np.ndarray, sr: int, expected: float, cadence_hz: float) -> An
         write_cadence_peak=cadence_peak,
         noise_floor_db=noise_floor_db(x, sr, peak),
     )
-
-
-# ---- capture --------------------------------------------------------------
 
 
 def find_camlink(fallback: int) -> int:
@@ -621,7 +609,6 @@ def main() -> int:
         be.reset()
         be.close()
 
-    # ---- report ----
     band_names = [b[0] for b in MOD_BANDS]
     header = (
         f"{'condition':>12} {'carrier':>9} {'down':>7} {'std':>7} {'noise':>7} {'dNoise':>7} "

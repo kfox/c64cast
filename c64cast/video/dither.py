@@ -1,33 +1,12 @@
 """Spatial dithering for pre-quantization color shaping.
 
-Two families, selected by ``[color].dither``:
+Two families selected by ``[color].dither``: ordered (Bayer 8×8 / blue noise
+64×64) via `bayer_offset` / `blue_noise_offset`, and error diffusion
+(Floyd-Steinberg / Atkinson) via `error_diffuse` / `error_diffuse_cells`.
+Both take an explicit BGR candidate set, so the same code dithers a global
+16-color pass or a per-cell subset.
 
-- **Ordered (Bayer 8×8 / blue noise 64×64)** — a fixed, position-deterministic
-  threshold offset added to every pixel before nearest-palette quantization.
-  Vectorized (one array op over the whole frame) and temporally stable (the
-  same pixel position always gets the same offset), so it holds realtime
-  frame rates without adding frame-to-frame shimmer. `bayer_offset` and
-  `blue_noise_offset` are the two primitives (same contract — an additive
-  (h, w) offset); callers add the result to the pixel array before
-  quantizing. Bayer's regular 8×8 tiling has visible cross-hatch/grid
-  structure at C64 resolution; the blue-noise tile (baked from a
-  void-and-cluster mask — see `scripts/diags/gen_blue_noise.py`) has the same
-  cost and stability properties with no periodic structure, so it's the
-  better default wherever an ordered method applies (`config.
-  resolve_dither_method`).
-- **Error diffusion (Floyd-Steinberg / Atkinson)** — a sequential per-pixel
-  scan that pushes each pixel's quantization error onto its yet-unvisited
-  neighbors. Higher quality on static content (no competing candidate set
-  reproduces gradients as well) but a Python-level loop — too slow for
-  realtime video, and diffusing across frames independently makes each
-  frame's error pattern independent of the last, which reads as shimmer on
-  motion. `error_diffuse` is the primitive; callers run it once per
-  candidate-set region (e.g. once per display cell) against that region's
-  resolved palette subset.
-
-Both primitives take an explicit BGR candidate set rather than the fixed
-16-color C64 palette, so the same code dithers a global 16-color pass or a
-per-cell subset (e.g. mhires' per-cell {bg0, c1, c2, c3}) identically.
+See docs/architecture/video-color.md#colordither--spatial-dither.
 """
 
 from __future__ import annotations
@@ -38,7 +17,6 @@ import numpy as np
 
 DITHER_METHODS: tuple[str, ...] = ("none", "ordered", "blue_noise", "floyd-steinberg", "atkinson")
 
-# 8x8 Bayer ordered-dither threshold matrix (index-value form, 0..63).
 _BAYER_8X8 = np.array(
     [
         [0, 32, 8, 40, 2, 34, 10, 42],
@@ -52,16 +30,10 @@ _BAYER_8X8 = np.array(
     ],
     dtype=np.float32,
 )
-# Normalized to a zero-mean -0.5..~0.48 range so `bayer_offset` can scale it
-# by an arbitrary strength without a magic 64 divisor at every call site.
 _BAYER_NORM = (_BAYER_8X8 / 64.0) - 0.5
 
-# 64x64 blue-noise ordered-dither threshold matrix (index-value form,
-# 0..4095), generated offline by the void-and-cluster algorithm — see
-# scripts/diags/gen_blue_noise.py (size=64 sigma=1.9 seed=0). Baked as a
-# base64 uint16 blob rather than a runtime generator call: generation isn't
-# vectorizable (each rank depends on the previous swap), so it stays a
-# build-time artifact, reproducible from the script, not a per-import cost.
+# Void-and-cluster mask, baked offline by scripts/diags/gen_blue_noise.py
+# (size=64 sigma=1.9 seed=0), as a base64 uint16 blob of ranks 0..4095.
 _BLUE_NOISE_SIZE = 64
 _BLUE_NOISE_B64 = (
     "eg47AKgF9wmgDS4Dfgc6AUYKDg20ACMJRQN7DT8IfAo0D04CsQXRDZkBOgblC1oP4wYuCyEATQZE"
@@ -214,24 +186,19 @@ _BLUE_NOISE = (
     .reshape(_BLUE_NOISE_SIZE, _BLUE_NOISE_SIZE)
     .astype(np.float32)
 )
-# Normalized to a zero-mean -0.5..~0.5 range by the tile's OWN value count
-# (4096 ranks), same treatment as `_BAYER_NORM` — but `blue_noise_offset`
-# then rescales by the same `strength * 64.0` constant `bayer_offset` uses
-# (not by 4096), so a given `dither_strength` produces the same offset
-# magnitude regardless of which ordered method is selected.
+# Normalized by the tile's own 4096 ranks, but `blue_noise_offset` rescales by
+# the same `strength * 64.0` `bayer_offset` uses, so a given `dither_strength`
+# means the same offset magnitude for either ordered method.
 _BLUE_NOISE_NORM = (_BLUE_NOISE / float(_BLUE_NOISE_SIZE * _BLUE_NOISE_SIZE)) - 0.5
 
-# Floyd-Steinberg error-diffusion kernel: (dx, dy, weight/16), applied to the
-# 4 unvisited neighbors of a raster-scan pixel.
+# Entries are (dx, dy, weight), addressing a raster-scan pixel's unvisited
+# neighbors.
 _FS_KERNEL: tuple[tuple[int, int, float], ...] = (
     (1, 0, 7 / 16),
     (-1, 1, 3 / 16),
     (0, 1, 5 / 16),
     (1, 1, 1 / 16),
 )
-# Atkinson diffuses only 3/4 of the error (the rest is dropped), which keeps
-# contrast punchier than Floyd-Steinberg at the cost of losing some detail in
-# deep shadows/highlights — the classic Mac-era look.
 _ATKINSON_KERNEL: tuple[tuple[int, int, float], ...] = tuple(
     (dx, dy, 1 / 8) for dx, dy in ((1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2))
 )
@@ -245,13 +212,8 @@ _ERROR_DIFFUSION_KERNELS = {
 def bayer_offset(h: int, w: int, strength: float) -> np.ndarray:
     """Return an (h, w) float32 additive offset from the tiled 8×8 Bayer matrix.
 
-    Add this to a pixel array's every channel before nearest-palette
-    quantization: pixels below the local threshold get pushed toward the next
-    palette entry down, pixels above toward the next one up, and the fixed
-    8×8 tiling means the same screen position always gets the same push — so
-    a static source dithers identically frame to frame (no shimmer) while a
-    moving one still gets full ordered-dither texture. `strength` scales the
-    offset's total range (roughly ±32 * strength at strength's face value)."""
+    Add to a pixel array's every channel before nearest-palette quantization.
+    `strength` scales the offset's total range (roughly ±32 * strength)."""
     tiles_y = -(-h // 8)
     tiles_x = -(-w // 8)
     tiled = np.tile(_BAYER_NORM, (tiles_y, tiles_x))[:h, :w]
@@ -260,13 +222,8 @@ def bayer_offset(h: int, w: int, strength: float) -> np.ndarray:
 
 def blue_noise_offset(h: int, w: int, strength: float) -> np.ndarray:
     """Return an (h, w) float32 additive offset from the tiled 64×64 blue-noise
-    matrix — same call-site contract as `bayer_offset` (add to a pixel
-    array's every channel before nearest-palette quantization, same
-    `strength` scale), but tiling a void-and-cluster mask instead of the
-    regular Bayer grid: no periodic low-frequency structure, so it dithers
-    without Bayer's visible cross-hatch at C64 resolution while keeping the
-    same vectorized, position-deterministic (no frame-to-frame shimmer)
-    properties. See the module docstring and `scripts/diags/gen_blue_noise.py`."""
+    matrix — same call-site contract and `strength` scale as `bayer_offset`,
+    tiling a void-and-cluster mask instead of the regular Bayer grid."""
     tiles_y = -(-h // _BLUE_NOISE_SIZE)
     tiles_x = -(-w // _BLUE_NOISE_SIZE)
     tiled = np.tile(_BLUE_NOISE_NORM, (tiles_y, tiles_x))[:h, :w]
@@ -284,12 +241,10 @@ def error_diffuse(
     img_bgr: (h, w, 3) BGR, any numeric dtype. candidates_bgr: (k, 3) BGR.
     Returns an (h, w) uint8 array of indices into `candidates_bgr` (0..k-1).
 
-    A plain per-pixel raster scan (Python-level loop — not realtime; see the
-    module docstring): at each pixel, picks the nearest candidate by squared
-    BGR distance, then pushes the quantization error onto not-yet-visited
-    neighbors per `method`'s kernel, scaled by `strength` (1.0 = the
-    textbook kernel weights; lower softens the diffusion toward a flatter,
-    more `ordered`-like result).
+    A per-pixel raster scan (Python-level loop — not realtime): at each pixel,
+    picks the nearest candidate by squared BGR distance, then pushes the
+    quantization error onto not-yet-visited neighbors per `method`'s kernel,
+    scaled by `strength` (1.0 = the textbook kernel weights).
     """
     kernel = _ERROR_DIFFUSION_KERNELS.get(method)
     if kernel is None:

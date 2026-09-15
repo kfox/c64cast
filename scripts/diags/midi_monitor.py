@@ -100,7 +100,6 @@ def _select_port(names: list[str], want: str | None) -> str | None:
     if len(names) == 1:
         print(f"Using the only MIDI input port: {names[0]!r}")
         return names[0]
-    # Several ports, no --port: prompt if we have a terminal, else bail with help.
     _list_ports(names)
     if not sys.stdin.isatty():
         print(
@@ -162,7 +161,6 @@ def _summary(seen: dict[tuple[str, int, int | None], dict[str, int]]) -> None:
     print("\n" + "=" * 70)
     print("Controls seen — paste these into a c64cast config:")
     print("=" * 70)
-    # Sort by kind (note, cc, pc, mmc), then number, then channel.
     order = {"note": 0, "cc": 1, "pc": 2, "mmc": 3}
     for (k, number, ch), stat in sorted(
         seen.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1], kv[0][2] or 0)

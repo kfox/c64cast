@@ -48,9 +48,6 @@ class Moire2Source(GenerativeSource):
         phase = t * self.drift_speed
         freq_a = freq_b = self.ring_freq
         if modulation is not None:
-            # Tempo breathes the center separation; each ring tracks a
-            # different voice's pitch so the two families drift apart in
-            # frequency, not just in space.
             phase += modulation.beat_phase * 0.15
             freq_a = self.ring_freq + modulation.voice_freqs[0] * self._VOICE_FREQ_GAIN
             freq_b = self.ring_freq + modulation.voice_freqs[1] * self._VOICE_FREQ_GAIN

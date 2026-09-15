@@ -11,7 +11,10 @@ are inert here: nothing in the Python package reads this directory, and
   update banner and `motd/`'s login line have something to read without
   either of them ever querying PyPI. Never installs anything — see
   `c64cast --upgrade` for the one command that does, and it always asks
-  first. The unit has to run as the same user as `c64cast.service`, since
+  first. It fires daily with an hour of `RandomizedDelaySec`, so a fleet of
+  these does not all reach PyPI in the same minute, and `Persistent=true`,
+  so a box powered off at the scheduled time catches up rather than skipping
+  the day. The unit has to run as the same user as `c64cast.service`, since
   what it writes and what the console reads are both `<data root>` files
   resolved from that account's environment.
 - **`motd/`** — an `/etc/update-motd.d/` script that prints what the timer

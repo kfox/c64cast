@@ -82,7 +82,6 @@ class PreviewWindowOpenTest(unittest.TestCase):
 
     def test_open_failure_disables_window_without_raising(self):
         # The headless-opencv case: no GUI support, so namedWindow throws.
-        # The session must survive it.
         cv2 = _fake_cv2()
         cv2.namedWindow.side_effect = RuntimeError("no GUI support")
         with patch.object(preview_mod, "cv2", cv2):
@@ -282,11 +281,9 @@ class PumpPreviewsUntilDoneTest(unittest.TestCase):
         self._assert_no_untimed_join(t)
 
     def test_the_fall_through_join_polls_so_signals_stay_deliverable(self):
-        # A headless opencv build leaves `is_open` False, so the pump loop
-        # breaks on its very first iteration and the whole run lands on this
-        # join — the same place the user closing the window lands. It has to
-        # poll, or `[preview].enabled = true` over SSH is a run that neither
-        # SIGINT nor SIGTERM can stop and that never reaches its final reset.
+        # A headless opencv build leaves `is_open` False, so the pump loop breaks on
+        # its first iteration and the run lands on this join — the same place the
+        # user closing the window lands. Unpolled, no SIGINT or SIGTERM can stop it.
         from c64cast.app.cli import _pump_previews_until_done
 
         win = MagicMock()

@@ -51,9 +51,8 @@ _iso = MachineSettingsIsolation()
 
 def setUpModule() -> None:
     _iso.start()
-    # The glyph cache is process-wide and may already hold whatever the real
-    # data dir answered in another module, so drop it on the way in as well as
-    # on the way out.
+    # The glyph cache is process-wide and may already hold what the real
+    # data dir answered, so drop it on the way in as well as on the way out.
     char_rom.invalidate_cache()
 
 
@@ -70,7 +69,6 @@ def _color_choices(field_name: str) -> tuple[str, ...]:
     raise KeyError(field_name)
 
 
-# ---------------------------------------------------------------- OSD ----------
 class OsdStateTests(unittest.TestCase):
     def test_post_then_current_then_expiry(self):
         osd = scenes.OsdState()
@@ -116,7 +114,6 @@ class OsdStateTests(unittest.TestCase):
         self.assertTrue((bot[100:].astype(int).sum()) > (bot[:100].astype(int).sum()))
 
 
-# ------------------------------------------------ LIVE_CHOICES drift -----------
 class LiveChoicesDriftTests(unittest.TestCase):
     """Every discrete live-tune choice tuple must equal the config-metadata
     choices for the field it maps to (minus the resolve-time "auto"), so the
@@ -148,7 +145,6 @@ class LiveChoicesDriftTests(unittest.TestCase):
             self.assertEqual(cls.LIVE_CHOICES["palette_mode"], _PALETTE_MODE_CHOICES)
 
 
-# --------------------------------------------------- mode setters --------------
 class ModeSetterTests(unittest.TestCase):
     def test_dither_strength_property(self):
         m = MCMDisplayMode()
@@ -174,7 +170,6 @@ class ModeSetterTests(unittest.TestCase):
         self.assertNotEqual(m._penalty_scale, ps0)
         self.assertFalse((m._pal_pairwise == pair0).all())
         self.assertNotEqual(m._quant_hysteresis, hy0)  # rescaled by new penalty
-        # Back to rgb restores.
         m.set_color_match("rgb")
         self.assertFalse(m._perceptual)
         self.assertEqual(m._penalty_scale, ps0)
@@ -274,7 +269,6 @@ class LiveChoiceReadbackTests(unittest.TestCase):
         self.assertIsNone(HiresDisplayMode().get_live_choice("nonesuch"))
 
 
-# -------------------------------------- MIDI mode.<name> holder ----------------
 class _FakeMode:
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
     LIVE_CHOICES = {"dither_method": DITHER_METHODS, "palette_mode": _PALETTE_MODE_CHOICES}
@@ -360,7 +354,6 @@ class MidiModeHolderTests(unittest.TestCase):
         self.assertFalse(pl.live_tracker.has_changes())
 
 
-# ------------------------------------------ live_tune, the shared module -------
 class _FakeEffect:
     LIVE_PARAMS = {"amount": (0.0, 4.0)}
 
@@ -636,7 +629,6 @@ class BlankModeColorLiveTuneTests(unittest.TestCase):
         self.assertEqual(mode.border, 0)
 
 
-# ---------------------------------------------- LiveTuneTracker ----------------
 class LiveTuneTrackerTests(unittest.TestCase):
     def test_record_and_describe(self):
         t = LiveTuneTracker()
@@ -669,7 +661,7 @@ class LiveTuneTrackerTests(unittest.TestCase):
         self.assertEqual(len(applied), 3)
 
     def test_palette_mode_not_persisted(self):
-        # palette_mode is per-scene, not [color]; live-only in Phase 1.
+        # palette_mode is per-scene, not [color], and live-only.
         t = LiveTuneTracker()
         t.record("mode.palette_mode", "percell", "vivid")
         self.assertEqual(t.apply(Config()), [])
@@ -685,10 +677,9 @@ class LiveTuneTrackerTests(unittest.TestCase):
         self.assertEqual(LiveTuneTracker().toml_snippet(), "")
 
     def test_snippet_from_renders_rows_a_caller_already_took(self):
-        # For the surface that shows the row list *and* the snippet in one
-        # payload (`perf_console._tuned_dict`): it used to call toml_snippet(),
-        # which takes its own second snapshot, so a knob turned between the two
-        # reads made the two halves of one frame disagree.
+        # For the surface that renders the row list and the snippet in one
+        # payload: taking a second snapshot inside toml_snippet() let a knob
+        # turned between the two reads make the halves of one frame disagree.
         t = LiveTuneTracker()
         t.record("mode.dither_strength", 0.5, 0.9)
         rows = [r for r in t.pending() if r["field"] is not None]
@@ -737,7 +728,6 @@ class LiveTuneTrackerTests(unittest.TestCase):
         t.record("mode.palette_mode", "cheap", "grayscale", scene=3)
         rows = t.pending()
         self.assertEqual([(r["scene"], r["new"]) for r in rows], [(0, "vivid"), (3, "grayscale")])
-        # And each can be dropped without touching the other.
         self.assertEqual(t.forget(["mode.palette_mode@0"]), 1)
         self.assertEqual([r["scene"] for r in t.pending()], [3])
 
@@ -925,8 +915,7 @@ class BuildSceneLoopAudioStampTests(unittest.TestCase):
         cfg.midi_control = replace(cfg.midi_control, loop_audio=loop_audio)
         s = SceneCfg(type="video", display="mhires", file=vid)
         api = cast("cfgmod.C64Backend", FakeAPI())  # type: ignore[attr-defined]
-        # A sentinel audio streamer is enough — setup() is never called here
-        # (matches the fps/ensemble build_scene tests).
+        # A sentinel audio streamer is enough; setup() is never called here.
         audio = cast("cfgmod.AudioStreamer", object())  # type: ignore[attr-defined]
         return scene_factory.build_scene(s, cfg, api, audio, None)
 

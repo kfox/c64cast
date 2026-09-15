@@ -5,19 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "c64cast"
 version = "0.4.0"
-# `description` and `keywords` mirror the GitHub repo's About blurb and topics.
-# The About field is the source of truth — it is what people see first — so if
-# either is reworded, change it there and here in the same commit. The blurb is
-# longer than a typical PyPI summary and gets truncated in search listings;
-# keeping one blurb in two places is worth more than the trim.
+# Mirrors the GitHub repo's About blurb and topics, which are the source of
+# truth: reword there and here in the same commit.
 description = "Turn a real Commodore 64 into a programmable display + audio device via Ultimate 64 or TeensyROM+ — video, SID-music scopes, webcam, MIDI/ASID synth, WLED, generative visuals, overlays, playlists."
 readme = "README.md"
 requires-python = ">=3.11"   # tomllib is stdlib
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    # The noreply address already in the git history — keeps a personal
-    # address out of published package metadata.
+    # noreply, so a personal address stays out of published package metadata.
     { name = "Kelly Fox", email = "kfox@users.noreply.github.com" },
 ]
 keywords = [
@@ -34,15 +30,12 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# Each platform claimed here is backed two ways, and both halves are needed:
-# a CI leg in the lint-and-test matrix (ubuntu × macos × windows) for the
-# host-side code, since the suite mocks every U64/TeensyROM path, and regular
-# real-hardware use for the pipeline the suite cannot cover. Adding a platform
-# means adding both — keep this list and the CI matrix in sync.
+# Keep the OS and Python classifiers in sync with ci.yml's `lint-and-test`
+# matrix (ubuntu × macos × windows, py3.11-3.14).
 #
-# There is no "License :: OSI Approved :: MIT License" classifier on purpose —
-# PEP 639 license expressions supersede license classifiers, and setuptools
-# hard-errors if both are present.
+# No "License :: OSI Approved :: MIT License" classifier: PEP 639 license
+# expressions supersede license classifiers, and setuptools hard-errors if both
+# are present.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -64,36 +57,19 @@ classifiers = [
     "Typing :: Typed",
 ]
 
-# DEPENDENCY PINNING POLICY. Everything here is a *bounded range*, never `==`.
-# Published metadata is a constraint on the user's environment: an exact pin
-# makes installing c64cast conflict with any env that already has numpy or
-# opencv, which is most of them. Reproducibility comes from `uv.lock`, which
-# still pins exact versions — so CI, `uv sync`, and the dev environment are
-# byte-identical to before; only what we publish loosens.
+# Bounded ranges, never `==`: published metadata constrains the user's
+# environment, and `uv.lock` is where the exact pins live. The shape is
+# `>=known-good,<next-breaking` — the next major for 1.0+, the next minor for
+# 0.x that breaks in minors (sounddevice, mediapipe), and `<1` for widely
+# co-installed 0.x (fastapi, uvicorn, zeroconf), so this package is not the one
+# that makes a user's environment unsolvable.
 #
-# The shape is `>=known-good,<next-breaking`. The floor is the version we
-# actually test against (so nobody resolves to something older than what CI
-# proved works); the ceiling is the next release allowed to break us. For 1.0+
-# projects that is the next major. For 0.x projects it depends on the project:
-# ones that break in minors (sounddevice, mediapipe) get the next minor, while
-# widely co-installed ones that don't (fastapi, uvicorn, zeroconf) get `<1` so
-# we aren't the package that makes a user's env unsolvable.
-#
-# Hard dependencies — without these the package won't import.
-# py65 is hard because the built-in WaveformScene depends on it for
-# host-side SID register-state tracking (the U64's SID is real
-# hardware: writes only, reads return 0, so we run a parallel py65
-# 6502 to recover live $D4xx state). Pure Python, no C extension.
-#
-# The opencv pin binds only when no other opencv wheel is installed. Every
-# variant (contrib, headless) unpacks to the same `site-packages/cv2/` under a
-# different distribution name, so the installer treats them as unrelated and
-# the last one written wins. `vision` pulls mediapipe, which requires
-# opencv-contrib-python, so `[vision]` and `[all]` both resolve this pin and
-# then load a different build. Not fixable from here — a conflict marker would
-# make c64cast[all] unsolvable rather than make contrib go away — so
-# `doctor._probe_opencv_provider` reports the build that actually loaded
-# instead of leaving the divergence silent.
+# Every opencv variant (contrib, headless) unpacks to the same
+# `site-packages/cv2/` under a different distribution name, so the installer
+# treats them as unrelated and the last one written wins: this pin still holds
+# opencv-python's version, but not which build `import cv2` gets. `vision`
+# pulls mediapipe, which requires opencv-contrib-python;
+# `doctor._probe_opencv_provider` reports the build that actually loaded.
 dependencies = [
     "numpy>=2.4.6,<3",
     "opencv-python>=5.0.0.93,<6",
@@ -102,79 +78,42 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Mic capture (the 4-bit SID DAC streaming path).
 mic = ["sounddevice>=0.5.5,<0.6"]
-# Video playback uses PyAV for container demux + audio resampling.
 video = ["av>=18.0.0,<19"]
-# NOTE: there is deliberately no `preview` extra. The local preview window
-# ([preview] enabled) and stream recording ([recording] enabled) both draw on
-# cv2 — HighGUI for the window, VideoWriter for the file — and opencv-python is
-# a hard dep, so both features are always available. The extra used to carry
-# pygame purely as the window backend; it bought nothing cv2 didn't already
-# provide, and its SDL window couldn't be created off the main thread anyway.
-# FastAPI-based HTTP control plane (pause/resume/skip/reload).
 control = ["fastapi>=0.140.0,<1", "uvicorn>=0.51.0,<1"]
-# OBS Studio status overlay (websocket v5).
 obs = ["obsws-python>=1.8.0,<2"]
-# MIDI → SID scene (live MIDI input controls SID voices).
 midi = ["mido>=1.3.3,<2", "python-rtmidi>=1.5.8,<2"]
-# Pretty terminal logging (colored levels + timestamps). Falls back to
-# plain logging.StreamHandler when not installed.
 logging = ["rich>=15.0.0,<16"]
-# TeensyROM+ hardware backend over USB serial (pyserial). The raw-TCP
-# transport (port 2112) needs no extra dependency.
 tr = ["pyserial>=3.5,<4"]
-# Camera-as-input: webcam hand-gesture control (MediaPipe HandLandmarker).
-# opencv/numpy are already hard deps; only mediapipe is extra. Needs a
-# separately-downloaded .task model (see assets/models/README.md).
 vision = ["mediapipe>=0.10.35,<1.1"]
-# Interactive config builder (`c64cast --init`). questionary pulls in
-# prompt_toolkit; both are small pure-Python deps.
 wizard = ["questionary>=2.1.1,<3"]
-# Select a webcam by name / USB VID:PID instead of a fragile cv2 index, and
-# enrich `--list-devices` with camera names + VID:PID + the correct backend
-# index. opencv/numpy are already hard deps; only the enumeration helper is
-# extra. Integer indices keep working with this absent.
 camera = ["cv2-enumerate-cameras>=1.3.3,<2"]
-# URL playback for quick-playback mode (positional MEDIA args). yt-dlp resolves
-# YouTube and other streaming sites to a directly-playable stream URL;
-# direct media URLs play without it (PyAV opens http(s) natively).
-# The one dependency with NO ceiling, deliberately: yt-dlp is network-facing
-# and its site extractors break constantly, so security + functionality both
-# depend on running a recent release. Its CalVer versioning has no "next
-# breaking" number to bound against anyway. Floor is raised to the current
-# known-good version to block a downgrade; the open ceiling lets `uv lock` pull
-# fixes forward.
+# No ceiling: yt-dlp is network-facing, its site extractors break constantly,
+# and CalVer offers no "next breaking" number to bound against. The floor
+# blocks a downgrade.
 yt = ["yt-dlp>=2026.7.4"]
-# WLED bridge Mode 1 (virtual WLED device / control surface): mDNS discovery
-# (zeroconf) + the WLED JSON HTTP/WS API (fastapi + uvicorn, shared with the
-# control plane). `websockets` is required here (not in `control`) because the
-# WLED API's `/ws` endpoint is the primary "is it alive" channel WLED clients
-# use — bare uvicorn has no ASGI websocket implementation, so `/ws` upgrades
-# fail and clients report the device offline even though the JSON REST API
-# works fine. Mode 3 (audio-sync broadcast) is pure stdlib and needs none of
-# this.
+# `websockets` is named explicitly: bare uvicorn ships no ASGI WebSocket
+# implementation, so `/ws` upgrades fail and WLED clients report the device
+# offline even though the JSON REST API works.
 wled = [
     "zeroconf>=0.150.0,<1",
     "fastapi>=0.140.0,<1",
     "uvicorn>=0.51.0,<1",
     "websockets>=16.1.1,<18",
 ]
-# The web console host (`c64cast --serve`): the control plane's server plus the
-# session-lifecycle API and its live state feed. `websockets` must be named
-# here for the same reason `wled` names it: bare uvicorn ships no ASGI
-# WebSocket implementation, so the upgrade fails and the console silently
-# never updates. `zeroconf` is for `console_mdns.py`'s LAN advertisement —
-# lazily imported, so a `web` install missing it just isn't discoverable.
+# `websockets` is named explicitly for the same reason as in `wled`: bare
+# uvicorn ships no ASGI WebSocket implementation, so the upgrade fails and the
+# console never updates. `zeroconf` is control/console_mdns.py's LAN
+# advertisement — lazily imported and logged at DEBUG on ImportError, so a
+# `web` install without it is simply not discoverable.
 web = [
     "fastapi>=0.140.0,<1",
     "uvicorn>=0.51.0,<1",
     "websockets>=16.1.1,<18",
     "zeroconf>=0.150.0,<1",
 ]
-# Everything optional, for users who want the full experience. Hand-maintained,
-# so it must stay exactly the union of every other extra above —
-# tests/test_packaging_metadata.py enforces that so it cannot silently drift.
+# Hand-maintained, and must stay exactly the union of every other extra above
+# — tests/test_packaging_metadata.py enforces it.
 all = [
     "av>=18.0.0,<19",
     "cv2-enumerate-cameras>=1.3.3,<2",
@@ -193,53 +132,27 @@ all = [
     "zeroconf>=0.150.0,<1",
 ]
 [dependency-groups]
-# Dev tools — not published to PyPI. Installed by default via
-# [tool.uv] default-groups; CI pulls them with `--group dev`. Use the uv
-# workflow (`uv sync --all-extras`) rather than `pip install -e .[dev]` —
-# groups are not extras and can't be requested through `.[...]` syntax.
 dev = [
-    "ruff==0.16.6",
+    "ruff==0.16.7",
+    "pre-commit==4.6.2",
     "coverage==7.16.0",
     "mypy==2.3.1",
-    "types-requests==2.33.0.20260712",
-    "pyright==1.1.411",
-    # Validates the generated JSON schema against the example configs in
-    # tests/test_schema.py. Dev-only; the runtime never imports it.
+    "types-requests==2.33.0.20260906",
+    "pyright==1.1.414",
     "jsonschema==4.26.0",
-    # Required by fastapi.testclient (Starlette's TestClient) for the
-    # control-plane end-to-end tests in tests/test_control_plane.py. FastAPI
-    # declares it optional, so the `control` extra doesn't pull it; without it
-    # those 13 tests skip. Dev-only; the runtime never imports it.
+    # fastapi.testclient (Starlette's TestClient) needs it, and FastAPI
+    # declares it optional, so the `control` extra does not pull it.
     "httpx==0.28.1",
-    # Satisfies every @skipUnless(HAVE_MIDI) gate, which tests `import mido`
-    # and nothing else. Named here rather than pulled via the `midi` extra
-    # because that extra also carries python-rtmidi, which has no wheels past
-    # cp312 and so builds from a C++/meson sdist needing the ALSA dev headers —
-    # minutes of CI per leg, and the step that intermittently hung the Linux
-    # legs outright. No test needs it: they patch `c64cast._midi.mido` or use
-    # scripted ports, and never open a real one. mido itself is pure Python and
-    # declares rtmidi only under its optional `ports-rtmidi` extra. Users who
-    # want real MIDI still get both from the `midi` extra, unchanged.
+    # Satisfies the tests' `import mido` gate without the `midi` extra, whose
+    # python-rtmidi has no wheels past cp312 and builds from a C++/meson sdist
+    # needing the ALSA dev headers.
     "mido>=1.3.3,<2",
-    # Draws the reference guide's diagrams in scripts/make_reference_diagrams.py.
-    # Already resolved transitively through matplotlib, but named here because
-    # that script imports it directly. Dev-only; the runtime never imports it.
     "pillow==12.3.0",
-    # JUnit XML reporter for the unittest suite (a unittest.TestRunner
-    # subclass, NOT a different test framework). CI runs the suite through
-    # `python -m xmlrunner discover` so Codecov Test Analytics can ingest the
-    # results. Dev/CI-only; the runtime never imports it.
+    # A unittest.TestRunner subclass, not a second test framework: CI runs the
+    # suite through it for the JUnit XML Codecov Test Analytics ingests.
     "unittest-xml-reporting==4.0.0",
-    # Parallel runner for the stdlib unittest suite (still stdlib unittest,
-    # NOT a different framework). `make test` and the CI unit-test step run
-    # the whole tree through `python -m unittest_parallel -s tests`, which
-    # forks one process per test module (default `--level=module`, so each
-    # module's shared state stays isolated in its own process). The suite is
-    # ~75% blocked on socket timeouts / thread joins, so overlapping those
-    # waits across cores cuts wall time ~3x (20s -> 7s on 16 cores) with
-    # identical results. The `coverage` job stays on serial `xmlrunner`
-    # because that path emits the JUnit XML that Codecov Test Analytics
-    # ingests, which unittest_parallel doesn't produce. Dev/CI-only.
+    # A parallel runner for the stdlib unittest suite, not a second test
+    # framework: one forked process per test module.
     "unittest-parallel==1.8.6",
 ]
 
@@ -248,15 +161,7 @@ c64cast = "c64cast.app.cli:run"
 
 [project.urls]
 Homepage = "https://github.com/kfox/c64cast"
-# The documentation site: all three books plus the standalone user docs,
-# rendered from the same Markdown by .github/workflows/pages.yml on every push
-# to main. It is built from `main` rather than from the tag, which is the right
-# trade for a link read off a PyPI page of any age -- a reader following it
-# wants the current documentation, and every page says which branch it is.
 Documentation = "https://kfox.github.io/c64cast/"
-# Deliberately `releases/latest` rather than a pinned tag: this link is read
-# from a PyPI page that may be any version's, and what a reader wants from it
-# is the current release and its User's Guide PDF.
 Releases = "https://github.com/kfox/c64cast/releases/latest"
 Source = "https://github.com/kfox/c64cast"
 Issues = "https://github.com/kfox/c64cast/issues"
@@ -267,31 +172,12 @@ Videos = "https://www.youtube.com/@c64cast"
 where = ["."]
 include = ["c64cast*"]
 
-# The wheel ships only .py files unless files are listed here.
-#
-# `py.typed` is the PEP 561 marker that tells type checkers our annotations are
-# real — without it consumers see an untyped package, even though we run
-# `mypy --strict` on the state-bearing modules and pyright across the tree.
-#
-# `examples/`, `data/` and `web/dist/` are the reason those trees live *under*
-# the package rather than at the repo root: setuptools can only package files
-# inside a package directory, and an installed user with no checkout still
-# needs the demos (`--config example:NAME`, `--list-examples`), the JSON schema
-# the demos' `#:schema ../data/…` directive points at, and the compiled web
-# console. `web/dist/` is committed build output (sources live in `web/` at the
-# repo root, `make web` compiles them) precisely so `uv sync` never needs Node.
-#
-# `control/*.html` is the performance console page (`perf_console.html`), a
-# hand-written single-file document with no build step — unlike `web/dist/`,
-# which Node compiles. Without this line the wheel ships only the `.py` files
-# and `GET /perf` 500s on a fresh install.
 [tool.setuptools.package-data]
 c64cast = [
     "py.typed",
     "control/*.html",
-    # live_socket.js is spliced into both control pages at render time
-    # (control/page_assets.py), so it has to ship even though nothing serves
-    # it as a file of its own.
+    # Spliced into both control pages at render time (control/page_assets.py),
+    # so it ships even though nothing serves it as a file of its own.
     "control/*.js",
     "wled/*.html",
     "data/*.json",
@@ -301,36 +187,37 @@ c64cast = [
     "web/dist/assets/*",
 ]
 
-# --- ruff ------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
-# Ruff formats fenced Python inside Markdown, which re-wraps the hand-narrowed
-# samples in the three books (their PDF columns are much narrower than the 100
-# ruff targets), so `make fmt` rewrote the docs on every run and never
-# converged. `exclude` here is format-only — unlike `extend-exclude`, it leaves
-# `ruff check`'s view of the tree alone.
+# Format-only, unlike `extend-exclude`: ruff reflows fenced Python inside
+# Markdown, and the books' samples are hand-wrapped for narrower PDF columns.
 [tool.ruff.format]
 exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
-    "E",   # pycodestyle errors
-    "F",   # pyflakes
-    "W",   # pycodestyle warnings
-    "I",   # isort
-    "UP",  # pyupgrade
-    "B",   # bugbear
-    "SIM", # simplify
-    "C4",  # comprehensions
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "C4",   # comprehensions
 ]
 ignore = [
-    "E501",  # line too long — we use 100 but defer to formatter
-    "E731",  # lambda assignment — used intentionally in factories
-    "B008",  # function call in default argument — argparse uses these
-    "SIM117", # nested with: blocks read fine for resource-pair management
+    "E501",  # line length is the formatter's job
+    "E731",  # lambda assignment — factories
+    "B008",  # function call in default argument — argparse
+    "SIM117", # nested with — resource pairs
 ]
+
+# `annotationlib` is stdlib as of 3.14, but ruff classifies imports by
+# `target-version` — py311 here — and would file it as third-party.
+[tool.ruff.lint.isort]
+extra-standard-library = ["annotationlib"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]   # allow late imports inside test methods
@@ -338,18 +225,9 @@ ignore = [
 "c64cast/scenes/generators/__init__.py" = ["E402"]   # ordered submodule imports after the base class
 "c64cast/scenes/scenes.py" = ["E741"]   # `l` for LAB-color split is canonical opencv idiom
 
-# --- uv --------------------------------------------------------------------
 [tool.uv]
 default-groups = ["dev"]
 
-# --- mypy ------------------------------------------------------------------
-# Strict on the state-bearing modules where a type slip would corrupt state:
-# the two backends' transports + clients (api/backend/teensyrom_api,
-# socket_dma/teensyrom_dma), the playlist/scene/config state machines, the
-# ensemble audio-slot coordinator, and the audio/dsp paths. The rest of the
-# codebase is gradually-typed and would explode under --strict; the modes/
-# renderers especially mix numpy with cv2 in ways that don't survive strict checking
-# without heavy annotation noise. Run with `make typecheck`.
 [tool.mypy]
 python_version = "3.11"
 files = [
@@ -377,21 +255,14 @@ files = [
     "c64cast/control/transport.py",
 ]
 strict = true
-# Untyped helpers in the rest of the package are fine as-is; don't
-# cascade strict-mode errors into them.
 follow_imports = "silent"
 
 [[tool.mypy.overrides]]
-# Third-party libs without type stubs.
 module = ["sounddevice", "av", "av.*",
           "uvicorn", "obsws_python", "mido", "py65", "py65.*",
           "serial", "serial.*"]
 ignore_missing_imports = true
 
-# --- pyright ---------------------------------------------------------------
-# Basic mode matches Pylance's VS Code default so editor diagnostics align
-# with CI. mypy --strict still polices the hot modules; pyright catches the
-# broader Pylance-visible mistakes across the rest of the codebase + tests.
 [tool.pyright]
 include = ["c64cast", "tests"]
 pythonVersion = "3.11"
@@ -399,7 +270,6 @@ typeCheckingMode = "basic"
 reportMissingImports = "warning"
 reportMissingTypeStubs = "none"
 
-# --- coverage --------------------------------------------------------------
 [tool.coverage.run]
 source = ["c64cast"]
 branch = true

@@ -108,9 +108,8 @@ class CornerTextOverlay(Overlay):
         raise NotImplementedError
 
     def compose(self, buffers: dict, scene, t: float) -> None:
-        # Throttle the (potentially expensive) compute_strings call, but
-        # paint the cached strings into the buffers EVERY frame — the
-        # scene rewrote the cells under us when it composed its own frame.
+        # compute_strings is throttled, but the cached strings are painted
+        # every frame: the scene rewrote these cells when it composed.
         if (t - self._last_compute_t) >= self.refresh_s:
             new_strings = self.compute_strings(t)
             if new_strings is not None:

@@ -1,6 +1,5 @@
 /** Pure logic behind `TransportBar.svelte`'s time display, loop-button label,
- *  loop-slot enablement and keyboard-tap gesture — pulled out of the
- *  component so it can be unit-tested without mounting Svelte. */
+ *  loop-slot enablement and keyboard-tap gesture. */
 
 import type { LoopState } from "./types";
 
@@ -30,8 +29,7 @@ export interface HoldEvent {
 /** A keyboard-synthesized click (Enter/Space on a focused button) reports
  *  `detail === 0` — there was no pointerdown/up to hold against, so it becomes
  *  a tap: one pressed event immediately followed by one released event.
- *  Returns `null` for a real pointer-driven click, which the hold handlers
- *  already cover. */
+ *  Returns `null` for a real pointer-driven click. */
 export function keyNudgeEvents(detail: number): HoldEvent[] | null {
   if (detail !== 0) return null;
   return [{ pressed: true }, { pressed: false }];

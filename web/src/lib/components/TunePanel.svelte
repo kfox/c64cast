@@ -7,9 +7,7 @@
     knobs: LiveKnob[];
     /** The host's live palette (`introspect.palette_swatches()`), for a
      *  `vocabulary === "c64color"` knob (border/background) to render as
-     *  swatches instead of a `<select>`. Empty falls back to the select — a
-     *  console that hasn't fetched introspection yet still renders something
-     *  a performer can turn. */
+     *  swatches instead of a `<select>`. Empty falls back to the select. */
     palette?: Swatch[];
     readOnly?: boolean;
     onscalar: (target: string, norm: number) => void;
@@ -18,10 +16,9 @@
 
   let { knobs, palette = [], readOnly = false, onscalar, onchoice }: Props = $props();
 
-  /** Grouped the way the host grouped them — `Color pipeline`, `Generator`,
-   *  `Scope` — which is `introspect.live_targets()`'s own grouping and so the
-   *  same one the `--midi-setup` picker offers. Insertion order is kept rather
-   *  than sorted: it is the order the pipeline runs in. */
+  /** Grouped as `introspect.live_targets()` groups them, the same grouping
+   *  `--midi-setup` offers. Insertion order is kept: it is the order the
+   *  pipeline runs in. */
   const groups = $derived.by(() => {
     const out: { name: string; knobs: LiveKnob[] }[] = [];
     for (const knob of knobs) {
@@ -32,8 +29,7 @@
     return out;
   });
 
-  /** A scalar knob as the shape the shared slider reads. The host sends value,
-   *  range and position together, so nothing has to be recomputed here. */
+  /** A scalar knob as the shape the shared slider reads. */
   function slider(knob: LiveKnob): Knob {
     return {
       name: knob.name,
@@ -79,7 +75,8 @@
             {:else}
               <div class="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-center gap-3">
                 <!-- `aria-label` rather than `<label for>`: a param name is
-                     unique within its group but not across the panel. -->
+                     unique within its group but not across the panel, so an
+                     id would collide. -->
                 <span class="truncate font-mono text-xs text-[var(--ink-dim)]">{knob.name}</span>
                 <select
                   aria-label={knob.name}

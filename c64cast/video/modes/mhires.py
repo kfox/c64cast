@@ -80,18 +80,16 @@ def _solid_last(top3: np.ndarray, table: BlendTable) -> np.ndarray:
 
     `top3` arrives sorted ascending, and the widened table lists all 16 solids
     before any pair, so a cell that picked a solid at all has it at position 0
-    and the reorder is a rotation. A cell whose three picks are all pairs has to
-    give one up: it loses the one with the smallest `demotion_cost`, i.e. the
-    pair whose fused color was closest to a real one to begin with, which is the
-    pair that was buying the least.
+    and the reorder is a rotation. A cell whose three picks are all pairs loses
+    the one with the smallest `demotion_cost`.
     """
     rows = np.arange(top3.shape[0])
     has_solid = top3[:, 0] < 16
     slot = np.where(has_solid, 0, table.demotion_cost[top3].argmin(axis=1))
     picked = top3[rows, slot]
     c3 = np.where(has_solid, picked, table.nearest_solid[picked])
-    # The two survivors, re-sorted so an unchanged SET keeps an unchanged order
-    # and the delta cache still skips the cell.
+    # Re-sorted, so an unchanged SET keeps an unchanged order and the delta
+    # cache still skips the cell.
     keep = np.sort(
         np.stack([top3[rows, (slot + 1) % 3], top3[rows, (slot + 2) % 3]], axis=1), axis=1
     )
@@ -121,22 +119,17 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         the most populated entry whose hue is far enough from already-
         chosen picks). Useful when a global mode is needed and the frame
         keeps collapsing to near-shades.
-      "grayscale" — fixed 4-of-5 gray-axis slot assignment in luminance
-        order (black, dark gray, gray, light gray; pure white is dropped
-        for better mid-tone resolution). Adaptive picking from only 5 gray
-        entries flipped the slot order on every frame whenever per-frame
-        counts tie-broke differently, which remapped every pixel in the
-        8 KB bitmap and forced a full re-upload — bytes/frame stayed at
-        ~20 KB and the scene paced at ~13 fps. Fixing the slot order keeps
-        the bitmap stable, lets the chunked delta-cache do its job, and
-        restores the bitmap-mode 30 fps target.
+      "grayscale" — a deliberately FIXED 4-of-5 gray-axis slot assignment in
+        luminance order (black, dark gray, gray, light gray; pure white is
+        dropped for better mid-tone resolution). Adaptive picking from only 5
+        gray entries would reshuffle the slot order on tie-breaks, remapping
+        every pixel in the 8 KB bitmap and forcing a full re-upload: measured
+        at ~20 KB/frame and ~13 fps before the order was fixed.
 
     In cheap and vivid modes, palette indices that didn't win one of the
     4 global slots are LUT-mapped to the nearest of the 4 (in weighted BGR
-    space). The previous code zero-defaulted them, which silently collapsed
-    every "other" color to bg0 and bled large patches of background into
-    the image. Per-cell skips the LUT entirely — every pixel resolves
-    directly against its cell's own {bg0, c1, c2, c3}.
+    space). Per-cell skips the LUT entirely — every pixel resolves directly
+    against its cell's own {bg0, c1, c2, c3}.
 
     use_reu_staged: opt into the REU bank-swap double-buffer pipeline.
       Each frame's bitmap + screen + color RAM are REUWRITE-staged
@@ -145,9 +138,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
       by a C64-side raster IRQ at vblank. The handler then writes the
       new bg0 to $D021 and swaps $DD00 to bring up the new bank.
 
-      Cannot coexist with [audio].use_reu_pump on webcam scenes (both
-      arm $0314); config.validate_scene_cfg rejects the combination at
-      load time. The color RAM DMA writes to shared $D800 mid-handler,
+      Runs alongside [audio].use_reu_pump. Both arm $0314, so setup()
+      installs MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER — the
+      chunked merged dispatcher — whenever audio_reu_pump_active is
+      set. The color RAM DMA writes to shared $D800 mid-handler,
       which produces a brief c3-mismatch window across the bank-swap
       tear line — bounded to one VIC cell row (~8 raster lines) and
       typically imperceptible on real content (color changes between
@@ -156,13 +150,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     name = "mhires"
     # 160 wide is the MCBM pixel grid (anamorphic — displayed stretched to
-    # 320); height 200 exceeds width here, so the decode planner must honor
-    # BOTH axes (see video._plan_decode_size).
+    # 320); height exceeds width here, so the decode planner must honor BOTH
+    # axes (see video._plan_decode_size).
     frame_target_size = (160, 200)
-    # Live-tune surface (see DisplayMode.LIVE_PARAMS). mhires is the richest:
-    # adaptive color fit, spatial dither, per-cell temporal smoothing, and the
-    # full set of discrete choices (dither method, per-cell strategy, color
-    # match, palette mode) are all live.
     LIVE_PARAMS = {
         "dither_strength": (0.0, 2.0),
         "motion_smoothing": (0.0, 1.0),
@@ -176,8 +166,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
     }
 
     # Derived from motion_smoothing (× _penalty_scale) by the property setter
-    # below; declared here so the setter-only writes are visible as instance
-    # attributes (compose() reads them).
+    # below; declared so the setter-only writes are visible as attributes.
     _motion_smoothing: float
     _ema_alpha: float
     _quant_hysteresis: float
@@ -208,13 +197,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         validate_palette_mode(palette_mode)
         validate_cell_strategy(cell_strategy)
         self._auto_fit_strength = float(min(1.0, max(0.0, auto_fit_strength)))
-        # Text overlays render double-wide ("chunky") by default — an 8×8 glyph
-        # spans 2 of the mode's 4px cells (20-col text grid). text_double_height
-        # also stretches it to 16 px tall (12-row grid) for across-the-room
-        # legibility. See text_surface.MHiresTextSurface.
+        # An 8×8 glyph already spans 2 of the mode's 4px cells (a 20-col text
+        # grid); this also stretches it to 16 px tall, for a 12-row grid.
         self.text_double_height = bool(text_double_height)
-        # Forced-palette preset pairs with percell (see cycle_style); when config
-        # opts in, start there regardless of the configured palette_mode.
+        # The forced-palette preset pairs with percell (see cycle_style).
         self._force_palette = bool(force_palette)
         if self._force_palette:
             palette_mode = "percell"
@@ -223,31 +209,15 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._channel_boost, self._hue_corrections = resolve_color_shaping(
             channel_boost, hue_corrections, hue_corrections_replace
         )
-        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
-        # When on, compose() measures nearest-color in Lab (perceptually uniform)
-        # instead of the brightness-weighted BGR metric; the channel_boost + gray
-        # penalty shaping still applies (only the distance space changes). The
-        # gray penalty and the percell code/quant hysteresis all live in d² space,
-        # so scale them to the Lab metric's smaller magnitude to preserve the same
-        # bias/flicker-suppression strength. See palette.quantize_distances_for.
+        # The gray penalty and the percell code/quant hysteresis all live in d²
+        # space, so they are rescaled to the Lab metric's smaller magnitude when
+        # `perceptual` is on, to hold the same bias strength.
         self._perceptual = bool(perceptual)
-        # Flicker blend ([color].flicker_tolerance): hold two screen pages over
-        # one bitmap and alternate them every field. None = off, and every blend
-        # branch is keyed on that rather than a bool so the plain path keeps
-        # running the 16-entry quantizer it always did.
-        #
-        # Only c1 and c2 can carry a pair. They are the two nibbles of the screen
-        # byte, and the screen matrix is what $D018 re-points at each field; c3
-        # lives in color RAM at $D800, which is neither VIC-banked nor reachable
-        # from $D018, and bg0 is the single $D021 register the swap handler
-        # writes once per committed frame. Blending bg0 was measured and dropped
-        # rather than skipped: across the fixture set the frame's most-populated
-        # entry was a solid every time — a solid wins the dominant slot precisely
-        # because it owns the largest region of color space — so the handler
-        # surgery to alternate $D021 would have bought a bit-identical picture.
+        # Only c1 and c2 can carry a blend pair: they are the two nibbles of the
+        # screen byte, which is what $D018 re-points each field. c3 lives in
+        # $D800, which is neither VIC-banked nor reachable from $D018, and bg0
+        # is the single $D021 register the swap handler writes once per frame.
         _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
-        # Parsed here rather than at the call site so a malformed entry raises
-        # where the mode is built, alongside the tolerance's own validation.
         _scored = parse_scoring_pairs(flicker_score_pairs) if flicker_score_pairs else None
         self._blend_table: BlendTable | None = (
             build_blend_table(
@@ -257,62 +227,36 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             else None
         )
         if self._blend_table is not None and cell_strategy != "error-min":
-            # Blending forces the cell fit, the same measured reason hires
-            # forces its own: a blend sits between two solids, so counting how
-            # many pixels landed on each entry splits a cell's population across
-            # neighbors and no slot wins on merit. Picking the trio by summed
-            # reconstruction error instead turns a widened palette that measured
-            # slightly WORSE than the 16 solids on two of seven fixtures into one
-            # that improves or ties on all seven. The fit is what makes the
-            # second screen page pay for itself.
+            # A blend sits between two solids, so counting how many pixels
+            # landed on each entry splits a cell's population across neighbors
+            # and no slot wins on merit.
             log.info(
                 "mhires: flicker blend forces cell_strategy=error-min "
                 "(a frequency pick fragments across the widened palette)"
             )
             cell_strategy = "error-min"
         if self._blend_table is not None and not self._perceptual:
-            # Same finding as hires: a blend's fused color is a linear-light
-            # average and its eligibility is a Lab gap, so fitting in
-            # weighted-BGR optimizes a different space than the extra entries
-            # live in, and the widened palette can measure worse than the 16
-            # solids. Forced rather than refused — color_match's own default
-            # already resolves here, so this only fires on an explicit "rgb".
+            # A blend's fused color is a linear-light average and its
+            # eligibility is a Lab gap, so weighted-BGR fits a different space
+            # than the extra entries live in.
             log.info("mhires: flicker blend forces color_match=perceptual (blends are Lab-defined)")
             self._perceptual = True
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
-        # Cached rather than recomputed in compose()'s per-frame hot path: it
-        # depends only on _gray_penalty and the (immutable once built) blend
-        # table, so it only needs to change when set_palette_mode re-derives
-        # _gray_penalty.
+        # Depends only on _gray_penalty and the immutable blend table, so it is
+        # rebuilt only when set_palette_mode re-derives _gray_penalty.
         self._entry_penalty_cache: np.ndarray | None = (
             self._entry_penalty(self._blend_table) if self._blend_table is not None else None
         )
-        # Temporal-smoothing knob ([color].motion_smoothing, 0..1). The percell
-        # path carries two flicker-suppression buffers that trade motion-tracking
-        # for frame-to-frame stability: the per-cell color-count EMA and the
-        # per-pixel/per-cell decision hysteresis. Both cause an after-image on
-        # hard cuts (an outline from the previous shot lingering as the buffers
-        # decay). `motion_smoothing` scales BOTH together — 1.0 = full (legacy)
-        # smoothing (most stable, most ghost); 0.0 = none (tracks the source
-        # exactly, but flickers on noisy content). HW A/B established that the
-        # hysteresis is the dominant ghost source, the EMA the secondary one, so
-        # a single dial over both is the right control. See docs/architecture.md.
-        # Derives _ema_alpha + the two hysteresis bonuses from _penalty_scale
-        # (set just above) — the `motion_smoothing` property setter, reused so the
-        # live knob re-derives them identically. See its definition below.
+        # The property setter, reused so the live knob and the config path
+        # derive _ema_alpha and the two hysteresis bonuses identically. Reads
+        # _penalty_scale, set just above.
         self.motion_smoothing = motion_smoothing
         self._dither_method = dither_method
         self._dither_strength = dither_strength
-        # Per-cell 3-color selection strategy for the percell path (see
-        # CELL_STRATEGIES / pick_cell_colors). Orthogonal to palette_mode
-        # (which only decides percell-vs-global) and to dither (which decides
-        # the per-pixel fill after the 3 colors are chosen).
         self._cell_strategy = cell_strategy
-        # Per-palette pairwise distances (no penalty — this is for the
-        # "snap unused indices to their nearest of the 4 winners" remap,
-        # which is a pure color-space neighbor query, not a chromatic-
-        # preference question. Match the active metric so the remap agrees
-        # with the per-pixel picks.
+        # No penalty: the "snap unused indices to their nearest winner" remap is
+        # a pure neighbor query. Matches the active metric so it agrees with the
+        # per-pixel picks.
         self._pal_pairwise = quantize_distances_for(
             C64_PALETTE_BGR, perceptual=self._perceptual
         )  # (16, 16)
@@ -320,40 +264,25 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._fixed_slots: tuple[int, ...] | None = None
         self._fixed_lut: np.ndarray | None = None
         self._apply_grayscale_fixed_slots()
-        # EMA-smoothed counts for cheap/vivid/percell global picks; see
-        # base.PALETTE_PICK_EMA_ALPHA.
         self._smoothed_counts: np.ndarray | None = None
-        # EMA-smoothed per-cell counts for percell top-3 picks; see
-        # base.PERCELL_PICK_EMA_ALPHA. Shape (1000, 16), float32.
+        # (1000, 16) float32.
         self._smoothed_cell_counts: np.ndarray | None = None
-        # Per-pixel bitmap-code hysteresis state for the percell path: the
-        # previous frame's cell candidate sets (1000, 4) and per-pixel codes
-        # (1000, 32). The hysteresis only applies to cells whose cand is
-        # bit-identical to last frame — when the cell's {bg0,c1,c2,c3}
-        # changes, the codes (0..3) point at different palette entries and
-        # the previous codes are meaningless, so we fall back to argmin.
+        # Previous frame's cell candidate sets (1000, 4) and per-pixel codes
+        # (1000, 32). The code hysteresis applies only to cells whose cand is
+        # bit-identical to last frame: once {bg0,c1,c2,c3} changes, the codes
+        # 0..3 point at different entries and the previous ones are meaningless.
         self._last_cand: np.ndarray | None = None
         self._last_codes: np.ndarray | None = None
-        # Per-pixel previous-frame palette index for the percell path. See
-        # base.PERCELL_QUANT_HYSTERESIS_BONUS. Shape (32000,) int64.
+        # (32000,) int64.
         self._last_quantized: np.ndarray | None = None
-        # Previous frame's error-min trio (see base.ERROR_MIN_HYSTERESIS_MARGIN).
-        # Only error-min consumes it; other strategies leave it unread. Shape
-        # (1000, 3) int64.
+        # (1000, 3) int64. Only error-min reads it back.
         self._last_error_trio: np.ndarray | None = None
-        # Sticky bg0 for the percell path (see BG0_HYSTERESIS_MARGIN). None =
-        # no prior pick, so the first frame takes the raw argmax.
+        # None = no prior pick, so the first frame takes the raw argmax.
         self._bg0: int | None = None
-        # Opt-in REU bank-swap pipeline. See MHIRES_BANK_SWAP_IRQ_HANDLER
-        # and push_mhires_via_reu for the per-frame mechanics. When the
-        # scene also opts into [audio].use_reu_pump, setup() installs the
-        # merged dispatcher (MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER)
-        # which JMPs to the audio pump at $C100 on non-raster IRQs.
         self.use_reu_staged = use_reu_staged
-        # Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): tear-free
-        # bitmap+screen via off-screen-bank writes + a vblank $DD00 flip. Color
-        # RAM ($D800) is shared/un-banked so the c3 slot still tears briefly;
-        # mutually exclusive with use_reu_staged (resolve_double_buffer ensures).
+        # Color RAM ($D800) is shared and un-banked, so the c3 slot still tears
+        # briefly. Mutually exclusive with use_reu_staged
+        # (resolve_double_buffer ensures it).
         self.double_buffer = double_buffer
         self.audio_reu_pump_active = audio_reu_pump_active
         self._displayed_bank = 0
@@ -403,7 +332,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         )
         return self.set_palette_mode(api, new_mode, force_palette=new_force)
 
-    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
     @property
     def dither_strength(self) -> float:
         return self._dither_strength
@@ -418,28 +346,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
 
     @motion_smoothing.setter
     def motion_smoothing(self, value: float) -> None:
-        # Re-derive the temporal flicker-suppression buffers from the dial: the
-        # per-cell color-count EMA weight and the per-pixel/per-cell decision
-        # hysteresis (in d² space, so × _penalty_scale). 1.0 = full (legacy)
-        # smoothing; 0.0 = none. Identical math to __init__ (which calls this)
-        # so the live knob and the config path stay in lockstep.
-        #
-        # base.ERROR_MIN_HYSTERESIS_MARGIN is deliberately NOT scaled by `s`
-        # here, unlike the three above. Those trade motion-tracking speed for
-        # stability — an EMA/hysteresis smooths across real frame-to-frame
-        # change too, not just noise, hence "0.0 tracks the source exactly."
-        # The error-min margin only breaks near-ties between two candidate
-        # trios that already score almost identically; a genuinely better
-        # trio's error improvement clears even a much larger margin on a
-        # single frame (measured offline — see that constant's comment), so
-        # there is no motion cost to scale away. Scaling it by `s` anyway left
-        # it at ~0.06 under the config default (motion_smoothing 0.25), too
-        # weak to suppress the near-tie flicker it exists for.
-        #
-        # Gating this to blend-armed scenes lives at the _compose_percell call
-        # site, not here — that's the single place the value is used, and
-        # keeping the gate there avoids two copies of the same condition
-        # drifting apart.
+        # base.ERROR_MIN_HYSTERESIS_MARGIN is NOT scaled by `s`, unlike the
+        # three below: it only breaks near-ties, so it costs no motion tracking
+        # to scale away, and scaling it left it at ≈0.06 under the config
+        # default of 0.25 — too weak for the flicker it exists to suppress.
         s = min(1.0, max(0.0, float(value)))
         self._motion_smoothing = s
         self._ema_alpha = 1.0 - s * (1.0 - base.PERCELL_PICK_EMA_ALPHA)
@@ -474,24 +384,18 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             return "color_match=perceptual (pinned by flicker_tolerance)"
         self._perceptual = value == "perceptual"
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
-        # Re-derive the hysteresis at the new penalty scale (keeps motion_smoothing).
+        # Re-derive the hysteresis at the new penalty scale.
         self.motion_smoothing = self._motion_smoothing
         self._pal_pairwise = quantize_distances_for(C64_PALETTE_BGR, perceptual=self._perceptual)
         return f"color_match={value}"
 
     def setup(self, api):
         super().setup(api)
-        # Single-buffer bring-up clears $2000+$0400 before the $D011 flip (engage
-        # clean-field — see engage_bitmap_mode); the REU / host-DMA double-buffer
-        # paths zero both VIC banks themselves below (clear=False). border ($D020)
-        # AND bg0 ($D021) = black on EVERY path so the pre-first-frame screen is
-        # solid black (a zeroed mhires bitmap is all-%00 → bg0). On the REU path
-        # this is a deliberate belt-and-braces write: the swap-tracker IRQ only
-        # writes $D021 on the first REAL swap (frame tracker's ready flag starts
-        # zeroed — see install_bank_swap_irq), so without this the screen would
-        # show whatever the previous scene left in $D021 (e.g. a stale blue) for
-        # every frame between this setup() and that first swap. The IRQ still
-        # owns $D021 from the first real swap onward; this just closes the gap.
+        # The double-buffer paths zero both VIC banks themselves below. border
+        # and bg0 are black on EVERY path, because a zeroed mhires bitmap is
+        # all-%00 → bg0: on the REU path the swap-tracker IRQ writes $D021 only
+        # on the first REAL swap (the ready flag starts zeroed — see
+        # install_bank_swap_irq), so this closes the gap until then.
         single_buffer = not self.use_reu_staged and not self.double_buffer
         engage_bitmap_mode(
             api,
@@ -509,16 +413,14 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_error_trio = None
         self._bg0 = None
         if not self.use_reu_staged:
-            # _last_bg tracks the host-written $D021 (single-buffer only — the
-            # double-buffer path flips $D021 via the swap tracker instead).
+            # _last_bg tracks the host-written $D021; the double-buffer path
+            # flips $D021 via the swap tracker instead.
             self._last_bg = 0
         if self._blend_table is not None:
-            # Bank-swapping double-buffer with a second screen page per bank and
-            # the field-alternating swap IRQ. self.double_buffer stays False for
-            # this: the plain host-DMA path installs a swap handler with no $D018
-            # phase toggle, and the two cannot share $0314. The handler itself is
-            # the hires one unmodified — it already writes bg0 to $D021, which
-            # hires ignores and mhires needs.
+            # self.double_buffer stays False: the plain host-DMA path installs a
+            # swap handler with no $D018 phase toggle, and the two cannot both
+            # own $0314. The handler is the hires one unmodified — it already
+            # writes bg0 to $D021, which hires ignores and mhires needs.
             self._setup_flicker_doublebuffer(api)
             self._log_flicker_arming(
                 self._blend_table, blendable="c1 + c2 (c3 is $D800 and bg0 is $D021 — both solid)"
@@ -531,9 +433,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                     self.palette_mode,
                 )
         if self.double_buffer:
-            # Host-DMA double-buffer: zero both banks + install the minimal
-            # vblank swap IRQ (no REU). Bitmap+screen go tear-free; the shared
-            # $D800 color RAM still tears briefly (the c3 slot) before each flip.
             self._setup_hostdma_doublebuffer(api)
             log.info(
                 "mhires: host-DMA double-buffer armed (bank 0 ↔ bank 2, "
@@ -544,11 +443,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             )
         if self.use_reu_staged:
             self._last_bg = None
-            # Zero both banks' bitmap + screen so the off-screen bank doesn't
-            # show garbage on the first swap. Color RAM ($D800) isn't banked
-            # — the first IRQ after install overwrites it from REU, so the
-            # one-frame stale window (post-reset $D800 contents through
-            # whatever the prior scene left there) is acceptable.
+            # So the off-screen bank shows no garbage on the first swap. $D800
+            # is not banked, so it keeps whatever the prior scene left there
+            # until the first IRQ overwrites it from REU.
             zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
             zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
             api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)
@@ -580,11 +477,10 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
             uninstall_bank_swap_irq(api)
             if self._blend_table is not None:
-                # uninstall restores $DD00 but not $D018, and the flicker handler
-                # may have left it on the $0C00 page. Nothing else re-asserts it
-                # on the way into a char scene, which would then read its matrix
-                # from the wrong offset. Safe only after uninstall — before it,
-                # the next field's IRQ would put the page value straight back.
+                # uninstall restores $DD00 but not $D018, which the flicker
+                # handler may have left on the $0C00 page — a char scene would
+                # then read its matrix from the wrong offset. Only safe after
+                # uninstall: before it, the next field's IRQ restores the page.
                 api.write_memory(f"{VIC.D018_MEMORY:04X}", "14")
             api.invalidate_cache()
 
@@ -604,13 +500,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         forced = self._force_palette and self._color_map is not None
         # Blending needs the per-cell slot pick: the global-4 modes choose one
         # set for the frame, and grayscale's slots are fixed on purpose (see the
-        # class docstring), so neither has a per-cell decision for a pair to win.
-        # The forced-palette remap opts out for a different reason — it exists to
-        # emit exactly the colors it was given, and a blend is not one of them.
+        # class docstring), so neither has a per-cell decision for a pair to
+        # win. The forced-palette remap emits exactly the colors it was given,
+        # and a blend is not one of them.
         table = self._blend_table if self.palette_mode == "percell" and not forced else None
         if forced:
-            # Forced-palette remap: emit exact C64 colors and skip the faithful
-            # shaping stages + gray penalty (the remap already chose each color).
+            # The remap already chose each color, so the shaping stages and the
+            # gray penalty are skipped.
             assert self._color_map is not None
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             d = quantize_distances(flat)
@@ -619,7 +515,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             if fit is not None:
                 img = apply_color_fit(img, fit)
             img = boost_saturation(img, self._sat_factor)
-            # Global [color] shaping: hue-band corrections then per-channel boost.
             img = apply_hue_corrections(img, self._hue_corrections)
             flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
@@ -627,8 +522,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 w, h = self.frame_target_size
                 offset = offset_fn(h, w, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            # In-place gray-penalty add (scaled to the active metric) avoids a
-            # second (N,16) float32 alloc.
             if table is None:
                 d = quantize_distances_for(flat, perceptual=self._perceptual)
                 d += self._gray_penalty * self._penalty_scale
@@ -653,10 +546,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         }
         if self._blend_table is None:
             return buffers
-        # Armed but not blending this frame (a global palette_mode, or the
-        # forced-palette remap) still owes push() a second page: the handler
-        # alternates whatever is in the two pages regardless, so the B page has
-        # to be a real copy rather than left holding the last blended frame.
+        # Armed but not blending this frame still owes push() a second page: the
+        # handler alternates whatever the two pages hold, so B must be a real
+        # copy rather than the last blended frame's leftovers.
         flicker = cast(MHiresFlickerComposeBuffers, buffers)
         flicker["screen_b"] = screen_ram if screen_b is None else screen_b
         return flicker
@@ -668,11 +560,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         color_bytes = buffers["color"].tobytes()
         if self._blend_table is not None:
             # Both pages plus the shared bitmap into the off-screen bank, then
-            # color RAM into the SHARED $D800 (same brief c3 tear as the plain
-            # host-DMA double-buffer — one copy serves both banks and both
-            # fields), then arm. The field alternation is already free-running
-            # against the displayed bank, so this stages a whole new pair set and
-            # the next phase-0 vblank brings it up in one piece.
+            # color RAM into the shared $D800 (one copy serves both banks and
+            # both fields, hence the brief c3 tear), then arm. The alternation
+            # free-runs, so the next phase-0 vblank brings the pair set up whole.
             (
                 target,
                 bm_addr,
@@ -697,11 +587,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._displayed_bank = target_bank
             return
         if self.double_buffer:
-            # Host-DMA double-buffer: bitmap+screen into the off-screen bank
-            # (per-bank delta cache), then color RAM into the SHARED $D800 LAST
-            # — written just before arming so its brief c3 tear on the still-
-            # displayed bank is minimal — then arm the vblank swap. bg0 flips
-            # via the tracker IRQ (atomic with $DD00), so no host $D021 write.
+            # Color RAM goes into the shared $D800 LAST, just before arming, so
+            # its c3 tear on the still-displayed bank is as short as possible.
+            # bg0 flips via the tracker IRQ, atomic with $DD00.
             target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(scr_addr, screen_bytes, region_id=scr_id)
@@ -742,19 +630,12 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 picks = pick_diverse_top_n(smoothed, 4)
             else:
                 picks = [int(x) for x in np.argsort(smoothed)[-4:]]
-            # Sort by palette index so the slot order is determined by
-            # the chosen SET, not by which entry happened to have the
-            # highest smoothed count. Without this, even a stable SET
-            # flips slot order whenever count rank shuffles, which
-            # rewrites screen + color RAM + bg registers every frame and
-            # shows up as a rapid palette flicker on the C64 output.
+            # Sorted by palette index, so the slot order follows the chosen SET
+            # rather than the count ranking: a stable SET then holds a stable
+            # order and the delta cache keeps skipping.
             bg0, c1, c2, c3 = sorted(picks)
-            # Build a 16-entry LUT mapping every palette index to the
-            # chosen slot (0..3) whose color is closest in weighted BGR
-            # space. This remaps the ~12 unused palette indices to a
-            # sensible neighbor instead of zero-defaulting them to bg0.
-            # For the 4 chosen indices the argmin trivially returns their
-            # own slot.
+            # Every palette index → the nearest chosen slot, so the ~12 unused
+            # indices land on a neighbor rather than defaulting to bg0.
             chosen = [bg0, c1, c2, c3]
             lut = np.argmin(self._pal_pairwise[:, chosen], axis=1).astype(np.uint8)
         mapped = lut[quantized].reshape(200, 160)
@@ -797,13 +678,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         n_entries = d.shape[1]
         quantized = np.argmin(d, axis=1)  # (32000,) entry idx
 
-        # Per-pixel decision hysteresis on the palette index: if the
-        # previous frame's choice is within base.PERCELL_QUANT_HYSTERESIS_BONUS
-        # of the new minimum distance, keep it. Stabilizes the per-pixel
-        # argmin against sensor noise / sub-pixel-shake aliasing on
-        # textured static subjects (striped rug, slatted blinds) WITHOUT
-        # smearing motion: a real color change moves d² by far more than
-        # the bonus, so the new index wins on a single frame.
+        # Keep the previous frame's palette index while it stays within
+        # base.PERCELL_QUANT_HYSTERESIS_BONUS of the new minimum distance.
         if self._last_quantized is not None and self._last_quantized.shape == quantized.shape:
             idx = np.arange(quantized.size)
             d_last = d[idx, self._last_quantized]
@@ -812,22 +688,13 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             quantized = np.where(keep, self._last_quantized, quantized)
         self._last_quantized = quantized
 
-        # bg0 = most-populated palette index across the frame, EMA-smoothed
-        # so a few-pixel reshuffle at a chromatic-vs-gray boundary doesn't
-        # flip bg0 (and with it, every cell's screen+color RAM byte). On top
-        # of the EMA, apply relative hysteresis (BG0_HYSTERESIS_MARGIN): keep
-        # the current bg0 unless a challenger's smoothed count beats it by the
-        # margin, so near-tied dominants (mostly-black video + a bright moment,
-        # or pillarbox bars) stop strobing $D021 every frame while a *sustained*
-        # dominant shift still moves bg0.
+        # bg0 is the most-populated palette index, EMA-smoothed and then held by
+        # BG0_HYSTERESIS_MARGIN, so near-tied dominants stop strobing $D021.
         smoothed = ema_counts(self, quantized, n_entries)
-        # bg0 is the $D021 register, one value for both fields, so it can only
-        # be a real color however the counts fall. Costs nothing measurable: the
-        # most-populated entry is a solid on real content anyway, because a solid
-        # owns a larger region of color space than any pair squeezed between two
-        # of them.
+        # bg0 is $D021, one value for both fields, so under blending it is
+        # restricted to the 16 solids however the counts fall.
         cand = int(np.argmax(smoothed if table is None else smoothed[:16]))
-        # Short-circuit keeps the margin index safe when there's no prior bg0.
+        # The short-circuit keeps the margin index safe with no prior bg0.
         prev = self._bg0
         if (
             prev is None
@@ -839,7 +706,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             bg0 = prev
         self._bg0 = bg0
 
-        # Per-cell histogram: group into (1000, 32) cell-major layout.
+        # (1000, 32) cell-major layout.
         cells = quantized.reshape(25, 8, 40, 4).transpose(0, 2, 1, 3).reshape(1000, 32)
         d_cell = (
             d.reshape(25, 8, 40, 4, n_entries).transpose(0, 2, 1, 3, 4).reshape(1000, 32, n_entries)
@@ -852,68 +719,32 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             .reshape(1000, n_entries)
             .astype(np.float32)
         )
-        # EMA-smooth so a 1-2 pixel reshuffle from sensor noise on a flat
-        # cell doesn't flip the 3rd top-3 slot every frame. The raw counts
-        # are stored across all 16 entries (bg0 included) so a future bg0
-        # change just remasks — the old-bg0's accumulated count stays valid
-        # the moment it becomes pickable again.
+        # Counts are kept across all 16 entries, bg0 included, so a bg0 change
+        # is just a remask and the old bg0's history stays valid.
         if self._smoothed_cell_counts is None:
             self._smoothed_cell_counts = cell_counts_raw
         else:
-            a = self._ema_alpha  # scaled by [color].motion_smoothing (see __init__)
+            a = self._ema_alpha  # scaled by [color].motion_smoothing
             self._smoothed_cell_counts = (
                 self._smoothed_cell_counts * (1.0 - a) + cell_counts_raw * a
             )
         cell_counts = self._smoothed_cell_counts.copy()
-        # Exclude bg0 from the per-cell pick — its slot is free via the %00
-        # code, so wasting one of c1/c2/c3 on it would shrink the cell's
-        # palette to 3.
+        # bg0's slot is free via the %00 code, so spending one of c1/c2/c3 on it
+        # would shrink the cell's palette to 3.
         cell_counts[:, bg0] = -1.0
-        # Top 3 candidate indices per cell. argpartition grabs the 3 highest
-        # counts, but a cell with fewer than 3 genuinely-present non-bg0 colors
-        # — very common, since most cells are mostly bg0 with 0-2 accents, and
-        # a small forced palette ([0,4,6,14]) makes it the norm — leaves the
-        # surplus slots holding ARBITRARY zero-count palette indices. Those
-        # filler indices are poison: (a) they can be a color OUTSIDE the
-        # forced palette (e.g. green=5 leaking into a black/purple/blue cast),
-        # and (b) they shuffle frame-to-frame (argpartition tie order + EMA
-        # jitter on the near-zero counts), which flips the sorted slot position
-        # of the real colors and so rewrites screen/color RAM + bitmap codes
-        # every frame on an otherwise-static cell.
+        # pick_cell_colors applies the absent→bg0 poison-filler guard: a cell
+        # with fewer than 3 present non-bg0 colors would otherwise carry
+        # arbitrary zero-count indices in the surplus slots, which can be
+        # outside a forced palette and shuffle frame to frame. They are never
+        # selected in steady state, but push() ships screen/color/bitmap as
+        # three NON-ATOMIC writes, so on a slow transport the VIC can render one
+        # against a stale neighbor mid-frame.
         #
-        # In steady state the garbage is never *selected* — present pixels
-        # resolve to their own in-set color, so the filler slot stays unused
-        # and invisible. But push() ships screen ($0400) / color ($D800) /
-        # bitmap ($2000) as three NON-ATOMIC writes; on a slow transport
-        # (TeensyROM serial, ~10 KB/frame ack-gated) the VIC can read a new
-        # bitmap byte against a still-stale screen/color byte mid-frame and
-        # briefly render the garbage filler — the green-square flicker (and,
-        # on letterboxed video, the all-bg0 edge cells flashing = the
-        # "flashing border"). On the U64's fast DMA the tear window is too
-        # small to see, which is why it's TR-specific.
-        #
-        # Fix: replace any pick whose smoothed count is 0 (never present in
-        # this cell) with bg0. screen/color RAM then only ever carries colors
-        # genuinely present in the cell — so nothing outside the source's
-        # color set can leak — and the absent slots become a deterministic
-        # bg0, so present colors stop churning slots. bg0 in a filler slot is a
-        # harmless duplicate: the %00 code already reaches bg0, and the
-        # per-pixel argmin breaks ties to the real bg0 at slot 0.
-        #
-        # _cell_strategy decides WHICH 3 present colors fill c1/c2/c3 (frequency
-        # / luminance / contrast / error-min — see pick_cell_colors). All keep
-        # the absent→bg0 poison-filler guard above.
-        #
-        # prev_trio/margin are gated on blending explicitly here, not just via
-        # _error_min_margin defaulting to 0.0 in the motion_smoothing setter:
-        # the near-tie rate that justifies the hysteresis (ERROR_MIN_HYSTERESIS_MARGIN's
-        # comment) was only ever measured for a blend pair's fused color sitting
-        # close to a solid or another pair. Plain error-min (a user-selected
-        # cell_strategy with no blend armed) was never profiled for the same
-        # near-tie rate, so it keeps the old raw per-frame argmin outright
-        # rather than inheriting stickiness through an unenforced margin=0.0
-        # coincidence that a future pool-size or metric change could quietly
-        # break.
+        # `_error_min_margin` is always the constant, so the blend gate lives
+        # here, at the one place the value is used: the near-tie rate that
+        # justifies the hysteresis was only measured for a blend pair's fused
+        # color sitting close to a solid or another pair, so a user-selected
+        # error-min with no blend armed keeps the raw per-frame argmin.
         blend_prev_trio = self._last_error_trio if self._blend_table is not None else None
         blend_margin = self._error_min_margin if self._blend_table is not None else 0.0
         top3 = pick_cell_colors(
@@ -925,25 +756,19 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             blend_prev_trio,
             blend_margin,
         )
-        # error-min's own temporal hysteresis (see base.ERROR_MIN_HYSTERESIS_MARGIN)
-        # needs this frame's winning trio for next frame's comparison; harmless to
-        # store unconditionally since other strategies never read it back.
         self._last_error_trio = top3
-        # Sort by palette index for delta-cache stability (otherwise the slot
-        # order would flip even when the chosen SET is identical).
+        # Sorted by palette index for delta-cache stability: otherwise the slot
+        # order flips even when the chosen SET is identical.
         top3 = np.sort(top3, axis=1)
         if table is not None:
             top3 = _solid_last(top3, table)
         cand = np.column_stack([np.full(1000, bg0, dtype=np.int64), top3])  # (1000, 4)
 
         if self._dither_method in ("floyd-steinberg", "atkinson"):
-            # Re-dither each cell's own 8×4 pixels against its resolved
-            # candidate set {bg0, c1, c2, c3} — candidate SELECTION (cand,
-            # above) stays on the EMA-smoothed histogram + hysteresis for
-            # temporal stability; only the per-pixel fill dithers. No
-            # cross-frame code hysteresis here: error diffusion recomputes
-            # its own state from scratch each frame (see dither.py), so the
-            # previous frame's codes aren't meaningful to blend in.
+            # Only the per-pixel fill dithers; candidate selection stays on the
+            # EMA-smoothed histogram. No cross-frame code hysteresis: error
+            # diffusion rebuilds its own state each frame, so the previous
+            # frame's codes mean nothing here.
             pixels_cell = (
                 flat.reshape(25, 8, 40, 4, 3).transpose(0, 2, 1, 3, 4).reshape(1000, 8, 4, 3)
             )
@@ -955,19 +780,15 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._last_codes = codes.reshape(1000, 32)
             self._last_cand = cand
         else:
-            # Per-cell-pixel distance to the 4 candidates (gather, not broadcast).
+            # Gather, not broadcast.
             d_cand = np.take_along_axis(
                 d_cell, cand[:, None, :].repeat(32, axis=1), axis=2
             )  # (1000,32,4)
             codes = d_cand.argmin(axis=2).astype(np.uint8)  # 0..3
 
-            # Per-pixel hysteresis: keep the previous frame's code when it's
-            # within base.PERCELL_CODE_HYSTERESIS_BONUS of the new minimum distance,
-            # but only for cells whose cand is bit-identical to last frame (a
-            # change in any cand slot means the codes 0..3 no longer point at
-            # the same palette entries they did last frame, so previous codes
-            # are meaningless). Suppresses the per-pixel boundary flicker that
-            # remains after the per-cell EMA stabilizes {bg0,c1,c2,c3}.
+            # Keep the previous frame's code while it stays within
+            # base.PERCELL_CODE_HYSTERESIS_BONUS of the new minimum, but only
+            # for cells whose cand is bit-identical to last frame.
             if self._last_codes is not None and self._last_cand is not None:
                 cell_unchanged = np.all(cand == self._last_cand, axis=1)  # (1000,) bool
                 if cell_unchanged.any():
@@ -984,7 +805,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._last_cand = cand
             codes_rc = codes.reshape(1000, 8, 4)
 
-        # Pack into bitmap layout: 8 rows × 4 px per cell → 8 bytes per cell.
+        # 8 rows × 4 px per cell → 8 bytes per cell.
         bitmap_ram = (
             (
                 (codes_rc[..., 0] << 6)
@@ -1000,10 +821,9 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         if table is None:
             screen_ram = ((top3[:, 0] << 4) | top3[:, 1]).astype(np.uint8)
             return bitmap_ram, screen_ram, top3[:, 2].astype(np.uint8), bg0, None
-        # Blending: c1 and c2 split into the color each field shows, c3 is
-        # already a real color (_solid_last put one there). A slot holding a
-        # solid writes the same nibble to both pages and simply doesn't
-        # alternate, so no branch is needed for the mixed case.
+        # c1 and c2 split into the color each field shows; _solid_last already
+        # put a real color in c3. A slot holding a solid writes the same nibble
+        # to both pages, so the mixed case needs no branch.
         c1_a, c1_b = table.field_pages(top3[:, 0])
         c2_a, c2_b = table.field_pages(top3[:, 1])
         screen_ram = ((c1_a << 4) | c2_a).astype(np.uint8)

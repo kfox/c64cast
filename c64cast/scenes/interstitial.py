@@ -35,8 +35,8 @@ RAINBOW_COLORS = [
     C64_COLORS["orange"],
 ]
 
-# Solid C64 palette colors that read well on a black background. Used when
-# text_color is "random". Skips dark gray, brown, dark blue.
+# The palette entries that read on a black background: no dark gray, brown or
+# dark blue. Used when text_color is "random".
 LEGIBLE_COLORS = [
     C64_COLORS["white"],
     C64_COLORS["yellow"],
@@ -96,26 +96,15 @@ class InterstitialScene(Scene):
             self.cfg.text_color,
             self.duration_s,
         )
-        # Mode switch — drop the dirty cache or we may suppress a needed
-        # frame-0 write that happens to look identical to the last scene.
+        # A mode switch, so the dirty cache would otherwise suppress a needed
+        # frame-0 write that happens to match the last scene.
         self.api.invalidate_cache()
-        # Defeat any lingering bitmap-scene raster IRQ before painting char
-        # mode. A preceding hires/mhires double-buffer scene hooks $0314 to a
-        # bank-swap handler that flips $DD00 (VIC bank 0 ↔ 2) every frame. Its
-        # teardown unhooks it, but a CTRL-skip can race that teardown and leave
-        # the handler live: because $D019's raster flag latches every frame
-        # regardless of $D01A, ANY IRQ (incl. the CIA #1 jiffy) still vectors
-        # through $C500, sees the raster bit, and re-flips $DD00 to bank 2 —
-        # right after we'd reset it. The VIC then reads its matrix from $8400
-        # (bank 2) and the card shows a screenful of the previous bitmap's
-        # leftover bytes as wrong glyphs, stable for its whole duration.
-        # So unhook the handler FIRST (restoring $0314 → $EA31 makes it
-        # unreachable by any IRQ), then disable the raster source, ack the
-        # latched flag, and only then pin the bank — order matters so nothing
-        # can re-flip $DD00 after the pin. Idempotent + safe: the interstitial
-        # is host-DMA char mode needing only the kernal jiffy IRQ (keyboard
-        # scan), so forcing the kernal vector never breaks anything here.
-        # See modes_irq.uninstall_bank_swap_irq.
+        # Defeat a leaked bitmap-scene bank-swap raster IRQ, in this order:
+        # unhook the handler (restoring $0314 → $EA31 puts it out of reach of
+        # any IRQ), disable the raster source, ack the latched flag, and only
+        # then pin the bank — anything else leaves a window in which $DD00 can
+        # be re-flipped to bank 2 after the pin. See
+        # docs/architecture/scenes.md#interstitialpy--backgroundspy.
         self.api.restore_kernal_irq_vector()
         self.api.write_memory("d01a", "00")
         self.api.write_memory("d019", "01")
@@ -128,7 +117,7 @@ class InterstitialScene(Scene):
 
         name = self.next_scene_name.upper()[:MAX_WIDTH]
         self.lines = [LABEL, name]
-        # Vertically center a 3-row block (label, blank, name).
+        # The block is 3 rows: label, blank, name.
         top = max(0, (MAX_HEIGHT - 3) // 2)
         self.line_rows = [top, top + 2]
         self.line_cols = [max(0, (MAX_WIDTH - len(text)) // 2) for text in self.lines]
@@ -141,20 +130,14 @@ class InterstitialScene(Scene):
         if elapsed >= self.duration_s:
             return False
 
-        # Re-assert VIC bank 0 every frame. setup() unhooks the prior bitmap
-        # scene's bank-swap raster IRQ ($0314 → $EA31) so no NEW invocation can
-        # fire, but a handler already DISPATCHED just before that vector write
-        # landed keeps running and does its `STA $DD00` (bank 2) AFTER setup's
-        # one-shot bank-0 write — leaving $DD00 stuck at bank 2 for the whole
-        # card (VIC reads its matrix from $8400 → a screenful of wrong glyphs).
-        # With the IRQ unhooked, at most that single late flip can happen, so
-        # rewriting bank 0 here corrects it on the very next frame and it can't
-        # recur. Cheap (1 byte) on a light char-mode card, and the card already
-        # repaints $0400/$D800 each frame, so the screen self-heals in lockstep.
+        # A bank-swap handler already dispatched when setup() unhooked the
+        # vector still does its `STA $DD00` after setup's one-shot bank-0 write,
+        # so bank 0 is re-asserted every frame; that one late flip is corrected
+        # on the next frame and, the vector being unhooked, cannot recur.
         self.api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
 
-        # The background fills the strips above and below the text block.
-        # Pass the rows occupied by the text so it doesn't paint over them.
+        # The background fills the strips above and below the text block, and
+        # is told which rows the text holds so it paints around them.
         text_top = self.line_rows[0]
         text_bot = self.line_rows[-1] + 1
         top_rows = range(0, text_top)
@@ -171,13 +154,15 @@ class InterstitialScene(Scene):
             chars[base : base + len(encoded)] = np.frombuffer(encoded, dtype=np.uint8)
             colors[base : base + len(encoded)] = color
 
+        # The dirty cache is keyed by region_id, not address, so these reuse the
+        # display modes' SCREEN/COLOR ids; setup()'s invalidate_cache() is what
+        # gives them a clean baseline across the mode switch.
         self.api.write_region(0x0400, chars.tobytes(), region_id=RegionID.SCREEN)
         self.api.write_region(0xD800, colors.tobytes(), region_id=RegionID.COLOR)
         return True
 
     def teardown(self):
-        # Nothing to release — no audio, no source.
-        pass
+        """Nothing to release: no audio, no source."""
 
 
 def default_factory(api: C64Backend, cfg: InterstitialCfg | None = None):

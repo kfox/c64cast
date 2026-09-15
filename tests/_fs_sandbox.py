@@ -66,17 +66,15 @@ import sys
 import tempfile
 from collections.abc import Iterator
 
-# Private, and deliberately not one of the two public overrides below: this is
-# the "a process in this tree already set the suite up" marker.
+# Private marker that a process in this tree already set the suite up; not one
+# of the two public overrides below.
 _TAKEOVER_ENV = "_C64CAST_SUITE_ROOT"
 _SETTINGS_ENV = "C64CAST_SETTINGS"
 _DATA_DIR_ENV = "C64CAST_DATA_DIR"
 
-# Filesystem audit events whose first argument is a path. Not the complete set
-# CPython raises — the ones a test could plausibly reach a real file through.
-# `open` alone covers every read and every rewrite; the rest catch the
-# directory and metadata operations that would let a test create, move or
-# delete something outside the checkout without opening it.
+# Filesystem audit events whose first argument is a path — not the complete set
+# CPython raises. `open` covers every read and rewrite; the rest catch the directory
+# and metadata operations that create, move or delete without opening.
 _PATH_EVENTS = frozenset(
     {
         "open",
@@ -118,12 +116,9 @@ def _key(path: str) -> str:
     return os.path.join(path, "").casefold()
 
 
-# Resolved, not just absolute: `violation` compares a realpath, so an
-# unresolved CHECKOUT made `_ASSETS` never match on a checkout reached through
-# a symlink (`~/src` a symlink, or the repo itself — ordinary on macOS). The
-# gitignored-assets branch then never fired and the resolved path matched the
-# resolved checkout in `_ALLOWED` instead: a guard that failed silently open,
-# which is the one failure mode this module says nothing else would notice.
+# Resolved, not merely absolute: `violation` compares a realpath, so an
+# unresolved CHECKOUT makes `_ASSETS` never match on a checkout reached through
+# a symlink (ordinary on macOS) and the guard fails silently open.
 CHECKOUT = _resolve(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -214,13 +209,12 @@ def _hook(event: str, args: tuple[object, ...]) -> None:
         return  # an open() on an already-open file descriptor
     raw = os.fsdecode(target)
     if not os.path.isabs(raw) and not os.path.dirname(raw):
-        # A bare name, which `shutil.rmtree` and `TemporaryDirectory.cleanup`
-        # emit for every entry of their fd-relative descent. The directory it
-        # is relative to lives in the file descriptor, which the audit event
-        # does not carry, so resolving against cwd would blame the checkout for
-        # a file deleted inside a temp dir. Nothing this guards is reachable by
-        # a bare name: the machine paths and the assets are all several
-        # components deep.
+        # A bare name, as `shutil.rmtree` and `TemporaryDirectory.cleanup` emit
+        # for every entry of their fd-relative descent: the directory lives in
+        # a file descriptor the audit event does not carry, so resolving
+        # against cwd would blame the checkout for a temp-dir deletion. Nothing
+        # this guards is reachable by a bare name: the machine paths and the
+        # assets are all several components deep.
         return
     complaint = violation(raw)
     if complaint is not None:
@@ -255,16 +249,15 @@ def redirect_local_state() -> None:
     os.environ[_DATA_DIR_ENV] = data
 
     def cleanup() -> None:
-        # A forked worker inherits this handler along with the directory, and
-        # the first one to exit would otherwise pull the machine layer out from
-        # under every worker still running.
+        # A forked worker inherits this handler; without the owner check the
+        # first to exit pulls the machine layer out from under the rest.
         if os.getpid() == owner:
             shutil.rmtree(root, ignore_errors=True)
 
     atexit.register(cleanup)
 
 
-# Somewhere no machine has a character ROM. `char_rom` only ever calls
+# Somewhere no machine has a character ROM. `char_rom` only calls
 # `Path(...).is_file()` on it, so it is never opened and never audited.
 _NO_CHARGEN = "/nonexistent/c64cast-suite-chargen.bin"
 
@@ -286,11 +279,9 @@ class _ChargenNeutralizer:
         if fullname != self.TARGET or self._busy:
             return None
         # A re-entrancy flag, not `sys.meta_path.remove(self)`: asking the
-        # normal machinery for this spec re-enters us, but uninstalling to
-        # break that also disarms the hook for good — and a spec can be looked
-        # up without ever being executed. `coverage run --source=<module>`
-        # does exactly that to turn the name into a file path, which consumed
-        # the one-shot before the real import ever happened.
+        # normal machinery for this spec re-enters us, and uninstalling to
+        # break that disarms the hook for good — a spec can be looked up
+        # without being executed, as `coverage run --source=<module>` does.
         self._busy = True
         try:
             spec = importlib.util.find_spec(fullname)

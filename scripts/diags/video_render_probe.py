@@ -49,10 +49,8 @@ import numpy as np
 from c64cast.app.scene_factory import _build_display_mode
 from c64cast.hw.backend import ULTIMATE_PROFILE, BufferedWriteBackend  # noqa: E402
 
-# The link cost model comes from the profile rather than being restated here:
-# write_region makes its chunking decision from those same numbers, so a second
-# copy would let this probe report a frame cost the renderer doesn't believe.
-# Re-measure with scripts/diags/link_cost_model.py and update the profile.
+# Re-measure the profile's write-cost constants with
+# scripts/diags/link_cost_model.py.
 COST_FLOOR_S = ULTIMATE_PROFILE.write_cost_floor_s
 write_cost_s = ULTIMATE_PROFILE.write_cost_s
 
@@ -68,8 +66,6 @@ class RecordingBackend(BufferedWriteBackend):
     cheap when it is the most expensive kind there is.
     """
 
-    # The cost model write_region consults now lives on the profile, so this
-    # has to be a real one: the probe reports what the Ultimate would spend.
     profile = ULTIMATE_PROFILE
 
     def __init__(self) -> None:

@@ -3,9 +3,7 @@ geometry (addresses, spans, incremental extension), and the weighted-segment
 progress model including its null object. No hardware; FakeAPI records the
 writes."""
 
-# FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
-# file-wide so the test focus stays on behavior (same convention as
-# test_dac_calibration.py).
+# FakeAPI duck-types C64Backend rather than subclassing it.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 

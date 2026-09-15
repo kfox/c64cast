@@ -1,7 +1,5 @@
-/** Shapes the daemon sends. Hand-written rather than generated: the API is
- *  small, and a generator would be a second thing to keep in sync with the
- *  Python that is already the source of truth. `svelte-check` in `npm run
- *  build` is what catches a screen reading a field that isn't here. */
+/** Shapes the daemon sends, hand-written to mirror the Python that produces
+ *  them. */
 
 export type SessionState = "idle" | "starting" | "running" | "stopping" | "error";
 
@@ -14,8 +12,7 @@ export interface SessionStatus {
   /** `config_path` as a ref (`<root-label>/<relative>`), or null when that
    *  path isn't under any configured root — a quick-playback run, or one
    *  started from outside `[web].config_roots`. What the browser preselects
-   *  and reveals as the running config; there is no "host default" concept
-   *  beyond this. */
+   *  as the running config. */
   config_ref: string | null;
   systems: string[];
   last_error: string | null;
@@ -125,8 +122,6 @@ export interface ViewerLink {
  *  without authentication, which `[web]` never does. */
 export type Role = "full" | "viewer" | null;
 
-// -- introspection: what the code says a config *may* contain ---------------
-
 /** One field of one config section, from `introspect.as_dict()`. `apply` is
  *  the reason this app reads introspection rather than the committed JSON
  *  schema, which drops it along with `applies_to`. */
@@ -193,9 +188,8 @@ export interface OverlayDoc {
 }
 
 /** `GET /api/introspect`. `modes` and `live_targets` arrive too and stay
- *  untyped here: the Tune panel reads the *resolved* knobs off the state feed
- *  (`LiveKnob`), which is the same registry already filtered to what the
- *  running scene has, so a screen never needs the unfiltered catalog. */
+ *  untyped here: the Tune panel reads the resolved knobs off the state feed
+ *  (`LiveKnob`) instead of the unfiltered catalog. */
 export interface Introspection {
   sections: SectionDoc[];
   scene_types: SceneTypeDoc[];
@@ -204,8 +198,6 @@ export interface Introspection {
    *  matched the machine's own palette offers the colors it really emits. */
   palette: Swatch[];
 }
-
-// -- one config file: what it *does* contain --------------------------------
 
 /** A field's loaded value. `is_default` is the same comparison
  *  `config_serialize` makes when deciding whether a field is worth writing,
@@ -278,8 +270,7 @@ export interface LayerNote {
 
 /** One problem `doctor.validate_load_result` found — the collect-all offline
  *  check `--doctor --skip-probe` runs, reachable here as the `diagnostics` on
- *  a pre-flight report so the console can say everything wrong with a config
- *  at once rather than one thing per click. */
+ *  a pre-flight report. */
 export interface Diagnostic {
   level: "ok" | "warn" | "error";
   category: string;
@@ -363,8 +354,6 @@ export interface SceneChanged extends ConfigWritten {
   };
   text: string;
 }
-
-// -- the performance surface: what the running show is doing right now ------
 
 /** One system's beat grid, from `perf_console._tempo_dict`. The two phases are
  *  sampled against a single instant so a client can extrapolate from them. */
@@ -467,10 +456,9 @@ export interface TransportState {
  *  now, and where a save-back would write it. `field` is the config field's own
  *  name and `scene` says which part of the file carries it — null for `[color]`,
  *  otherwise the index of the `[[scenes]]` block. `field` is null when nothing
- *  carries it at all; such a change is still listed, because one that will be
- *  lost when the show ends is exactly the one worth saying so about. `key`
- *  identifies the row to the host, and is not the target: the same per-scene
- *  knob turned during two scenes is two rows. */
+ *  carries it at all, and such a change is still listed. `key` identifies the
+ *  row to the host, and is not the target: the same per-scene knob turned
+ *  during two scenes is two rows. */
 export interface TuneChange {
   key: string;
   target: string;
@@ -481,9 +469,8 @@ export interface TuneChange {
 }
 
 /** `LiveKnob[]` is what can be turned; this is what *has* been, from
- *  `perf_console._tuned_dict`. A one-shot run offers these back at exit, on a
- *  terminal a daemon does not have — so the browser is where the offer is made
- *  instead. `snippet` replaces it for a run with no config file to write to. */
+ *  `perf_console._tuned_dict`. `snippet` replaces it for a run with no config
+ *  file to write to. */
 export interface TunedState {
   changes: TuneChange[];
   savable: number;

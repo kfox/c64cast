@@ -108,7 +108,7 @@ class ClassifyStaticTest(unittest.TestCase):
         self.assertEqual(classify_static(fist(), pinch_threshold=0.05), Gesture.NONE)
 
     def test_pinch_wins_over_open(self):
-        # A pinch curls the index, but be explicit that precedence is pinch.
+        # A pinch curls the index; precedence is pinch.
         self.assertEqual(classify_static(pinch(), pinch_threshold=0.05), Gesture.PINCH)
 
     def test_closed_fist_with_thumb_on_index_is_not_pinch(self):
@@ -159,12 +159,11 @@ class FakeRecognizer:
 def _controller(script, *, loop=False, **kw):
     kw.setdefault("poll_interval_s", 0.005)
     kw.setdefault("gesture_cooldown_s", 0.0)
-    # Most tests want immediate firing; gesture_dwell_s=0 -> a 1-frame pose
-    # fires. The dwell-gate tests override this explicitly.
+    # gesture_dwell_s=0 fires on a 1-frame pose; the dwell-gate tests
+    # override it.
     kw.setdefault("gesture_dwell_s", 0.0)
     kw.setdefault("mirror", False)  # don't cv2.flip the dummy frame needlessly
-    # FakeSource/FakeRecognizer are structural stand-ins (not subclasses), so
-    # cast for the type checker — same pattern as test_keyboard.py's FakeApi.
+    # FakeSource/FakeRecognizer are structural stand-ins, not subclasses.
     return VisionController(
         cast(WebcamSource, FakeSource()),
         cast(GestureRecognizer, FakeRecognizer(script, loop=loop)),
@@ -216,9 +215,9 @@ class VisionControllerTest(unittest.TestCase):
         ctl.stop()
 
     def test_dwell_gate_rejects_transient_pose(self):
-        # An open hand for a single frame, then gone — with a multi-frame dwell
-        # gate it must NOT cycle (this is the "raising hand flickers a stray
-        # cycle" case the gate exists to kill).
+        # An open hand for a single frame, then gone: with a multi-frame dwell
+        # gate it must not cycle, the "raising hand flickers a stray cycle"
+        # case the gate exists to kill.
         ctl = _controller(
             [open_hand(), None, None, None], gesture_dwell_s=0.05
         )  # 0.05/0.005 = 10 frames
@@ -236,10 +235,10 @@ class VisionControllerTest(unittest.TestCase):
         ctl.stop()
 
     def test_moving_open_hand_does_not_cycle(self):
-        # An open hand that keeps MOVING (never held still) must not cycle — the
-        # stillness gate is what stops a busy/waving hand from racking up cycles.
-        # swipe_velocity huge so the motion can't fire a skip either; loop so the
-        # hand keeps jumping instead of settling into a held pose.
+        # An open hand that keeps moving must not cycle: the stillness gate is
+        # what stops a waving hand racking up cycles. swipe_velocity is huge
+        # so the motion cannot fire a skip either, and the script loops so the
+        # hand never settles into a held pose.
         moving = [open_hand(0.2), open_hand(0.6)]
         ctl = _controller(moving, loop=True, gesture_dwell_s=0.02, swipe_velocity=100.0)
         pause, resume = threading.Event(), threading.Event()
@@ -248,13 +247,10 @@ class VisionControllerTest(unittest.TestCase):
         self.assertFalse(cycle.is_set(), "a moving open hand must not cycle")
 
     def test_fast_swipe_skips(self):
-        # Sustained horizontal wrist motion (x flips across the frame) past the
-        # settle window → skip. Needs >SWIPE_SETTLE_FRAMES frames of motion.
-        # Driven on the virtual clock, not a thread: the swipe verdict divides
-        # wrist travel by inter-tick time, so on a loaded runner real ticks
-        # stretch, the computed speed drops below swipe_velocity, and the
-        # gesture legitimately never fires (the windows-latest flake the
-        # perf-mode tests already fixed this way).
+        # Sustained horizontal wrist motion past the settle window, needing
+        # >SWIPE_SETTLE_FRAMES frames. Driven on the virtual clock: the swipe
+        # verdict divides wrist travel by inter-tick time, so real ticks on a
+        # loaded runner drop the computed speed below swipe_velocity.
         ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
         pause, resume = threading.Event(), threading.Event()
         skip, cycle = threading.Event(), threading.Event()
@@ -263,9 +259,9 @@ class VisionControllerTest(unittest.TestCase):
         self.assertFalse(pause.is_set())
 
     def test_vertical_raise_is_not_a_swipe(self):
-        # Raising the hand = fast VERTICAL motion (x constant, y changes). Must
-        # not register a swipe — the |dx|>|dy| gate is what makes "raise your
-        # hand to open it" not skip.
+        # Raising the hand is fast VERTICAL motion (x constant, y changes);
+        # the |dx|>|dy| gate is what keeps "raise your hand to open it" from
+        # skipping.
         raise_up = [make_hand({**_FIST_POINTS, WRIST: (0.5, y)}) for y in (0.9, 0.7, 0.5, 0.3, 0.1)]
         ctl = _controller(raise_up, swipe_velocity=1.0)
         pause, resume = threading.Event(), threading.Event()
@@ -336,11 +332,8 @@ class VisionPerformanceModeTest(unittest.TestCase):
     clip-launch grid (swipe = next clip, pinch = fx0 bypass, open = fx1 bypass)."""
 
     # Driven through _drive_ticks like the transport tests above: the swipe
-    # decision divides wrist movement by real inter-tick dt, so the threaded
-    # version's positives depended on the poll thread keeping ~5 ms pacing —
-    # a loaded CI box stretched dt, the computed speed fell under the
-    # threshold, and the swipe legitimately never fired (went red on
-    # windows-latest py3.11). Virtual ticks make the gesture math exact.
+    # decision divides wrist movement by real inter-tick dt, so a loaded
+    # box stretches dt and the gesture legitimately never fires.
 
     def test_swipe_launches_next_clip_not_skip(self):
         ctl = _controller([fist(0.1), fist(0.9), fist(0.1), fist(0.9)], swipe_velocity=1.0)
@@ -373,9 +366,8 @@ class VisionPerformanceModeTest(unittest.TestCase):
         self.assertFalse(cycle.is_set(), "in performance mode open-hand must not cycle style")
 
     def test_paused_pinch_still_resumes_in_performance_mode(self):
-        # The paused-state resume gesture is unchanged whether or not perf is
-        # bound. hold_threshold 0.05 s at 0.005 s virtual ticks = held after
-        # 10 ticks; drive 15 so the accrual provably crosses it.
+        # hold_threshold 0.05 s at 0.005 s virtual ticks is held after 10
+        # ticks; drive 15 so the accrual provably crosses it.
         ctl = _controller([pinch()], hold_threshold_s=0.05)
         perf = _FakePerfPlaylist()
         ctl.bind_performance(perf)
@@ -423,8 +415,8 @@ class WebcamSourceBrokerTest(unittest.TestCase):
                 self.assertIsNotNone(a)
                 self.assertIsNotNone(b)
                 assert a is not None and b is not None
-                # Equal values, distinct objects (so a consumer mutating one
-                # can't corrupt the broker's frame or another consumer's copy).
+                # Equal values, distinct objects, so a consumer mutating one cannot
+                # corrupt the broker's frame or another consumer's copy.
                 np.testing.assert_array_equal(a, frame)
                 self.assertIsNot(a, b)
             finally:

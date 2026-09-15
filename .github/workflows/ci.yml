@@ -5,65 +5,41 @@ on:
     branches: [main]
   pull_request:
 
-# Least privilege: these jobs only read the repo and upload to Codecov via a
-# token, so the default read/write GITHUB_TOKEN is more than they need.
 permissions:
   contents: read
 
-# Cancel a superseded run when new commits land on the same ref (e.g. rapid
-# pushes to a PR) instead of letting a stale full matrix run to completion.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Runs the SAME hooks as a local `pre-commit run --all-files`: the hygiene
-  # checks (trailing whitespace, EOF, line endings, YAML/TOML, large files,
-  # merge markers) plus ruff lint + ruff format. This is the single style/
-  # hygiene gate. The pyright + unittest hooks are SKIPped here because the
-  # lint-and-test job below already runs them across the Python matrix.
   pre-commit:
     name: pre-commit (lint + format + hygiene)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The interpreter the hooks' own virtualenvs are built from. uv (below)
-      # only supplies the pre-commit runner itself.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
-      # pre-commit/action@v3.0.1 is unmaintained (last release Feb 2024) and
-      # pins actions/cache@v4 internally, which runs on the now-deprecated
-      # Node 20. Run pre-commit directly and cache its hook environments with a
-      # Node 24 actions/cache instead. SKIP mirrors the wrapper's old behavior:
-      # pyright + unittest run across the matrix in lint-and-test, not here.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-      # `uvx pre-commit`, not `pip install pre-commit`: uv is the only installer
-      # this workflow uses, so there is one dependency resolver to reason about
-      # and one cache to warm. uv fetches the runner into its own cached tool
-      # env; the hooks' environments still live in ~/.cache/pre-commit above.
-      - run: uvx pre-commit run --all-files --show-diff-on-failure --color=always
+      - run: uv run --locked pre-commit run --all-files --show-diff-on-failure --color=always
         env:
           SKIP: pyright,unittest
 
-  # Every book, under both renderers, on every pull request. Until this job
-  # existed nothing proved a book still rendered until release day, when the
-  # tag has already been pushed. Both builders are stdlib-only and read only
-  # the checkout, so the whole gate costs one `--no-project` interpreter.
   docs:
     name: docs (books + site render)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: Every book parses as Typst
@@ -74,13 +50,9 @@ jobs:
           done
       - name: The whole site renders
         run: make site-check PY="uv run --no-project python"
+      - name: The search box's ranking/highlighting logic
+        run: node --test docs/shared/search.test.mjs
 
-  # The web console's bundle is committed under c64cast/web/dist so that
-  # installing c64cast never needs Node. That only stays true if the bundle is
-  # actually current, so rebuild it here and fail on a diff — the same drift
-  # gate the JSON schema and the generated reference appendices already have.
-  # Node is needed by this job alone; nothing else in CI, and nothing a user
-  # runs, touches it.
   web:
     name: web console (bundle matches its sources)
     runs-on: ubuntu-latest
@@ -92,32 +64,11 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      # `make web` is `npm ci` + svelte-check + vite build, so a type error in
-      # the UI fails here too rather than shipping in a committed bundle.
       - name: Rebuild the console
         run: make web
       - name: The committed bundle is current
         run: git diff --exit-code -- c64cast/web/dist
 
-  # Both type checkers, over three platform views, on three runners instead of
-  # the twelve they used to ride along with.
-  #
-  # Both pin their *version* in pyproject (`[tool.pyright] pythonVersion` and
-  # `[tool.mypy] python_version`, both 3.11), so the interpreter a runner
-  # installs never changed the answer — the twelve legs recomputed one result
-  # twelve times, pyright at ~25s a leg being the largest step in the job.
-  #
-  # Neither pins its *platform*, though, and both default to the host OS. So the
-  # OS matrix was checking the Linux, Darwin and Windows views as a side effect
-  # nobody had written down, and simply collapsing to one job would quietly drop
-  # two of them. That matters here: `getattr(signal, "SIGHUP", None)` in cli.py
-  # and serve.py is spelled that way *because* Windows has no SIGHUP, and
-  # paths.py branches on `os.name == "nt"`. A direct `signal.SIGHUP` would pass
-  # a Linux-only check and break on Windows.
-  #
-  # So the platform is named explicitly and the matrix is over platforms rather
-  # than over runners — all three on ubuntu, since the flag decides the analysis
-  # and the host no longer does. Coverage is the same as before, now on purpose.
   types:
     name: types (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -138,15 +89,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up uv + Python
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
-          # The primary toolchain version (matches mise.toml). Any would do —
-          # the checkers pin their own target — so this tracks what devs run.
           python-version: "3.14"
       - name: Install runtime + dev deps
-        # The same sync the test legs use, so the imports the checkers resolve
-        # are the ones a developer sees locally.
         run: uv sync --frozen --no-default-groups --group dev --extra web
       - name: Pyright (basic, whole tree)
         run: uv run pyright --pythonplatform ${{ matrix.pyright }}
@@ -159,17 +106,6 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      # The full grid: every supported interpreter on every OS the package
-      # claims in its trove classifiers. Keep the two in sync — a platform we
-      # claim is a platform that gets a leg here.
-      #
-      # What these legs do and don't prove: the suite mocks every U64/TeensyROM
-      # path, so there is no *hardware* coverage on any runner. What they cover
-      # is the host-side code that is platform-sensitive — path resolution
-      # (%APPDATA%/%LOCALAPPDATA% vs XDG), the serial/socket transports,
-      # subprocess and tempfile handling — plus the tests gated
-      # `skipUnless(os.name == "nt")` in tests/test_paths.py, which only ever
-      # execute on the Windows legs.
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
@@ -177,50 +113,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # setup-uv provisions the interpreter as well (it sets UV_PYTHON), so
-      # there is no actions/setup-python step here — a second interpreter would
-      # just be downloaded and ignored on all 12 legs.
       - name: Set up uv + Python ${{ matrix.python-version }}
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install runtime + dev deps
-        # Skip the [all] extras here — most pull in heavy native libs
-        # (PyAV, sounddevice) that aren't needed for the
-        # unittest suite, which mocks all hardware paths. Add specific
-        # extras here if you start testing them.
-        # The `midi` extra is deliberately NOT here, even though the MidiScene
-        # suite is gated `@skipUnless(HAVE_MIDI)`: that gate tests `import mido`
-        # alone, and mido is in the `dev` group for exactly this reason. The
-        # extra would additionally build python-rtmidi from a C++/meson sdist
-        # (no wheels past cp312) and need the ALSA dev headers — minutes per leg
-        # for a library no test touches. See the note on `mido` in pyproject.
-        # `web` (fastapi + uvicorn + websockets) IS included: every HTTP-surface
-        # suite is gated `@skipUnless(HAVE_TESTCLIENT)`, so without it the
-        # control plane, the token gate, the config browser and the web console
-        # all read as covered while running nothing. Three pure-Python wheels.
-        # --frozen: use uv.lock exactly, error if it's out of date
-        # --no-default-groups: skip [tool.uv] default-groups (which is [dev])
-        # --group dev: pull in the dev dependency group
+        # `web` is not optional: without it the @skipUnless(HAVE_TESTCLIENT)
+        # suites skip -- hundreds of tests -- and the HTTP surface stops being
+        # exercised.
         run: uv sync --frozen --no-default-groups --group dev --extra web
 
-      # Ruff lint + format are enforced in the `pre-commit` job above (single
-      # style gate), so they're intentionally not repeated here.
-      # unittest_parallel forks one process per test module (still stdlib
-      # unittest; default --level=module keeps each module's shared state
-      # isolated). The suite is mostly blocked on socket/thread waits, so
-      # overlapping them across the runner's cores cuts wall time ~3x. `-b`
-      # buffers per-test stdout/stderr, surfacing it only for failures — so
-      # the matrix logs stay clean instead of interleaving every module's
-      # INFO spam. The coverage job below stays on serial xmlrunner (it emits
-      # the JUnit XML for Codecov Test Analytics, which this runner can't).
       - name: Unit tests
-        # PYTHONPATH=tests arms the filesystem sandbox (tests/sitecustomize.py),
-        # which fails any test that reads or writes outside the checkout and
-        # the temp dirs. Every entry point sets it; test_fs_sandbox.py checks
-        # that this one still does.
         env:
           PYTHONPATH: tests
         run: uv run python -m unittest_parallel -s tests -b
@@ -233,39 +138,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Deliberately a one-leg matrix, written as a matrix so the single
-        # choice is explicit rather than implied. lint-and-test already runs the
-        # full suite on every OS × version; coverage is version- and
-        # platform-independent (the report is identical across them), so it runs
-        # once on the primary toolchain version (matches mise.toml) and that leg
-        # is what feeds Codecov below. Ubuntu specifically: the path below goes
-        # through `make coverage` -> scripts/coverage.sh, which is bash + make.
         os: [ubuntu-latest]
         python-version: ["3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # As in lint-and-test: setup-uv provisions the interpreter, so there is no
-      # separate actions/setup-python step.
       - name: Set up uv + Python ${{ matrix.python-version }}
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install dev deps
-        # Include the `web` extra so the @skipUnless(HAVE_TESTCLIENT) suites run
-        # here — otherwise every HTTP surface reads as uncovered and tanks the
-        # codecov patch/project gates. The @skipUnless(HAVE_MIDI) suites are
-        # covered by `mido` in the `dev` group; the `midi` extra is left out so
-        # this leg doesn't build python-rtmidi from sdist. See lint-and-test.
+        # `web` for the same reason as the test legs: a skipped HTTP-surface
+        # suite reads as uncovered and tanks the codecov patch/project gates.
         run: uv sync --frozen --no-default-groups --group dev --extra web
 
       - name: Coverage
-        # `make coverage` (scripts/coverage.sh) is the single source of truth:
-        # it runs the suite through `xmlrunner discover` and emits both
-        # coverage.xml (Codecov coverage) and test-results/*.xml (Codecov Test
-        # Analytics) from one run. Same discovery as `make test`.
         run: uv run make coverage
 
       - name: Upload coverage artifact
@@ -275,10 +164,6 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
-      # Push to Codecov so the live README badge updates. Tokenless upload works
-      # for public repos; set the CODECOV_TOKEN secret to lift the rate limits /
-      # cover a private repo. The `if` guard is defensive — it keeps the upload
-      # single-leg should more versions ever be re-added to this matrix.
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
@@ -287,14 +172,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-      # Test Analytics: ingest the JUnit XML produced by `make coverage`.
-      # `!cancelled()` so results upload even when the suite is red (xmlrunner
-      # writes the XML before exiting non-zero). https://docs.codecov.com/docs/test-analytics
-      # Test-result upload now goes through codecov-action with
-      # `report_type: test_results` (same action as the coverage upload above,
-      # one step earlier with the default `coverage` type). The standalone
-      # codecov/test-results-action@v1 was deprecated in favor of this and ran
-      # on the now-deprecated Node 20.
       - name: Upload test results to Codecov
         if: ${{ !cancelled() && matrix.python-version == '3.14' }}
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

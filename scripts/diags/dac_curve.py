@@ -98,9 +98,6 @@ def segment_order() -> list[dict]:
     return plan
 
 
-# --------------------------------------------------------------------------- #
-# Capture I/O + analysis
-# --------------------------------------------------------------------------- #
 def read_wav_mono(path: str) -> tuple[np.ndarray, int]:
     with wave.open(path, "rb") as w:
         sr, n, ch = w.getframerate(), w.getnframes(), w.getnchannels()
@@ -245,9 +242,6 @@ def build_inverse_lut(curve: dict, size: int = 256) -> list[int]:
     return [int(codes[np.argmin(np.abs(levels - i / (size - 1)))]) for i in range(size)]
 
 
-# --------------------------------------------------------------------------- #
-# Bias + playback (ring-prefill loop)
-# --------------------------------------------------------------------------- #
 def set_bias(api: Ultimate64API, voices: int, sustain: int) -> None:
     """Lock `voices` SID voices into a steady DC pulse (test bit) at the given
     sustain nibble, feeding a constant bias into the master mixer (same trick as

@@ -24,9 +24,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# ---- paths ----------------------------------------------------------------
-
-# scripts/diags/_diaglib.py -> repo root is two parents up.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
 
@@ -76,8 +73,6 @@ def save_image(frame, path, *, max_width: int = DEFAULT_VERIFY_WIDTH) -> tuple[i
     cv2.imwrite(str(path), frame)
     return w, h
 
-
-# ---- hardware defaults (all env-overridable) ------------------------------
 
 #: Ultimate 64. Override: C64_DIAG_URL.
 U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
@@ -183,11 +178,6 @@ def python_exe() -> str:
     subprocess launched any other way can miss the project's installed
     extras and report them as unavailable."""
     return sys.executable
-
-
-# ---- U64 REST shims -------------------------------------------------------
-# Thin wrappers over the firmware REST API. Note: REST paths take addresses
-# WITHOUT a `$` prefix (a recurring gotcha — see c64_u64_hardware_facts memory).
 
 
 def rest_ping(url: str = U64_URL, timeout: float = 3.0) -> int | None:

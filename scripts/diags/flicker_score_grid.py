@@ -629,7 +629,7 @@ def main() -> None:
         if not args.no_reset:
             print(f"\n[reset] {args.url}: {d.rest_reset(args.url)}")
 
-    # Revealed only now. Everything above this line was deliberately blind.
+    # The key must stay below the page loop — writing it earlier ends the blind.
     key = out / "key.json"
     detail = []
     for page, entries in zip(manifest["pages"], pages, strict=True):

@@ -1,6 +1,3 @@
-# Issue-template chooser configuration. The two templates above cover bugs and
-# feature requests; everything else is better served by Discussions, where an
-# answer helps the next person who searches for it.
 blank_issues_enabled: false
 contact_links:
   - name: Question or help getting started

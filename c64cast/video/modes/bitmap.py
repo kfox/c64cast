@@ -100,11 +100,8 @@ def engage_bitmap_mode(
       bank and reuses the IDs as its spacer-row baseline). ``None`` ⇒ clear via
       ``write_memory_file`` (the display modes' one-time bulk clear, which
       bypasses the delta cache the first ``push`` rebuilds)."""
-    # 1. VIC bank select — before the clear so it lands in the fetched bank.
     if dd00 is not None:
         api.write_memory(f"{CIA2.PORT_A:04X}", f"{dd00:02X}")
-    # 2. Clear bitmap + screen matrix while $2000 is still OFF-screen (text
-    #    mode), so the $D011 flip in step 4 reveals a clean black field.
     if clear:
         if clear_region_ids is None:
             api.write_memory_file(f"{bitmap_base:04X}", bytes(SCREEN.BITMAP_BYTES))
@@ -113,14 +110,12 @@ def engage_bitmap_mode(
             bitmap_region_id, screen_region_id = clear_region_ids
             api.write_region(bitmap_base, bytes(SCREEN.BITMAP_BYTES), region_id=bitmap_region_id)
             api.write_region(screen_base, bytes(SCREEN.N_CELLS), region_id=screen_region_id)
-    # 3. Configure the sub-bank pointers ($D018/$D016) + background colors.
     api.write_memory("d018", d018)
     api.write_memory("d016", d016)
     if border is not None:
         api.write_regs("d020", border)
     if bg0 is not None:
         api.write_regs("d021", bg0)
-    # 4. Flip $D011 into bitmap mode LAST — now the clean field is revealed.
     api.write_memory("d011", d011)
 
 
@@ -141,24 +136,12 @@ class BitmapDisplayMode(DisplayMode):
 
     is_bitmapped = True
     supports_compose = True
-    # Bitmap modes can host the text overlays (clock/marquee/…) that paint
-    # PETSCII screen codes — see text_surface.HiresTextSurface / MHiresTextSurface.
     is_bitmap_text_compatible = True
     # Which VIC bank is currently displayed under double-buffering (REU staging
     # or host-DMA): 0 ⇒ bank 0 on screen / paint bank 2 next, 1 ⇒ bank 2 on
     # screen / paint bank 0 next. Subclasses reset it in __init__/setup.
     _displayed_bank: int = 0
 
-    # The clear-then-flip engage bring-up lives in the module-level
-    # `engage_bitmap_mode` (above) so it's shared with VoiceScopeRenderer.
-
-    # --- Host-DMA double-buffer (no-REU backends, e.g. TeensyROM) -----------
-    # Shared by Hires + MultiHires. The host writes bitmap+screen into the
-    # OFF-screen VIC bank over the normal host-DMA write_region path, then arms
-    # HOSTDMA_SWAP_IRQ_HANDLER (installed in setup) to flip $DD00 at vblank — so
-    # the visible bank is never written mid-display (tear-free) without needing
-    # an REU. See the handler block in modes_irq.py. Subclasses own
-    # self._displayed_bank (0 ⇒ off-screen is bank 2, 1 ⇒ off-screen is bank 0).
     def _hostdma_swap_target(self) -> tuple[int, int, int, int, int, int]:
         """Resolve the current off-screen bank to
         (target_bank, bitmap_addr, screen_addr, bitmap_region, screen_region,
@@ -189,12 +172,6 @@ class BitmapDisplayMode(DisplayMode):
         tracker = bytes([bg0 & 0x0F, dd00_value & 0xFF, 0x01])
         api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
 
-    # --- Flicker blend ([color].flicker_tolerance) ------------------------------
-    # The double-buffer above, plus a second screen page per bank. Both pages
-    # go into the off-screen bank each frame over the same host-DMA path; the
-    # $C500 handler alternates $D018 between them every field so the eye fuses
-    # each cell's color pair. See modes_irq.FLICKER_SWAP_IRQ_HANDLER and
-    # video/flicker.py.
     def _flicker_swap_target(self) -> tuple[int, int, int, int, int, int, int, int]:
         """Resolve the current off-screen bank to (target_bank, bitmap_addr,
         page_a_addr, page_b_addr, bitmap_region, page_a_region, page_b_region,
@@ -279,9 +256,8 @@ class BitmapDisplayMode(DisplayMode):
         pair, which differs by mode and is the thing a reader most needs: hires
         alternates both nibbles of every screen byte, mhires only two of its
         four slots."""
-        # Logged against the concrete mode's own module so `hires:`/`mhires:`
-        # lines keep arriving on the logger a reader filters for, rather than on
-        # this shared base's.
+        # The concrete mode's own logger, so `hires:`/`mhires:` lines keep
+        # arriving where a reader filters for them.
         log = logging.getLogger(type(self).__module__)
         log.info(
             "%s: flicker blend armed — %d blend pairs from %s, "
@@ -339,8 +315,6 @@ class BitmapDisplayMode(DisplayMode):
                 self.name,
                 table.tolerance,
             )
-        # Which pairs specifically — the thing you want when deciding whether
-        # flicker_max_luma_delta is set where you meant it.
         log.debug("%s: flicker pairs = %s", self.name, ", ".join(table.describe()))
 
     def _setup_hostdma_doublebuffer(self, api: C64Backend) -> None:
@@ -371,10 +345,8 @@ class BitmapDisplayMode(DisplayMode):
         out["screen"] = fade_nibbles(buffers["screen"], lut)
         out["bg"] = int(lut[buffers["bg"]])
         if "screen_b" in buffers:
-            # Under flicker blending the second page holds the same kind of
-            # packed nibble pair. Dimming only page A would turn every blended
-            # cell into an alternation between a dimmed color and an undimmed
-            # one — a fade that introduces flicker instead of removing it.
+            # Page B holds the same packed nibble pair; dimming only page A
+            # would alternate a dimmed color against an undimmed one.
             flicker = cast(FlickerComposeBuffers, out)
             flicker["screen_b"] = fade_nibbles(
                 cast(FlickerComposeBuffers, buffers)["screen_b"], lut

@@ -1,20 +1,18 @@
 """Shared 3-voice SID oscilloscope renderer (hires bitmap).
 
-Extracted from :mod:`c64cast.sid.waveform` so both :class:`~c64cast.sid.waveform.WaveformScene`
-(SID-file playback) and :class:`~c64cast.sid.midi_scene.MidiScene` (live MIDI input)
-can paint the same full-screen 320×200 hires oscilloscope of the three SID voices.
+A full-screen 320×200 hires oscilloscope of the three SID voices, shared by
+:class:`~c64cast.sid.waveform.WaveformScene` (SID-file playback),
+:class:`~c64cast.sid.midi_scene.MidiScene` (live MIDI) and
+:class:`~c64cast.sid.asid_scene.AsidScene` (ASID stream).
 
 The renderer is **SID-source-agnostic**: it reads per-voice state from a
-:class:`~c64cast.sid.sidemu.SIDEmulator` the host scene owns, and draws three
-vertically-stacked voice strips plus two bottom text rows. *How* that emulator's
-register state is kept current differs per host — WaveformScene mirrors a parallel
-py65 6502 (it can't read the U64's write-only SID back), MidiScene feeds its own
-register shadow (it computes every byte it sends) — but the rendering is identical.
+:class:`~c64cast.sid.sidemu.SIDEmulator` the host scene owns and keeps current
+however it likes, and draws three vertically-stacked voice strips plus two bottom
+text rows.
 
-``VoiceScopeRenderer`` is a **mixin**: methods reference ``self.<attr>`` directly
-(rather than taking a helper object) so WaveformScene's byte-output and its test
-suite stay unchanged across the extraction. A host scene must provide these
-attributes before any render call (the **attribute contract**):
+``VoiceScopeRenderer`` is a **mixin**: methods reference ``self.<attr>`` directly,
+so a host scene must provide these attributes before any render call (the
+**attribute contract**):
 
   * ``self.api``            — C64 backend (write_memory / write_regs / write_region)
   * ``self.emulator``       — SIDEmulator with three voices
@@ -23,6 +21,11 @@ attributes before any render call (the **attribute contract**):
   * ``self._bitmap_base``   — bitmap base address (e.g. $2000)
   * ``self._dd00``          — CIA2 port-A value selecting the VIC bank
   * ``self._d018``          — $D018 value (matrix + bitmap sub-bank offsets)
+  * ``self._emulators``     — one SIDEmulator per chip window; **required** for
+    any host with more than one window (``_scope_emulators()`` falls back to
+    ``[self.emulator]`` without it, which renders every window past the first
+    blank). Host-supplied — see ``AsidScene.__init__`` /
+    ``WaveformScene._rebuild_scope_for_sids``.
   * ``self._glyphs``        — charset bytes (set by ``_apply_vic_hires_bank``)
   * ``self.color_mode``     — "per_voice" | "per_waveform"
   * ``self.voice_color_names`` / ``self.waveform_color_names``
@@ -36,6 +39,8 @@ Bring-up order in a host's ``setup()``: ``_init_scope_knobs(...)`` (usually in
 ``__init__``) → ``api.invalidate_cache()`` → ``_apply_vic_hires_bank()`` → paint
 the two text rows (host-specific content via ``_paint_text_row``) →
 ``_alloc_scope_buffers()`` → render each frame via ``_render_hires()``.
+
+See docs/architecture/sid.md#voice_scopepy--shared-3-voice-oscilloscope-renderer.
 """
 
 from __future__ import annotations
@@ -47,7 +52,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.hw.c64 import CIA2, SCREEN, RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from c64cast.scenes.bitmap_text import load_glyphs as _load_glyphs
 from c64cast.video.modes import engage_bitmap_mode
@@ -101,15 +106,19 @@ BITMAP_STRIPS = [
 TITLE_ROW = 22
 META_ROW = 23
 
-# VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode.
-# Hex strings match the write_memory API. Named so the intent (bitmap mode,
-# multicolor off, screen page) is readable inline.
+# VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode,
+# as the hex strings the write_memory API takes.
 D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
 D016_STANDARD = "08"  # 40-col, no multicolor
 # $D018 selects the screen matrix (bits 7-4 = offset/$0400 within the bank)
 # and the bitmap (bit 3 = bitmap at bank+$2000). $18 = matrix at bank+$0400
 # + bitmap at bank+$2000 — bank-relative.
 D018_HIRES_BITMAP = 0x18  # bank-relative: screen +$0400, bitmap +$2000
+# The char-mode $D018 a scope scene puts back on teardown: matrix at bank+$0400,
+# bitmap bit clear. The same value every char-mode engage in the tree writes
+# (video/modes/petscii.py, video/modes/blank.py, scenes/interstitial.py,
+# hires.py's teardown).
+D018_CHAR_DEFAULT = 0x14
 
 COLOR_NIBBLE_MASK = 0x0F
 
@@ -122,30 +131,26 @@ DEFAULT_WAVEFORM_COLORS = {
     "off": "dark gray",
 }
 
-# Text-row colors. Picked to (a) read against a black background and (b)
-# avoid the default voice + waveform palettes so a static line of text
-# isn't mistaken for a trace. Title row gets white for emphasis; the
-# metadata row is light gray (muted, secondary information).
+# Text-row colors: readable against black, and outside the default voice +
+# waveform palettes so a static line of text isn't mistaken for a trace.
 TITLE_TEXT_COLOR = "white"
 METADATA_TEXT_COLOR = "light gray"
 
-# Time-base modes.
+# Per-voice render modes. Named because they are written from two places and
+# dispatched from a third, and a typo degrades to the fast path in silence.
+RENDER_MODE_FAST = "fast"
+RENDER_MODE_SCROLL = "scroll"
+RENDER_MODE_ECHO = "echo"
+
 TIME_BASE_WALLCLOCK = "wallclock"
 TIME_BASE_AUTO = "auto"
 TIME_BASE_NAMES = (TIME_BASE_WALLCLOCK, TIME_BASE_AUTO)
 
-# Persistence/echo presets. Maps name → palette indices for past frames
-# (oldest first). Each frame's trace is drawn with its corresponding color
-# via per-cell screen-RAM writes; the current frame uses the voice's
-# regular color. The C64 palette has 3 distinct grays (dark gray / gray /
-# light gray) so the longest preset includes "black" as an invisible
-# pacing slot, per the user's spec for "long".
-#
-# "off" disables echoes entirely (fast redraw-from-scratch path, identical
-# byte-output to the pre-persistence implementation). "random" is a
-# sentinel resolved to one of the named presets at scene setup. Per-frame
-# decay is gone: each echo is a hard render at a fixed gray, not a fading
-# intensity — fits 1bpp hardware naturally.
+# Persistence/echo presets: name → palette colors for past frames, oldest
+# first, drawn via per-cell screen-RAM writes with the current frame in the
+# voice's regular color. The C64 palette has only 3 distinct grays, so the
+# longest preset pads with an invisible "black" slot. A 1bpp bitmap cannot fade
+# a pixel, so an echo is a hard render at a dimmer gray, not a decay.
 PERSISTENCE_ECHOES = {
     "off": (),
     "short": ("gray", "light gray"),  # 2 visible echoes
@@ -154,18 +159,23 @@ PERSISTENCE_ECHOES = {
 }
 RANDOM_PERSISTENCE = "random"
 PERSISTENCE_NAMES = (*PERSISTENCE_ECHOES.keys(), RANDOM_PERSISTENCE)
-# Random pick excludes "off" — the user explicitly didn't ask for a fixed
-# preset; the visual reward of random is the echo trail itself.
+# "off" is excluded: the reward of asking for random is the echo trail itself.
 _PERSISTENCE_RANDOM_CHOICES = ("short", "medium", "long")
-
-# Glyph loading + ASCII→screen-code mapping live in bitmap_text now (shared with
-# the on-C64 menu). Aliased to the historical private names so the rest of this
-# module — and its byte-for-byte oscilloscope output — is unchanged.
 
 # Screen code of the C64 left-arrow (←) glyph in the uppercase charset (ASCII
 # "_" / PETSCII $5F maps here). Horizontally mirroring it yields a right-arrow
 # (→) — a glyph the C64 charset has no native cell for; see _mirror_glyph_h.
 LEFT_ARROW_SCREEN_CODE = 0x1F
+
+
+def restore_char_mode_display(api: C64Backend) -> None:
+    """Put VIC bank 0 and the char-mode $D018 back for the next scene.
+
+    Every scope scene renders from a bitmap layout. The next scene's mode engage
+    owns $D011 but not the matrix pointer, so a $D018 left on the bitmap layout
+    makes a char-mode scene read its matrix from the wrong offset."""
+    api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
+    api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
 
 
 def _mirror_glyph_h(glyph: bytes) -> bytes:
@@ -259,16 +269,14 @@ class VoiceScopeRenderer:
     delta cache absorbs unchanged columns.
     """
 
-    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep
-    # (the sx/ix WLED sliders + the identical midi-CC seam). `gain` scales the
-    # scope trace amplitude; 1.0 == the historical fixed amplitude. Resolved
-    # via the `scene.` target prefix — a scope scene *is* the renderer, so it
-    # has no source/effect holder for the live-param resolvers to reach.
+    # Live-tunable params: name -> (min, max) for a CC-style [0, 1] sweep (the
+    # sx/ix WLED sliders + the identical midi-CC seam). Resolved via the
+    # `scene.` target prefix — a scope scene *is* the renderer, so it has no
+    # source/effect holder for the live-param resolvers to reach.
     LIVE_PARAMS: dict[str, tuple[float, float]] = {"gain": (0.25, 3.0)}
     gain: float
 
-    # ---- attribute contract (host scene supplies these; declared here so
-    # the type checker sees them on the mixin) ------------------------------
+    # The attribute contract, declared so the type checker sees it on the mixin.
     api: C64Backend
     emulator: SIDEmulator
     _reg_lock: threading.Lock
@@ -277,8 +285,8 @@ class VoiceScopeRenderer:
     _dd00: int
     _d018: int
     # Multi-chip split scope: window `c` of a strip is sourced from
-    # ``_emulators[c]`` (falls back to ``[self.emulator]`` when a host scene
-    # doesn't set it). Set by _init_scope_knobs.
+    # ``_emulators[c]``. Host-supplied; without it ``_scope_emulators()`` falls
+    # back to ``[self.emulator]`` and every window past the first renders blank.
     _emulators: list[SIDEmulator]
     _n_windows: int
     _window_slices: list[tuple[int, int]]
@@ -286,6 +294,9 @@ class VoiceScopeRenderer:
     # that pans its chips reorders this so columns run left-to-right across the
     # stereo field instead of by chip number (see sid_panning.window_order_for_pans).
     _window_chip_order: list[int]
+    # A class default so no host has to supply it; the warning sets the
+    # instance attribute. Same shape as AsidScene's `_warned_downmix`.
+    _warned_forced_fast: bool = False
 
     def _scope_emulators(self) -> list[SIDEmulator]:
         """The per-window SID sources, in window (left-to-right) order —
@@ -301,9 +312,12 @@ class VoiceScopeRenderer:
 
     def set_window_chip_order(self, order: Sequence[int]) -> None:
         """Set which chip each scope column shows, left to right. Ignored unless
-        `order` is a permutation of the current window count — a mismatched
-        order (a stale one from a different chip count) falls back to identity
-        rather than dropping or duplicating a chip's window."""
+        `order` is a permutation of the current window count: a mismatched order
+        (a stale one from a different chip count) is dropped and the *current*
+        order stays in place, rather than dropping or duplicating a chip's
+        window. Identity on a reflow is the caller's doing, not this method's —
+        `_set_window_count` resets to identity first, and every caller reflows
+        before it pans."""
         if sorted(order) != list(range(self._n_windows)):
             log.debug(
                 "scope: ignoring window order %s for %d window(s)", list(order), self._n_windows
@@ -311,20 +325,59 @@ class VoiceScopeRenderer:
             return
         self._window_chip_order = list(order)
 
+    def _resolve_render_modes(self) -> tuple[list[str], bool]:
+        """Derive the per-voice render modes (and the all-"fast" shortcut flag)
+        from the configured knobs. Pure in `scroll_columns` + `_echo_depth`, so
+        construction and a live reflow always reach the same answer — which is
+        what lets `_set_window_count` *re-derive* rather than clobber.
+
+        Echo is only meaningful for a voice that isn't scrolling: scroll already
+        gives a natural "trail off the left edge", and mixing the two
+        double-draws the same trace at different x's every frame. The all-fast
+        flag is the shortcut for "no per-voice persistent state needed at all"."""
+        modes: list[str] = []
+        for sn in self.scroll_columns:
+            if sn > 0:
+                modes.append(RENDER_MODE_SCROLL)
+            elif self._echo_depth > 0:
+                modes.append(RENDER_MODE_ECHO)
+            else:
+                modes.append(RENDER_MODE_FAST)
+        return modes, all(m == RENDER_MODE_FAST for m in modes)
+
     def _set_window_count(self, n: int) -> None:
         """Reflow the split scope to `n` chip windows (multi-chip scenes call
-        this when the SID count changes). Recomputes the cell-aligned window
-        slices, resets the column order to chip order (a caller that pans
-        re-applies its own order after), and forces the fast render path for
-        n>1 (see _init_scope_knobs)."""
+        this when the SID count changes, and `_init_scope_knobs` calls it once
+        at construction so there is only one copy of this layout). Recomputes
+        the cell-aligned window slices, resets the column order to chip order (a
+        caller that pans re-applies its own order after), and re-derives the
+        per-voice render modes — forcing the fast path for n>1, and restoring
+        the configured scroll/echo when the count shrinks back to 1.
+
+        The force is announced once per instance: a user who configured
+        `persistence`/`scroll_columns` and then hits a multi-chip stream would
+        otherwise watch the trails vanish with nothing in the log. Once, because
+        the message is a consequence of the knobs plus `n` and so is identical
+        every time, while the reflow is not a one-off — a playlist reuses scene
+        instances and re-runs `setup()` each lap, and `WaveformScene` reflows per
+        tune. Repeats go to DEBUG rather than nowhere, so `-v` still shows each
+        reflow."""
         self._n_windows = max(1, n)
         self._window_slices = _compute_window_slices(self._n_windows)
         self._window_chip_order = list(range(self._n_windows))
-        if self._n_windows > 1:
-            self._voice_render_modes = ["fast"] * 3
+        self._voice_render_modes, self._fast_path = self._resolve_render_modes()
+        if self._n_windows > 1 and not self._fast_path:
+            forced = (
+                "voice_scope: scroll/persistence not supported for the multi-chip "
+                "split scope — forcing the fast render path"
+            )
+            if self._warned_forced_fast:
+                log.debug(forced)
+            else:
+                self._warned_forced_fast = True
+                log.warning(forced)
+            self._voice_render_modes = [RENDER_MODE_FAST] * len(BITMAP_STRIPS)
             self._fast_path = True
-
-    # ---- knob parsing / buffer allocation ----------------------------------
 
     def _init_scope_knobs(
         self,
@@ -345,9 +398,11 @@ class VoiceScopeRenderer:
         any invalid knob — matching the prior in-__init__ validation.
 
         ``n_windows`` (default 1) is the number of side-by-side chip windows per
-        strip. Single-chip scenes (waveform/midi) omit it → byte-identical
-        output. When >1 the per-voice scroll/echo modes are forced to "fast"
-        (per-window persistence buffers are out of scope for v1)."""
+        strip; the layout itself is applied by ``_set_window_count``, which also
+        derives the render modes. Single-chip scenes (waveform/midi) omit it →
+        byte-identical output. When >1 the per-voice scroll/echo modes are
+        forced to "fast", announced once per instance (per-window persistence
+        buffers are out of scope for v1)."""
         if color_mode not in ("per_voice", "per_waveform"):
             raise ValueError("voice_scope: color_mode must be 'per_voice' or 'per_waveform'")
         if time_base not in TIME_BASE_NAMES:
@@ -362,8 +417,6 @@ class VoiceScopeRenderer:
             )
 
         self._frame_time_s = frame_time_s
-        # Live trace-amplitude knob (sx/ix); overridable at runtime via the
-        # `scene.gain` live-param target.
         self.gain = 1.0
         self.color_mode = color_mode
         self.voice_color_names = list(voice_colors or DEFAULT_VOICE_COLORS)
@@ -373,13 +426,11 @@ class VoiceScopeRenderer:
         wf_defaults.update(waveform_colors or {})
         self.waveform_color_names = wf_defaults
 
-        # Time-base + auto-cycles knobs.
         self.time_base = time_base
         self.auto_cycles = float(auto_cycles)
 
-        # Scroll: normalize scalar → list-of-3. Each entry is the number
-        # of new columns drawn (and the strip is shifted left by) per
-        # frame for that voice. 0 = no scroll (full-frame redraw).
+        # Each entry is the number of new columns drawn (and the strip shifted
+        # left by) per frame for that voice; 0 = no scroll, full-frame redraw.
         if isinstance(scroll_columns, int):
             sc_list = [scroll_columns, scroll_columns, scroll_columns]
         else:
@@ -396,70 +447,42 @@ class VoiceScopeRenderer:
                 )
         self.scroll_columns: list[int] = sc_list
 
-        # Persistence: resolve "random" sentinel now so the chosen preset
-        # is stable across setup/teardown cycles within this scene instance.
+        # The "random" sentinel resolves now, so the chosen preset is stable
+        # across setup/teardown cycles within this scene instance.
         self.persistence_config = persistence
         if persistence == RANDOM_PERSISTENCE:
             self.persistence = random.choice(_PERSISTENCE_RANDOM_CHOICES)
         else:
             self.persistence = persistence
-        # Past-frame color ramp (palette indices, oldest first). Each entry
-        # corresponds to one history slot drawn at that gray; the current
-        # frame is overlaid on top in the voice's regular color.
+        # One history slot per entry, oldest first; the current frame is
+        # overlaid on top in the voice's regular color.
         echo_names = PERSISTENCE_ECHOES[self.persistence]
         self._echo_colors: list[int] = [
             resolve_color(n, default=C64_COLORS["black"]) for n in echo_names
         ]
         self._echo_depth = len(self._echo_colors)
-        # Echo mode is per-voice only meaningful when no scroll: scroll
-        # already gives a natural "trail off the left edge" effect, and
-        # mixing the two double-draws the same trace at different x's
-        # every frame. Compute the per-voice render mode up front.
-        # Tri-state per voice: "fast" / "scroll" / "echo".
+        # Derived by _set_window_count below, and again on every runtime reflow.
         self._voice_render_modes: list[str] = []
-        for sn in self.scroll_columns:
-            if sn > 0:
-                self._voice_render_modes.append("scroll")
-            elif self._echo_depth > 0:
-                self._voice_render_modes.append("echo")
-            else:
-                self._voice_render_modes.append("fast")
+        self._fast_path = True
 
-        # Per-render persistent state. Allocated in _alloc_scope_buffers().
-        # _strips: per-voice scroll-mode bool strip (only used by scroll
-        #          path; persists across frames so the shift can rotate
-        #          old samples left).
-        # _echo_history: per-voice list of past bool masks, oldest first,
-        #          length up to _echo_depth (only used by echo path).
-        # _last_y: per-voice last column's y from the previous frame
-        #          (scroll path uses this so the first new column connects
-        #          to the last drawn column instead of being a self-dot).
+        # Per-render persistent state, allocated in _alloc_scope_buffers().
+        # _strips: per-voice scroll-mode bool strip, persisting across frames so
+        #          the shift can rotate old samples left.
+        # _echo_history: per-voice past bool masks, oldest first, up to
+        #          _echo_depth of them.
+        # _last_y: per-voice last column's y from the previous frame, so the
+        #          first new scroll column connects instead of being a self-dot.
         # _rows_col: cached row-index broadcast column used by every path.
         self._strips: list[np.ndarray | None] | None = None
         self._echo_history: list[list[np.ndarray]] | None = None
         self._last_y: list[int | None] | None = None
         self._rows_col: np.ndarray | None = None
-        # Fast-path detection: no per-voice persistent state is needed at
-        # all when every voice is in "fast" mode.
-        self._fast_path = all(m == "fast" for m in self._voice_render_modes)
 
-        # Multi-chip split layout. >1 window forces the fast render path:
-        # per-window scroll/echo would need every persistence buffer re-keyed to
-        # (voice, chip) with per-window widths — out of scope for v1.
         if n_windows < 1:
             raise ValueError(f"voice_scope: n_windows must be >= 1, got {n_windows!r}")
-        self._n_windows = n_windows
-        self._window_slices = _compute_window_slices(n_windows)
-        self._window_chip_order = list(range(n_windows))
-        if n_windows > 1 and not self._fast_path:
-            log.warning(
-                "voice_scope: scroll/persistence not supported for the multi-chip "
-                "split scope — forcing the fast render path"
-            )
-            self._voice_render_modes = ["fast"] * 3
-            self._fast_path = True
+        self._set_window_count(n_windows)
 
-        # Charset (loaded once, cached process-wide) — set by the bring-up.
+        # Loaded by _apply_vic_hires_bank.
         self._glyphs: bytes | None = None
 
     def _alloc_scope_buffers(self) -> None:
@@ -471,13 +494,11 @@ class VoiceScopeRenderer:
         for v_idx, (top, bot) in enumerate(BITMAP_STRIPS):
             mode = self._voice_render_modes[v_idx]
             self._strips.append(
-                np.zeros((bot - top, BITMAP_W), dtype=bool) if mode == "scroll" else None
+                np.zeros((bot - top, BITMAP_W), dtype=bool) if mode == RENDER_MODE_SCROLL else None
             )
             self._echo_history.append([])
             self._last_y.append(None)
         self._rows_col = np.arange(BITMAP_H, dtype=np.int32)[:, None]
-
-    # ---- VIC setup ---------------------------------------------------------
 
     def _apply_vic_hires_bank(self) -> None:
         """Point VIC at the current display bank ($DD00/$D018), clear its
@@ -512,8 +533,7 @@ class VoiceScopeRenderer:
             clear_region_ids=(RegionID.WAVE_BITMAP, RegionID.WAVE_SCREEN_CLEAR),
         )
         self._init_hires_colors()
-        # Lazy-load the charset once. Glyph loading is process-wide cached so
-        # a second scope scene doesn't re-read the file.
+        # Process-wide cached, so a second scope scene doesn't re-read the file.
         self._glyphs = _load_glyphs()
 
     def _init_hires_colors(self) -> None:
@@ -547,8 +567,6 @@ class VoiceScopeRenderer:
             region_id=RegionID.WAVE_SCREEN + v_idx,
         )
 
-    # ---- per-voice color resolution ----------------------------------------
-
     def _initial_voice_color(self, v_idx: int) -> int:
         if self.color_mode == "per_voice":
             return resolve_color(self.voice_color_names[v_idx], default=C64_COLORS["white"])
@@ -578,8 +596,6 @@ class VoiceScopeRenderer:
         if color is None:
             color = self._voice_color_now(v_idx)
         self._paint_strip_color_row(v_idx, [color] * self._n_windows)
-
-    # ---- hires text rows ---------------------------------------------------
 
     def _paint_text_row(
         self,
@@ -652,8 +668,6 @@ class VoiceScopeRenderer:
             RegionID.WAVE_META_SCREEN,
         )
 
-    # ---- hires rendering ---------------------------------------------------
-
     def _voice_time_window_s(
         self, v_idx: int, n_cols: int, *, emulator: SIDEmulator | None = None
     ) -> float:
@@ -676,16 +690,13 @@ class VoiceScopeRenderer:
             full_window = self._frame_time_s
         else:
             v = emu.voices[v_idx]
-            wave = primary_waveform(v.control)
-            if v.freq == 0 or wave == 0 or v.envelope_level <= 0.0:
+            if v.is_silent():
                 full_window = self._frame_time_s
             else:
                 # SID freq (Hz) = freq_reg * clock / 2^24; period = 1/freq_hz.
                 period_s = ACCUMULATOR_RANGE / (v.freq * emu.clock)
                 full_window = self.auto_cycles * period_s
         return full_window * n_cols / BITMAP_W
-
-    # ---- per-voice render helpers -----------------------------------------
 
     def _compute_ys(
         self, v_idx: int, top: int, bot: int, n_new: int, *, emulator: SIDEmulator | None = None
@@ -696,15 +707,13 @@ class VoiceScopeRenderer:
         emu = emulator if emulator is not None else self.emulator
         mid = (top + bot) // 2
         half_h = (bot - top) // 2 - 1
-        # Hold the register lock only for the emulator reads + sample
-        # synthesis (voice state is written by the poll thread; the display
-        # accumulator is advanced here). Released before mask packing + DMA
-        # so the poll thread is never blocked across the wire.
+        # The lock covers the emulator reads + sample synthesis only, and is
+        # released before mask packing and DMA: the poll thread writes the same
+        # voice state, and must never be blocked across the wire.
         with self._reg_lock:
             time_window_s = self._voice_time_window_s(v_idx, n_new, emulator=emu)
             samples = emu.voice_samples(v_idx, n_new, time_window_s)
-        # `gain` (the sx/ix live knob) scales trace amplitude; the clip below
-        # keeps an overdriven trace inside the strip.
+        # The clip keeps an overdriven `gain` inside the strip.
         ys = (mid - samples * half_h * self.gain).astype(np.int32)
         np.clip(ys, top, bot - 1, out=ys)
         return ys
@@ -741,8 +750,6 @@ class VoiceScopeRenderer:
             bitmap_strip,
             region_id=RegionID.WAVE_BITMAP + v_idx,
         )
-
-    # ---- the three per-voice render paths ---------------------------------
 
     def _render_voice_fast(self, v_idx: int, top: int, bot: int) -> None:
         """Default redraw-from-scratch: sample → mask → pack → write.
@@ -806,18 +813,14 @@ class VoiceScopeRenderer:
         ys = self._compute_ys(v_idx, top, bot, BITMAP_W)
         current_mask = self._span_mask(ys, top, bot, prev_y=None)
 
-        # Combined bitmap is the OR of all history + current — past
-        # frames stay lit until they age out of the ring buffer.
+        # Past frames stay lit until they age out of the ring buffer.
         combined = current_mask.copy()
         for past in history:
             combined |= past
 
-        # Per-cell color: walk newest→oldest, assigning each cell to the
-        # color of the freshest trace whose mask has any pixel in it.
-        # masks_newest_first[0] is the current frame in voice color;
-        # masks_newest_first[1..] are past frames in increasingly old
-        # grays. Length is up to echo_depth+1. Slice via plain `len`
-        # rather than negative index — `_echo_colors[-0:]` would return
+        # Per-cell color: walk newest→oldest, assigning each cell to the color
+        # of the freshest trace whose mask has any pixel in it. Sliced via plain
+        # `len` rather than a negative index — `_echo_colors[-0:]` would return
         # the full list on a first-frame warm-up instead of empty.
         masks_newest_first: list[np.ndarray] = [current_mask, *reversed(history)]
         n_hist = len(history)
@@ -830,15 +833,13 @@ class VoiceScopeRenderer:
         cell_color = np.zeros((n_cell_rows, SCREEN_W_CHARS), dtype=np.uint8)
         claimed = np.zeros((n_cell_rows, SCREEN_W_CHARS), dtype=bool)
         for mask, color in zip(masks_newest_first, colors_newest_first, strict=True):
-            # Reshape to (cell_rows, CELL_PX, SCREEN_W_CHARS, CELL_PX) and
-            # reduce over the pixel-within-cell axes to "any pixel lit?".
+            # Reduce over the two pixel-within-cell axes: "any pixel lit?"
             cell_lit = mask.reshape(n_cell_rows, CELL_PX, SCREEN_W_CHARS, CELL_PX).any(axis=(1, 3))
             new_claims = cell_lit & ~claimed
             cell_color[new_claims] = color & COLOR_NIBBLE_MASK
             claimed |= new_claims
 
-        # Push the (cell_rows × 40) color matrix to screen RAM as FG-nibble
-        # bytes (high nibble = FG color, BG = 0/black).
+        # FG-nibble bytes: high nibble = FG color, BG = 0/black.
         screen_bytes = (cell_color << 4).astype(np.uint8).tobytes()
         cell_row_top = top // CELL_PX
         self.api.write_region(
@@ -849,15 +850,14 @@ class VoiceScopeRenderer:
 
         self._write_bitmap_strip(v_idx, top, bot, combined)
 
-        # Rotate the ring: append current, drop oldest if at capacity.
         history.append(current_mask)
         if len(history) > self._echo_depth:
             history.pop(0)
 
     def _render_hires(self) -> None:
         """Render each voice strip via its configured mode (fast / scroll
-        / echo). Per-voice modes are computed once in _init_scope_knobs based
-        on scroll_columns + persistence so the per-frame branch is a cheap
+        / echo). Per-voice modes are derived by ``_resolve_render_modes`` from
+        scroll_columns + persistence so the per-frame branch is a cheap
         dispatch.
 
         Fast: no state, redraws from scratch. Identical to the pre-knob
@@ -871,9 +871,9 @@ class VoiceScopeRenderer:
         assert self._rows_col is not None
         for v_idx, (top, bot) in enumerate(BITMAP_STRIPS):
             mode = self._voice_render_modes[v_idx]
-            if mode == "scroll":
+            if mode == RENDER_MODE_SCROLL:
                 self._render_voice_scroll(v_idx, top, bot)
-            elif mode == "echo":
+            elif mode == RENDER_MODE_ECHO:
                 self._render_voice_echo(v_idx, top, bot)
             else:
                 self._render_voice_fast(v_idx, top, bot)

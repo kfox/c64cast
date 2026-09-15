@@ -30,7 +30,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `audio` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Audio (2)](03-vocabulary.md#audio), [The Effect Chain (3)](04-display-pipeline.md#the-effect-chain) |
 | `--audio-device` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Choosing a Microphone (6)](07-inputs-and-outputs.md#choosing-a-microphone), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
 | `[audio_features]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
-| `audio_source` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`generative` (2)](03-vocabulary.md#generative), [Playing SID Tunes (4)](05-sound-and-music.md#playing-sid-tunes) |
+| `audio_source` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [What Ends a Scene (2)](03-vocabulary.md#what-ends-a-scene), [`generative` (2)](03-vocabulary.md#generative) |
 | `auto_cycles` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `auto_fit` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |

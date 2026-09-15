@@ -1,12 +1,10 @@
 """Shared hires bitmap text rasterizer.
 
 Renders ASCII text into a VIC-II hires bitmap (320×200, 8×8 cells) by copying
-glyph bytes from the C64 character ROM (resolved by [char_rom.py](char_rom.py),
-which dumps one off the machine on first run if none is installed). Extracted
-from voice_scope.py so the
-oscilloscope's text rows and the on-C64 MenuOverlay paint glyphs the same way
-(voice_scope keeps its own row painter; it now sources `load_glyphs` /
-`ascii_to_screen_code` from here).
+glyph bytes from the C64 character ROM (resolved by [char_rom.py](../hw/char_rom.py),
+which dumps one off the machine on first run if none is installed). The
+oscilloscope and the on-C64 MenuOverlay both source `load_glyphs` /
+`ascii_to_screen_code` here, so their glyphs match.
 
 A hires cell is 8 bytes (one byte per scanline); consecutive cells in a row are
 consecutive 8-byte chunks, and screen-RAM color bytes for a row are consecutive,

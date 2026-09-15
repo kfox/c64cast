@@ -94,9 +94,6 @@ def encode_4bit(
     return out
 
 
-# ---- source acquisition ---------------------------------------------------
-
-
 def _synth(kind: str, sr: int, secs: float) -> np.ndarray:
     rng = np.random.default_rng(1234)
     n = int(secs * sr)
@@ -152,9 +149,6 @@ def _write_wav(path, codes: np.ndarray, sr: int) -> None:
         w.setsampwidth(2)
         w.setframerate(sr)
         w.writeframes(pcm.tobytes())
-
-
-# ---- metrics --------------------------------------------------------------
 
 
 def _db(power: float) -> float:

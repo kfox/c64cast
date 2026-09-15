@@ -58,8 +58,7 @@ class GeneratorTest(unittest.TestCase):
 
     def test_live_params_declared_with_valid_ranges(self):
         # midi_control.py scales a CC into each declared (min, max) range and
-        # setattr()s it directly — a malformed range would silently corrupt
-        # a live-performance param sweep, so pin the shape here.
+        # setattr()s it directly, so a malformed range corrupts a live param sweep.
         expected = {
             "plasma": {"speed", "scale"},
             "tunnel": {"speed", "scale"},
@@ -91,9 +90,8 @@ class GeneratorTest(unittest.TestCase):
                 self.assertTrue(hasattr(g, param), f"{name}.{param} not a real attribute")
 
     def test_live_params_settable_via_generic_setattr(self):
-        # The exact mechanism midi_control.py uses: setattr(obj, name, val)
-        # with no per-class wiring. Constructed directly (not via the
-        # registry) so the concrete type declares `speed` for pyright.
+        # The exact mechanism midi_control.py uses: setattr(obj, name, val), no
+        # per-class wiring. Constructed directly so pyright sees `speed` declared.
         g = generators.PlasmaSource()
         lo, hi = g.LIVE_PARAMS["speed"]
         mid = lo + 0.5 * (hi - lo)
@@ -119,10 +117,8 @@ class GeneratorTest(unittest.TestCase):
             build_generator("does-not-exist")
 
     def test_unmodulated_path_identical_to_pure_time(self):
-        # The determinism guard: render(t, None) and read(t) must be byte-for-byte
-        # the historical pure-time output for every generator (the offline
-        # renderer + drift tests rely on this — even fire, whose scroll is a
-        # pure function of t rather than a stateful cellular sim).
+        # The determinism guard: render(t, None) must be byte-for-byte the pure-time
+        # output for every generator — the offline renderer + drift tests rely on it.
         for name in generator_names():
             g = build_generator(name)
             np.testing.assert_array_equal(g.render(0.7), g.render(0.7, None))
@@ -130,9 +126,8 @@ class GeneratorTest(unittest.TestCase):
             self.assertFalse(np.array_equal(g.render(0.0), g.render(1.0)))  # animates
 
     def test_fire_flares_with_level_and_onset(self):
-        # Fire's headline reaction: a transient + loudness push the heat field
-        # toward the white-hot end of COLORMAP_HOT, so the reactive frame is
-        # strictly brighter than the resting fire — the flames leap on the beat.
+        # A transient + loudness push the heat field toward the white-hot end of
+        # COLORMAP_HOT, so the reactive frame is strictly brighter than resting fire.
         from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("fire")
@@ -141,9 +136,8 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(g.render(0.5, flare).sum()), int(rest.sum()))
 
     def test_fire_intensity_raises_heat(self):
-        # The ix live knob: a higher intensity scales the whole heat field up,
-        # so more of the frame reaches the white-hot end (brighter overall);
-        # a lower one dims it. Default 1.0 is the baseline.
+        # Higher intensity scales the whole heat field up, so more of the frame
+        # reaches the white-hot end; lower dims it. Default 1.0 is the baseline.
         base = generators.FireSource().render(0.5)
         hot = generators.FireSource(intensity=2.0).render(0.5)
         cool = generators.FireSource(intensity=0.3).render(0.5)
@@ -151,9 +145,8 @@ class GeneratorTest(unittest.TestCase):
         self.assertLess(int(cool.sum()), int(base.sum()))
 
     def test_tunnel_scale_changes_ring_density(self):
-        # The ix live knob: `scale` multiplies the depth coefficient, changing
-        # the concentric-ring density, so the rendered frame differs from the
-        # baseline. Default 1.0 reproduces the historical output.
+        # `scale` multiplies the depth coefficient, changing the concentric-ring
+        # density. Default 1.0 reproduces the historical output.
         base = generators.TunnelSource().render(0.5)
         dense = generators.TunnelSource(scale=4.0).render(0.5)
         self.assertEqual(base.shape, dense.shape)
@@ -176,7 +169,7 @@ class GeneratorTest(unittest.TestCase):
 
     def test_onset_flashes_brightness(self):
         # A transient (onset=1) must brighten the frame versus the same modulation
-        # with onset=0 (the "color pulse / flash" behavior).
+        # with onset=0.
         from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("plasma")
@@ -185,8 +178,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(g.render(1.0, hit).sum()), int(g.render(1.0, rest).sum()))
 
     def test_beat_phase_advances_hue(self):
-        # A larger accumulated beat_phase shifts the hue (tempo-driven cycling),
-        # so frames at different beat_phase differ.
+        # A larger accumulated beat_phase shifts the hue (tempo-driven cycling).
         from c64cast.scenes.modulation import MusicModulation
 
         g = build_generator("plasma")
@@ -203,9 +195,8 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(30.0)))  # zoom has advanced
 
     def test_mandelbrot_interior_is_black(self):
-        # The starting (scale=1) view frames the whole set, so some pixels
-        # must land strictly inside it (never escape) and render pure black
-        # regardless of the cycling hue.
+        # The starting (scale=1) view frames the whole set, so some pixels never
+        # escape and render pure black regardless of the cycling hue.
         g = build_generator("mandelbrot")
         frame = g.render(0.0)
         self.assertTrue((frame.sum(axis=-1) == 0).any())
@@ -296,8 +287,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertEqual(f0.shape, (generators.GEN_HEIGHT, generators.GEN_WIDTH, 3))
         self.assertEqual(f0.dtype, np.uint8)
         np.testing.assert_array_equal(f0, g.render(0.0))
-        # More of the walk is revealed partway into the grow cycle than at
-        # the very start ⇒ strictly more lit pixels.
+        # More of the walk is revealed partway into the grow cycle ⇒ more lit pixels.
         self.assertGreater(int(g.render(5.0).sum()), int(f0.sum()))
 
     def test_rorschach_mirror_symmetric(self):
@@ -356,7 +346,7 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(3.0)))
 
     def test_rotozoomer_scale_changes_frame(self):
-        # The ix live knob: `scale` feeds the affine zoom factor directly.
+        # `scale` feeds the affine zoom factor directly.
         base = generators.RotozoomerSource().render(0.5)
         zoomed = generators.RotozoomerSource(scale=3.0).render(0.5)
         self.assertEqual(base.shape, zoomed.shape)
@@ -489,10 +479,8 @@ class GeneratorTest(unittest.TestCase):
         self.assertFalse(np.array_equal(f0, g.render(3.0)))
 
     def test_game_of_life_direct_jump_matches_gradual_replay(self):
-        # The purity guarantee: a fresh instance rendering t=5.0 directly must
-        # equal an instance that got there via several smaller render() calls
-        # first — verifies the (epoch, generation) cache never changes the
-        # answer, only how cheaply it's reached.
+        # A fresh instance rendering t=5.0 directly must equal one that got there in
+        # steps: the (epoch, generation) cache changes cost, never the answer.
         direct = build_generator("game_of_life").render(5.0)
         gradual = build_generator("game_of_life")
         for t in (0.5, 1.3, 2.7, 4.0, 5.0):
@@ -500,8 +488,7 @@ class GeneratorTest(unittest.TestCase):
         np.testing.assert_array_equal(direct, out)
 
     def test_game_of_life_epoch_reseeds(self):
-        # Past one full epoch, the board reseeds from a fresh random soup —
-        # different epochs must not look identical.
+        # Past one full epoch the board reseeds from a fresh random soup.
         g = generators.GameOfLifeSource()
         epoch_s = g._epoch_s  # noqa: SLF001 — reading the instance's own constant
         f0 = g.render(0.5)
@@ -535,8 +522,8 @@ class GeneratorTest(unittest.TestCase):
         g = generators.SoapSource()
         g.render(2.0)
         g.reset()
-        # Immediately after reset the buffer is back to the seed pattern —
-        # rendering at the same t it started at reproduces the first frame.
+        # After reset the buffer is back to the seed pattern, so rendering at the
+        # same t reproduces the first frame.
         fresh = generators.SoapSource().render(0.0)
         np.testing.assert_array_equal(g.render(0.0), fresh)
 
@@ -558,8 +545,7 @@ class GeneratorTest(unittest.TestCase):
     def test_fireworks_evolves_over_time(self):
         g = build_generator("fireworks")
         frames = [g.render(t) for t in (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0)]
-        # Over enough sim time a shell must launch/explode/fade — some frame
-        # differs from the (likely-empty) first frame.
+        # Over enough sim time a shell must launch/explode/fade.
         self.assertTrue(any(not np.array_equal(frames[0], f) for f in frames[1:]))
 
     def test_fireworks_reset_clears_particles(self):
@@ -581,12 +567,9 @@ class GeneratorTest(unittest.TestCase):
         self.assertGreater(int(out.sum()), 0)
 
     def test_fireworks_scale_changes_burst_spread(self):
-        # `scale` multiplies burst particle speed — force an explosion at t=0
-        # via a strong onset on both instances, then let a few ticks of
-        # physics move the particles along their (scale-dependent) velocities
-        # before comparing spread (right at the burst instant every particle
-        # still sits exactly at the burst center, so spread would be zero
-        # regardless of scale).
+        # `scale` multiplies burst particle speed. Force an explosion at t=0 on both
+        # instances, then run a few ticks of physics before comparing spread: at the
+        # burst instant every particle still sits exactly at the burst center.
         from c64cast.scenes.modulation import MusicModulation
 
         hit = MusicModulation(0.3, 1.0, 0.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -603,16 +586,13 @@ class GeneratorTest(unittest.TestCase):
 
 class EffectTest(unittest.TestCase):
     def test_live_params_declared_with_valid_ranges(self):
-        # midi_control.py scales a CC into each declared (min, max) range and
-        # setattr()s it directly — pin the shape for every registered
-        # effect. pulse/rgb_shift expose `intensity` (the sx/ix reaction-depth
-        # knob; a visible no-op only because they're inert without modulation).
+        # As above, for effects. pulse/rgb_shift expose `intensity` (the reaction-
+        # depth knob), inert-looking only because they do nothing without modulation.
         expected = {
             "trails": {"decay"},
             "pulse": {"intensity"},
             "rgb_shift": {"intensity"},
             "blur": {"intensity"},
-            # Phase 3 VJ effects.
             "strobe": {"duty", "rate"},
             "invert": {"mix"},
             "mirror": set(),  # choice-only (LIVE_CHOICES axis), no scalars
@@ -657,9 +637,8 @@ class EffectTest(unittest.TestCase):
             build_effect("nope")
 
     def test_trails_reactive_decay_lengthens_tail(self):
-        # A transient + loudness raise the effective decay, so more of a prior
-        # bright frame survives into the next — a brighter/longer tail than the
-        # unmodulated baseline. Drives "the trail blooms on the beat".
+        # A transient + loudness raise the effective decay, so more of a prior bright
+        # frame survives into the next — a longer tail than the baseline.
         from c64cast.scenes.modulation import MusicModulation
 
         bright = np.full((2, 2, 3), 200, np.uint8)
@@ -704,8 +683,7 @@ class EffectTest(unittest.TestCase):
         np.testing.assert_array_equal(eff.apply(f, 0.0, silent), f)
 
     def test_pulse_intensity_zero_is_identity_under_modulation(self):
-        # intensity=0 scales the whole reaction away ⇒ scale collapses to 1.0
-        # ⇒ identity even with a full transient present.
+        # intensity=0 scales the reaction away ⇒ identity even with a full transient.
         from c64cast.scenes.modulation import MusicModulation
 
         eff = PulseEffect(intensity=0.0)
@@ -714,8 +692,7 @@ class EffectTest(unittest.TestCase):
         np.testing.assert_array_equal(eff.apply(f, 0.0, hit), f)
 
     def test_pulse_intensity_scales_reaction(self):
-        # A higher intensity zooms harder for the same transient — the frame
-        # diverges further from the source than at the baseline intensity.
+        # A higher intensity zooms harder, so the frame diverges further from source.
         from c64cast.scenes.modulation import MusicModulation
 
         f = np.zeros((16, 16, 3), np.uint8)
@@ -728,8 +705,7 @@ class EffectTest(unittest.TestCase):
         self.assertGreater(hot_diff, base_diff)
 
     def test_effect_intensity_default_is_baseline(self):
-        # The default intensity=1.0 is what build_effect ships — the multiply is
-        # bit-exact identity against the pre-knob response.
+        # The default intensity=1.0 makes the multiply a bit-exact identity.
         self.assertEqual(PulseEffect().intensity, 1.0)
         self.assertEqual(RgbShiftEffect().intensity, 1.0)
 
@@ -786,8 +762,7 @@ class EffectTest(unittest.TestCase):
         self.assertFalse(np.array_equal(out, f))
 
     def test_blur_reactive_kick_increases_with_onset(self):
-        # Same base intensity, more onset ⇒ more blur (base + reactive kick,
-        # same shape as trails' reactive decay boost).
+        # Same base intensity, more onset ⇒ more blur (base + reactive kick).
         from c64cast.scenes.modulation import MusicModulation
 
         f = np.zeros((16, 16, 3), np.uint8)
@@ -797,13 +772,11 @@ class EffectTest(unittest.TestCase):
         eff = BlurEffect(intensity=0.5)
         rest_out = eff.apply(f, 0.0, rest)
         hit_out = eff.apply(f, 0.0, hit)
-        # More blur spreads the bright point's energy over more pixels, so the
-        # peak value drops further under the stronger (onset-kicked) blur.
+        # More blur spreads the bright point's energy, so its peak value drops more.
         self.assertLess(int(hit_out.max()), int(rest_out.max()))
 
     def test_render_with_overlays_threads_modulation_to_effect(self):
-        # The render path must hand the per-frame modulation snapshot to the
-        # effect (mirrors the frame-source threading) so reactive effects react.
+        # The render path must hand the per-frame modulation snapshot to the effect.
         from c64cast.scenes.modulation import MusicModulation
 
         snap = MusicModulation(0.4, 0.9, 1.0, 120.0, (0.0, 0.0, 0.0), (False, False, False))
@@ -970,8 +943,7 @@ class AudioSourceTest(unittest.TestCase):
         try:
             sink = streamer.analysis_sink
             assert sink is not None
-            # Drive the sink the way a mic callback would, then let the poll
-            # thread pick it up.
+            # Drive the sink the way a mic callback would.
             deadline = time.time() + 2.0
             while time.time() < deadline:
                 t = np.arange(2048, dtype=np.float32) / streamer.sample_rate
@@ -1005,7 +977,6 @@ class AudioSourceTest(unittest.TestCase):
         try:
             assert streamer.started is not None
             self.assertTrue(streamer.started.get("listen"))
-            # The sink is installed for reactive analysis.
             self.assertIsNotNone(streamer.analysis_sink)
         finally:
             mic.teardown()
@@ -1013,9 +984,8 @@ class AudioSourceTest(unittest.TestCase):
         self.assertTrue(streamer.stopped)
 
     def test_listen_analyzer_uses_full_bandwidth_rate(self):
-        # Freed from the DAC rate, listen captures + analyzes at the higher
-        # listen_sample_rate (44.1 kHz by default), while mic stays at the DAC
-        # rate so the analyzer matches what the C64 plays.
+        # Listen captures and analyzes at listen_sample_rate (44.1 kHz default),
+        # while mic stays at the DAC rate, matching what the C64 plays.
         from c64cast.app.config import AudioFeaturesCfg
 
         listen_streamer = _FakeStreamer()
@@ -1186,8 +1156,7 @@ class SourceSceneTest(unittest.TestCase):
         self.assertEqual(mode.setups, 1)  # no re-assert for a non-SID source
 
     def test_modulation_threaded_from_audio_source_to_frame_source(self):
-        # The audio source's features() snapshot must reach the frame source's
-        # read() — this is the music→visuals wiring.
+        # The audio source's features() snapshot must reach the frame source's read().
         from c64cast.scenes.modulation import MusicModulation
 
         snap = MusicModulation(0.5, 1.0, 2.0, 120.0, (1.0, 0.0, 0.0), (True, False, False))
@@ -1203,12 +1172,9 @@ class SourceSceneTest(unittest.TestCase):
         self.assertIs(src.last_modulation, snap)
 
     def test_audio_source_setup_failure_aborts_scene(self):
-        # A failing audio source (e.g. a SID source whose tune run_sid_player
-        # refuses) must abort the scene: setup() flips is_done, and
-        # process_frame() must honor it — the generative source's `finished`
-        # is always False, so without the is_done guard the playlist's
-        # `is_done = not still_active` would clobber the abort and play silent
-        # video for the full duration.
+        # A failing audio source must abort the scene: setup() flips is_done and
+        # process_frame() honors it. The generative source's `finished` is always
+        # False, so without the guard the playlist plays silent video for the duration.
         class _BoomAudio:
             wants_audio_lock = True
 
@@ -1261,7 +1227,6 @@ class EffectHookTest(unittest.TestCase):
             cast(DisplayMode, mode), cast(C64Backend, SimpleNamespace()), frame, [], 0.0, scene
         )
         self.assertEqual(eff.applied, 1)
-        # The display received the effect's output, not the raw frame.
         np.testing.assert_array_equal(mode.rendered[0], eff.marker)
 
     def test_no_effect_passes_raw_frame(self):
@@ -1292,9 +1257,8 @@ class EffectHookTest(unittest.TestCase):
 
 
 class _DummyAPI:
-    # `profile` is a pure capability read (not device I/O), legitimately read at
-    # build time to resolve [video].double_buffer — so it's a real attribute.
-    # __getattr__ still guards against any actual device call at build time.
+    # `profile` is a pure capability read, needed at build time to resolve
+    # [video].double_buffer; __getattr__ still guards any real device call.
     profile = HardwareProfile(name="Dummy", family="fake")
 
     def __getattr__(self, name):
@@ -1346,9 +1310,8 @@ class ConfigGenerativeTest(unittest.TestCase):
         self.assertIsNone(scene.audio)
 
     def test_audio_source_listen_builds_listen_only_source(self):
-        # "listen" builds a listen-only MicAudioSource driven by the shared
-        # streamer, but the scene carries NO DAC audio (SourceScene.audio None):
-        # it produces no C64 sound, only reactive visuals.
+        # "listen" builds a listen-only MicAudioSource on the shared streamer, but
+        # the scene carries no DAC audio: no C64 sound, only reactive visuals.
         s = SceneCfg(type="generative", source="plasma", display="mhires", audio_source="listen")
         streamer = cast(AudioStreamer, _FakeStreamer())
         scene = build_scene(s, self.cfg, cast(C64Backend, _DummyAPI()), streamer, None)
@@ -1418,12 +1381,10 @@ class ConfigGenerativeTest(unittest.TestCase):
 
     @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_routes_to_sampler_and_caps_fps_at_30(self):
-        # On a sampler-capable U64 (backend auto/sampler + sampler_available),
-        # audio_source="file" decodes into the off-bus UltimateAudioSampler
-        # instead of the staticky 4-bit DAC. Crucially the bitmap fps stays at
-        # the muted 30 cap — NOT the video path's 60 uncap: a generative source
-        # doesn't dedup, so 60 real mhires frames/s would starve the sampler ring
-        # (static) and crash the C64 (HW 2026-07-24).
+        # On a sampler-capable U64, audio_source="file" decodes into the off-bus
+        # UltimateAudioSampler rather than the 4-bit DAC. The bitmap fps stays at the
+        # muted 30 cap, not the video path's 60: a generative source doesn't dedup, so
+        # 60 mhires frames/s starves the sampler ring and crashes the C64 (HW 2026-07-24).
         import tempfile
 
         from c64cast.audio.sampler import UltimateAudioSampler
@@ -1444,7 +1405,6 @@ class ConfigGenerativeTest(unittest.TestCase):
                 sampler_available=True,
             )
             assert isinstance(scene, SourceScene)
-            # The scene's base audio AND the source's audio object are the sampler.
             self.assertIsInstance(scene.audio, UltimateAudioSampler)
             self.assertIsInstance(scene.audio_source._audio, UltimateAudioSampler)  # type: ignore[attr-defined]
             self.assertEqual(scene.target_fps, 30.0)
@@ -1478,9 +1438,8 @@ class ConfigGenerativeTest(unittest.TestCase):
 
     @unittest.skipUnless(ensure_pyav(), "PyAV (video extra) not installed")
     def test_audio_source_file_dac_backend_stays_on_dac_at_20_fps(self):
-        # backend="dac" forces the 4-bit DAC even on a sampler-capable U64 (also
-        # the only path on TeensyROM), keeping its 20 fps bitmap cap. Proves the
-        # DAC remains a user-selectable option after the sampler default.
+        # backend="dac" forces the 4-bit DAC even on a sampler-capable U64 (and it is
+        # the only path on TeensyROM), keeping its 20 fps bitmap cap.
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -1501,7 +1460,6 @@ class ConfigGenerativeTest(unittest.TestCase):
                 sampler_available=True,
             )
             assert isinstance(scene, SourceScene)
-            # The DAC path keeps the shared streamer (not a sampler).
             self.assertIs(scene.audio, streamer)
             self.assertIs(scene.audio_source._audio, streamer)  # type: ignore[attr-defined]
             self.assertEqual(scene.target_fps, 20.0)

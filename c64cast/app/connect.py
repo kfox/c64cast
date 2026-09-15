@@ -51,13 +51,11 @@ from typing import Protocol
 
 from c64cast._redact import REDACTED, redact_secrets
 
-# Windows serial ports look like a host in a URL (``tr://COM3`` -> netloc
-# "COM3"), so they're matched here and routed to the serial transport instead
-# of TCP. Unix serial nodes are always /dev/... paths (empty netloc), so they
-# don't need this.
+# A Windows serial port parses as a URL host (``tr://COM3`` -> netloc "COM3"),
+# so it is matched here and routed to serial instead of TCP. Unix serial nodes
+# are /dev/... paths with an empty netloc and need no such case.
 _COM_RE = re.compile(r"^COM\d+$", re.IGNORECASE)
 
-# Recognized schemes, for the error message on an unknown one.
 _SCHEMES = ("u64", "http", "https", "tr")
 
 
@@ -74,10 +72,8 @@ class ConnectionSpec:
     config's own defaults (or a TOML's values) in place otherwise."""
 
     backend: str  # "ultimate" | "teensyrom"
-    # --- ultimate ---
     url: str | None = None
     dma_port: int | None = None
-    # --- teensyrom ---
     transport: str | None = None  # "serial" | "tcp"
     serial_port: str | None = None
     host: str | None = None
@@ -164,8 +160,7 @@ def _parse_tr(
     storage = query.get("storage")
 
     if not parts.netloc:
-        # Serial. tr:// -> auto-detect (serial_port left None); tr:///dev/... ->
-        # that explicit device node.
+        # tr:// -> auto-detect (serial_port None); tr:///dev/... -> that node.
         _check_known_query(query, {"baud", "storage"}, target=target)
         return ConnectionSpec(
             backend="teensyrom",
@@ -176,8 +171,7 @@ def _parse_tr(
         )
 
     if _COM_RE.match(parts.netloc):
-        # Windows COM port. Use the netloc verbatim (urlsplit's .hostname would
-        # lowercase it) and treat it as a serial device.
+        # The netloc verbatim: `urlsplit`'s `.hostname` would lowercase it.
         _check_known_query(query, {"baud", "storage"}, target=target)
         return ConnectionSpec(
             backend="teensyrom",
@@ -187,7 +181,6 @@ def _parse_tr(
             storage=storage,
         )
 
-    # Non-empty, non-COM netloc -> raw TCP host[:port].
     port = _netloc_port(parts, target)
     tcp_port_query = _int_query(query, "tcp_port", target=target)
     _check_known_query(query, {"baud", "storage", "tcp_port"}, target=target)
@@ -212,9 +205,8 @@ def parse_connection_uri(target: str) -> ConnectionSpec:
         raise ConnectionURIError("empty connection target")
     parts = urllib.parse.urlsplit(target)
     scheme = parts.scheme.lower()
-    # `target` is only ever reported back to the user from here down (the spec
-    # is built from `parts`), so switch to the redacted spelling once and every
-    # message below is safe to log by construction.
+    # From here down `target` is only ever reported back to the user (the spec is
+    # built from `parts`), so redacting once makes every message below safe to log.
     target = redact_target(target)
     _reject_userinfo(parts, target)
     query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
@@ -225,10 +217,8 @@ def parse_connection_uri(target: str) -> ConnectionSpec:
     if scheme in ("http", "https"):
         _netloc_port(parts, target)
         _check_known_query(query, {"dma_port"}, target=target)
-        # The Ultimate is the only HTTP-speaking backend. Rebuild without the
-        # query/fragment — ``target`` passed through whole would leave
-        # ``?dma_port=64`` inside the base URL that Ultimate64API concatenates
-        # every REST path onto.
+        # Rebuilt without the query/fragment: `Ultimate64API` concatenates every
+        # REST path onto this URL, so `?dma_port=64` must not ride along.
         return ConnectionSpec(
             backend="ultimate",
             url=urllib.parse.urlunsplit((scheme, parts.netloc, parts.path, "", "")),

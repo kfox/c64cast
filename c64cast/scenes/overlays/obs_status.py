@@ -66,10 +66,9 @@ class OBSStatusOverlay(CornerTextOverlay):
             raise RuntimeError(
                 "obs_status overlay requires obsws-python (uv tool install --force 'c64cast[all]')"
             )
-        # CornerTextOverlay handles paint-throttling internally; we set a
-        # short refresh_s here so the corner-text base renders immediately
-        # whenever our cached string changes (the OBS poll runs at a
-        # separate cadence in the background thread).
+        # A short refresh_s makes the corner-text base pick up a change to the
+        # cached string promptly; the OBS poll runs at its own cadence on the
+        # background thread.
         super().__init__(corner=corner, fg_color=fg_color, bg_color=bg_color, refresh_s=0.5)
         self.host = host
         self.port = int(port)
@@ -81,7 +80,6 @@ class OBSStatusOverlay(CornerTextOverlay):
         self._poll = PollThread(self._worker, name="obs-status", manual=True, join_timeout=1.0)
         self._client = None
 
-    # ---- background polling --------------------------------------------------
     def _connect(self):
         assert _obsws is not None
         return _obsws.ReqClient(
@@ -119,12 +117,10 @@ class OBSStatusOverlay(CornerTextOverlay):
                 log.debug("OBS poll failed: %s", e)
                 with self._lines_lock:
                     self._lines = ["OBS OFFLINE"]
-                # Drop the stale client; reconnect next iteration.
                 self._client = None
                 backoff = min(backoff * 2.0, 30.0)
             stop.wait(timeout=max(self.poll_interval, backoff))
 
-    # ---- overlay surface -----------------------------------------------------
     def setup(self, api, scene):
         self._poll.start()
 
@@ -136,8 +132,8 @@ class OBSStatusOverlay(CornerTextOverlay):
         self._poll.stop()
         if self._client is not None:
             try:
-                # obsws-python's ReqClient has a .disconnect() method
-                # under both v1.x and v2.x APIs.
+                # obsws-python's ReqClient has .disconnect() under both v1.x
+                # and v2.x.
                 close = getattr(self._client, "disconnect", None)
                 if close is None:
                     close = getattr(self._client, "close", None)

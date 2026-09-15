@@ -59,22 +59,17 @@ def _trigger(be, c64_addr: int, reu_off: int, length: int, command: int) -> None
 
 def roundtrip(be, reu_off: int) -> tuple[bool, bytes]:
     """One stash→clobber→fetch cycle at `reu_off`. Returns (ok, readback)."""
-    # 1. seed the scratch page
     be.write_memory(f"{SCRATCH:04X}", PATTERN.hex())
     got = be.read_memory(SCRATCH, NBYTES)
     if got != PATTERN:
         raise SystemExit(f"[!] scratch seed/read failed: wrote {PATTERN.hex()} read {got}")
-    # 2. stash C64 -> REU
     stash = REU.CMD_EXEC | REU.CMD_FF00_OFF | REU.CMD_DIR_C64_TO_REU  # $90
     _trigger(be, SCRATCH, reu_off, NBYTES, stash)
-    # 3. clobber + verify
     be.write_memory(f"{SCRATCH:04X}", "00" * NBYTES)
     cl = be.read_memory(SCRATCH, NBYTES)
     if cl != bytes(NBYTES):
         raise SystemExit(f"[!] clobber failed: read {cl}")
-    # 4. fetch REU -> C64
     _trigger(be, SCRATCH, reu_off, NBYTES, REU.CMD_FETCH_EXEC)  # $91
-    # 5. read back
     back = be.read_memory(SCRATCH, NBYTES) or b""
     return (back == PATTERN, back)
 

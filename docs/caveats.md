@@ -165,23 +165,34 @@ documented way to suppress the UI.
 Instead, `api.run_sid_player()` DMAs the SID payload to its declared
 load address + a small hand-encoded 6502 player (plus a SHIFT-driven
 re-INIT stub), then POSTs a matching `10 SYS <player_base>` BASIC stub
-via `runners:run_prg`. The player and stub are **relocated per-tune** by
-`_choose_player_layout` — the default location is `$C300` (so the BASIC
-stub is `SYS 49920`), but a tune whose payload would overlap gets the
-bundle relocated to free RAM the tune doesn't touch (the waveform scene
-passes a footprint and picks the largest hole the tune never writes; the
-generic path places the bundle just past the payload), with the SYS
-argument rebuilt to match. The real 6510 sets the CPU port (`$01`) bank
-config around each call (see below), calls
-INIT once, installs an IRQ that calls PLAY then chains to kernal
-`$EA31` (so keyboard scan at `$028D` + cursor-blink suppression
-survive), and then spins forever in a tight `JMP *`. The player
-intentionally never returns to BASIC: most SID INIT routines clobber
-zero-page locations BASIC depends on, so an RTS would land back in
-the interpreter with corrupted state and print `?SYNTAX ERROR` on
-screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
-system rate and `$028D` keeps updating for the keyboard poller.
-Audio still comes from the real SID chip.
+via `runners:run_prg`. The player and stub are **relocated per-tune**
+by `_choose_player_layout` — the default location is `$C300` (so the
+BASIC stub is `SYS 49920`), and it is taken whenever the bundle clears
+every `_layout_fits` check. In the order the code applies them, per
+block: the `$0820`-`$D000` bounds, audio's `$C000`-`$C2FF` region, the
+payload extent, any byte the supplied footprint marks, and then —
+once, after both blocks — the player/stub mutual overlap. Fail any one
+and the bundle is relocated to free RAM the tune doesn't touch (the
+waveform scene passes a footprint and picks the largest hole the tune
+never writes; the generic path tries page-aligned just past the
+payload and then, if that does not fit, page-aligned just below it,
+and raises `ValueError` if neither does), with the SYS argument
+rebuilt to match. Note which path is tried first: the largest-hole
+preference is a real margin against a write pattern a footprint sample
+never reached, but it belongs to the relocation path, and the default
+path taken ahead of it has none — see
+[sid.md](architecture/sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene).
+
+The real 6510 sets the CPU port (`$01`) bank config around each call
+(see below), calls INIT once, installs an IRQ that calls PLAY then
+chains to kernal `$EA31` (so keyboard scan at `$028D` + cursor-blink
+suppression survive), and then spins forever in a tight `JMP *`. The
+player intentionally never returns to BASIC: most SID INIT routines
+clobber zero-page locations BASIC depends on, so an RTS would land
+back in the interpreter with corrupted state and print `?SYNTAX ERROR`
+on screen. The kernal IRQ keeps firing regardless, so PLAY runs at the
+system rate and `$028D` keeps updating for the keyboard poller. Audio
+still comes from the real SID chip.
 
 **Pre-blank before the kick (Ultimate only).** `runners:run_prg` soft-resets
 the C64, and like any reset it has a reset-latency window during which the
@@ -431,9 +442,25 @@ blanked). A buffered run folds the ASID ring into the REU auto-provisioner
 **v1 limitations (documented, not over-engineered):**
 
 * **Frame-fit ceiling.** The handler's per-frame cost (per-op overhead + `0x30`
-  waits, summed across all chips) must fit the frame period. Realistic content
-  fits — it's how the tune runs natively — but a pathological 8-SID × 16× frame
-  can overrun and queue ticks, an inherent limit like the NMI DAC cycle budget.
+  waits, summed across all chips) must fit the frame period, and an overrun does
+  not queue politely — the CIA fires again before the handler returns, so the
+  6510 stays inside the ASID IRQ and the kernal tail (jiffy clock, `SCNKEY`)
+  stops until the stream lets up or the scene tears down. The wire-supplied half
+  of that cost is **bounded**: a `0x30` recipe caps at 28 pairs with each
+  register named once (so one chip's frame can never serialize past
+  `MAX_OPS_PER_CHIP`, and a slot that still has to truncate logs it), and the
+  recipe's inter-write waits are scaled down to fit the consume period before
+  the slot is packed, with a one-time warning. What remains is the op cost
+  itself: a dense 8-SID frame at a high multispeed can outrun the period with
+  every wait already at zero. Realistic content fits — it's how the tune runs
+  natively — and the register writes are never dropped to make it fit, because
+  a mangled tune is worse than a slow kernal chain teardown undoes anyway.
+* **Consume rate is clamped to ~15-1000 Hz.** The ceiling is 16× the video rate
+  (all the `0x31` speed multiplier can express); the floor is the slowest
+  cadence a 16-bit CIA latch can realize. A host asking for more gets the bound
+  and a warning, because `cia1_latch_for_rate` clamps the latch rather than the
+  rate — an unclamped `frame_delta_us = 1` became the fastest timer the CIA can
+  run, which the 6510 cannot service and the host cannot feed.
 * **Coarse cycle delay.** The on-C64 busy-wait approximates each `0x30`
   `wait_cycles` within a few cycles (≈`DELAY_CYCLES_PER_UNIT` per unit) — far
   better than dropped/instant, a refinement target if it ever matters audibly.

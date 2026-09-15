@@ -255,16 +255,23 @@ the browns and orange.
 
 | `host_palette` | Means |
 |---|---|
-| `auto` | The default, and needs no configuration. Ask the machine: an Ultimate 64 reports its own palette, and anything else is driving a real C64, so assume a VIC-II |
+| `auto` | The default, and needs no configuration. Ask the machine: an Ultimate reports the sixteen colors it is driving, and anything else is driving a real C64, so assume a VIC-II |
 | `u64` | The Ultimate 64's own table, stated outright |
 | `pepto` | The classic VIC-II rendering — right for a real C64, so for an Ultimate II+ and for a TeensyROM+ in a breadbin |
 | *a path* | A VICE `.vpl` file, which is how to describe a machine running a custom palette |
 
 `auto` is right on every stock setup, and this is a setting most configurations
-should never contain. Reach for it when the machine's palette is not the one its
-backend implies: a `.vpl` loaded on the Ultimate, or a display whose own
-processing you have already characterized. Point a path at a local copy of the
-`.vpl` — an Ultimate will not serve its own over the network.
+should never contain. An Ultimate running firmware **3.15** or newer answers
+`auto` with the colors it is really driving — a custom `.vpl` loaded from flash
+included. It is answered over the Command Interface, already one of the three
+services a run needs:
+["The Three Network Services"](02-config-rules.md#the-three-network-services).
+
+Reach for a stated value when the machine cannot be asked or its answer is not
+the whole story: firmware older than that, where a loaded `.vpl` goes unseen
+and the built-in table is assumed instead, or a display whose own processing
+you have already characterized. For the first, point a path at a local copy of
+that `.vpl`.
 
 Note that this is a `[hardware]` setting rather than a `[color]` one, and
 deliberately: it says what the *machine* emits, not what the show should look
@@ -279,7 +286,7 @@ not have. Two families, and they are integrated differently:
 
 **Ordered** — `ordered` and `blue_noise` — add a fixed, position-dependent
 offset to every channel before the nearest-color search. They are one
-vectorised operation over the frame, they hold real-time frame rates, and
+vectorized operation over the frame, they hold real-time frame rates, and
 because the pattern is constant at a given screen position a still source
 dithers identically frame after frame and a moving one gains no shimmer.
 `ordered` tiles the classic 8×8 Bayer matrix and shows its cross-hatch at C64

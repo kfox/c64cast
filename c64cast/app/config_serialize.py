@@ -56,11 +56,8 @@ _PUBLISHED_SCHEMA_URL = (
     "https://raw.githubusercontent.com/kfox/c64cast/{ref}/c64cast/data/c64cast.schema.json"
 )
 
-# The same URL read the other way: a `#:schema` value of this shape names a
-# *snapshot* of the schema, and `pinned_url_version` says which. Spelled out
-# rather than built from the template above — a regex assembled by escaping a
-# formatted string is unreadable, and `test_a_published_url_reads_back` pins the
-# two spellings to each other instead.
+# The template above read the other way; spelled out rather than escaped from
+# it, with `test_a_published_url_reads_back` pinning the two spellings together.
 _PINNED_URL_RE = re.compile(
     r"https://raw\.githubusercontent\.com/kfox/c64cast/v(?P<version>[^/]+)"
     r"/c64cast/data/c64cast\.schema\.json\Z"
@@ -73,30 +70,23 @@ def _published_schema_url(version: str) -> str:
     return _PUBLISHED_SCHEMA_URL.format(ref=ref)
 
 
-# Fallback for the `#:schema` first line, used only when the packaged schema
-# isn't on disk to point at: a URL pinned to *this* version rather than to a
-# moving ref, because a schema newer than the program stops flagging real
-# mistakes and starts offering keys this install will reject. That pin is also
-# why it's the fallback and not the preference — `schema_directive_for` names
-# the installed copy when it can, and that one is rewritten by every upgrade.
+# Fallback for the `#:schema` first line, used only when the packaged schema is
+# not on disk to point at. Pinned to *this* version rather than a moving ref: a
+# schema newer than the program offers keys this install will reject. The pin is
+# also why it is the fallback — `schema_directive_for` prefers the installed
+# copy, which every upgrade rewrites.
 DEFAULT_SCHEMA_PATH = _published_schema_url(__version__)
 
-# Never written to disk — it's a secret, supplied via an env var or hand-added
-# to a non-committed file (see docs/reference/). Omitting it keeps the
-# serializer safe to point at a checked-in path. Public because `config_store`
-# withholds the same fields from the web console's form data — one list, so a
-# secret can't be safe in the file and visible in the browser.
+# Fields never written to disk and never echoed back as an ordinary field value:
+# each grants remote control of the host. Public, because `config_store`
+# withholds the same set from the web console's form data — one list, so a secret
+# cannot be safe in the file and visible in the browser.
 #
-# The [web]/[control] tokens are here for the same reason as the DMA password:
-# each grants remote control of the host (the web token equivalent to local
-# shell reach, the control token to the /perf console), so an operator who
-# left one in a config must not have it echoed back as an ordinary field
-# value. This governs `describe()`'s form, `_editable_fields()` and `dumps()` —
-# it does NOT reach `config_store.read()`'s raw `text`, which still carries
-# any of these verbatim (see that method's docstring, and
-# `web_api.api_config_read`, which is what gates that text behind the full
-# token). `save_machine_settings` is the one writer that deliberately re-emits
-# them, because the machine-settings file is the one file they live in.
+# It governs `describe()`'s form, `_editable_fields()` and `dumps()`. It does NOT
+# reach `config_store.read()`'s raw `text`, which still carries these verbatim
+# (`web_api.api_config_read` is what gates that text behind the full token), and
+# `save_machine_settings` deliberately re-emits them, since the machine-settings
+# file is the one file they live in.
 SECRET_FIELDS = frozenset(
     {
         ("ultimate64", "dma_password"),
@@ -108,20 +98,16 @@ SECRET_FIELDS = frozenset(
     }
 )
 
-# List-of-table fields that must render as [[parent.child]] blocks AFTER the
-# parent's scalar keys (TOML forbids scalar keys after a sub-table header is
-# opened). Handled out-of-band by the section/scene emitters below.
+# List-of-table fields, rendered as [[parent.child]] blocks after the parent's
+# scalar keys because TOML forbids a scalar key once a sub-table header opens.
 _COLOR_TABLE_ARRAY = "hue_corrections"  # under [color]
 _SCENE_TABLE_ARRAY = "overlays"  # under [[scenes]]
 _PERF_TABLE_ARRAY = "clips"  # under [performance]
 
-# Which section carries which list-of-tables field, and the [[header]] it
-# renders under — one lookup `_emit_section` consults twice (to skip the
-# field in the scalar loop, then to route its rows) instead of two independent
-# `if sd.name == ...` chains that a third table-array field would have to find
-# and update in step.
 _MIDI_TABLE_ARRAY = "cc_map"  # under [midi_control]
 
+# Section -> (field, [[header]]). One lookup `_emit_section` consults twice — to
+# skip the field in the scalar loop, then to route its rows.
 _SECTION_TABLE_ARRAYS: dict[str, tuple[str, str]] = {
     "color": (_COLOR_TABLE_ARRAY, "color.hue_corrections"),
     "performance": (_PERF_TABLE_ARRAY, "performance.clips"),
@@ -144,11 +130,6 @@ _STR_ESCAPES = {
 class SerializeError(Exception):
     """Raised when a Config can't be represented as TOML (e.g. an ensemble
     master, or a non-finite float). Message is end-user readable."""
-
-
-# ---------------------------------------------------------------------------
-# Scalar formatting
-# ---------------------------------------------------------------------------
 
 
 def _fmt_str(s: str) -> str:
@@ -194,11 +175,6 @@ def _fmt_value(v: object) -> str:
     raise SerializeError(f"cannot serialize value of type {type(v).__name__}: {v!r}")
 
 
-# ---------------------------------------------------------------------------
-# Field selection
-# ---------------------------------------------------------------------------
-
-
 def _should_emit(value: object, default: object, *, minimal: bool) -> bool:
     """A field is written when it carries information: never None (TOML can't
     represent it, and None always means "fall back to the dataclass default"),
@@ -216,11 +192,6 @@ def _comment_lines(help_text: str, choices: tuple[str, ...], indent: str) -> lis
         suffix = "choices: " + ", ".join(choices)
         text = f"{text} ({suffix})" if text else suffix
     return [f"{indent}# {text}"]
-
-
-# ---------------------------------------------------------------------------
-# Section + scene emitters
-# ---------------------------------------------------------------------------
 
 
 def _table_rows(
@@ -278,8 +249,7 @@ def _emit_section(
             body += _comment_lines(fd.help, fd.choices, "")
         body.append(f"{_fmt_key(fd.name)} = {_fmt_value(value)}")
 
-    # Trailing list-of-tables, emitted after the section's scalar keys (TOML
-    # forbids scalar keys once a sub-table header opens).
+    # After the section's scalar keys — see `_COLOR_TABLE_ARRAY`.
     table_rows: list[dict[str, object]] = []
     table_header = ""
     if table_array is not None:
@@ -308,17 +278,14 @@ def _emit_scene(
     annotate: bool,
     minimal: bool,
 ) -> list[str]:
-    # Only the fields that apply to this scene's type (introspect already did
-    # the applies_to filtering); fall back to every field for an unknown type.
+    # `introspect` has already done the `applies_to` filtering.
     fields = field_docs.get(s.type, all_fields)
-    # A field the type doesn't claim but that carries a non-default value
-    # anyway (set while the scene was a different type, or by a structured
-    # edit) still has to round-trip — `load` never enforces `applies_to`, so
-    # dropping it here would silently rewrite the file out from under it.
+    # A field this type doesn't claim but that carries a non-default value anyway
+    # still has to round-trip: `load` never enforces `applies_to`, so dropping it
+    # here would silently rewrite the file out from under its author.
     leftover = tuple(fd for fd in all_fields if fd.name not in {f.name for f in fields})
     lines = ["[[scenes]]"]
-    # `type` is the discriminator — always written, even when it's the default,
-    # so the block is unambiguous and copy-pasteable.
+    # The discriminator: written even at its default, so the block is unambiguous.
     lines.append(f"type = {_fmt_value(s.type)}")
     for fd in (*fields, *leftover):
         if fd.name in ("type", _SCENE_TABLE_ARRAY, "color"):
@@ -350,9 +317,8 @@ def _emit_scene_color(color: dict[str, object], *, annotate: bool) -> list[str]:
     lines = ["[scenes.color]"]
     for k, v in color.items():
         if k == _COLOR_TABLE_ARRAY:
-            # An empty override is still an authored key — `color` is the
-            # scene's sparse dict, so `{"hue_corrections": []}` differs from
-            # not mentioning the key at all, and has to round-trip as such.
+            # `color` is the scene's sparse dict, so an empty override is still
+            # an authored key and has to round-trip as one.
             if isinstance(v, list) and not v:
                 lines.append(f"{_fmt_key(k)} = []")
             continue
@@ -366,11 +332,6 @@ def _emit_scene_color(color: dict[str, object], *, annotate: bool) -> list[str]:
         rows: list[dict[str, object]] = [dict(hc) for hc in hue_corrections]
         lines += _emit_table_array("scenes.color.hue_corrections", rows)
     return lines
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def schema_directive_for(out_path: str) -> str:
@@ -401,14 +362,11 @@ def schema_directive_for(out_path: str) -> str:
     try:
         rel = os.path.relpath(schema, out_dir)
     except ValueError:
-        # Windows only: relpath raises across drives (a config on C:, the
-        # package on D:) since there is no relative path between them at all.
-        # Same predicament as the "would have to climb" case below, so the same
-        # answer — absolute — rather than a crash out of `--init`.
+        # Windows only: `relpath` raises across drives, there being no relative
+        # path at all. Same answer as the "would have to climb" case below.
         return str(schema)
     if rel.startswith(".."):
         return str(schema)
-    # Keep "./foo" style for readability.
     return rel if rel.startswith(os.sep) else f".{os.sep}{rel}"
 
 
@@ -491,7 +449,6 @@ def dumps(
         for s in cfg.scenes:
             lines += _emit_scene(s, field_docs, all_fields, annotate=annotate, minimal=minimal)
 
-    # Collapse the trailing blank line; guarantee a single terminating newline.
     text = "\n".join(lines).rstrip("\n")
     return text + "\n"
 

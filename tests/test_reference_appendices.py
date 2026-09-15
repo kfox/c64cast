@@ -75,9 +75,9 @@ class FreshnessTest(unittest.TestCase):
 
     def test_the_appendices_cover_the_reference_book(self):
         # A-I and the index are generated; the introduction, the seven chapters
-        # and the glossary are not. If a hand-written chapter ever acquires the
-        # marker, the next `make reference-appendices` would not touch it and
-        # the drift guard above would silently pass on a file nobody generates.
+        # and the glossary are not. A hand-written chapter that acquired the
+        # marker would be skipped by `make reference-appendices` and pass the
+        # drift guard above.
         generated = {p for p in gen.APPENDICES if p.parent == gen.REFERENCE_DIR}
         self.assertEqual(len(generated), 10)
         for path in bd.discover_chapters(gen.REFERENCE_DIR):
@@ -100,9 +100,8 @@ class ConverterSafetyTest(unittest.TestCase):
             with self.subTest(file=path.name):
                 paths = bd.discover_chapters(path.parent)
                 anchors = bd.section_anchors(paths)
-                # The anchors are not optional here: the index is nothing but
-                # links at sections, and the converter refuses one it cannot
-                # resolve rather than emitting a dead destination.
+                # The anchors are not optional: the index is nothing but links
+                # at sections, and the converter refuses one it cannot resolve.
                 chapter = bd.load_chapter(
                     path, bb.TypstEmitter(), bd.chapter_numbers(paths), anchors
                 )
@@ -145,8 +144,7 @@ class IndexTest(unittest.TestCase):
 
     def test_locators_are_in_reading_order(self):
         # The best few are *chosen* by relevance and then put back in document
-        # order, because they print as page numbers and "152, 41, 84" reads as
-        # a fault rather than as a ranking the reader cannot see.
+        # order, because they print as page numbers and "152, 41, 84" reads wrong.
         order = {p.name: i for i, p in enumerate(bd.discover_chapters(gen.REFERENCE_DIR))}
         for term, locators in self.rows.items():
             files = [order[f] for f in re.findall(r"\]\((\d+-[\w.-]+\.md)#", locators)]
@@ -155,14 +153,12 @@ class IndexTest(unittest.TestCase):
 
     def test_the_section_written_about_a_term_is_among_its_locators(self):
         # Appendix A has a row for every configuration field, so choosing by
-        # position alone would answer "where is dither explained" with the
-        # table rather than with the section that explains it.
+        # position alone would answer "where is dither explained" with the table.
         self.assertIn("Which Pixel Takes Which", self.rows["`dither`"])
 
     def test_no_section_title_is_an_entry(self):
-        # Topics belong to the contents page. Entering every heading put
-        # "Saving What a Run Changed" in an index, which is not a term and is
-        # not a phrase anybody looks up.
+        # Topics belong to the contents page. Entering every heading put "Saving
+        # What a Run Changed" in an index, which nobody looks up.
         for title in ("Saving What a Run Changed", "One Surface", "The Scene Types"):
             with self.subTest(title=title):
                 self.assertNotIn(title, self.rows)
@@ -175,9 +171,8 @@ class IndexTest(unittest.TestCase):
                 self.assertIn(term, self.rows)
 
     def test_every_curated_concept_is_found_somewhere(self):
-        # The list is hand-written, so an entry can rot two ways: the prose it
-        # was added for gets reworded, or it was never in this book at all.
-        # Either way it is dead configuration, and silence is how it stays so.
+        # The list is hand-written, so an entry rots two ways: the prose it was
+        # added for gets reworded, or it was never in this book at all.
         codes = gen.code_terms()
         for name in gen.concept_terms(codes):
             with self.subTest(term=name):
@@ -396,8 +391,7 @@ class SnippetTest(unittest.TestCase):
 
     def test_a_fragment_never_invents_a_value(self):
         # It shows placement, so it carries only settings whose default *is* a
-        # usable value. Anything else and the fragment is the one line on the
-        # page the program never agreed to.
+        # usable value.
         self.assertIsNone(gen.toml_literal(None))
         self.assertIsNone(gen.toml_literal(""))
         self.assertIsNone(gen.toml_literal(introspect.REQUIRED))
@@ -425,9 +419,8 @@ class SnippetTest(unittest.TestCase):
         self.assertIn(gen._SAMPLE_TARGET, {t.target for t in introspect.live_targets()})
 
     def test_every_holder_is_glossed(self):
-        # Appendix F heads a section with the bare holder and spends the gloss
-        # on saying what it is; a new one would head a section with no sentence
-        # under it, and KeyError is the friendlier way to hear about it.
+        # Appendix F heads a section with the bare holder and spends the gloss on
+        # saying what it is; a new one would head a section with no sentence.
         self.assertEqual({t.holder for t in introspect.live_targets()}, set(gen._HOLDER_GLOSS))
 
     def test_every_appendix_fragment_fits_the_page(self):

@@ -107,10 +107,9 @@ class ReuMicIrqHandlerTest(unittest.TestCase):
         self.assertEqual(run.memory.ram[0xDF03], RING_BUFFER_END_HI - 1)
 
     def test_handler_does_not_read_DF06(self):
-        # Whole-handler invariant: $DF06 is WRITTEN (during src reload)
-        # but never READ. Reading $DF06 was the original bug that caused
-        # silent audio — the U64's REU returns garbage in the upper bits
-        # of the src_hi register read-back.
+        # $DF06 is written during the src reload but never read: the U64's
+        # REU returns garbage in the upper bits of that read-back, which is
+        # what made the audio silent.
         for i in range(len(REU_MIC_IRQ_HANDLER) - 2):
             # 6502 absolute LDA = 0xAD; check no LDA absolute reads $DF06.
             if REU_MIC_IRQ_HANDLER[i] == 0xAD:
@@ -145,7 +144,6 @@ class PushMicToReuTest(unittest.TestCase):
         fake = cast(FakeAPI, s.api)
         s._mic_reu_write_pos = REU_MIC_SIZE - 128
         s._push_mic_to_reu(b"\xaa" * 128)
-        # Single write, position wraps back to 0.
         self.assertEqual(len(fake.socket_dma.reuwrites), 1)
         off, data = fake.socket_dma.reuwrites[0]
         self.assertEqual(off, REU_MIC_BASE + REU_MIC_SIZE - 128)
@@ -164,7 +162,6 @@ class PushMicToReuTest(unittest.TestCase):
         self.assertEqual(len(data1), 64)
         self.assertEqual(off2, REU_MIC_BASE)
         self.assertEqual(len(data2), 256 - 64)
-        # Wrapped position lands at (256 - 64) past the ring start.
         self.assertEqual(s._mic_reu_write_pos, 256 - 64)
 
     def test_empty_write_is_noop(self):
@@ -175,8 +172,7 @@ class PushMicToReuTest(unittest.TestCase):
         self.assertEqual(s._mic_reu_write_pos, 0)
 
     def test_pushed_count_advances(self):
-        # position_seconds() in REU mic mode reads _pushed_count to track
-        # how much real audio has been captured.
+        # In REU mic mode position_seconds() tracks _pushed_count.
         s = _new_streamer()
         s._push_mic_to_reu(b"\x07" * 256)
         self.assertEqual(s._pushed_count, 256)
@@ -223,10 +219,9 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertEqual(fake.memories["DF02"], expected)
 
     def test_main_ram_tracker_seeded_to_mic_base(self):
-        # The 3-byte src tracker at REU_AUDIO_SRC_TRACKER_ADDR ($C200) gets
-        # seeded with REU_MIC_BASE at bring-up; the handler reads it
-        # (not $DF06) on every IRQ. If this seed is wrong, the first
-        # transfer reads from a bogus REU offset.
+        # The 3-byte src tracker at $C200 is seeded with REU_MIC_BASE at
+        # bring-up and read by the handler (not $DF06) on every IRQ; a wrong
+        # seed makes the first transfer read a bogus REU offset.
         s = self._start()
         fake = cast(FakeAPI, s.api)
         expected = (
@@ -277,10 +272,9 @@ class StartMicForReuPumpTest(unittest.TestCase):
         self.assertTrue(s._reu_pump_armed)
 
     def test_mic_write_pos_starts_at_bootstrap_offset(self):
-        # Bootstrap latency: host writes start REU_MIC_BOOTSTRAP_BYTES
-        # ahead of the pump's initial read position (0), giving the mic
-        # ~200 ms of slack before underrun. Smoke-test the constant +
-        # the initial assignment.
+        # Host writes start REU_MIC_BOOTSTRAP_BYTES ahead of the pump's
+        # initial read position, giving the mic ~200 ms of slack before
+        # underrun.
         s = self._start()
         self.assertEqual(s._mic_reu_write_pos, REU_MIC_BOOTSTRAP_BYTES)
         self.assertGreater(REU_MIC_BOOTSTRAP_BYTES, 0)
@@ -307,9 +301,8 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
         s = _new_streamer(use_reu_pump=True)
         called: list[int] = []
         s._start_mic_for_reu_pump = lambda device, **_kwargs: called.append(device)  # type: ignore[method-assign]
-        # Patch sd availability so we get past the import guard. AUDIO_AVAILABLE
-        # is a module global; if sounddevice isn't installed in the test env
-        # the function early-returns and we can't observe the branch — skip.
+        # AUDIO_AVAILABLE is a module global; without sounddevice installed
+        # the function early-returns and the branch cannot be observed.
         from c64cast.audio import audio as audio_mod
 
         if not audio_mod.AUDIO_AVAILABLE:
@@ -323,7 +316,6 @@ class StartMicBranchesOnReuFlagTest(unittest.TestCase):
 
         if not audio_mod.AUDIO_AVAILABLE:
             self.skipTest("sounddevice not installed in this environment")
-        # Re-route the heavy bits: pretend mic open succeeded.
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()  # type: ignore[method-assign]
         called_reu: list[int] = []
         s._start_mic_for_reu_pump = lambda device: called_reu.append(device)  # type: ignore[method-assign]
@@ -343,7 +335,6 @@ class MicCallbackReuTest(unittest.TestCase):
         fake = cast(FakeAPI, s.api)
         s.running = True
         s._mic_reu_write_pos = 0
-        # Build a fake 256-sample mono float buffer.
         samples = np.full((256, 1), 0.5, dtype=np.float32)
         s._mic_callback_reu(samples, 256, None, None)
         self.assertEqual(len(fake.socket_dma.reuwrites), 1)
@@ -362,9 +353,8 @@ class MicCallbackReuTest(unittest.TestCase):
         self.assertEqual(fake.socket_dma.reuwrites, [])
 
     def test_callback_drops_on_xrun_status(self):
-        # sounddevice signals input over/underflow via `status`. Mirrors
-        # the host-DMA _mic_callback: drop the buffer rather than feed
-        # potentially-stale samples.
+        # sounddevice signals input over/underflow via `status`; like the
+        # host-DMA _mic_callback, drop the buffer rather than feed stale samples.
         s = _new_streamer()
         fake = cast(FakeAPI, s.api)
         s.running = True
@@ -399,7 +389,6 @@ class PushMicToReuFailureTest(unittest.TestCase):
             s._push_mic_to_reu(b"\x07" * 128)
         self.assertEqual(s._mic_reu_write_errors, 1)
         self.assertTrue(any("REU write failed" in m for m in cm.output), cm.output)
-        # The write never landed, so neither the head nor the push count moved.
         self.assertEqual(s._mic_reu_write_pos, 0)
         self.assertEqual(s._pushed_count, 0)
 

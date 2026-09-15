@@ -25,7 +25,7 @@ Every type but `video` takes these as well.
 <!-- table: fields -->
 | Key | Description |
 |---|---|
-| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 30s; slideshow/generative = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
+| **`duration_s`**<br>*Type:* `float \| None`<br>*Default:* `None` | Seconds before auto-advance; 0 = run forever. Unset = scene-type default (webcam/blank run forever when they're the only scene, else 30s; waveform = song length or 180s; generative with audio_source = "file" = the track's length, or 30s when the container reports none; everything else = 30s). Video scenes reject this (they run until the file ends). For launcher this is the idle timeout (reset by player input). *Menu-live*: the on-C64 menu offers this knob, applied to the running scene. |
 
 Every type but `launcher` takes these as well.
 

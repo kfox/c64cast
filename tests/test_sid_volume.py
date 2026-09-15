@@ -2,8 +2,6 @@
 the auto policy, the pure plan_sid_volume mapping, and the live diff-only apply
 (FakeAPI — no real hardware)."""
 
-# FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
-# file-wide (same convention as test_sid_panning.py).
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -19,8 +17,8 @@ VOL_S2 = (CAT, "Vol Socket 2")
 VOL_U1 = (CAT, "Vol UltiSid 1")
 VOL_U2 = (CAT, "Vol UltiSid 2")
 
-# The state the bug report was filed against: both UltiSID cores muted, both
-# sockets at unity. Any chip routed onto a core is silent here.
+# The state the bug report was filed against: both UltiSID cores muted,
+# both sockets at unity, so any chip routed onto a core is silent.
 CORES_OFF = {
     "Vol Socket 1": " 0 dB",
     "Vol Socket 2": " 0 dB",
@@ -39,8 +37,8 @@ class VolumeValueConversionTest(unittest.TestCase):
     """dB int ↔ label, the spellings a config may use."""
 
     def test_zero_carries_the_firmware_leading_space(self):
-        # A stripped "0 dB" never equals the mixer's value, so the apply would
-        # rewrite the item on every single setup.
+        # A stripped " 0 dB" never equals the mixer's value, so the apply would
+        # rewrite the item on every setup.
         self.assertEqual(sv.volume_to_label(0), " 0 dB")
         self.assertNotEqual(sv.volume_to_label(0), "0 dB")
 
@@ -197,7 +195,7 @@ class ApplyVolumeTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [])
 
     def test_unknown_sources_leave_the_mixer_alone(self):
-        # Muting on a source list we couldn't resolve risks silencing the very
+        # Muting on a source list we could not resolve risks silencing the
         # chip that is playing.
         api = _ultimate_fake()
 

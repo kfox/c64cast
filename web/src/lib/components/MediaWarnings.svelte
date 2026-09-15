@@ -4,8 +4,7 @@
   interface Props {
     warnings?: Warning[];
     /** Shown when a report is otherwise a clean pass, so "validates" doesn't
-     *  read as "will run". Off where the report already failed — a second
-     *  heading under an error is noise. */
+     *  read as "will run". Off where the report already failed. */
     heading?: string;
   }
 

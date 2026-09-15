@@ -7,8 +7,7 @@ every setup() — an earlier one-time guard left stale bitmap bytes as the
 character set on the second loop (visible as a corrupted charset).
 """
 
-# FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
-# argument-type complaints across the file rather than per-call ignores.
+# FakeAPI is a duck-typed stub of Ultimate64API.
 # pyright: reportArgumentType=false
 import os
 import sys
@@ -39,14 +38,12 @@ class MCMCharsetUploadTest(unittest.TestCase):
         self.assertEqual(api.mem_files.get("3000"), _expected_charset())
 
     def test_setup_reuploads_charset_after_clobber(self):
-        # Simulate a looping playlist: MCM scene runs, an intervening bitmap
-        # scene overwrites $3000, then the same MCM instance is set up again.
         mode = MCMDisplayMode(palette_mode="grayscale")
         api = FakeAPI()
         mode.setup(api)
 
         # A bitmap scene (hires/mhires) clobbers $3000 between appearances.
-        api.mem_files["3000"] = b"\xde\xad\xbe\xef" * 512  # 2048 bytes of garbage
+        api.mem_files["3000"] = b"\xde\xad\xbe\xef" * 512
 
         mode.setup(api)
         self.assertEqual(api.mem_files.get("3000"), _expected_charset())

@@ -3,40 +3,12 @@ key a calibration is filed under, reading the applicable per-socket sidtable
 back at playback time (:func:`load_calibrated_table`), and writing a measured
 run out (:func:`save_calibration`).
 
-Identity keys (not host/IP)
-----------------------------
-A calibration file is keyed by a *stable device identity*, not the connection
-target, so a DHCP re-lease or a USB replug doesn't orphan it:
+The measurement itself lives in :mod:`c64cast.audio.dac_calibration` (the run)
+and :mod:`c64cast.audio.dac_slot_ring` (the DSP); which table playback actually
+uses is :mod:`c64cast.audio.dac_curve_resolve`.
 
-* **Ultimate (U64 or U2+)** — the REST ``GET /v1/info`` ``unique_id`` (e.g.
-  ``"5D327C"``), fetched live via :meth:`~c64cast.hw.api.Ultimate64API.get_device_info`.
-* **TeensyROM, serial transport** — the attached board's USB serial number
-  (:func:`c64cast.hw.teensyrom_dma.usb_serial_number`), which identifies the
-  *cartridge*, not whichever host machine it's plugged into.
-* **Fallback** (no live backend — e.g. offline ``--doctor --skip-probe`` — or
-  the live lookup fails): the pre-existing host/serial-device-path key.
-
-``[audio].dac_calibration_profile`` overrides all of the above with a
-user-chosen name. This is the only way to key a calibration correctly when
-the connection itself can't identify the physical SID in front of it: a
-TeensyROM+ has no config API, and it can be moved between different physical
-C64s (or a U64) — its own USB serial number identifies the cartridge, not
-whichever machine's SID it happens to be driving right now. A user who moves
-a TR+ around names each host's calibration once (``--calibrate-dac
---dac-calibration-profile my-breadbin``) and passes the same name on every
-playback run against that host.
-
-The same setting also takes a **path** to a calibration file
-(:func:`profile_path_override`), used as given. A name can only address this
-backend's own key space, so it cannot express "drive the SID of a machine whose
-calibration is already filed under a *different* backend's identity" — which is
-exactly what a TR+ in a U64's cartridge port is: one physical SID, already
-measured and filed under the Ultimate's ``unique_id``. Naming that file reuses
-the measurement instead of repeating it.
-
-The measurement itself lives in :mod:`c64cast.audio.dac_calibration` (the run) and
-:mod:`c64cast.audio.dac_slot_ring` (the DSP); which table playback actually uses is
-:mod:`c64cast.audio.dac_curve_resolve`.
+See docs/architecture/audio.md#identity-keys and
+docs/architecture/audio.md#the-calibration-file.
 """
 
 from __future__ import annotations
@@ -63,19 +35,15 @@ from c64cast.sid.asid_sidmap import (
     ITEM_SOCKET2_TYPE,
 )
 
-if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+if TYPE_CHECKING:
     from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
 
 log = logging.getLogger(__name__)
 
-# Calibration tables live under the canonical user data dir
-# (`paths.calibration_dir()` = <data root>/calibration/dac), resolved at use
-# time so the location works from a repo checkout or an installed wheel, not a PyPI
-# wheel — and so `$C64CAST_DATA_DIR` (and tests) can redirect it. A calibration
-# is machine-specific captured data, not source (never committed; only guarded
-# by a .gitignore entry if a dev points $C64CAST_DATA_DIR at the checkout). See
-# paths.py and the "per-system calibration" notes in docs/architecture/audio.md.
+# Tables land under paths.calibration_dir(), resolved at use time so
+# $C64CAST_DATA_DIR (and the tests) can redirect it. Captured machine-specific
+# data, never committed.
 
 _SCHEMA_VERSION = 2
 
@@ -128,13 +96,9 @@ def resolve_calibration_key(cfg: Config, be: C64Backend | None = None) -> str:
         if override is not None:
             return override.stem
         name = _sanitize(cfg.audio.dac_calibration_profile)
-        # A bare name normally becomes "profile-<name>", which is what a run
-        # calibrating *under* that profile writes. But the auto-keyed files a
-        # plain --calibrate-dac produces are named for the device
-        # ("ultimate-<unique-id>", "tr-<usb-serial>"), and naming one of those —
-        # the obvious thing to type, since it is what is on disk — resolved to
-        # "profile-ultimate-<unique-id>" and matched nothing. So an existing file
-        # named exactly by the given name wins over the prefixed spelling.
+        # A file named exactly by the given name wins over the "profile-"
+        # spelling, so naming an auto-keyed file ("ultimate-<unique-id>",
+        # "tr-<usb-serial>") on disk resolves to it rather than to nothing.
         if (
             not (paths.calibration_dir() / f"profile-{name}.json").exists()
             and (paths.calibration_dir() / f"{name}.json").exists()
@@ -240,25 +204,18 @@ def _select_sid_entry(
         if cfg.hardware.backend == "ultimate" and getattr(be.profile, "supports_sid_config", False):
             socket = active_socket_at_d400(be)
             if socket is None:
-                # The file has physical-chip table(s), but $D400 is currently
-                # owned by something else (an UltiSID core) — applying a
-                # physical-chip table there would be wrong. Let "auto" fall back
-                # to the baked mahoney_ultisid table instead.
+                # Something else (an UltiSID core) owns $D400, so no
+                # physical-chip table in this file applies.
                 return None
             key = str(socket)
             return key if key in sids else None
-        # This link has no SID config query, so ownership of $D400 can't be read
-        # back. That is "unknown", not the "an UltiSID owns it" the branch above
-        # returns None for — treating the two the same discarded a perfectly
-        # good multi-socket file (falling all the way back to the 4-bit linear
-        # DAC) on exactly the cross-backend reuse dac_calibration_profile exists
-        # to support: measure on the Ultimate, replay over a TeensyROM+ in the
-        # same machine.
+        # No SID config query on this link: ownership of $D400 is *unknown*,
+        # which is not the "an UltiSID owns it" the branch above answers None
+        # for. Collapsing the two discards a good multi-socket file.
         if recorded_d400 is not None:
-            # The file names the chip this machine reaches at $D400. If it holds
-            # no table for that chip, then no table in it is the right one —
-            # falling through to "the only entry" would apply the other socket's
-            # ladder, which is the mismatch this whole selection exists to avoid.
+            # The file names the chip reached at $D400; if it holds no table
+            # for that chip, no table in it is the right one. Falling through
+            # to "the only entry" would apply the other socket's ladder.
             return str(recorded_d400) if str(recorded_d400) in sids else None
         if len(sids) > 1 and "1" in sids:
             log.warning(
@@ -336,20 +293,11 @@ def load_calibrated_table(
         entry_key == "default"
         and isinstance(entry, dict)
         and entry.get("detected") is None
-        # Only on a link that *cannot* establish the identity. A backend with the
-        # socket map (see active_socket_at_d400) resolved it or chose not to
-        # write per-socket entries, either way knowingly; saying this there would
-        # fire on every Ultimate run that predates per-socket files.
+        # Only on a link that *cannot* establish the identity; a backend with
+        # the socket map either resolved it or knowingly declined to.
         and be is not None
         and not getattr(be.profile, "supports_sid_config", False)
     ):
-        # A "default" entry means the measurement never established *which* SID
-        # it was driving: it measured whatever answers $D400 and filed it under
-        # one key. On a single-SID machine that is exactly right. On a machine
-        # with a second chip — or with address mirroring on — the ladder is a
-        # blend of both, and a blended ladder is signal-correlated distortion at
-        # playback. Nothing on this side can tell those two cases apart, so say
-        # which one is assumed.
         log.info(
             "audio: this calibration was measured without identifying the SID at $D400 "
             "(the %s link has no SID config query), so it assumes one SID. If this "
@@ -365,18 +313,14 @@ def load_calibrated_table(
 
 @dataclass(frozen=True)
 class CalibrationResult:
-    # 256 entries: amplitude index → $D418 byte. None when the measurement
-    # failed its self-test — the raw levels are still kept for diagnosis, but
-    # no table is written, so playback falls back to the baked/linear curve.
+    # 256 entries, amplitude index → $D418 byte. None when the measurement
+    # failed its self-test; playback then falls back to the baked/linear curve.
     sidtable: list[int] | None
     metrics: dict[str, Any]
     detected: str | None = None  # e.g. "6581" (SID Detected Socket N), or None
-    # Raw per-code signed output levels, in capture-amplitude units relative to
-    # L($00) = 0 — the 256 numbers the ladder is folded from. Persisted so a
-    # finished calibration stays diagnosable offline: alternative ladder
-    # constructions, the self-test and every metric derive from these, and
-    # without them a suspect table can only be re-examined by re-measuring.
-    # None on results loaded from a file that predates them.
+    # Per-code signed output levels in capture-amplitude units relative to
+    # L($00) = 0 — the 256 numbers the ladder is folded from, kept so a
+    # finished calibration stays diagnosable offline. None on older files.
     raw: list[tuple[int, float]] | None = None
 
 

@@ -1,41 +1,18 @@
-"""Process-wide musical beat grid for live performance (Phase 1 of the
-Live DJ/VJ arc — see docs/architecture/control.md → "Live performance").
+"""Process-wide musical beat grid for live performance.
 
-`TempoClock` is a tiny, dependency-light beat grid that every performance
-consumer reads the same way a generator reads :class:`MusicModulation` today —
-one grid, many consumers (launch quantization, effect tempo-lock, WLED). It has
-three drive modes:
+:class:`TempoClock` is one grid with many consumers (launch quantization,
+effect tempo-lock, WLED), driven three ways: external MIDI clock (``0xF8``
+pulses at 24 PPQN plus ``0xFA``/``0xFB``/``0xFC``/``0xF2``), internal/tap
+tempo, or the live-input analyzer's detected BPM (``tempo_source = "audio"``).
 
-- **External MIDI clock** — the :mod:`midi_control` reader thread feeds it the
-  real-time bytes ``0xF8`` clock (24 PPQN), ``0xFA`` start / ``0xFB`` continue /
-  ``0xFC`` stop, and ``0xF2`` song-position, straight off the wire. `beat_phase`
-  advances one 1/24-beat per clock pulse, so it tracks the DAW *exactly*, and a
-  jittery inter-pulse interval never causes a phase discontinuity (mirrors the
-  jitter-immunity rationale of :attr:`MusicModulation.beat_phase`).
-- **Internal / tap tempo** — with no external clock, the grid free-runs at a
-  static ``[performance].bpm``, and a mapped ``tempo_tap`` pad averages the
-  inter-tap intervals into a live BPM (re-anchoring the downbeat to each tap).
-- **Live audio** (``tempo_source = "audio"``) — the playlist forwards the BPM
-  the live-input analyzer already derives (:mod:`audio_features`, which runs the
-  same :class:`modulation.TempoEstimator` over spectral-flux onsets) into
-  :meth:`TempoClock.audio_drive` each frame. The grid then free-runs its phase
-  at that live BPM exactly as internal mode does — so a detected beat drives
-  launch quantization, ``mod_source = "clock"`` effects, and WLED tempo with no
-  MIDI clock or tap. The grid holds stopped until the analyzer locks a tempo.
-
-The whole thing is host-side memory only: the feed methods do GIL-cheap writes
-under a small lock and touch **no** DMA socket — the same rule the rest of
-:mod:`midi_control` follows on its reader thread (clock at 24 PPQN @ 200 BPM is
-only ~80 msg/s, trivially under any ceiling). Reads (`beat_phase` / `bar_phase`
-/ `bpm` / `running`) extrapolate the phase from the last event under the same
-lock, so a render/consumer thread always sees a consistent snapshot.
-
-`ClockModulationSource` wraps a `TempoClock` as a `MusicModulation` feeder, so
-effects/generators can be driven by MIDI tempo exactly as they are by SID audio
-today, with no new effect wiring (the Phase-2/3 ``mod_source = clock`` selector
-is what routes it). Deliberately stdlib-only (plus the leaf
-:mod:`c64cast.scenes.modulation`) so it imports nowhere near mido or the heavy
+Every feed method is cheap in-memory work under a small lock and touches no DMA
+socket. :class:`ClockModulationSource` wraps a clock as a
+:class:`MusicModulation` feeder so ``mod_source = "clock"`` effects read the
+grid the way they read SID audio. Stdlib-only (plus the leaf
+:mod:`c64cast.scenes.modulation`), so it imports nowhere near mido or the
 render deps.
+
+See docs/architecture/control.md#tempopy--process-wide-musical-beat-grid-live-djvj-phase-1.
 """
 
 from __future__ import annotations
@@ -51,19 +28,17 @@ from c64cast.scenes.modulation import MusicModulation
 if TYPE_CHECKING:
     from c64cast.app.config import PerformanceCfg
 
-# Plausible tempo band. A pulse-derived or tap-derived BPM outside this range is
-# treated as noise (a dropped/duplicated clock byte, a stray double-tap) and
-# ignored rather than yanking the grid to an absurd tempo.
+# Plausible tempo band; a pulse- or tap-derived BPM outside it is treated as
+# noise (a dropped clock byte, a stray double-tap) and ignored.
 _BPM_MIN = 20.0
 _BPM_MAX = 400.0
 
-# EMA weight for smoothing the per-pulse BPM estimate. Low enough that a single
-# jittery inter-pulse interval barely moves the displayed tempo, high enough to
-# follow a real tempo ramp within a beat or two.
+# EMA weight for the per-pulse BPM estimate: low enough that one jittery
+# interval barely moves the tempo, high enough to follow a ramp in a beat or two.
 _PULSE_EMA_ALPHA = 0.2
 
-# Tap-tempo history is cleared when this long passes with no tap (a new tap group
-# starts a fresh average instead of blending across an old one).
+# Tap history is cleared after this long with no tap, so a new tap group starts
+# a fresh average.
 _TAP_RESET_S = 2.0
 
 
@@ -99,12 +74,11 @@ class TempoClock:
         self._source = source
         self._bpm = float(bpm)
         t = now if now is not None else time.monotonic()
-        # phase(now) = _phase_base + advance-since-_base_time (see class docstring).
         self._phase_base = 0.0
         self._base_time = t
         # Internal mode free-runs immediately; MIDI mode waits for the first
-        # clock/start/continue byte, and audio mode waits for the analyzer to
-        # lock a tempo (the first audio_drive with bpm > 0).
+        # clock/start/continue byte, audio mode for the first audio_drive with
+        # bpm > 0.
         self._running = source == "internal"
         # Flips True once any external transport/clock byte arrives; gates the
         # per-pulse extrapolation cap (external is pulse-truthed, internal isn't).
@@ -113,19 +87,16 @@ class TempoClock:
         self._pulse_bpm: float | None = None
         self._tap_times: deque[float] = deque(maxlen=8)
 
-    # ---- phase math (caller holds _lock) -----------------------------------
     def _phase_at_locked(self, now: float) -> float:
         if not self._running:
             return self._phase_base
         advance = max(0.0, now - self._base_time) * self._bpm / 60.0
         if self._external:
-            # Between pulses, never overrun the next pulse's 1/PPQN increment —
-            # keeps the phase from running ahead of a late clock byte and then
-            # jerking backwards when it lands.
+            # Never overrun the next pulse's 1/PPQN increment: the phase must
+            # not run ahead of a late clock byte and jerk backwards when it lands.
             advance = min(advance, 1.0 / self.PPQN)
         return self._phase_base + advance
 
-    # ---- external clock feed (MIDI reader thread) --------------------------
     def clock_pulse(self, now: float) -> None:
         """A ``0xF8`` MIDI clock byte (24 per quarter note). Advances the grid by
         exactly 1/24 beat and refreshes the BPM estimate from the inter-pulse
@@ -189,7 +160,6 @@ class TempoClock:
             self._base_time = now
             self._last_pulse_time = None
 
-    # ---- internal tap tempo (MIDI reader thread) ---------------------------
     def tap(self, now: float) -> None:
         """Register a tap-tempo hit. Averages the recent inter-tap intervals into
         a live BPM, switches the grid to internal drive, and re-anchors the
@@ -209,13 +179,12 @@ class TempoClock:
                     bpm = 60.0 / avg
                     if _BPM_MIN <= bpm <= _BPM_MAX:
                         self._bpm = bpm
-            # Snap the phase to a whole beat at the tapped instant so taps land
-            # on the beat grid (the downbeat re-anchors to the performer's hand).
+            # Snap to a whole beat at the tapped instant, so the downbeat
+            # re-anchors to the performer's hand.
             self._phase_base = float(round(self._phase_at_locked(now)))
             self._base_time = now
             self._running = True
 
-    # ---- live-audio drive (playlist thread) --------------------------------
     def audio_drive(self, bpm: float, now: float | None = None) -> None:
         """Drive the grid from the live-input analyzer's tempo estimate
         (``tempo_source = "audio"``). The playlist calls this once per frame with
@@ -236,8 +205,6 @@ class TempoClock:
         with self._lock:
             self._external = False
             self._source = "audio"
-            # Re-anchor: freeze the current phase at `now`, then advance from
-            # there. Continuous whether we're changing bpm, starting, or stopping.
             self._phase_base = self._phase_at_locked(t)
             self._base_time = t
             if bpm <= 0.0:
@@ -246,7 +213,6 @@ class TempoClock:
             self._bpm = min(_BPM_MAX, max(_BPM_MIN, float(bpm)))
             self._running = True
 
-    # ---- reads (consumer threads) ------------------------------------------
     def beat_phase_at(self, now: float | None = None) -> float:
         """Accumulated beats (quarter notes) at ``now`` — the running integral of
         bpm/60, monotonic while running. The quantity a tempo-locked cycle rate
@@ -287,7 +253,6 @@ class TempoClock:
         with self._lock:
             return self._source
 
-    # ---- mido bridge -------------------------------------------------------
     def feed_message(self, msg: Any, now: float | None = None) -> bool:
         """Feed a mido message; return True if it was a clock/transport/SPP
         message this clock consumed (so the caller can skip further dispatch).

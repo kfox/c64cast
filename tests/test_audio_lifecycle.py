@@ -20,7 +20,7 @@ from typing import Any, cast
 from unittest import mock
 
 import numpy as np
-from _fakes import FakeAPI
+from _fakes import FakeAPI, FakeTime
 
 from c64cast.audio import audio as audio_mod
 from c64cast.audio import audio_rate as audio_rate_mod
@@ -150,9 +150,8 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s._full_underruns, 0)
 
     def test_full_underrun_after_prebuffer(self):
-        # Prebuffer exactly, then starve the queue: the worker should arm NMI,
-        # flip to strict pacing, and pad NEUTRAL chunks counted as full
-        # underruns.
+        # Prebuffer exactly, then starve the queue: the worker arms NMI, flips
+        # to strict pacing, and pads NEUTRAL chunks as full underruns.
         s = _make_worker_streamer(chunk_size=32)
         # Prebuffer with a NON-neutral value, so a NEUTRAL run in the stream can
         # only have come from an underrun pad and not from the prebuffer itself.
@@ -170,15 +169,12 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         )
 
     def test_partial_underrun_pads_tail(self):
-        # A collect window that closes on a sub-chunk blob must pad the tail with
-        # NEUTRAL and count a partial (not full) underrun.
-        #
-        # Queue exactly the prebuffer as whole chunks, then one half chunk and
-        # nothing more. The collect loop runs `while n < chunk_size`, so each
-        # whole chunk fills a window exactly and leaves the next item alone; the
-        # window after the prebuffer therefore takes the 32 bytes, finds the
-        # queue empty, and closes short — the branch under test, reached without
-        # depending on any sleep landing inside a 1 ms window.
+        # A collect window closing on a sub-chunk blob pads the tail with
+        # NEUTRAL and counts a partial, not full, underrun. The collect loop
+        # runs `while n < chunk_size`, so whole chunks fill a window exactly
+        # and the window after the prebuffer takes the 32 bytes, finds the
+        # queue empty, and closes short — the branch under test, reached
+        # without depending on a sleep landing inside a 1 ms window.
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         for _ in range(PREBUFFER_CHUNKS):
             s.q.put(bytes([1] * 64))
@@ -187,14 +183,13 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         s.q.put(bytes([2] * half))
         s._queued_samples += half
 
-        # The padded chunk is the half blob followed by a NEUTRAL tail. Asserted
-        # against the reassembled stream, since the chunk reaches the ring as
-        # several sub-NMI-period writes rather than one.
+        # The padded chunk is the half blob then a NEUTRAL tail, asserted
+        # against the reassembled stream because it reaches the ring as
+        # several sub-NMI-period writes.
         expected = bytes([2] * half) + bytes([NEUTRAL_SAMPLE] * half)
-        # Wait on the bytes, not on the counter: the counter increments when the
-        # short window closes, but the one-chunk pipeline only drips that chunk
-        # out on the following pass, so stopping the worker at the counter can
-        # cut it off before the padded chunk is ever written.
+        # Wait on the bytes, not the counter: the counter increments when the
+        # short window closes, but the one-chunk pipeline drips that chunk out
+        # on the following pass.
         _run_worker(s, until=lambda: expected in _written_stream(s), timeout=3.0)
 
         self.assertGreaterEqual(
@@ -214,11 +209,10 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(body[:50], bytes(range(50)))
 
     def test_ring_writes_stay_under_one_nmi_period(self):
-        # The whole point of the split: a host DMAWRITE halts the 6510 for about
-        # one cycle per byte, and CIA #2 is edge-triggered, so a payload longer
-        # than one NMI period swallows underflows that then never fire. Every
-        # steady-state write must therefore fit the quantum derived from the
-        # live latch — and the bytes must still arrive intact and in order.
+        # A host DMAWRITE halts the 6510 for about one cycle per byte and CIA
+        # #2 is edge-triggered, so a payload longer than one NMI period
+        # swallows underflows that then never fire: every steady-state write
+        # has to fit the quantum derived from the live latch.
         s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
         payload = bytes(range(256)) * 8
         for _ in range(PREBUFFER_CHUNKS + 2):
@@ -241,9 +235,8 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(stream[: len(payload)], payload, "split lost or reordered bytes")
 
     def test_split_writes_are_contiguous_in_the_ring(self):
-        # Splitting must not disturb where the bytes land: each piece has to
-        # continue from the end of the one before it, or the ring develops holes
-        # the NMI reads as stale audio.
+        # Each piece has to continue from the end of the one before it, or the
+        # ring develops holes the NMI reads as stale audio.
         s = _make_worker_streamer(chunk_size=1024, sample_rate=12000)
         for _ in range(PREBUFFER_CHUNKS + 2):
             s.q.put(bytes([5] * 1024))
@@ -261,11 +254,10 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
                 expect = audio_mod.RING_BUFFER_ADDR
 
     def test_halt_quantum_backs_off_to_the_write_rate_budget(self):
-        # The quantum sets the write RATE, and the render thread shares the same
-        # socket. Asking for more writes than the link sustains makes each one
-        # overrun its slot, which starves collection and pads silence over a full
-        # queue — so a backend that advertises a ceiling has to raise the quantum
-        # above the halt-derived size rather than the other way round.
+        # The quantum sets the write rate and the render thread shares the
+        # socket, so asking for more writes than the link sustains starves
+        # collection: a backend that advertises a ceiling has to raise the
+        # quantum above the halt-derived size.
         s = _make(sample_rate=12000)
         halt_sized = s._halt_quantum()
 
@@ -278,12 +270,9 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertLessEqual(writes_hz, 200.0 * audio_mod.AUDIO_WRITE_RATE_SHARE + 1.0)
 
     def test_unaffordable_link_collapses_to_one_write(self):
-        # A backend too slow to carry the split degrades all the way back to a
-        # single write per chunk on its own. This is why there is no separate
-        # off switch: the budget already expresses "this link cannot afford to
-        # split", and splitting past what the link carries is actively worse
-        # than not splitting (the writes overrun their slots and collection
-        # starves), so nothing is served by letting it be chosen by hand.
+        # A backend too slow to carry the split degrades to a single write per
+        # chunk on its own — splitting past what the link carries starves
+        # collection, so the budget already expresses "cannot afford to split".
         s = _make_worker_streamer(chunk_size=64, sample_rate=64000)
         cast(Any, s.api).profile = SimpleNamespace(max_write_rate_hz=1.0)
         for _ in range(PREBUFFER_CHUNKS + 2):
@@ -299,11 +288,10 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         )
 
     def test_slow_writes_are_counted_as_late_slots(self):
-        # A sub-write that runs past its own slot leaves every later slot in the
-        # chunk already expired, so they all fire back-to-back — the spread
-        # collapses into the burst it was split to avoid. Nothing else notices:
-        # the bytes still land, in order, and no underrun is counted. This
-        # counter is the only signal that the schedule was not kept.
+        # A sub-write that runs past its own slot leaves every later slot
+        # already expired, so they fire back-to-back and the spread collapses
+        # into the burst it was split to avoid. The bytes still land, in
+        # order, with no underrun counted: this counter is the only signal.
         s = _make_worker_streamer(chunk_size=256, sample_rate=64000)
         real_write = cast(Any, s.api).write_memory_file
 
@@ -324,10 +312,8 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
 
     def test_prompt_writes_keep_the_schedule(self):
         # The negative control for the counter above: with writes that return
-        # immediately the drip keeps its deadlines, so a late slot means a real
-        # link/collection problem rather than an artifact of the accounting.
-        # Run on a virtual clock — see _VirtualClock for why the host's
-        # scheduler must not be able to answer this question.
+        # immediately the drip keeps its deadlines. Run on a virtual clock —
+        # see _VirtualClock for why the host's scheduler cannot answer this.
         s = _make_worker_streamer(chunk_size=256, sample_rate=8000)
         for _ in range(PREBUFFER_CHUNKS + 8):
             s.q.put(bytes([3] * 256))
@@ -344,10 +330,9 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s._late_slots, 0, "a prompt write missed its slot on an ideal timeline")
 
     def test_consumer_rate_is_measured_with_the_adaptive_loop_off(self):
-        # The rate estimate used to be computed inside the adaptive NMI-rate
-        # loop, which is off by default — so the one quantity that shows
-        # content-dependent tick loss read zero in every log. Measuring is not
-        # steering: the loop stays off, the number still has to arrive.
+        # The rate estimate was computed inside the adaptive NMI-rate loop,
+        # which is off by default, so the one quantity showing content-dependent
+        # tick loss read zero in every log. Measuring is not steering.
         s = _make_worker_streamer(chunk_size=256, sample_rate=12000)
         s.nmi_rate_adaptive = False
         s.host_dma_servo = True
@@ -365,9 +350,8 @@ class WorkerPacingUnderrunTest(unittest.TestCase):
         self.assertEqual(s.nmi.latch, latch_before, "observation must not steer the latch")
 
     def test_health_line_reports_window_deltas(self):
-        # The health line exists to place an onset in time, so it must report
-        # the window rather than the session: a second window that saw two more
-        # underruns reports two, not the running total.
+        # The health line places an onset in time, so it reports the window
+        # rather than the session's running total.
         s = _make(sample_rate=12000)
         s.nmi.latch = 84
         s.servo.r_rate_ema = 11900.0
@@ -561,10 +545,10 @@ class PitchCompensationLatchTest(unittest.TestCase):
         self.assertIsNone(self._latch_write(s))
 
     def test_multiplier_is_sticky_until_timer_starts(self):
-        # The real ordering: set_nmi_latch_for_mode runs at scene setup BEFORE
-        # the worker prebuffers and arms the timer. It must stash the multiplier
-        # (no write yet) and _start_nmi_timer must then apply it — otherwise the
-        # timer start would clobber the compensation back to nominal.
+        # set_nmi_latch_for_mode runs at scene setup BEFORE the worker
+        # prebuffers and arms the timer, so it stashes the multiplier and
+        # _start_nmi_timer applies it; otherwise the timer start would clobber
+        # the compensation back to nominal.
         s = _make()
         s._worker_thread = cast(Any, object())
         self.assertFalse(s.nmi.started)
@@ -680,12 +664,15 @@ class NmiArmVerifyTest(unittest.TestCase):
         # It must keep the old behavior exactly — one arm, no retry latency.
         api = FakeAPI()  # read_memory → None for the read pointer
         s = self._streamer(api)
-        with mock.patch.object(audio_mod.time, "sleep") as sleep:
+        # The sleep under test is audio_rate.NmiTimer.start's, not one of
+        # audio.py's: scoping the patch to audio_mod makes the assertion
+        # below vacuous.
+        with mock.patch.object(audio_rate_mod, "time", FakeTime(sleep=mock.MagicMock())) as faked:
             with self.assertNoLogs(audio_rate_mod.log, level="WARNING"):
                 s.nmi.start(adaptive=s.nmi_rate_adaptive)
         self.assertEqual(self._arm_count(api), 1)
         self.assertEqual(s.nmi.arm_attempts, 1)
-        sleep.assert_not_called()
+        faked.sleep.assert_not_called()
 
     def test_stop_clears_arm_state(self):
         api = _RFakeAPI([0, 240])
@@ -873,16 +860,14 @@ class NmiRateAdaptiveStepTest(unittest.TestCase):
         self.assertEqual(self._step(0.0, 92), 92)
         self.assertEqual(self._step(-1.0, 92), 92)
 
-    # ---- wiring ----
     def test_adaptive_mode_disables_static_multiplier(self):
         s = _make(sample_rate=10500, nmi_rate_adaptive=True)
         s._worker_thread = cast(Any, object())
         s.nmi.started = True
         s.nmi.latch = s.nmi.nominal_latch()  # nominal
         s.set_nmi_latch_for_mode("mhires", {"mhires": 1.1575})
-        # Adaptive ignores the static multiplier (stays 1.0) and instead records
-        # the mode + re-seeds the latch to the mode seed (here: ceiling), NOT the
-        # static-multiplier latch (110).
+        # Adaptive ignores the static multiplier and re-seeds the latch to the
+        # mode seed (here the ceiling), not the static-multiplier latch (110).
         self.assertEqual(s.nmi.pitch_multiplier, 1.0)
         self.assertEqual(s.nmi.mode, "mhires")
         self.assertEqual(s.nmi.latch, s.nmi.ceiling_latch())

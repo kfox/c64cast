@@ -14,8 +14,8 @@
   let { transport, readOnly = false, onverb }: Props = $props();
 
   // The scrub bar holds the dragged position under the finger and only sends
-  // on release — the same rule FieldInput and FxSlider follow: a control the
-  // state feed echoes back must not have its value yanked mid-gesture.
+  // on release: the state feed echoes the value back, and must not yank it
+  // mid-gesture. FieldInput and FxSlider follow the same rule.
   let dragging = $state(false);
   let dragValue = $state(0);
   const duration = $derived(transport.duration ?? 0);
@@ -32,19 +32,17 @@
     onverb("seek", { target });
   }
 
-  // Press-and-hold rw/ff: the engine's ramp is itself hold-driven (it
-  // accelerates the longer the button stays down), so press and release are
-  // sent separately rather than as one tap — the same press/release split
-  // ClipGrid uses for launch types that need to tell them apart.
+  // Press-and-hold rw/ff: the engine's ramp is hold-driven (it accelerates the
+  // longer the button stays down), so press and release are sent separately.
   function hold(action: "rw" | "ff", pressed: boolean, event: Event): void {
     event.preventDefault();
     if (readOnly) return;
     onverb(action, { pressed });
   }
 
-  // A keyboard-synthesized click (Enter/Space on a focused button) has
-  // `detail === 0` — there was no pointerdown/up to hold, so it gets a single
-  // brief nudge instead of a hang with no release.
+  // A keyboard-synthesized click (Enter/Space on a focused button) reports
+  // `detail === 0` — no pointerdown/up to hold against, so it gets a single
+  // nudge rather than a hold with no release.
   function keyNudge(action: "rw" | "ff", event: MouseEvent): void {
     if (readOnly) return;
     const nudges = keyNudgeEvents(event.detail);
@@ -55,8 +53,8 @@
   const loop = $derived(transport.loop);
   const loopLabel = $derived(loopButtonLabel(loop.state));
 
-  /** Matches the Looks pad count so the same "SAVE arms, a pad commits"
-   *  gesture (see LookPads) applies here for a video's per-file loop presets. */
+  /** Matches the Looks pad count (`LookPads.svelte`), so the same "SAVE arms,
+   *  a pad commits" gesture applies to a video's per-file loop presets. */
   const LOOP_SLOTS = 8;
   let savingSlot = $state(false);
   const slots = $derived(Array.from({ length: LOOP_SLOTS }, (_, i) => i + 1));

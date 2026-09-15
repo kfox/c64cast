@@ -32,10 +32,10 @@ if TYPE_CHECKING:
 InterstitialFactory = Callable[[str], Scene]
 FollowerSceneFactory = Callable[["SceneCfg"], Scene]
 
-# A deadline snap-forward dropping at least this many seconds of frames counts as
-# a "large" playback disturbance (seek catch-up, stream rebuffer) worth telling the
-# audio streamer about, so its adaptive NMI-rate loop re-arms its warm-up gate
-# instead of chasing the abnormal bus load. Routine 1-3 frame drops stay below it.
+# A deadline snap-forward dropping at least this many seconds of frames is a
+# "large" disturbance (seek catch-up, stream rebuffer) the audio streamer is
+# told about, so its adaptive NMI-rate loop re-arms its warm-up gate instead of
+# chasing the abnormal bus load. Routine 1-3 frame drops stay below it.
 _AUDIO_DISTURBANCE_DROP_S = 0.5
 
 
@@ -63,34 +63,27 @@ class Playlist:
     ) -> None:
         if not scenes:
             raise ValueError("Playlist needs at least one scene")
-        # Per-instance logger so ensemble runs can tell which system a
-        # given line came from. Child of the existing c64cast.app.playlist
-        # logger, so assertLogs("c64cast.app.playlist", ...) in tests still
-        # matches (per logging hierarchy: parent captures children).
+        # Per-instance so an ensemble run attributes each line to a system; a
+        # child of `c64cast.app.playlist`, so `assertLogs` on the parent still
+        # captures it.
         self.name = name
         self.log = logging.getLogger(f"c64cast.app.playlist.{name}")
         self.scenes = scenes
-        # Single-scene mode: skip the interstitial cycle entirely, loop the
-        # one scene via teardown+setup on is_done, and drop CTRL skip events
-        # (there's nowhere to skip *to*). Auto-detected from the scene list.
+        # Single-scene mode skips the interstitial cycle, loops the one scene by
+        # teardown+setup on is_done, and drops CTRL skips — there is nowhere to
+        # skip to.
         self.single_scene = len(scenes) == 1
-        # Loop the playlist after the last scene finishes. False = exit
-        # the streamer cleanly after one pass through `scenes` (or one
-        # play of the single scene). Drives `_advance`'s end-of-list
-        # branches: when False, the final teardown sets stop_event
-        # instead of looping back / re-setting-up. See [playlist].loop in
-        # config.py for the user-facing knob.
+        # False exits the streamer cleanly after one pass: `_advance`'s end-of-list
+        # branch sets stop_event instead of looping back.
         self.loop = loop
-        # Scene fade transitions. fade_duration_s <= 0 disables (hard cuts).
-        # Fade-in overlaps the opening live frames (the display mode's
-        # fade_alpha ramps 0→1 as frames render); fade-out freezes the last
-        # composed frame and dims it to black before teardown on a NORMAL end.
-        # A CTRL skip cancels both (see the skip branch in run_one_frame and
-        # the _ended_via_skip guard in _fade_out).
+        # fade_duration_s <= 0 disables (hard cuts). Fade-in overlaps the opening
+        # live frames as the display mode's `fade_alpha` ramps 0→1; fade-out
+        # freezes the last composed frame and dims it before teardown on a NORMAL
+        # end. A CTRL skip cancels both.
         self.fades = SceneFades(self, duration_s=fade_duration_s)
         self.api = api
         self.audio = audio  # Optional AudioStreamer for pitch retune
-        # Optional {display_mode_name: playback-rate multiplier} for servo pitch.
+        # {display_mode_name: playback-rate multiplier} for servo pitch.
         self.audio_calibration = audio_calibration
         self.default_target_fps = target_fps
         self.frame_time = 1.0 / target_fps
@@ -98,63 +91,50 @@ class Playlist:
         self.stop_event = stop_event or threading.Event()
         self.interstitial_factory = interstitial_factory or self._default_interstitial_factory()
         self.key_poller = key_poller
-        # Optional vision controller — a second, camera-driven control surface
-        # that sets the same pause/resume/skip/cycle events as the keyboard
-        # poller (started/stopped alongside it). None unless [vision].enabled.
+        # A second, camera-driven control surface setting the same
+        # pause/resume/skip/cycle events as the keyboard poller, started and
+        # stopped alongside it. None unless [vision].enabled.
         self.vision_controller = vision_controller
-        # Optional per-frame profiler. NullProfiler keeps the hot path
-        # branch-free; cli.py also calls set_profiler() so sub-stages from
-        # scenes._render_with_overlays land in the same instance.
+        # NullProfiler keeps the hot path branch-free. `cli.py` also calls
+        # `set_profiler()`, so `scenes._render_with_overlays`' sub-stages land in
+        # this same instance.
         self.profiler: FrameProfiler | NullProfiler = profiler or NullProfiler()
-        # Pause/resume events: poller sets pause_event on C= press; we set
-        # resume_event after the held-key check, also via the poller.
-        # Skip event: poller sets it on CTRL press (while running), or
-        # the FastAPI control plane sets it on POST /skip. The run loop
-        # forces is_done = True on the current scene when it fires.
-        # Cycle event: poller sets it on SHIFT press (while running). The
-        # run loop calls display_mode.cycle_style() on the current scene,
-        # which lets the mode rotate through its visual styles. No-op for
-        # modes that don't override cycle_style().
+        # The poller sets `pause_event` on C=, `resume_event` after the held-key
+        # check, `skip_event` on CTRL (as does the control plane's POST /skip) and
+        # `cycle_event` on SHIFT. The run loop forces `is_done` on a skip and calls
+        # `display_mode.cycle_style()` on a cycle.
         self.pause_event = threading.Event()
         self.resume_event = threading.Event()
         self.skip_event = threading.Event()
         self.cycle_event = threading.Event()
-        # Jump-to-index request (e.g. from midi_control.py). Reuses
-        # skip_event to force the current scene done at the next clean
-        # frame boundary; _advance() then consumes _jump_target instead of
-        # advancing to index+1. Locked because it's written from whatever
-        # thread requests the jump and read from the run-loop thread.
-        # Last-write-wins: a burst of requests before the run loop drains
-        # collapses to the final target, which is correct for a performer
-        # mashing pads.
+        # A jump reuses `skip_event` to force the current scene done at the next
+        # clean frame boundary; `_advance()` then consumes `_jump_target` instead
+        # of advancing. Locked because the requesting thread is not the run loop.
+        # Last-write-wins, which is what a performer mashing pads wants.
         self._jump_target: int | None = None
         self._jump_skip_interstitial = True
         self._jump_lock = threading.Lock()
-        # On-C64 menu plumbing. menu_event is toggled by the poller on SPACE
-        # (open when running / close when open); menu_active is held set by the
-        # run loop while the MenuOverlay is injected, which flips the poller into
-        # nav mode (pause/skip/cycle suspended, key edges pushed onto nav_queue).
-        # menu_cfg/config/config_path drive the save-back flow. All optional:
-        # menu is gated on [menu].enabled + a read-capable backend in cli.py.
+        # The poller toggles `menu_event` on SPACE; the run loop holds
+        # `menu_active` set while the MenuOverlay is injected, which flips the
+        # poller into nav mode (pause/skip/cycle suspended, key edges onto
+        # `nav_queue`). Gated on [menu].enabled plus a read-capable backend.
         self.menu_event = threading.Event()
         self.menu_active = threading.Event()
-        # Set while the current scene can host the menu; gates the poller's
-        # access to the kernal keyboard buffer (it writes $00C6=0 to consume
-        # keys, which must not disturb a kernal-input launcher's own watch).
+        # Gates the poller's access to the kernal keyboard buffer: it writes
+        # $00C6=0 to consume keys, which must not disturb a kernal-input
+        # launcher's own watch.
         self.menu_eligible = threading.Event()
         self.nav_queue: deque[int] = deque(maxlen=8)
         self.menu_cfg = menu_cfg
         self.config = config
         self.config_path = config_path
-        # WLED audio-sync broadcaster (bridge Mode 3): a process-wide UDP sender
-        # that pulls the active scene's music features and multicasts them as
-        # WLED Audio Sync packets so LAN LED matrices react to the SID. Built
-        # only when [wled].broadcast is on; started/stopped around the run loop.
+        # A process-wide UDP sender that multicasts the active scene's music
+        # features as WLED Audio Sync packets. Built only when [wled].broadcast is
+        # on; started and stopped around the run loop.
         self._wled: Any = None
-        # When [wled].broadcast_tempo_fallback is on, a scene with no SID features
-        # (video/webcam/slideshow) still feeds the broadcaster off the beat grid
-        # so WLED strips pulse to the MIDI/tap tempo (Live DJ/VJ Phase 6). Read
-        # once here; consulted in `_active_features`.
+        # With [wled].broadcast_tempo_fallback on, a scene with no SID features
+        # feeds the broadcaster off the beat grid instead. Read once here;
+        # consulted in `_active_features`.
         self._wled_tempo_fallback: bool = bool(
             getattr(getattr(config, "wled", None), "broadcast_tempo_fallback", False)
         )
@@ -175,74 +155,54 @@ class Playlist:
 
         self.index = 0
         self.current: Scene | None = None
-        # Persistent user brightness dim (WLED bridge Mode 1 `bri` slider),
-        # 0 < user_dim <= 1.0. Owned here — not on the display mode — so it
-        # survives scene auto-advance: `safe_setup` re-stamps it onto each
-        # fresh scene's display mode (the mode instance is per-scene). The
-        # bridge sets both this and the current mode's `user_dim` for an
-        # instant effect that also outlasts the current scene.
+        # The WLED `bri` slider, 0 < user_dim <= 1.0. Owned here rather than on
+        # the display mode, whose instance is per-scene, so it survives an
+        # auto-advance: `safe_setup` re-stamps it onto each fresh scene.
         self.user_dim: float = 1.0
-        # Performance mode: the C64 output is in front of an audience, so
-        # nothing may draw an OSD line over it. Owned here for the same reason
-        # `user_dim` is — an `OsdState` is per-scene, so a hide applied to one
-        # scene would be lost the moment the playlist advanced, which is
-        # exactly what the pre-existing `cycle_osd` double-tap hide suffered
-        # from. `safe_setup` re-stamps it onto each fresh scene.
+        # The C64 output is in front of an audience, so nothing may draw an OSD
+        # line over it. Owned here for the same reason `user_dim` is — an
+        # `OsdState` is per-scene — and re-stamped by `safe_setup`.
         #
-        # This is the *runtime* control. `[midi_control].osd = "off"` is the
-        # static one, applied per scene by `scene_factory.build_scene`; the two
-        # compose the only way that makes sense — config sets the baseline,
-        # performance mode forces silence regardless of it, and turning
-        # performance mode back off restores whatever the config asked for
-        # rather than assuming "on".
+        # This is the *runtime* control; `[midi_control].osd = "off"` is the static
+        # one, applied per scene by `scene_factory.build_scene`. Config sets the
+        # baseline, performance mode forces silence regardless, and turning
+        # performance mode off restores the config's answer rather than "on".
         self.performance_mode: bool = False
-        # Live-tune change log for the exit save-back flow (--overwrite / prompt).
-        # The MIDI/WLED live-tune controls record each applied param change here;
-        # cli.main reads it after teardown. Always present (cheap), so callers
-        # needn't guard. `config` lets it route a [color]-homed knob into a
-        # scene's own [scenes.color] block when that scene overrides the
-        # field — see transport.LiveTuneTracker.
+        # The live-tune controls record each applied param change here and
+        # `cli.main` reads it after teardown. `config` lets it route a
+        # [color]-homed knob into a scene's own [scenes.color] block when that
+        # scene overrides the field.
         self.live_tracker = LiveTuneTracker(config)
         # DJ-style transport control (seek/pause/loop) driven by
-        # [midi_control]'s transport.* actions — see transport.TransportSession.
-        # Always present (cheap; the queue just stays empty for a run with no
-        # transport CC mappings), so callers needn't guard.
+        # [midi_control]'s transport.* actions. Always present, so callers need no
+        # guard; the queue just stays empty with no transport CC mappings.
         self.transport = TransportSession()
-        # Process-wide musical beat grid (Live-performance Phase 1). Built from
-        # [performance] (or a 120-BPM 4/4 internal default), fed by the MIDI
-        # control listener's reader thread (external clock) and tap-tempo pads.
-        # Always present like `transport` so consumers (launch quantize,
-        # tempo-locked effects — later phases) can read `pl.tempo` unguarded.
-        # In-memory only — the reader thread never touches DMA to update it.
+        # Process-wide musical beat grid, from [performance] or a 120-BPM 4/4
+        # internal default, fed by the MIDI listener's reader thread and tap-tempo
+        # pads. Always present, like `transport`. In-memory only — that reader
+        # thread never touches DMA to update it.
         from c64cast.control.tempo import ClockModulationSource, build_tempo_clock
 
         self.tempo = build_tempo_clock(performance)
-        # Live-audio tempo drive (tempo_source = "audio"). When set, `_run_one_
-        # frame` forwards the current scene's analyzer BPM into `self.tempo` each
-        # frame (`_drive_tempo_from_audio`), so the detected beat drives the whole
-        # performance grid. Off for internal/midi (the default). See
-        # tempo.TempoClock.audio_drive.
+        # With tempo_source = "audio", each frame forwards the current scene's
+        # analyzer BPM into `self.tempo`, so the detected beat drives the grid.
         self._tempo_audio_drive: bool = (
             performance is not None and getattr(performance, "tempo_source", "") == "audio"
         )
-        # Lock-transition state for the audio-drive log (below). Lets the run
-        # loop announce when the live beat locks / is lost without per-frame spam.
+        # Lock-transition state, so the run loop can announce a locked or lost
+        # beat without a per-frame record.
         self._tempo_audio_locked = False
         self._tempo_audio_log_t = 0.0
-        # Beat-grid-as-modulation feeder (Live-performance Phase 3). Wraps
-        # `self.tempo` as a MusicModulation source so an effect layer with
-        # `mod_source = "clock"` locks to the tempo grid exactly as an audio-
-        # reactive layer locks to the SID feature stream. Stamped onto each
-        # scene in safe_setup; scenes read it in scenes._render_with_overlays.
+        # Wraps `self.tempo` as a MusicModulation source, so an effect layer with
+        # `mod_source = "clock"` locks to the tempo grid the way an audio-reactive
+        # layer locks to the SID feature stream. Stamped onto each scene in
+        # `safe_setup`; read in `scenes._render_with_overlays`.
         self._clock_modulation = ClockModulationSource(self.tempo)
-        # Clip-launch grid (Live-performance Phase 2). Built from
-        # [[performance.clips]] (empty when none configured, so `service` is a
-        # cheap no-op). Always present like `transport`/`tempo`. Fires scenes
-        # from pads quantized to `tempo`; all scene mutation runs on the playlist
+        # Fires scenes from pads quantized to `tempo`, empty when
+        # [[performance.clips]] is. All scene mutation happens on the playlist
         # thread inside `service` (called from `_advance`), never on the MIDI
-        # reader thread. `build_performance_scene` is the injected factory
-        # (session.build_stack) that turns a clip dict into a Scene — None until
-        # wired, which makes the grid inert.
+        # reader thread. `build_performance_scene` is the injected factory that
+        # turns a clip dict into a Scene — None until wired, leaving the grid inert.
         from c64cast.control.performance import PerformanceSession, default_look_store
 
         self.performance = PerformanceSession(
@@ -253,21 +213,17 @@ class Playlist:
         self.transitioning = False
         self._last_heartbeat = 0.0
         self._last_stats = {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
-        # Reload event + pending replacement state. The CLI sets these on
-        # SIGHUP; the run loop notices, finishes the current scene's frame,
-        # then swaps in the new playlist at the next advance boundary.
+        # Set on SIGHUP; the run loop finishes the current frame, then swaps in
+        # the new playlist at the next advance boundary.
         self.reload_event = threading.Event()
         self._pending_scenes: list[Scene] | None = None
         self._pending_interstitial: InterstitialFactory | None = None
         self._reload_lock = threading.Lock()
-        # Ensemble + broadcast-interrupt plumbing. None in single-system
-        # mode; wired up by cli.py after Ensemble construction in
-        # multi-system mode. When `_broadcast_interrupt` fires the run
-        # loop tears down the current scene, runs a follower scene
-        # driven by `ensemble.active_orchestrator`, and resumes the
-        # saved index. `build_follower_scene` builds the per-system
-        # follower Scene from a SceneCfg (the playlist itself doesn't
-        # know about audio/source/cfg; the factory closes over them).
+        # None in single-system mode. When `_broadcast_interrupt` fires, the run
+        # loop tears down the current scene, runs a follower scene driven by
+        # `ensemble.active_orchestrator`, and resumes the saved index.
+        # `build_follower_scene` closes over the audio/source/cfg the playlist
+        # itself cannot reach.
         self.ensemble: Ensemble | None = None
         self.ensemble_coord = EnsembleCoordinator(self)
         self.broadcast_interrupt: threading.Event | None = None
@@ -473,8 +429,7 @@ class Playlist:
         return True
 
     def _default_interstitial_factory(self) -> InterstitialFactory:
-        # Late import so tests that supply their own factory don't have
-        # to pull in backgrounds + InterstitialCfg.
+        # Late, so a test supplying its own factory need not pull in backgrounds.
         from c64cast.scenes.interstitial import InterstitialScene
 
         api = self.api
@@ -499,12 +454,10 @@ class Playlist:
         return 1.0 / self.default_target_fps
 
     def _advance(self) -> None:
-        # Clip-launch engine gets first refusal each frame (Phase 2): it drains
-        # pad events, services background clip builds, performs the quantized
-        # swap, and manages clip looping/restore. When it owns the current
-        # program (an active clip) it fully handles this iteration and the normal
-        # playlist advance is suspended; otherwise it just processed pending pad
-        # events (arming a build under the count-in) and we fall through.
+        # First refusal each frame: it drains pad events, services background clip
+        # builds, performs the quantized swap, and manages clip looping. A True
+        # means an active clip owns the program and the playlist advance is
+        # suspended for this iteration.
         if self.performance.service(self):
             return
         if self.single_scene:
@@ -613,9 +566,8 @@ class Playlist:
         scene) and flip `transitioning` on. Shared by both interstitial-
         entry paths in `_advance` (first scene + scene-to-scene)."""
         nxt = self.scenes[self.index]
-        # Let randomized scenes pick their file now so the "UP NEXT" card
-        # shows the real upcoming content (not a directory spec / stale
-        # prior pick). Must run before we read nxt.name.
+        # Before `nxt.name` is read, so a randomized scene has picked its file and
+        # the "UP NEXT" card names the real upcoming content.
         self._safe_prepare_next(nxt)
         self.log.info("interstitial → %r (scene %d/%d)", nxt.name, self.index + 1, len(self.scenes))
         self.current = self.interstitial_factory(nxt.name)
@@ -636,34 +588,25 @@ class Playlist:
 
     def safe_setup(self, scene: Scene) -> None:
         self.ensemble_coord.maybe_install_conductor(scene)
-        # Give clock-locked effect layers (mod_source = "clock") this playlist's
-        # beat-grid feeder before the scene renders a frame (Phase 3). Harmless
-        # on scenes with no such layer.
+        # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
         scene.setup()
-        # Re-stamp the persistent user brightness onto this fresh scene's display
-        # mode (mode instances are per-scene, so a dim set on a previous scene's
-        # mode wouldn't otherwise carry). No-op at the 1.0 default.
+        # Mode instances are per-scene, so a dim set on the previous scene's mode
+        # would not otherwise carry.
         if self.user_dim < 1.0:
             dm = getattr(scene, "display_mode", None)
             if dm is not None:
                 dm.user_dim = self.user_dim
-        # Same re-stamp, same reason: an OsdState is per-scene, so performance
-        # mode has to be re-applied to each fresh one or the audience screen
-        # picks the OSD back up on the next auto-advance. Written every lap, not
-        # only when the mode is on: `suppressed` is the run's gate (the config
-        # owns `enabled`, which is why that one is left alone), so a scene that
-        # was live while the mode was on has to have it *cleared* when it comes
-        # round again. A one-way stamp stranded it — the mode goes off from
-        # whichever scene is current, reaching only that one.
+        # Same re-stamp, same reason. Written every lap and not only when the mode
+        # is on: `suppressed` is the run's gate (the config owns `enabled`), so a
+        # scene that was live while the mode was on has to have it *cleared* when
+        # it comes round again. Turning the mode off reaches only the current scene.
         scene.osd.suppressed = self.performance_mode
-        # Arm the fade-in: the display mode starts black and ramps up over the
-        # opening live frames (driven by _advance_fade_in in run_one_frame).
+        # The display mode starts black and ramps up over the opening live frames,
+        # driven by `_advance_fade_in`.
         self.fades.begin_fade_in(scene)
-        # Adjust NMI latch for the new display mode (if audio is active and has
-        # a calibration table). This restores pitch under the host-DMA servo by
-        # boosting the NMI consumer rate back toward 8000 Hz after being throttled
-        # by video DMA bus-halts.
+        # Restores pitch under the host-DMA servo by boosting the NMI consumer rate
+        # back toward 8000 Hz after video DMA bus-halts throttled it.
         if (
             self.audio is not None
             and self.audio_calibration is not None
@@ -677,8 +620,6 @@ class Playlist:
             try:
                 ov.setup(self.api, scene)
             except Exception:
-                # Overlay failure mustn't strand the scene — log and drop
-                # the offending overlay from the run list for this scene.
                 self.log.exception("overlay %r setup failed on %r — disabling", ov.name, scene.name)
                 ov.disabled = True  # checked in process_frame loop
         self._log_scene_recording_metadata(scene)
@@ -706,9 +647,8 @@ class Playlist:
             scene.teardown()
         except Exception:
             self.log.exception("teardown of %r failed", scene.name)
-        # Conductor slot + ensemble audio lock release (no-op single-system);
-        # runs even when teardown raised so a crashing scene can't strand
-        # either. See EnsembleCoordinator.release_scene for the full story.
+        # Runs even when teardown raised, so a crashing scene cannot strand the
+        # conductor slot or the ensemble audio lock.
         self.ensemble_coord.release_scene(scene)
 
     def _maybe_heartbeat(self, now: float) -> None:
@@ -716,7 +656,8 @@ class Playlist:
             return
         if now - self._last_heartbeat < self.heartbeat_interval:
             return
-        # First call just establishes the baseline; don't emit a 0-second window.
+        # The first call only establishes the baseline; a 0-second window is not
+        # worth emitting.
         if self._last_heartbeat == 0.0:
             self._last_heartbeat = now
             self._last_stats = self.api.stats
@@ -733,8 +674,7 @@ class Playlist:
             f"skipped={d_sk / dt:.0f}/s "
             f"bytes={d_by / dt / 1024.0:.0f}KiB/s"
         )
-        # Promote to WARNING when errors are actually flowing — without this
-        # the user wouldn't see issues unless they ran with -v.
+        # WARNING while errors are flowing, so they are visible without -v.
         if d_e / dt > 1.0:
             self.log.warning(msg)
         else:
@@ -766,8 +706,7 @@ class Playlist:
         frame_time = self.frame_time_for(scene)
         with self.profiler.frame(scene.name):
             t0 = time.time()
-            # Sleep until the deadline if we're early. Slow DMA pushes
-            # mean t0 can be later than expected; natural pacing absorbs
+            # A slow DMA push can put t0 past the deadline; natural pacing absorbs
             # that, and the catch-up below absorbs the rest.
             if t0 < next_deadline:
                 with self.profiler.stage("wait"):
@@ -776,15 +715,12 @@ class Playlist:
 
             stats_before = self.api.stats
 
-            # Step the fade-in ramp before the scene composes, so the opening
-            # frames render progressively brighter (overlapping live playback).
+            # Before the scene composes, so the opening frames render
+            # progressively brighter over live playback.
             self.fades.advance_fade_in(scene)
-            # Apply any queued MIDI transport events (seek/pause/loop/rw/ff/jog)
-            # against this scene before it renders, so a seek issued this tick
-            # is reflected in the frame we're about to compose.
+            # Before the scene renders, so a seek issued this tick is reflected in
+            # the frame about to be composed.
             self.transport.tick(self, t0)
-            # Live-audio tempo drive: feed the beat grid this scene's detected BPM
-            # (tempo_source = "audio"). No-op for internal/midi drive.
             if self._tempo_audio_drive:
                 self._drive_tempo_from_audio(scene, t0)
 
@@ -800,10 +736,9 @@ class Playlist:
 
             self._maybe_heartbeat(t0)
             if self.profiler.emit_if_due(t0, self.log):
-                # Same cadence as the profiler — surfaces U64
-                # per-DMA-write latency so we can tell whether
-                # cpu_render is really CPU work or producer blocked
-                # on the network.
+                # Same cadence as the profiler, so per-DMA-write latency says
+                # whether `cpu_render` is CPU work or a producer blocked on the
+                # network.
                 latency_line = self.api.format_write_latency()
                 if latency_line is not None:
                     self.log.info(latency_line)
@@ -859,8 +794,8 @@ class Playlist:
             else:
                 self.log.info("skip requested — advancing past %r", scene.name)
                 scene.is_done = True
-                # A skip means "get to the next scene now" — abort any
-                # in-progress fade-in and suppress the fade-out.
+                # A skip means "next scene now": abort the fade-in, suppress the
+                # fade-out.
                 self.fades.cancel_fade_in(scene)
                 self.fades.ended_via_skip = True
             self.skip_event.clear()
@@ -901,8 +836,8 @@ class Playlist:
         scene. Called every frame on the playlist thread; cheap in-memory work."""
         feats = scene.features()
         self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
-        # Announce lock/loss transitions at INFO (rare); trickle the live BPM at
-        # DEBUG (~2 s) while locked so `-vv` shows the grid tracking the beat.
+        # Lock/loss transitions at INFO, the live BPM at DEBUG every ~2 s while
+        # locked, so -vv shows the grid tracking the beat.
         locked = self.tempo.running
         if locked != self._tempo_audio_locked:
             self._tempo_audio_locked = locked
@@ -950,16 +885,15 @@ class Playlist:
                     self.resume_event,
                     skip_event=self.skip_event,
                     cycle_event=self.cycle_event,
-                    # Only wire the menu (and the extra buffer read) when enabled.
+                    # The extra buffer read only happens when the menu is enabled.
                     menu_event=self.menu_event if menu_enabled else None,
                     menu_active=self.menu_active if menu_enabled else None,
                     menu_eligible=self.menu_eligible if menu_enabled else None,
                     nav_queue=self.nav_queue if menu_enabled else None,
                 )
-        # Deadline-based pacing: after each frame we advance the deadline by
-        # one frame_time. If real wall clock has fallen far behind the
-        # deadline, jump it forward (effectively dropping the missed frames)
-        # so animations stay tied to wall-clock time instead of compounding lag.
+        # Deadline-based pacing: each frame advances the deadline by one
+        # `frame_time`, and a wall clock far behind it snaps the deadline forward,
+        # dropping the missed frames rather than compounding lag.
         if self._wled is not None:
             self._wled.start()
         next_deadline = time.time()
@@ -984,18 +918,15 @@ class Playlist:
                 except Exception:
                     self.log.exception("playlist advance failed; aborting")
                     break
-                # loop=False end-of-playlist: _advance has torn down the
-                # last scene, set self.current = None, and set stop_event.
-                # Skip the render and let the while-loop condition exit.
+                # loop=False end-of-playlist: `_advance` has torn down the last
+                # scene, cleared `current` and set `stop_event`.
                 if self.current is None:
                     break
 
                 self.menu.service()
-                # Freeze the background while the menu is open and idle: holding
-                # the last frame stops the post-render panel from flickering
-                # against a scene that redraws the whole frame every tick. A
-                # menu interaction (open / nav / value change) sets
-                # menu.repaint, so the live preview still re-renders on demand.
+                # Holding the last frame stops the post-render panel flickering
+                # against a scene that redraws every tick; a menu interaction sets
+                # `menu.repaint`, so the live preview still updates.
                 if self.menu_active.is_set() and not self.menu.repaint:
                     next_deadline = self._idle_pace(self.current, next_deadline)
                     continue
@@ -1082,25 +1013,21 @@ class Playlist:
         if self.current is not None:
             self.safe_teardown(self.current)
             self.current = None
-        # Clear any stale resume signal BEFORE idling. The poller can set
-        # resume_event the moment it sees a 3 s C= hold — which, if pause_idle
-        # is slow (it brings $028D live mid-call on some backends), can land
-        # *during* pause_idle. Clearing afterwards would then wipe a legitimate
-        # resume and strand the pause; clearing first lets that detection stick.
+        # Before idling, not after: the poller can set `resume_event` the moment
+        # it sees a 3 s C= hold, which can land *during* a slow `pause_idle`, and
+        # clearing afterwards would wipe a legitimate resume and strand the pause.
         self.resume_event.clear()
         try:
-            # pause_idle() leaves the machine in its paused state with the
-            # kernal keyboard scan still alive so $028D keeps updating for the
-            # resume-hold detection. Backend-specific: the Ultimate resets to
-            # the BASIC READY banner; the TeensyROM clears the screen but keeps
-            # the display ON (a bare reset lands at the TR menu, freezing $028D;
-            # blanking the display would remove the VIC badlines the TR's
-            # cycle-clean DMA needs, hanging the resume reads).
+            # Leaves the kernal keyboard scan alive so $028D keeps updating for the
+            # resume-hold detection. Backend-specific: the Ultimate resets to the
+            # BASIC READY banner; the TeensyROM clears the screen but keeps the
+            # display ON, since a bare reset lands at the TR menu and freezes $028D,
+            # and blanking would remove the VIC badlines its cycle-clean DMA needs.
             self.api.pause_idle()
         except Exception:
             self.log.exception("pause_idle failed")
 
-        # Spin on stop_event.wait so SIGTERM can shortcut the pause.
+        # `stop_event.wait`, so SIGTERM can shortcut the pause.
         while not self.stop_event.is_set() and not self.resume_event.is_set():
             self.stop_event.wait(timeout=0.1)
         if self.stop_event.is_set():
@@ -1114,6 +1041,5 @@ class Playlist:
             self.api.disable_case_switch()
         except Exception:
             self.log.exception("reset/clear during resume failed")
-        # The same scene gets re-set-up by _advance() on the next loop pass.
         self.pause_event.clear()
         self.resume_event.clear()

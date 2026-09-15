@@ -1,14 +1,11 @@
-/** Pure logic behind the Editor's media picker — the `file =` field's
- *  datalist options, which scene type browses which media kind, and reading a
- *  URL out of a drag-and-drop payload — pulled out of the components so it
- *  can be unit-tested without mounting Svelte or a `DataTransfer`. */
+/** Pure logic behind the Editor's media picker: the `file =` field's datalist
+ *  options, which scene type browses which media kind, and reading a URL out
+ *  of a drag-and-drop payload. */
 
 import type { MediaEntry, MediaUploaded, SceneTypeDoc } from "./types";
 
-/** The datalist options for a `file =` field: directories first (the more
- *  useful default to reach for — a slideshow or an HVSC tree is usually
- *  offered as a directory, not one file at a time), each group alphabetical.
- *  Never mutates `entries`. */
+/** The datalist options for a `file =` field: directories first, each group
+ *  alphabetical. Never mutates `entries`. */
 export function pickerOptions(entries: readonly MediaEntry[]): string[] {
   const bySpec = (a: MediaEntry, b: MediaEntry) => a.spec.localeCompare(b.spec);
   const dirs = entries.filter((e) => e.is_dir).slice().sort(bySpec);
@@ -30,9 +27,9 @@ const URL_LINE = /^https?:\/\/\S+$/i;
  *  component checks `dataTransfer.files` before calling this, since a Finder
  *  or Explorer drag carries both).
  *
- *  Takes a plain string map rather than a `DataTransfer` so this stays
- *  testable under `vitest.config.ts`'s `environment: "node"`; the component
- *  reads `event.dataTransfer.getData(...)` into one before calling this. */
+ *  Takes a plain string map rather than a `DataTransfer`, which
+ *  `vitest.config.ts`'s `environment: "node"` has none of; the component reads
+ *  `event.dataTransfer.getData(...)` into one before calling this. */
 export function urlFromDrop(payload: Readonly<Record<string, string>>): string | null {
   const text = payload["text/uri-list"] || payload["text/plain"] || "";
   for (const line of text.split(/\r?\n/)) {
@@ -42,11 +39,8 @@ export function urlFromDrop(payload: Readonly<Record<string, string>>): string |
   return null;
 }
 
-/** The one-sentence success banner for a finished upload — the only new logic
- *  worth its own pure function; everything else about the upload flow is
- *  fetch + component state. Says when the name was changed to avoid clobbering
- *  something already there, since a silent rename is the kind of thing an
- *  operator notices five minutes later instead of right away. */
+/** The one-sentence success banner for a finished upload. Says when the name
+ *  was changed to avoid clobbering something already there. */
 export function uploadMessage(uploaded: MediaUploaded): string {
   if (uploaded.renamed) {
     return `Uploaded as ${uploaded.name} — that name was already taken.`;

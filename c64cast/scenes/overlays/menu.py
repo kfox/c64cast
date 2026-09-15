@@ -45,11 +45,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("c64cast.menu")
 
-# Display modes the menu can render a panel on this cut.
 _SUPPORTED_DISPLAYS = ("petscii", "blank", "hires", "mhires")
 _BITMAP_DISPLAYS = ("hires", "mhires")
 
-# Panel placement + colors (C64 palette indices).
 _PANEL_TOP_ROW = 2
 _PANEL_COL = 1
 _PANEL_WIDTH = 38  # cells; _PANEL_COL + _PANEL_WIDTH must be <= 40
@@ -74,9 +72,8 @@ class MenuItem:
     label: str
     kind: str  # "enum" | "int" | "float"
     get: Callable[[], Any]
-    # Return value is ignored — `object` lets the builders use a one-expression
-    # lambda that both writes the cfg and calls the live setter, e.g.
-    # `lambda v: (setattr(cfg, ...), mode.set_palette_mode(api, v))`.
+    # The return is ignored; `object` is what lets a builder write the cfg and
+    # call the live setter in one lambda expression.
     set: Callable[[Any], object]
     choices: tuple[str, ...] = ()
     step: float = 1.0
@@ -108,11 +105,6 @@ class MenuItem:
         self.set(int(round(nv)) if self.kind == "int" else nv)
 
 
-# --- per-field builders: introspect picks WHICH fields; these supply the live
-# get/set wiring. Each returns a MenuItem or None when not applicable to the
-# scene's actual display mode. ----------------------------------------------
-
-
 def _build_palette_mode(scene, cfg, mode, api, fd) -> MenuItem | None:
     if mode is None or not hasattr(mode, "set_palette_mode"):
         return None
@@ -128,8 +120,8 @@ def _build_palette_mode(scene, cfg, mode, api, fd) -> MenuItem | None:
 def _build_style(scene, cfg, mode, api, fd) -> MenuItem | None:
     if mode is None or not hasattr(mode, "set_style"):
         return None
-    # STYLE_NAMES (concrete styles) excludes the 'random' sentinel; fd.choices
-    # includes it, so filter it out — you can't cycle to "random" live.
+    # fd.choices carries the 'random' sentinel that STYLE_NAMES excludes; there
+    # is nothing to cycle to for it.
     choices = tuple(c for c in fd.choices if c != "random")
     return MenuItem(
         label="STYLE",
@@ -144,7 +136,7 @@ def _build_duration(scene, cfg, mode, api, fd) -> MenuItem | None:
     if not hasattr(scene, "duration_s"):
         return None
     cur = getattr(scene, "duration_s", None)
-    # Video scenes run until EOF (duration_s = inf); not meaningfully editable.
+    # Video scenes run until EOF (duration_s = inf).
     if cur is None or cur == float("inf"):
         return None
     return MenuItem(
@@ -235,8 +227,6 @@ class MenuOverlay(Overlay):
         self._glyphs = bitmap_text.load_glyphs() if self._is_bitmap else None
         self._warned_staged = False
 
-    # --- input -------------------------------------------------------------
-
     def on_key(self, code: int) -> None:
         """Handle one decoded PETSCII nav key (forwarded from the poller's nav
         queue). Direction is encoded in the code itself — the kernal already
@@ -281,8 +271,6 @@ class MenuOverlay(Overlay):
             self.log.info("menu: changes applied to the running scene (save unavailable)")
         self.closed = True
         return True
-
-    # --- rendering ---------------------------------------------------------
 
     def _panel_lines(self) -> list[tuple[str, int]]:
         """(text padded to width, fg index) for each panel row."""
@@ -336,10 +324,9 @@ class MenuOverlay(Overlay):
         screen = bytes(ascii_to_screen(text))
         color = bytes([fg & 0x0F] * len(text))
         base = cell_row * SCREEN.W_CHARS + _PANEL_COL
-        # Force-repaint: the scene re-renders these same cells every frame, so
-        # the panel's own per-region cache must be dropped or write_region
-        # would treat the (static) panel as unchanged and skip it — leaving the
-        # scene's content showing through. See backend.invalidate_region.
+        # The scene re-renders these same cells every frame, so write_region
+        # would treat the static panel as unchanged and skip it, leaving the
+        # scene showing through. Force the repaint.
         api.invalidate_region(RegionID.MENU_ROW_SCREEN + idx)
         api.invalidate_region(RegionID.MENU_ROW_COLOR + idx)
         api.write_region(SCREEN.RAM + base, screen, region_id=RegionID.MENU_ROW_SCREEN + idx)
@@ -349,8 +336,8 @@ class MenuOverlay(Overlay):
         self, api: C64Backend, cell_row: int, idx: int, text: str, fg: int
     ) -> None:
         assert self._glyphs is not None
-        # Force-repaint over the scene's per-frame bitmap redraw (see
-        # _paint_char_row).
+        # Force the repaint over the scene's per-frame bitmap redraw, as in
+        # _paint_char_row.
         api.invalidate_region(RegionID.MENU_ROW_BITMAP + idx)
         api.invalidate_region(RegionID.MENU_ROW_SCREEN + idx)
         bitmap_text.paint_text_row(

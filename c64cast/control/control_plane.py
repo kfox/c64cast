@@ -1,26 +1,22 @@
 """HTTP control plane for runtime per-system pause / skip / reload actions.
 
-One FastAPI app, one uvicorn server, regardless of how many systems are
-in the ensemble. Endpoints take an optional `?system=NAME` query param:
+One FastAPI app, one uvicorn server, regardless of how many systems are in the
+ensemble. Endpoints take an optional `?system=NAME` query param:
 
-  absent (1 system)   → today's un-wrapped response shape (back-compat)
+  absent (1 system)   → unwrapped response shape
   absent (N systems)  → wrapped { systems: { name: ... } } shape
   `?system=all`       → wrapped { systems: { name: ... } } shape
   `?system=NAME`      → unwrapped response for that one system
   `?system=UNKNOWN`   → 404 with the list of known names
 
-POST endpoints (pause / resume / skip / reload) with no `?system=` and
-multiple systems apply to every system. The convention reads as
-"unscoped means cluster-wide, scoped means single-system."
+POST endpoints (pause / resume / skip / reload) with no `?system=` and multiple
+systems apply to every system: unscoped means cluster-wide, scoped means
+single-system.
 
-Lives behind the `control` optional dep group (fastapi + uvicorn). The
-server runs in a background thread so it doesn't block any render loop;
-each system's Playlist + per-system reload closures are the shared state.
+Behind the `control` optional dep group (fastapi + uvicorn); the server runs on
+a background thread so it doesn't block any render loop.
 
-`build_app_for_registry` reads that state through providers called per
-request, so one app can outlive the session it acts on (a host that starts
-and stops shows under a server that keeps listening); `build_app` is the
-one-shot CLI's fixed-map form of it.
+See docs/architecture/control.md#control_planepy--http-control-plane-optional.
 """
 
 from __future__ import annotations
@@ -44,11 +40,9 @@ log = logging.getLogger(__name__)
 SceneFactory = Callable[[], list[Scene]]
 InterstitialFactory = Callable[[], Callable[[str], Scene]]
 
-# Providers, not maps: the app outlives any one session. A long-lived host
-# (`--serve`) starts and stops sessions under a server that keeps running, so
-# the playlists a request acts on are whatever the *current* session owns —
-# and there may be none. build_app's fixed-map form is these three closed over
-# constants.
+# Providers, not maps: the app outlives any one session, so the playlists a
+# request acts on are whatever the *current* session owns — and there may be
+# none.
 PlaylistRegistry = Callable[[], Mapping[str, Playlist]]
 LoaderRegistry = Callable[[], Mapping[str, SceneFactory]]
 InterstitialRegistry = Callable[[], Mapping[str, InterstitialFactory]]
@@ -101,8 +95,7 @@ class ControlServer:
         )
         self._server = uvicorn.Server(self._cfg)
         # uvicorn has its own stop signal (should_exit, set in stop()), so the
-        # target ignores the PollThread event — the poll supplies only the
-        # daemon-thread start/join lifecycle.
+        # target ignores the PollThread event.
         self._poll = PollThread(
             lambda stop: self._server.run(), name="control-plane", manual=True, join_timeout=2.0
         )
@@ -111,14 +104,12 @@ class ControlServer:
         """Bring the server up, and report whether it is really listening.
 
         uvicorn binds on the background thread rather than here, and on a bind
-        failure — `address already in use`, the likeliest operator error —
-        `Server.startup` calls `sys.exit(1)` *there*: a `SystemExit` that
-        `PollThread` does not catch and `threading.excepthook` discards
-        without a record on any `c64cast` logger. So this used to log
-        "listening on …" for a socket that never existed, and a caller had no
-        way to find out. Waiting on uvicorn's own `started` flag is what makes
-        that log line true; the serve thread dying is what makes the failure
-        prompt rather than a five-second stall."""
+        failure `Server.startup` calls `sys.exit(1)` *there* — a `SystemExit`
+        that `PollThread` does not catch and `threading.excepthook` discards
+        without a record on any `c64cast` logger. Waiting on uvicorn's own
+        `started` flag is what makes the "listening" log line true; watching
+        the serve thread die is what makes a failure prompt rather than a
+        five-second stall."""
         self._poll.start()
         if not self._wait_until_serving(timeout):
             log.error(
@@ -219,10 +210,6 @@ def build_app_for_registry(
 
     app = FastAPI(title="c64cast", version="0.1.0")
 
-    # GET endpoints unwrap the response when the caller named one system
-    # (today's shape — single-system clients keep working unmodified).
-    # Multi-system aggregate responses wrap in { systems: { name: ... } }.
-
     @app.get("/status")
     def status(system: str | None = Query(default=None)):
         current, targets = _resolve(system)
@@ -260,7 +247,7 @@ def build_app_for_registry(
             else:
                 skipped.append(n)
         if not resumed and len(targets) == 1:
-            # Preserve the 409 today's single-system clients expect.
+            # Single-system clients expect a 409 here.
             raise HTTPException(409, "not currently paused")
         return {"ok": True, "resumed": resumed, "skipped_not_paused": skipped}
 
@@ -281,9 +268,8 @@ def build_app_for_registry(
         reloaded: dict[str, int] = {}
         errors: dict[str, str] = {}
         for n in targets:
-            # A system without a path-on-disk (e.g. defaults-only single-
-            # system mode) has no reload loader. Surface that as a per-
-            # system error rather than KeyErroring out.
+            # A system with no config file on disk (defaults-only single-
+            # system mode) has no reload loader.
             if n not in loaders:
                 errors[n] = "no config file to reload from"
                 continue
@@ -296,17 +282,15 @@ def build_app_for_registry(
             current[n].request_reload(new_scenes, new_factory)
             reloaded[n] = len(new_scenes)
         if errors and not reloaded:
-            # Every requested reload failed — surface as a server error
-            # so a single-system caller's existing 500-handling still works.
+            # Every requested reload failed — a 500 so a single-system
+            # caller's existing error handling still works.
             raise HTTPException(500, f"reload failed: {errors}")
         return {"ok": True, "reloaded": reloaded, "errors": errors}
 
-    # Live DJ/VJ Phase 5: the phone/web performance console rides the same server
-    # (GET /perf page + /perf/state + /perf/command + /perf/ws), driving the same
-    # performance engine the MIDI surface does. Always registered when the control
-    # plane is up — the tempo readout + effect rack are useful even with no clip
-    # grid configured. Kept in its own module (which, unlike this one, omits
-    # `from __future__ import annotations`) so the WebSocket param injects.
+    # The phone/web performance console rides the same server, driving the same
+    # performance engine the MIDI surface does. Kept in its own module (which,
+    # unlike this one, omits `from __future__ import annotations`) so the
+    # WebSocket param injects.
     from .perf_console import PerfBridge, register_perf_routes
 
     register_perf_routes(app, PerfBridge(lambda: list(playlists().items())))
@@ -368,8 +352,8 @@ def start_control_server(
     elif host not in LOOPBACK_HOSTS:
         # Reached only when [control].allow_unauthenticated is set — otherwise
         # scene_factory.validate_control_cfg has already refused this
-        # combination, before any hardware was opened. Kept as a warning here
-        # so a caller reaching this entry point directly still gets told.
+        # combination. Kept so a caller reaching this entry point directly
+        # still gets told.
         log.warning(
             "control plane: bound to %s with no [control] token — "
             "anything that can reach the port can drive the run",

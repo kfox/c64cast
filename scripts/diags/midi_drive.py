@@ -4,9 +4,7 @@
 Opens a virtual MIDI *output* port (visible system-wide as an input to other
 apps, the CoreMIDI/ALSA convention) and sends notes / CCs / program-changes to
 it. Point a running c64cast at the same port name and its MIDI control listener
-picks the messages up — no physical controller needed. This is the reusable
-form of the throwaway ``midi_smoke.py`` scripts used to HW-verify the MidiScene
-and MIDI live-tune (transport / audio-resync) features.
+picks the messages up — no physical controller needed.
 
 The port MUST exist before c64cast boots, or ``midi_control`` finds no matching
 input and disables itself. So start this tool (or at least open the port) first.

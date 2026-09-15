@@ -8,9 +8,7 @@ oblivious to whether the underlying display is a character mode or a bitmap.
 Three implementations:
 
 * ``CharTextSurface`` — wraps a char mode's 40×25 screen-code + color-nibble
-  arrays. ``paint_run`` writes screen codes + FG nibbles exactly as the
-  overlays did before this abstraction existed, so char-mode output stays
-  byte-identical.
+  arrays; ``paint_run`` writes screen codes + FG nibbles into them.
 * ``HiresTextSurface`` — folds glyphs straight into a 320×200 hires bitmap
   (one glyph per 8×8 cell) + the per-cell FG/BG screen nibble. 40×25 grid.
 * ``MHiresTextSurface`` — folds double-wide ("chunky") glyphs into a 160×200

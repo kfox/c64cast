@@ -8,7 +8,7 @@
 
   interface Props {
     /** The config ref being edited. Also the directory a dry-run validation
-     *  happens in, which is why the check needs it and not just the text. */
+     *  happens in, so the check needs it as well as the text. */
     path: string;
     value: string;
     /** What is on disk, so "revert" and "dirty" mean something exact. */
@@ -39,9 +39,8 @@
     try {
       await fn();
     } catch (e) {
-      // A refused save answers 422 with the whole validation report, which is
-      // the same shape the check returns — so show it the same way rather than
-      // reducing the loader's diagnostics to one line.
+      // A refused save answers 422 with the whole validation report, the same
+      // shape the check returns.
       const refused = reportOf(e);
       if (refused) report = refused;
       else if (e instanceof ApiError) problem = e.message;

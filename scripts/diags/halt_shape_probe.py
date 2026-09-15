@@ -61,9 +61,7 @@ import time
 
 import _diaglib as d
 
-# Same bring-up as the race probe, imported rather than restated: a second copy
-# of the reset/clear-loop/handler-upload sequence is how the two tools would end
-# up measuring subtly different machines.
+# Bring-up is shared with ring_race_probe so both tools measure the same machine.
 from ring_race_probe import arm, disarm, effective_rate, latch_for, read_r, setup
 
 from c64cast.app.config import Config

@@ -58,9 +58,8 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     that path with a verbose plain-text format. Safe to call more than once
     — clears any existing handlers first so a re-call (e.g. after config
     load) doesn't double up."""
-    # Default level is INFO so the user sees lifecycle messages (scene
-    # transitions, audio bring-up, keypress detection, resets) without
-    # needing -v. -v / -vv bumps to DEBUG.
+    # INFO by default, so lifecycle messages (scene transitions, audio bring-up,
+    # resets) need no -v.
     level = logging.INFO
     if verbosity >= 1:
         level = logging.DEBUG
@@ -71,7 +70,6 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     root.setLevel(level)
 
     try:
-        # rich is an optional [logging] extra; pyright doesn't see it unless installed.
         from rich.logging import RichHandler  # pyright: ignore[reportMissingImports]
 
         terminal: logging.Handler = RichHandler(
@@ -93,13 +91,11 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
         try:
             fh = logging.FileHandler(paths.expand_user(log_file), encoding="utf-8")
         except OSError as e:
-            # Don't let a bad --log-file path kill the run; surface and
-            # continue with just the terminal handler.
             log.warning("could not open log file %s: %s", log_file, e)
         else:
             fh.setLevel(level)
-            # Redacting: a log file outlives the run, is not created 0600, and
-            # may be pasted into a bug report. The terminal keeps the token.
+            # A log file outlives the run, is not created 0600, and may be pasted
+            # into a bug report. The terminal handler keeps the token.
             fh.setFormatter(
                 RedactingFormatter(
                     "%(asctime)s %(name)s %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -107,10 +103,8 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             )
             root.addHandler(fh)
 
-    # Third-party loggers that spam at DEBUG and drown our own output under -vv.
-    # urllib3 logs every REST request/connection to the U64 (probe, config
-    # reads, run_prg) — pin it to WARNING so -vv stays about c64cast, not the
-    # HTTP transport. (Requests reuse the connection pool, so this is pure noise.)
+    # urllib3 logs every REST request to the U64, which drowns -vv in HTTP
+    # transport noise.
     for noisy in ("urllib3.connectionpool", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -145,10 +139,9 @@ def list_devices() -> int:
 
     from c64cast.control import camera
 
-    # Best-effort resolution probe (indices 0-7), merged into whichever listing
-    # we print below. Probing past the highest valid index makes OpenCV (and the
-    # AVFoundation / FFmpeg backends underneath it) print to stderr at the C
-    # level, so mute that for the probe via fd-level redirection.
+    # Probing past the highest valid index makes OpenCV (and the AVFoundation /
+    # FFmpeg backends under it) print to stderr at the C level, hence the
+    # fd-level mute.
     res_by_index: dict[int, tuple[int, int]] = {}
     sys.stdout.flush()
     with silence_native_stderr():
@@ -163,9 +156,8 @@ def list_devices() -> int:
                 if cap is not None:
                     cap.release()
 
-    # Rich path (the `camera` extra): name + USB VID:PID + the correct backend
-    # index cross-platform. This makes system_profiler's index-guessing dance
-    # unnecessary, so we return before the macOS fallback below.
+    # The `camera` extra gives name + VID:PID + the right backend index on every
+    # platform, so the macOS fallback below is unreachable when it is installed.
     cams = camera.enumerate_cameras()
     if cams:
         for c in cams:
@@ -192,11 +184,8 @@ def list_devices() -> int:
         print("    (no webcams responded to OpenCV probe)")
 
     if sys.platform == "darwin":
-        # Prefer the jq pipeline when jq is on PATH — it collapses
-        # system_profiler's verbose multi-line dump into a clean
-        # `index:name` listing that lines up with AVFoundation's (and
-        # therefore OpenCV's) device enumeration. Falls back to the raw
-        # dump when jq isn't installed.
+        # The jq pipeline collapses system_profiler's multi-line dump into an
+        # `index:name` listing that lines up with AVFoundation's enumeration.
         cmd = (
             [
                 "sh",
@@ -321,10 +310,9 @@ def run_introspection(args: argparse.Namespace) -> int | None:
         print(introspect.render_list_examples())
         return 0
     if args.print_example is not None:
-        # Straight to stdout so `> c64cast.toml` makes an editable copy — the
-        # packaged original lives inside the install and isn't meant to be
-        # edited in place. A bad name must NOT exit 0: the caller is usually
-        # redirecting, and a happy exit would leave them an empty config.
+        # Straight to stdout so `> c64cast.toml` makes an editable copy. A bad
+        # name must not exit 0: the caller is usually redirecting, and a happy
+        # exit would leave them an empty config.
         try:
             text = paths.resolve_example(args.print_example).read_text(encoding="utf-8")
         except ValueError as e:
@@ -344,10 +332,9 @@ def run_introspection(args: argparse.Namespace) -> int | None:
         print(json.dumps(schema.build_schema(), indent=2))
         return 0
     if args.print_schema_path:
-        # Just the value, so it composes: prefixed with `#:schema ` it is a
-        # config's first line, and on its own it is what an editor's schema
-        # association wants. Worked out for where the config actually is,
-        # because the answer is relative from inside a checkout.
+        # Just the value, so `#:schema ` prefixed it is a config's first line and
+        # bare it is what an editor's schema association wants. Resolved against
+        # where the config actually is, since the answer is relative in a checkout.
         from . import config_serialize
 
         print(config_serialize.schema_directive_for(args.config or "c64cast.toml"))
@@ -366,22 +353,19 @@ def run_introspection(args: argparse.Namespace) -> int | None:
             return 2  # canceled, or the 'wizard' extra is missing
         out_path, launch = result
         if launch:
-            # Fall through to the normal run path against the file we just
-            # wrote (returning None lets main() continue to load_master).
+            # None lets `main()` continue to `load_master` against the new file.
             args.config = out_path
             return None
         return 0
     return None
 
 
-# --save-settings's whitelist, one entry per flag: (args dest, config
-# section, field, flag name for --help/error text). `-u/--url` isn't here —
-# it decomposes into several of these same fields via
-# `connect.apply_to_config` rather than a single setattr, so it stays a
-# special case in `run_save_settings` below — but every flag that IS a plain
-# `setattr` lives in this one table, so `--save-settings`'s `--help` text
-# (cli.py), its "nothing to save" error, and its apply block can't drift
-# out of sync with each other the way three hand-copied lists did.
+# --save-settings's whitelist, one entry per flag: (args dest, config section,
+# field, flag name for --help/error text). `-u/--url` is a special case in
+# `run_save_settings` below, decomposing into several of these fields via
+# `connect.apply_to_config` rather than one setattr. Every flag that IS a plain
+# setattr lives here, so `--save-settings`'s --help text (cli.py), its "nothing
+# to save" error and its apply block cannot drift apart.
 SAVABLE_SETTINGS_FIELDS: tuple[tuple[str, str, str, str], ...] = (
     ("device", "video", "device", "-d/--device"),
     ("audio_device", "audio", "device", "-D/--audio-device"),
@@ -428,8 +412,7 @@ def run_save_settings(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Start from the existing file's values so a save merges rather than
-    # replaces (defaults → existing machine settings → this invocation).
+    # Defaults -> existing machine settings -> this invocation, so a save merges.
     cfg = cfgmod.Config()
     cfgmod.apply_machine_settings(cfg)
 
@@ -499,9 +482,8 @@ def run_dump_char_rom(cfg: cfgmod.Config) -> int:
         )
         return 4
     finally:
-        # Teardown in a `finally` must never rewrite the `return 3`/`return 4`
-        # the `except` blocks above already computed, so neither call here is
-        # allowed to raise — each is reported instead.
+        # A raise here would rewrite the `return 3`/`return 4` the `except` blocks
+        # above already computed, so each call reports instead.
         try:
             be.reset()
         except Exception as e:
@@ -530,35 +512,30 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
             "'mic' extra: uv tool install --force 'c64cast[all]'"
         )
         return 3
-    # Resolve a name substring / index to a concrete input index (-1 → None
-    # = system default). find_capture_device wants int | None.
+    # `find_capture_device` wants int | None, with None meaning the system default.
     dev: int | None = None
     if args.audio_device is not None:
         idx = resolve_audio_input_device(args.audio_device)
         dev = idx if idx >= 0 else None
     be = make_backend(cfg)
     try:
-        # A calibration is keyed per system, so settle `system = "auto"`
-        # against the machine before measuring — otherwise an unresolved
-        # "auto" would file a PAL machine's curve under NTSC. Inside the try
-        # (not before it) so an unreachable/unresponsive machine here still
-        # closes `be` rather than abandoning the U64's single-connection DMA
-        # socket for the next run to trip over.
+        # A calibration is keyed per system, so an unresolved `system = "auto"`
+        # would file a PAL machine's curve under NTSC. Inside the try so an
+        # unresponsive machine still closes `be` rather than abandoning the U64's
+        # single-connection DMA socket for the next run to trip over.
         hw_provision.resolve_system(cfg, be)
         run = dac_calibration.run_calibration(
             be, cfg, device=dev, log_fn=lambda m: log.info("%s", m)
         )
-    # A rig that can't be measured (no capture device, or a capture that
-    # doesn't contain the ring) is a user-fixable setup problem, not a bug —
-    # both carry actionable text, so print it and exit rather than traceback.
+    # A rig that cannot be measured is a user-fixable setup problem, and both
+    # exceptions carry actionable text — so print it rather than traceback.
     except (CaptureUnavailableError, MeasurementError) as e:
         log.error("%s", e)
         return 3
     finally:
         be.close()
-    # A run that measured every SID but trusted none of them still wrote a
-    # file (raw levels, for diagnosis) — but it produced no usable table, so
-    # it must not look like a success.
+    # A run that trusted none of the SIDs it measured still wrote a file of raw
+    # levels for diagnosis, but produced no usable table.
     if not any(r.sidtable is not None for r in run.entries.values()):
         log.error(
             "no usable DAC table was produced: every measured SID failed its "
@@ -577,10 +554,8 @@ def run_doctor(loaded: cfgmod.LoadResult, cfgs: list[cfgmod.Config]) -> int:
 
     from .doctor import print_report, validate_load_result
 
-    # `replace` rather than a hand-listed field-by-field copy: a `LoadResult`
-    # field this doesn't know to carry forward (e.g. master_web) would
-    # otherwise silently fall back to its dataclass default instead of the
-    # value load_master actually produced.
+    # `replace`, not a field-by-field copy: a `LoadResult` field this does not
+    # know to carry forward would silently fall back to its dataclass default.
     merged = dataclasses.replace(loaded, cfgs=cfgs)
     diagnostics = validate_load_result(
         merged,

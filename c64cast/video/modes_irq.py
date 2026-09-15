@@ -1,6 +1,6 @@
 """The C64-side IRQ-handler layer for tear-free double-buffered video.
 
-The 6502 machine code modes.py's bitmap modes upload and drive per frame:
+The 6502 machine code the bitmap modes in `modes/` upload and drive per frame:
 the $C500 bank-swap raster IRQ handlers (hires, mhires, the chunked
 mhires + REU-audio merged dispatcher, and the host-DMA page-flip sibling
 for no-REU backends), the $C700 frame-tracker layouts each handler reads
@@ -9,12 +9,11 @@ teardown plus per-frame push helpers that stage a frame and arm the
 tracker. Pure Python over C64Backend — no numpy, no cv2 — so the whole
 module runs under mypy --strict.
 
-Nothing here decides WHEN a pipeline engages: that's scene_factory's
-resolve_use_reu_staged / resolve_double_buffer, and the DisplayMode
-classes in modes.py own the per-frame compose + call order. See
-docs/architecture/video-color.md ("[video].use_reu_staged" and
-"[video].double_buffer") for the design and hardware history behind
-these bytes.
+Nothing here decides WHEN a pipeline engages: that is scene_factory's
+resolve_use_reu_staged / resolve_double_buffer, and the DisplayMode classes
+own the per-frame compose + call order.
+
+See docs/architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-push-helpers.
 """
 
 from __future__ import annotations
@@ -39,41 +38,30 @@ from c64cast.hw.c64 import (
 log = logging.getLogger(__name__)
 
 
-# --- REU-staged video pipeline (experimental, opt-in) --------------------
-# Selected char-mode display modes can render their per-frame screen RAM by
-# first pushing the 1000 bytes to REU SRAM via socket DMA opcode 0xFF07
-# (REUWRITE — bus-clean, no SID perturbation), then triggering a REU→main
-# DMA on the C64 to drop the screen bytes into VIC's screen-RAM area in one
-# shot. Color RAM ($D800) is never banked and stays on the regular
-# DMAWRITE path. The opt-in flag flows from `[video].use_reu_staged` in
-# TOML to the display mode constructor.
+# The char-mode REU-staged screen push: 1000 bytes to REU SRAM via socket DMA
+# opcode 0xFF07 (REUWRITE — bus-clean, no SID perturbation), then a REU→main
+# DMA drops them into VIC's screen RAM in one shot. Color RAM ($D800) is never
+# banked and stays on the regular DMAWRITE path.
 #
-# Slice 1 (current): single-buffer — REU→main writes into the
-# currently-displayed $0400. The screen RAM gets stomped during the
-# transfer, but the visible artifact is one frame's worth at most. No bank
-# swap yet (the bank-swap bytes are defined in c64.VIC_BANK_0 / VIC_BANK_2
-# / CIA2.PORT_A_BANK_* and ready for a future slice that pairs the REU
-# trigger with a $DD00 swap via a C64-side handler).
+# Single-buffer: the REU→main write lands in the currently-displayed $0400, so
+# the screen is stomped during the transfer — one frame's artifact at most.
 #
-# Coexistence with REU audio: this path drives the REU controller's REC
-# registers from the host, while the REU audio pump (audio.start_for_reu_staged)
-# drives them from a kernal-IRQ handler on the C64. They share one set of
-# registers — if both are active, REU writes will interleave unpredictably
-# and audio will glitch or stop. Mutual exclusion is enforced at scene
-# setup; the resulting useful pairing today is REU video + host-DMA audio
-# (e.g. mic on a webcam scene) or REU video + no audio.
+# This path drives the REU controller's REC registers from the host, while the
+# REU audio pump (audio.start_for_reu_staged) drives them from a kernal-IRQ
+# handler on the C64. There is no merged dispatcher for this pair the way there
+# is for the bank-swap handlers below, so both active at once interleaves REU
+# writes unpredictably and audio glitches or stops.
 REU_VIDEO_SCREEN_BASE = 0xE00000  # 14 MB in — way past any REU audio region
 REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 
-# --- REU-staged bitmap pipeline (double-buffer, bank-swap) ---------------
-# HiresDisplayMode opt-in path. Each frame is REUWRITE-staged into REU
-# SRAM (bus-clean), then a pair of REU→main DMAs drop the bitmap + screen
-# into the OFF-SCREEN VIC bank's addresses while the on-screen bank keeps
-# being rendered (no visible tearing during the transfer). A C64-side
-# raster IRQ at line $F8 reads a pending-bank byte in main RAM and, when
-# set, writes the new $DD00 value to flip which bank VIC fetches from —
-# a 1-cycle, vblank-aligned swap. The host alternates target_bank between
-# 0 (bank 0 @ $2000/$0400) and 1 (bank 2 @ $A000/$8400) each frame.
+# The REU-staged bitmap pipeline (double-buffer, bank-swap). Each frame is
+# REUWRITE-staged into REU SRAM (bus-clean), then a pair of REU→main DMAs drop
+# the bitmap + screen into the OFF-SCREEN VIC bank's addresses while the
+# on-screen bank keeps being rendered (no visible tearing during the transfer).
+# A C64-side raster IRQ at line $F8 reads a pending-bank byte in main RAM and,
+# when set, writes the new $DD00 value to flip which bank VIC fetches from — a
+# 1-cycle, vblank-aligned swap. The host alternates target_bank between 0
+# (bank 0 @ $2000/$0400) and 1 (bank 2 @ $A000/$8400) each frame.
 #
 # Memory map (both banks always reserved while this path is active):
 #   Bank 0: bitmap $2000-$3F3F, screen $0400-$07E7
@@ -85,22 +73,18 @@ REU_VIDEO_SCREEN_LEN = SCREEN.N_CELLS  # 1000 bytes of PETSCII screen codes
 #   $E10000-$E11F3F  bitmap staging (8000 bytes)
 #   $E12000-$E123E7  screen staging (1000 bytes)
 #
-# Coexistence: shares the REC controller with the REU audio pump. Mutex
-# is enforced at validate_scene_cfg — REU video on a hires scene cannot
-# coexist with REU audio (mic on webcam OR video pre-encode), because
-# both arm IRQ handlers via $0314.
+# Coexistence: shares the REC controller and $0314 with the REU audio pump.
+# The merged dispatchers below are what let the two run together — one $0314
+# hook servicing both IRQ sources.
 REU_VIDEO_BITMAP_BASE = 0xE10000
 REU_VIDEO_BITMAP_LEN = SCREEN.BITMAP_BYTES  # 8000 bytes
 REU_VIDEO_BITMAP_SCREEN_BASE = 0xE12000  # 1000-byte screen for hires
 REU_VIDEO_BITMAP_SCREEN_LEN = SCREEN.N_CELLS
-# MultiHires adds per-cell color RAM ($D800) on top of bitmap+screen. Color
-# RAM isn't VIC-banked — one shared SRAM is read by VIC regardless of which
-# bank is currently displayed — so the IRQ handler triggers a third REU→main
-# DMA into $D800 right before the bank swap. The DMA is fast enough (~1000
-# cycles ≈ 16 raster lines) that the c3-mismatch window across the bank
-# swap is bounded to one VIC cell row at most; on stationary content it's
-# imperceptible, on motion content it's a 1-row band of "wrong c3" at the
-# tear line that the eye reads as part of the bank-swap location anyway.
+# MultiHires adds per-cell color RAM ($D800) on top of bitmap+screen. $D800 is
+# not VIC-banked — one shared SRAM whatever the displayed bank — so the IRQ
+# handler triggers a third REU→main DMA into it right before the bank swap.
+# That DMA takes ~1000 cycles ≈ 16 raster lines, bounding the c3-mismatch
+# window across the swap to one VIC cell row.
 REU_VIDEO_BITMAP_COLOR_BASE = 0xE13000  # 1000-byte color RAM staging
 REU_VIDEO_BITMAP_COLOR_LEN = SCREEN.N_CELLS
 
@@ -150,19 +134,15 @@ TRACKER_OFF_READY_FLAG = 15  # 1 byte
 #   * Clear $C70F so the next IRQ skips until the host stages a new frame.
 #   * Chain to kernal $EA31 for SCNKEY / UDTIM / cursor blink.
 #
-# Why have the IRQ trigger the DMA instead of the host? Doing it host-
-# side adds Python-paced jitter to a sequence that's otherwise deterministic
-# (kernal IRQ fires on a clockwork CIA #1 timer). The earlier reu_irq_pump
-# experiment ([u64_reu_socket_dma.md] Phase 2 v2) found that deterministic
-# C64-side IRQ-paced REU DMAs sounded perceptually cleaner than jittery
-# host-paced ones, even when measured sideband power was the same or higher.
-# Moving the trigger here also collapses 6 host socket round-trips per
-# frame (2× setup + 2× trigger + pending flag) into 1 (the 16-byte tracker
-# DMAWRITE), and eliminates host-induced mid-frame bus halts entirely.
+# The IRQ triggers the DMA rather than the host: host-side triggering adds
+# Python-paced jitter to a sequence the CIA #1 timer otherwise makes
+# deterministic, costs 6 socket round-trips per frame instead of 1 (the 16-byte
+# tracker DMAWRITE), and puts host-induced bus halts mid-frame.
 #
 # A/X/Y survive: kernal $FF48 saved A/X/Y before vectoring through
 # $0314; our handler uses A + X, both of which $EA81 restores via PLA.
-# Same convention as big_text.py's raster IRQ ([overlays/big_text.py:104])
+# Same convention as big_text.py's raster IRQ
+# ([overlays/big_text.py RASTER_IRQ_HANDLER])
 # and the REU pump ([audio_handlers.py REU_IRQ_HANDLER]).
 #
 # Offsets must be exact: BEQ at offset 5 (+51 → 58), BEQ at offset 13
@@ -240,7 +220,8 @@ assert len(BANK_SWAP_IRQ_HANDLER) == 61, (
 )
 
 
-# --- MultiHires bank-swap IRQ handler --------------------------------------
+# MultiHires bank-swap IRQ handler.
+#
 # Extends the hires handler: same bitmap + screen REU→main DMAs, but adds a
 # third DMA into shared $D800 color RAM and a $D021 bg0 register write
 # before the bank swap. The DMA order matters — see the long comment block
@@ -371,20 +352,20 @@ MHIRES_TRACKER_OFF_BG0 = 21  # 1 byte
 MHIRES_TRACKER_OFF_BANK_VALUE = 22  # 1 byte
 MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 
-# --- Merged dispatcher: bank-swap + audio REU pump fall-through ----------
-# Today the bank-swap handler at $C500 chains to $EA31 on non-raster IRQs
-# (i.e. CIA #1 jiffy). When the scene ALSO opted into REU audio, the
-# audio pump handler at $C100 (37 B video / 102 B mic) wants every
-# CIA #1 IRQ to run its REU→ring drain. The two handlers can't both own
-# $0314 — historically `validate_scene_cfg` rejected the combination.
+# Merged dispatcher: bank-swap + audio REU pump fall-through.
 #
-# The merge lifts that restriction by appending `JMP $C100` to the bank-
-# swap handler and retargeting its first BEQ ("not raster → chain") to
-# fall through to that JMP instead of to the chain-to-kernal. The 6502
-# can't preempt IRQ handlers (I flag), so audio + bank-swap serialize
-# naturally — each fully completes its REC ($DF02-$DF08) use before
-# returning. The audio handler at $C100 stays byte-for-byte identical
-# (audio_handlers.py owns its bytes; this side only routes execution there).
+# The bank-swap handler at $C500 chains to $EA31 on non-raster IRQs (CIA #1
+# jiffy). When the scene ALSO opted into REU audio, the audio pump handler at
+# $C100 (37 B video / 102 B mic) wants every CIA #1 IRQ to run its REU→ring
+# drain, and the two cannot both own $0314.
+#
+# The merge resolves that by appending `JMP $C100` to the bank-swap handler and
+# retargeting its first BEQ ("not raster → chain") to fall through to that JMP
+# instead of to the chain-to-kernal. The 6502 can't preempt IRQ handlers (I
+# flag), so audio + bank-swap serialize naturally — each fully completes its
+# REC ($DF02-$DF08) use before returning. The audio handler at $C100 stays
+# byte-for-byte identical (audio_handlers.py owns its bytes; this side only
+# routes execution there).
 AUDIO_HANDLER_INSTALL_ADDR = 0xC100  # where audio.AudioStreamer uploads its REU pump
 AUDIO_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])  # JMP $EA31
 
@@ -444,17 +425,19 @@ def _make_merged_handler(base: bytes, audio_jmp_target: int = AUDIO_HANDLER_INST
     return bytes(merged)
 
 
-# Pre-built merged dispatchers. Hires base = 61 → merged = 61 - 3 + 13 = 71 B.
-# Mhires base = 83 → merged = 83 - 3 + 13 = 93 B. These are installed at
-# $C500 in place of the base handlers when the scene combines REU video
-# bank-swap with REU audio pump.
+# Pre-built merged dispatchers. The 6-byte extension replaces base[-3:], so
+# merged = base - 3 + 6: hires 61 → 64 B, mhires 83 → 86 B. hires installs its
+# one at $C500 when the scene combines REU video bank-swap with REU audio pump;
+# mhires installs MHIRES_BANK_SWAP_CHUNKED_PLUS_AUDIO_IRQ_HANDLER instead, and
+# the plain mhires merge is what that one is built and tested against.
 BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(BANK_SWAP_IRQ_HANDLER)
 MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER = _make_merged_handler(MHIRES_BANK_SWAP_IRQ_HANDLER)
 assert len(BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 64
 assert len(MHIRES_BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER) == 86
 
 
-# --- Chunked mhires merged dispatcher ------------------------------------
+# Chunked mhires merged dispatcher.
+#
 # The plain merged dispatcher above triggers one large REC DMA per family
 # (bitmap = 8000 bytes ≈ 8 ms halt, screen = 1000 ≈ 1 ms, color = 1000 ≈
 # 1 ms). NMI fires at 8 kHz = every 125 cycles (≈ 125 µs at 1 MHz NTSC).
@@ -757,7 +740,8 @@ assert _PUMP_BODY_LO == (REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF)
 assert _PUMP_BODY_HI == ((REU_PUMP_BODY_SUBROUTINE_ADDR >> 8) & 0xFF)
 
 
-# --- Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM) -
+# Host-DMA double-buffer swap IRQ handler (no-REU backends, e.g. TeensyROM).
+#
 # The minimal sibling of the REU bank-swap handlers above. On a backend whose bus
 # DMA is too slow to rewrite a full bitmap frame in the VISIBLE bank without
 # tearing (TeensyROM serial/TCP both ~106 KiB/s — the bus, not the link, is the
@@ -789,7 +773,8 @@ HOSTDMA_TRACKER_OFF_READY = 2  # $C702
 HOSTDMA_TRACKER_LEN = 3
 
 
-# --- The raster window gate, shared by both host-DMA swap handlers ----------
+# The raster window gate, shared by both host-DMA swap handlers.
+#
 # A host DMA write halts the 6510 for ~1.02 us/byte, so an 8000-byte bitmap
 # push stalls it ~8.2 ms ≈ 128 raster lines. A raster IRQ that falls inside a
 # halt does not run until the halt ends, and its $DD00 lands deep in the
@@ -878,9 +863,8 @@ assert len(HOSTDMA_SWAP_IRQ_HANDLER) == 45, (
 )
 
 
-# ---------------------------------------------------------------------------
-# Flicker blend ([color].flicker_tolerance) — page-flip every field
-# ---------------------------------------------------------------------------
+# Flicker blend ([color].flicker_tolerance) — page-flip every field.
+#
 # The host-DMA sibling above, plus an unconditional per-field toggle of the
 # $D018 screen-matrix nibble between the two page offsets (c64.D018_HIRES_PAGE_A
 # / _B). Two screen pages holding different color nibbles over one shared
@@ -993,9 +977,8 @@ assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
 )
 
 
-# CIA #2 PORT_A bank-select values (also defined in c64.CIA2 but pulled
-# here so the per-frame push has them as Python ints, not strings — fewer
-# allocations on the hot path).
+# Also in c64.CIA2, kept here as Python ints rather than strings for the
+# per-frame push.
 DD00_BANK_0 = CIA2.PORT_A_BANK_0  # $97
 DD00_BANK_2 = CIA2.PORT_A_BANK_2  # $95
 
@@ -1040,47 +1023,44 @@ def install_bank_swap_irq(
     half-installed handler. Same sequence as
     [overlays/big_text.py:_install_raster_irq]."""
     if audio_pump_active:
-        # Critical ordering: stub MUST be in place by the time CIA #1 is
-        # re-enabled at step 6 below. Easiest correct ordering is to
-        # upload it before any other write — that way ANY IRQ source firing
-        # during the install sees a safe $C100, even if some future edit
-        # changes the install order.
+        # The stub must be in place before CIA #1 is re-enabled at the end of
+        # this function. Uploading it before any other write means any IRQ source
+        # firing during the install sees a safe $C100, even if a future edit
+        # reorders the writes below.
         api.write_memory_file(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", AUDIO_HANDLER_STUB)
     api.write_memory_file(f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}", handler_bytes)
-    # Zero the frame tracker — ready flag (last byte) = 0 means the first
-    # IRQ after install skips the DMA path until the host stages a real
-    # frame.
+    # Ready flag (last byte) = 0, so the first IRQ after install skips the DMA
+    # path until the host stages a real frame.
     #
     # `tracker_init` overrides those zeros for handlers with a field the IRQ
     # *reads* unconditionally rather than only behind the ready flag — the
     # flicker handler's $D018 page pair. Zeros there would point VIC at the
     # $0000 matrix offset for the field or two before the first frame stages,
-    # so the seed has to be in place before step 5 arms the raster source.
+    # so the seed has to be in place before the $D01A write below arms the
+    # raster source.
     tracker = bytes(tracker_len) if tracker_init is None else tracker_init
     if len(tracker) != tracker_len:
         raise ValueError(f"tracker_init must be {tracker_len} bytes, got {len(tracker)}")
     api.write_memory_file(f"{FRAME_TRACKER_ADDR:04X}", tracker)
-    # 1) Mask CIA #1 (jiffy IRQ would otherwise vector through $0314 mid-install).
+    # Mask CIA #1 first: a jiffy IRQ would vector through $0314 mid-install.
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
-    # 2) Disable VIC IRQ sources (raster + sprite collisions + light pen).
+    # Disable VIC IRQ sources (raster + sprite collisions + light pen).
     api.write_memory("D01A", "00")
-    # 3) Hook $0314/$0315 → our handler. write_regs packs both bytes into
-    #    one DMA so the vector is never half-updated on the wire.
+    # write_regs packs both vector bytes into one DMA, so $0314/$0315 is never
+    # half-updated on the wire.
     api.write_regs(
         f"{VECTORS.IRQ:04X}",
         BANK_SWAP_IRQ_HANDLER_ADDR & 0xFF,
         (BANK_SWAP_IRQ_HANDLER_ADDR >> 8) & 0xFF,
     )
-    # 4) Program the raster compare register. RASTER_VBLANK_LINE = 248 is
-    #    the first line past the last badline, so the final row's video
-    #    matrix has already been fetched — the bank swap + per-frame REU
-    #    DMAs land after that fetch, not mid-frame. $D011 bit 7 is the
-    #    raster MSB; we leave it 0 (lines 0-255 only).
+    # RASTER_VBLANK_LINE = 248 is the first line past the last badline, so the
+    # final row's video matrix has already been fetched and the bank swap lands
+    # after it. $D011 bit 7 is the raster MSB, left 0 (lines 0-255 only).
     api.write_memory("D012", f"{RASTER_VBLANK_LINE:02X}")
-    # 5) Ack any latent raster flag, then enable raster IRQ source.
+    # Ack any latent raster flag before enabling the raster IRQ source.
     api.write_memory("D019", "01")
     api.write_memory("D01A", "01")
-    # 6) Re-enable CIA #1 jiffy IRQ — kernal keyboard scan etc.
+    # Re-enable the CIA #1 jiffy IRQ — kernal keyboard scan etc.
     api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
 
 
@@ -1090,21 +1070,20 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
     sees the kernal-default VIC bank. Best-effort: any failure logs and
     swallows so teardown doesn't abort a multi-scene transition."""
     try:
-        # 1) Mask CIA #1 + disable VIC IRQ first so no IRQ source can fire
-        #    into the about-to-be-unhooked handler.
+        # Mask CIA #1 + disable VIC IRQ first, so no source can fire into the
+        # about-to-be-unhooked handler.
         api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
         api.write_memory("D01A", "00")
-        # 2) Restore $0314/$0315 → kernal $EA31.
+        # Restore $0314/$0315 → kernal $EA31.
         api.write_regs(
             f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
         )
-        # 3) Ack any pending raster IRQ flag so the next $D019 read is clean.
+        # Ack any pending raster IRQ flag so the next $D019 read is clean.
         api.write_memory("D019", "01")
-        # 4) Restore VIC bank to 0 (kernal default) so the next scene
-        #    paints into the addresses it expects.
+        # Restore VIC bank 0 (kernal default) so the next scene paints into the
+        # addresses it expects.
         api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
-        # 5) Re-enable CIA #1 jiffy IRQ — keyboard scan must keep running
-        #    for the C= / CTRL / SHIFT poller.
+        # Keyboard scan must keep running for the C= / CTRL / SHIFT poller.
         api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
     except Exception as e:
         log.debug("bank-swap IRQ teardown: %s", e)
@@ -1136,14 +1115,11 @@ def push_bitmap_via_reu(
         bitmap_dest = VIC_BANK_2.BITMAP
         screen_dest = VIC_BANK_2.SCREEN
         pending_value = DD00_BANK_2
-    # 1. Stage bitmap + screen into REU SRAM (bus-clean — no C64 halt).
+    # Stage bitmap + screen into REU SRAM (bus-clean — no C64 halt).
     api.reu_write(REU_VIDEO_BITMAP_BASE, bitmap_bytes)
     api.reu_write(REU_VIDEO_BITMAP_SCREEN_BASE, screen_bytes)
-    # 2. Pack the 16-byte frame tracker. Order matches the IRQ handler's
-    #    layout exactly; ready flag = 1 is the LAST byte, so even if the
-    #    IRQ fired mid-write (it can't — the DMAWRITE arrives atomically
-    #    on the C64 side after the FIFO drain) the regs would always be
-    #    consistent before ready flips.
+    # Order matches the IRQ handler's layout exactly, and the ready flag is the
+    # LAST byte, so the regs are consistent before ready flips.
     tracker = bytes(
         [
             bitmap_dest & 0xFF,
@@ -1198,15 +1174,12 @@ def push_mhires_via_reu(
         screen_dest = VIC_BANK_2.SCREEN
         pending_value = DD00_BANK_2
     color_dest = SCREEN.COLOR_RAM  # $D800 — not banked, single shared SRAM
-    # 1. Stage bitmap + screen + color into REU SRAM (all bus-clean — no
-    #    C64 halts; ARM-side memcpy into FPGA SRAM).
+    # Bus-clean: an ARM-side memcpy into FPGA SRAM, no C64 halts.
     api.reu_write(REU_VIDEO_BITMAP_BASE, bitmap_bytes)
     api.reu_write(REU_VIDEO_BITMAP_SCREEN_BASE, screen_bytes)
     api.reu_write(REU_VIDEO_BITMAP_COLOR_BASE, color_bytes)
-    # 2. Pack the 24-byte frame tracker. Order matches the IRQ handler's
-    #    layout exactly; ready flag = 1 is the LAST byte, so the IRQ
-    #    handler can rely on the regs being consistent whenever it sees
-    #    ready=1.
+    # Order matches the IRQ handler's layout exactly, and the ready flag is the
+    # LAST byte, so the regs are consistent whenever the handler sees ready=1.
     tracker = bytes(
         [
             # bitmap regs: $DF02..$DF08 packed [c64_lo, c64_hi, reu_lo, reu_mi,
@@ -1249,13 +1222,12 @@ def push_screen_via_reu(api: C64Backend, screen_bytes: bytes, dest_addr: int) ->
     for bank 0, $8400 for bank 2). Used by the REU-staged char-mode push.
     Each frame is a one-shot transfer (no auto-increment across triggers),
     so the REU source offset stays pinned at REU_VIDEO_SCREEN_BASE — the
-    REUWRITE in step 1 overwrites the staging area each frame."""
-    # 1. Stage the new screen into REU SRAM (clean — no C64 bus halt).
+    REUWRITE overwrites the staging area each frame."""
+    # Stage the new screen into REU SRAM (clean — no C64 bus halt).
     api.reu_write(REU_VIDEO_SCREEN_BASE, screen_bytes)
-    # 2. Configure REU source (REU_VIDEO_SCREEN_BASE, 24-bit), dest
-    # (dest_addr, 16-bit), length (1000 bytes), addr-control (auto-inc
-    # both — default 0). write_regs packs contiguous register writes into
-    # one DMA command, so REU regs go in 3 commands instead of 7.
+    # write_regs packs contiguous register writes into one DMA command, so the
+    # REU regs go in 3 commands instead of 7. Addr-control is auto-inc both,
+    # which is the default 0.
     api.write_regs(f"{REU.C64_ADDR_LO:04X}", dest_addr & 0xFF, (dest_addr >> 8) & 0xFF)
     api.write_regs(
         f"{REU.REU_ADDR_LO:04X}",
@@ -1266,8 +1238,7 @@ def push_screen_via_reu(api: C64Backend, screen_bytes: bytes, dest_addr: int) ->
     api.write_regs(
         f"{REU.LENGTH_LO:04X}", REU_VIDEO_SCREEN_LEN & 0xFF, (REU_VIDEO_SCREEN_LEN >> 8) & 0xFF
     )
-    # 3. Trigger. The CPU halts for ~1000 cycles (1 byte/cycle) while the
-    # REU→main DMA copies the staged frame into screen RAM. This is the
-    # only bus-halt event in the REU-staged char push (REUWRITE in step 1
-    # is bus-clean; color RAM uses the regular delta cache).
+    # The CPU halts for ~1000 cycles (1 byte/cycle) while the REU→main DMA
+    # copies the staged frame into screen RAM. The only bus-halt event in the
+    # REU-staged char push.
     api.write_memory(f"{REU.COMMAND:04X}", f"{REU.CMD_FETCH_EXEC:02X}")

@@ -228,12 +228,11 @@ class AuthHelpersTest(unittest.TestCase):
         self.assertIsNone(_presented_token(_scope(headers=[(b"cookie", b"other=1")])))
 
     def test_a_malformed_sibling_cookie_does_not_hide_ours(self):
-        # CPython's SimpleCookie discards the WHOLE jar on the first segment
-        # its pattern rejects, without raising — so any other service on the
-        # same host setting a cookie with an illegal character used to make
-        # this console unreachable in that browser: a 401, the login form, a
-        # fresh Set-Cookie that replaces ours and not the offender, and a 401
-        # again. Both orders, because a bad sibling after ours wiped it too.
+        # CPython's SimpleCookie discards the WHOLE jar on the first segment its
+        # pattern rejects, without raising, so any other service on the host
+        # setting a cookie with an illegal character made this console
+        # unreachable in that browser. Both orders, because a bad sibling after
+        # ours wiped it too.
         for header in (
             f"bad cookie here; {COOKIE_NAME}=SECRET".encode(),
             f"{COOKIE_NAME}=SECRET; bad cookie here".encode(),
@@ -250,9 +249,8 @@ class AuthHelpersTest(unittest.TestCase):
 
     def test_an_empty_bearer_header_falls_through_to_the_next_source(self):
         # `Authorization: Bearer ` is what some proxies emit for an unset
-        # credential. It carries no claim, so it must not suppress a perfectly
-        # good cookie and turn a valid session into a 401 that looks like a
-        # wrong token.
+        # credential. It carries no claim, so it must not suppress a good cookie
+        # and turn a valid session into a 401.
         scope = _scope(
             headers=[
                 (b"authorization", b"Bearer "),
@@ -282,10 +280,9 @@ class AuthHelpersTest(unittest.TestCase):
             TokenAuthMiddleware(None, token="")
 
     def test_the_public_path_floor_is_the_middlewares_own(self):
-        # The docstring promised "never narrower than PUBLIC_PATHS" and only
-        # one caller happened to union it in. A caller passing a set without
-        # the login exchange would get an app whose 401 serves a form that
-        # posts back to a route that can only 401 again.
+        # The docstring promised "never narrower than PUBLIC_PATHS" and only one
+        # caller happened to union it in. A caller passing a set without the login
+        # exchange gets an app whose 401 serves a form that can only 401 again.
         gate = TokenAuthMiddleware(None, token=TOKEN, public_paths=("/api/setup",))
         self.assertLessEqual(PUBLIC_PATHS, gate._public)
         self.assertIn("/api/setup", gate._public)
@@ -374,11 +371,9 @@ class InstallAuthTest(unittest.TestCase):
         self.assertTrue(install_auth(FastAPI(), token=TOKEN, viewer_token=VIEWER))
 
     def test_a_short_token_is_warned_about_but_honored(self):
-        # Nothing in this tree throttles login attempts, so `token = "c64"` is
-        # a console that falls to a few thousand requests. Refusing one
-        # outright would break runs that work today, so it warns — and the
-        # policy is now declared once, here, rather than on the one setup
-        # route that used to own it.
+        # Nothing in this tree throttles login attempts, so `token = "c64"` falls
+        # to a few thousand requests. Refusing one outright would break runs that
+        # work today, so it warns — declared once here rather than on one route.
         from fastapi import FastAPI
 
         short = "c" * (MIN_TOKEN_LENGTH - 1)
@@ -454,13 +449,11 @@ class LoginTest(unittest.TestCase):
         cookie = r.headers["set-cookie"].lower()
         self.assertIn("httponly", cookie)
         self.assertIn("samesite=strict", cookie)
-        # The jar now authenticates everything else, as a browser's would.
         self.assertEqual(client.get("/status").status_code, 200)
 
     def test_cookie_carries_the_configured_secret_not_the_callers_string(self):
-        # Byte-equal by the time the cookie is written, so this can only ever
-        # fail if the route starts echoing the request back — which is the
-        # shape CodeQL flags and the shape a reordering would reintroduce.
+        # Byte-equal by the time the cookie is written, so this can only fail if
+        # the route starts echoing the request back — the shape CodeQL flags.
         app, _pl = _app()
         r = TestClient(app).get("/api/login", params={"token": VIEWER}, follow_redirects=False)
         self.assertIn(f"{COOKIE_NAME}={VIEWER};", r.headers["set-cookie"])
@@ -497,9 +490,8 @@ class LoginTest(unittest.TestCase):
         self.assertEqual(client.post("/api/login", json={}).status_code, 401)
 
     def test_post_refuses_an_oversized_body_rather_than_buffering_it(self):
-        # This route is public, so an uncapped `request.json()` is a remote
-        # memory exhaustion on an appliance with 1-2 GB — and the process it
-        # takes down owns live hardware.
+        # This route is public, so an uncapped `request.json()` is a remote memory
+        # exhaustion on an appliance whose process owns live hardware.
         from c64cast.control import auth
 
         app, _pl = _app()
@@ -608,9 +600,8 @@ class WebSocketAuthTest(unittest.TestCase):
 
     def test_unauthenticated_socket_is_refused(self):
         app, _pl = _app()
-        # Raised by `websocket_connect` itself: the close landed before any
-        # accept, which is what makes it a handshake failure rather than a
-        # connection that opened and then dropped.
+        # Raised by `websocket_connect` itself: the close landed before any accept,
+        # making it a handshake failure rather than a connection that dropped.
         with self.assertRaises(WebSocketDisconnect):
             with TestClient(app).websocket_connect("/perf/ws"):
                 pass  # pragma: no cover - the connect above must raise
@@ -716,15 +707,12 @@ class ViewerCredentialTest(unittest.TestCase):
         client = TestClient(app)
 
         token, _ = cred.issue()
-        # A read the viewer role is allowed…
         self.assertEqual(client.get("/status", params={"token": token}).status_code, 200)
-        # …and a write it is not, on the same freshly-minted token.
         self.assertEqual(client.post("/pause", params={"token": token}).status_code, 403)
 
     def test_the_get_login_a_shared_link_uses_honors_it_too(self):
-        # `GET`, not `POST`: the gate lets a viewer through read methods only,
-        # so `POST /api/login` is a 403 for a viewer token however valid it is.
-        # That is why the link handed out is the redirect form.
+        # `GET`, not `POST`: the gate lets a viewer through read methods only, so
+        # `POST /api/login` is a 403 for a viewer token however valid it is.
         from starlette.testclient import TestClient
 
         from c64cast.control.auth import COOKIE_NAME, ViewerCredential

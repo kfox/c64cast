@@ -47,7 +47,7 @@ class ResolveLineColorsTest(unittest.TestCase):
 
     def test_random_is_one_legible_color_for_all_lines(self):
         colors = _resolve_line_colors("random", 4)
-        self.assertEqual(len(set(colors)), 1)  # all lines share the pick
+        self.assertEqual(len(set(colors)), 1)
         self.assertIn(colors[0], LEGIBLE_COLORS)
 
     def test_named_color(self):
@@ -76,20 +76,17 @@ class InterstitialSceneTest(unittest.TestCase):
         self.assertEqual(fake.memories["D011"], "1b")
         self.assertEqual(fake.regs["D020"], (0x00, 0x00))
         # Defeat a preceding bitmap scene's lingering bank-swap raster IRQ:
-        # $0314/$0315 → kernal $EA31, raster IRQ source off, latched flag
-        # acked, and the VIC bank pinned to 0. Without this, a CTRL-skip that
-        # races the prior scene's teardown leaves the handler re-flipping
-        # $DD00 to bank 2 → a screenful of wrong glyphs for the whole card.
+        # $0314/$0315 → kernal $EA31, IRQ source off, latched flag acked, VIC
+        # bank pinned to 0. Otherwise a CTRL-skip racing the prior teardown
+        # leaves the handler re-flipping $DD00 to bank 2: wrong glyphs.
         self.assertIn("RESTORE_IRQ", fake.regs)
         self.assertEqual(fake.memories["D01A"], "00")
         self.assertEqual(fake.memories["D019"], "01")
         self.assertEqual(fake.memories["DD00"], "97")
         self.assertEqual(fake.cache_invalidations, 1)
-        # Two lines: the label + the upcoming scene name (uppercased).
         self.assertEqual(scene.lines, [LABEL, "WEBCAM SHOW"])
         # 3-row block (label, blank, name) vertically centered → top at row 11.
         self.assertEqual(scene.line_rows, [11, 13])
-        # Each line horizontally centered.
         self.assertEqual(scene.line_cols[0], (40 - len(LABEL)) // 2)
         self.assertEqual(scene.line_cols[1], (40 - len("WEBCAM SHOW")) // 2)
 
@@ -102,7 +99,6 @@ class InterstitialSceneTest(unittest.TestCase):
         fake = cast(FakeAPI, api)
         screen = np.frombuffer(fake.regions[0x0400], dtype=np.uint8)
         color = np.frombuffer(fake.regions[0xD800], dtype=np.uint8)
-        # The label glyphs land at its centered position.
         base = scene.line_rows[0] * 40 + scene.line_cols[0]
         encoded = ascii_to_screen(LABEL)
         self.assertEqual(bytes(screen[base : base + len(encoded)]), encoded)

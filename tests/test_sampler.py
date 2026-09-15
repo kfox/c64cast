@@ -19,10 +19,21 @@ from c64cast.audio import sampler as s
 from c64cast.hw import hw_provision
 
 
-# ---------------------------------------------------------------------------
-# Pure register helpers
-# ---------------------------------------------------------------------------
 class PureHelperTest(unittest.TestCase):
+    def test_the_mapped_io_page_matches_the_channel_register_files(self):
+        # ULTIMATE_AUDIO.IO_BASE/IO_END is what the SID planners and the PSID
+        # header decoder refuse to place a chip on (hw.c64.RESERVED_IO_WINDOWS), so
+        # it must stay the range this register spec occupies: the firmware switch
+        # is "Map Ultimate Audio $DF20-DFFF" and seven 32-byte files fill it.
+        from c64cast.hw.c64 import ULTIMATE_AUDIO
+
+        self.assertEqual(s.SAMPLER_IO_BASE, ULTIMATE_AUDIO.IO_BASE)
+        self.assertEqual(
+            s.SAMPLER_IO_BASE + s.SAMPLER_NUM_CHANNELS * s.SAMPLER_CHANNEL_STRIDE - 1,
+            ULTIMATE_AUDIO.IO_END,
+        )
+        self.assertEqual(s.channel_base(s.SAMPLER_NUM_CHANNELS - 1), 0xDFE0)
+
     def test_divider_table_matches_doc(self):
         # round(6.25 MHz / rate); 44100 -> 142 is the documented value.
         self.assertEqual(s.divider_for_rate(44100), 142)
@@ -40,9 +51,8 @@ class PureHelperTest(unittest.TestCase):
 
     def test_ref_clock_calibration(self):
         # A per-unit calibrated reference clock shifts BOTH the divider and the
-        # actual rate together — the resample target stays matched to the rate
-        # the FPGA actually clocks out (the A/V-sync drift fix). A lower ref
-        # picks a smaller divider (fewer cycles per sample → audio sped up).
+        # actual rate together, keeping the resample target matched to what the
+        # FPGA clocks out. A lower ref picks a smaller divider (audio sped up).
         ref = 6_120_000
         div = s.divider_for_rate(44100, ref)
         self.assertEqual(div, 139)  # round(6_120_000 / 44100)
@@ -120,9 +130,6 @@ class PureHelperTest(unittest.TestCase):
         self.assertNotIn(s.REG_REPEAT_B, writes)
 
 
-# ---------------------------------------------------------------------------
-# Recording fake backend for the streamer
-# ---------------------------------------------------------------------------
 class _FakeBackend:
     """Records the writes a UltimateAudioSampler issues (reu_write / write_regs /
     write_memory / flush). No socket, no REST."""
@@ -221,8 +228,8 @@ class StreamerTest(unittest.TestCase):
 
     def test_prebuffer_target_decoupled_from_lead(self):
         # The runtime lead (1.0 s default) is deeper than the startup prebuffer
-        # (0.5 s default), so playback starts promptly while the writer keeps a
-        # cushion deep enough to ride out a 4K clip's decode stalls.
+        # (0.5 s), so playback starts promptly while the writer keeps a cushion
+        # deep enough for a 4K clip's decode stalls.
         smp = _make(_FakeBackend(), sample_rate=44100, bits=16)
         self.assertLess(smp._prebuffer_target, smp._lead_target)
         self.assertAlmostEqual(smp._prebuffer_target / smp._lead_target, 0.5, delta=0.05)
@@ -253,9 +260,6 @@ class StreamerTest(unittest.TestCase):
         )
 
 
-# ---------------------------------------------------------------------------
-# flush() — transport resync (MIDI live-tune Phase 4)
-# ---------------------------------------------------------------------------
 class SamplerFlushTests(unittest.TestCase):
     def _running(self, api: _FakeBackend, *, rate: int = 2000, ring: int = 4096, consumed: int = 0):
         smp = _make(api, sample_rate=rate, bits=8, ring_base=0x200000, ring_size=ring)
@@ -338,11 +342,10 @@ class SamplerFlushTests(unittest.TestCase):
     def test_push_after_flush_stale_epoch_dropped(self):
         # A push parked in the Full-retry loop when the flush epoch advances must
         # drop its chunk (return before the put) and NOT count it toward
-        # _pushed_samples (which clamps position_seconds after EOF). Keep the
-        # queue full so the put never succeeds — the loop re-checks the epoch on
-        # each Full timeout and bails once it changes. (flush() also drains, but
-        # that drain→put race is the accepted µs window the writer's own epoch
-        # check closes; here we isolate the push-side drop.)
+        # _pushed_samples. Keeping the queue full means the put never succeeds, so
+        # the loop re-checks the epoch on each Full timeout and bails. flush() also
+        # drains; that drain-then-put race is an accepted microsecond window the
+        # writer's own epoch check closes.
         api = _FakeBackend()
         smp = _make(api, sample_rate=2000, bits=8, queue_max_chunks=1)
         smp._q.put(b"x")  # fill and keep full
@@ -372,9 +375,6 @@ class SamplerFlushTests(unittest.TestCase):
         self.assertFalse(smp._output_silenced)
 
 
-# ---------------------------------------------------------------------------
-# resolve_audio_backend + validate_sampler_cfg
-# ---------------------------------------------------------------------------
 class ResolveAudioBackendTest(unittest.TestCase):
     def test_auto_picks_sampler_when_available(self):
         self.assertEqual(
@@ -448,9 +448,6 @@ class ValidateSamplerCfgTest(unittest.TestCase):
         scene_factory.validate_sampler_cfg(self._cfg(bits=99, enabled=False))
 
 
-# ---------------------------------------------------------------------------
-# hw_provision: availability + provisioning
-# ---------------------------------------------------------------------------
 class _FakeProfile:
     def __init__(self, supports_sampler: bool = True) -> None:
         self.supports_sampler = supports_sampler
@@ -588,9 +585,9 @@ class SamplerMixerCategoryTest(unittest.TestCase):
         self.assertEqual(state.mixer_category, "Audio Output Settings")
 
     def test_error_with_no_fields_found_is_cant_tell(self):
-        # A U64-shaped store whose mixer read fails: the fields were never
-        # seen AND a query failed, so "absent" can't be distinguished from
-        # "unreadable" — that must stay None (can't tell), not False.
+        # A U64-shaped store whose mixer read fails: the fields were never seen
+        # AND a query failed, so "absent" cannot be told from "unreadable" — that
+        # must stay None, not False.
         api = _FakeRestApi(error_categories={"Audio Mixer"})
         self.assertIsNone(hw_provision.read_sampler_config(api).present)
 

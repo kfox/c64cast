@@ -138,14 +138,11 @@ class SlideshowRebuildWiringTest(unittest.TestCase):
         return cast(SlideshowScene, scene_factory.build_scene(s, Config(), _api(), None, None))
 
     def test_the_rebuild_keeps_the_resolved_dither_and_cell_strategy(self):
-        # [color].dither/cell_strategy = "auto" resolve to the documented
-        # static-scene pair for a slideshow. The rebuild passed neither, so
-        # _build_display_mode's "none"/"frequency" defaults took over from the
-        # very first slide onward.
-        # Narrow the pool instead of rolling until mhires turns up: 40 rolls
-        # miss it about once in 6000 runs, which is a flake nobody would ever
-        # reproduce, and the test is about the rebuild's wiring rather than
-        # about the draw.
+        # [color].dither/cell_strategy = "auto" resolve to the documented static-scene
+        # pair for a slideshow. The rebuild passed neither, so _build_display_mode's
+        # "none"/"frequency" defaults took over from the first slide onward.
+        # Narrow the pool rather than rolling for mhires: 40 rolls miss it about once
+        # in 6000 runs.
         scene = self._scene()
         with quiet_logging(), _only_display("mhires"):
             scene._maybe_rebuild_display_mode()
@@ -155,17 +152,15 @@ class SlideshowRebuildWiringTest(unittest.TestCase):
         self.assertEqual(mode._cell_strategy, "error-min")
 
     def test_the_rebuild_withholds_double_buffer_under_the_reu_audio_pump(self):
-        # The rebuild handed audio_reu_pump_active to resolve_flicker_tolerance
-        # and withheld it from resolve_double_buffer in the same breath, so a
-        # slideshow running the REU mic pump could get the $0314 raster IRQ the
-        # pump already owns.
+        # The rebuild handed audio_reu_pump_active to resolve_flicker_tolerance and
+        # withheld it from resolve_double_buffer, so a slideshow running the REU mic
+        # pump could get the $0314 raster IRQ the pump already owns.
         cfg = Config()
         cfg.audio.use_reu_pump = True
         cfg.video.double_buffer = True
         s = SceneCfg(type="slideshow", display="random", file=self.tmp.name)
         scene = cast(SlideshowScene, scene_factory.build_scene(s, cfg, _api(), None, None))
-        # Every member of the pool, once each — 40 random rolls could still
-        # leave one of the five untried.
+        # Every member of the pool once each — 40 random rolls could leave one untried.
         for display in scene_factory.SLIDESHOW_RANDOM_DISPLAYS:
             with self.subTest(display=display):
                 with quiet_logging(), _only_display(display):
@@ -229,10 +224,9 @@ class InterleavedVideoWiringTest(unittest.TestCase):
         return [s for s in built if isinstance(s, VideoScene)]
 
     def test_the_bitmap_dac_tempo_compensation_is_applied(self):
-        # hires_edges over the $D418 DAC is exactly the case
-        # [audio].dac_bitmap_tempo_hires exists to correct; the direct
-        # construction left tempo_scale at VideoScene's 1.0 default, so every
-        # interleaved clip played the documented ~11-12% slow.
+        # hires_edges over the $D418 DAC is what [audio].dac_bitmap_tempo_hires exists
+        # to correct; the direct construction left tempo_scale at VideoScene's 1.0
+        # default, so every interleaved clip played the documented ~11-12% slow.
         cfg = Config()
         videos = self._interleaved(cfg, cast(object, object()))
         self.assertTrue(videos)
@@ -285,10 +279,9 @@ class FileSpecGrammarTest(unittest.TestCase):
     EXTS = (".mp4",)
 
     def test_a_url_keeps_its_own_commas(self):
-        # The standard Akamai HLS shape. It used to be cut into a truncated URL
-        # plus fragments reported as paths the user never typed — and yt-dlp's
-        # own resolved stream URLs, which this module writes back into a file
-        # spec, routinely carry commas in query parameters.
+        # The standard Akamai HLS shape. It used to be cut into a truncated URL plus
+        # fragments reported as paths the user never typed — and yt-dlp's resolved
+        # stream URLs routinely carry commas in query parameters.
         url = "https://cdn.example.com/i/clip_,300,700,.mp4.csmil/master.m3u8"
         self.assertEqual(scene_factory.split_file_spec(url), [url])
         self.assertTrue(scene_factory._is_single_url_spec(url))
@@ -312,10 +305,9 @@ class FileSpecGrammarTest(unittest.TestCase):
         )
 
     def test_an_existing_directory_beats_glob_interpretation(self):
-        # yt-dlp's `%(title)s [%(id)s]` convention produces such directories
-        # for playlist downloads. `[2024]` is a character class matching one of
-        # 2/0/4, so the glob branch found nothing and the populated directory
-        # was reported as "glob matched no files".
+        # yt-dlp's `%(title)s [%(id)s]` convention produces such directories. `[2024]`
+        # is a character class matching one of 2/0/4, so the glob branch found nothing
+        # and the populated directory was reported as "glob matched no files".
         with tempfile.TemporaryDirectory() as tmp:
             d = os.path.join(tmp, "Clips [2024]")
             os.makedirs(d)
@@ -413,14 +405,12 @@ class SidHeaderReadIsBoundedTest(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFOs only")
     def test_a_fifo_named_like_a_sid_is_never_opened(self):
-        # `resolve_file_spec` admits it (a literal path is not required to
-        # exist, and only its extension is checked), so without the isfile
-        # guard the read blocked the validate request thread forever.
+        # `resolve_file_spec` admits it (a literal path need not exist, only its
+        # extension is checked), so without the isfile guard the read blocked forever.
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "pipe.sid")
-            # Suppressed because CI runs `pyright --pythonplatform Windows`,
-            # where os.mkfifo does not exist; the skipUnless above is the
-            # runtime guard.
+            # CI runs `pyright --pythonplatform Windows`, where os.mkfifo does not
+            # exist; the skipUnless above is the runtime guard.
             os.mkfifo(path)  # type: ignore[attr-defined]
             s = SceneCfg(type="generative", audio_source="sid", file=path)
             opened: list[str] = []
@@ -542,10 +532,9 @@ class FlickerToleranceValidatorTest(unittest.TestCase):
         self.assertIn("[[scenes]][0].color.flicker_tolerance", str(cm.exception))
 
     def test_a_sid_only_playlist_is_checked_too(self):
-        # The session runs whole-Config validators, so a blank/waveform-only
-        # playlist — whose display modes are built with color=None, meaning
-        # resolve_flicker_tolerance's own raise is unreachable — is covered now
-        # where it never used to be.
+        # The session runs whole-Config validators, so a blank/waveform-only playlist
+        # — whose display modes are built with color=None, making
+        # resolve_flicker_tolerance's own raise unreachable — is covered here.
         cfg = Config()
         cfg.color.flicker_tolerance = "bogus"
         cfg.scenes = [SceneCfg(type="blank")]

@@ -55,10 +55,9 @@ import re
 import sys
 from pathlib import Path
 
-# scripts/ is not a package, and this module is loaded by path (by the tests and
-# by gen_reference_appendices.py) as often as it is run -- neither of which puts
-# its directory on the path. Adding it is what lets the sibling import below
-# resolve in every one of the three cases.
+# scripts/ is not a package, and this module is loaded by path (by the tests
+# and by gen_reference_appendices.py) as often as it is run, so the sibling
+# import below needs its directory on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bookdoc import (  # noqa: E402
@@ -80,21 +79,16 @@ from bookdoc import (  # noqa: E402
 
 TEMPLATE = "/docs/shared/template.typ"
 
-# The layout's chapter renderer. A card has no room for the guide's full-page
-# openers, so its "chapters" are drawn as banded headings instead.
+# The layout's chapter renderer: a card has no room for full-page openers, so
+# its "chapters" are banded headings.
 CHAPTER_FN = {"guide": "chapter", "card": "card-chapter"}
 
-# How many characters of a listing fit on one line, per layout.
-#
-# Derived from the template rather than chosen. A guide page is 6.24in with
-# 0.82in margins, a code block insets 0.9 x the 10pt body size on each side,
-# and Inconsolata advances exactly 0.5em -- so 62. A card is us-letter with
-# 0.5in margins in two columns at 8.5pt, which comes to 57.
-#
-# Nothing enforces it at render time: Typst wraps a long line rather than
-# complaining, and a wrapped listing is not obviously wrong on screen -- it
-# reads as a second line of output the program never printed. So the guard is
-# a test (tests/test_book_build.py), and this is the number it holds books to.
+# How many characters of a listing fit on one line, per layout. Derived from
+# the template: a guide page is 6.24in with 0.82in margins, a code block insets
+# 0.9 x the 10pt body size on each side, and Inconsolata advances exactly
+# 0.5em -- so 62. A card is us-letter with 0.5in margins in two columns at
+# 8.5pt, so 57. Typst wraps a long line rather than complaining, so the guard
+# is tests/test_book_build.py, which reads these numbers.
 CODE_WIDTH = {"guide": 62, "card": 57}
 
 # Keys naming a file relative to the book directory. They are rewritten to
@@ -104,27 +98,24 @@ CODE_WIDTH = {"guide": 62, "card": 57}
 PATH_KEYS = ("logo",)
 
 # Characters that carry meaning in Typst markup and so must be escaped in any
-# run of literal prose. `-` and `.` are deliberately absent: Typst turns `--`
-# into an en dash and `...` into an ellipsis, which is what we want in prose.
-# Command-line flags always live in backticks, where no substitution happens;
-# `check_prose` below enforces that.
+# run of literal prose. `-` and `.` are absent: Typst turns `--` into an en
+# dash and `...` into an ellipsis, which is what prose wants, and flags live in
+# backticks where no substitution happens (`check_prose` below enforces that).
 #
 # `/` is here because Typst comments (`//` and `/*`) are live in markup mode
 # too: an unescaped URL in prose comments out the rest of its line, taking the
-# closing bracket of whatever content block it sits in with it. That surfaced
-# as "unclosed delimiter" pointing at a table three lines earlier. `\/` renders
-# as an ordinary slash, so prose is unaffected.
+# closing bracket of its content block with it. `\/` renders as an ordinary
+# slash.
 _TYPST_SPECIAL = set("\\#$*_`<>@[]~/")
 
 # Marks the body face does not carry, which the template draws instead of
 # setting. Written as the ordinary character in the Markdown, so the same file
-# still reads correctly on github.com; see `tick` and `rarrow` in the template
-# for why they are not simply borrowed from the mono face.
+# still reads correctly on github.com; see `tick` and `rarrow` in the template.
 #
-# Wrapped and then closed with an empty comment because a mark lands in the
-# middle of a word as often as not: bare `#rarrow` swallowed the text after it
-# ("low→high" became the variable `rarrowhigh`), the content block stops that,
-# and the comment stops a following `(` or `[` from being read as a call on it.
+# A mark lands mid-word as often as not, and bare `#rarrow` would absorb the
+# text after it ("low→high" as the variable `rarrowhigh`): the content block
+# stops that, and the empty comment stops a following `(` or `[` from being
+# read as a call on it.
 _DRAWN_MARKS = {"✓": "#[#tick]/**/", "→": "#[#rarrow]/**/"}
 
 
@@ -195,8 +186,6 @@ def check_prose(text: str, path: Path, lineno: int) -> None:
 class TypstEmitter(Emitter):
     """Every construct as Typst markup. Stateless -- the walker holds the state."""
 
-    # -- inline -------------------------------------------------------------
-
     def text(self, literal: str) -> str:
         return escape(literal)
 
@@ -211,8 +200,8 @@ class TypstEmitter(Emitter):
 
     def link(self, href: str, ref: SectionRef | None, body: str) -> str:
         # A section link is spelled at a Typst *label*, not a string: a string
-        # destination is a URL, so a relative `.md#anchor` reached the PDF as a
-        # dead link. The same Markdown resolves on github.com.
+        # destination is a URL, so a relative `.md#anchor` would be a dead link
+        # in the PDF. The same Markdown resolves on github.com.
         dest = f"label({typst_string(ref.label)})" if ref else typst_string(href)
         return f"#link({dest})[{body}]"
 
@@ -228,12 +217,9 @@ class TypstEmitter(Emitter):
     def mark(self, char: str) -> str:
         return _DRAWN_MARKS[char]
 
-    # -- blocks -------------------------------------------------------------
-
     def heading(self, level: int, body: str, label: SectionRef | None) -> str:
-        # A separate metadata + label rather than a label on the heading
-        # itself, which is the pattern the chapter openers already use: proven
-        # to attach, and it renders nothing.
+        # A separate metadata + label, the pattern the chapter openers use: it
+        # attaches, and it renders nothing.
         prefix = f'#metadata("sec")#label({typst_string(label.label)})\n' if label else ""
         return f"{prefix}#heading(level: {level})[{body}]\n"
 
@@ -251,8 +237,8 @@ class TypstEmitter(Emitter):
         # The template's `pagerefs` resolves a page from the same label the
         # link already names, so the Markdown can point at a section -- the
         # only locator github.com has -- and the PDF still prints a page. The
-        # section's name goes with it and is dropped here: on a page reference
-        # the number is the locator, and printing both would say it twice.
+        # section's name is dropped: on a page reference the number is the
+        # locator.
         labels = ", ".join(f"label({typst_string(ref.label)})" for ref, _ in entries)
         return f"#pagerefs(({labels},))"
 
@@ -263,14 +249,12 @@ class TypstEmitter(Emitter):
         aligns: list[str],
         kind: str | None,
     ) -> str:
-        # A fields table gets its widths from the template, which is where every
-        # other measurement in the book is decided; an ordinary table lets Typst
-        # size its columns to what is in them.
+        # A fields table takes its widths from the template; an ordinary table
+        # lets Typst size its columns to what is in them.
         call = "#fields-table(" if kind else f"#table(\n  columns: {len(header)},"
         parts = [call, f"  align: ({', '.join(aligns)},),"]
         # A real `table.header`, not just a first row: it repeats when a table
-        # splits across a page, and it stops Typst from stranding the header at
-        # the foot of one page with its body at the top of the next.
+        # splits across a page.
         parts.append("  table.header(" + ", ".join(f"[{c}]" for c in header) + "),")
         for row in rows:
             cells = [guard_cell_markup(c) for c in row]
@@ -278,8 +262,7 @@ class TypstEmitter(Emitter):
                 # A term with no space in it -- `hue_corrections_replace_defaults`
                 # -- cannot wrap and runs over the locator column, so an
                 # identifier gets a zero-width break opportunity after each
-                # underscore. In the .typ only; the Markdown a font check reads
-                # stays clean.
+                # underscore. In the .typ only, never in the Markdown.
                 cells[0] = cells[0].replace("_", "_" + _ZWSP)
             parts.append("  " + ", ".join(f"[{c}]" for c in cells) + ",")
         parts.append(")\n")
@@ -299,15 +282,8 @@ class TypstEmitter(Emitter):
     def paragraph(self, body: str) -> str:
         return body + "\n"
 
-    # -- checks -------------------------------------------------------------
-
     def check_prose(self, literal: str, path: Path, lineno: int) -> None:
         check_prose(literal, path, lineno)
-
-
-# ---------------------------------------------------------------------------
-# Assembly
-# ---------------------------------------------------------------------------
 
 
 def out_path(book_dir: Path) -> Path:
@@ -323,14 +299,10 @@ def typst_content_list(items: list[tuple[SectionRef, str]]) -> str:
     """A section list for an opener page: the anchor each entry links at, and
     its title as Typst *content*.
 
-    The title is content and not a string because quoting it would print
-    whatever markup it carries -- which is how the appendices' opener pages
-    came to list ``` `[hardware]` ``` with the backticks showing.
-
-    The `link()` call is left to the template rather than built here: the
-    opener page is blue, the document-wide show rule paints links in accent
-    blue, and the fill that resolves that is a design decision. This module
-    only says which section each line means.
+    The title is content and not a string, because quoting it would print
+    whatever markup it carries -- ``` `[hardware]` ``` with its backticks
+    showing. The `link()` call is left to the template, which owns the fill an
+    opener page's links take; this module only says which section a line means.
     """
     entries = [f"(label: {typst_string(ref.label)}, title: [{title}])" for ref, title in items]
     return "(" + ", ".join(entries) + ("," if entries else "") + ")"
@@ -348,8 +320,7 @@ def layout_call(book_dir: Path, book: dict[str, str]) -> list[str]:
                 raise BookError(f"{book_dir / 'book.toml'}: {key} not found: {value}")
             value = root_relative(target)
         lines.append(f"  {key.replace('_', '-')}: {typst_string(value)},")
-    # Not in book.toml: the version is not book-level metadata somebody edits,
-    # it is whatever release this build documents.
+    # Not in book.toml: the version is whatever release this build documents.
     lines.append(f"  version: {typst_string(book_version())},")
     lines.append(")")
     return lines
@@ -376,8 +347,7 @@ def build(book_dir: Path) -> str:
         "",
     ]
 
-    # Only the bound book gets front matter. A card is a hand-out: it opens on
-    # its first line, and a contents page for two pages would be a joke.
+    # Only the bound book gets front matter; a card opens on its first line.
     if layout == "guide":
         if not any(c.number is not None for c in chapters):
             raise BookError(f"{book_dir} has no numbered chapters")
@@ -388,10 +358,10 @@ def build(book_dir: Path) -> str:
             raise BookError(f"cannot read {colophon_path}: {exc}") from exc
         colophon_conv = Converter(colophon_path, 1, emitter, numbers, anchors)
         colophon_conv.title = ""  # the colophon is bare prose, no heading
-        # `#show:` and not `#frontmatter()`: both switches contain a `set page`,
-        # which in Typst reaches only to the end of the block it is written in.
-        # Called, they changed the folio (the footer reads a state) and left the
-        # PDF's own page labels on the document-level roman for all 205 pages.
+        # `#show:` and not `#frontmatter()`: both switches contain a `set
+        # page`, which in Typst reaches only to the end of the block it is
+        # written in, so calling them leaves the folio and the PDF's own page
+        # labels on the document-level roman.
         out += [
             f"#colophon[\n{colophon_conv.convert(colophon)}\n]",
             "",

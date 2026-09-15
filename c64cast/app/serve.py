@@ -211,11 +211,9 @@ def default_safe_state(req: StartRequest) -> None:
     from c64cast.hw.backend import make_backend
 
     if len(req.cfgs) != len(req.loaded.names):
-        # `strict=False` below truncates to the shorter of the two, which in
-        # the one function whose whole job is guaranteeing a reset would drop
-        # a machine with nothing said about it. The loop still runs — a reset
-        # that can happen must — but the mismatch is a bug upstream and has to
-        # be visible.
+        # `strict=False` below truncates to the shorter of the two, which in the
+        # one function whose job is guaranteeing a reset would silently drop a
+        # machine. The loop still runs, but the upstream bug has to be visible.
         log.error(
             "safe-state reset: %d configs but %d system names; some machines may be missed",
             len(req.cfgs),
@@ -279,10 +277,9 @@ class SessionLogBuffer(logging.Handler):
                     "t": record.created,
                     "level": record.levelname,
                     "name": record.name,
-                    # Redacted on the way *in*, because this buffer is served to
-                    # every client on the state feed — including a read-only
-                    # viewer, who must not be handed the token that would let it
-                    # stop the show. See `c64cast._redact`.
+                    # Redacted on the way *in*: this buffer is served to every
+                    # client on the state feed, a read-only viewer included, who
+                    # must not be handed the token that would let it stop the show.
                     "message": redact_secrets(record.getMessage()),
                     "generation": self.generation,
                 }
@@ -385,11 +382,9 @@ class SessionManager:
         self._log_buffer = log_buffer
         self._marker_path = marker_path
         self._clock = clock
-        # What `status()` answers before the console has started anything —
-        # the config this host was launched with, so the browser has
-        # something to preselect and show as "the running config" even at
-        # idle. There is no other "host default" concept left: once a start
-        # names a ref, `_request.config_path` is that ref instead.
+        # What `status()` answers before the console has started anything, so the
+        # browser can preselect something at idle. Once a start names a ref,
+        # `_request.config_path` is that ref instead.
         self._launch_config_path = launch_config_path
 
         self._lock = threading.RLock()
@@ -416,8 +411,6 @@ class SessionManager:
         self._reaper = PollThread(
             self._reap_tick, period=reap_period_s, name="session-reap", run_first=False
         )
-
-    # -- observation --------------------------------------------------------
 
     @property
     def state(self) -> SessionState:
@@ -478,8 +471,6 @@ class SessionManager:
                     return False
                 self._cond.wait(remaining)
             return True
-
-    # -- transitions --------------------------------------------------------
 
     def start(self, req: StartRequest) -> int:
         """Begin bringing a session up. Returns its generation; raises
@@ -570,25 +561,20 @@ class SessionManager:
             self._closing = True
             busy = self._state not in STARTABLE or self._switching
         if busy:
-            # Only when there is something to wait on: `run_daemon` calls this
-            # on every exit path, including the ones where no session ever
-            # existed, and a host that died resolving its token used to sign
-            # off with a claim that it was waiting a minute on a teardown.
+            # Only when there is something to wait on: `run_daemon` calls this on
+            # every exit path, no session having existed included.
             log.info("waiting up to %.0fs for the session to tear down", timeout * 2)
         self.stop()
         self.wait_for(STARTABLE, timeout=timeout)
         self._reaper.stop()
         self._workers.join(timeout=timeout)
         if self.state not in STARTABLE:
-            # A start that squeezed through before `_closing` was visible, or
-            # a teardown that outran its deadline. This is the last chance to
-            # release the hardware, so ask once more.
+            # A start that squeezed through before `_closing` was visible, or a
+            # teardown past its deadline: the last chance to release the hardware.
             log.warning("the session is still %s after close(); stopping it again", self.state)
             self.stop()
             self.wait_for(STARTABLE, timeout=timeout)
             self._workers.join(timeout=timeout)
-
-    # -- internals ----------------------------------------------------------
 
     def _refuse_if_closing(self) -> None:
         if self._closing:
@@ -608,11 +594,9 @@ class SessionManager:
         try:
             self._workers.spawn(f"session-start-{gen}", lambda: self._run_start(req, gen))
         except Exception as e:
-            # Nothing else can leave `starting`: it isn't STARTABLE, `stop()`
-            # from it only arms the cancel flag, and the reaper ignores it — so
-            # a `Thread.start()` that raised (resource exhaustion) wedged the
-            # host until the process restarted. Roll back to a startable state
-            # and still tell the caller.
+            # Nothing else leaves `starting`: it is not STARTABLE, `stop()` from it
+            # only arms the cancel flag, and the reaper ignores it — so a raising
+            # `Thread.start()` would wedge the host until the process restarted.
             self._generation = previous
             if self._log_buffer is not None:
                 self._log_buffer.generation = previous
@@ -672,9 +656,8 @@ class SessionManager:
         try:
             self._await_hardware()
             if self._recover_if_unclean(req):
-                # A recovery just opened and closed the backend, which arms the
-                # same settle window a teardown does — handing it straight to
-                # the build is the socket-reuse case the cooldown exists for.
+                # A recovery just opened and closed the backend, which arms the same
+                # settle window a teardown does — the socket-reuse case this exists for.
                 self._arm_cooldown()
                 self._await_hardware()
             sess = self._build(req, gen, self._publish)
@@ -684,14 +667,11 @@ class SessionManager:
             self._settle(SessionState.IDLE, None)
             return
         except BaseException as e:
-            # `BaseException`, not `Exception`, and load-bearing: a build that
-            # raised `SystemExit` or `GeneratorExit` has already taken the
-            # hardware, and `_settle` is the only thing that releases it —
-            # narrowing this reopens the "no hardware is left held" guarantee
-            # this module is built around. Not re-raised, either: this is a
-            # worker thread, where `threading.excepthook` discards `SystemExit`
-            # outright, so the only useful thing left is to say which it was
-            # rather than letting a deliberate exit read as a dead machine.
+            # `BaseException`, not `Exception`: a build that raised `SystemExit` or
+            # `GeneratorExit` has already taken the hardware and `_settle` is the
+            # only thing that releases it. Not re-raised either — on a worker thread
+            # `threading.excepthook` discards `SystemExit` outright, so naming which
+            # it was is all that is left.
             if isinstance(e, Exception):
                 log.exception("session %d failed to start", gen)
             else:
@@ -704,8 +684,8 @@ class SessionManager:
             self._write_marker(req, gen)
             self._transition_locked(SessionState.RUNNING)
         self._reaper.start()
-        # A stop that arrived mid-build has been waiting for exactly this: the
-        # session is only stoppable once it is running.
+        # A stop that arrived mid-build waits for this: a session is only
+        # stoppable once it is running.
         if self._cancel.is_set():
             self.stop()
 
@@ -720,10 +700,8 @@ class SessionManager:
                     sess.stop_event.set()
         except Exception as e:
             log.exception("session shutdown failed; tearing down anyway")
-            # Carried into `last_error` for the same reason a failed *build* is:
-            # a teardown that raised is the one thing an operator most needs to
-            # know about, and settling with `None` left the console reporting a
-            # clean `idle`.
+            # Carried into `last_error` for the same reason a failed *build* is;
+            # settling with `None` would leave the console reporting a clean `idle`.
             error = f"session shutdown failed: {type(e).__name__}: {e}"
         self._settle(SessionState.IDLE, error)
 
@@ -824,13 +802,10 @@ class SessionManager:
             log.info("session %d: every playlist finished", self._generation)
             gen = self._generation
             self._transition_locked(SessionState.STOPPING)
-            # Named apart from `stop()`'s worker on purpose: `join_bounded`
-            # identifies a straggler by thread name, and "session-stop-7 did
-            # not finish" cannot tell an operator-requested stop (a wedged
-            # playlist) from a self-ending show being reaped (a hung teardown).
+            # Named apart from `stop()`'s worker: `join_bounded` identifies a
+            # straggler by thread name, and one name could not tell an
+            # operator-requested stop from a self-ending show being reaped.
             self._workers.spawn(f"session-reap-stop-{gen}", lambda: self._run_stop(sess))
-
-    # -- the run marker -----------------------------------------------------
 
     def _marker(self) -> Path:
         return self._marker_path if self._marker_path is not None else paths.run_marker_path()
@@ -886,10 +861,6 @@ def request_from_configs(
     that exists so callers don't have to remember the field order."""
     return StartRequest(args=args, loaded=loaded, cfgs=list(cfgs), config_path=config_path)
 
-
-# ---------------------------------------------------------------------------
-# The host: one server, many sessions
-# ---------------------------------------------------------------------------
 
 #: Produces the per-system configs to run — the CLI's own resolver, handed in
 #: rather than imported, because `cli` imports this module to dispatch
@@ -1126,14 +1097,12 @@ def build_daemon_app(
         lambda: _registries(1),
         token=token,
         viewer_token=viewer_token,
-        # The setup form has to answer with no token at all — nothing has
-        # generated one the admin has seen yet — so it, the shell that draws
-        # it, and the shell's own address for it need the same allowlist
-        # `auth.PUBLIC_PATHS` gives the login exchange. This is
-        # `TokenAuthMiddleware`'s exemption, not `SetupGateMiddleware`'s: the
-        # gate below only decides what's blocked *while pending*, and by
-        # itself would still hand these paths on into a token check they
-        # can't pass.
+        # The setup form answers with no token at all, nothing having generated
+        # one the admin has seen, so it and the shell that draws it need the
+        # allowlist `auth.PUBLIC_PATHS` gives the login exchange. This is
+        # `TokenAuthMiddleware`'s exemption, not `SetupGateMiddleware`'s: the gate
+        # below only decides what is blocked *while pending*, and would still hand
+        # these paths into a token check they cannot pass.
         public_paths=((SETUP_PATH, SETUP_PAGE_PATH, *shell_paths()) if setup_pending else ()),
     )
     register_web_routes(
@@ -1159,10 +1128,8 @@ def build_daemon_app(
             token_settable=token_settable,
             on_complete=on_setup_complete,
         )
-    # mount_web_app is last among the *route* registrations: its fallback is a
-    # catch-all, so anything registered after it would be unreachable. The
-    # setup gate goes even later than that — it reads the app's complete route
-    # table (`setup_gate.install_setup_gate` -> `web_static.owned_segments`) to
+    # Last among the *route* registrations, its fallback being a catch-all. The
+    # setup gate goes later still: it reads the app's complete route table to
     # decide what to block, so it has to see everything above first.
     mount_web_app(app)
     if setup_pending:
@@ -1234,8 +1201,7 @@ def pump_forever(
                     w.pump()
                 except Exception:
                     log.exception("preview window failed to draw")
-            # The user closing the window doesn't stop the show; it just stops
-            # this loop from drawing one (the CLI's pump does the same).
+            # Closing the window stops this loop drawing, not the show itself.
             if not any(w.is_open for w in opened):
                 opened = []
     finally:
@@ -1449,9 +1415,8 @@ def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
         return _Cycle.FAILED
 
     # Before the banner, the beacon and any autostart: uvicorn binds on its own
-    # thread, so a port already in use used to leave the host printing a login
-    # URL, autostarting a show on real hardware, and parking forever with
-    # nothing listening — then exiting 0.
+    # thread, so a port already in use would otherwise leave the host printing a
+    # login URL and autostarting a show with nothing listening.
     if not server.start():
         return _Cycle.FAILED
 

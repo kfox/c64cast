@@ -40,11 +40,9 @@ class EpicycleSource(GenerativeSource):
     _LEVEL_RADIUS_GAIN = 0.6
     _ONSET_FLASH_GAIN = 90.0  # max per-channel brightness add on a full onset
 
-    # Radii taper geometrically (`r0 * _RADIUS_RATIO**i`) rather than the
-    # stricter harmonic `1/(2i+1)` series: the harmonic decay makes every arm
-    # past the first collapse into an illegible cluster at this arm count,
-    # while a gentler taper keeps each ring visually distinct (a spirograph
-    # look rather than a literal square-wave Fourier reconstruction).
+    # A geometric taper (`r0 * _RADIUS_RATIO**i`), not the harmonic `1/(2i+1)`
+    # Fourier series, which collapses every arm past the first into an
+    # illegible cluster at this arm count.
     _RADIUS_RATIO = 0.55
 
     def __init__(self, *, width: int = GEN_WIDTH, height: int = GEN_HEIGHT, speed: float = 0.6):

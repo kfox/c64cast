@@ -3,17 +3,17 @@
 
 The host-DMA servo locks W (write pace) to R (NMI consumer), which runs at ~7690 B/s
 in petscii due to video DMA bus-halts (the servo fixes the echo but trades constant
-~4% slowdown). This script measures R_rate across three modes (petscii, mhires, blank)
-to understand:
+~4% slowdown). This script measures R_rate across six configurations — petscii, hires and
+mhires, each at 60 and 30 fps (see MODES) — to understand:
 1. Per-mode R_rate (how much slowdown per mode?)
 2. Whether a fixed latch bump can compensate all modes or needs adaptive servo
-3. Whether blank (minimal video) shows full 8000 or also loses ~4%
+3. Whether halving the frame rate halves the shortfall
 
 Run from the c64cast project root:
     python scripts/diags/measure_r_rate_all_modes.py
     python scripts/diags/measure_r_rate_all_modes.py --url http://u2p.lan
 
-Each mode runs for ~45s and writes a CSV. Summary printed at the end.
+Each mode runs for ~40s (10s boot + --duration, default 30). Summary printed at the end.
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ from c64cast.audio.audio_handlers import (
 READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5
 
 # (config_path, mode_name)
-# Test order: petscii (light), hires (moderate), mhires (heavy), repeated at different fps
 MODES = [
     ("scripts/diags/out/r_rate_petscii_60fps.toml", "petscii@60fps"),
     ("scripts/diags/out/r_rate_petscii_30fps.toml", "petscii@30fps"),
@@ -85,12 +84,10 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
         stderr=subprocess.PIPE,
     )
 
-    # Wait for boot + first audio
     boot_wait = 10.0
     print(f"[boot] waiting {boot_wait}s for boot + first audio")
     time.sleep(boot_wait)
 
-    # Poll R at 50 Hz
     period = 1.0 / 50.0
     rows: list[tuple[float, int, int]] = []
     missed = 0
@@ -123,12 +120,10 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
             app.wait(timeout=5)
         except subprocess.TimeoutExpired:
             app.kill()
-        # Reset after each mode
         print("[reset] machine:reset")
         d.rest_reset(url)
         time.sleep(1)
 
-    # Analysis
     if len(rows) < 10:
         return {"error": f"only {len(rows)} samples ({missed} missed)", "mode": mode_name}
 
@@ -137,7 +132,6 @@ def measure_mode(config_path: str, mode_name: str, url: str, poll_duration: floa
     slope, intercept = _linfit(ts, ys)
     r_rate = slope  # bytes/second
 
-    # Report
     result = {
         "mode": mode_name,
         "samples": len(rows),
@@ -180,7 +174,6 @@ def main() -> int:
             d.rest_reset(args.url)
         return 1
 
-    # Summary
     print(f"\n{'=' * 70}")
     print("[SUMMARY]")
     print(f"{'=' * 70}")
@@ -195,7 +188,6 @@ def main() -> int:
     for r in valid_results:
         print(f"{r['mode']:<12} {r['r_rate_bps']:>8.1f}       {r['slowdown_pct']:>6.1f}%")
 
-    # Analysis
     print("\n[analysis]")
     avg_slowdown = sum(r["slowdown_pct"] for r in valid_results) / len(valid_results)
     print(f"Average slowdown across modes: {avg_slowdown:.1f}%")
@@ -205,7 +197,6 @@ def main() -> int:
     print(f"Range: {min_slowdown:.1f}% (lightest) to {max_slowdown:.1f}% (heaviest)")
     print(f"Spread: {max_slowdown - min_slowdown:.1f}% (fixed bump OK if < 0.5%)")
 
-    # Recommendation
     if max_slowdown - min_slowdown < 0.5:
         print(
             f"\n[recommendation] Fixed NMI latch bump by ~{avg_slowdown:.1f}% "

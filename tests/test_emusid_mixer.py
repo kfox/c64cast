@@ -7,8 +7,6 @@ against FakeAPI's config surface for gating, diffing, and restore originals.
 Field names and enum labels mirror a live `Audio Output Settings` dump.
 """
 
-# FakeAPI duck-types C64Backend; suppress pyright's argument-type complaints
-# file-wide (same convention as test_sid_panning.py).
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -40,9 +38,8 @@ _STOCK = {
     "Vol EmuSid2": " 0 dB",
 }
 
-# The same machine with both sides' model items reported — the firmware's
-# `sidchip_sel` ladder is exactly these two labels, for filter curve and for
-# combined waveforms alike.
+# The same machine with both sides' model items reported; the
+# firmware's `sidchip_sel` ladder is exactly these two labels.
 _STOCK_6581 = dict(
     _STOCK,
     **{
@@ -121,7 +118,7 @@ class PlanRoutingTest(unittest.TestCase):
         self.assertEqual(remaining, ())
 
     def test_uncovered_primary_takes_a_spare_side(self):
-        # Left disabled, right parked on $D680: the single enabled side is
+        # Left disabled, right parked on $D680: the one enabled side is
         # spare and moves to the tune's only address.
         category = dict(_STOCK, **{"SID Left": "Disabled"})
         plan, remaining = plan_emusid_routing((0xD400,), category)
@@ -135,8 +132,8 @@ class PlanRoutingTest(unittest.TestCase):
         self.assertEqual(remaining, (0xD420,))
 
     def test_redundant_mirror_side_counts_as_spare(self):
-        # Both sides snooping $D400: the mirror is redundant, and an
-        # uncovered chip made audible beats a covered one doubled.
+        # Both sides snooping $D400: an uncovered chip made audible beats
+        # a covered one doubled.
         category = dict(_STOCK, **{"SID Right Base": "Snoop $D400"})
         plan, remaining = plan_emusid_routing((0xD400, 0xD420), category)
         self.assertEqual(plan, {(CAT_EMUSID, "SID Right Base"): "Snoop $D420"})
@@ -186,6 +183,14 @@ class ApplyRoutingTest(unittest.TestCase):
             apply_emusid_routing(api, (0xD400, 0xD420))
         self.assertIn("no spare enabled emulated SID", cm.output[0])
 
+    def test_inexpressible_address_warns_with_its_own_diagnosis(self):
+        # _log_uncovered's other branch: $D440 has no snoop-base enum label
+        # at all, so no amount of spare sides would help.
+        api = _u2plus_with(_STOCK)
+        with self.assertLogs("c64cast.sid.emusid_mixer", level="WARNING") as cm:
+            apply_emusid_routing(api, (0xD400, 0xD440))
+        self.assertIn("no snoop base can express $D440", cm.output[0])
+
     def test_read_emusid_category_requires_the_enable_fields(self):
         api = FakeAPI.u2plus()
         api.config_store[CAT_EMUSID] = {"Vol EmuSid1": " 0 dB"}
@@ -230,8 +235,8 @@ class PlanModelTest(unittest.TestCase):
                 self.assertEqual(plan_emusid_model((0xD400,), (required,), _STOCK_6581), {})
 
     def test_chip_no_side_snoops_is_left_alone(self):
-        # $D420 is uncovered in _STOCK — routing already warned about it, and
-        # there is no side to set a model on.
+        # $D420 is uncovered in _STOCK, so there is no side to set a model
+        # on and routing has already warned.
         self.assertEqual(plan_emusid_model((0xD420,), ("8580",), _STOCK_6581), {})
 
     def test_model_matching_off_plans_nothing(self):
@@ -272,9 +277,8 @@ class ApplyModelTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [])
 
     def test_model_follows_the_side_routing_just_retargeted(self):
-        # The whole reason the model pass re-reads the category: the right side
-        # is parked on $D680 until routing moves it to the tune's second chip,
-        # and only then is there a side to give that chip's model to.
+        # The model pass re-reads the category because the right side is
+        # parked on $D680 until routing moves it to the tune's second chip.
         api = _u2plus_with(_STOCK_6581)
         apply_emusid_routing(api, (0xD400, 0xD420))
         apply_emusid_model(api, (0xD400, 0xD420), ("6581", "8580"))

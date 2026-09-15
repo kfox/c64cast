@@ -22,7 +22,7 @@ the capture device, and crops the HDMI pillarbox away so what lands in
     # back-to-back frames, for catching an exact scroll position
     capture_guide_figure.py shoot --config c.toml --label hello --at 37 --burst 110
 
-Three things here were each worth a debugging session:
+Three things the capture path depends on:
 
 **The U64 ships at SD.** "HDMI Scan Resolution" defaults to SD (480p/576p), and
 the Cam Link then offers only 640x480 — far too soft for print. `hdmi
@@ -32,8 +32,8 @@ volatile — the firmware only persists on an explicit save — but `--restore`
 puts them back anyway rather than leaving someone's machine reconfigured.
 
 **The frame is pillarboxed.** At 1080p the C64's 4:3 output sits at x 242..1681
-of the 1920-wide HDMI frame. CROP below is measured, not guessed: a white
-border over a black screen makes both edges findable.
+of the 1920-wide HDMI frame. CROP below is measured off a white border on a
+black screen, which makes both edges findable.
 
 **Hold the capture device open.** Re-opening per shot costs about a second of
 handshake, which makes any timed sequence meaningless; `--burst` goes further
@@ -123,8 +123,7 @@ def cmd_shoot(args) -> int:
                 cap.read()
 
             def wait_until(target: float) -> None:
-                # Keep draining while waiting: a queued stale frame is worse
-                # than a late one when the point is a specific moment.
+                # Keep draining: a queued stale frame is worse than a late one.
                 while (remaining := target - (time.monotonic() - t0)) > 0:
                     cap.read()
                     if remaining > 0.05:
@@ -217,7 +216,7 @@ def cmd_center(args) -> int:
     import numpy as np
 
     # Inset a few pixels: the outermost active columns pick up scaler ringing
-    # from the border, which otherwise pins every measurement to the edge.
+    # from the border.
     x0, x1 = CROP_X - CROP_X + BORDER_X + 4, CROP_W - BORDER_X - 4
     y0, y1 = BORDER_Y + 6, CROP_H - BORDER_Y - 6
     span = CROP_W - 2 * BORDER_X
@@ -261,8 +260,7 @@ def cmd_plate(args) -> int:
     panels = []
     for spec in args.panels:
         stem, sep, label = spec.partition("=")
-        # A trailing "=" means an unlabeled panel: some plates compare named
-        # things (display modes), others are just adjacent screens.
+        # A trailing "=" means an unlabeled panel.
         if sep and not label:
             label = ""
         elif not sep:

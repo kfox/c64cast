@@ -8,9 +8,7 @@
   let { lines }: Props = $props();
 
   let box: HTMLDivElement | undefined = $state();
-  // Follow the tail, but stop the moment the reader scrolls up — a log that
-  // yanks itself back to the bottom while someone is reading the failure that
-  // just scrolled past is the reason the daemon has a log pane at all.
+  // Follow the tail, but stop the moment the reader scrolls up.
   let pinned = $state(true);
 
   function onScroll(): void {

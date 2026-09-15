@@ -81,7 +81,6 @@ class PreEmphasisTest(unittest.TestCase):
         lo = _sine(100, 0.25)
         hi = _sine(3500, 0.25)
         self.assertLess(_rms(pe.process(lo)), _rms(pe.process(hi)))
-        # And HF output is louder than HF input.
         pe.reset()
         self.assertGreater(_rms(pe.process(hi)), _rms(hi))
 
@@ -136,8 +135,7 @@ class CompressorTest(unittest.TestCase):
         self.assertAlmostEqual(lin_to_db(_rms(y[-1000:]) / _rms(x[-1000:])), 6.0, delta=0.5)
 
     def test_auto_makeup_brings_threshold_to_unity(self):
-        # With auto makeup, a signal AT threshold should come out near 0 dB
-        # change (makeup compensates the curve at the threshold point).
+        # With auto makeup, a signal AT threshold comes out near 0 dB change.
         comp = Compressor(
             sample_rate=SR,
             threshold_db=-18.0,
@@ -215,18 +213,14 @@ class ExpanderTest(unittest.TestCase):
 
     def test_hysteresis_no_chatter_in_band(self):
         # Once opened by a loud burst, a signal that dips into the hysteresis
-        # band (between close and open thresholds) should stay open — gain
-        # stays high — rather than chattering closed.
+        # band must stay open rather than chatter closed.
         exp = self._exp(threshold_db=-40.0, hysteresis_db=10.0)
         loud = _sine(500, 0.2, amp=db_to_lin(-6.0))
-        # -36 dB sits below the -40+... open point math but above close;
-        # choose a level inside the hysteresis band: between -40 (close-ish)
-        # and -30 (open). Use -34.
+        # -34 dB sits inside the hysteresis band, between -40 (close) and
+        # -30 (open).
         mid = _sine(500, 0.3, amp=db_to_lin(-34.0))
         exp.process(loud)
         y_mid = exp.process(mid)
-        # Gain should remain essentially open (output ~ input) because we're
-        # in the hysteresis band after having opened.
         self.assertGreater(_rms(y_mid[-1000:]), _rms(mid[-1000:]) * 0.8)
 
     def test_streaming_continuity(self):
@@ -309,8 +303,8 @@ class AudioDSPChainTest(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.abs(y))), 0.95 + 1e-3)
 
     def test_quiet_source_made_louder(self):
-        # The headline win: a quiet source should come out louder after the
-        # compressor (+ makeup) so it uses more of the 4-bit DAC range.
+        # A quiet source has to come out louder after the compressor and
+        # makeup, so it uses more of the 4-bit DAC range.
         dsp = AudioDSP(
             DSPParams(
                 enabled=True,

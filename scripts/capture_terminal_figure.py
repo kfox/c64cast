@@ -55,7 +55,7 @@ BG = (0x1B, 0x1D, 0x21)
 FG = (0xE4, 0xE6, 0xEA)
 CHROME = (0x2C, 0x2F, 0x35)
 
-# pyte names -> RGB. Terminal-ish, tuned to sit calmly next to the book's blue.
+# pyte color names -> RGB.
 ANSI = {
     "black": (0x3B, 0x3F, 0x46),
     "red": (0xE0, 0x6C, 0x75),
@@ -146,10 +146,9 @@ def run(
                     buffered += data
                 else:
                     stream.feed(data)
-                # prompt_toolkit probes for the cursor with DSR-6 and warns if
-                # nothing answers. pyte models the screen but doesn't reply, so
-                # the driver has to — otherwise the figure carries a "your
-                # terminal doesn't support CPR" banner that no real one shows.
+                # prompt_toolkit probes the cursor with DSR-6 and prints a
+                # "terminal doesn't support CPR" banner if nothing answers;
+                # pyte models the screen but never replies.
                 if b"\x1b[6n" in data:
                     os.write(
                         fd,
@@ -194,7 +193,6 @@ def render(screen, rows_used: int, cols: int, out: Path, size: int = 26) -> None
 
     img = Image.new("RGB", (w, h), BG)
     draw = ImageDraw.Draw(img)
-    # A minimal window bar: enough to read as a terminal, no OS branding.
     draw.rectangle([0, 0, w, bar], fill=CHROME)
     r = round(bar * 0.17)
     for i, dot in enumerate(((0xE0, 0x6C, 0x75), (0xE5, 0xC0, 0x7B), (0x98, 0xC3, 0x79))):

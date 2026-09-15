@@ -13,10 +13,9 @@
 
   let { tempo, scene, armed, paused, readOnly = false, ontap }: Props = $props();
 
-  /** Where the beat clock was when the host last told us, and when we heard it.
-   *  Deliberately a plain object rather than `$state`: the frame loop below
-   *  reads it every frame, and a reactive read there would re-arm the effect
-   *  that owns the loop on every push. */
+  /** Where the beat clock was when the host last told us, and when we heard
+   *  it. A plain object, not `$state`: the frame loop below reads it every
+   *  frame, and a reactive read there would re-arm the effect that owns it. */
   let anchor = { bpm: 0, running: false, phase: 0, bpb: 4, at: 0 };
 
   let beat = $state(0);
@@ -32,9 +31,8 @@
     };
   });
 
-  // The pulse is extrapolated locally between pushes. The host sends about
-  // three frames a second and a beat at 128 bpm is shorter than that, so a
-  // pulse driven by the feed alone would stutter and skip beats outright.
+  // The pulse is extrapolated locally: the host sends about three frames a
+  // second, and a beat at 128 bpm is shorter than that.
   $effect(() => {
     let frame = 0;
     const tick = (): void => {
@@ -82,10 +80,8 @@
   </p>
 
   {#if paused}
-    <!-- A machine-level halt (the C64's own keys, MIDI, or the legacy /perf
-         console) — a different thing from TransportBar's per-scene Freeze,
-         and this bar's only job is to say so: the pause/resume control itself
-         still lives on /perf, not here. -->
+    <!-- A machine-level halt (the C64's own keys, MIDI, or /perf) — not
+         TransportBar's per-scene Freeze. This bar only reports it. -->
     <p class="font-mono text-xs text-c64-yellow">· paused</p>
   {/if}
 

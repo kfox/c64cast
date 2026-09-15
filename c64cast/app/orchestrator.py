@@ -110,8 +110,6 @@ class Orchestrator(ABC):
         self._active = False
         self._conductor_cfg: SceneCfg | None = None
 
-    # ---- public protocol called from the conductor's scene/overlay ----
-
     def begin(self, conductor_cfg: SceneCfg) -> bool:
         """Open a broadcast. Returns True iff the orchestrator was idle
         and is now active; False if a broadcast was already running (the
@@ -126,11 +124,8 @@ class Orchestrator(ABC):
             self._active = True
             self._conductor_cfg = conductor_cfg
             self._on_begin(conductor_cfg)
-        # Clear any leftover resume events, then wake every follower
-        # via the ensemble's per-system interrupt events. (Followers'
-        # playlists each hold a reference to their own ensemble event,
-        # so the wake-up is delivered regardless of which orchestrator
-        # instance owns this broadcast.)
+        # Follower playlists hold their own ensemble event, so the wake-up lands
+        # whichever orchestrator instance owns this broadcast.
         for name, ev in self.ensemble.broadcast_resume.items():
             if name != self.conductor_name:
                 ev.clear()
@@ -152,8 +147,6 @@ class Orchestrator(ABC):
         for name, ev in self.ensemble.broadcast_resume.items():
             if name != self.conductor_name:
                 ev.set()
-
-    # ---- consumed by follower playlists ----
 
     def interrupt_event(self, name: str) -> threading.Event:
         """Event a follower playlist watches to know a broadcast started.
@@ -188,9 +181,6 @@ class Orchestrator(ABC):
             if sc.name == conductor_cfg.name and not sc.orchestrate:
                 return sc
         return conductor_cfg
-
-    # ---- subclass hooks (intentionally non-abstract — empty default
-    #      lets subclasses opt in only when they have state to manage) ----
 
     def _on_begin(self, cfg: SceneCfg) -> None:  # noqa: B027
         """Called inside begin() under the lock, before follower events

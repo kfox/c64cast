@@ -18,7 +18,7 @@ git clone https://github.com/kfox/c64cast
 cd c64cast
 uv sync --all-extras    # creates/updates .venv from uv.lock: every runtime
                         # extra + the dev tool group
-pre-commit install      # ruff + pyright + tests run before every commit
+uv run --locked pre-commit install   # ruff + pyright + tests run before every commit
 ```
 
 Then either prefix one-off commands with `uv run`, or let
@@ -77,7 +77,7 @@ whether or not the current shell has `.venv` activated:
 | Target | What it does |
 |---|---|
 | `make sync` | `uv sync --all-extras` (refresh the project env) |
-| `make lint` | `ruff check` |
+| `make lint` | `ruff check` + `ruff format --check` |
 | `make fmt` | `ruff format` |
 | `make test` | the unittest suite, parallel across cores (`T=tests.test_foo` runs just that, serially) |
 | `make coverage` | tests under coverage → report + HTML + `coverage.xml` + JUnit XML |
@@ -87,9 +87,13 @@ whether or not the current shell has `.venv` activated:
 | `make web` | rebuild the web console into `c64cast/web/dist` (needs Node — only if you changed `web/`) |
 | `make guide` | render the User's Guide to a typeset PDF (needs `typst`) |
 | `make bench` | the async write-pipeline benchmark |
+| `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
+| `make mutation-check` | verify it is still armed — a clean, a new worktree or a `uv sync` un-arms it silently |
 
-CI runs the same lint, typecheck, and tests on every push and pull request
-across Python 3.11–3.14 — see
+CI runs the same tests on every push and pull request across Python 3.11–3.14
+and three operating systems, the same lint and formatting once in the
+`pre-commit` job, and the same type checks once per target platform on Python
+3.14 in the `types` job — see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Type-checking is
 deliberately two-tiered: `pyright` in basic mode across the whole tree
 (including tests), matching Pylance's VS Code defaults so editor diagnostics
@@ -132,6 +136,38 @@ file the test writes under `tempfile.mkdtemp()`, or to run the block from
 *relative* default like `assets/videos/`. `MachineSettingsIsolation` is still
 there for a module that wants a settings/data directory of its own, fresh and
 untouched by anything else.
+
+### Proving a test can fail
+
+"A test covers this" is an argument; a test you watched go red is evidence. The
+cheap way to get the evidence is to break the line under test on purpose, run
+the suite, and check that a *named* assertion failed — then revert and re-run
+green. A fix whose test would have passed either way is a fix nobody can
+maintain.
+
+Run `make mutation-ready` first. CPython validates a compiled module against
+its source's modification time in **whole seconds**, so an edit applied and
+reverted inside one second, with the file's length unchanged, leaves both the
+timestamp and the size where they were: the interpreter reads the cached
+bytecode from before your edit and reports a green run that means nothing.
+`PYTHONDONTWRITEBYTECODE=1` does not help — it suppresses writing, not reading
+— and neither does `touch`. The target recompiles the tree in PEP 552
+hash-based mode, where the check is over the source's contents instead, and
+then verifies that every module an import here could read really is armed —
+which includes having bytecode at all. Absence is not a gap in what the check
+can see: `compileall` compiles every source under a root whether or not
+anything imports it, so a missing `.pyc` after arming means the arming lapsed,
+and it is the dangerous shape rather than a benign one, because the first
+import then writes a *timestamp-mode* file.
+
+It has to be re-run more often than it looks: `make clean` deletes every
+`__pycache__`, a fresh worktree has none to begin with, and a `uv sync` that
+moves the Python minor invalidates the lot. Every one of those is silent, and
+they all happen *after* the arming — so `make mutation-check` is the check on
+its own, to run at the moment a proof's green is about to be believed. It is
+deliberately not part of `make test`: arming matters only for a mutation proof,
+and failing every ordinary run on an unarmed tree would teach everyone to
+bypass it.
 
 Several tests exist purely to stop documentation from drifting — the JSON schema
 against the config metadata, the annotated example TOML against the dataclass

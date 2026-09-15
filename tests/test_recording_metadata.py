@@ -4,9 +4,6 @@ Run:    python -m unittest discover tests
    or:  python -m unittest tests.test_recording_metadata
 """
 
-# _FakeVideoScene / _FakeWaveformScene are intentional duck-typed Scene
-# stubs (same convention as test_playlist.py's FakeScene) — silence
-# pyright's structural-typing complaints rather than spraying ignores.
 # pyright: reportArgumentType=false
 
 from __future__ import annotations
@@ -218,9 +215,8 @@ class LogAndParseRoundTripTest(unittest.TestCase):
         self.assertEqual(len(cm.output), 1)
         self.assertIn(SCENE_CONFIG_MARKER, cm.output[0])
 
-        # The file handler prefixes asctime/name/levelname — simulate that
-        # to prove extract_scene_configs doesn't depend on message being
-        # the whole line.
+        # The file handler prefixes asctime/name/levelname; simulating that
+        # proves extract_scene_configs does not need the whole line.
         prefixed = f"12:00:00 c64cast.recording INFO: {cm.output[0].split(':', 1)[1].strip()}"
         entries = extract_scene_configs(prefixed)
         self.assertEqual(len(entries), 1)

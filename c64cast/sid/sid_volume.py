@@ -1,51 +1,14 @@
 """SID mixer volume: make every chip a tune actually plays on audible, and
 everything else silent.
 
-The panning sibling of :mod:`c64cast.sid.sid_panning`, and the reason it exists: the
-U64 mixes each audio *source* — physical SID socket 1/2, UltiSID FPGA core 1/2 —
-at an independent level, and the two UltiSID levels are commonly left at
-``OFF``. Routing a chip onto an UltiSID core (which multi-SID address planning
-and model autoconfig both do freely) then produces **silence with no error** —
-the chip is mapped, the player writes to it, and nothing comes out. The mirror
-failure is just as real: a tune that deliberately uses the socketed chips is
-polluted by an UltiSID core still mapped at the same address with its level up.
+A **pure** planner (`plan_sid_volume`, `resolve_volumes`, label/int conversion)
+plus one best-effort impure entry point (`apply_volume`) that reads the mixer
+once, writes only what differs, and returns the originals for the caller to fold
+into its existing SID-config restore snapshot. Ultimate-family only: a no-op on a
+backend with neither mixer surface (TeensyROM), and a REST failure never crashes
+a scene.
 
-So a tune's sources are driven in both directions:
-
-  * a source the tune plays on is made audible — the configured level from
-    ``[ultimate64].sid_volume`` if there is one, else ``" 0 dB"`` when it was
-    ``OFF``. A source already at a deliberate non-``OFF`` level (a rig trimmed
-    to ``-6 dB``) is left exactly as the user set it.
-  * every other SID source is muted to ``OFF``, so nothing that isn't part of
-    the tune can bleed into the mix.
-
-Like panning, this is a **pure** planner (`plan_sid_volume`, `resolve_volumes`,
-label/int conversion) plus one best-effort impure entry point (`apply_volume`)
-that reads the mixer once, writes only what differs, and returns the originals
-for the caller to fold into its existing SID-config restore snapshot. Source
-derivation is shared, not duplicated: `sid_panning.distinct_sources` decides
-which sources a tune claims and in what order, so the ``sid_volume`` list is
-indexed exactly like ``sid_panning`` — entry *k* is the *k*-th source claimed.
-
-The same semantics drive the Ultimate II+'s emulated stereo SIDs (`Vol
-EmuSid1/2` under `Audio Output Settings` — topology in
-:mod:`c64cast.sid.emusid_mixer`): each tune chip's primary side is made
-audible and every other side is muted — including a redundant mirror side
-snooping an address the primary already covers, so a tune renders once,
-predictably, and the user's doubling comes back at teardown with the rest of
-the restore set. Ultimate-family only, best-effort — a no-op on a backend
-with neither mixer surface (TeensyROM), and a REST failure never crashes a
-scene.
-
-Two firmware naming traps, both confirmed live via
-``GET /v1/configs/Audio%20Mixer``:
-
-  * the volume items spell it ``Vol UltiSid 1``/``Vol UltiSid 2`` (lowercase
-    ``id``) while the pan items spell it ``Pan UltiSID 1``/``Pan UltiSID 2``
-    (uppercase ``SID``). The inconsistency is the firmware's; do not "fix" it.
-  * every non-negative level carries a **leading space** — ``" 0 dB"``, not
-    ``"0 dB"``. Exact-match comparisons against a stripped string never match,
-    so the mixer would be rewritten on every setup.
+See docs/architecture/sid.md#sid-volume.
 """
 
 from __future__ import annotations
@@ -63,12 +26,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Per-source volume item names — must match the firmware exactly (see the
-# module docstring's note on `UltiSid` vs `UltiSID`). One per mixable SID
-# source, keyed identically to sid_panning.PAN_ITEM so the two share
-# `distinct_sources` for source derivation. Spans both surfaces like
-# PAN_ITEM does; safe for the same reason (a planner probing the other
-# surface's item finds no current value and leaves it alone).
+# Per-source volume item names — must match the firmware exactly, which spells
+# these `Vol UltiSid N` (lowercase `id`) while sid_panning's are `Pan UltiSID N`.
+# Keyed identically to sid_panning.PAN_ITEM so the two share `distinct_sources`.
 VOL_ITEM: Final[dict[str, str]] = {
     "socket1": "Vol Socket 1",
     "socket2": "Vol Socket 2",
@@ -77,9 +37,8 @@ VOL_ITEM: Final[dict[str, str]] = {
     **VOL_ITEM_EMU,
 }
 
-# The mixer's level enum, in firmware order. NOT a uniform 1 dB ladder: it is
-# dense from -18 dB up and sparse below, so an arbitrary int (e.g. -20) has no
-# representation and is rejected rather than silently snapped to a neighbor.
+# The mixer's level enum, in firmware order. NOT a uniform 1 dB ladder: dense
+# from -18 dB up and sparse below, so an int like -20 has no representation.
 VOL_OFF: Final = "OFF"
 VOL_UNITY: Final = " 0 dB"  # leading space is the firmware's, not a typo
 VOL_LABELS: Final[tuple[str, ...]] = (
@@ -120,10 +79,8 @@ _VALID_DB: Final[tuple[int, ...]] = tuple(
     int(label.strip().removesuffix(" dB")) for label in VOL_LABELS if label != VOL_OFF
 )
 
-# One volume control per source, so a sid_volume list longer than this can
-# never take effect (config load rejects it) — same ceiling as sid_panning,
-# and pinned to 4 for the same reason (the merged VOL_ITEM spans both
-# surfaces, but no device carries more than 4 sources).
+# One volume control per source, so a longer sid_volume list can never take
+# effect; config load rejects it. Same ceiling as sid_panning.
 MAX_VOLUME_SOURCES: Final = 4
 
 
@@ -254,8 +211,7 @@ def apply_volume(
         return {}
     claimed = distinct_sources(sources)
     if not claimed:
-        # Nothing resolved to a known source — muting on that basis would risk
-        # silencing the very chip that is playing.
+        # Muting on this basis would risk silencing the chip that is playing.
         log.debug("sid volume: no known audio source for this tune — leaving the mixer alone")
         return {}
 

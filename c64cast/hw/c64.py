@@ -1,26 +1,17 @@
 """Centralized C64 hardware constants — addresses, registers, magic numbers.
 
-Pulling all the bare hex addresses into one module makes the rest of the
-code self-documenting (you can grep for `VIC.D018_VIC_BANK` instead of
-`"d018"`), and makes porting to other Commodore variants tractable.
+Every bare hex address in the tree resolves through here, so the code is
+greppable (`VIC.D018_MEMORY`, not `"d018"`) and porting to another Commodore
+variant stays tractable. Constants are grouped by chip / subsystem, with the
+derived timing helpers (CPU clock, frame rate, CIA latch, NMI budget) at the
+end.
 
-Group constants by chip / subsystem:
-  * VIC-II (`VIC`) — video registers ($D000-$D02E) and memory areas
-  * SID (`SID`) — sound chip registers ($D400-$D41C) and per-voice offsets
-  * CIA1, CIA2 (`CIA1`, `CIA2`) — the two 6526 timer/IO chips
-  * KERNAL — useful kernal ROM entry points
-  * IRQ / NMI — vector addresses + helpers
-  * SCREEN — screen RAM, color RAM, character ROM locations
-  * U64_API — REST endpoint paths (relative to base URL)
+See docs/architecture/hardware-io.md#c64py--the-hardware-constant-register.
 """
 
 from __future__ import annotations
 
 from typing import Final, Literal
-
-# ---------------------------------------------------------------------------
-# VIC-II — video chip
-# ---------------------------------------------------------------------------
 
 
 class VIC:
@@ -60,11 +51,6 @@ class VIC:
 
     # Sprite pointers live in the last 8 bytes of screen RAM (default bank).
     SPRITE_POINTERS: Final = 0x07F8
-
-
-# ---------------------------------------------------------------------------
-# SID — sound chip
-# ---------------------------------------------------------------------------
 
 
 class SID:
@@ -109,20 +95,14 @@ class SID:
         return cls.BASE + voice_idx * cls.BYTES_PER_VOICE
 
 
-# ---------------------------------------------------------------------------
-# CIA1 / CIA2 — the two 6526 timer/IO chips
-# ---------------------------------------------------------------------------
-
-
 class CIA1:
     BASE: Final = 0xDC00
     # PORT_A ($DC00) = keyboard column-select output / joystick port 2 input;
     # PORT_B ($DC01) = keyboard row input / joystick port 1 input. Joystick
     # lines are active-low: a pressed direction/fire pulls its bit to 0, idle
-    # reads all-high. Bits 0-4 = up/down/left/right/fire. The LauncherScene
-    # polls these to detect player input (see scenes.LauncherScene). NB: while
-    # a program runs its own keyboard-matrix scan it drives PORT_A as output,
-    # so reads can momentarily race that scan — input detection is best-effort.
+    # reads all-high. Bits 0-4 = up/down/left/right/fire. While a program runs
+    # its own keyboard-matrix scan it drives PORT_A as output, so a read can
+    # race that scan — joystick detection is best-effort.
     PORT_A: Final = 0xDC00
     PORT_B: Final = 0xDC01
     JOY_UP: Final = 0x01
@@ -139,8 +119,8 @@ class CIA1:
 class CIA2:
     BASE: Final = 0xDD00
     # PORT_A bit 0-1 = inverted VIC bank select (00=bank 3, 11=bank 0). The
-    # upper bits drive the serial bus / RS-232 outputs; c64cast doesn't
-    # use those, so we write the whole byte and accept clobbering them.
+    # upper bits drive the serial bus / RS-232 outputs, which the whole-byte
+    # write below clobbers.
     PORT_A: Final = 0xDD00
     TIMER_A_LO: Final = 0xDD04
     TIMER_A_HI: Final = 0xDD05
@@ -150,34 +130,22 @@ class CIA2:
     # base (1001 0111) keeps serial-bus output lines high (idle, no device
     # active) which matches the kernal's post-init state; bits 0-1 are
     # inverted from the bank number (bank 0 = 11, bank 1 = 10, bank 2 = 01).
-    # The REU-staged PETSCII / Blank double-buffer swaps between bank 0
-    # (default) and bank 2 — the only two banks with kernal char-ROM mapped
-    # at $1000/$9000, which char modes need. Those modes must avoid bank 1
-    # because the audio ring lives there ($4000-$5FFF).
-    #
-    # The waveform scene is the exception: it's bitmap-only (no char-ROM
-    # dependency) and stops the audio ring at setup (the SID plays on the
-    # real chip), so bank 1 is a free display target there. It selects
-    # PORT_A_BANK_1 for tunes whose payload/footprint occupies banks 0 and 2
-    # (e.g. Galway's Times of Lore subtunes 2-11). See waveform._DISPLAY_BANKS.
+    # Banks 0 and 2 are the only ones with kernal char-ROM mapped at their
+    # $1000 offset; the audio ring occupies bank 1 ($4000-$5FFF), which the
+    # waveform scene (bitmap-only, ring stopped at setup) is free to claim —
+    # see waveform._DISPLAY_BANKS.
     PORT_A_BANK_0: Final = 0x97  # bits 0-1 = 11 → VIC bank 0 ($0000-$3FFF)
     PORT_A_BANK_1: Final = 0x96  # bits 0-1 = 10 → VIC bank 1 ($4000-$7FFF)
     PORT_A_BANK_2: Final = 0x95  # bits 0-1 = 01 → VIC bank 2 ($8000-$BFFF)
 
 
-# ---------------------------------------------------------------------------
-# VIC bank layout — char-mode addresses within each VIC bank
-# ---------------------------------------------------------------------------
-# When VIC bank N is selected via CIA2.PORT_A, the addresses VIC actually
-# fetches from are bank-base + the offset encoded in $D018:
+# When VIC bank N is selected via CIA2.PORT_A, the addresses VIC fetches from
+# are bank-base + the offset encoded in $D018:
 #   $D018 = $14 → matrix at offset $0400, char gen at offset $1000.
 # Banks 0 ($0000-$3FFF) and 2 ($8000-$BFFF) are the only ones with kernal
-# char-ROM mapped at the $1000 offset. PETSCII / Blank scenes set
-# $D018 = $14 so both banks render with the same matrix+chars layout.
-#
-# For the REU-staged display modes, screens are renderable into either
-# bank — bank 0 uses $0400, bank 2 uses $8400. Double-buffering swaps
-# CIA2.PORT_A between PORT_A_BANK_0 and PORT_A_BANK_2.
+# char-ROM mapped at the $1000 offset, so char-mode double-buffering swaps
+# CIA2.PORT_A between PORT_A_BANK_0 and PORT_A_BANK_2 and both render with the
+# same $D018 = $14 layout.
 
 
 class VIC_BANK_0:
@@ -198,9 +166,7 @@ class VIC_BANK_2:
 
 # Flicker-blend page pair for the hires bitmap modes: bitmap pinned at the
 # $2000 offset, screen matrix alternating between the $0400 and $0C00 offsets.
-# Both values are bank-relative (the property the block above describes), so one
-# pair is correct in bank 0 and bank 2 alike and the alternation survives a
-# $DD00 double-buffer swap untouched.
+# Both are bank-relative, so one pair is correct in bank 0 and bank 2 alike.
 #
 # $0C00 rather than $0800: $0801 is where run_prg drops a PRG, so a screen page
 # there would be shot through by the clear-loop / SID player upload. It is the
@@ -210,22 +176,11 @@ D018_HIRES_PAGE_A: Final = 0x18  # matrix offset $0400, bitmap offset $2000
 D018_HIRES_PAGE_B: Final = 0x38  # matrix offset $0C00, bitmap offset $2000
 
 
-# ---------------------------------------------------------------------------
-# REU (RAM Expansion Unit) — REC controller at $DF00-$DF0A
-# ---------------------------------------------------------------------------
-# The U64 emulates a 17xx-style REU with one DMA-capable controller mapped
-# at $DF00-$DF0A. Triggers move bytes between REU FPGA SRAM and the C64
-# bus (main RAM or I/O space) at ~1 byte per cycle while halting the 6510.
-# c64cast uses this for:
-#   * audio: a kernal-IRQ-triggered pump streams pre-staged samples from
-#     REU into the audio ring (see [audio_handlers.py] REU_IRQ_HANDLER).
-#   * video (REU-staged display modes): the host pre-stages frame data
-#     into REU via socket DMA opcode 0xFF07 (REUWRITE, no bus halt), then
-#     triggers REU→main DMAs to drop the frame into screen RAM.
-#
-# The REC is a single shared resource — c64cast serializes audio + video
-# REU usage at the scene level (REU video opt-in cannot coexist with REU
-# audio in the current slice; mutual exclusion is enforced at scene setup).
+# The U64 emulates a 17xx-style REU with one DMA-capable controller (the REC)
+# mapped at $DF00-$DF0A. Triggers move bytes between REU FPGA SRAM and the C64
+# bus (main RAM or I/O space) at ~1 byte per cycle while halting the 6510. The
+# REC is a single shared resource: audio (the REU pump) and video (REU-staged
+# display modes) are mutually excluded at scene setup.
 
 
 class REU:
@@ -253,9 +208,30 @@ class REU:
     CMD_FETCH_EXEC: Final = CMD_EXEC | CMD_FF00_OFF | CMD_DIR_REU_TO_C64  # $91
 
 
-# ---------------------------------------------------------------------------
-# Kernal ROM entry points + IRQ/NMI vectors
-# ---------------------------------------------------------------------------
+class ULTIMATE_AUDIO:
+    """The U64's Ultimate Audio FPGA PCM sampler, mapped into cartridge I/O 2
+    by the firmware's "Map Ultimate Audio $DF20-DFFF" switch (hw_provision
+    enables it live+volatile per run). Seven 32-byte channel register files
+    fill the page from $DF20 to its end — the register spec itself lives in
+    c64cast.audio.sampler, which takes its base from here."""
+
+    IO_BASE: Final = 0xDF20
+    IO_END: Final = 0xDFFF
+
+
+# I/O that c64cast drives *itself*, as inclusive ``(lo, hi)`` byte ranges.
+#
+# Both windows sit inside the $DE00-$DFE0 "cartridge I/O" range the PSID spec
+# lets a .sid header declare an extra SID on, and which the U64 firmware lets
+# an UltiSID core be based at. Two independent paths must refuse a window
+# overlapping these ranges — sid_host_emu._decode_extra_sid_addr (the header
+# byte a tune declares) and asid_sidmap._plan_ultisid_cores (which force-aligns
+# a split core's base DOWNWARD, so a declared $DF20 becomes an emitted $DF00) —
+# and they share this one tuple rather than each carrying a copy.
+RESERVED_IO_WINDOWS: Final[tuple[tuple[int, int], ...]] = (
+    (REU.BASE, REU.ADDR_CONTROL),
+    (ULTIMATE_AUDIO.IO_BASE, ULTIMATE_AUDIO.IO_END),
+)
 
 
 class KERNAL:
@@ -299,7 +275,7 @@ class CPU:
     # $33 = $37 with CHAREN cleared: BASIC + KERNAL still mapped, but the
     # CHARACTER ROM replaces I/O at $D000-$DFFF. The only way the CPU can see
     # the charset (which is why char_rom's dump stub has to run on the C64 —
-    # a host read of $D000 gets I/O). See api.CHAR_ROM_DUMP_STUB_TEMPLATE.
+    # a host read of $D000 gets I/O). See api.build_char_rom_dump_stub.
     PORT_CHARROM: Final = 0x33
 
 
@@ -312,11 +288,6 @@ class ROM:
     BASIC_HI: Final = 0xC000  # exclusive
     KERNAL_LO: Final = 0xE000  # KERNAL ROM $E000-$FFFF
     KERNAL_HI: Final = 0x10000  # exclusive
-
-
-# ---------------------------------------------------------------------------
-# Screen layout
-# ---------------------------------------------------------------------------
 
 
 class SCREEN:
@@ -363,10 +334,6 @@ class KEYBUF:
     CRSR_LEFT: Final = 0x9D
 
 
-# ---------------------------------------------------------------------------
-# Raster IRQ helpers
-# ---------------------------------------------------------------------------
-
 # First raster line past the last badline (51 + 24*8 = 243 at the default
 # YSCROLL=3), on both PAL and NTSC — the final row's video matrix has already
 # been fetched by here, so a VIC register commit at this line is safe from
@@ -383,25 +350,17 @@ RASTER_VBLANK_LINE: Final = 0xF8
 RASTER_COMMIT_LAST_SAFE_LINE: Final = 45
 
 
-# ---------------------------------------------------------------------------
-# Ultimate-64 REST API endpoints (relative to base URL)
-# ---------------------------------------------------------------------------
-
-
 class U64_API:
-    # /v1/machine:writemem is intentionally absent — writes go over Socket
-    # DMA, not REST. /v1/runners:sidplay is intentionally absent — the
-    # firmware UI it draws hides VIC output (see api.run_sid_player).
+    # /v1/machine:writemem is absent because writes go over Socket DMA, and
+    # /v1/runners:sidplay because the firmware UI it draws hides VIC output
+    # (see api.run_sid_player). Neither may be added here.
     READ_MEM: Final = "/v1/machine:readmem"
     RESET: Final = "/v1/machine:reset"
     RUN_PRG: Final = "/v1/runners:run_prg"
     RUN_CRT: Final = "/v1/runners:run_crt"
 
 
-# ---------------------------------------------------------------------------
-# System clocks (in Hz) for NTSC + PAL.
-# ---------------------------------------------------------------------------
-
+# System clocks in Hz.
 CLOCK_NTSC: Final = 1022727
 CLOCK_PAL: Final = 985248
 
@@ -436,13 +395,10 @@ def cpu_clock(system: str) -> int:
     return CLOCK_NTSC if _canonical_system(system) == "NTSC" else CLOCK_PAL
 
 
-# ---------------------------------------------------------------------------
-# Frame rate + CIA #1 Timer A timing.
-# ---------------------------------------------------------------------------
 # A VIC-II frame is (cycles per raster line) x (lines per frame), so the frame
 # rate follows from the CPU clock rather than being an independent constant.
-# Spelled out this way because the round numbers ("50 Hz", "60 Hz") are both
-# ~0.25% off and that error compounds against the CIA latch derived from them.
+# The round numbers ("50 Hz", "60 Hz") are both ~0.25% off, and that error
+# compounds against the CIA latch derived from them.
 CYCLES_PER_FRAME_PAL: Final = 63 * 312  # 19656
 CYCLES_PER_FRAME_NTSC: Final = 65 * 263  # 17095
 
@@ -500,55 +456,24 @@ def actual_rate_for_latch(latch: int, system: str) -> float:
     return cpu_clock(system) / (latch + 1)
 
 
-# ---------------------------------------------------------------------------
-# NMI audio sample-rate safety budget.
-# ---------------------------------------------------------------------------
-# The $D418 DAC NMI handler (audio_handlers.NMI_ROUTINE) pulls one sample per fire. If
-# the sample PERIOD (= cpu_clock / sample_rate) is shorter than the handler can
-# complete (fast path + a VIC-II badline steal + entry latency for the
-# in-progress instruction), NMIs queue and fire back-to-back — the effective
-# consumption rate falls below the configured rate, so samples stretch and
-# pitch drops.
-#
-# These are now DIRECTLY HW-MEASURED, superseding the earlier 81/40-cycle
-# cycle-count ESTIMATE (which put the ceiling at a conservative ~11.6 kHz NTSC).
-# 2026-07-02, ring-prefill tone sweep on a real NTSC C64 with a TeensyROM+
-# (scripts/diags/tr_nmi_rate_ceiling.py, display on = 25 badlines/frame, the
-# same badline load char AND bitmap modes carry): the effective consumer rate
-# tracked the configured rate within ±0.7% cleanly THROUGH 14 kHz (period 73
-# cycles), began slipping ~1% at 15 kHz (68 cycles = overrun ONSET), and
-# hard-plateaued ~15.3 kHz at 16 kHz. So the true handler worst-case completion
-# is ~68 cycles, not the estimated 88, and clean operation holds to a 73-cycle
-# period. This is a 6510/badline property (host feed uses the prefill loop, so
-# it's independent of the C64/backend and of TR firmware).
-#
-# PAL is tighter than NTSC (slower clock = fewer cycles per period at the same
-# rate), and the sweep unit was NTSC, so the ceiling keeps a margin above the
-# measured onset for PAL + chip/temperature variation: SAFE (clean) = 75-cycle
-# period → ~13.6 kHz NTSC / ~13.1 kHz PAL; below the 68-cycle onset (≥ ~15 kHz
-# NTSC) is a hard "error". HW-verified end-to-end 2026-07-02: petscii video +
-# host-DMA DAC on the TR ran clean (no underruns) at 11.6 kHz and 13.5 kHz.
-NMI_HANDLER_WORST_CYCLES: Final = 68  # HW-measured overrun onset (was est. 81)
-NMI_ENTRY_LATENCY_CYCLES: Final = 7  # safety margin (entry latency + PAL/unit variation)
+# The $D418 DAC NMI handler's cycle budget. HW-measured 2026-07-02 by a
+# ring-prefill tone sweep on a real NTSC C64 with a TeensyROM+
+# (scripts/diags/tr_nmi_rate_ceiling.py), display on at 25 badlines/frame, and
+# the same onset in char and bitmap modes; see
+# docs/architecture/audio.md#audiopy--audiostreamer.
+NMI_HANDLER_WORST_CYCLES: Final = 68  # measured overrun onset
+NMI_ENTRY_LATENCY_CYCLES: Final = 7  # margin for entry latency + PAL/unit variation
 NMI_SAFE_MIN_PERIOD_CYCLES: Final = NMI_HANDLER_WORST_CYCLES + NMI_ENTRY_LATENCY_CYCLES  # 75
 
 
 # A host DMAWRITE halts the 6510 for the whole transfer, and CIA #2 is
 # edge-triggered: two Timer A underflows inside one halt latch as one NMI, so
-# every tick past the first is LOST, not merely late. The halt costs ~1 cycle per
-# byte — HW-measured 2026-08-05 with scripts/diags/audio_fm_probe.py at 1.02
-# us/byte on the U64 and 0.97 on a TeensyROM+, holding within a few percent from
-# 32 to 1024 bytes. So a write's payload size *is* its halt length in cycles, and
-# keeping the payload under one NMI period is what keeps the blocked window
-# (halt + the handler's own ~68 cycles) under the two periods it would take to
-# swallow an underflow.
-#
-# This is the host-side twin of modes_irq.BANK_SWAP_CHUNK_SIZE, which splits C64-side
-# REC DMA for exactly the same reason and took NMI capture from 67% to 97%.
-# Measured payoff at the 12 kHz NTSC default (85-cycle period): a 1024-byte write
-# freezes the CPU ~1064 us = 12.8 periods and costs 27.3 Hz of FM deviation on a
-# 376 Hz carrier; at 65 bytes the freeze is ~46 us and deviation falls to 5.3 Hz.
-# The margin covers the fixed per-write cost and PAL/unit variation.
+# every tick past the first is lost, not merely late. The halt costs ~1 cycle
+# per byte (HW-measured 2026-08-05, scripts/diags/audio_fm_probe.py: 1.02
+# us/byte on the U64, 0.97 on a TeensyROM+), so a payload kept under one NMI
+# period cannot swallow an underflow. The margin covers the fixed per-write
+# cost and PAL/unit variation. See
+# docs/architecture/audio.md#audiopy--audiostreamer.
 HALT_QUANTUM_MARGIN_CYCLES: Final = 20
 
 
@@ -601,63 +526,54 @@ def nmi_rate_safety(system: str, sample_rate: int) -> tuple[Literal["ok", "warn"
     )
 
 
-# ---------------------------------------------------------------------------
-# Region IDs for the dirty-cache in Ultimate64API.write_region.
-# ---------------------------------------------------------------------------
-# Each ID identifies a logical write region; the cache keys by ID (not by
-# address) so a mode switch reusing the same address gets a clean baseline
-# via api.invalidate_cache(). IDs must be unique across all callers — when
-# adding a new region, claim a fresh slot here so collisions are visible at
-# definition time rather than as silent cache corruption mid-run.
+# Region IDs for write_region's dirty cache, which keys by ID rather than by
+# address. IDs must be unique across all callers, reserved strides included —
+# claim a fresh slot here so a collision is visible at definition time rather
+# than as silent cache corruption mid-run.
 
 
 class RegionID:
-    # Char-mode displays (modes.py, interstitial.py, midi_scene.py).
+    # Char-mode displays (video/modes/, interstitial.py, midi_scene.py).
     SCREEN: Final = 1  # $0400 (1000 bytes)
     COLOR: Final = 2  # $D800 (1000 bytes)
     BITMAP: Final = 3  # $2000 (8000 bytes)
 
     # Waveform scene (waveform.py). 10 IDs reserved per base for per-voice
-    # offsets — use `RegionID.WAVE_BITMAP + voice_idx` for voice-specific
-    # writes, pass the base value for whole-region writes.
+    # offsets: `RegionID.WAVE_BITMAP + voice_idx`.
     WAVE_BITMAP: Final = 4000  # +0..+9
     WAVE_SCREEN: Final = 4010  # +0..+9
     WAVE_COLOR: Final = 4020  # +0..+9
 
-    # Waveform-scene metadata rows (hires display only). Each text row is
-    # one cache entry for the bitmap glyphs + one for the screen-RAM color
-    # nibble. Using stable IDs across paints lets the delta cache absorb
-    # unchanged columns on a SHIFT-driven song change (only the song-number
-    # digits move; everything else is identical bytes).
+    # Waveform-scene metadata rows (hires display only). Each text row is one
+    # cache entry for the bitmap glyphs + one for the screen-RAM color nibble;
+    # the IDs are stable across paints so the delta cache absorbs unchanged
+    # columns on a song change.
     WAVE_TITLE_BITMAP: Final = 4030
     WAVE_TITLE_SCREEN: Final = 4031
     WAVE_META_BITMAP: Final = 4032
     WAVE_META_SCREEN: Final = 4033
     # One-time full screen-matrix clear at _setup_hires — zeroes the spacer
-    # rows the per-voice/title/meta paints don't cover, so a relocated
-    # (VIC bank 2) display doesn't show uninitialized-RAM garbage there.
+    # rows the per-voice/title/meta paints don't cover.
     WAVE_SCREEN_CLEAR: Final = 4034
 
     # On-C64 menu overlay (overlays/menu.py). Per-panel-row IDs (+row offset,
-    # panel is at most 25 rows) so the delta cache absorbs unchanged rows
-    # between repaints. Bitmap displays use ROW_BITMAP + ROW_SCREEN (color in
-    # the screen nibble); char displays use ROW_SCREEN + ROW_COLOR.
+    # panel is at most 25 rows). Bitmap displays use ROW_BITMAP + ROW_SCREEN
+    # (color in the screen nibble); char displays use ROW_SCREEN + ROW_COLOR.
     MENU_ROW_BITMAP: Final = 5000  # +row 0..24
     MENU_ROW_SCREEN: Final = 5100  # +row 0..24
     MENU_ROW_COLOR: Final = 5200  # +row 0..24
 
-    # Host-DMA double-buffer (modes.py). The off-screen VIC bank is written each
-    # frame and must diff against ITS OWN prior content, not the other bank's, so
-    # bank 2 gets its own bitmap/screen cache IDs. Bank 0 reuses BITMAP/SCREEN
-    # above. Color RAM ($D800) is shared/un-banked, so it stays on COLOR.
+    # Host-DMA double-buffer (video/modes/). The off-screen VIC bank must diff
+    # against its own prior content, so bank 2 gets its own bitmap/screen IDs;
+    # bank 0 reuses BITMAP/SCREEN above. Color RAM ($D800) is un-banked and
+    # stays on COLOR.
     BITMAP_BANK2: Final = 6000  # $A000 (8000 bytes), VIC bank 2
     SCREEN_BANK2: Final = 6001  # $8400 (1000 bytes), VIC bank 2
 
     # Flicker blend ([color].flicker_tolerance). The field-B screen page is a
-    # second 1000-byte matrix per bank, alternating with the field-A page
-    # above at the VIC field rate. Same reasoning as the bank-2 split: each
-    # page must diff against its own prior content, and the two pages differ
-    # by construction (that difference IS the blend), so sharing an ID would
-    # make every frame look fully dirty on both.
+    # second 1000-byte matrix per bank, alternating with the field-A page above
+    # at the VIC field rate. The two pages differ by construction (that
+    # difference IS the blend), so sharing one ID would make every frame look
+    # fully dirty on both.
     SCREEN_ALT: Final = 6002  # $0C00 (1000 bytes), VIC bank 0
     SCREEN_ALT_BANK2: Final = 6003  # $8C00 (1000 bytes), VIC bank 2

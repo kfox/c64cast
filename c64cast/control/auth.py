@@ -1,20 +1,18 @@
 """Shared-token authentication for c64cast's HTTP surfaces.
 
-Everything c64cast listens on has historically been unauthenticated (see
-SECURITY.md). That is defensible for a LAN tool driving hardware on your desk,
-but the control plane is the one surface people already want to reach from a
-phone at a gig — and the web console being built on top of it will read and
-write config files on the host, which is not defensible unauthenticated at all.
-
-This module is the gate, shipped first on the control plane where it is small
-and immediately useful.
+``[control] token`` (or ``$C64CAST_CONTROL_TOKEN``, which wins) turns the whole
+control plane — routes, ``/perf`` console, WebSocket — into a token-gated
+surface. Empty is the default and leaves it open, which
+``scene_factory.validate_control_cfg`` allows on loopback and refuses off it
+unless ``[control].allow_unauthenticated`` says otherwise. ``viewer_token`` is
+a second credential that may only issue read methods.
 
 **One pure-ASGI middleware, not a per-route dependency.** Two reasons a
 ``Depends`` can't do this job:
 
 * ``BaseHTTPMiddleware`` (and any ``Depends``-based scheme) never sees
   ``websocket`` scopes, and it buffers response bodies — fatal for the binary
-  preview stream the web console will add.
+  preview stream the web console adds.
 * A WebSocket rejected from *inside* the handler can only close **after**
   ``accept()``, which a browser reports as a normal disconnect. Closing before
   accept makes uvicorn answer the handshake with an HTTP ``403``, the one
@@ -28,24 +26,21 @@ Token sources, in order: ``Authorization: Bearer`` → ``X-C64Cast-Token`` →
 ``?token=`` → the ``c64cast_token`` cookie. The last two exist because a browser
 can set no headers on a WebSocket handshake or on a plain navigation; hitting
 ``/api/login?token=…`` once trades the token for an ``HttpOnly; SameSite=Strict``
-cookie, after which the console's page loads and its WebSocket authenticate
+cookie, after which the console's page and its WebSocket authenticate
 themselves. ``?token=`` stays the curl/scripting escape hatch. The cookie is
 written from the *configured* secret rather than from the caller's string (see
 ``_set_cookie``), so no request data reaches a response header even in a future
 where the checks get reordered.
 
 Roles: the token grants ``full``, the optional second token grants ``viewer``,
-and a viewer may only issue read methods — which covers ``/pause``, ``/skip``,
-``/reload`` and ``/perf/command`` with no per-route code. The method *is* the
-authorization for every route where the verb tells the truth about the intent,
-and :func:`require_full` is the seam for the ones where it doesn't: a ``GET``
-that hands back host-authored text or a credential is a read to HTTP and an
-administrative act to this system, and it has to say so itself. ``GET
-/api/configs/{ref}`` is the reason that seam exists — its raw ``text`` is the
-file verbatim, tokens and DMA password included, so a shared read-only link
-would otherwise escalate to full control. The **other hole the middleware
-cannot plug** is the bidirectional ``/perf/ws``: it reads the role off the
-scope itself (:func:`is_viewer`) and drops inbound command frames from viewers.
+and the verb is the authorization for every route where it tells the truth
+about the intent. Two holes that leaves, both closed in this module rather than
+by the middleware: a ``GET`` that hands back host-authored text or a credential
+is administrative, and says so itself through :func:`require_full` (``GET
+/api/configs/{ref}`` is why the seam exists — its raw ``text`` is the file
+verbatim, tokens and DMA password included); and the bidirectional ``/perf/ws``
+reads the role off the scope with :func:`is_viewer` and drops inbound command
+frames from viewers.
 
 The **third hole is not about credentials at all** — it is the request's origin,
 and the middleware cannot close it because the mode it matters in is the one
@@ -63,6 +58,8 @@ Like :mod:`perf_console`, this module deliberately does **not** ``from __future_
 import annotations``: the login routes annotate their params with names imported
 inside :func:`_register_login_routes`, and stringized annotations would make
 FastAPI mis-read them as query params.
+
+See docs/architecture/control.md#authpy--shared-token-gate-optional.
 """
 
 import hmac
@@ -116,13 +113,12 @@ MAX_BODY_BYTES = 8 << 20
 Scope = MutableMapping[str, Any]
 
 # The 401 a *browser* gets when someone opens the console's address without
-# having logged in. Plain text is the right answer for a fetch or a curl and
-# the wrong one for the front door: the daemon prints a URL with the token in
-# it at startup, and a phone that has lost its cookie has nowhere else to put
-# that token back. Deliberately a `GET` form, which is the same exchange the
-# startup URL performs — `POST /api/login` exists so a *scripted* login can
-# keep the token out of a URL, and this page has no script at all. Inline
-# everything: the bundle it would otherwise link to is itself behind this gate.
+# having logged in. Plain text is right for a fetch or a curl and wrong for the
+# front door: the daemon prints a URL with the token in it at startup, and a
+# phone that has lost its cookie has nowhere else to put that token back.
+# Deliberately a `GET` form, the same exchange the startup URL performs, with
+# everything inline — the bundle it would otherwise link to is itself behind
+# this gate.
 _LOGIN_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

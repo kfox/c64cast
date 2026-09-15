@@ -10,6 +10,8 @@ Guide](../reference/README.md) and the [Performance Card](../card/README.md).
 | `template.typ` | The PDF's entire visual language — palette, faces, and one entry point per layout |
 | `site.css` | The documentation site's, in the same palette and the same faces |
 | `fonts/` | The two OFL faces, vendored, plus their [licenses](fonts/README.md) |
+| `search.js` | The site's client-side search box — fetches `search-index.json` (generated, see below) and answers queries against it, no server involved |
+| `search.test.mjs` | `node --test`s `search.js`'s ranking/highlighting core; see the file for how |
 
 Nothing here is book-specific. A change to `template.typ` restyles every book
 at once, which is the point: they are a series, and a table in one should look
@@ -28,8 +30,11 @@ docs/<book>/*.md -----------------+
       |    docs/shared/template.typ ----->+--> typst --> .pdf
       |
       +--> scripts/build_site.py --> docs/_site/<book>/*.html
+                                         |    |
+                                         |    +--> docs/_site/search-index.json (generated)
                                          |
-           docs/shared/site.css --------->+--> GitHub Pages
+           docs/shared/site.css -------->+
+           docs/shared/search.js ------->+--> GitHub Pages
 ```
 
 One reading of the Markdown, two renderings of it. `bookdoc.py` recognizes

@@ -9,8 +9,7 @@
 
   let { diagnostics = [] }: Props = $props();
 
-  /** `ok` diagnostics are the doctor's "this is fine" notes, not something a
-   *  refusal screen needs to repeat back. */
+  /** `ok` diagnostics are the doctor's "this is fine" notes. */
   const shown = $derived(diagnostics.filter((d) => d.level !== "ok"));
 
   const grouped = $derived.by(() => {

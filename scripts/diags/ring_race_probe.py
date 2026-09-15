@@ -88,9 +88,6 @@ QUANTUM = 128  # audio.py halt_quantum_bytes at the 12 kHz NTSC default
 SENTINEL = 0xFF  # prefill: "no lap has written this slot yet"
 
 
-# ---- C64 bring-up ---------------------------------------------------------
-
-
 def latch_for(rate: int, system: str) -> int:
     clock = CLOCK_NTSC if system == "NTSC" else CLOCK_PAL
     return max(1, round(clock / rate) - 1)
@@ -150,9 +147,6 @@ def read_r(be) -> int | None:
         return None
     r = raw[0] | (raw[1] << 8)
     return r if RING_BUFFER_ADDR <= r < RING_BUFFER_END else None
-
-
-# ---- phase r: is R a trustworthy observation? -----------------------------
 
 
 def phase_r(be, secs: float, rate_hz: float, eff: float) -> dict:
@@ -216,9 +210,6 @@ def phase_r(be, secs: float, rate_hz: float, eff: float) -> dict:
         "error_pct": (fitted - eff) / eff * 100.0 if eff else 0.0,
         "step_rate_std_hz": spread,
     }
-
-
-# ---- phase race: the feeder ------------------------------------------------
 
 
 class MarkerFeeder:
@@ -303,9 +294,6 @@ class MarkerFeeder:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5.0)
-
-
-# ---- phase race: the sampler ----------------------------------------------
 
 
 def locate_true_head(buf: bytes, lap: int, quantum: int) -> tuple[int, int, int]:

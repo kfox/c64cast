@@ -34,9 +34,8 @@ _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _INDEX = _REPO_ROOT / "docs" / "architecture.md"
 _PACKAGE = _REPO_ROOT / "c64cast"
 
-# Registry subpackages the index lists whole, as directories: their files are
-# small members of one registry apiece, and a per-file row would say the same
-# thing forty times. Paths are relative to the package root.
+# Registry subpackages the index lists whole, as directories — a per-file row
+# would say the same thing forty times. Paths are relative to the package root.
 _REGISTRY_DIRS = ("scenes/generators/", "video/modes/", "app/orchestrators/", "scenes/overlays/")
 
 
@@ -76,7 +75,7 @@ def _table_rows(text: str, heading: str) -> list[tuple[str, str]]:
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) != 2 or set(cells[0]) <= {"-", " "}:
             continue
-        if cells[0] == "Module":  # header row
+        if cells[0] == "Module":
             continue
         rows.append((cells[0], cells[1]))
     return rows

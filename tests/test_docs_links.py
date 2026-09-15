@@ -8,6 +8,8 @@ destination is gone.
 
 from __future__ import annotations
 
+import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -48,6 +50,108 @@ def _text_files() -> list[Path]:
     return found
 
 
+# A target is only checked when it looks like a path into the repo: it carries a
+# separator, or an extension we ship. Without this, `[Ctx](ctx)` and
+# `REGISTRY[name](seed=seed)` read as links.
+_PATH_SUFFIXES = {
+    ".cfg",
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".png",
+    ".prg",
+    ".py",
+    ".sh",
+    ".svg",
+    ".toml",
+    ".typ",
+    ".txt",
+    ".yml",
+}
+
+# Link text may wrap across lines; the prose here is hard-wrapped at 80 columns,
+# so a per-line pattern would skip the links it splits.
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+# Prose that quotes the *shape* of a link rather than making one: the guide's
+# authoring instructions, the renderers' docstrings describing what they accept,
+# and the book builder's own fixtures.
+_LINK_SHAPE_EXEMPT = {
+    "CHANGELOG.md",  # a record; it quotes links as they were when removed
+    "docs/guide/README.md",
+    "scripts/bookdoc.py",
+    "scripts/build_book.py",
+    "scripts/build_site.py",
+    "scripts/make_guide_figures.py",
+    "scripts/make_reference_diagrams.py",
+    "tests/test_book_build.py",
+}
+
+
+def _linked_paths(text: str) -> list[tuple[int, str]]:
+    found = []
+    for match in _MARKDOWN_LINK.finditer(text):
+        target = match.group(1)
+        if target.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        if any(ch in target for ch in "${}"):  # a shell or f-string template
+            continue
+        path = target.split("#", 1)[0]
+        if not path:
+            continue
+        if "/" not in path and Path(path).suffix not in _PATH_SUFFIXES:
+            continue
+        found.append((text.count("\n", 0, match.start()) + 1, path))
+    return found
+
+
+def _linkable_files() -> list[Path]:
+    """Every tracked Markdown file and every tracked Python file.
+
+    `git ls-files` rather than a walk: it reaches `assets/`, which `_SKIP_DIRS`
+    excludes, while still ignoring build output and anything untracked.
+    """
+    listing = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    files = []
+    for name in listing.split("\0"):
+        if not name:
+            continue
+        path = _REPO_ROOT / name
+        if name.startswith("c64cast/web/dist/"):
+            continue
+        if path.suffix in {".md", ".py"}:
+            files.append(path)
+    return files
+
+
+class RelativeLinkTest(unittest.TestCase):
+    """Every relative link in prose and in Python source resolves to a file.
+
+    Not redundant with its neighbors: `test_architecture_index` resolves the
+    module table's rows but not the links inside the sections those rows point
+    at, and the site build skips `docs/architecture/` entirely.
+    """
+
+    def test_every_relative_link_resolves(self) -> None:
+        offenders = []
+        for path in _linkable_files():
+            rel = path.relative_to(_REPO_ROOT).as_posix()
+            if rel in _LINK_SHAPE_EXEMPT:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for lineno, target in _linked_paths(text):
+                if not (path.parent / target).resolve().exists():
+                    offenders.append(f"{rel}:{lineno} -> {target}")
+        self.assertEqual(offenders, [], "these links resolve to nothing")
+
+
 class RetiredDocsTest(unittest.TestCase):
     def test_nothing_points_at_the_retired_usage_document(self) -> None:
         """`docs/usage.md` was promoted into the Programmer's Reference Guide.
@@ -57,9 +161,8 @@ class RetiredDocsTest(unittest.TestCase):
         surrounding one used to be. Point it at `docs/reference/` instead.
         """
         needle = "usage.md"
-        # Two files have to say the name: this one, which searches for it, and
-        # the changelog, which records the removal and would be useless if it
-        # could not name what was removed.
+        # Two files have to say the name: this one, and the changelog, which records
+        # the removal and would be useless if it could not name what was removed.
         allowed = {Path(__file__).resolve(), _REPO_ROOT / "CHANGELOG.md"}
         offenders = [
             str(path.relative_to(_REPO_ROOT))

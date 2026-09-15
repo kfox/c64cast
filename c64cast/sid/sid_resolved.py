@@ -1,65 +1,18 @@
 """One log line naming the chip a listener will actually hear.
 
-Every other module in this area logs its *intent* — sid_autoconfig says "chip at
-$D400 (8580) → ultisid1", asid_sidmap says which chip it mapped where,
-sid_volume says which mixer levels it moved. None of them says what came out the
-other end, and the three can disagree: a core can be configured and then never
-reach the mixer, a socket can keep answering an address a core was just handed,
-a level the user trimmed to OFF can silence a chip that is otherwise routed
-perfectly. Each of those produces **no error anywhere** — the config writes all
-succeed — so the only symptom is wrong-sounding or silent playback, and
-diagnosing it means reading four REST categories by hand.
+Emitted once per scene setup, after routing, model matching, panning and volume
+have all settled: the live hardware state is read back and rendered per tune
+chip — the source answering its address, the chip model it presents, its mixer
+level and pan. A chip on the wrong model, inaudible, or unmapped makes the line
+a WARNING instead of INFO.
 
-So after routing, model matching, panning and volume have all settled, the live
-state is read back once and rendered as a single line per tune chip: the source
-answering its address, the chip model that source presents, and its mixer level
-and pan. A chip that ends up on the wrong model, or inaudible, or unmapped makes
-the line a WARNING instead of INFO.
+A read-back rather than a summary of what the planners decided, because the
+planners are what it exists to catch. Pure renderers plus one best-effort reader
+(:func:`log_resolved_audio`); a REST failure logs nothing rather than crashing a
+scene. A backend that cannot read the state renders against what
+``[hardware].host_sid_model`` / ``[hardware].host_sid_chips`` declare instead.
 
-Read-back, not a summary of what the planners decided: the planners are exactly
-what this is here to catch. Pure renderer (:func:`describe_resolved_audio`) plus
-one best-effort reader (:func:`log_resolved_audio`), like the rest of the SID
-hardware-config modules — and a REST failure logs nothing rather than crashing
-a scene.
-
-A backend without the multi-SID surface but with the U2+ emulated-stereo-SID
-surface renders from that instead (:func:`read_emusid_hardware_state`): the
-side snooping each chip, its filter curve as the model, and its mixer level
-and pan — with the declared host-SID verdict appended, because on such a
-device the host machine's own SID plays the tune too, on its own output.
-
-Those two outputs can disagree, and when they do the verdict alone is not
-enough. A tune matched to an 8580 emulation still plays on the machine's own
-6581 through the AV cable, so it sounds thin and scratchy there while the log
-says everything matched — which reads exactly like a failing SID.
-:func:`_warn_output_split` therefore names the consequence and the remedy once
-per run, rather than leaving a listener to infer either from a line about
-configuration.
-
-A backend that can't read the SID hardware state at all (TeensyROM has no
-config API) still gets a model-match verdict when the machine's chips are
-declared, since nothing on such a link can *ask* what the host C64 carries.
-``[hardware].host_sid_model`` rides in on the backend profile and
-:func:`describe_declared_audio` renders the primary chip against it — the tune
-wants an 8580, this machine is declared (or NTSC/PAL-assumed) to carry a 6581.
-That mismatch is the single most audible mis-set on such a link, and without
-the declaration nothing anywhere could say so.
-
-One chip is not always the whole machine, though. A C64 with an internal
-dual-SID mod (ARM2SID, SIDFX, DualSID) answers at a second address in its own
-hardware, and a multi-SID tune plays on both chips with no routing required —
-the mod has already done in silicon what the U64 does in config. Such a
-machine is declared per chip with ``[hardware].host_sid_chips``, and
-:func:`describe_declared_chips` gives every tune chip its own verdict, which
-matters most where these mods usually land: one 6581 and one 8580 at once.
-
-Most machines have no such mod, though, and a multi-SID tune on one of them is
-usually a tune picked by mistake. The declared-chip verdict can only say so
-once someone has declared their chips, which leaves the default configuration
-— nothing declared — silent about exactly the case most likely to be an error.
-:func:`_warn_unplaceable_chips` closes that: it needs no declaration, because
-"this machine has one SID" is the safe assumption to warn from when the
-alternative is a mod the user would have had to install deliberately.
+See docs/architecture/sid.md#sid_resolvedpy--the-resolved-audio-line.
 """
 
 from __future__ import annotations
@@ -94,23 +47,15 @@ _SOCKET_INDEX: Final[dict[str, int]] = {"socket1": 0, "socket2": 1}
 _UNMAPPED = "nothing mapped"
 _NO_CHIP = "empty socket"
 _UNKNOWN_LEVEL = "level unknown"
-# A host_sid_chips entry whose model the user doesn't know — the chip exists,
-# so the address is covered, but no model verdict can be passed on it.
+# A host_sid_chips entry whose model the user doesn't know: the address is
+# covered, but no model verdict can be passed on it.
 _MODEL_UNDECLARED = "unknown"
 
-# Set once the NTSC/PAL host-model assumption has been logged, so a playlist
-# of SID scenes states it on the first verdict that rides on it rather than
-# at every scene activation.
+# Once-per-run latches. A playlist re-activates these scenes, and each of these
+# messages is identical every time it would fire: a property of the machine, or
+# of the machine and the tune, not of the activation.
 _assumed_model_logged = False
-
-# Set once the two-outputs guidance has been given. The per-scene verdict keeps
-# reporting the mismatch; the advice about which cable to listen to is the same
-# every time, so it is said once rather than at every scene activation.
 _output_split_logged = False
-
-# Set once a tune has been found to drive more chips than the machine can place.
-# Same reasoning as the two above: the condition is a property of the machine
-# and the tune choice, not something a listener needs restated per scene.
 _unplaceable_logged = False
 
 # A real SID decodes its address only partially and answers all of this range,
@@ -274,10 +219,6 @@ def describe_declared_chips(
             ok = False
         else:
             fragments.append(f"${address:04X} → host SID ({model} declared)")
-    # No bystander clause, unlike describe_resolved_audio's: a declared chip the
-    # tune doesn't drive is receiving no writes, so it makes no sound. The U64's
-    # bystanders are audible (mapped and unmuted); a silent chip has no place in
-    # a line about what a listener hears.
     return ResolvedAudio("; ".join(fragments), clean=ok)
 
 
@@ -349,10 +290,6 @@ def _declared_host_verdict(
     assumed = bool(getattr(api.profile, "host_sid_model_assumed", False))
     if assumed and not _assumed_model_logged:
         _assumed_model_logged = True
-        # WARNING, not INFO: every model verdict on this link is only as good as
-        # this guess, and the NTSC/PAL convention is a weak one — plenty of NTSC
-        # machines carry an 8580. A guess that silently underwrites a verdict is
-        # worth interrupting for once; declaring the model silences it for good.
         log.warning(
             "sid hardware: this machine's SID model is undeclared and cannot be "
             "read over this link — assuming %s from the NTSC=6581 / PAL=8580 "
@@ -551,15 +488,13 @@ def log_resolved_audio(
             return
         resolved = describe_resolved_audio(state, addresses, required_models)
         if (host := _declared_host_verdict(api, addresses, required_models)) is not None:
-            # Label the host route as a *group* rather than trailing the phrase
-            # after it: with two declared chips a suffix reads as if only the
-            # last fragment were on the machine's own output.
+            # Both warnings end in "listen on the Ultimate's jack", but this one
+            # blames the chip model — the wrong diagnosis for a chip that isn't
+            # there, which the more specific unplaceable warning has just given.
             if not unplaceable:
-                # Both messages end in "listen on the Ultimate's jack", but the
-                # split warning attributes the AV output's problem to the chip
-                # model, which is the wrong diagnosis when the real cause is a
-                # chip that isn't there. The more specific one has already run.
                 _warn_output_split(emu_clean=resolved.clean, host=host)
+            # The label precedes the host fragments as a group: trailed after
+            # them it reads as if only the last chip were on that output.
             resolved = ResolvedAudio(
                 summary=f"{resolved.summary}; on the machine's own audio output: {host.summary}",
                 clean=resolved.clean and host.clean,

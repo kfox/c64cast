@@ -44,8 +44,7 @@ class FakeApi:
             self._idx += 1
         return b
 
-    # Stubbed out — never called by the poller, but the Playlist's _safe_setup
-    # uses these on its scenes (not relevant here).
+    # Never called by the poller; the Playlist's _safe_setup uses these.
     @property
     def stats(self):
         return {"writes": 0, "skipped": 0, "errors": 0, "bytes": 0}
@@ -102,18 +101,14 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         poller.stop()
 
     def test_no_pause_when_already_pressed_at_start(self):
-        # Edge-trigger: if the first read shows pressed, we should not
-        # interpret that as a fresh press (could be transient from boot).
-        # Actually the poller's last_press_seen starts False, so even an
-        # initial 'pressed' reading triggers pause. This test pins that
-        # behavior so we notice if it changes.
+        # last_press_seen starts False, so even an initial "pressed" reading
+        # fires pause rather than being read as a transient from boot.
         api = FakeApi()
         api.set_script([b"\x02", b"\x02"])
         poller = CommodoreKeyPoller(cast(Ultimate64API, api), poll_interval_s=0.01)
         pause = threading.Event()
         resume = threading.Event()
         poller.start(pause, resume)
-        # First read sees pressed → fires pause (current behavior).
         self.assertTrue(pause.wait(timeout=0.3))
         poller.stop()
 
@@ -142,15 +137,10 @@ class CommodoreKeyPollerTest(unittest.TestCase):
         poller = CommodoreKeyPoller(
             cast(Ultimate64API, api), poll_interval_s=0.02, hold_threshold_s=0.30
         )
-        # Drive the tick state machine synchronously on a virtual clock, one
-        # scripted sample per tick, instead of racing a real poll thread
-        # against wall time. The threaded version flaked on loaded CI boxes
-        # (main's own runs went red on it): the hold decision compares
-        # against wall-clock hold_threshold_s, so when the first five
-        # "pressed" ticks stretched past 300 ms of real time, resume fired
-        # legitimately before the release sample was ever read. Virtual
-        # ticks advance exactly poll_interval_s apiece, so the schedule the
-        # script encodes is the schedule the state machine sees.
+        # Driven on a virtual clock, one scripted sample per tick: the hold
+        # decision compares against wall-clock hold_threshold_s, so under a real
+        # poll thread on a loaded box the first five "pressed" ticks stretched
+        # past 300 ms and resume fired before the release sample was read.
         _drive_ticks(poller, len(seq), pause, resume)
         self.assertFalse(resume.is_set(), "release in the middle should reset the hold timer")
 
@@ -195,8 +185,7 @@ class CtrlSkipTest(unittest.TestCase):
         self.assertFalse(resume.is_set(), "CTRL while paused must not trigger resume either")
 
     def test_ctrl_dropped_when_no_skip_event_provided(self):
-        # Backwards compat: existing callers that don't pass skip_event
-        # should still work — CTRL just becomes a silent no-op.
+        # Callers that don't pass skip_event still work; CTRL is a no-op.
         api = FakeApi()
         api.set_script([b"\x00", b"\x04"])
         pause = threading.Event()
@@ -234,9 +223,8 @@ class CtrlSkipTest(unittest.TestCase):
         poller.stop()
 
     def test_ctrl_edge_after_release(self):
-        # Press, release, press → two skip events possible, but skip_event
-        # only latches on edge. We just verify the second press still
-        # fires after the event is cleared by the consumer.
+        # skip_event latches on edge only, so the second press must still fire
+        # once the consumer has cleared it.
         api = FakeApi()
         api.set_script([b"\x00", b"\x04", b"\x00", b"\x04"])
         pause = threading.Event()
@@ -246,11 +234,8 @@ class CtrlSkipTest(unittest.TestCase):
         poller.start(pause, resume, skip_event=skip)
         self.assertTrue(skip.wait(timeout=0.3))
         skip.clear()
-        # Need to give the poller time to step through release → press.
-        # The script's last byte loops; we already passed it before clearing,
-        # so we won't actually see a second edge in this short window.
-        # The point is the first press worked; the loop-after-clear case is
-        # covered by test_ctrl_press_sets_skip_event running again.
+        # The script's last byte loops and was already passed before the clear,
+        # so no second edge lands in this window.
         poller.stop()
 
 
@@ -377,10 +362,9 @@ class MenuInputTest(unittest.TestCase):
         poller.stop()
 
     def test_no_buffer_read_when_menu_not_wired(self):
-        # menu_event None → the poller must never touch the keyboard buffer
-        # (read load stays $028D-only). Driven synchronously so a buffer
-        # read raises HERE — on the old poll thread the AssertionError died
-        # with the thread and unittest never saw it.
+        # menu_event None means the poller must never touch the keyboard
+        # buffer (read load stays $028D-only). Driven synchronously so a
+        # buffer read raises here instead of dying with the poll thread.
         class ModOnlyApi(MenuKeyApi):
             def read_memory(self, address, length, timeout=1.0):
                 assert address == ADDR_MODIFIERS, "must not read the buffer when menu unwired"
@@ -392,10 +376,9 @@ class MenuInputTest(unittest.TestCase):
         _drive_ticks(poller, 5, pause, resume)  # no menu params
 
     def test_no_buffer_read_when_not_eligible(self):
-        # menu wired but neither open nor eligible (e.g. a kernal-input
-        # launcher scene): the poller must NOT read/clear the buffer — $00C6
-        # is the launcher's own to watch. A buffer read raises in-thread
-        # (same rationale as test_no_buffer_read_when_menu_not_wired).
+        # Menu wired but neither open nor eligible (a kernal-input launcher
+        # scene): $00C6 is the launcher's own to watch, so the poller must not
+        # read or clear the buffer.
         class ModOnlyApi(MenuKeyApi):
             def read_memory(self, address, length, timeout=1.0):
                 assert address == ADDR_MODIFIERS, "must not touch the buffer when not eligible"
@@ -449,9 +432,8 @@ class MenuInputTest(unittest.TestCase):
         poller.stop()
 
     def test_nav_keys_enqueued(self):
-        # Menu open: cursor codes are enqueued in order. CRSR-up is the
-        # kernal's SHIFT+CRSR-down decode (reverse), carried in the code
-        # itself — no separate shift flag.
+        # CRSR-up is the kernal's SHIFT+CRSR-down decode, carried in the code
+        # itself rather than a separate shift flag.
         nav: deque[int] = deque(maxlen=8)
         api = MenuKeyApi()
         api.inject([KEYBUF.CRSR_DOWN, KEYBUF.CRSR_UP, KEYBUF.CRSR_RIGHT])

@@ -54,19 +54,10 @@ log = logging.getLogger(__name__)
 
 HIRES_STYLES = ("normal", "edges", "edges_inverted")
 
-# Per-cell foreground stickiness for the error-min pick, in d² space (the units
-# quantize_distances returns — scaled by PERCEPTUAL_DIST_SCALE under the Lab
-# metric, the same convention the percell bonuses in base.py use).
-#
-# Well below base.py's per-pixel 5000 because the quantity is different: this
-# thresholds a mean d² over a cell's 64 pixels, which averages most of the
-# sensor noise out before the comparison ever happens, where the percell bonus
-# thresholds one pixel's own distance. Swept on a noisy static subject and a
-# panning one: 2000 already takes static-subject screen churn to zero for +0.06
-# Lab on the panning case, and everything above it only buys lag — 5000 costs
-# +0.28, 15000 +1.05, 50000 +6.6, for progressively less churn benefit. Since
-# this is a decision hysteresis and not a smoother, over-damping shows up
-# directly as motion inaccuracy, so the knee is the right place to sit.
+# Per-cell foreground stickiness for the error-min pick, in d² space (scaled by
+# PERCEPTUAL_DIST_SCALE under the Lab metric, as base.py's percell bonuses are).
+# Swept on noisy static and panning sequences; see
+# docs/architecture/video-color.md#colorhires_cell_pick--which-color-fills-a-hires-cell.
 HIRES_CELL_HYSTERESIS_BONUS = 2000.0
 
 
@@ -96,8 +87,8 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     cell_pick: how the "normal" style chooses each cell's foreground.
       "error-min" (default) minimizes the cell's own error; "sample" reads
-      one pixel per cell. See _errmin_fg for why the accurate pick is also
-      the stabler one.
+      one pixel per cell. See
+      docs/architecture/video-color.md#colorhires_cell_pick--which-color-fills-a-hires-cell.
 
     use_reu_staged: opt into the REU bank-swap double-buffer pipeline.
       Each frame's bitmap + screen are REUWRITE-staged into REU SRAM
@@ -107,19 +98,16 @@ class HiresDisplayMode(BitmapDisplayMode):
       bank tear-free. See push_bitmap_via_reu / install_bank_swap_irq
       and the REU_VIDEO_BITMAP_* constants in modes_irq.py.
 
-      Cannot coexist with [audio].use_reu_pump (both share REC + $0314)
-      — validate_scene_cfg enforces this at load time. Color RAM isn't
-      used by hires (color is in screen RAM nibbles), so the shared-
-      $D800 mid-frame-mismatch problem the other display modes would
-      have doesn't apply.
+      Runs alongside [audio].use_reu_pump. Both drive REC and $0314,
+      so setup() installs BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER — the merged
+      dispatcher — whenever audio_reu_pump_active is set. Color RAM
+      isn't used by hires (color is in screen RAM nibbles), so the
+      shared-$D800 mid-frame-mismatch problem the other display modes
+      would have doesn't apply.
     """
 
     name = "hires"
     frame_target_size = (320, 200)
-    # Live-tune surface (see DisplayMode.LIVE_PARAMS). Hires quantizes (in the
-    # "normal" style) with spatial dither + nearest-palette matching, so those
-    # are live; it does NOT apply the adaptive color fit (no auto_fit_strength)
-    # and has no palette_mode / per-cell axis.
     LIVE_PARAMS = {"dither_strength": (0.0, 2.0)}
     LIVE_CHOICES = {
         "dither_method": DITHER_METHODS,
@@ -145,13 +133,9 @@ class HiresDisplayMode(BitmapDisplayMode):
         _validate_hires_style(style)
         _validate_cell_pick(cell_pick)
         self.style = style
-        # Flicker blend ([color].flicker_tolerance). None = off, and every
-        # blend branch is keyed on that rather than a bool so the plain path
-        # keeps running the 16-entry quantizer it always did. Only the "normal"
-        # style picks color, so blending is a no-op on the edges styles.
+        # `self._blend_table is None` is the off state every blend branch keys
+        # on. Only the "normal" style picks color, so it is inert on edges.
         _blending = FLICKER_TOLERANCES.get(flicker_tolerance, -1) >= 0
-        # Parsed here rather than at the call site so a malformed entry raises
-        # where the mode is built, alongside the tolerance's own validation.
         _scored = parse_scoring_pairs(flicker_score_pairs) if flicker_score_pairs else None
         self._blend_table: BlendTable | None = (
             build_blend_table(
@@ -161,49 +145,29 @@ class HiresDisplayMode(BitmapDisplayMode):
             else None
         )
         self._last_bg_index: int | None = None
-        # Which color each cell's foreground takes ([color].hires_cell_pick).
-        # Only the "normal" style picks color at all — the edges styles are
-        # fixed 2-color, so this is a no-op there, same as _perceptual.
         self._cell_pick = cell_pick
         self._last_fg: np.ndarray | None = None
-        # Perceptual (CIE-Lab) nearest-palette matching ([color].color_match).
-        # Only the "normal" style quantizes color (bg + per-cell fg samples); the
-        # edges styles are fixed 2-color, so this is a no-op there.
         self._perceptual = bool(perceptual)
         if self._blend_table is not None and not self._perceptual:
-            # Blending is defined perceptually — a pair's fused color is a
-            # linear-light average and its eligibility is a Lab gap — so fitting
-            # in weighted-BGR optimizes a different space than the one the extra
-            # entries live in. Measured, that mismatch is enough to make the
-            # widened palette score WORSE than the 16 solids on photographic
-            # content (+2.5%) and on a luminance ramp (+6.3%), where under the
-            # Lab metric the same frames improve by 2-3%. Forced rather than
-            # refused: color_match's own default already resolves here, so this
-            # only fires when a config explicitly asked for "rgb".
+            # Blends are Lab-defined, and measured under weighted-BGR the
+            # widened palette scores worse than the 16 solids (+2.5% on a photo,
+            # +6.3% on a luminance ramp).
             log.info("hires: flicker blend forces color_match=perceptual (blends are Lab-defined)")
             self._perceptual = True
         self._dither_method = dither_method
         self._dither_strength = dither_strength
         self._last_bg: int | None = None
         self.use_reu_staged = use_reu_staged
-        # Host-DMA double-buffer (no-REU backends, e.g. TeensyROM): tear-free
-        # via off-screen-bank writes + a vblank $DD00 flip, no REU. Mutually
-        # exclusive with use_reu_staged (resolve_double_buffer guarantees it).
+        # Mutually exclusive with use_reu_staged; resolve_double_buffer
+        # guarantees it.
         self.double_buffer = double_buffer
-        # When the scene also opted into REU audio (`[audio].use_reu_pump`),
-        # the bank-swap dispatcher at $C500 needs to fall through to the
-        # audio pump handler at $C100 on non-raster (CIA #1 jiffy) IRQs.
-        # Picks BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER in setup() and pre-seeds
-        # $C100 with a safe JMP $EA31 stub so the install window can't
-        # vector into uninitialized RAM.
+        # Selects BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER in setup(), whose dispatcher
+        # falls through to the $C100 audio pump on non-raster (CIA #1) IRQs.
         self.audio_reu_pump_active = audio_reu_pump_active
-        # Double-buffer tracker: which VIC bank is currently displayed.
-        # 0 = bank 0 (paint into bank 2 next), 1 = bank 2 (paint into
-        # bank 0 next). Only meaningful when use_reu_staged is True;
-        # reset in setup().
+        # Which VIC bank is displayed: 0 = bank 0 (paint bank 2 next),
+        # 1 = bank 2 (paint bank 0 next).
         self._displayed_bank = 0
 
-    # --- live-tune setters (see DisplayMode.LIVE_PARAMS / LIVE_CHOICES) ---
     @property
     def dither_strength(self) -> float:
         return self._dither_strength
@@ -218,20 +182,16 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def set_color_match(self, value: str) -> str:
         """Live-swap the nearest-palette metric (no-op on the fixed 2-color
-        edges styles). Hires carries no d²-space penalty to rescale.
-
-        Pinned while blending, for the reason __init__ gives: the widened
-        palette is Lab-defined and measurably regresses under weighted-BGR."""
+        edges styles), pinned to perceptual while blending."""
         if self._blend_table is not None:
             return "color_match=perceptual (pinned by flicker_tolerance)"
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
 
     def set_cell_pick(self, value: str) -> str:
-        """Live-swap the per-cell foreground pick. Drops the hysteresis state:
-        the two strategies choose from the same 16 entries but by different
-        criteria, so carrying a "previous pick" across the swap would hold the
-        old strategy's answers for a frame."""
+        """Live-swap the per-cell foreground pick, dropping the hysteresis
+        state — the two strategies pick by different criteria, so a carried-over
+        previous pick would hold the old strategy's answers for a frame."""
         _validate_cell_pick(value)
         self._cell_pick = value
         self._last_fg = None
@@ -241,11 +201,9 @@ class HiresDisplayMode(BitmapDisplayMode):
         """Pick the global background entry, holding the previous one unless a
         challenger beats it by BG0_HYSTERESIS_MARGIN.
 
-        Blend-only. bg fills every %0 pixel, so under blending a bg flip does not
-        merely recolor the field — it can switch the whole background between
-        steady and alternating, which reads far harder than the color change
-        itself. The margin is the one mhires uses on $D021, for the same reason:
-        track a sustained shift, ignore a near-tie."""
+        Blend-only. bg fills every %0 pixel, so under blending a bg flip can
+        switch the whole background between steady and alternating. The margin
+        is the one mhires uses on $D021."""
         best = int(counts.argmax())
         prev = self._last_bg_index
         if (
@@ -266,20 +224,13 @@ class HiresDisplayMode(BitmapDisplayMode):
         over the cell's 64 pixels — no search, one argmin over the 16 entries.
         The distance matrix it needs is the one the quantizer already built.
 
-        The `"sample"` alternative reads a single pixel per cell instead. It was
-        kept for a long time on the grounds that it costs less and holds still
-        better, and the second half of that turns out not to survive
-        measurement: against `"sample"` on a noisy static subject this scores
-        -34% mean Lab error AND drops per-frame screen churn to zero (`"sample"`
-        sits at ~33 bytes/frame), because a one-pixel read tracks sensor noise
-        directly while a whole-cell mean averages it out. It is the more
-        accurate pick and the stabler one at once; the cost half of the claim is
-        real but small (≈+0.8 ms/frame). `"sample"` stays available for the
-        tightest CPU budgets.
+        The `"sample"` alternative reads a single pixel per cell instead, and
+        stays available for the tightest CPU budgets: this path costs ≈+0.8
+        ms/frame.
         """
         entries = dist.shape[1]
-        # (1000, 64, E): each cell's 8×8 pixels against every candidate. Same
-        # row/col interleave the dither path uses for pixels_cell below.
+        # (1000, 64, E): each cell's 8×8 pixels against every candidate, in the
+        # same row/col interleave the dither path's pixels_cell uses.
         per_cell = (
             dist.reshape(25, 8, 40, 8, entries).transpose(0, 2, 1, 3, 4).reshape(1000, 64, entries)
         )
@@ -303,40 +254,26 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def setup(self, api):
         super().setup(api)
-        # Single-buffer bring-up clears $2000+$0400 before the $D011 flip
-        # (engage clean-field — see engage_bitmap_mode); the REU / host-DMA
-        # double-buffer paths zero both VIC banks themselves below, so they pass
-        # clear=False and only take the register pokes. border=0x00 here closes
-        # the window between this setup() and the first push() (which re-asserts
-        # the real per-frame border on every subsequent frame) — without it the
-        # engage would reveal a clean black bitmap under whatever border color
-        # the previous scene left behind. bg0=0x00 is belt-and-braces (hires
-        # ignores $D021 — background is the screen-RAM nibble, already zeroed
-        # by the clear above) but matches voice_scope's hires bring-up so the
-        # register isn't left holding a stale value from the prior scene.
+        # The double-buffer paths zero both VIC banks themselves below, so they
+        # take only the register pokes. border=0x00 covers the window between
+        # here and the first push(); hires ignores $D021, so bg0=0x00 just keeps
+        # the register off the previous scene's value.
         single_buffer = not self.use_reu_staged and not self.double_buffer
         engage_bitmap_mode(
             api, d011="3b", d018="18", d016="08", border=0x00, bg0=0x00, clear=single_buffer
         )
-        # None (not 0) so the first push() unconditionally re-asserts the
-        # border/bg0 pair even when the first frame's bg happens to be black —
-        # push() also touches $D021 (unused in hires, but other code/tests
-        # treat the pair as atomic), which the setup-time write above doesn't.
+        # None, not 0, so the first push() re-asserts the border/bg0 pair even
+        # when the first frame's bg is black.
         self._last_bg = None
         self._last_fg = None
         self._last_bg_index = None
         if self._blend_table is not None:
-            # Bank-swapping double-buffer with a second screen page per bank and
-            # the field-alternating swap IRQ. self.double_buffer stays False for
-            # this: the plain host-DMA path installs a swap handler with no $D018
-            # phase toggle, and the two cannot share $0314.
+            # self.double_buffer stays False: the plain host-DMA path installs a
+            # swap handler with no $D018 phase toggle, and the two cannot both
+            # own $0314.
             self._setup_flicker_doublebuffer(api)
-            # Hires puts both of a cell's colors in the screen byte, so the page
-            # flip reaches every color the mode has.
             self._log_flicker_arming(self._blend_table, blendable="fg + bg (both screen nibbles)")
         elif self.double_buffer:
-            # Host-DMA double-buffer: zero both banks + install the minimal
-            # vblank swap IRQ (no REU). See _setup_hostdma_doublebuffer.
             self._setup_hostdma_doublebuffer(api)
             log.info(
                 "hires: host-DMA double-buffer armed (bank 0 ↔ bank 2, "
@@ -345,19 +282,15 @@ class HiresDisplayMode(BitmapDisplayMode):
                 FRAME_TRACKER_ADDR,
             )
         if self.use_reu_staged:
-            # Zero both banks' bitmap + screen so the off-screen bank
-            # doesn't show garbage on the first swap. Single full-region
-            # writes — these aren't on the per-frame path.
+            # So the off-screen bank shows no garbage on the first swap.
             zeros_bitmap = bytes(REU_VIDEO_BITMAP_LEN)
             zeros_screen = bytes(REU_VIDEO_BITMAP_SCREEN_LEN)
             api.write_memory_file(f"{VIC_BANK_0.BITMAP:04X}", zeros_bitmap)
             api.write_memory_file(f"{VIC_BANK_0.SCREEN:04X}", zeros_screen)
             api.write_memory_file(f"{VIC_BANK_2.BITMAP:04X}", zeros_bitmap)
             api.write_memory_file(f"{VIC_BANK_2.SCREEN:04X}", zeros_screen)
-            # Pin VIC bank to 0 (kernal default; the reset path leaves
-            # CIA #2 PORT_A at this value already, but be explicit so a
-            # scene-to-scene transition into REU-staged hires from a
-            # non-default bank still starts from a known state).
+            # Pin VIC bank 0, so a transition in from a non-default bank still
+            # starts from a known state.
             api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
             self._displayed_bank = 0
             handler = (
@@ -379,11 +312,10 @@ class HiresDisplayMode(BitmapDisplayMode):
         if self.use_reu_staged or self.double_buffer or self._blend_table is not None:
             uninstall_bank_swap_irq(api)
             if self._blend_table is not None:
-                # uninstall restores $DD00 but not $D018, and the flicker handler
-                # may have left it on the $0C00 page. Nothing else re-asserts it
-                # on the way into a char scene, which would then read its matrix
-                # from the wrong offset. Safe only after uninstall — before it,
-                # the next field's IRQ would put the page value straight back.
+                # uninstall restores $DD00 but not $D018, which the flicker
+                # handler may have left on the $0C00 page — a char scene would
+                # then read its matrix from the wrong offset. Only safe after
+                # uninstall: before it, the next field's IRQ restores the page.
                 api.write_memory(f"{VIC.D018_MEMORY:04X}", "14")
             api.invalidate_cache()
 
@@ -406,10 +338,9 @@ class HiresDisplayMode(BitmapDisplayMode):
             if offset_fn is not None:
                 offset = offset_fn(200, 320, self._dither_strength)
                 flat = np.clip(flat + offset.reshape(-1, 1), 0, 255)
-            # Blending only swaps the candidate set: a blend entry is the pair
-            # (a, b) and a solid is (c, c), so every index below is just an
-            # entry, and picking, dithering and bit-packing are shared verbatim.
-            # Only the final nibble split cares which kind an entry is.
+            # A blend entry is the pair (a, b) and a solid is (c, c), so every
+            # index below is just an entry and only the final nibble split cares
+            # which kind it is.
             if table is None:
                 dist = quantize_distances_for(flat, perceptual=self._perceptual)
             else:
@@ -421,18 +352,16 @@ class HiresDisplayMode(BitmapDisplayMode):
             if self._cell_pick == "error-min" or table is not None:
                 # Blending forces the cell fit regardless of cell_pick: a blend
                 # entry sits between its two solids, so a single sample lands on
-                # one of them more or less at random and the widened palette
-                # then measures WORSE than the 16 solids. The fit is what makes
-                # the second screen page pay for itself.
+                # one of them at random and the widened palette then measures
+                # worse than the 16 solids.
                 sample_fg, is_fg = self._errmin_fg(dist, bg)
             else:
                 sample_fg = quantized[4::8, 4::8]  # one sample per 8×8 cell
                 is_fg = quantized != bg
             if self._dither_method in ("floyd-steinberg", "atkinson"):
-                # Re-dither each 8×8 cell's own pixels against its 2-color set
-                # {bg, cell fg}, replacing the nearest-of-two assignment above.
-                # Only the per-pixel fill dithers — the cell's two colors are
-                # already fixed by this point, whichever way they were picked.
+                # Re-dither each 8×8 cell's pixels against its {bg, cell fg} set,
+                # replacing the nearest-of-two assignment above. The cell's two
+                # colors are already fixed by this point.
                 pixels_cell = (
                     flat.reshape(200, 320, 3)
                     .reshape(25, 8, 40, 8, 3)
@@ -456,15 +385,14 @@ class HiresDisplayMode(BitmapDisplayMode):
             edges = cv2.Canny(gray, 75, 150)
             is_fg = edges > 128
             quantized = None
-            # edges_inverted: black edges on white background. Swap which
-            # palette index plays bg vs fg — VIC packs both into one byte
-            # per cell so the bit-pattern stays identical.
+            # Swapping which index plays bg vs fg is enough: VIC packs both into
+            # one byte per cell, so the bit pattern is identical either way.
             if self.style == "edges_inverted":
                 bg, fg_const = 1, 0
             else:
                 bg, fg_const = 0, 1
 
-        # Bit-pack into VIC bitmap layout: 25 rows × 40 cells × 8 bytes.
+        # VIC bitmap layout: 25 rows × 40 cells × 8 bytes.
         packed = np.packbits(is_fg.astype(np.uint8), axis=1)  # (200, 40)
         bitmap_ram = packed.reshape(25, 8, 40).transpose(0, 2, 1).reshape(-1)
 
@@ -481,9 +409,9 @@ class HiresDisplayMode(BitmapDisplayMode):
             }
             return plain
 
-        # Split each entry into the palette index its field shows. The two pages
-        # share the bitmap, so a cell whose entry is a solid writes the same byte
-        # to both and simply doesn't alternate.
+        # Split each entry into the index its field shows. Both pages share the
+        # bitmap, so a solid entry writes the same byte to each and never
+        # alternates.
         fg_a, fg_b = table.field_pages(sample_fg)
         bg_a, bg_b = (int(v) for v in table.pairs[bg])
         screen_ram = _pack_screen(fg_a, bg_a)
@@ -492,10 +420,8 @@ class HiresDisplayMode(BitmapDisplayMode):
             "bitmap": bitmap_ram,
             "screen": screen_ram,
             "screen_b": screen_b,
-            # $D020 is a single register the field IRQ doesn't manage, so the
-            # border can't blend — it takes the field-A component. Widening the
-            # handler to alternate it too would buy a blended frame around the
-            # picture and cost bytes in the one routine that must fit in vblank.
+            # $D020 is a single register the field IRQ does not manage, so the
+            # border cannot blend; it takes the field-A component.
             "bg": bg_a,
             "text": HiresTextSurface(bitmap_ram, screen_ram),
         }
@@ -503,19 +429,17 @@ class HiresDisplayMode(BitmapDisplayMode):
 
     def push(self, api: C64Backend, buffers: BitmapComposeBuffers) -> None:
         bg = buffers["bg"]
-        # $D020 (border) is a single global register — write it from the host
-        # on both paths (the REU bank-swap IRQ only manages the banked bitmap +
-        # screen, not the border).
+        # $D020 is a single global register the REU bank-swap IRQ does not
+        # manage, so the host writes it on both paths.
         if bg != self._last_bg:
             api.write_regs("d020", bg, bg)
             self._last_bg = bg
         bitmap_bytes = buffers["bitmap"].tobytes()
         screen_bytes = buffers["screen"].tobytes()
         if self._blend_table is not None:
-            # Both pages plus the shared bitmap into the off-screen bank, then
-            # arm. The field alternation is already free-running against the
-            # displayed bank, so this stages a whole new pair set and the next
-            # phase-0 vblank brings it up in one piece.
+            # The field alternation free-runs against the displayed bank, so
+            # staging both pages plus the bitmap lets the next phase-0 vblank
+            # bring the whole pair set up in one piece.
             (
                 target,
                 bm_addr,
@@ -534,15 +458,12 @@ class HiresDisplayMode(BitmapDisplayMode):
             self._displayed_bank = target
             return
         if self.use_reu_staged:
-            # Drop into the off-screen bank, then cue a vblank swap.
             target_bank = 1 - self._displayed_bank
             push_bitmap_via_reu(api, bitmap_bytes, screen_bytes, target_bank)
             self._displayed_bank = target_bank
             return
         if self.double_buffer:
-            # Host-DMA: write bitmap+screen into the off-screen bank, then arm
-            # the vblank swap. Hires has no color RAM, so the swap is fully
-            # tear-free (bg passed as the tracker's bg0 → $D021, unused in hires).
+            # Hires has no color RAM, so this swap is fully tear-free.
             target, bm_addr, scr_addr, bm_id, scr_id, dd00 = self._hostdma_swap_target()
             api.write_region(bm_addr, bitmap_bytes, region_id=bm_id)
             api.write_region(scr_addr, screen_bytes, region_id=scr_id)

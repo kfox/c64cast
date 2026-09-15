@@ -176,7 +176,6 @@ class PackagedResourcesTest(unittest.TestCase):
         self.assertIn("hello", names)
         self.assertIn("c64cast.example", names)
         self.assertIn("ensemble/master", names)
-        # Single-file demos are listed before the sub-directory ones.
         self.assertLess(names.index("hello"), names.index("ensemble/master"))
         self.assertEqual(len(names), len(set(names)), "duplicate example names")
 

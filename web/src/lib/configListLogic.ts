@@ -1,6 +1,5 @@
 /** Pure logic behind `ConfigList.svelte`'s search box, sort control and name
- *  display — pulled out of the component so it can be unit-tested without
- *  mounting Svelte. */
+ *  display. */
 
 import type { ConfigFile } from "./types";
 
@@ -13,10 +12,8 @@ export function displayLabel(file: ConfigFile): string {
 }
 
 /** The same label from a bare ref (`<root-label>/<relative>`) when the
- *  `ConfigFile` isn't in hand — the shell's Start/Switch button, the Live
- *  breadcrumb, a favorite whose file has since moved. Drops the leading root
- *  segment and the `.toml` suffix so it reads identically to `displayLabel`
- *  for the same file. One name for a config, everywhere it is shown. */
+ *  `ConfigFile` isn't in hand. Drops the leading root segment and the `.toml`
+ *  suffix, so it reads identically to `displayLabel` for the same file. */
 export function refDisplayLabel(ref: string): string {
   const slash = ref.indexOf("/");
   return (slash >= 0 ? ref.slice(slash + 1) : ref).replace(/\.toml$/i, "");

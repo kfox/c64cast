@@ -9,12 +9,9 @@ analyzer (audio_features.AudioFeatureStream), tomorrow a MIDI event stream, all
 behind this same struct.
 
 `TempoEstimator` lives here for the same reason: both producers need the
-identical onset-rate → BPM → beat-phase math, and this module is the one place
-both can import without dragging in the other's heavy deps.
-
-Deliberately tiny and dependency-free (stdlib only) so both the generators
-(numpy/cv2), the SID feature stream (py65), and the audio analyzer (numpy) can
-import it without pulling each other's deps in.
+identical onset-rate → BPM → beat-phase math. The module is stdlib-only, so the
+generators (numpy/cv2), the SID feature stream (py65) and the audio analyzer
+(numpy) can all import it without pulling in each other's dependencies.
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ class MusicModulation:
     """A point-in-time snapshot of music features for driving visuals.
 
     All fields are normalized or physical and generator-agnostic — the generator
-    decides how to map them onto its parameters (see generators.py). A frozen
+    decides how to map them onto its parameters (see scenes/generators/). A frozen
     snapshot so the render thread reads a consistent set while the feature thread
     builds the next one.
 
@@ -60,11 +57,10 @@ class MusicModulation:
     voice_gates: tuple[bool, bool, bool]
     bands: tuple[float, ...] = ()
 
-    # ---- band folds ---------------------------------------------------------
-    # Thirds of whatever band count the analyzer produced, so a generator can say
-    # "bass" without knowing that [audio_features].bands is 8 or 16. All three
-    # read 0.0 when `bands` is empty, which is what keeps the SID path's visuals
-    # byte-identical to before this field existed.
+    # Thirds of whatever band count the analyzer produced, so a generator can
+    # say "bass" without knowing that [audio_features].bands is 8 or 16. All
+    # three read 0.0 when `bands` is empty, which is what keeps the SID path's
+    # visuals independent of this field.
 
     @property
     def bass(self) -> float:
@@ -148,13 +144,12 @@ class TempoEstimator:
             return
         ioi = now - last
         if ioi < self.MIN_IOI_S:
-            # Another attack on the same beat — keep the earlier reference so the
-            # next beat-to-beat interval isn't corrupted.
+            # Same beat: keep the earlier reference, or the next beat-to-beat
+            # interval is corrupted.
             return
         self._last_onset_time = now
         if ioi > self.MAX_IOI_S:
-            # Long gap (rest / phrase boundary) — re-anchor without polluting
-            # the estimate.
+            # Rest or phrase boundary: re-anchor without feeding the estimate.
             return
         if self._ioi_ema is None:
             self._ioi_ema = ioi

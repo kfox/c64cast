@@ -502,8 +502,7 @@ class SwitchTest(SupervisorTestCase):
         gate = threading.Event()
         mgr = self.manager(teardown=lambda _s: gate.wait(WAIT), **mgr_kwargs)
         # Registered after the manager, so it runs *before* the close() cleanup
-        # the manager helper registered and that close never waits on a gate
-        # nobody is going to release.
+        # the manager helper registered — which never waits on an unreleased gate.
         self.addCleanup(gate.set)
         mgr.start(_request("a"))
         self.assertReaches(mgr, SessionState.RUNNING)
@@ -607,7 +606,6 @@ class LastErrorRedactionTest(SupervisorTestCase):
         error = mgr.status().last_error or ""
         self.assertNotIn("s3cr3t-abc", error)
         self.assertIn("token=REDACTED", error)
-        # Still diagnostic.
         self.assertIn("RuntimeError", error)
 
 
@@ -651,9 +649,8 @@ class RunMarkerTest(SupervisorTestCase):
         self.assertEqual(order, ["safe_state", "build"])
 
     def test_the_build_settles_after_a_recovery_touched_the_hardware(self):
-        # safe_state opens and closes a backend, which arms the same window a
-        # teardown does — handing it straight to the build is the socket-reuse
-        # case the cooldown exists for.
+        # safe_state opens and closes a backend, arming the same window a teardown
+        # does: handing it straight to the build is what the cooldown exists for.
         self.marker.parent.mkdir(parents=True, exist_ok=True)
         self.marker.write_text("{}\n")
         now = [1000.0]
@@ -846,11 +843,9 @@ class SessionLogBufferTest(unittest.TestCase):
         import tempfile
 
         # The only `SessionManager` in this file built outside
-        # `SupervisorTestCase`, so it needs that class's temp `marker_path`
-        # spelled out here: without it the supervisor writes — and on close
-        # *deletes* — the real `~/.local/share/c64cast/run.json`, which on a
-        # host actually running `--serve` is the marker that tells the next
-        # start the previous session did not shut down cleanly.
+        # `SupervisorTestCase`, so that class's temp `marker_path` is spelled out
+        # here: without it the supervisor writes — and on close *deletes* — the
+        # real `~/.local/share/c64cast/run.json`, the unclean-shutdown marker.
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         buf = serve.SessionLogBuffer()
@@ -1315,10 +1310,9 @@ class RunDaemonSetupWizardTest(RunDaemonTestCase):
             first_client = TestClient(self.apps[0])
             self.assertTrue(first_client.get("/api/setup").json()["pending"])
             self.assertEqual(first_client.get("/status").status_code, 503)
-            # The form is a screen of the ordinary console bundle, so the
-            # shell, its assets and the address it puts itself at all have to
-            # load with no token — the gate lets them by, and `shell_paths()`
-            # is what exempts them from the token check one layer in.
+            # The form is a screen of the ordinary console bundle, so the shell,
+            # its assets and its address all have to load with no token;
+            # `shell_paths()` is what exempts them from the token check.
             for path in ("/", "/assets/app.js", "/assets/app.css", "/setup"):
                 with self.subTest(path=path):
                     self.assertEqual(first_client.get(path).status_code, 200)
@@ -1331,10 +1325,9 @@ class RunDaemonSetupWizardTest(RunDaemonTestCase):
             self.assertTrue(self.app_built.wait(timeout=WAIT), "restart never rebuilt the app")
             self.assertEqual(len(self.apps), 2)
             second_client = TestClient(self.apps[1])
-            # setup_api was never registered on this app, but the token gate
-            # (which now wraps /api/setup too — the public_paths exemption is
-            # per-app-build, not per-route) answers before the catch-all can
-            # report a 404.
+            # setup_api was never registered on this app, but the token gate (which
+            # wraps /api/setup too — the public_paths exemption is per-app-build,
+            # not per-route) answers before the catch-all can report a 404.
             self.assertEqual(second_client.get("/api/setup").status_code, 401)
             self.assertEqual(second_client.get("/status").status_code, 401)
 

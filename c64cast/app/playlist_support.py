@@ -163,11 +163,10 @@ class PlaylistMenu:
     def __init__(self, playlist: Playlist) -> None:
         self._pl = playlist
         self.overlay: object | None = None
-        # While the menu is open the background is frozen (not re-rendered
-        # every frame) so the post-render panel can't flicker against a
-        # per-frame scene redraw. This flag requests a one-shot re-render on
-        # open / nav / value-change so the live preview still updates. See
-        # service() + the freeze gate in Playlist.run().
+        # The background is frozen while the menu is open, so the panel cannot
+        # flicker against a per-frame redraw; this requests the one-shot
+        # re-render that keeps the live preview current. See `service()` and the
+        # freeze gate in `Playlist.run()`.
         self.repaint = False
 
     def service(self) -> None:
@@ -183,15 +182,13 @@ class PlaylistMenu:
             return
         from c64cast.scenes.overlays.menu import can_show_menu
 
-        # Publish eligibility to the poller every frame: only an eligible scene
-        # lets it drain/clear the keyboard buffer (so SPACE-to-open is inert,
-        # and $00C6 untouched, on launcher/waveform/midi scenes).
+        # Only an eligible scene lets the poller drain the keyboard buffer, so
+        # SPACE is inert and $00C6 untouched on launcher/waveform/midi scenes.
         if can_show_menu(scene):
             pl.menu_eligible.set()
         else:
             pl.menu_eligible.clear()
-        # Defensive: if the scene changed out from under an open menu (reload,
-        # broadcast), drop the menu state cleanly.
+        # The scene can change out from under an open menu (reload, broadcast).
         if self.overlay is not None and self.overlay not in getattr(scene, "overlays", ()):
             self.overlay = None
             pl.menu_active.clear()
@@ -252,8 +249,7 @@ class PlaylistMenu:
                 scene.overlays.remove(self.overlay)  # type: ignore[arg-type]
         self.overlay = None
         pl.menu_active.clear()
-        # Reclaim the panel cells: the scene's delta cache is unaware the menu
-        # overwrote them, so force a full repaint on the next frame.
+        # The scene's delta cache is unaware the menu overwrote these cells.
         pl.api.invalidate_cache()
         pl.log.info("menu: closed")
 
@@ -279,9 +275,9 @@ class PlaylistMenu:
         backup = pl.config_path + ".bak"
         try:
             note = _preserve_original(pl.config_path, backup)
-            # The running Config was built on the machine-settings layer, so
-            # that is what "unset" means for it — dumping against the dataclass
-            # defaults would write this machine's settings into the show file.
+            # The running Config was built on the machine-settings layer, so that
+            # is what "unset" means for it; dumping against the dataclass defaults
+            # would write this machine's settings into the show file.
             config_serialize.dump(pl.config, pl.config_path, baseline=cfgmod.machine_baseline())
             pl.log.info("menu: saved config → %s (%s)", pl.config_path, note)
             return True
@@ -384,12 +380,9 @@ class EnsembleCoordinator:
         pl = self._pl
         if pl.ensemble is None:
             return
-        # Skip if the scene is already wired with an orchestrator —
-        # handle_broadcast_interrupt stamps follower scenes before
-        # calling us, and we must not clobber the follower role with a
-        # fresh conductor (especially when the follower's fallback cfg
-        # IS the conductor's orchestrate=true cfg, which carries that
-        # flag with it).
+        # `handle_broadcast_interrupt` stamps follower scenes before calling
+        # here, and a follower's fallback cfg can be the conductor's own
+        # orchestrate=true cfg — so an already-wired scene keeps its role.
         if scene.__dict__.get("_orchestrator") is not None:
             return
         cfg = scene.__dict__.get("_cfg")
@@ -448,9 +441,7 @@ class EnsembleCoordinator:
         assert pl.broadcast_resume is not None
         pl.broadcast_interrupt.clear()
         if pl.ensemble is None or pl.ensemble.active_orchestrator is None:
-            # Stale event (orchestrator ended between set and our
-            # observation). Drop the interrupt and let the run loop
-            # continue normally.
+            # Stale event: the orchestrator ended between set and observation.
             return
         if pl.build_follower_scene is None:
             pl.log.error(
@@ -459,19 +450,16 @@ class EnsembleCoordinator:
             return
         orch = pl.ensemble.active_orchestrator
 
-        # Force-resume if paused. The pause_event was set by the keyboard
-        # poller; we clear it + set resume_event so any concurrent
-        # _handle_pause loop exits cleanly. Per the design, paused
-        # systems get woken by a broadcast and are left un-paused after
-        # (matches user expectation: emergency broadcast overrides pause).
+        # A broadcast overrides a pause, and leaves the system un-paused after:
+        # clearing pause_event and setting resume_event lets any concurrent
+        # `_handle_pause` loop exit cleanly.
         if pl.pause_event.is_set():
             pl.log.info("broadcast: force-resuming paused playlist")
             pl.pause_event.clear()
             pl.resume_event.set()
 
-        # Save scene index; tear down the current scene cleanly so its
-        # overlays release threads/network state. The follower scene
-        # runs in its place until the orchestrator releases us.
+        # Torn down cleanly so its overlays release threads and network state;
+        # the follower scene runs in its place until the orchestrator releases us.
         saved_idx = pl.index
         if pl.current is not None:
             pl.safe_teardown(pl.current)
@@ -483,12 +471,9 @@ class EnsembleCoordinator:
         except Exception:
             pl.log.exception("broadcast: follower scene build failed; skipping interrupt")
             return
-        # Stamp orchestrator + role + this system's index in the
-        # ensemble (left-to-right) onto the scene so overlays that
-        # participate in the broadcast (e.g. big_text) can find them in
-        # their setup(). Followers are not conductors; the index is
-        # used by span-mode orchestrators to compute each follower's
-        # slice of the global content.
+        # Overlays that participate in the broadcast (big_text) read the
+        # orchestrator, role and left-to-right ensemble index in their setup();
+        # span-mode orchestrators use the index to pick each follower's slice.
         follower_scene.bind_orchestrator(
             orch, conductor=False, index=pl.ensemble.system_names().index(pl.name)
         )
@@ -497,7 +482,6 @@ class EnsembleCoordinator:
 
         pl.log.info("broadcast: follower scene %r running until resume", follower_scene.name)
 
-        # Spin frames until the orchestrator releases us or stop fires.
         next_deadline = time.time()
         while not pl.broadcast_resume.is_set() and not pl.stop_event.is_set():
             next_deadline = pl.run_one_frame(follower_scene, next_deadline)
@@ -508,8 +492,6 @@ class EnsembleCoordinator:
         )
         pl.safe_teardown(follower_scene)
         pl.current = None
-        # Defensive: _advance() reads playlist.index on the next iteration
-        # and re-sets-up the scene at that index from scratch. We didn't
-        # touch the index during the broadcast, but pin it anyway in
-        # case some future code path mutates it mid-flight.
+        # `_advance()` re-sets-up the scene at `playlist.index` on the next
+        # iteration, so the broadcast's exit pins it back.
         pl.index = saved_idx

@@ -1,55 +1,17 @@
-"""Per-system Mahoney 8-bit ``$D418`` DAC calibration: measure the SID transfer
-curve for the *actual* SID chip(s) on the connected machine and persist a
-per-unit amplitude→``$D418`` "sidtable", so playback can use a table matched
-to the real chip instead of the baked emulated-UltiSID one.
+"""Per-system Mahoney 8-bit ``$D418`` DAC calibration: measure the SID
+transfer curve for the *actual* SID chip(s) on the connected machine and
+persist a per-unit amplitude→``$D418`` "sidtable", so playback can use a table
+matched to the real chip instead of the baked emulated-UltiSID one.
 
-Why per-system calibration
---------------------------
-The baked ``mahoney_ultisid`` table in :mod:`c64cast.audio.dac_curves` generalizes
-perfectly across the U64's *emulated* UltiSID (deterministic, model-knob
-irrelevant). But **physical 6581/8580 chips vary enormously** chip-to-chip
-(measured: curve correlation 0.74 between two 6581s; one chip's table on the
-other → ~29 % RMS level error), dominated by the analog filter — and SID
-replacements (ARM2SID/SwinSID/FPGASID) differ again. So a baked table cannot
-serve a physical/replacement chip; the only correct path is to measure the
-transfer curve of the device in front of you. ``c64cast --calibrate-dac`` does
-that (Cam Link / any UVC audio capture on the SID output required).
+``c64cast --calibrate-dac`` runs it; a capture device on the SID output is
+required. This module owns the run: hardware bring-up, per-socket isolation,
+capture + retry, and handing the result to the store. How a capture is
+*measured* lives with the DSP in :mod:`c64cast.audio.dac_slot_ring`; finding
+and probing the capture device in :mod:`c64cast.audio.dac_capture_device`;
+identity keys and the file in :mod:`c64cast.audio.dac_calibration_store`;
+which curve playback actually uses in :mod:`c64cast.audio.dac_curve_resolve`.
 
-Multi-socket U64/U2+ calibration
----------------------------------
-A real U64 (Elite I/II, C64U) can carry **two physical SID sockets**, each
-potentially holding a different chip. ``run_calibration`` queries the live
-config (``sid_hw_config.detect_sockets`` — ``"SID Detected Socket N"``) and,
-for every socket reporting a real chip, isolates it to ``$D400`` (the fixed
-address the NMI DAC handler's hand-assembled ``STA $D418`` reaches — see
-:mod:`c64cast.sid.asid_sidmap`'s "chip 0 must land at $D400" trick, reused here
-via ``_isolate_socket``) and measures it independently, restoring the
-original SID address/socket config afterward. This is purely config-driven —
-there's no U64-vs-U2+ model check — so it naturally measures 0, 1, or 2
-sockets depending on what the live config reports (a U2+ with one socket +
-one UltiSID core measures just that socket; a bare-UltiSID board measures
-nothing and falls back to the single-measurement path below). A board with no
-populated sockets, or a backend with no config API at all (TeensyROM), falls
-back to one unlabeled measurement of whatever SID currently answers
-``$D400``.
-
-The resulting file (schema 2) holds one entry per measured SID, keyed
-``"1"``/``"2"`` (socket number) or ``"default"`` (single-measurement
-fallback) — see :func:`save_calibration`. At playback time,
-``load_calibrated_table`` picks the entry matching whichever socket is
-*currently* mapped to ``$D400`` (a live config read), so a calibrated
-physical-chip table is never misapplied when ``$D400`` is actually owned by
-an UltiSID core.
-
-How a capture is *measured* — the slot ring, the context-dependence rounds,
-the volume-0 self-test, and every gate a capture must pass before its numbers
-reach the table — lives with the DSP in :mod:`c64cast.audio.dac_slot_ring`; finding
-and probing the capture device lives in :mod:`c64cast.audio.dac_capture_device`.
-Identity keys and the calibration file live in
-:mod:`c64cast.audio.dac_calibration_store`; which curve playback actually uses is
-:mod:`c64cast.audio.dac_curve_resolve`. This module owns the run itself: hardware
-bring-up, per-socket isolation, capture + retry, and handing the result to
-the store.
+See docs/architecture/audio.md#table-selection-auto-and-per-system-calibration.
 """
 
 from __future__ import annotations
@@ -125,15 +87,13 @@ from .dac_slot_ring import (
     read_ring_capture,
 )
 
-if TYPE_CHECKING:  # avoid import cycles / heavy imports at module load
+if TYPE_CHECKING:
     from c64cast.app.config import Config
     from c64cast.hw.backend import C64Backend
 
     from .audio import AudioStreamer
 
 log = logging.getLogger(__name__)
-
-# --- calibration run ---------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -150,20 +110,15 @@ def _plan_rounds() -> list[list[list[int]]]:
     return plan_capture_rounds(codes_per_ring(RING_BUFFER_SIZE) - 1)
 
 
-# --- on-screen status --------------------------------------------------------
-# The machine spends the whole run parked in the BASIC clear loop with a dead
-# screen; these two lines tell whoever is looking at it what is happening and
-# for roughly how long. Both are painted BEFORE the first capture and never
-# repainted: a host DMA halt spanning two CIA #2 Timer A underflows during a
-# capture silently drops NMI samples (docs/architecture/audio.md), so the
-# screen must not be written while a ring is being measured.
-
+# On-screen status for the otherwise-dead BASIC-loop screen. Both lines are
+# painted BEFORE the first capture and never repainted: a host DMA halt
+# spanning two CIA #2 Timer A underflows during a capture silently drops NMI
+# samples, so the screen must not be written while a ring is being measured.
 _TITLE_ROW = 10
 _TITLE_TEXT = "SID DAC CALIBRATION IN PROGRESS"
 _ESTIMATE_ROW = 12
 _STATUS_COLOR = 1  # white
-# Per-SID cost beyond the rings themselves: socket isolation config writes,
-# the Mahoney-env settle, and the numpy fold.
+# Beyond the rings: isolation config writes, Mahoney-env settle, numpy fold.
 _PER_SID_OVERHEAD_S = 2.0
 _ESTIMATE_GRANULARITY_S = 15
 
@@ -254,9 +209,8 @@ def _unsteady_ring_message(reason: str, diag: dict[str, Any], saved: Path | None
     )
     if saved is not None:
         kept += f"\nThe capture is saved at {saved} — it is what any diagnosis has to start from."
-    # The "input is right" line leads both branches: the number this is built from
-    # reads like the mistracked-capture fault, and without it either branch sends
-    # the reader back to cabling that is already correct.
+    # "The input is right" leads both branches: the number behind this reads
+    # like the mistracked-capture fault, whose advice is the opposite.
     return (
         f"the calibration ring is playing and is being recorded, but {reason}.\n"
         "The input is right — what moves is the level it reads back at, and a "
@@ -428,9 +382,7 @@ def _bring_up_dac_env(be: C64Backend, cfg: Config, log_fn: Callable[[str], None]
     )
     st.running = True
     st._upload_nmi_and_buffers()
-    # The streamer's own arm, so a dropped CIA write is retried here too: a
-    # silent NMI is one of the three causes capture_fault_message has to
-    # guess between after 50 s of measuring nothing.
+    # The streamer's own arm, so a dropped CIA write is retried here too.
     st.nmi.start(adaptive=st.nmi_rate_adaptive)
     return st
 
@@ -503,7 +455,6 @@ def _capture_ring(ctx: _RunContext, codes: Sequence[int]) -> SlotLevels:
             dtype="float32",
         )
         sd.wait()
-        # (N, channels) → mono; a 1-channel capture folds to itself.
         mono = rec.mean(axis=1).astype(np.float64)
         last = mono
         peak = float(np.max(np.abs(mono))) if mono.size else 0.0
@@ -514,9 +465,8 @@ def _capture_ring(ctx: _RunContext, codes: Sequence[int]) -> SlotLevels:
             unsteady = e if isinstance(e, UnsteadyRingError) else None
         if attempt < RING_ATTEMPTS:
             ctx.log_fn(f"[calib]   unusable capture ({reason}) — retrying")
-    # Keep the waveform that was refused. It is the whole evidence for the
-    # refusal, and re-creating it costs a fresh hardware run that may not
-    # reproduce the fault.
+    # The refused waveform is the whole evidence for the refusal, and a fresh
+    # hardware run may not reproduce the fault.
     diag = unsteady.diagnostics if unsteady is not None else {}
     saved = (
         None if last is None else _save_unusable_capture(last, codes, ctx.fmt, ctx.key, dict(diag))
@@ -546,13 +496,6 @@ def _measure_one(
             got = _capture_ring(ctx, [ANCHOR_CODE, *codes])
             measured.append((codes, got))
             d = got.diagnostics
-            # Marginal spread is called out rather than left as a bare
-            # number: a run whose rings all sit just under the gate is the
-            # one whose table is quietly poor, and nothing else in the
-            # progress output says what "good" looks like.
-            # A marginal ring also says which *kind* of marginal it is, so a
-            # run that is drifting can be recognized while it is still
-            # running rather than from the table it produces.
             marginal = ""
             if d["pass_spread_p95_frac"] > RING_SPREAD_HEALTHY:
                 kind = (
@@ -614,9 +557,8 @@ def _measure_each_socket(
     """Isolate each populated socket at $D400 in turn and measure it, restoring
     the machine's own SID address/socket/mixer config afterward."""
     entries: dict[str, CalibrationResult] = {}
-    # Mixer levels snapshot once, before the loop: _isolate_mixer
-    # rewrites them per socket, so a per-iteration snapshot would
-    # capture its own previous edit rather than the user's setting.
+    # Snapshot once, before the loop: _isolate_mixer rewrites the levels per
+    # socket, so a per-iteration snapshot would capture its own previous edit.
     with SidHwSession(ctx.be) as session:
         session.snapshot()
         mixer_levels = _snapshot_mixer(ctx.be)
@@ -630,13 +572,11 @@ def _measure_each_socket(
             )
             _isolate_socket(ctx.be, socket)
             _isolate_mixer(ctx.be, f"socket{socket}", mixer_items)
-            # Re-park AFTER the routing change, not once at bring-up.
-            # The env is a series of writes to $D400-$D418, so it lands
-            # on whichever chip owned that window at the time — the
-            # first socket measured. Every socket after it would be
-            # measured with unparked voices, i.e. no DC for the volume
-            # nibble to scale, which reads as a near-silent capture
-            # rather than an obviously wrong one.
+            # Re-park AFTER the routing change, not once at bring-up: the env
+            # is writes to $D400-$D418, so it lands on whichever chip owned
+            # that window at the time. Every later socket would otherwise be
+            # measured with unparked voices — no DC for the volume nibble to
+            # scale, which reads as a near-silent capture.
             st._enable_mahoney_env()
             time.sleep(0.2)
             sidtable, metrics, raw = _measure_one(ctx, f"socket {socket}")
@@ -678,8 +618,8 @@ def run_calibration(
     be: C64Backend,
     cfg: Config,
     *,
-    # A ring pass is ring_size/NMI_RATE ≈ 1.03 s; 4.5 s guarantees ≥3 complete
-    # passes land inside the window wherever the capture happens to start.
+    # A ring pass is ring_size/NMI_RATE ≈ 1.03 s, so 4.5 s lands ≥3 complete
+    # passes inside the window wherever the capture happens to start.
     secs: float = 4.5,
     settle: float = 0.4,
     device: int | None = None,
@@ -717,12 +657,10 @@ def run_calibration(
         )
 
         sockets = _populated_sockets(be, log_fn) if supports_sid_config else []
-        # Read before the measurement loop: _isolate_socket remaps every socket
-        # to $D400 in turn, so asking afterwards answers with c64cast's own
-        # edit rather than the mapping this machine actually runs under.
+        # Before the measurement loop: _isolate_socket remaps every socket to
+        # $D400 in turn, so asking afterwards answers with c64cast's own edit.
         normal_d400 = active_socket_at_d400(be) if supports_sid_config else None
-        # Last screen write of the run: the duration line, painted once the
-        # SID count is known and strictly before the first capture.
+        # Last screen write of the run — strictly before the first capture.
         _paint_status_line(be, _ESTIMATE_ROW, _estimate_text(max(1, len(sockets)), secs, settle))
 
         if sockets:

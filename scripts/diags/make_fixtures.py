@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Generate synthetic A/V fixtures for testing the video / audio paths
-without depending on a real clip. Replaces the pile of one-off ffmpeg
-``lavfi`` invocations that kept accumulating in settings.local.json.
+without depending on a real clip.
 
     scripts/diags/make_fixtures.py tone        # 30s 440Hz tone wav
     scripts/diags/make_fixtures.py clip         # red video + 440Hz tone mp4

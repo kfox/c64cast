@@ -39,8 +39,7 @@ def packet(*, seq: int, frame: int, line: int, payload: bytes, width: int = WIDT
 
 class UnpackTest(unittest.TestCase):
     def test_two_pixels_a_byte_low_nibble_first(self):
-        # The one fact a wrong implementation gets backwards while still
-        # producing a picture: 0x21 is pixel 1 then pixel 2, not 2 then 1.
+        # 0x21 is pixel 1 then pixel 2, not 2 then 1: low nibble first.
         out = vic_stream.unpack_pixels(bytes([0x21, 0xF0]), width=4)
         self.assertEqual(out.tolist(), [[1, 2, 0, 15]])
 
@@ -123,9 +122,9 @@ class ReassemblyTest(unittest.TestCase):
         self.assertEqual(self.rx.stats["frames"], 2)
 
     def test_a_width_change_discards_the_frame_in_hand(self):
-        # A mode change on the machine: the lines already collected were
-        # measured in the old width and joining them to the new ones would
-        # produce a picture that is wrong in a way that looks deliberate.
+        # A mode change on the machine: lines already collected were measured
+        # in the old width, and joining them to the new ones makes a picture
+        # that is wrong in a way that looks deliberate.
         self.rx._accept(packet(seq=0, frame=1, line=0, payload=b"\x11" * LINE_BYTES))
         self.rx._accept(
             packet(
@@ -146,7 +145,6 @@ class ReassemblyTest(unittest.TestCase):
         self.rx._last_packet_at -= vic_stream._STALE_FRAME_S + 1
         self.rx._expire_partial()
         self.assertEqual(self.rx.stats["dropped"], 1)
-        # And the next frame is a frame, not those three lines plus these.
         self._feed(2, frame=2)
         frame = self.rx.latest()
         assert frame is not None
@@ -158,9 +156,9 @@ class ReassemblyTest(unittest.TestCase):
         self.assertEqual(self.rx.stats["dropped"], 0)
 
     def test_a_partial_flood_that_never_ends_is_capped_not_unbounded(self):
-        # A flood of non-final packets (forged or just a firmware bug) must
-        # not grow `_parts` forever while waiting for `_expire_partial`'s
-        # silence-based timeout — it has to give up on its own.
+        # A flood of non-final packets (forged, or a firmware bug) must not
+        # grow `_parts` forever while waiting for `_expire_partial`'s
+        # silence-based timeout.
         chunk = LINE_BYTES
         n = vic_stream._MAX_PARTIAL_BYTES // chunk + 2
         self._feed(n, frame=1, end=False)
@@ -221,13 +219,12 @@ class WatchdogTest(unittest.TestCase):
         self.rx._rearm_at = 0.0
         self.rx._maybe_rearm()
         self.assertEqual(self.dma.started, [("192.0.2.1:40000", vic_stream.WATCHDOG_S)])
-        # And not again until the interval is up.
         self.rx._maybe_rearm()
         self.assertEqual(len(self.dma.started), 1)
 
     def test_the_window_outlives_the_gap_between_renewals(self):
         # Otherwise the stream stops between re-arms and the picture stutters
-        # once every interval — a slow failure that reads as a network problem.
+        # once an interval, a slow failure that reads as a network problem.
         self.assertGreater(vic_stream.WATCHDOG_S, vic_stream.REARM_EVERY_S * 2)
 
     def test_a_link_failure_while_renewing_is_not_fatal(self):
@@ -286,8 +283,7 @@ class ProfileGateTest(unittest.TestCase):
 
     def test_it_follows_the_same_category_as_system_mode(self):
         # Both are compiled under the firmware's `#ifdef U64`, so a device
-        # registering one registers the other — a U2+ has neither. Asking twice
-        # would only create a way for them to disagree.
+        # registering one registers the other and a U2+ has neither.
         import inspect
 
         from c64cast.hw.api import Ultimate64API
@@ -296,8 +292,8 @@ class ProfileGateTest(unittest.TestCase):
         self.assertIn("supports_video_stream=has_system_mode", source)
 
     def test_a_frame_is_indices_rather_than_color(self):
-        # So a caller comparing against what c64cast meant to draw compares
-        # indices with indices, and a caller displaying it picks the palette.
+        # A caller comparing against what c64cast meant to draw compares
+        # indices with indices; a caller displaying it picks the palette.
         frame = vic_stream.VicFrame(np.zeros((2, 4), dtype=np.uint8), 1, 0.0)
         self.assertEqual(frame.indices.dtype, np.uint8)
         self.assertEqual((frame.height, frame.width), (2, 4))

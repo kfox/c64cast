@@ -1,29 +1,11 @@
 """Camera enumeration + name / USB ``VID:PID`` device selection.
 
-The webcam ``[video].device`` was historically a bare ``cv2`` integer index.
-That index is unstable across reboots/replugs and opaque (which capture stick is
-index 1 today?). This module lets ``device`` also be a **string** resolved by
-camera *name substring* or *USB ``VID:PID``* — the same "identify hardware by its
-USB identity, not by an OS-assigned slot" idea the TeensyROM+ serial auto-detect
-already uses (:func:`c64cast.hw.teensyrom_dma.autodetect_serial_port`), applied to
-the video-input side.
+Lets ``[video].device`` be a **string** matched to a camera by name substring
+or USB ``VID:PID``, not only a ``cv2`` integer index. Enumeration comes from
+the optional ``cv2-enumerate-cameras`` package (the ``camera`` extra); integer
+indices keep working without it.
 
-Enumeration (name + VID/PID + the *correct backend index*) comes from the
-optional ``cv2-enumerate-cameras`` package (the ``camera`` extra). Everything
-here degrades gracefully when it is absent: integer indices keep working exactly
-as before, ``--list-devices`` falls back to its probe, and a *string* device
-raises an actionable "install the ``camera`` extra" error.
-
-Design mirrors :mod:`c64cast.hw.teensyrom_dma`: a lazy import behind a best-effort
-enumerator, a pure duck-typed matcher (VID/PID primary, name substring
-fallback), and a resolver that warns (never silently guesses) on ambiguity.
-
-Backend/apiPreference correctness: the enumerated index is only valid for the
-backend it was queried with (macOS → ``CAP_AVFOUNDATION``). A string-resolved
-device therefore reports the matched backend so the caller opens
-``cv2.VideoCapture(index, backend)``; a plain-int device reports ``None`` so the
-caller keeps the historical single-arg ``CAP_ANY`` open (byte-identical
-behavior for existing configs).
+See docs/architecture/control.md#camerapy--camera-enumeration--namevidpid-device-selection-optional-camera-extra.
 """
 
 from __future__ import annotations
@@ -38,13 +20,11 @@ import cv2  # hard dependency — the CAP_* backend constants live here
 
 log = logging.getLogger(__name__)
 
-# A USB VID:PID token: two 1-4 digit hex halves, e.g. "0fd9:0066" (Elgato Cam
-# Link 4K). Case-insensitive.
+# A USB VID:PID token, e.g. "0fd9:0066" (Elgato Cam Link 4K).
 _VIDPID_RE = re.compile(r"^([0-9a-fA-F]{1,4}):([0-9a-fA-F]{1,4})$")
 
 _EXTRA_HINT = "install the 'camera' extra: uv tool install --force 'c64cast[all]'"
 
-# Cache of importlib.util.find_spec — cheap, but this is hit per-resolve.
 _ENUM_AVAILABLE: bool | None = None
 
 
@@ -162,7 +142,6 @@ def parse_camera_device(value: int | str, *, field_name: str) -> None:
             f"{field_name}: {token!r} looks like a USB VID:PID but isn't two hex "
             "values (e.g. 0fd9:0066)"
         )
-    # Plain name substring or an int-in-a-string — both always syntactically OK.
 
 
 def _describe(cams: list[CameraInfo]) -> str:

@@ -22,8 +22,7 @@ log = logging.getLogger(__name__)
 
 
 def _parse_target(s: str) -> datetime:
-    # Try standard ISO first; tolerate the space-separated variant by
-    # swapping in a 'T'.
+    # Tolerate the space-separated variant of ISO by swapping in a 'T'.
     try:
         return datetime.fromisoformat(s)
     except ValueError:

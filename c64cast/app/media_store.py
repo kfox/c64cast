@@ -186,11 +186,9 @@ def _walk(root: MediaRoot) -> Iterator[tuple[Path, list[str]]]:
 
 
 def _spec(root: MediaRoot, rel_parts: Sequence[str]) -> str:
-    # `wanted` in `MediaStore.__init__` already drops empty/blank spellings,
-    # so `rstrip("/")` only empties out a spelling that was itself all
-    # slashes (e.g. "/") — the filesystem root, not "no path at all". That
-    # root is the one spelling `"/".join` can't just prepend to, or a rel
-    # part joins in as "//etc" instead of "/etc".
+    # `MediaStore.__init__` already drops blank spellings, so `rstrip("/")` can
+    # only empty an all-slashes one — the filesystem root, which `"/".join` cannot
+    # simply prepend to without turning a rel part into "//etc".
     spelling = root.spelling.rstrip("/") or "/"
     if not rel_parts:
         return spelling
@@ -204,15 +202,12 @@ def _candidates(root: MediaRoot, exts: tuple[str, ...]) -> Iterator[tuple[str, b
     directly holds a file ending in `exts` *and* passing the jail check, and
     for every such file itself."""
     for here, filenames in _walk(root):
-        # Filtered before the directory is offered as an entry, not after —
-        # `resolve_file_spec` treats a listed directory as a randomizer that
-        # picks a member at each scene `setup()`, so a directory entry built
-        # from an unfiltered `hits` would hand back exactly the out-of-jail
-        # file the per-file check below refuses to list directly. A symlinked
-        # file pointing out of the root is an ordinary walk entry
-        # (followlinks=False only keeps the walk out of symlinked
-        # *directories*) — same escape config_store's own `_walk` guards
-        # against.
+        # Filtered before the directory is offered as an entry: `resolve_file_spec`
+        # treats a listed directory as a randomizer picking a member at each scene
+        # `setup()`, so an unfiltered `hits` would hand back the out-of-jail file
+        # the per-file check below refuses to list. `followlinks=False` only keeps
+        # the walk out of symlinked *directories*, so a symlinked file that points
+        # out of the root is an ordinary walk entry.
         kept = [
             f
             for f in filenames
@@ -296,12 +291,10 @@ def _reject_unless_bare_filename(name: str) -> None:
     if "/" in name or "\\" in name:
         raise MediaNameRejected(f"{name!r} is not a bare file name")
     if ntpath.splitdrive(name)[0]:
-        # No separator survives this: `PureWindowsPath('D:/media') /
-        # 'C:evil.prg'` is `PureWindowsPath('C:evil.prg')`, discarding the
-        # left operand entirely — Windows is a first-class target
-        # (paths.py's `os.name == "nt"` branches), so a drive-relative name
-        # has to be refused by itself, not caught by the separator check
-        # above.
+        # The separator check above cannot catch this: `PureWindowsPath('D:/media')
+        # / 'C:evil.prg'` is `PureWindowsPath('C:evil.prg')`, discarding the left
+        # operand. Windows is a first-class target, so a drive-relative name has to
+        # be refused on its own.
         raise MediaNameRejected(f"{name!r} names a drive, not a bare file name")
     if name.startswith("."):
         raise MediaNameRejected(f"{name!r} may not start with a dot")
@@ -359,19 +352,16 @@ class MediaStore:
         write_missing: dict[str, str] = {}
 
         def resolve_root(spelling: str, *, writable: bool) -> MediaRoot | None:
-            # `spelling` is what a listed entry's spec is built from — the
-            # `~` stays a `~` in the spec. It is expanded only to find out
-            # where the root actually is.
+            # A listed entry's spec is built from `spelling`, so the `~` stays a
+            # `~` there; it is expanded only to locate the root.
             candidate = Path(paths.expand_user(spelling))
             location = candidate if candidate.is_absolute() else base / candidate
             real = location.resolve()
             existing = seen.get(real)
             if existing is not None:
-                # Write roots resolve first (below), so a path reached a
-                # second time here can only be read-only re-naming an
-                # already-writable root — never the other way around. If a
-                # future refactor reorders the two loops, this catches the
-                # drift immediately rather than letting `writable` silently
+                # Write roots resolve first, so a path reached twice can only be a
+                # read-only re-naming of an already-writable root. Reordering the
+                # two loops trips this instead of letting `writable` silently
                 # disagree with `_write_roots`.
                 assert not (writable and not existing.writable), (
                     f"{spelling!r} resolved to an existing non-writable root "
@@ -470,10 +460,10 @@ class MediaStore:
                 os.unlink(tmp_path)
             log.warning(
                 "web console: upload of %r aborted after %d bytes (%s)",
-                # `%r` rather than `%s` because `name` is an untrusted upload
-                # filename that `_reject_unless_bare_filename` never rejects
-                # for an embedded newline — `repr` cannot emit one, so the
-                # waiver is for CodeQL modeling neither as a sanitizer.
+                # `%r` because `name` is an untrusted upload filename that
+                # `_reject_unless_bare_filename` does not reject for an embedded
+                # newline, and `repr` cannot emit one. CodeQL models neither as a
+                # sanitizer, hence the waiver.
                 # codeql[py/log-injection]
                 name,
                 upload.bytes_written,
@@ -512,10 +502,8 @@ class MediaStore:
         }
         log.info(
             "web console: received %r as %r (kind=%s, %d bytes%s)",
-            # Both `%r`, and both waived for the same reason as `abort`'s log
-            # line above: `name` is the untrusted upload filename itself, and
-            # `final_name` inherits whatever `name` put in its stem —
-            # `disambiguate` only ever appends a numeric `-N` suffix to it.
+            # Both `%r`, waived as in `abort`'s log line above: `final_name`
+            # inherits `name`'s stem, `disambiguate` only appending a `-N` suffix.
             # codeql[py/log-injection]
             name,
             # codeql[py/log-injection]

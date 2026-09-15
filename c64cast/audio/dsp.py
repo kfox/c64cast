@@ -1,41 +1,12 @@
 """Host-side audio DSP for the 4-bit SID `$D418` DAC path.
 
-The SID volume DAC is 4 bits — 16 levels, ~24 dB of usable range. Feeding it a
-raw line/mic signal wastes most of that: quiet passages collapse into a handful
-of codes (audible as buzz/chop), and the dynamic range of normal program
-material dwarfs what 16 levels can hold. The same reasoning that makes AM radio
-and telephony lean on heavy compression applies here, only more so. This module
-is the pure-numpy DSP stage that runs on float samples in [-1, 1] *before*
-`audio_handlers.encode_floats_to_dac` quantizes them, so the signal that reaches the DAC
-already lives in the loud, narrow band the 4 bits can represent.
+Five composable, stateful processors — :class:`PreEmphasis`,
+:class:`Expander`, :class:`Compressor`, :class:`Limiter`, :class:`AGC` —
+wired into source-appropriate order by :class:`AudioDSP` and run on float
+samples in [-1, 1] before `audio_handlers.encode_floats_to_dac` quantizes
+them. Config surface is `[dsp]` via `config.DSPCfg`.
 
-Five composable, stateful processors (config surface: `[dsp]` via
-`config.DSPCfg`; design notes in docs/architecture.md):
-
-* :class:`PreEmphasis` — gentle HF boost; brightens speech for intelligibility.
-* :class:`Expander` — downward expander with hysteresis, replacing the old hard
-  noise gate (which chattered on signal hovering at the threshold).
-* :class:`Compressor` — soft-knee feed-forward compressor + makeup gain; the
-  headline win, evening out dynamics so quiet detail survives quantization.
-* :class:`Limiter` — fast peak limiter / brickwall ceiling, final safety.
-* :class:`AGC` — slow automatic gain control for the mic path (line/video
-  audio is already peak-normalized upstream, so AGC is mic-only).
-
-:class:`AudioDSP` wires the enabled processors into the right order for a mic or
-line source and is what the encode paths call.
-
-**Streaming contract.** Every processor is stateful and is fed in
-arbitrary-sized blocks from the realtime callbacks. Processing a signal split
-across blocks must match processing it in one shot (the recursive smoothers
-carry their envelope/gain state across `process` calls). `tests/test_dsp.py`
-asserts this continuity directly for each processor.
-
-**Performance.** The attack/release envelope followers and the expander gate are
-genuinely recursive (per-sample state, attack≠release branch), so they use a
-Python loop rather than a vectorized form — no scipy in the dep set. At the
-DAC sample rate with realtime mic blocks (hundreds of samples) this is
-negligible; the offline video pre-encode runs it once over the whole track
-(~1 s for a 2.5-min clip), which is acceptable for one-time scene setup.
+See docs/architecture/audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path.
 """
 
 from __future__ import annotations
@@ -47,11 +18,8 @@ import numpy as np
 
 _EPS = 1e-9
 
-# Source-aware pre-emphasis defaults, used when DSPParams.pre_emphasis is None
-# ("auto"). The mic/voice path gets a stronger HF lift than the line path: pure
-# voice benefits most from the consonant/upper-formant boost (intelligibility),
-# while line content (videos = mixed speech + music) wants a gentler one so
-# music doesn't get over-bright. HW-A/B-tuned on a real 6581 (2026-06-12).
+# HW-A/B-tuned on a real 6581 (2026-06-12); rationale in
+# audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path.
 PRE_EMPHASIS_MIC_DEFAULT = 0.7
 PRE_EMPHASIS_LINE_DEFAULT = 0.6
 
@@ -163,7 +131,6 @@ class Compressor:
         self._atk = _one_pole_coeff(attack_ms / 1000.0, sample_rate)
         self._rel = _one_pole_coeff(release_ms / 1000.0, sample_rate)
         if makeup_db is None:
-            # Auto: compensate the curve exactly at the threshold point.
             self.makeup_db = -self.threshold_db * (1.0 - 1.0 / self.ratio)
         else:
             self.makeup_db = float(makeup_db)
@@ -175,10 +142,9 @@ class Compressor:
     def _gain_db(self, level_db: np.ndarray) -> np.ndarray:
         """Static gain-reduction curve (<= 0 dB) for a level array, soft knee."""
         over = level_db - self.threshold_db
-        slope = 1.0 / self.ratio - 1.0  # negative
+        slope = 1.0 / self.ratio - 1.0
         if self.knee_db > 0.0:
             half = self.knee_db / 2.0
-            # Below knee: 0; in knee: quadratic; above knee: linear.
             knee = slope * np.square(over + half) / (2.0 * self.knee_db)
             above = slope * over
             gain = np.where(over <= -half, 0.0, np.where(over >= half, above, knee))
@@ -219,7 +185,6 @@ class Limiter:
         if x.size == 0:
             return x
         x = x.astype(np.float32, copy=False)
-        # Instant-attack peak detector (atk=0 → env tracks current peak up).
         env, self._env = _ar_envelope(np.abs(x), 0.0, self._rel, self._env)
         gain = np.where(env > self.ceiling, self.ceiling / np.maximum(env, _EPS), 1.0).astype(
             np.float32
@@ -235,8 +200,8 @@ class Expander:
     it sits below threshold (down to ``floor_db`` of attenuation). Hysteresis:
     the gate opens at ``threshold_db`` but only closes once the level falls
     ``hysteresis_db`` below it, so a signal hovering at the threshold doesn't
-    rapidly toggle (the failure mode of the old hard gate). Gain changes are
-    attack/release-smoothed (fast open, slow close).
+    rapidly toggle. Gain changes are attack/release-smoothed (fast open, slow
+    close).
     """
 
     def __init__(
@@ -257,7 +222,6 @@ class Expander:
         self.floor_gain = db_to_lin(floor_db)
         self._det_atk = _one_pole_coeff(attack_ms / 1000.0, sample_rate)
         self._det_rel = _one_pole_coeff(release_ms / 1000.0, sample_rate)
-        # Gain smoothing: open fast (attack), close slow (release).
         self._g_atk = _one_pole_coeff(attack_ms / 1000.0, sample_rate)
         self._g_rel = _one_pole_coeff(release_ms / 1000.0, sample_rate)
         self._env = 0.0
@@ -297,7 +261,7 @@ class Expander:
                 target = 1.0
             else:
                 level_db = 20.0 * np.log10(max(e, _EPS))
-                gain_db = slope * (level_db - thr_db)  # <= 0
+                gain_db = slope * (level_db - thr_db)
                 target = max(10.0 ** (gain_db / 20.0), floor)
             cg = g_atk if target > g else g_rel
             g = cg * g + (1.0 - cg) * target
@@ -316,14 +280,9 @@ class AGC:
     ``±max_gain_db``. Input quieter than ``noise_floor_db`` is treated as
     silence — the gain is held rather than cranked up to amplify the noise floor.
 
-    Known limitation (measured 2026-06-12 on the Kaggle speech-noise set, see
-    scripts/diags/dsp_noise.py): being level-based, AGC cannot tell a -30 dB
-    noise floor from -30 dB quiet speech. ``noise_floor_db`` is the only "this
-    is just noise" signal, and it is absolute — set it below the real floor and
-    sustained noise gets boosted toward target during long pauses (a VAD or a
-    tuned expander ahead of it is the real fix). Fine for clean mics; for noisy
-    ones prefer the (chatter-free) expander, or raise ``noise_floor_db`` above
-    the floor at the cost of not lifting genuinely quiet speech.
+    Known limitation: being level-based, AGC cannot tell a -30 dB noise floor
+    from -30 dB quiet speech (measured 2026-06-12, Kaggle speech-noise set,
+    scripts/diags/dsp_noise.py). See audio.md#dsppy--host-side-audio-dsp-for-the-4-bit-dac-path.
     """
 
     def __init__(
@@ -353,10 +312,6 @@ class AGC:
             return x
         x = x.astype(np.float32, copy=False)
         n = x.shape[0]
-        # Per-sample mean-square + gain smoothing on a shared one-pole time
-        # constant. Sample-accurate (not per-block) so the gain trajectory is
-        # independent of the callback block size — the same property the other
-        # processors hold, and what makes streaming continuity exact.
         c = _one_pole_coeff(self.time_s, self.sample_rate)
         out = np.empty(n, dtype=np.float32)
         ms = self._rms * self._rms
@@ -367,7 +322,7 @@ class AGC:
             s = float(x[i])
             ms = c * ms + (1.0 - c) * (s * s)
             if ms < nf2:
-                desired = g  # hold; don't amplify the noise floor
+                desired = g
             else:
                 desired = min(max(target / max(np.sqrt(ms), _EPS), self.min_gain), self.max_gain)
             g = c * g + (1.0 - c) * desired
@@ -379,15 +334,14 @@ class AGC:
 
 @dataclass
 class DSPParams:
-    """Pure DSP parameters (no config metadata — that lives on
-    ``config.DSPCfg``, which builds one of these). Defaults are tuned for the
-    4-bit DAC: moderate compression, a safety limiter just under full scale, a
-    gentle expander floor, source-aware pre-emphasis on by default."""
+    """Pure DSP parameters (config metadata lives on ``config.DSPCfg``, which
+    builds one of these). Defaults are tuned for the 4-bit DAC.
+
+    ``pre_emphasis = None`` selects the source-aware auto default; a number
+    forces that amount; 0.0 disables the stage. ``comp_makeup_db = None``
+    auto-computes makeup gain."""
 
     enabled: bool = False
-    # None = source-aware auto (PRE_EMPHASIS_MIC_DEFAULT if is_mic else
-    # PRE_EMPHASIS_LINE_DEFAULT, resolved in AudioDSP); a number forces that
-    # amount for every source; 0.0 disables pre-emphasis.
     pre_emphasis: float | None = None
     expander: bool = True
     expander_threshold_db: float = -45.0
@@ -402,7 +356,7 @@ class DSPParams:
     comp_knee_db: float = 6.0
     comp_attack_ms: float = 5.0
     comp_release_ms: float = 120.0
-    comp_makeup_db: float | None = None  # None = auto
+    comp_makeup_db: float | None = None
     limiter: bool = True
     limiter_ceiling: float = 0.95
     limiter_release_ms: float = 50.0
@@ -430,7 +384,6 @@ class AudioDSP:
         self._chain: list[_Processor] = []
         if not params.enabled:
             return
-        # Resolve source-aware pre-emphasis: None → mic/line default by is_mic.
         pre = params.pre_emphasis
         if pre is None:
             pre = PRE_EMPHASIS_MIC_DEFAULT if is_mic else PRE_EMPHASIS_LINE_DEFAULT

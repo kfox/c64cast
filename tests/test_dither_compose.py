@@ -8,9 +8,7 @@ relative to "none" on a smooth gradient (where dithering has visible work to
 do).
 """
 
-# FakeAPI is a duck-typed stub of Ultimate64API; silence pyright's
-# argument-type complaints across the file (same pattern as
-# test_bitmap_compose.py / test_mcm_mode.py).
+# FakeAPI is a duck-typed stub of Ultimate64API.
 # pyright: reportArgumentType=false
 from __future__ import annotations
 
@@ -87,7 +85,7 @@ class MultiHiresDitherTest(unittest.TestCase):
         self.assertFalse(np.array_equal(plain["bitmap"], dithered["bitmap"]))
 
     def test_blue_noise_differs_from_ordered_on_gradient(self):
-        # Confirms the modes.py dispatch actually selects a different mask
+        # Confirms the video/modes/ dispatch actually selects a different mask
         # per method rather than both methods silently sharing one offset.
         frame = _gradient()
         ordered = MultiHiresDisplayMode(

@@ -217,8 +217,7 @@ def burst_capture(label: str, seconds: float, device) -> list[np.ndarray]:
         cap.read()
     # Wait for signal before starting the clock. The capture card can take
     # seconds to relock after the mode change a phase launch causes, and a run
-    # that starts early spends its whole window on a black screen — which the
-    # old scorer folded into the tally instead of reporting.
+    # that starts early spends its whole window on a black screen.
     t_lock = time.monotonic() + 15.0
     while time.monotonic() < t_lock:
         ok, frame = cap.read()

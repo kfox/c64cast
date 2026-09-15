@@ -137,12 +137,10 @@ class ErrorMinHysteresisTest(unittest.TestCase):
     trio must still win immediately regardless of the margin."""
 
     def _near_tied_cell(self) -> tuple[np.ndarray, np.ndarray]:
-        # 32 pixels split into 3 groups: A (0:12) only entry 1 fits, B (12:24)
-        # only entry 2 fits, C (24:32) neither fits — entries 3 and 4 both
-        # residually near-fit C, 4 very slightly better. So trio {1,2,3} and
-        # {1,2,4} both cover A+B perfectly and differ only on C's residual:
-        # near-tied overall (80.8 vs 80.0), not an exact tie (which leaves the
-        # 3rd slot's winner to arbitrary trio-enumeration order).
+        # 32 pixels in 3 groups: A (0:12) fits only entry 1, B (12:24) only entry 2,
+        # C (24:32) neither — entries 3 and 4 both near-fit C, 4 slightly better. So
+        # trios {1,2,3} and {1,2,4} differ only on C's residual: near-tied (80.8 vs
+        # 80.0), not an exact tie (which leaves the 3rd slot to enumeration order).
         d_cell = np.full((1, 32, 16), 500.0, dtype=np.float32)
         d_cell[:, :12, 1] = 0.0
         d_cell[:, 12:24, 2] = 0.0
@@ -160,9 +158,8 @@ class ErrorMinHysteresisTest(unittest.TestCase):
         self.assertEqual(set(picks[0].tolist()), {1, 2, 3})
 
     def test_no_hysteresis_without_prev_trio_or_margin(self):
-        # Baseline: with no prior state (first frame) or margin=0, the pool
-        # search's raw winner is returned even though it's a near-tie —
-        # this is the pre-fix behavior the regression above guards against.
+        # Baseline: with no prior state (first frame) or margin=0, the pool search's
+        # raw winner is returned even though it's a near-tie — the pre-fix behavior.
         counts, d_cell = self._near_tied_cell()
         picks = pick_cell_colors(counts, d_cell, 0, "error-min")
         self.assertEqual(set(picks[0].tolist()), {1, 2, 4})
@@ -185,12 +182,12 @@ class ErrorMinHysteresisTest(unittest.TestCase):
         self.assertIn(5, picks[0].tolist())
 
     def test_default_margin_suppresses_steady_state_flicker_under_blending(self):
-        # End-to-end reproduction: a cell whose content sits ambiguously
-        # between two blend-table entries (a solid and its nearest pair, the
-        # closest possible near-tie) flickers between them under per-frame
-        # quantization noise when error-min scores unsmoothed, and stops once
-        # ERROR_MIN_HYSTERESIS_MARGIN is applied. Regression for the "cell
-        # backgrounds visibly flip" bug seen on hardware video playback.
+        # End-to-end reproduction: a cell sitting ambiguously between two blend-table
+        # entries (a solid and its nearest pair, the closest possible near-tie)
+        # flickers under per-frame quantization noise when error-min scores
+        # unsmoothed, and stops once ERROR_MIN_HYSTERESIS_MARGIN is applied.
+        # Regression for the "cell backgrounds visibly flip" bug seen on hardware
+        # video playback.
         from c64cast.video.flicker import blend_distances_for, build_blend_table
 
         table = build_blend_table(0.075, tolerance="subtle")

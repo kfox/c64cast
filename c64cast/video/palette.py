@@ -1,4 +1,7 @@
-"""C64 palette constants and color quantization."""
+"""C64 palette constants and color quantization.
+
+See docs/architecture/video-color.md#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette.
+"""
 
 from __future__ import annotations
 
@@ -34,10 +37,8 @@ C64_COLORS = {
     "light gray": 15,
 }
 
-# Canonical Title-Case display names, index-aligned to C64_COLORS. Used for
-# error messages, --describe/help, and the wizard. "gray" is preferred over
-# "grey", and index 12 reads "Medium Gray" to disambiguate it from the dark
-# (11) and light (15) grays.
+# Index-aligned to C64_COLORS. Index 12 reads "Medium Gray" to disambiguate it
+# from the dark (11) and light (15) grays.
 C64_COLOR_NAMES: tuple[str, ...] = (
     "Black",
     "White",
@@ -63,8 +64,7 @@ def color_display_name(index: int) -> str:
     return C64_COLOR_NAMES[index & 0x0F]
 
 
-# Reverse of C64_COLORS: index -> the lowercase spelling a config (and a
-# LIVE_CHOICES value) is written with. Built once at import.
+# Index -> the lowercase spelling a config (and a LIVE_CHOICES value) uses.
 _INDEX_TO_WRITE_NAME: dict[int, str] = {index: name for name, index in C64_COLORS.items()}
 
 
@@ -75,11 +75,10 @@ def color_name(index: int) -> str:
     return _INDEX_TO_WRITE_NAME[index & 0x0F]
 
 
-# --- Fuzzy color-name resolution -------------------------------------------
-# _COLOR_ALIASES maps many spellings/abbreviations to a palette index so config
+# _COLOR_ALIASES maps spellings and abbreviations to a palette index, so config
 # color knobs accept forgiving names (case-insensitive, "lgrn", "mgry", "blk",
-# grey==gray, ...). Built once at import from a modifier x hue grammar plus the
-# handful of modifier+hue combinations the C64 palette actually has.
+# and grey == gray). Built from a modifier × hue grammar plus the handful of
+# modifier+hue combinations the C64 palette actually has.
 _MODIFIER_ALIASES: dict[str, list[str]] = {
     "light": ["light", "lt", "l", "lite"],
     "dark": ["dark", "dk", "d"],
@@ -183,16 +182,13 @@ def resolve_color(token: int | str, *, default: int | None = None) -> int:
     )
 
 
-# --- Host palettes ----------------------------------------------------------
-# The 16 colors are fixed in the sense that a program cannot change them, but
-# what they *are* depends on the machine: a VIC-II's analog output, a
-# reimplementation's RGB table, or whatever .vpl the user loaded. The quantizer
-# has to aim at the colors the display will actually show, so the active table
-# is selected per run from [hardware].host_palette (see set_host_palette).
+# Host palettes. What the 16 colors *are* depends on the machine — a VIC-II's
+# analog output, a reimplementation's RGB table, or a loaded .vpl — and the
+# quantizer has to aim at the colors the display will actually show, so the
+# active table is selected per run from [hardware].host_palette.
 
-# The classic RGB rendering of a real VIC-II's output, on the 0/68/85/.../255
-# lattice that emulators settled on. The right table for a C64 whose own VIC is
-# driving the display — an Ultimate II+ or a TeensyROM+ in a breadbin.
+# The classic RGB rendering of a real VIC-II's output. The right table for a
+# C64 whose own VIC drives the display: an Ultimate II+ or a TeensyROM+.
 PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
     (0, 0, 0),
     (255, 255, 255),
@@ -213,15 +209,9 @@ PEPTO_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
 )
 
 # The Ultimate 64's own table (the firmware's `default_colors`), which its FPGA
-# VIC drives to both HDMI and composite. Captured off the HDMI output it comes
-# back within 4 counts per channel, so this is measurement-confirmed rather
-# than transcribed hopefully; the residual is a uniform ~2-count black-level
-# offset in the capture chain, not a palette difference.
-#
-# It is a long way from PEPTO_PALETTE_BGR — 25.5 counts mean, 60 at worst on
-# Orange — and quantizing against the wrong one of the two is not cosmetic:
-# it costs ~13% mean Lab error and sends ~19% of pixels to a different palette
-# index than the one that actually fits best.
+# VIC drives to both HDMI and composite. Confirmed against an HDMI capture to
+# within 4 counts per channel. It sits 25.5 counts from PEPTO_PALETTE_BGR on
+# average, 60 at worst (Orange).
 U64_PALETTE_BGR: tuple[tuple[int, int, int], ...] = (
     (0x00, 0x00, 0x00),
     (0xF7, 0xF7, 0xF7),
@@ -246,10 +236,9 @@ HOST_PALETTES: dict[str, tuple[tuple[int, int, int], ...]] = {
     "u64": U64_PALETTE_BGR,
 }
 
-# The active table. Mutated in place by set_host_palette rather than rebound,
-# because half the render pipeline holds a direct reference to this array from
-# import time and rebinding the name here would leave all of them on the old
-# colors.
+# The active table, in OpenCV BGR channel order — not RGB. Mutated in place by
+# set_host_palette rather than rebound: half the render pipeline holds a direct
+# reference to this array from import time.
 C64_PALETTE_BGR = np.array(PEPTO_PALETTE_BGR, dtype=np.float32)
 
 # Modules that keep their own palette-derived tables register a rebuild hook
@@ -355,21 +344,18 @@ def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str 
 
 C64_SPECTRUM_INDICES = np.array([2, 8, 7, 5, 13, 3, 14, 6, 4, 10])
 
-# Rec.601 luma of each palette entry (0..255), computed from the BGR palette
-# (0.114·B + 0.587·G + 0.299·R). Used by the mhires per-cell luminance/contrast
-# color-selection strategies (modes._pick_cell_colors) to order a cell's present
-# colors dark→light.
+# Rec.601 luma of each palette entry (0..255), from the BGR palette
+# (0.114·B + 0.587·G + 0.299·R). Orders a cell's colors dark→light for the
+# mhires luminance/contrast cell strategies.
 PALETTE_LUMA = (C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float32)).astype(
     np.float32
 )
 
 DISTANCE_WEIGHTS = np.array([2.0, 4.0, 3.0], dtype=np.float32)
-# Pre-quantization per-channel gain (BGR), the built-in default for the global
-# [color].channel_boost shaping stage. The blue/green lift biases the palette
-# match toward C64-friendly hues; red is left at 1.0 — A/B on real TRON frames
-# showed the historical 0.9 red-cut only raised perceptual (Lab) error and
-# starved warm colors (yellow/red/purple) with zero benefit to the blues it was
-# meant to favor. Override per-config via [color].channel_boost.
+# Pre-quantization per-channel gain (BGR), the built-in [color].channel_boost
+# default. The blue/green lift biases the palette match toward C64-friendly
+# hues; red stays at 1.0 — a measured A/B on TRON frames put a 0.9 red-cut at
+# higher Lab error with no benefit to the blues it was meant to favor.
 CHANNEL_BOOST = np.array([1.3, 1.2, 1.0], dtype=np.float32)
 
 # Squared weighted distance is computed via the (x-p)² expansion:
@@ -395,10 +381,6 @@ def quantize_flat(flat_pixels: np.ndarray) -> np.ndarray:
     """Return nearest-palette index (int64) for each pixel. flat_pixels: (N, 3) float32."""
     return np.argmin(quantize_distances(flat_pixels), axis=1)
 
-
-# ---------------------------------------------------------------------------
-# Scene fade: per-palette-index dim toward black
-# ---------------------------------------------------------------------------
 
 _IDENTITY_FADE_LUT = np.arange(16, dtype=np.uint8)
 _FADE_LUT_CACHE: dict[tuple[int, tuple[int, ...] | None], np.ndarray] = {}
@@ -445,26 +427,20 @@ def build_fade_lut(alpha: float, allowed: tuple[int, ...] | None = None) -> np.n
     return lut
 
 
-# ---------------------------------------------------------------------------
-# Palette-mode helpers (used by MCM / MultiHires display modes)
-# ---------------------------------------------------------------------------
-
-# Indices of gray-axis palette entries. The C64 palette has 5 of these so
-# any desaturated pixel has 5 close winners and rarely picks a chromatic
-# neighbor — `make_gray_penalty()` adds a distance² bias that shifts the
-# decision boundary in favor of the chromatic entry.
+# The palette has 5 gray-axis entries, so a desaturated pixel has 5 close
+# winners and rarely picks a chromatic neighbor; `make_gray_penalty()` adds a
+# d² bias that shifts that decision boundary.
 GRAY_INDICES = (0, 1, 11, 12, 15)  # black, white, dark gray, gray, light gray
 PALE_INDICES = (3,)  # cyan — chromatic but very pale; over-selected on warm-gray skin
 CHROMATIC_INDICES = tuple(i for i in range(16) if i not in GRAY_INDICES)
 
-# Default penalties chosen by eye against typical webcam input. Units are
-# squared distance in the weighted BGR space used by quantize_distances —
-# 2500 is roughly "a chromatic palette entry wins if it is within ~50 BGR
-# units of the pixel; otherwise gray can win".
+# Chosen by eye against typical webcam input, in squared distance in the
+# weighted BGR space quantize_distances uses: 2500 is roughly "a chromatic entry
+# wins within ~50 BGR units of the pixel, otherwise gray can win".
 DEFAULT_GRAY_PENALTY = 2500.0
 DEFAULT_PALE_PENALTY = 625.0
-# Large enough to dominate any real squared-distance score, so chromatic
-# entries lose every argmin. Used by "grayscale" palette_mode.
+# Large enough to dominate any real squared-distance score, so chromatic entries
+# lose every argmin. Used by "grayscale" palette_mode.
 GRAYSCALE_CHROMATIC_PENALTY = 1e10
 
 
@@ -523,16 +499,11 @@ def boost_saturation(img_bgr: np.ndarray, factor: float) -> np.ndarray:
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
-# ---------------------------------------------------------------------------
-# Hue-targeted correction (the global [color] hue_corrections stage)
-# ---------------------------------------------------------------------------
-# The C64 has exactly one purple (index 4) and it is a bright, fully-saturated
-# magenta. Real-world purples are dark, blue-leaning violets, so the weighted-
-# BGR (brightness-dominated) quantizer sends them to gray/blue and never to
-# purple. A pre-quantization HSV pass that, for pixels in the violet→magenta
-# hue band, snaps the hue toward magenta and boosts saturation + value lets
-# them reach C64 purple. The same mechanism can tune any hue band; the default
-# table ships only the purple rescue (the one true gap in the 16-color set).
+# Hue-targeted correction ([color].hue_corrections). The C64's only purple
+# (index 4) is a bright, fully-saturated magenta, so real dark blue-leaning
+# violets never reach it under the brightness-dominated weighted-BGR quantizer.
+# A pre-quantization HSV pass over a hue band snaps hue and lifts S and V; the
+# default table ships only that one rescue.
 
 
 @dataclass(frozen=True)
@@ -683,25 +654,16 @@ def parse_channel_boost(
     return np.array([float(v) for v in raw], dtype=np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Adaptive per-source color fit (the [color].auto_fit stage)
-# ---------------------------------------------------------------------------
-# The static [color] stage above (channel_boost + hue_corrections) is the same
-# nudge for every video. auto_fit is its per-source adaptive sibling: a scene
-# pre-scans its source (video video / slideshow image), derives a contrast
-# (levels) stretch + a gentle saturation lift that expands the content to FILL
-# the C64 tonal + chroma range, and the display mode applies it as the first
-# shaping step. Faithful (hue preserved) — it stretches what's there, it does
-# not recolor. The guards below keep it do-no-harm on already-well-exposed
-# sources: percentile black/white points reject outliers, a minimum span caps
-# the gain, the saturation lift is floored at 1.0 (never desaturates) and
-# capped, and a 0..1 strength dial lerps the whole transform toward identity.
+# Adaptive per-source color fit ([color].auto_fit), the per-source sibling of
+# channel_boost + hue_corrections: a scene pre-scans its source, derives a
+# levels stretch plus a saturation lift filling the C64 tonal and chroma range,
+# and the display mode applies it as the first shaping step. Hue is preserved.
 
 _AUTO_FIT_BLACK_PCT = 1.0  # luma percentile mapped to black
 _AUTO_FIT_WHITE_PCT = 99.0  # luma percentile mapped to white
-# Smallest black→white span we'll stretch across. Enforcing a floor caps the
-# contrast gain at 255/MIN_SPAN (~8x) so a near-flat frame doesn't blow its
-# sensor/compression noise up to full contrast.
+# Smallest black→white span to stretch across; the floor caps contrast gain at
+# 255/MIN_SPAN (≈8×), so a near-flat frame cannot blow its noise up to full
+# contrast.
 _AUTO_FIT_MIN_SPAN = 32.0
 _AUTO_FIT_SAT_TARGET = 110.0  # target mean HSV S (0..255) the lift aims for
 _AUTO_FIT_SAT_CAP = 1.6  # never multiply saturation by more than this
@@ -814,7 +776,6 @@ class ColorFitAccumulator:
             if mean_s > 1.0
             else 1.0
         )
-        # Lerp toward identity by strength.
         st = self._strength
         black *= st
         white = 255.0 - (255.0 - white) * st
@@ -823,26 +784,13 @@ class ColorFitAccumulator:
         return None if fit.is_identity() else fit
 
 
-# ---------------------------------------------------------------------------
-# Forced-palette remap (the [color].force_palette "extreme" stage)
-# ---------------------------------------------------------------------------
-# The stages above (auto_fit, channel_boost, hue_corrections) are all FAITHFUL —
-# they stretch/nudge the source but every pixel still maps to its nearest of the
-# fixed 16 C64 colors. A source that clusters in one gamut region (TRON = black +
-# dark blue) therefore leaves most of the 16 colors unused and renders nearly
-# monochromatic. The forced-palette remap is a deliberate FALSE-COLOR pre-stage:
-# it k-means the source into N clusters (in perceptual Lab space), assigns each
-# cluster to a DISTINCT C64 color via an optimal (min total Lab error) bijection,
-# and routes every pixel cluster→assigned color. Result: all N colors are used
-# and the assignment is consistent across the whole source (no per-frame
-# flicker). Opt-in only, never a default — it does not preserve the source's true
-# colors. Once clusters are assigned to specific indices, the remap BYPASSES the
-# faithful shaping stages (re-nudging hues would fight the assignment); it feeds
-# the existing nearest-palette quantizer + per-cell slot-picker unchanged by
-# emitting an image whose pixels are already exact C64 palette colors.
+# Forced-palette remap (the [color].force_palette stage). Unlike auto_fit,
+# channel_boost and hue_corrections, it is false-color, so it BYPASSES those
+# faithful shaping stages — re-nudging hues would fight the cluster→index
+# assignment — and emits an image whose pixels are already exact palette
+# colors, which the quantizer and slot-picker consume unchanged.
 #
-# Per-frame cost is a single LUT gather (see ColorMap.apply); the only real work
-# (pre-scan + k-means + assignment + LUT bake) happens once per source.
+# See docs/architecture/video-color.md#rolling_palettepy--palettepy--forced-palette-remap.
 
 _FORCE_PALETTE_BINS = 32  # per-axis BGR bins for the bake-once 3D LUT
 _FORCE_PALETTE_SHIFT = 3  # 8 - log2(bins): BGR byte → bin index
@@ -916,43 +864,26 @@ _PALETTE_LAB = _palette_lab()
 _PAL_LAB_T = _PALETTE_LAB.T.copy()  # (3, 16)
 _PAL_LAB_NORMSQ = (_PALETTE_LAB**2).sum(axis=1)  # (16,)
 
-# ---------------------------------------------------------------------------
-# Perceptual (CIE-Lab) nearest-palette matching — the [color].color_match
-# "perceptual" path.
-# ---------------------------------------------------------------------------
-# The default quantizer (quantize_distances above) measures nearest-color in a
-# weighted BGR space (DISTANCE_WEIGHTS [2, 4, 3]) that is brightness-dominated:
-# a warm mid-gray skin pixel lands closer to a gray-axis entry than to orange/
-# brown. CIE-Lab is perceptually near-uniform, so the nearest-Lab match picks
-# the color the eye would actually call closest — the accuracy win of the
-# perceptual path is a better hue decision among the candidate colors.
+# The [color].color_match = "perceptual" path swaps ONLY the distance space:
+# channel_boost and the gray penalty still apply, and that is load-bearing —
+# hardware A/B has flat desaturated regions fragmenting into gray under the
+# bare Lab match.
 #
-# The perceptual path swaps ONLY the distance space: the channel_boost + gray
-# penalty shaping still applies. Those two aren't just weighted-BGR crutches —
-# the gray penalty keeps a flat desaturated region (a pale sky) from fragmenting
-# into gray under the accurate-but-drab Lab match, and channel_boost holds the
-# C64-friendly hues; dropping them (an earlier revision) measurably regressed
-# flat regions on real hardware. See modes.py.
-#
-# Distances are in OpenCV 8-bit Lab units (L, a, b each on a 0..255 scale), so a
-# perceptual d² is ~1/3 the magnitude of a weighted-BGR d² for the same physical
-# color gap (unweighted 3-channel vs weight-sum-9). Callers that add d²-space
-# biases/thresholds under the Lab metric (modes.py's gray penalty + percell
-# hysteresis) scale them by this factor to preserve their tuned strength.
+# Lab distances are in OpenCV 8-bit units (L, a, b each 0..255), so a perceptual
+# d² is ≈1/3 the magnitude of a weighted-BGR d² for the same physical color gap
+# (unweighted 3-channel against weight-sum-9). Callers adding d²-space biases
+# under the Lab metric scale them by this factor to hold their tuned strength.
 PERCEPTUAL_DIST_SCALE = 1.0 / 3.0  # approx d²_lab / d²_weighted_bgr for equal gaps
 
 COLOR_MATCH_MODES: tuple[str, ...] = ("rgb", "perceptual")
 
-# Per-cell 3-color selection strategies for the mhires percell path (the
-# [color].cell_strategy knob). The canonical list lives here (a lightweight,
-# already-color-adjacent module) so config.py can validate against it without
-# importing the heavy modes module; modes._pick_cell_colors implements them.
+# The canonical [color].cell_strategy list. Here rather than in modes/ so
+# config.py can validate against it without importing the heavy modes tree;
+# modes.base.pick_cell_colors implements them.
 CELL_STRATEGIES: tuple[str, ...] = ("frequency", "luminance", "contrast", "error-min")
 
-# How the hires "normal" style picks each 8×8 cell's foreground against the
-# global background (the [color].hires_cell_pick knob). Here for the same reason
-# as CELL_STRATEGIES above — config.py validates against it and must not import
-# the modes tree; modes/hires.py implements them.
+# [color].hires_cell_pick, here for the same reason as CELL_STRATEGIES above.
+# modes/hires.py implements them.
 HIRES_CELL_PICKS: tuple[str, ...] = ("error-min", "sample")
 
 
@@ -1123,12 +1054,11 @@ class ColorMapAccumulator:
         return assigned[nearest].reshape(bins, bins, bins)
 
 
-# Rolling (live-source) force_palette tuning. The window holds ~this many
-# per-frame Lab blocks; at the worker's ~1 Hz sampling that's a ~30 s memory,
+# Rolling (live-source) force_palette tuning. The window holds this many
+# per-frame Lab blocks: at the worker's ≈1 Hz sampling that is a ≈30 s memory,
 # and 30 × _FORCE_PALETTE_PER_FRAME ≈ the one-shot 60k cap. ROLLING_HYSTERESIS
-# is the fractional Lab-error improvement the OPTIMAL cluster→C64-index bijection
-# must beat the previous one by before the palette re-assigns (stability bias,
-# same idea as the mhires percell hysteresis).
+# is the fractional Lab-error improvement the optimal bijection must beat the
+# previous one by before the palette re-assigns.
 _ROLLING_WINDOW_BLOCKS = 30
 ROLLING_HYSTERESIS = 0.1
 
@@ -1204,10 +1134,9 @@ class RollingColorMapAccumulator:
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
         prev = self._prev_centers
         if prev is not None and prev.shape[0] == k:
-            # Initial labels = nearest previous center per sample (expansion-trick
-            # distance, no (N, k, 3) tensor). Warm-start keeps cluster i ≈ the
-            # previous cluster i, which is what makes the bijection hysteresis
-            # below meaningful across bakes.
+            # Warm start: initial labels are the nearest previous center, which
+            # keeps cluster i ≈ the previous cluster i and is what makes the
+            # bijection hysteresis below meaningful across bakes.
             px_normsq = (samples**2).sum(axis=1)
             cross = samples @ prev.T  # (N, k)
             prev_normsq = (prev**2).sum(axis=1)
@@ -1247,7 +1176,7 @@ class RollingColorMapAccumulator:
             reuse_cost = float(cost[rows, prev].sum())
             opt_cost = float(cost[rows, optimal].sum())
             # Switch only if the optimal bijection improves by more than the
-            # margin; otherwise the previous C64-color mapping stays (no pop).
+            # margin; otherwise the previous mapping stays, so nothing pops.
             if opt_cost >= reuse_cost * (1.0 - ROLLING_HYSTERESIS):
                 return prev
         return optimal
@@ -1317,8 +1246,8 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
     if samples_lab.size == 0:
         return []
     lab = samples_lab.astype(np.float32, copy=False).reshape(-1, 3)
-    # (N, 16) Lab distance from every sample to every palette color (expansion
-    # trick, same as quantize_distances_lab but the samples are already Lab).
+    # (N, 16) Lab distance, same expansion trick as quantize_distances_lab but
+    # the samples are already Lab.
     px_normsq = (lab**2).sum(axis=1)  # (N,)
     cross = lab @ _PAL_LAB_T  # (N, 16)
     dist = np.sqrt(np.maximum(px_normsq[:, None] - 2.0 * cross + _PAL_LAB_NORMSQ[None, :], 0.0))
@@ -1402,13 +1331,13 @@ def pick_diverse_top_n(counts: np.ndarray, n: int, min_hue_gap_deg: float = 45.0
     populated = [i for i in order if counts[i] > 0]
 
     if not populated:
-        # Degenerate (zero pixels). Just return the argsort order.
+        # Zero pixels: return the argsort order.
         return order[:n]
 
     chosen: list[int] = [populated.pop(0)]
     while len(chosen) < n:
         pick: int | None = None
-        # 1: diversity search over populated chromatic entries.
+        # Prefer a populated chromatic entry far enough away in hue.
         for cand in populated:
             cand_h = _PALETTE_HUES_DEG[cand]
             if np.isnan(cand_h):
@@ -1424,10 +1353,10 @@ def pick_diverse_top_n(counts: np.ndarray, n: int, min_hue_gap_deg: float = 45.0
             if ok:
                 pick = cand
                 break
-        # 2: most-populated remaining (no diversity check).
+        # Otherwise the most-populated remaining, diversity check dropped.
         if pick is None and populated:
             pick = populated[0]
-        # 3: dip into zero-count entries to reach n.
+        # Last resort: dip into zero-count entries to reach n.
         if pick is None:
             tail = [i for i in order if i not in chosen]
             if not tail:

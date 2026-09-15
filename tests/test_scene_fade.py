@@ -226,11 +226,6 @@ class UserDimTest(unittest.TestCase):
         self.assertEqual(mode.fade_alpha, 1.0)
 
 
-# ---------------------------------------------------------------------------
-# Playlist timeline + CTRL-skip abort
-# ---------------------------------------------------------------------------
-
-
 class _FakeMode:
     """Minimal compose-based display mode stand-in for Playlist fade wiring."""
 

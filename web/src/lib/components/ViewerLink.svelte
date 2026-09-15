@@ -2,9 +2,7 @@
   import { ApiError, api } from "$lib/api";
   import Button from "$lib/components/Button.svelte";
 
-  // Held rather than fetched on mount: asking mints the token, and a console
-  // that minted one every time somebody opened it would be creating a
-  // credential nobody wanted.
+  // Not fetched on mount: asking mints the token.
   let url = $state("");
   let minted = $state(false);
   let problem = $state("");
@@ -17,9 +15,8 @@
     busy = true;
     try {
       const link = await api.viewerLink();
-      // The host answers with a path because it may be bound to 0.0.0.0 and
-      // cannot know which of its addresses this browser reached it on. This
-      // browser knows exactly that, and it is the address worth sharing.
+      // The host answers with a path: bound to 0.0.0.0, it cannot know which
+      // of its addresses this browser reached it on. This browser can.
       url = new URL(link.path, location.origin).toString();
       minted = link.minted;
     } catch (e) {
@@ -31,9 +28,8 @@
 
   async function copy(): Promise<void> {
     try {
-      // Not available over plain HTTP outside localhost, which is exactly how
-      // this host is usually reached — so the link is on screen and selectable
-      // whether or not this works.
+      // No clipboard over plain HTTP outside localhost, which is how this host
+      // is usually reached — so the link stays on screen and selectable.
       await navigator.clipboard.writeText(url);
       copied = "Copied.";
     } catch {

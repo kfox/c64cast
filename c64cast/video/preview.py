@@ -1,23 +1,14 @@
-"""Local preview window + stream recorder.
+"""Local preview window + stream recorder, both over `Framebuffer.render()`.
 
-PreviewWindow mirrors whatever the U64 is displaying in a desktop window
-(using the Framebuffer's reconstruction). StreamRecorder captures the
-same framebuffer to a video file via cv2.VideoWriter.
+**PreviewWindow must be driven from the process's main thread, and must never
+be threaded the way StreamRecorder is.** cv2's HighGUI may only create and
+service a window on the main thread — on macOS a hard Cocoa requirement, where
+an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV code"
+out of the first call. Hence the open/pump/close shape, whose lifecycle
+`session._pump_previews_until_done` owns from the otherwise-parked main thread.
 
-Both sit on top of `Framebuffer.render()`, which is the heavy lift; this
-module is mostly orchestration. Both use cv2 — a hard dependency — so
-neither needs an optional extra.
-
-**PreviewWindow must be driven from the process's main thread.** It is
-deliberately *not* threaded like StreamRecorder is: cv2's HighGUI (and
-SDL, and every other desktop toolkit) may only create and service a
-window on the main thread, which on macOS is a hard Cocoa requirement —
-an off-thread `namedWindow` raises "Unknown C++ exception from OpenCV
-code" straight out of the first call. Every playlist already runs on its
-own worker thread (`session.run_foreground`), leaving the main thread blocked
-in `join()`, so the main thread is both the only legal place to pump a
-window and the one with nothing else to do. Hence the open/pump/close
-shape: `session._pump_previews_until_done` owns the lifecycle.
+See docs/architecture/video-color.md#framebufferpy--previewpy--the-software-mirror-behind-preview-and-recording
+and docs/caveats.md#preview-window-fidelity--limits.
 """
 
 from __future__ import annotations
@@ -77,8 +68,7 @@ class PreviewWindow:
         try:
             cv2.namedWindow(self.title, cv2.WINDOW_AUTOSIZE)
         except Exception as e:
-            # Most likely an opencv build with no GUI support (headless
-            # wheel, no display). Not fatal — the session runs without it.
+            # A headless opencv build or no display. The session runs without it.
             log.error("preview disabled: cannot open a window: %s", e)
             return
         self._open = True
@@ -98,13 +88,11 @@ class PreviewWindow:
                     bgr = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_NEAREST)
                 cv2.imshow(self.title, bgr)
                 self._next_draw = now + 1.0 / self.fps
-            # waitKey is what actually pumps HighGUI's event loop — without it
-            # the window never paints and the OS marks it unresponsive. The 1 ms
-            # wait also keeps the caller's polling loop off a busy-spin.
+            # waitKey is what services HighGUI's event loop; without it the
+            # window never paints. Its ~1 ms block also paces the caller.
             cv2.waitKey(1)
         except Exception:
-            # We're on the main thread now, so an exception here would take the
-            # whole session down with it. A dead preview must not do that.
+            # On the main thread, so an escaping exception would end the session.
             log.exception("preview window failed; disabling it")
             self.close()
             return
@@ -127,8 +115,7 @@ class PreviewWindow:
         self._open = False
         with contextlib.suppress(Exception):
             cv2.destroyWindow(self.title)
-            # destroyWindow only queues the teardown; HighGUI needs one more
-            # event-loop turn to actually retire the window.
+            # destroyWindow only queues the teardown; the pump is what runs it.
             cv2.waitKey(1)
 
 
@@ -197,7 +184,6 @@ class StreamRecorder:
                 self._writer.write(bgr)
                 self._frame_count += 1
                 next_t += period
-                # If we fell way behind (slow disk?), snap forward.
                 if time.monotonic() > next_t + period * 5:
                     next_t = time.monotonic()
         except Exception:

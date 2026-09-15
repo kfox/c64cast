@@ -16,25 +16,21 @@
   let done = $state("");
 
   const savable = $derived(tuned.savable > 0 && tuned.config_path !== "");
-  // The host already resolved this to a bare name (no directory, no `.toml`) —
-  // the same spelling a config gets everywhere else in the console.
   const file = $derived(tuned.config_name);
   const lost = $derived(tuned.changes.length - tuned.savable);
 
-  /** The answer has to outlive the thing it answers: a save empties the record,
-   *  and a section that only showed while the record was there would take the
-   *  confirmation with it on the very next state push. */
+  /** Kept up past an emptied record, or a save's own confirmation would go
+   *  with it on the next state push. */
   const showing = $derived(tuned.changes.length > 0 || done !== "" || problem !== "");
 
-  /** The host's own rounding, so a value reads the same here as it does in the
-   *  log line and the exit prompt. */
+  /** The host's own rounding, so a value reads the same here as in the log
+   *  line and the exit prompt. */
   function show(value: number | string | null): string {
     if (typeof value === "number") return String(Number(value.toPrecision(3)));
     return value === null ? "—" : value;
   }
 
-  /** The knob's own name; the holder prefix is the same for every row in the
-   *  list and repeating it 8 times says nothing. */
+  /** The knob's own name, without the holder prefix every row shares. */
   function knob(change: TuneChange): string {
     return change.target.split(".").slice(1).join(".") || change.target;
   }
@@ -60,9 +56,6 @@
 </script>
 
 {#if showing}
-  <!-- Below the knobs, because this is the record of turning them. The show is
-       already playing these values; what is at stake here is only whether the
-       next run starts from them. -->
   <section class="mt-4 rounded-lg border border-[var(--edge)] bg-[var(--panel-alt)] p-3">
     <h3 class="mb-2 text-xs font-semibold tracking-wide text-[var(--ink-dim)] uppercase">
       Tuned this run
@@ -75,9 +68,9 @@
             {knob(change)}
           </span>
           {#if change.scene !== null}
-            <!-- Counted over the config's own blocks, which is not always the
-                 running order (a follower-only scene is in the file and not in
-                 the show), so the label says which numbering it means. -->
+            <!-- Counted over the config's own blocks, not the running order
+                 (a follower-only scene is in the file and not in the show), so
+                 the label says which numbering it means. -->
             <span
               class="text-[0.65rem] text-[var(--ink-dim)]"
               title="belongs to the {change.scene + 1}. [[scenes]] block of this config"
@@ -114,9 +107,6 @@
 
     {#if !readOnly && tuned.changes.length > 0}
       <div class="mt-3 flex flex-wrap items-center gap-2">
-        <!-- Absent rather than disabled when there is nothing to write: a
-             greyed "Keep 0 in the config" is a worse answer than the sentence
-             above it, which says why. -->
         {#if savable}
           <Button
             variant="primary"
