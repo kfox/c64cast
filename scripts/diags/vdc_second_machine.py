@@ -549,6 +549,7 @@ def stage_identity(p: Probe) -> bool:
     print("       in stages 4 and 5 would describe some fixed byte pattern rather")
     print("       than what the blit wrote. They are skipped instead of reported.")
     print("       Stage 3 below needs no register write and is still measured.")
+    return False
 
 
 def stage_blanking(p: Probe, samples: int) -> float:
