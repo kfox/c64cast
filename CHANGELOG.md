@@ -781,8 +781,24 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   target has refused a `user:pass@` netloc for exactly this reason since it was
   introduced; a secret inside a scene `file` *value* was covered by none of that
   machinery, because it is not a field of its own. Every message that quotes a
-  media spec now strips URL userinfo and masks `token=`/`key=`/`password=`-style
-  query parameters, and so does the snapshot.
+  media spec now strips URL userinfo and masks `token=`/`password=`-style query
+  parameters, and so does the snapshot.
+- **A quoted secret was redacted down to its first word, or not at all.**
+  `redact_secrets` accepted only a double quote around the value and ended the
+  value at the first space, so `dma_password = "correct horse battery staple"`
+  came back as `"REDACTED horse battery staple"`, a TOML literal string
+  (`dma_password = 'hunter2'`) or a Python mapping `repr()`
+  (`{'token': 's3cr3t'}`) was not touched at all, and neither was a
+  triple-quoted `'''…'''` — which `_format_toml_error` then underlined with a
+  caret, because it believed it had redacted nothing. All three reached every
+  destination that redacts: `--log-file`, the console's log buffer served to
+  read-only viewers, and the config parse error rendered in a browser, which
+  quotes the offending line. A quoted value now runs to its matching quote — a
+  backslash-escaped one does not close it — and to the end of the line when the
+  string is unterminated, which is the usual reason the parse failed on that
+  line in the first place. Neither bound crosses a newline, so a value written
+  across several lines is masked only as far as its first newline, and a `'''`
+  or `"""` that ends the line leaves nothing on it to mask.
 - **A media URL was fetched at build time with no timeout.** The yt-dlp
   resolution runs inside `build_scene`, i.e. after the link is open and the
   machine has been reset, and it passed no `socket_timeout` (nothing in the tree

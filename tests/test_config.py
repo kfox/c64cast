@@ -775,20 +775,23 @@ class FormatTomlErrorTest(unittest.TestCase):
         # cli.py logs a ConfigError at error level and --log-file mirrors it to disk,
         # so echoing the offending source line copied the credential there — and a
         # TOML typo is exactly the error whose log gets pasted into an issue.
-        err = type(
-            "E",
-            (),
-            {
-                "lineno": 2,
-                "colno": 26,
-                "msg": "bad value",
-                "doc": '[ultimate64]\ndma_password = "hunter2" oops\n',
-            },
-        )()
-        out = cfgmod._format_toml_error("cfg.toml", err)
-        self.assertNotIn("hunter2", out)
-        self.assertIn("dma_password", out)
-        self.assertIn("line 2, column 26", out)
+        for value in ('"hunter2"', "'hunter2'"):
+            with self.subTest(value=value):
+                err = type(
+                    "E",
+                    (),
+                    {
+                        "lineno": 2,
+                        "colno": 26,
+                        "msg": "bad value",
+                        "doc": f"[ultimate64]\ndma_password = {value} oops\n",
+                    },
+                )()
+                out = cfgmod._format_toml_error("cfg.toml", err)
+                self.assertNotIn("hunter2", out)
+                self.assertIn("dma_password", out)
+                self.assertIn("line 2, column 26", out)
+                self.assertNotIn("^", out)
 
     def test_an_innocent_line_keeps_its_caret(self):
         err = type(
