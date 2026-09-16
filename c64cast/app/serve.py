@@ -1363,6 +1363,20 @@ def _log_console_urls(
     )
 
 
+def _stop_web_streams(app: Any) -> None:
+    """Tell the machines to stop streaming their screens.
+
+    Contained like every other teardown step here, and for a sharper reason
+    than most: this is the *first* thing :func:`_serve_once`'s ``finally``
+    does, so anything that escaped it would strand the hardware and leave the
+    port bound — a worse failure than the one it exists to prevent. An unset
+    attribute lands here too, and is worth the same record."""
+    try:
+        app.state.stop_web_streams()
+    except Exception:
+        log.exception("could not stop the web streams; shutting down anyway")
+
+
 def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
     """One build-and-pump cycle: credentials, app, listener, mDNS, pump.
 
@@ -1373,6 +1387,11 @@ def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
     and an operator with no console for that minute has no way to see whether
     it happened. On a *restart* the session stays up and only the listener is
     replaced.
+
+    First on both paths, though, is :func:`_stop_web_streams`: it is the one
+    thing here that has to reach the *machine*, and the session's teardown
+    closes the link it would reach it on. See
+    :func:`c64cast.control.web_api._close_with_app`.
 
     Each cycle gets a fresh
     :class:`~c64cast.control.console_mdns.ConsoleMdnsAdvertiser` rather than
@@ -1435,6 +1454,7 @@ def _serve_once(host: _Host, web_cfg: cfgmod.WebCfg) -> _Cycle:
                 log.exception("autostart failed; the host is up and idle")
         pump_forever(host.manager, host.shutdown, restart=restart)
     finally:
+        _stop_web_streams(app)
         if host.shutdown.is_set():
             # `close()` is idempotent, so `run_daemon`'s own call stays the
             # backstop for every other way out of this function.

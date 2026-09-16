@@ -138,6 +138,33 @@ class LifetimeTest(unittest.TestCase):
             self.feed.close()
         self.assertEqual(self.api.stops, 1)
 
+    def test_close_is_terminal(self):
+        # The host closes the feed on the way down while its listener is still
+        # up, so a request landing in that window must not start the machine
+        # streaming again at a link that is about to close.
+        self.feed.close()
+        with self.assertRaises(screen_mod.ScreenUnavailable) as cm:
+            self.feed.acquire("c64cast")
+        self.assertIn("shutting down", str(cm.exception))
+        self.assertEqual(self.api.starts, 0)
+
+    def test_a_close_landing_mid_open_does_not_leave_the_stream_up(self):
+        # The receiver is opened outside the lock, so `close()` can sweep a map
+        # this one is not in yet — and it would come back live, with a sweeper
+        # thread, on a host that just told everything else to stop.
+        real_open = self.feed._open
+
+        def open_then_close(system):
+            receiver = real_open(system)
+            self.feed.close()
+            return receiver
+
+        with mock.patch.object(self.feed, "_open", open_then_close):
+            with self.assertRaises(screen_mod.ScreenUnavailable):
+                self.feed.acquire("c64cast")
+        self.assertEqual((self.api.starts, self.api.stops), (1, 1))
+        self.assertIsNone(self.feed._sweeper)
+
     def test_the_stream_ends_on_its_own_with_nothing_else_ticking(self):
         """The leak this feature shipped with for an afternoon, found on
         hardware: the sweep was driven by the state feed's push loop, and

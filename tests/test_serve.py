@@ -990,6 +990,19 @@ class RunDaemonTestCase(unittest.TestCase):
 
         return mock.patch.object(serve.SessionManager, "close", close)
 
+    def recording_screen_close(self) -> Any:
+        """`ScreenFeed.close` labeled into `self.events` the same way, so the
+        one ordering that has to reach the machine can be asserted too."""
+        from c64cast.control.screen import ScreenFeed
+
+        real_close = ScreenFeed.close
+
+        def close(feed):
+            self.events.append("screen.close")
+            return real_close(feed)
+
+        return mock.patch.object(ScreenFeed, "close", close)
+
     def refuse_load(self, _path):
         return self.fail("autostart is off; the config loader must not be called")
 
@@ -1109,6 +1122,44 @@ class RunDaemonShutdownOrderTest(RunDaemonTestCase):
             f"the listener was stopped before the session: {self.events}",
         )
         self.assertLess(self.events.index("manager.close"), self.events.index("mdns.stop"))
+
+    def test_the_screen_stream_is_stopped_before_the_machines_are_released(self):
+        # The session's teardown ends with `api.close()`, and a closed
+        # SocketDMAClient refuses to reconnect — so a VIC receiver stopped
+        # after it swallows its own OFF and the Ultimate goes on sending until
+        # its 20s watchdog. Waiting for the ASGI lifespan is too late twice
+        # over: uvicorn runs it after the connections drain, and a browser
+        # watching the screen never drains.
+        with self.recording_close(), self.recording_screen_close():
+            code = self.drive(cfgmod.WebCfg(autostart=False))
+        self.assertEqual(code, 0)
+        self.assertIn("screen.close", self.events)
+        self.assertLess(
+            self.events.index("screen.close"),
+            self.events.index("manager.close"),
+            f"the machines were released before the stream was stopped: {self.events}",
+        )
+
+    def test_a_failing_stream_stop_still_releases_the_hardware_and_the_port(self):
+        # It runs first, so anything escaping it would strand the C64 and leave
+        # the port bound — a worse failure than the one it prevents.
+        def boom():
+            raise RuntimeError("the feed said no")
+
+        def poke():
+            self.assertTrue(self.app_built.wait(timeout=WAIT), "the app was never built")
+            self.apps[-1].state.stop_web_streams = boom
+
+        with self.recording_close():
+            with self.assertLogs("c64cast", level="ERROR") as cm:
+                code = self.drive(cfgmod.WebCfg(autostart=False), poke=poke)
+        self.assertEqual(code, 0)
+        self.assertIn("manager.close", self.events)
+        self.assertIn("server.stop", self.events)
+        self.assertTrue(
+            any("could not stop the web streams" in m for m in cm.output),
+            f"the failure was swallowed without a record: {cm.output}",
+        )
 
 
 class RunDaemonBindFailureTest(RunDaemonTestCase):

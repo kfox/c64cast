@@ -60,6 +60,7 @@ import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -267,6 +268,34 @@ def _restamp(cfg: Config, rows: Sequence[Mapping[str, Any]]) -> None:
         write_live_tune_row(cfg, row)
 
 
+def _close_with_app(app: Any, close: Callable[[], None]) -> None:
+    """Run `close` once the ASGI host has finished serving `app`, and publish
+    it as ``app.state.stop_web_streams`` for a host that has to run it sooner.
+
+    The ASGI lifespan is the general seam — uvicorn runs it on ``should_exit``,
+    `TestClient` on the way out of a ``with`` block — but it is not a seam
+    :func:`c64cast.app.serve._serve_once` can wait for: uvicorn runs the
+    shutdown half only after every connection has drained, and a browser
+    watching the screen never drains on its own. That host releases the
+    session's hardware before it stops the listener, too, and a receiver
+    stopped after ``api.close()`` has no link left to tell the machine on. So
+    it calls the published closure first; `close` is idempotent."""
+    app.state.stop_web_streams = close
+    serving = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(served: Any) -> AsyncIterator[Any]:
+        try:
+            # Starlette passes the *app* here, and merges what the context
+            # yields into every request scope's `state`.
+            async with serving(served) as state:
+                yield state
+        finally:
+            close()
+
+    app.router.lifespan_context = lifespan
+
+
 def register_web_routes(
     app: Any,
     *,
@@ -316,6 +345,7 @@ def register_web_routes(
     # One playlist per system, each holding the backend that system's writes go
     # through — and the screen is a property of that same machine.
     screen = ScreenFeed(lambda: {name: pl.api for name, pl in playlists().items()})
+    _close_with_app(app, screen.close)
 
     # Built once: ~150 KB of JSON assembled by walking every config dataclass,
     # every scene type and every overlay. It describes the code, not the run, so
@@ -500,6 +530,9 @@ def register_web_routes(
 
         try:
             read = screen.acquire(name)
+        except ScreenUnavailable as e:
+            streams.release()
+            raise HTTPException(501, str(e)) from e
         except BaseException:
             streams.release()
             raise

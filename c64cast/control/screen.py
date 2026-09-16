@@ -70,6 +70,10 @@ KEEPALIVE_S = 2.0
 #: so the linger is what decides when a stream ends rather than the polling.
 _SWEEP_EVERY_S = 1.0
 
+#: What a request that arrives between :meth:`ScreenFeed.close` and the
+#: listener actually stopping is told.
+_GOING_AWAY = "this host is shutting down, so the screen is going away"
+
 
 class ScreenUnavailable(RuntimeError):
     """No picture, and a reason worth showing: the machine can't stream, or
@@ -97,6 +101,7 @@ class ScreenFeed:
     _live: dict[str, _Watched] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _sweeper: Any = None
+    _closed: bool = False
 
     def available(self) -> dict[str, bool]:
         """Which running systems can show a screen. Empty when nothing runs."""
@@ -170,10 +175,20 @@ class ScreenFeed:
             return encode_png(frame)
 
     def close(self) -> None:
-        """Stop every receiver. Called when the session goes away — the
-        watchers are HTTP responses that will notice their stream ended, and a
-        machine that has been torn down cannot be told to stop later."""
+        """Stop every receiver, watched or not, and refuse to open another.
+
+        Terminal, because the host calls it on the way down while its listener
+        is still up: a request arriving in that window would otherwise start
+        the machine streaming again. Watchers are HTTP responses that will
+        notice their stream ended.
+
+        It has to run before the session releases its hardware — the OFF it
+        sends needs the machine's link to still be open; see
+        :func:`c64cast.control.web_api._close_with_app` for who runs it and
+        when. :meth:`sweep` is what retires a receiver whose machine went away
+        under a host that keeps serving."""
         with self._lock:
+            self._closed = True
             live, self._live = self._live, {}
             sweeper, self._sweeper = self._sweeper, None
         if sweeper is not None:
@@ -207,6 +222,8 @@ class ScreenFeed:
 
     def _acquire(self, system: str) -> Any:
         with self._lock:
+            if self._closed:
+                raise ScreenUnavailable(_GOING_AWAY)
             watched = self._live.get(system)
             if watched is not None:
                 watched.watchers += 1
@@ -222,6 +239,11 @@ class ScreenFeed:
                 existing.watchers += 1
                 _stop_quietly(system, receiver)
                 return existing.receiver
+            if self._closed:
+                # `close()` landed while this one was connecting, so it swept a
+                # map this receiver was not in yet.
+                _stop_quietly(system, receiver)
+                raise ScreenUnavailable(_GOING_AWAY)
             self._live[system] = _Watched(receiver, watchers=1)
         self._start_sweeper()
         return receiver

@@ -52,7 +52,7 @@ from c64cast.app import config as cfgmod
 from c64cast.app import config_store, console_library, media_store, paths, serve, session
 from c64cast.app.serve import SessionState
 from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
-from c64cast.control import screen, web_api
+from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
 TOKEN = "full-token-value"
@@ -1298,16 +1298,6 @@ class ScreenRouteTest(WebApiTestCase):
     """The C64's screen. All three routes are GETs so the read-only role can
     watch; the stream's own lifetime is tested in tests/test_screen.py."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        # The feed the routes share is a closure local of register_web_routes, so
-        # nothing here can close it; it ends its sweeper thread on the first sweep
-        # after the machine goes away. Class-scoped, not per-test: a per-test patch
-        # is restored while the sweeper may not have read it yet, leaving a sweeper
-        # asleep for the unpatched second — past the stray-thread grace.
-        super().setUpClass()
-        cls.enterClassContext(mock.patch.object(screen, "_SWEEP_EVERY_S", 0.01))
-
     def _api(self) -> Any:
         sess = self.manager.session
         assert sess is not None
@@ -1357,6 +1347,17 @@ class ScreenRouteTest(WebApiTestCase):
             self._running(c)
             r = c.get("/api/screen.png", headers=VIEWER_AUTH)
         self.assertEqual(r.status_code, 200)
+
+    def test_the_stream_stops_when_the_host_stops_serving(self):
+        # A still leaves the receiver lingering for the reload that may follow,
+        # and nothing sweeps a host that is going down — so the machine would
+        # go on sending until its own watchdog expired.
+        with self.client() as c:
+            self._running(c)
+            c.get("/api/screen.png", headers=AUTH)
+            receiver = self._api().receiver
+            self.assertEqual((receiver.started, receiver.stopped), (1, 0))
+        self.assertEqual(receiver.stopped, 1)
 
     def test_the_off_switch_is_answered_rather_than_unrouted(self):
         # A console asking a host with the picture turned off should hear that,
