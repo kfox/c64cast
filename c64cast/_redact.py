@@ -27,8 +27,13 @@ REDACTED = "REDACTED"
 
 _SECRET_VALUE = re.compile(
     r"""
-    (?P<kv_prefix> \b\w*(?:token|password|secret|api[_-]?key)\b "? \s* [=:] \s* "? )
-    (?P<kv_value>[^\s&"',}]+)
+    (?P<kv_prefix>
+        \b\w*(?:token|password|secret|api[_-]?key)\b ["']? \s* [=:] \s*
+        (?P<quote> ["]{3} | [']{3} | ["'] )?
+    )
+    (?P<kv_value>
+        (?(quote) (?: \\[^\r\n] | (?!(?P=quote)) [^\r\n] )+ | [^\s&"',}]+ )
+    )
     |
     (?P<bearer_prefix>\bBearer\s+) (?P<bearer_value>[^\s"',}]+)
     """,
@@ -43,6 +48,14 @@ def _mask(m: re.Match[str]) -> str:
 
 def redact_secrets(text: str) -> str:
     """`text` with every recognized secret value reduced to ``REDACTED`` —
-    `token=VALUE`, `password: VALUE`, `api_key=VALUE` (`=` or `:`, quoted or
-    not) and `Bearer VALUE`."""
+    `token=VALUE`, `password: VALUE`, `secret=VALUE`, `api_key=VALUE` (`=` or
+    `:`, with any prefix, so `viewer_token` and `client_secret` match) and
+    `Bearer VALUE`.
+
+    An unquoted value ends at whitespace, `&`, a comma, a quote, or a closing
+    brace. A quoted one — `'`, `"`, `'''` or `\"\"\"` — runs to the matching
+    quote that no backslash escapes, or to the end of the line, whichever comes
+    first: a value written across several lines is masked only as far as its
+    first newline, and one whose opening delimiter ends the line has nothing on
+    that line to mask."""
     return _SECRET_VALUE.sub(_mask, text)

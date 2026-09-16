@@ -917,9 +917,9 @@ def redact_media_spec(entry: str) -> str:
     sits in a value rather than in its own field.
 
     Strips the URL userinfo, then hands the rest to the shared
-    :func:`~c64cast._redact.redact_secrets`, which covers `token=`/`key=`/
-    `password=`/`sig=`-style query parameters. A local path is returned
-    unchanged apart from that second pass."""
+    :func:`~c64cast._redact.redact_secrets`, whose own docstring names the
+    forms it recognizes. A local path is returned unchanged apart from that
+    second pass."""
     text = entry
     if is_media_url(entry):
         parts = urlsplit(entry.strip())

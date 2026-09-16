@@ -70,10 +70,74 @@ class RedactSecretsTest(unittest.TestCase):
         out = redact_secrets('token = "s3cr3t"')
         self.assertNotIn("s3cr3t", out)
 
+    def test_a_single_quoted_rendering_is_covered(self):
+        """A TOML literal string and a Python mapping repr both quote with `'`,
+        and `config._format_toml_error` quotes the offending config line."""
+        self.assertNotIn("hunter2", redact_secrets("dma_password = 'hunter2'"))
+        out = redact_secrets("{'token': 's3cr3t', 'next': '/'}")
+        self.assertNotIn("s3cr3t", out)
+        self.assertIn("'next': '/'", out)
+
+    def test_a_quoted_value_runs_to_its_matching_quote(self):
+        """A quoted value is a whole secret: a passphrase DMA password holds
+        spaces, and a generated key holds `&` and `,`."""
+        for line in (
+            'dma_password = "correct horse battery staple" oops',
+            "dma_password = 'correct horse battery staple' oops",
+            "dma_password = '''correct horse battery staple''' oops",
+            'dma_password = """correct horse battery staple""" oops',
+        ):
+            with self.subTest(line=line):
+                out = redact_secrets(line)
+                for word in ("correct", "horse", "battery", "staple"):
+                    self.assertNotIn(word, out)
+                self.assertIn("oops", out)
+        self.assertEqual(redact_secrets("api_key = 'AAAA&BBBB'"), "api_key = 'REDACTED'")
+        self.assertEqual(redact_secrets("password = 'p@ss,word'"), "password = 'REDACTED'")
+
+    def test_an_unterminated_quote_takes_the_rest_of_the_line(self):
+        """The unterminated string is what `_format_toml_error` is quoting in
+        the first place — the parse failed on that line."""
+        out = redact_secrets('dma_password = "correct horse battery staple')
+        self.assertNotIn("staple", out)
+
+    def test_neither_bound_crosses_a_newline(self):
+        """One formatted record can hold several lines, so the mask stops where
+        the line does: a widened bound would blank whatever followed."""
+        out = redact_secrets('dma_password = "first\nsecond"')
+        self.assertNotIn("first", out)
+        self.assertIn("second", out)
+
+    def test_a_delimiter_that_ends_the_line_is_left_alone(self):
+        """No part of the value is on the key's line, and a mask there would
+        read as coverage the line-bounded value does not have."""
+        line = 'dma_password = """\ncorrect horse battery staple\n"""'
+        self.assertEqual(redact_secrets(line), line)
+
+    def test_a_mixed_run_of_quotes_is_not_a_triple_delimiter(self):
+        """A delimiter of `'""` could never close, so the value would run to
+        the end of the line and take the fields after it along."""
+        self.assertEqual(
+            redact_secrets("{'password': '\"\"x', 'next': '/'}"),
+            "{'password': 'REDACTED', 'next': '/'}",
+        )
+
+    def test_an_escaped_quote_does_not_close_the_value(self):
+        """Escaping is the only way a JSON or TOML basic string carries its own
+        delimiter, so a secret that holds one is still one value."""
+        self.assertEqual(
+            redact_secrets('{"password": "ab\\"cd", "x": 1}'),
+            '{"password": "REDACTED", "x": 1}',
+        )
+
     def test_a_password_or_api_key_value_is_covered(self):
         self.assertNotIn("hunter2", redact_secrets("password=hunter2"))
         self.assertNotIn("abc123", redact_secrets("api_key=abc123"))
         self.assertNotIn("abc123", redact_secrets("api-key=abc123"))
+
+    def test_a_secret_value_is_covered(self):
+        self.assertNotIn("abc123", redact_secrets("secret=abc123"))
+        self.assertNotIn("abc123", redact_secrets("?client_secret=abc123"))
 
     def test_a_bearer_header_value_is_covered(self):
         out = redact_secrets("Authorization: Bearer s3cr3t")
