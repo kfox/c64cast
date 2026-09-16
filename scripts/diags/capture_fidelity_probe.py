@@ -219,7 +219,7 @@ def main() -> int:
     time.sleep(1.5)
 
     app_log = d.stamped("capfid_app", "log")
-    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url, "-vv"]
+    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", args.url, "-v"]
     try:
         with open(app_log, "w") as fh:
             app = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT)

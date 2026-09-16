@@ -13,7 +13,7 @@ stretches.
 
 This probe measures that directly and cheaply — NO Cam Link capture, NO rapid
 U64 REST polling (both of which the memories warn against). It just runs
-``python -m c64cast`` in each display mode with ``-vv`` and reads the app's own
+``python -m c64cast`` in each display mode with ``-v`` and reads the app's own
 telemetry from the log:
 
   * ``clock/wall``  — master-clock speed vs real time (the tempo-stretch metric;
@@ -77,7 +77,7 @@ def run_condition(url: str, clip: str, label: str, display: str, secs: float) ->
     boot_margin = 8.0
 
     print(f"\n=== {label}: display={display} ===")
-    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-vv"]
+    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"]
     with open(app_log, "w") as fh:
         app = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT)
         try:

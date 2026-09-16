@@ -90,7 +90,7 @@ def main() -> int:
     from c64cast.app.cli import build_stack, configure_logging, teardown_stack
     from c64cast.app.profiler import NullProfiler, set_profiler
 
-    configure_logging(1)  # INFO: surface the poller's SPACE/menu log lines
+    configure_logging(1)
 
     out = d.out_dir()
     tmp = out / "menu_inject.toml"

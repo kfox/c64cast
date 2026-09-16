@@ -92,7 +92,7 @@ def run_rate(url: str, clip: str, rate: int, display: str, secs: float, avf: str
     time.sleep(1.5)  # let the avfoundation stream come up before c64cast boots
 
     app_log = d.stamped(f"rate_{rate}_{display}_app", "log")
-    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-vv"]
+    argv = [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"]
     with open(app_log, "w") as fh:
         app = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT)
         try:
