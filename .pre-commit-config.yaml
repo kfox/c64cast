@@ -28,6 +28,12 @@ repos:
   # tests/test_tooling_pins.py enforces it.
   - repo: local
     hooks:
+      - id: venv-matches-checkout
+        name: venv matches this checkout
+        entry: scripts/check_venv_target.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ruff
         name: ruff
         entry: uv run --locked ruff check --fix --force-exclude

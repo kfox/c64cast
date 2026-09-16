@@ -20,6 +20,10 @@ _PYPROJECT = os.path.join(_REPO, "pyproject.toml")
 _PRECOMMIT = os.path.join(_REPO, ".pre-commit-config.yaml")
 
 _PROJECT_ENV = "uv run --locked"
+# `uv run` syncs before it executes, so the environment guard cannot resolve
+# through it: that would perform the very reinstall the guard exists to catch.
+_OUTSIDE_PROJECT_ENV = {"venv-matches-checkout"}
+_INVOKES_UV = re.compile(r"\buv\b")
 
 _SUBCOMMANDS = (
     "autoupdate",
@@ -199,14 +203,64 @@ class ProjectEnvironmentTest(unittest.TestCase):
             f"it with `{_PROJECT_ENV}`, which takes the pinned one",
         )
 
-    def test_every_local_hook_runs_through_the_project_environment(self) -> None:
+    def _local_block(self) -> str:
         local = [b for b in _blocks() if (m := _REPO_URL.search(b)) and m[1] == "local"]
         self.assertEqual(len(local), 1, "expected exactly one `- repo: local` block")
+        return local[0]
 
-        hooks = _HOOK.findall(local[0])
+    def _local_hooks(self) -> list[tuple[str, str]]:
+        """Every local hook's (id, entry), in the order pre-commit runs them."""
+        hooks: list[tuple[str, str]] = []
+        for hook in _HOOK.findall(self._local_block()):
+            name = _HOOK_ID.search(hook)
+            entry = _ENTRY.search(hook)
+            if name is not None and entry is not None:
+                hooks.append((name[1], entry[1]))
+
+        return hooks
+
+    def test_each_exempt_hook_runs_before_every_hook_that_invokes_uv(self) -> None:
+        hooks = self._local_hooks()
+        names = [name for name, _ in hooks]
+        first_uv = next(
+            (i for i, (_, entry) in enumerate(hooks) if _INVOKES_UV.search(entry)),
+            len(hooks),
+        )
+        self.assertLess(first_uv, len(hooks), "no local hook invokes uv any more")
+
+        for exempt in _OUTSIDE_PROJECT_ENV.intersection(names):
+            self.assertLess(
+                names.index(exempt),
+                first_uv,
+                f"{exempt} is declared after `{names[first_uv]}`, which invokes "
+                f"uv. pre-commit runs hooks in file order, so the environment "
+                f"guard would report only after the sync it exists to prevent",
+            )
+
+    def test_each_exempt_hook_exists_and_runs_a_checked_in_script(self) -> None:
+        entries = dict(self._local_hooks())
+
+        for exempt in _OUTSIDE_PROJECT_ENV:
+            self.assertIn(
+                exempt,
+                entries,
+                f"{exempt} is exempt from the project environment but declares no "
+                f"hook — a rename left the exemption behind, exempting nothing",
+            )
+            self.assertTrue(
+                os.path.isfile(os.path.join(_REPO, entries[exempt])),
+                f"{exempt} runs `{entries[exempt]}`, which is not a file in this "
+                f"repo: an exempt hook must run a checked-in script, never a name "
+                f"that PATH resolves",
+            )
+
+    def test_every_local_hook_runs_through_the_project_environment(self) -> None:
+        block = self._local_block()
+
+        hooks = _HOOK.findall(block)
         self.assertEqual(
             len(hooks),
-            len(_keys(_HOOK_KEY, local[0])),
+            len(_keys(_HOOK_KEY, block)),
             "a local hook was not parsed, so nothing checked how it resolves",
         )
         self.assertTrue(hooks, "the local block declares no hooks")
@@ -218,6 +272,8 @@ class ProjectEnvironmentTest(unittest.TestCase):
             assert name is not None
             self.assertIsNotNone(entry, f"local hook {name[1]} has no entry")
             assert entry is not None
+            if name[1] in _OUTSIDE_PROJECT_ENV:
+                continue
             self.assertTrue(
                 entry[1].startswith(_PROJECT_ENV),
                 f"local hook {name[1]} runs `{entry[1]}`, which can resolve a "

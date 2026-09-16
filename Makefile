@@ -9,11 +9,15 @@ TEST_ENV := PYTHONPATH=tests
 # skipped there.
 SYNC := $(if $(CI),,sync)
 
+# `uv run` syncs before it executes, so a target that runs uv without
+# refreshing the env still needs the guard. $(SYNC) already carries it.
+GUARD := $(if $(CI),,venv-check)
+
 HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync lint fmt test coverage typecheck doctor bench check preflight clean schema web \
+.PHONY: help sync venv-check lint fmt test coverage typecheck doctor bench check preflight clean schema web \
 	mutation-ready \
 	mutation-check \
         guide reference card books guide-figures reference-figures \
@@ -97,14 +101,17 @@ help:
 	@echo "  preflight  lint + hygiene hooks + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
 	@echo "  clean      remove build artifacts"
 
-sync:
+venv-check:
+	@scripts/check_venv_target.py
+
+sync: venv-check
 	uv sync --all-extras
 
 lint: $(SYNC)
 	uv run ruff check .
 	uv run ruff format --check .
 
-fmt:
+fmt: $(GUARD)
 	uv run ruff format .
 
 # Default .pyc validation keys on the source's mtime truncated to whole
@@ -134,12 +141,12 @@ typecheck: $(SYNC)
 doctor: $(SYNC)
 	$(PY) -m c64cast --doctor --skip-probe
 
-bench:
+bench: $(GUARD)
 	$(PY) scripts/bench.py
 
 # tests/test_schema.py fails if the committed schema drifts from this output,
 # so run this after changing any config dataclass field or overlay constructor.
-schema:
+schema: $(GUARD)
 	$(PY) -m c64cast --print-schema > c64cast/data/c64cast.schema.json
 
 # c64cast/web/dist is committed build output, so a source change and its
@@ -173,10 +180,10 @@ books: guide reference card
 
 SITE_DIR := docs/_site
 
-site:
+site: $(GUARD)
 	$(PY) scripts/build_site.py --out $(SITE_DIR)
 
-site-check:
+site-check: $(GUARD)
 	$(PY) scripts/build_site.py --check
 
 # tests/test_reference_appendices.py fails if the committed appendices drift
