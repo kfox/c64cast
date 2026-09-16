@@ -1684,7 +1684,10 @@ class SceneCfg:
 @dataclass
 class DebugCfg:
     verbose: int = field(
-        default=0, metadata={"help": "Log verbosity (0 = INFO; 1+ = DEBUG). CLI: -v / -vv."}
+        default=0,
+        metadata={
+            "help": "Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport). CLI: -v / -vv."
+        },
     )
     heartbeat: float = field(
         default=10.0, metadata={"help": "Seconds between health heartbeat log lines (0 disables)."}

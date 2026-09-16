@@ -448,7 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="count",
         default=None,
-        help="Increase log verbosity (default: INFO; -v enables DEBUG)",
+        help="Increase log verbosity (default: INFO; -v enables DEBUG, -vv adds HTTP transport)",
     )
     debug.add_argument(
         "--heartbeat",

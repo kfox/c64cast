@@ -182,10 +182,15 @@ run from the directory the material sits in. See Chapter 3.
 ## Getting More Detail
 
 Informational logging is on by default; add `-v` for debug logging, which
-includes debug records from some of the libraries c64cast builds on. Add
-`--log-file run.log` to keep it. For a long-running installation,
-`--heartbeat` prints a periodic line of throughput statistics, which is
-the quickest way to tell a slow link from a slow computer.
+includes debug records from some of the libraries c64cast builds on. `-vv`
+adds one more: a line per request c64cast's HTTP client makes — the REST
+link to an Ultimate above all — held back at `-v` because it buries
+everything else. A TeensyROM link is serial or raw TCP, so on one of those
+`-vv` says nothing about the link itself, whatever else the run fetches
+over HTTP. Add `--log-file run.log` to keep it. For a long-running
+installation, `--heartbeat` prints a periodic line of throughput
+statistics, which is the quickest way to tell a slow link from a slow
+computer.
 
 ## Still Stuck
 

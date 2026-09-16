@@ -13,7 +13,9 @@ system's U64 — all without starting the stream. See
 
 If your problem isn't here, check the stats line printed every 10 s —
 `errors/s > 0` usually points at the right corner of the system. `-v`
-adds debug logging.
+adds debug logging; `-vv` adds a line per HTTP request on top of it —
+an Ultimate's REST link above all. A TeensyROM link is serial or raw TCP and
+contributes none.
 
 ## Audio symptoms
 

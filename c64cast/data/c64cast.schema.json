@@ -540,7 +540,7 @@
       "properties": {
         "verbose": {
           "type": "integer",
-          "description": "Log verbosity (0 = INFO; 1+ = DEBUG). CLI: -v / -vv.",
+          "description": "Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport). CLI: -v / -vv.",
           "default": 0
         },
         "heartbeat": {

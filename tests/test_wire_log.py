@@ -434,7 +434,7 @@ class NoProcessWideThrottleTest(unittest.TestCase):
         if isinstance(obj, logging.Manager):
             return [
                 (f".loggerDict[{name!r}]", child)
-                for name, child in obj.loggerDict.items()
+                for name, child in dict(obj.loggerDict).items()
                 if _in_package_scope(name)
             ]
         if isinstance(obj, self._CONTAINERS):

@@ -120,7 +120,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 <!-- table: fields -->
 | Flag | Description |
 |---|---|
-| **`-v`, `--verbose`** | Increase log verbosity (default: INFO; -v enables DEBUG) |
+| **`-v`, `--verbose`** | Increase log verbosity (default: INFO; -v enables DEBUG, -vv adds HTTP transport) |
 | **`--heartbeat`**<br>`HEARTBEAT` | Health heartbeat interval in seconds, 0 disables (default: 10.0) |
 | **`--skip-probe`** | Skip the startup U64 reachability probe (default: False) |
 | **`--list-devices`** | List available audio and video input devices and exit |

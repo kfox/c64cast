@@ -71,6 +71,17 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **`-vv` now does something.** It has always been accepted and has always
+  meant exactly what `-v` means: DEBUG is reached at the first `-v`, and no
+  code anywhere read a verbosity of 2. It now releases urllib3, whose record
+  per HTTP request `-v` holds back at WARNING because it buries everything
+  else in the log. `configure_logging` holds back no other logger, so that
+  release is the whole of the difference. Reach for `-vv` when the question
+  is about an Ultimate's REST link itself: a request that never returned, a
+  status the application logged only the consequence of. A TeensyROM link
+  is serial or raw TCP, so on one of those the second `v` says nothing about
+  the link itself.
+
 - **The split scope's forced-fast-path warning is said once, not once per
   tune.** Configuring `persistence` or `scroll_columns` and then playing a
   multi-SID tune discards those modes — per-window scroll and echo are not

@@ -57,7 +57,10 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     StreamHandler otherwise. File: when `log_file` is given, also append to
     that path with a verbose plain-text format. Safe to call more than once
     — clears any existing handlers first so a re-call (e.g. after config
-    load) doesn't double up."""
+    load) doesn't double up.
+
+    `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, and 2 (`-vv`) additionally
+    releases the urllib3 loggers this otherwise holds at WARNING."""
     # INFO by default, so lifecycle messages (scene transitions, audio bring-up,
     # resets) need no -v.
     level = logging.INFO
@@ -104,9 +107,11 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             root.addHandler(fh)
 
     # urllib3 logs every REST request to the U64, which drowns -v in HTTP
-    # transport noise.
+    # transport noise. `cli.main` calls this again on the loaded config, so a
+    # one-sided hold-back here would outlive the second call's -vv.
+    transport = logging.NOTSET if verbosity >= 2 else logging.WARNING
     for noisy in ("urllib3.connectionpool", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+        logging.getLogger(noisy).setLevel(transport)
 
 
 def list_devices() -> int:

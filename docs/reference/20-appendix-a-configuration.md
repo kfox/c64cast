@@ -139,7 +139,7 @@ profile = false
 <!-- table: fields -->
 | Field | Description |
 |---|---|
-| **`verbose`**<br>*Type:* `int`<br>*Default:* `0` | Log verbosity (0 = INFO; 1+ = DEBUG). CLI: -v / -vv. |
+| **`verbose`**<br>*Type:* `int`<br>*Default:* `0` | Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport). CLI: -v / -vv. |
 | **`heartbeat`**<br>*Type:* `float`<br>*Default:* `10.0` | Seconds between health heartbeat log lines (0 disables). |
 | **`skip_probe`**<br>*Type:* `bool`<br>*Default:* `False` | Skip the startup U64 reachability probe. |
 | **`log_file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Also mirror log output to this file (useful for headless runs). |
