@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,13 +39,20 @@ _SKIP_DIRS = {
 _TEXT_SUFFIXES = {".cfg", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"}
 
 
+def _nested_checkout(path: Path) -> bool:
+    """Whether `path` is a checkout of its own — worktree, clone or submodule —
+    whose prose belongs to whatever it has checked out rather than to this tree.
+    """
+    return (path / ".git").exists()
+
+
 def _text_files() -> list[Path]:
     found = []
     stack = [_REPO_ROOT]
     while stack:
         for entry in stack.pop().iterdir():
             if entry.is_dir():
-                if entry.name not in _SKIP_DIRS:
+                if entry.name not in _SKIP_DIRS and not _nested_checkout(entry):
                     stack.append(entry)
             elif entry.suffix in _TEXT_SUFFIXES or entry.name == "Makefile":
                 found.append(entry)
@@ -150,6 +159,33 @@ class RelativeLinkTest(unittest.TestCase):
                 if not (path.parent / target).resolve().exists():
                     offenders.append(f"{rel}:{lineno} -> {target}")
         self.assertEqual(offenders, [], "these links resolve to nothing")
+
+
+class TextFileWalkTest(unittest.TestCase):
+    def test_a_checkout_under_the_root_is_not_walked(self) -> None:
+        """A second checkout of this repo below its own root would otherwise be
+        read as this checkout's own prose, and fail these guards for whatever
+        some other branch says. This repo's agent tooling adds worktrees under
+        `.claude/worktrees/`, but the prune is by marker rather than by path:
+        a linked worktree marks itself with a `.git` file and a clone with a
+        `.git` directory, so both shapes are built here.
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / "ours.md").write_text("ours", encoding="utf-8")
+
+        worktree = root / ".claude" / "worktrees" / "wt"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+        (worktree / "theirs.md").write_text("theirs", encoding="utf-8")
+
+        clone = root / "vendor" / "clone"
+        (clone / ".git").mkdir(parents=True)
+        (clone / "vendored.md").write_text("vendored", encoding="utf-8")
+
+        with mock.patch(f"{__name__}._REPO_ROOT", root):
+            found = {p.name for p in _text_files()}
+
+        self.assertEqual(found, {"ours.md"})
 
 
 class RetiredDocsTest(unittest.TestCase):
