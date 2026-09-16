@@ -217,7 +217,7 @@ class SceneTeardownTests(unittest.TestCase):
         `UltimateAudioSampler.position_seconds` short-circuits to 0.0 once
         stopped, so a summary logged *after* the audio-stop step reports
         `clock/wall=0.0000` for every audible video scene. That reading is the
-        only one at `-v` (the live line is DEBUG), and
+        only one logged without `-v` (the live line is DEBUG), and
         `scripts/diags/mhires_tempo_clock_ab.py` parses it as `clock_final`, so
         a constant zero silently breaks the tempo calibration instrument.
         """

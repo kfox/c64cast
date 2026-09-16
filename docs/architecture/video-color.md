@@ -91,7 +91,7 @@ Both paths share `_frame_to_scan_bgr`, the decode-time downscale above, and one 
 
 ### A/V-lag telemetry
 
-`current_frame` records the chosen frame's rebased PTS (`last_frame_pts`) and exposes `video_buffer_depth`; `VideoScene._record_av_lag` logs `audio_clock − displayed_frame_pts` per displayed frame. Small + lag (≤ one source-frame interval) is healthy frame selection; a lag that climbs while the buffer sits near 0 is the decoder failing real time. This is **software-side and artifact-free** — the right way to measure A/V drift on this project (Cam Link audio capture uniformly time-compresses the recording under host DMA load — a load-dependent factor, not the sampler — so it can't measure absolute drift). Live line at `-vv` (every `AV_LAG_LOG_INTERVAL_S`); per-scene min/avg/max summary at teardown (`-v`, mirrors the sampler's write-ahead-lead line).
+`current_frame` records the chosen frame's rebased PTS (`last_frame_pts`) and exposes `video_buffer_depth`; `VideoScene._record_av_lag` logs `audio_clock − displayed_frame_pts` per displayed frame. Small + lag (≤ one source-frame interval) is healthy frame selection; a lag that climbs while the buffer sits near 0 is the decoder failing real time. This is **software-side and artifact-free** — the right way to measure A/V drift on this project (Cam Link audio capture uniformly time-compresses the recording under host DMA load — a load-dependent factor, not the sampler — so it can't measure absolute drift). Live line at `-v` (every `AV_LAG_LOG_INTERVAL_S`); per-scene min/avg/max summary at teardown (INFO, so no flag needed — mirrors the sampler's write-ahead-lead line).
 
 ### Start offset (`start_s`)
 

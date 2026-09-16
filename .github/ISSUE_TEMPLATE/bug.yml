@@ -103,7 +103,7 @@ body:
     attributes:
       label: Logs
       description: >
-        Re-run with `-vv` (and `--log-file run.log` for a long run) and paste
+        Re-run with `-v` (and `--log-file run.log` for a long run) and paste
         the relevant part — especially anything logged around the moment it went
         wrong.
       render: text

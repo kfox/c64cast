@@ -11,9 +11,9 @@ system's U64 — all without starting the stream. See
 [the Programmer's Reference Guide, "Validation"](reference/02-config-rules.md#validation). Most
 "why won't it start" questions answer themselves from the doctor report.
 
-If your problem isn't here, run with `-vv` (debug logging) and check
-the stats line printed every 10 s — `errors/s > 0` usually points
-at the right corner of the system.
+If your problem isn't here, check the stats line printed every 10 s —
+`errors/s > 0` usually points at the right corner of the system. `-v`
+adds debug logging.
 
 ## Audio symptoms
 
@@ -147,8 +147,8 @@ The audio worker can't get fresh samples onto the U64's ring buffer fast
 enough, so it pads with neutral samples — audible as dropouts. (There is
 no client-side write queue to watch under Socket DMA; the TCP send buffer
 is the only buffer, and `--profile` reports `u64 dma latency` rather than
-a queue percentage.) Run with `-v` first: on the `$D418` DAC path the worker
-logs a short health line every few seconds — underruns, late ring sub-writes,
+a queue percentage.) On the `$D418` DAC path the worker logs a short
+health line every few seconds — underruns, late ring sub-writes,
 write and consumer rates — which tells a fault that is present throughout
 from one that appears part-way in, and the stop summary reports the run's
 late-write share. Possible causes:
@@ -350,7 +350,7 @@ The CTRL key (skip) also relies on `$028D`, so the same applies.
 ### "Playlist freezes between scenes"
 
 Usually the new scene's `setup()` is blocking — the U64 might be
-unreachable. Run with `-vv` to see the per-write debug log; you'll
+unreachable. Run with `-v` to see the per-write debug log; you'll
 see retries piling up if so. Eventually the scene gives up and the
 playlist advances to the next interstitial.
 
@@ -367,7 +367,7 @@ silently disables itself with one warning if FastAPI isn't installed.
 
 Also: skip is intentionally a no-op in **single-scene mode** (when the
 config defines exactly one scene). Look for `skip ignored — single-scene
-mode` in `-vv` logs. See
+mode` in `-v` logs. See
 [caveats.md → "Single-scene mode"](caveats.md#single-scene-mode-is-automatic-not-opt-in).
 
 ### "Interstitial never appears between scenes"

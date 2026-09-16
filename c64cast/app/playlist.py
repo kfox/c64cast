@@ -674,7 +674,8 @@ class Playlist:
             f"skipped={d_sk / dt:.0f}/s "
             f"bytes={d_by / dt / 1024.0:.0f}KiB/s"
         )
-        # WARNING while errors are flowing, so they are visible without -v.
+        # WARNING while errors are flowing, so a failing link stands out from
+        # the routine heartbeat.
         if d_e / dt > 1.0:
             self.log.warning(msg)
         else:
@@ -837,7 +838,7 @@ class Playlist:
         feats = scene.features()
         self.tempo.audio_drive(feats.bpm if feats is not None else 0.0, now)
         # Lock/loss transitions at INFO, the live BPM at DEBUG every ~2 s while
-        # locked, so -vv shows the grid tracking the beat.
+        # locked, so -v shows the grid tracking the beat.
         locked = self.tempo.running
         if locked != self._tempo_audio_locked:
             self._tempo_audio_locked = locked

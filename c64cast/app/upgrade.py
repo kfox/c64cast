@@ -186,7 +186,7 @@ def latest_release(*, timeout: float = 5.0) -> str | None:
     `{"info": null}` raises `TypeError` from the subscript, and the lazy
     `import requests` sat outside the guard, so a half-installed `requests`
     — the state an upgrade exists to fix — raised `ImportError` straight
-    through. The caught exception is logged at debug, so `-vv` can still tell
+    through. The caught exception is logged at debug, so `-v` can still tell
     a DNS failure from a proxy's 403 from a change in the shape of
     `info.version`; without it, every one of those was the same
     indistinguishable None and the only trace on an appliance was an

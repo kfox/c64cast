@@ -538,7 +538,7 @@ class BufferedWriteBackend(C64Backend):
         """Record a transport write failure on the escalating log ladder
         shared by every backend's `_emit`. Counts the error, then logs at
         debug (first failure), warning (10th & 50th), and error (200th) so
-        the user eventually sees a sustained outage even without -vv. Never
+        the user eventually sees a sustained outage even without -v. Never
         raises — a transient blip shouldn't crash the playlist; the next
         write retries the reconnect."""
         self._stats["errors"] += 1

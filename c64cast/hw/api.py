@@ -1583,7 +1583,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         (server died completely, reconnect failed, or mid-handshake
         IDENTIFY/auth round-trip didn't reply), the shared failure ladder
         logs on an escalating schedule so the user eventually sees a problem
-        even without -vv, but never raises — a transient network issue
+        even without -v, but never raises — a transient network issue
         shouldn't crash the playlist. The next call retries the reconnect."""
         try:
             self.socket_dma.dmawrite(addr, payload)

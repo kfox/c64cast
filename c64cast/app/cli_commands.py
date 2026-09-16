@@ -103,7 +103,7 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             )
             root.addHandler(fh)
 
-    # urllib3 logs every REST request to the U64, which drowns -vv in HTTP
+    # urllib3 logs every REST request to the U64, which drowns -v in HTTP
     # transport noise.
     for noisy in ("urllib3.connectionpool", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

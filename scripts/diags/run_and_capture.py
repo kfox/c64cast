@@ -137,7 +137,8 @@ def main() -> int:
         default=[],
         metavar="ARG",
         help="extra argument forwarded verbatim to `python -m c64cast` (repeatable); "
-        "e.g. --app-arg -v to surface INFO logs like the sampler write-ahead lead. "
+        "e.g. --app-arg -v for the app's debug logging; INFO, like the sampler "
+        "write-ahead lead, needs no flag. "
         "The app's stdout+stderr are tee'd to <label>_app.log under out/.",
     )
     args = ap.parse_args()

@@ -699,7 +699,7 @@ test hardware). Two transports are in play:
 Older firmware may rename or omit endpoints; newer firmware sometimes
 tightens parameter validation. If a previously-working setup starts
 500ing, run `--skip-probe` to bypass the reachability check and inspect
-the request bodies (`-vv` enables debug logging).
+the request bodies (`-v` enables debug logging).
 
 `AudioStreamer` **shares** the render path's `Ultimate64API` instance
 rather than opening its own. The U64 DMA service is single-connection

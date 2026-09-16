@@ -56,7 +56,7 @@ remembering:
 | `--save-settings` | Remember this run's connection and devices |
 | `--dump-char-rom` | Re-read the character ROM from the Commodore |
 | `--install-char-rom PATH` | Use a character ROM dump you already have |
-| `-v` / `-vv` | More logging, then a great deal more |
+| `-v` | Debug logging (`-vv` is accepted, and does the same) |
 | `--log-file PATH` | Also write the log to a file |
 
 ### Naming Devices Instead of Counting Them

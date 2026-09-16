@@ -48,7 +48,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   that emulator holding only part of the register state the tune sets up. The
   tune still plays — the audio comes from the real chip — but the picture can
   disagree with it, and until now nothing said so unless you were running with
-  `-vv`. The line says which of the three things stopped the INIT, and notes
+  `-v`. The line says which of the three things stopped the INIT, and notes
   that the detected PLAY rate may be affected too, since it is measured the
   same way. A tune picked from a pool is only reported on once it is the one
   being played, and a subtune is reported on once however many times you cue
@@ -1545,7 +1545,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   release `"5"`, which compares newer than everything this project has
   published, and `{"info": {"version": null}}` into `"None"`, which cleared
   the recorded `unanswered_since` and discarded the previous real answer.
-  The failure is now caught broadly and logged at debug, so `-vv`
+  The failure is now caught broadly and logged at debug, so `-v`
   distinguishes a DNS failure from a proxy's 403 from a shape change instead
   of collapsing all of them into the same silent `None`.
 - `--check-for-updates --write-state` tracebacked, and threw away the
@@ -1743,7 +1743,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   cfgs=cfgs)`, so a future `LoadResult` field can't be forgotten the same way.
 - A config-resolution failure (`_resolve_configs`, covering `load_master`,
   `merge_cli`, `quickcast.build_config` and `connect.parse_connection_uri`)
-  logged only `str(e)` with no traceback, even under `-v`/`-vv` — a genuine
+  logged only `str(e)` with no traceback, even under `-v` — a genuine
   internal defect anywhere in that tree was indistinguishable from a user
   typo and left oncall to bisect by hand. A `log.debug(..., exc_info=True)`
   now runs right before the existing `log.error`, so `-v` recovers the

@@ -8,7 +8,7 @@ defaulting to one, because a default would be per *process*.
 Two design points worth not re-deriving:
 
 * **The interval, not the level, is what bounds the cost.** Demoting a repeat to
-  DEBUG is no bound at all under ``-vv``, where a DEBUG record costs the same
+  DEBUG is no bound at all under ``-v``, where a DEBUG record costs the same
   322 us. So a repeat inside the window emits *nothing* and is counted; the
   count rides on the next record that does go out.
 * **The level says whether the site is flooding.** A record that stands for a

@@ -181,11 +181,11 @@ run from the directory the material sits in. See Chapter 3.
 
 ## Getting More Detail
 
-Add `-v` for informational logging, or `-vv` for debug logging including
-noisy third-party libraries. Add `--log-file run.log` to keep it. For a
-long-running installation, `--heartbeat` prints a periodic line of
-throughput statistics, which is the quickest way to tell a slow link from a
-slow computer.
+Informational logging is on by default; add `-v` for debug logging, which
+includes debug records from some of the libraries c64cast builds on. Add
+`--log-file run.log` to keep it. For a long-running installation,
+`--heartbeat` prints a periodic line of throughput statistics, which is
+the quickest way to tell a slow link from a slow computer.
 
 ## Still Stuck
 
