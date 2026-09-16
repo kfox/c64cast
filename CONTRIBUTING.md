@@ -41,6 +41,18 @@ definition of the environment CI runs.
 > `.[all,dev]` can never resolve it no matter which installer you use. With
 > plain pip: `pip install -e .[all] && pip install --group dev`.
 
+> [!IMPORTANT]
+> **In a git worktree, check where `UV_PROJECT_ENVIRONMENT` points.** Unset, uv
+> resolves the project environment inside the worktree and there is nothing to
+> do. If your shell exports an absolute path to another checkout's environment,
+> every `uv` command here reinstalls this source into that environment, leaving
+> that checkout's tests importing this code. Give the worktree its own with
+> `env -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT="$PWD/.venv" uv sync --all-extras`,
+> and pass the same override to `git commit` too — the commit hooks run
+> `pyright` and the suite through `uv`. The `venv-matches-checkout` hook fails a
+> commit whose environment does not import this checkout, and `make` runs the
+> same check ahead of any target that invokes `uv`.
+
 If you use VS Code, point the interpreter at `.venv/bin/python` rather than the
 mise interpreter, or editor diagnostics will diverge from what actually runs.
 
