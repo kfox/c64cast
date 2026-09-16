@@ -988,7 +988,19 @@ class InitTruncationNoticeTest(unittest.TestCase):
         from c64cast.sid import sid_host_emu
 
         sid = _make_synthetic_sid(init_code=_INIT_INFINITE_LOOP, play_code=_PLAY_WRITES)
-        with patch.object(sid_host_emu, "_INIT_DEADLINE_S", 0.25):
+        # A real clock raced this against the 2,000,000-cycle cap on the
+        # assumption that 0.25s of wall time could not elapse first — true
+        # when this was written, not on a host whose py65 loop now clears
+        # that many steps in well under 0.25 real seconds, which made the
+        # cycle cap win instead. FrozenClock decouples the deadline from how
+        # fast this host happens to run: it has already passed 0.25s by the
+        # first wall-clock check inside _run_routine (every
+        # _WALL_CLOCK_CHECK_STEPS steps), long before the cycle cap could.
+        clock = FrozenClock(0.0, "monotonic", step=1.0)
+        with (
+            patch.object(sid_host_emu, "time", clock),
+            patch.object(sid_host_emu, "_INIT_DEADLINE_S", 0.25),
+        ):
             emu = SidHostEmu(sid)
         assert emu.init_truncation is not None
         self.assertIn("0.25s cap", emu.init_truncation)
