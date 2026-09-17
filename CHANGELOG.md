@@ -126,6 +126,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A SID file could paint a system-mismatch arrow that was not there.** The
+  oscilloscope's metadata row marks a clock mismatch with a `\x01` sentinel,
+  swapped for a mirrored right-arrow glyph wherever it appears in the row, and
+  the PSID/RSID copyright field reached that row as raw bytes. The three header
+  text fields are now decoded as ISO-8859-1 with control characters replaced by
+  spaces.
+
 - **Shutting the web console down left the C64 streaming its screen.** Once a
   browser had watched the picture, the Ultimate went on sending its VIC output
   — ~2.6 MB/s of UDP — at the host that had just exited, until the firmware's
