@@ -30,7 +30,7 @@ keywords = [
     "vic-ii",
     "wled",
 ]
-# Keep the OS and Python classifiers in sync with ci.yml's `lint-and-test`
+# Keep the OS and Python classifiers in sync with ci.yml's `test`
 # matrix (ubuntu × macos × windows, py3.11-3.14).
 #
 # No "License :: OSI Approved :: MIT License" classifier: PEP 639 license

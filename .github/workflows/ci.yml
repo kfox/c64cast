@@ -100,8 +100,8 @@ jobs:
       - name: Mypy --strict (hot modules)
         run: uv run mypy --strict --platform ${{ matrix.mypy }}
 
-  lint-and-test:
-    name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -134,7 +134,7 @@ jobs:
     name: coverage (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    needs: lint-and-test
+    needs: test
     strategy:
       fail-fast: false
       matrix:
