@@ -1378,9 +1378,10 @@ class AtempoTempoCompensationTest(unittest.TestCase):
     def _feed(self, src: AVFileSource, total_samples: int, frame_len: int = 1024) -> None:
         import av
 
+        rng = np.random.default_rng(0)
         pts = 0
         for _ in range(0, total_samples, frame_len):
-            arr = np.random.randint(-2000, 2000, frame_len).astype(np.int16).reshape(1, -1)
+            arr = rng.integers(-2000, 2000, frame_len).astype(np.int16).reshape(1, -1)
             frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
             frame.sample_rate = self.SR
             frame.pts = pts
