@@ -317,6 +317,19 @@ def _append_distinct_sid_base(addresses: list[int], addr: int) -> bool:
     return True
 
 
+# C0, DEL and C1 — the ISO-8859-1 control code points.
+_CONTROL_TO_SPACE = dict.fromkeys((*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)), " ")
+
+
+def _decode_header_text(field: bytes) -> str:
+    """Decode a PSID/RSID 32-byte text field for display: ISO-8859-1, since
+    composer names carry accented letters, with control characters replaced by
+    spaces — `waveform._SYSTEM_MISMATCH_ARROW` is a C0 sentinel keyed on the
+    metadata row's contents."""
+    text = field.rstrip(b"\x00").decode("latin-1")
+    return text.translate(_CONTROL_TO_SPACE).rstrip()
+
+
 def parse_sid_header(data: bytes) -> SidHeader:
     """Parse the PSID/RSID v1+ header. Validates magic, returns metadata.
 
@@ -361,11 +374,9 @@ def parse_sid_header(data: bytes) -> SidHeader:
         version=version,
         num_songs=int.from_bytes(data[14:16], "big"),
         start_song=int.from_bytes(data[16:18], "big"),
-        name=data[22:54].rstrip(b"\x00").decode("latin-1", "replace"),
-        author=data[54:86].rstrip(b"\x00").decode("latin-1", "replace"),
-        released=data[86:118].rstrip(b"\x00").decode("latin-1", "replace")
-        if len(data) >= 118
-        else "",
+        name=_decode_header_text(data[22:54]),
+        author=_decode_header_text(data[54:86]),
+        released=_decode_header_text(data[86:118]) if len(data) >= 118 else "",
         clock=clock,
         sid_model=model1,
         sid_addresses=tuple(addresses),
