@@ -110,6 +110,22 @@ class SidHeaderTest(unittest.TestCase):
         self.assertEqual(h.clock, "?")
         self.assertEqual(h.sid_model, "?")
 
+    def test_control_bytes_in_text_fields_become_spaces(self):
+        # The three text fields are free-form bytes: a file can carry C0, DEL
+        # or C1 bytes into the display rows and the log records.
+        h = parse_sid_header(
+            _make_sid_header(name=b"A\x01B", author=b"C\x7fD", released=b"1985 \x9b HOBBY")
+        )
+        self.assertEqual(h.name, "A B")
+        self.assertEqual(h.author, "C D")
+        self.assertEqual(h.released, "1985   HOBBY")
+
+    def test_accented_latin1_letters_survive(self):
+        # Composer names legitimately carry ISO-8859-1 accents; stripping
+        # controls must not fold the text to 7-bit ASCII.
+        h = parse_sid_header(_make_sid_header(author="Jørn Lavoll".encode("latin-1")))
+        self.assertEqual(h.author, "Jørn Lavoll")
+
     def test_v1_header_leaves_flags_none(self):
         # A 118-byte v1 header has no flags field — clock + sid_model must
         # be None rather than guessed.
@@ -1128,6 +1144,26 @@ class WaveformSceneTest(unittest.TestCase):
                 api, audio=None, file=path, song=1, duration_s=10.0, system="NTSC"
             )
             self.assertEqual(scene._build_clock_display(), f"PAL{_SYSTEM_MISMATCH_ARROW}NTSC 6581")
+        finally:
+            os.unlink(path)
+
+    def test_copyright_control_byte_paints_no_arrow(self):
+        from c64cast.sid.waveform import _SYSTEM_MISMATCH_ARROW, WaveformScene
+
+        # flags: clock NTSC (bits 2-3 = 10), model 8580 (bits 4-5 = 10) → 0x28.
+        hdr = _make_sid_header(flags=0x0028, released=b"1985 \x01 HOBBY")
+        with tempfile.NamedTemporaryFile("wb", suffix=".sid", delete=False) as f:
+            f.write(hdr)
+            f.write(bytes(2048))
+            path = f.name
+        try:
+            api = FakeAPI()
+            scene = WaveformScene(
+                api, audio=None, file=path, song=1, duration_s=10.0, system="NTSC"
+            )
+            line = scene._build_metadata_line()
+            self.assertIn("1985", line)
+            self.assertNotIn(_SYSTEM_MISMATCH_ARROW, line)
         finally:
             os.unlink(path)
 
