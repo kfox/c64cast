@@ -135,7 +135,7 @@ all = [
 dev = [
     "ruff==0.16.7",
     "pre-commit==4.6.2",
-    "coverage==7.16.0",
+    "coverage==7.16.1",
     "mypy==2.3.1",
     "types-requests==2.33.0.20260906",
     "pyright==1.1.414",
