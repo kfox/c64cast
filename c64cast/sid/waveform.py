@@ -117,9 +117,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Placeholder at the system-mismatch arrow position. Never appears in real SID
-# text (title/composer/copyright are printable), so _paint_metadata_row can swap
-# it for the mirrored right-arrow glyph without colliding with real content.
+# Placeholder swapped for the mirrored right-arrow glyph by _paint_metadata_row.
+# sid_host_emu._decode_header_text keeps header text from carrying it.
 _SYSTEM_MISMATCH_ARROW = "\x01"
 
 # Bank 1 display addresses. The audio ring at $4000-$5FFF is dormant during a
