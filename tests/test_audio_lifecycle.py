@@ -36,7 +36,7 @@ from c64cast.audio.audio_handlers import (
     nmi_rate_step,
 )
 from c64cast.hw.api import Ultimate64API
-from c64cast.hw.c64 import CIA2, SID
+from c64cast.hw.c64 import CIA1, CIA2, SID, VECTORS
 
 
 def _make(**kw: Any) -> AudioStreamer:
@@ -989,7 +989,7 @@ class DigiBoostTest(unittest.TestCase):
 
     def test_disable_releases_gate_each_voice(self):
         s = _make(digi_boost=True)
-        s._disable_digi_boost()
+        s._release_sid_gates()
         api = cast(Any, s.api)
         for v in range(SID.N_VOICES):
             ctrl = f"{SID.voice_base(v) + SID.OFF_CONTROL:04X}"
@@ -1002,8 +1002,27 @@ class DigiBoostTest(unittest.TestCase):
             raise RuntimeError("write failed")
 
         cast(Any, s).api.write_memory = boom
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
-            s._disable_digi_boost()  # must not raise
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s._release_sid_gates()  # must not raise
+
+    def test_one_failed_voice_does_not_starve_the_others(self):
+        s = _make(digi_boost=True)
+        api = cast(Any, s.api)
+        write_memory = api.write_memory
+        first_voice = f"{SID.voice_base(0) + SID.OFF_CONTROL:04X}"
+
+        def boom(addr: str, data_hex: str) -> None:
+            if addr == first_voice:
+                raise RuntimeError("write failed")
+            write_memory(addr, data_hex)
+
+        api.write_memory = boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
+            s._release_sid_gates()
+        self.assertNotIn(first_voice, api.memories)
+        for v in range(1, SID.N_VOICES):
+            ctrl = f"{SID.voice_base(v) + SID.OFF_CONTROL:04X}"
+            self.assertEqual(api.memories[ctrl], "40")
 
 
 class EncodeBackpressureTest(unittest.TestCase):
@@ -1466,13 +1485,33 @@ class LifecycleTest(unittest.TestCase):
 
     def test_stop_swallows_teardown_write_errors(self):
         s = _make()
+        api = cast(Any, s.api)
+        write_regs = api.write_regs
+        calls = 0
 
         def boom(*a: Any, **k: Any) -> None:
-            raise RuntimeError("teardown write failed")
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("teardown write failed")
+            write_regs(*a, **k)
 
-        cast(Any, s).api.write_regs = boom
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
+        api.write_regs = boom
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
             s.stop()  # must not raise
+        self.assertEqual(api.memories["D418"], "00")
+        self.assertIn(f"{VECTORS.NMI:04X}", api.regs)
+
+    def test_stop_orders_the_nmi_vector_then_the_mute_then_the_bias_release(self):
+        # Both positions are load-bearing; see stop()'s order comment.
+        s = _make(digi_boost=True)
+        s.running = True
+        s.stop()
+        api = cast(Any, s.api)
+        gates = {f"{SID.voice_base(v) + SID.OFF_CONTROL:04X}" for v in range(SID.N_VOICES)}
+        watched = (f"{VECTORS.NMI:04X}", "D418", *gates)
+        order = [op[1] for op in api.ops if op[1] in watched]
+        self.assertEqual(order, [f"{VECTORS.NMI:04X}", "D418", *sorted(gates)], f"ops={api.ops}")
 
     def test_stop_drains_leftover_queue(self):
         s = _make()
@@ -1486,15 +1525,21 @@ class LifecycleTest(unittest.TestCase):
         s = _make()
 
         class _BadStream:
+            def __init__(self) -> None:
+                self.closed = False
+
             def stop(self):
                 raise RuntimeError("mic stop failed")
 
             def close(self):
+                self.closed = True
                 raise RuntimeError("mic close failed")
 
-        s.mic_stream = cast(Any, _BadStream())
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
+        stream = _BadStream()
+        s.mic_stream = cast(Any, stream)
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
             s.stop()  # must not raise
+        self.assertTrue(stream.closed)
         self.assertIsNone(s.mic_stream)
 
     def test_disarm_reu_pump_swallows_errors(self):
@@ -1505,9 +1550,11 @@ class LifecycleTest(unittest.TestCase):
             raise RuntimeError("vector restore failed")
 
         cast(Any, s).api.write_regs = boom
-        with self.assertLogs("c64cast.audio.audio", level="DEBUG"):
+        with self.assertLogs("c64cast.audio.audio", level="ERROR"):
             s._disarm_reu_pump()  # must not raise
         self.assertFalse(s._reu_pump_armed)
+        # The latch restore sits behind the failing vector restore.
+        self.assertIn(f"{CIA1.TIMER_A_LO:04X}", cast(Any, s.api).memories)
 
     def test_disarm_reu_pump_noop_when_unarmed(self):
         s = _make()

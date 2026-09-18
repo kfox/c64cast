@@ -187,6 +187,14 @@ A backend that can't read R (`profile.supports_read` false, older TeensyROM firm
 
 Pacing is **strict absolute** — `next_write_time + chunk_period` — and never snaps forward to wall-clock on overrun. Snapping forward lets DMA round-trip and Python wakeup overhead shrink the effective sample rate below NMI consumption; every chunk then takes NEUTRAL padding, producing audible chunk-rate AM sidebands (≈−5 dB at the carrier) and ≈16 dB of overall level loss on video audio. The 8 KB ring (≈0.68 s at the 12 kHz default) absorbs occasional pace overshoots.
 
+### Teardown: independent guarantees, not a transaction
+
+`stop()`'s C64-side cleanup is a run of separate promises to whatever comes next, not a transaction, so it goes through `run_teardown_steps` (`c64cast/_teardown.py`) — a step that raises is logged at ERROR and the steps behind it still run. The reason is the one [scenes.md](scenes.md#scenespy--scene-state-machine) gives at length. `_disarm_reu_pump` is stepped the same way: a link hiccup on its IRQ-vector restore used to skip the CIA #1 latch restore behind it, leaving Timer A at the pump rate, so the jiffy clock, SCNKEY and the cursor blink ran at kHz for every later scene.
+
+Guarding a step frees its *position* only where the C64 cannot undo it, and the two `$D418` steps are where that fails. The in-RAM `NMI_ROUTINE` at `$C020` is what writes `$D418` per sample, and the KERNAL NMI-vector restore is what puts it out of reach — not the `#$7F` → `$DD0D` the KERNAL handler then issues, which only ends the NMI storm. So a mute placed ahead of the vector restore is overwritten whenever the NMI-source disable is the write that failed; the mute goes behind it instead.
+
+The DAC-bias gate release goes behind the mute, for the opposite reason: gate-off starts the envelope release, and under digi-boost `SID_DIGIBOOST_SR` is release=0, so the parked DC collapses within a few ms. Releasing it while `$D418` still holds the last sample byte is an audible thump on the way out of a digi-boost scene; releasing it after the mute means the collapse happens at volume 0.
+
 ### Why the ring lives at `$4000`
 
 `$4000-$5FFF` is VIC bank 1, chosen over `$8000-$9FFF` so the ring stays out of VIC banks 0 and 2 — the two banks with kernal char-ROM mapped (at `$1000` and `$9000`), which the REU-staged char display modes use as their off-screen swap target. The 6510 NMI handler sees `$4000` as ordinary main RAM regardless of VIC bank.
