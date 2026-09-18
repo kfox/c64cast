@@ -85,16 +85,45 @@ make schema    # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
 ```
 
-**Then review the commit you just made, scoped to that commit alone** —
-`/code-review <sha>`, and tell it to review that commit's own diff, not
-`<sha>...HEAD` and not the branch. Act on what it finds, then record it; the
-report is read from **stdin**, and an empty one is refused:
+**Then review the commit you just made, scoped to that commit alone.** Spawn a
+subagent, hand it `~/.claude/hooks/changeset-review-brief.md`, and have it run:
+
+    Skill(skill="code-review", args="high <sha>")
+
+The effort level goes **first**, and `record` refuses a report whose
+`Reviewed-by:` trailer does not name a subagent review at high effort. Tell it
+to review that commit's own diff, not `<sha>...HEAD` and not the branch.
+
+**The reviewer applies its own fixes.** `/code-review` without `--fix` reports
+and changes nothing, so the prompt has to say it: fix what you find, leave it
+uncommitted in the working tree, then say what you fixed, what you declined,
+and why. A finding handed back as prose gets re-implemented from a description,
+and the re-implementation is new code that earns its own review.
+
+What it reports instead of applying: an advisory *design* finding, and any
+editorial call about prose, which needs the whole-branch view a single-commit
+reviewer does not have. A defect in the commit message it reports too — the
+amend below is yours, so fold the message fix into it before you record.
+
+Do not commit, or edit anything in this checkout, while it runs: it verifies
+findings by mutating the tree and running the suite, so a concurrent commit
+fails its pre-commit hook on a mutation you never made.
+
+Run `make check` over its fixes — a fix that breaks the suite is not a fix —
+amend them into the commit under review, and record the report against the
+amended SHA; the report is read from **stdin**, and an empty one is refused:
 
 ```bash
-~/.claude/hooks/changeset-review.sh record <sha> <<'REPORT'
+~/.claude/hooks/changeset-review.sh record <amended-sha> <<'REPORT'
 <looked at / found / did>
+
+Reviewed-by: subagent (<type>) via code-review at high effort
+Comments: <examined / removed / kept and why>
+Docs: <what changed, or what was checked and needed nothing>
 REPORT
 ```
+
+All three trailers are required, and the gate re-checks them at push time.
 
 The placeholder above is deliberately under the hook's floor: the report has
 to say what you looked at, what you found, and what you did about each
@@ -107,8 +136,9 @@ defer the cost, it blocks step 5.
 
 Do not batch this to the end. The whole point is that the reviewer sees one
 changeset instead of a branch: a wide scope spends its attention before it
-reaches the small commit, and reads back as a clean pass. Fixes for what it
-finds are their own commits, and get their own review.
+reaches the small commit, and reads back as a clean pass. Step 4 is where a fix
+becomes its own commit instead of an amend, because the commits it touches
+already have records keyed to their SHAs.
 
 ## 4. Branch-wide review at high effort
 
@@ -125,16 +155,16 @@ Spawn **one subagent** with the Agent tool and have it review the whole branch:
 The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last.
 
-**Its prompt has to tell it to fix what it finds rather than report it.** That
-call is a report-only run; nothing reaches the tree unless the subagent applies
-it. Have it apply the fixes itself and leave them in the working tree, then say
-what it fixed, what it declined, and why. An advisory *design* finding is the
-exception — the subagent reports it rather than applying it, and you route it
-once it has reported, below.
+**Its prompt has to tell it to fix what it finds** — that call is a report-only
+run, and nothing reaches the tree unless the subagent applies it. This is the
+reviewer with the whole-branch view, so the editorial calls step 3 sends back
+are its to make. It still reports rather than applies an advisory *design*
+finding, and anything that rewrites a commit message: here that moves the SHA
+a recorded review is keyed to. Route what it hands back once it has reported,
+below.
 
-Do not commit, or edit anything in this checkout, while it runs: it verifies
-findings by mutating the tree and running the suite, so a concurrent commit
-fails its pre-commit hook on a mutation you never made.
+Do not commit, or edit anything in this checkout, while it runs — the same as
+step 3.
 
 A clean pass here does not mean the branch is clean — it means nothing survived
 *both* nets. Read a wide pass that finds nothing as weak evidence.
@@ -186,11 +216,14 @@ Then, once it has reported:
   that was only said out loud is re-litigated by the next reader. The record is
   where that belongs — not the PR body, which is for the change and not for the
   history of reviewing it.
-- **Route every advisory finding before step 5.** Fix it on this branch when a
-  commit here introduced it or the fix fits the spirit of the change, as its own
-  commit under the rule above; otherwise open a labeled GitHub issue. A finding
-  that is only mentioned is one nothing tracks, and one fixed after step 6 costs
-  another commit, review and push with the PR already green.
+- **Route everything it handed back before step 5.** Fix an advisory finding on
+  this branch when a commit here introduced it or the fix fits the spirit of the
+  change, as its own commit under the rule above; otherwise open a labeled
+  GitHub issue. A commit-message rewrite moves that SHA and every SHA after it,
+  and reports are keyed by SHA, so re-record each commit the gate then reports
+  as unreviewed. A finding that is only mentioned is one nothing tracks, and one
+  fixed after step 6 costs another commit, review and push with the PR already
+  green.
 
 A defect still open when the subagent is done is a stop, not a pass. Report what
 remains and ask the user how to proceed before opening a PR.
@@ -234,8 +267,8 @@ Report to the user:
 
 - The PR URL and its check status.
 - What the review found, fixed, and declined — with reasons for the declines.
-- Any advisory finding, and where step 4 routed it — the commit that fixed it
-  here, or the issue it became.
+- Anything the review handed back rather than applied, and where step 4 routed
+  it — the commit that fixed it here, or the issue it became.
 - Anything still open, stated plainly.
 
 Then stop. The merge is the user's, and they squash-merge from the GitHub UI.
