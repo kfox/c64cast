@@ -1,8 +1,8 @@
 """Centralized C64 hardware constants — addresses, registers, magic numbers.
 
-Every bare hex address in the tree resolves through here, so the code is
-greppable (`VIC.D018_MEMORY`, not `"d018"`) and porting to another Commodore
-variant stays tractable. Constants are grouped by chip / subsystem, with the
+Naming an address or register value here is what keeps the code greppable
+(`VIC.D018_MEMORY` rather than a bare `"d018"`) and porting to another
+Commodore variant tractable. Constants are grouped by chip / subsystem, with the
 derived timing helpers (CPU clock, frame rate, CIA latch, NMI budget) at the
 end.
 
