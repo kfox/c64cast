@@ -185,9 +185,9 @@ anything imports it, so a missing `.pyc` after arming means the arming lapsed,
 and it is the dangerous shape rather than a benign one, because the first
 import then writes a *timestamp-mode* file.
 
-It has to be re-run more often than it looks: `make clean` deletes every
-`__pycache__`, a fresh worktree has none to begin with, and a `uv sync` that
-moves the Python minor invalidates the lot. Every one of those is silent, and
+It has to be re-run more often than it looks: `make clean` deletes the armed
+bytecode, a fresh worktree has none to begin with, and a `uv sync` that moves
+the Python minor invalidates the lot. Every one of those is silent, and
 they all happen *after* the arming — so `make mutation-check` is the check on
 its own, to run at the moment a proof's green is about to be believed. It is
 deliberately not part of `make test`: arming matters only for a mutation proof,

@@ -108,7 +108,14 @@ def scan(roots: list[str]) -> tuple[list[tuple[Path, int]], dict[str, int]]:
 
 
 def main(argv: list[str]) -> int:
-    roots = argv[1:] or ["c64cast", "tests", "scripts"]
+    roots = argv[1:]
+    if not roots:
+        print(
+            "no roots given, so nothing was checked. The roots are the Makefile's "
+            "SOURCE_ROOTS — run `make mutation-check` from the repository root.",
+            file=sys.stderr,
+        )
+        return 1
     stale, sources = scan(roots)
     empty = [root for root, n in sources.items() if not n]
 
