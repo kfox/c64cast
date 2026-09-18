@@ -179,3 +179,14 @@ jobs:
           report_type: test_results
           files: ./test-results/*.xml
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  ci:
+    name: ci (all jobs succeeded)
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [pre-commit, docs, web, types, test, coverage]
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$NEEDS"
