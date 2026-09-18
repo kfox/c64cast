@@ -1328,17 +1328,35 @@ class PlaylistAudioTempoDriveTest(unittest.TestCase):
         self.assertFalse(pl.tempo.running)
 
 
+class ScriptedStopEvent(threading.Event):
+    """A stop event that runs the next step of `steps` in place of blocking and
+    records the timeout of every `wait`, so a test can drive a wait loop
+    through its states and assert which waits rode this event."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.steps: list[Callable[[], None]] = []
+        self.timeouts: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.timeouts.append(timeout)
+        if self.steps:
+            self.steps.pop(0)()
+        return self.is_set()
+
+
 class PauseResumeTest(unittest.TestCase):
-    def test_resume_wait_is_cut_short_by_a_stop(self):
-        # As a bare time.sleep(1) this wait was unconditional, unlike the
-        # pause loop above it that spins on stop_event.wait() so SIGTERM can
-        # shortcut the pause.
+    def test_pause_waits_ride_the_stop_event(self):
+        """Both waits in the pause path — the idle loop and the settle after
+        resume — go through `stop_event.wait`, so a SIGTERM during either one
+        returns instead of running its timeout down."""
+        called = []
         api = FakeApi()
-        api.pause_idle = lambda: None
-        api.reset = lambda: None
-        api.run_basic_clear_loop = lambda: None
-        api.disable_case_switch = lambda: None
-        stop_event = threading.Event()
+        api.pause_idle = lambda: called.append("pause_idle")
+        api.reset = lambda: called.append("reset")
+        api.run_basic_clear_loop = lambda: called.append("run_basic_clear_loop")
+        api.disable_case_switch = lambda: called.append("disable_case_switch")
+        stop_event = ScriptedStopEvent()
         factory, _ = _transition_factory()
         pl = Playlist(
             [FakeScene("only")],
@@ -1348,14 +1366,20 @@ class PauseResumeTest(unittest.TestCase):
             stop_event=stop_event,
             interstitial_factory=factory,
         )
-        # Resume shortly after entering the pause loop (so _handle_pause moves
-        # on to reset() rather than idling forever), then stop mid-wait.
-        arm_deadline(self, 0.05, pl.resume_event.set)
-        arm_deadline(self, 0.3, stop_event.set)
-        t0 = time.time()
+        stop_event.steps = [pl.resume_event.set, stop_event.set]
+        arm_deadline(self, 2.0, stop_event.set)
+
         pl._handle_pause()
-        dt = time.time() - t0
-        self.assertLess(dt, 0.6, f"resume wait should be cut short by stop_event, took {dt:.2f}s")
+
+        self.assertEqual(
+            stop_event.timeouts,
+            [0.1, 1.0],
+            "the idle poll and the post-resume settle must both wait on stop_event",
+        )
+        self.assertEqual(
+            called,
+            ["pause_idle", "reset", "run_basic_clear_loop", "disable_case_switch"],
+        )
 
 
 class PerformanceModeTest(unittest.TestCase):

@@ -195,8 +195,6 @@ reference-appendices: $(SYNC)
 
 check: lint typecheck test
 
-# Mirrors every CI job except the OS x Python-version test matrix
-# (`lint-and-test`), which needs the actual runners rather than a local flag.
 preflight: lint test
 	SKIP=ruff,ruff-format,pyright,unittest uv run --locked pre-commit run --all-files
 	$(call check-platforms,pyright,uv run pyright --pythonplatform,$(PYRIGHT_PLATFORMS))
