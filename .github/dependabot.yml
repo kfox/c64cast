@@ -21,6 +21,11 @@ updates:
     labels:
       - "dependencies"
       - "javascript"
+    # svelte-check peers on typescript ^5.0.0 || ^6.0.0.
+    ignore:
+      - dependency-name: "typescript"
+        versions:
+          - ">= 7.0.0"
     groups:
       npm:
         patterns:
