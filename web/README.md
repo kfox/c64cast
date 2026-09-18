@@ -57,6 +57,19 @@ rather than content hashes, so a rebuild is one diff on one file instead of a
 new file plus an orphan. `web_static.py` serves them `no-cache` for the same
 reason.
 
+The console's browser floor is whatever Vite's default
+`baseline-widely-available` target resolves to, which moves forward as Vite is
+updated. Both the JavaScript minifier and Lightning CSS emit for it, so it is
+what decides whether a breakpoint ships as `(min-width: 40rem)` or as
+`(width >= 40rem)`. Pin it by setting `build.target` in `vite.config.ts`; read
+what it is today with:
+
+```bash
+cd web && node --input-type=module -e \
+  "import { resolveConfig } from 'vite'; \
+   console.log((await resolveConfig({}, 'build')).build.target)"
+```
+
 ## Layout
 
 | Path | What |

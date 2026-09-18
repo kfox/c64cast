@@ -71,6 +71,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **The web console's build toolchain moved to Vite 8.** Vite 8 bundles with
+  Rolldown and minifies stylesheets with Lightning CSS, where Vite 7 used
+  Rollup and esbuild, so the committed bundle is rebuilt here with no source
+  change behind it. Lightning CSS emits for the resolved build target — Vite's
+  default `baseline-widely-available`, today Chrome 111, Edge 111, Firefox 114
+  and Safari/iOS 16.4 — so the console's two responsive breakpoints now ship as
+  media-query range syntax, `(width >= 40rem)` in place of
+  `(min-width: 40rem)`. A browser that does not support range syntax matches
+  neither and gets the narrow layout at every width.
+
 - **`-vv` now does something.** It has always been accepted and has always
   meant exactly what `-v` means: DEBUG is reached at the first `-v`, and no
   code anywhere read a verbosity of 2. It now releases urllib3, whose record
