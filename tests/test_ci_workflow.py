@@ -1,4 +1,4 @@
-"""Guards for the aggregate gate in .github/workflows/ci.yml.
+"""Guards for .github/workflows/ci.yml.
 
 Branch protection requires the gate's context in place of one per matrix leg,
 so its `needs:` list is what decides which jobs can block a merge, and
@@ -8,6 +8,10 @@ A merge queue gates on that same context, evaluated against the merge group it
 builds, which is why the workflow triggers on `merge_group` too: a required
 check that never reports there does not fail the entry, it holds the queue
 until the status-check timeout evicts it.
+
+The `use_oidc` input and the job's `id-token: write` permission have to travel
+together: without the permission the action's token step throws before the
+upload runs, and the error it raises names neither of them.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ with open(_WORKFLOW, encoding="utf-8") as f:
 
 _BLOCK_KEY = re.compile(r"^  ([\w-]+):$", re.M)
 _INLINE_NEEDS = re.compile(r"^    needs: \[([^\]]+)\]$", re.M)
+_USE_OIDC = re.compile(r"^\s+use_oidc:\s*(.+?)\s*$", re.M)
 
 _GATE = "ci"
 
@@ -57,6 +62,12 @@ def _job_block(job_id: str) -> str:
     return _block(f"  {job_id}")
 
 
+def _asks_for_oidc(job_block: str) -> bool:
+    """Whether a job uploads with OIDC — a value this cannot read counts as yes."""
+    values = (match.group(1).strip("\"'").lower() for match in _USE_OIDC.finditer(job_block))
+    return any(value != "false" for value in values)
+
+
 class AggregateGateTest(unittest.TestCase):
     def test_the_gate_needs_every_other_job(self):
         needs = _INLINE_NEEDS.search(_job_block(_GATE))
@@ -81,3 +92,17 @@ class AggregateGateTest(unittest.TestCase):
             _job_block(_GATE),
             "without `always()` the gate skips, and a skipped check satisfies branch protection",
         )
+
+
+class OidcUploadTest(unittest.TestCase):
+    def test_a_job_uploading_with_oidc_can_mint_its_token(self):
+        for job_id in _job_ids():
+            block = _job_block(job_id)
+            if not _asks_for_oidc(block):
+                continue
+            self.assertIn(
+                "id-token: write",
+                block,
+                f"the `{job_id}` job uploads with OIDC but cannot mint a token, "
+                "so the action's token step throws before the upload runs",
+            )
