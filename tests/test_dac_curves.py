@@ -114,7 +114,7 @@ class MahoneyEnvTest(unittest.TestCase):
     def test_disable_gates_all_voices_off(self):
         api = FakeAPI()
         s = _bare_streamer(api, "mahoney_ultisid")
-        s._disable_mahoney_env()
+        s._release_sid_gates()
         for base in (0xD400, 0xD407, 0xD40E):
             self.assertEqual(api.memories[f"{base + 4:04X}"], f"{SID_GATE_OFF:02X}")
 

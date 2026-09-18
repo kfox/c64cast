@@ -15,6 +15,7 @@ See docs/architecture/audio.md#audiopy--audiostreamer.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 import queue
 import threading
@@ -24,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -410,14 +412,24 @@ class AudioStreamer:
         self.api.write_memory(f"{SID.RES_FILT:04X}", f"{SID_MAHONEY_RES_FILT:02X}")
         log.info("audio: Mahoney 8-bit $D418 env engaged (dac_curve=%s)", self.dac_curve_name)
 
-    def _disable_mahoney_env(self) -> None:
-        """Release the gate on all 3 voices. Best-effort — called from stop()."""
-        for v in range(SID.N_VOICES):
-            base = SID.voice_base(v)
-            try:
-                self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
-            except Exception as e:
-                log.debug("mahoney env teardown voice %d failed: %s", v, e)
+    def _release_sid_voice_gate(self, voice: int) -> None:
+        base = SID.voice_base(voice)
+        self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
+
+    def _release_sid_gates(self) -> None:
+        """Release the gate on all 3 voices, undoing whichever DAC bias set it.
+
+        One teardown step per voice: a voice left gated with its TEST bit
+        locked holds the SID mixer at a DC bias, so a failed write must not
+        cost the other two."""
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                (f"SID voice {v} gate release", functools.partial(self._release_sid_voice_gate, v))
+                for v in range(SID.N_VOICES)
+            ],
+        )
 
     def _enable_digi_boost(self) -> None:
         """Lock all 3 SID voices into a steady DC pulse so the master volume
@@ -437,15 +449,6 @@ class AudioStreamer:
             self.api.write_regs(f"{base + SID.OFF_PW_LO:04X}", 0x00, 0x08)
             self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_DIGIBOOST_CONTROL:02X}")
         log.info("audio: digi-boost engaged (3 voices, test bit locked)")
-
-    def _disable_digi_boost(self) -> None:
-        """Release gate on all 3 voices. Best-effort — called from stop()."""
-        for v in range(SID.N_VOICES):
-            base = SID.voice_base(v)
-            try:
-                self.api.write_memory(f"{base + SID.OFF_CONTROL:04X}", f"{SID_GATE_OFF:02X}")
-            except Exception as e:
-                log.debug("digi-boost teardown voice %d failed: %s", v, e)
 
     @property
     def effective_rate(self) -> float:
@@ -1882,22 +1885,35 @@ class AudioStreamer:
         back to kernal's value, then the normal NMI/SID teardown."""
         if not self._reu_pump_armed:
             return
-        try:
-            # Restore IRQ vector → $EA31. Use write_regs (coalesced into
-            # one DMA) so $0314 and $0315 atomically point at the kernal.
-            self.api.write_regs(
-                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
-            )
-            # Restore CIA #1 Timer A to this machine's kernal default so the
-            # jiffy clock, SCNKEY and the cursor blink resume at ~60 Hz.
-            latch = kernal_cia1_latch(self.system)
-            self.api.write_memory(
-                f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
-            )
-            self.api.flush()
-        except Exception as e:
-            log.debug("REU pump disarm: %s", e)
+        run_teardown_steps(
+            log,
+            type(self).__name__,
+            [
+                # write_regs coalesces into one DMA, so $0314 and $0315
+                # atomically point at the kernal.
+                (
+                    "IRQ vector restore",
+                    lambda: self.api.write_regs(
+                        f"{VECTORS.IRQ:04X}",
+                        KERNAL.IRQ_HANDLER & 0xFF,
+                        (KERNAL.IRQ_HANDLER >> 8) & 0xFF,
+                    ),
+                ),
+                ("CIA #1 Timer A latch restore", self._restore_cia1_latch),
+                ("REU pump disarm flush", self.api.flush),
+            ],
+        )
         self._reu_pump_armed = False
+
+    def _restore_cia1_latch(self) -> None:
+        """Put CIA #1 Timer A back to this machine's kernal default, without
+        which the jiffy clock, `SCNKEY` and the cursor blink stay at the REU
+        pump's rate. Raises on a `system` that resolves to neither NTSC nor
+        PAL."""
+        latch = kernal_cia1_latch(self.system)
+        self.api.write_memory(
+            f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+        )
 
     def push_samples(self, samples_int16: np.ndarray) -> None:
         """Convert mono int16 → 4-bit volume codes and enqueue. Blocks
@@ -1993,19 +2009,43 @@ class AudioStreamer:
         for addr, ln in stomp_spans(r_addr, write_addr):
             self.api.write_memory_file(f"{addr:04X}", neutral * ln)
 
+    def _hardware_teardown_steps(self) -> list[tuple[str, Callable[[], object]]]:
+        """The C64-side teardown of a DAC session, in `stop()`'s cutoff order."""
+        steps: list[tuple[str, Callable[[], object]]] = [
+            (
+                "NMI source disable",
+                lambda: self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP),
+            ),
+            (
+                "KERNAL NMI vector restore",
+                lambda: self.api.write_regs(
+                    f"{VECTORS.NMI:04X}",
+                    KERNAL.DEFAULT_NMI & 0xFF,
+                    (KERNAL.DEFAULT_NMI >> 8) & 0xFF,
+                ),
+            ),
+            ("SID volume mute", lambda: self.api.write_memory("D418", "00")),
+        ]
+        if self.digi_boost or self._dac_curve is not None:
+            steps.append(("DAC bias release", self._release_sid_gates))
+        return steps
+
+    def _close_mic_stream(self) -> None:
+        stream, self.mic_stream = self.mic_stream, None
+        if stream is not None:
+            run_teardown_steps(
+                log,
+                type(self).__name__,
+                [("mic stop", stream.stop), ("mic close", stream.close)],
+            )
+
     def stop(self) -> None:
         # A listen-only session never touched the NMI/DAC/SID, so writing $D418
         # or the NMI vectors here would be spurious U64 traffic.
         if self._listen_mode:
             self.running = False
             self._listen_mode = False
-            if self.mic_stream:
-                try:
-                    self.mic_stream.stop()
-                    self.mic_stream.close()
-                except Exception as e:
-                    log.debug("listen close: %s", e)
-                self.mic_stream = None
+            self._close_mic_stream()
             return
         # Teardown order, for a clean cutoff:
         #  - REU pump (if armed): restore the IRQ vector + CIA #1 latch FIRST so
@@ -2014,8 +2054,11 @@ class AudioStreamer:
         #    chunk_period (~256 ms) in q.get before it sees running=False, and
         #    the NMI keeps playing the ring through that as an echo past the
         #    visual end of the clip.
-        #  - Then zero SID volume so the DAC isn't clamped at the last NMI
-        #    value, and finally restore the KERNAL NMI vector.
+        #  - Then restore the KERNAL NMI vector, which is what puts the in-RAM
+        #    $D418 writer out of reach — so the SID mute follows it and holds
+        #    even when the NMI-source disable is the write that failed.
+        #  - The DAC-bias gate release goes last, so the bias collapse it
+        #    starts (release=0 under digi-boost) happens at volume 0.
         self.running = False
         # Ahead of everything a producer could outlast: the push path's epoch
         # check is what drops a blob from a producer this clear just released,
@@ -2024,27 +2067,10 @@ class AudioStreamer:
         # No-op if the pump was never armed. The governor lives entirely in the
         # C64-side handler, so disarming the IRQ vector stops it.
         self._disarm_reu_pump()
-        try:
-            self.api.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
-            self.api.write_memory("D418", "00")
-            if self.digi_boost:
-                self._disable_digi_boost()
-            elif self._dac_curve is not None:
-                self._disable_mahoney_env()
-            self.api.write_regs(
-                f"{VECTORS.NMI:04X}", KERNAL.DEFAULT_NMI & 0xFF, (KERNAL.DEFAULT_NMI >> 8) & 0xFF
-            )
-        except Exception as e:
-            log.debug("teardown write failed: %s", e)
+        run_teardown_steps(log, type(self).__name__, self._hardware_teardown_steps())
         # NMI is already silenced; let the worker / mic threads tear down
         # at their own pace.
-        if self.mic_stream:
-            try:
-                self.mic_stream.stop()
-                self.mic_stream.close()
-            except Exception as e:
-                log.debug("mic close: %s", e)
-            self.mic_stream = None
+        self._close_mic_stream()
         if self._worker_thread:
             # A plain bounded join, not session.join_bounded: a daemon thread
             # joined off the main thread, and the audio layer must not import
