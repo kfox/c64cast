@@ -62,10 +62,22 @@ _HOME = str(_HOME_DIR.resolve())
 _CWD = str(_clone(_TREE / "checkout").resolve())
 _ALLOWED = f"{_in_a_command(_CWD)}/.claude/worktrees"
 
-# Both, because `expanduser` reads HOME on POSIX and USERPROFILE on Windows,
-# and the hook expands `~` and compares against `Path.home()` — a fake that
-# moved only one of them would answer inconsistently and pass a `~` path.
-_FAKE_HOME_ENV = {"HOME": _HOME, "USERPROFILE": _HOME}
+# Both homes, because `expanduser` reads HOME on POSIX and USERPROFILE on
+# Windows, and the hook expands `~` and compares against `Path.home()` — a
+# fake that moved only one of them would answer inconsistently and pass a `~`
+# path. CLAUDE_PROJECT_DIR because the hook names the sanctioned location
+# relative to it, falling back to the working directory when it is unset.
+_PINNED_ENV = {"HOME": _HOME, "USERPROFILE": _HOME, "CLAUDE_PROJECT_DIR": _CWD}
+
+
+def _in_a_reason(path: str) -> str:
+    """`path` spelled the way a refusal's reason spells it — resolved against
+    `_CWD`.
+
+    A POSIX-looking absolute path is drive-relative on Windows, so
+    `/private/tmp/x` is reported there as `C:\\private\\tmp\\x`.
+    """
+    return str((Path(_CWD) / path).resolve())
 
 
 def _load_hook():
@@ -80,7 +92,7 @@ hook = _load_hook()
 
 
 def _verdict(cmd: str, cwd: str = _CWD) -> str | None:
-    with mock.patch.dict(os.environ, _FAKE_HOME_ENV):
+    with mock.patch.dict(os.environ, _PINNED_ENV):
         return hook.verdict(cmd, cwd)
 
 
@@ -278,8 +290,20 @@ class RefusedDestinationTest(unittest.TestCase):
 
     def test_the_reason_names_the_refused_destination_and_where_to_put_it(self):
         reason = self.assertRefused("git worktree add /private/tmp/c64cast-386")
-        self.assertIn("/private/tmp/c64cast-386", reason)
-        self.assertIn(".claude/worktrees", reason)
+        self.assertIn(_in_a_reason("/private/tmp/c64cast-386"), reason)
+        self.assertIn(_in_a_reason(".claude/worktrees"), reason)
+
+    def test_the_reason_names_a_relative_destination_resolved(self):
+        reason = self.assertRefused("git worktree add ../c64cast-wt-407")
+        self.assertIn(_in_a_reason("../c64cast-wt-407"), reason)
+
+    def test_an_ambient_project_dir_does_not_move_where_the_reason_points(self):
+        # The hook reads CLAUDE_PROJECT_DIR to name the sanctioned location,
+        # and Claude Code sets it — so an unpinned suite would assert against
+        # whatever ran it.
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": "/elsewhere"}):
+            reason = self.assertRefused("git worktree add /private/tmp/c64cast-386")
+        self.assertIn(_in_a_reason(".claude/worktrees"), reason)
 
 
 class CheckoutMarkerTest(unittest.TestCase):
@@ -343,7 +367,7 @@ class HookProtocolTest(unittest.TestCase):
     def _main(self, payload: str) -> tuple[int, str]:
         out = io.StringIO()
         with mock.patch("sys.stdin", io.StringIO(payload)), contextlib.redirect_stdout(out):
-            with mock.patch.dict(os.environ, _FAKE_HOME_ENV):
+            with mock.patch.dict(os.environ, _PINNED_ENV):
                 code = hook.main()
         return code, out.getvalue()
 
@@ -356,7 +380,7 @@ class HookProtocolTest(unittest.TestCase):
         decision = json.loads(printed)["hookSpecificOutput"]
         self.assertEqual(decision["hookEventName"], "PreToolUse")
         self.assertEqual(decision["permissionDecision"], "deny")
-        self.assertIn("/private/tmp/x", decision["permissionDecisionReason"])
+        self.assertIn(_in_a_reason("/private/tmp/x"), decision["permissionDecisionReason"])
 
     def test_an_allowed_command_prints_nothing(self):
         code, printed = self._main(self._payload("git worktree add .claude/worktrees/x"))

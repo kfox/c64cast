@@ -223,7 +223,8 @@ class HookProtocolTest(unittest.TestCase):
     def test_a_notebook_is_read_from_its_own_key(self):
         target = _MAIN / "notes.ipynb"
         _, printed = self._main(self._payload({"notebook_path": str(target)}))
-        self.assertIn(str(target), printed)
+        decision = json.loads(printed)["hookSpecificOutput"]
+        self.assertIn(str(target), decision["permissionDecisionReason"])
 
     def test_a_worktree_edit_prints_nothing(self):
         target = _WORKTREE / "tests" / "x.py"
