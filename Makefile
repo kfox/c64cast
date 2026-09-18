@@ -114,19 +114,23 @@ lint: $(SYNC)
 fmt: $(GUARD)
 	uv run ruff format .
 
+# A bytecode sweep rooted at `.` reaches .venv's dependency bytecode and any
+# nested checkout under .claude/worktrees/.
+SOURCE_ROOTS := c64cast tests scripts
+
 # Default .pyc validation keys on the source's mtime truncated to whole
 # seconds plus its size, so a mutation applied and reverted within one second
 # runs stale bytecode and reports green. `-f` is required: compileall otherwise
 # skips any file whose timestamp cache is still valid.
 mutation-ready: $(SYNC)
-	$(PY) -m compileall -q -f --invalidation-mode checked-hash c64cast tests scripts
-	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+	$(PY) -m compileall -q -f --invalidation-mode checked-hash $(SOURCE_ROOTS)
+	$(PY) scripts/check_hash_based_pycs.py $(SOURCE_ROOTS)
 
 # Arming is not durable: a `make clean`, a fresh worktree, a uv sync that moves
 # the Python minor, or `make test PY=python` all un-arm the tree silently. Run
 # this at the moment a mutation proof's green is about to be believed.
 mutation-check: $(SYNC)
-	$(PY) scripts/check_hash_based_pycs.py c64cast tests scripts
+	$(PY) scripts/check_hash_based_pycs.py $(SOURCE_ROOTS)
 
 test: $(SYNC)
 	$(if $(T),$(TEST_ENV) $(PY) -m unittest $(T),$(TEST_ENV) $(PY) -m unittest_parallel -s tests)
@@ -209,7 +213,7 @@ preflight: lint test
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
 	rm -rf .ruff_cache .mypy_cache .pytest_cache
+	rm -rf __pycache__ *.egg-info
 	rm -f $(addsuffix .typ,$(BOOK_ARTS)) $(addsuffix .pdf,$(BOOK_ARTS))
 	rm -rf $(SITE_DIR)
-	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
-	find . -type d -name '*.egg-info' -prune -exec rm -rf {} +
+	find $(SOURCE_ROOTS) -type d -name '__pycache__' -prune -exec rm -rf {} +
