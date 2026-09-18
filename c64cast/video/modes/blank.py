@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import SCREEN, RegionID
+from c64cast.hw.c64 import SCREEN, VIC, RegionID
 from c64cast.scenes.text_surface import CharTextSurface
 from c64cast.video.modes_irq import push_screen_via_reu
 from c64cast.video.palette import C64_COLORS, color_display_name, resolve_color
@@ -43,7 +43,7 @@ class BlankDisplayMode(CharDisplayMode):
         # Clear-then-reveal: blank the screen before the register pokes and
         # flip $D011 last, so a scene switch never shows stale glyphs.
         clear_char_screen(api)
-        api.write_memory("d018", "14")
+        api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
         api.write_memory("d016", "08")
         api.write_regs("d020", self.border, self.background)
         api.write_memory("d011", "1b")
