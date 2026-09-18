@@ -26,17 +26,39 @@ auto-merge, and do not ask to. Hand over a green PR and stop.
 Skip this skill for genuinely trivial work — a typo, a one-line fix the user
 dictated, a dependency bump. Say you're skipping it and why.
 
-## 1. Branch
+## 1. Branch, in a worktree
 
-Never work on `main`. Branch from an up-to-date `main`:
+Never work on `main`, and never in the primary checkout — it is shared, and a
+`git pull` there moves HEAD out from under uncommitted work. Call
+`EnterWorktree` with a `name`, which lands it in `.claude/worktrees/<name>` on
+a branch of that name; skip this if the session is in a worktree already.
+
+Then, from the worktree, confirm the branch and give it an environment of its
+own:
 
 ```bash
 git fetch -q origin
+git rev-parse --abbrev-ref HEAD   # not <type>/<short-slug>? then:
 git checkout -q -b <type>/<short-slug> origin/main
+env -u VIRTUAL_ENV UV_PROJECT_ENVIRONMENT="$PWD/.venv" uv sync --all-extras
 ```
 
 `<type>` is `feat`, `fix`, `refactor`, `docs`, `test`, or `chore`. If the user
 is already on a feature branch with related work, stay on it.
+
+**Pass that environment to everything after this.** `make` takes it as an
+argument; git reads a trailing `VAR=value` as a pathspec and needs it as a
+prefix instead:
+
+```bash
+make check UV_PROJECT_ENVIRONMENT=<worktree>/.venv
+UV_PROJECT_ENVIRONMENT=<worktree>/.venv git commit -F <message-file>
+```
+
+`git commit` needs it because its hooks run `pyright` and the suite through
+`uv`. A shell exporting the primary checkout's `.venv` otherwise has every `uv`
+command here reinstall this source into that environment, and the gate you just
+ran graded a tree nothing uses. `make venv-check` is the guard that catches it.
 
 ## 2. Implement
 
@@ -80,8 +102,9 @@ follow the reasoning, not just the edits.
 Run the gate before committing:
 
 ```bash
-make check     # lint + typecheck + test
-make schema    # only if you touched config metadata; CI fails on drift
+# each also takes UV_PROJECT_ENVIRONMENT=<worktree>/.venv, per step 1
+make check        # lint + typecheck + test
+make schema       # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
 ```
 
