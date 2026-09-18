@@ -174,6 +174,15 @@ class HashBasedPycCheckTest(unittest.TestCase):
         self.assertIn("no Python sources", err)
         self.assertIn("has no compiled bytecode", err)
 
+    def test_no_roots_fails_rather_than_passing_an_empty_scan(self):
+        # The roots are the Makefile's SOURCE_ROOTS, and a scan of none finds
+        # nothing to report, which is not a pass.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = check.main(["prog"])
+        self.assertEqual(code, 1)
+        self.assertIn("SOURCE_ROOTS", err.getvalue())
+
     def test_an_armed_tree_exits_zero(self):
         self._compile(py_compile.PycInvalidationMode.CHECKED_HASH)
         self.assertEqual(check.main(["prog", str(self.root)]), 0)

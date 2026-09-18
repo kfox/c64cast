@@ -86,6 +86,23 @@ Non-trivial changes go through the [`ship` skill](.claude/skills/ship/SKILL.md)
 — see it for the stages, the pinned-paths review policy, and the never-merge
 rule. **Never merge** — hand over a green PR; the merge is Kelly's.
 
+**Every change happens in a worktree of its own**, under
+`.claude/worktrees/<name>` and with its own environment — call `EnterWorktree`
+with a `name` before the first edit, whether or not the change goes through
+`ship`. The primary checkout is shared, so another session may be standing in
+it and a `git pull` there moves HEAD out from under uncommitted work. Two hooks
+hold the line: [`require-worktrees-in-checkout.py`](.claude/hooks/require-worktrees-in-checkout.py)
+refuses a `git worktree add` aimed anywhere else, and
+[`require-edits-in-a-worktree.py`](.claude/hooks/require-edits-in-a-worktree.py)
+asks before an edit lands in the primary checkout. The environment half is
+[`scripts/check_venv_target.py`](scripts/check_venv_target.py), which fails a
+commit whose project environment does not import the checkout it ran from. In a
+worktree, `make` takes the override as an argument (`make check
+UV_PROJECT_ENVIRONMENT=<worktree>/.venv`) while git needs it as a prefix
+(`UV_PROJECT_ENVIRONMENT=<worktree>/.venv git commit …`), because git reads a
+trailing `VAR=value` as a pathspec. A write driven through Bash (`sed -i`, a
+redirection) reaches neither hook, so there it rests on this rule alone.
+
 ## Spelling
 
 **Everything in this repository is written in American English — prose, code,

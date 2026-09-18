@@ -41,6 +41,21 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-uv.py\"",
             "statusMessage": "Checking that installs and checks go through uv/make"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-worktrees-in-checkout.py\"",
+            "statusMessage": "Checking that a new worktree lands under .claude/worktrees"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-edits-in-a-worktree.py\"",
+            "statusMessage": "Checking that the edit is not in the primary checkout"
           }
         ]
       }
