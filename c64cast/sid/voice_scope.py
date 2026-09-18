@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.hw.c64 import CIA2, SCREEN, RegionID
+from c64cast.hw.c64 import CIA2, SCREEN, VIC, RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code as _ascii_to_screen_code
 from c64cast.scenes.bitmap_text import load_glyphs as _load_glyphs
 from c64cast.video.modes import engage_bitmap_mode
@@ -114,11 +114,6 @@ D016_STANDARD = "08"  # 40-col, no multicolor
 # and the bitmap (bit 3 = bitmap at bank+$2000). $18 = matrix at bank+$0400
 # + bitmap at bank+$2000 — bank-relative.
 D018_HIRES_BITMAP = 0x18  # bank-relative: screen +$0400, bitmap +$2000
-# The char-mode $D018 a scope scene puts back on teardown: matrix at bank+$0400,
-# bitmap bit clear. The same value every char-mode engage in the tree writes
-# (video/modes/petscii.py, video/modes/blank.py, scenes/interstitial.py,
-# hires.py's teardown).
-D018_CHAR_DEFAULT = 0x14
 
 COLOR_NIBBLE_MASK = 0x0F
 
@@ -175,7 +170,7 @@ def restore_char_mode_display(api: C64Backend) -> None:
     owns $D011 but not the matrix pointer, so a $D018 left on the bitmap layout
     makes a char-mode scene read its matrix from the wrong offset."""
     api.write_memory(f"{CIA2.PORT_A:04X}", f"{CIA2.PORT_A_BANK_0:02X}")
-    api.write_memory("d018", f"{D018_CHAR_DEFAULT:02X}")
+    api.write_memory("d018", f"{VIC.D018_CHAR_DEFAULT:02X}")
 
 
 def _mirror_glyph_h(glyph: bytes) -> bytes:

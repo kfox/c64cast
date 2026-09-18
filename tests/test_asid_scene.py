@@ -207,16 +207,17 @@ class AsidSceneTest(unittest.TestCase):
 
     def test_teardown_leaves_d018_on_the_char_mode_default(self):
         # The scope ran in hires ($18 = bitmap at bank+$2000). Teardown claims
-        # to hand the next scene the char-mode default, so it must write the
-        # value every char-mode engage in the tree writes, not its own.
+        # to hand the next scene the char-mode default, so it must write
+        # VIC.D018_CHAR_DEFAULT, not its own.
         scene, api = self._make()
         self._bring_up(scene)
         self.assertEqual(api.memories["D018"], "18")
         scene.teardown()
-        # The literal is the point: comparing against D018_CHAR_DEFAULT compares
-        # teardown's write to the constant it wrote it from, and stayed green with
-        # that constant set to the hires $18. $14 = matrix at bank+$0400, char gen
-        # at +$1000, bitmap bit clear; test_voice_scope pins the constant to it.
+        # The literal is the point: comparing against VIC.D018_CHAR_DEFAULT
+        # compares teardown's write to the constant it wrote it from, and stayed
+        # green with that constant set to the hires $18. $14 = matrix at
+        # bank+$0400, char gen at +$1000, bitmap bit clear; test_voice_scope
+        # pins the constant to it.
         self.assertEqual(api.memories["D018"], "14")
 
     def _make_multi(self, sockets=None, **kwargs):
