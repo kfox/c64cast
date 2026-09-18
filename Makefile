@@ -115,8 +115,10 @@ fmt: $(GUARD)
 	uv run ruff format .
 
 # A bytecode sweep rooted at `.` reaches .venv's dependency bytecode and any
-# nested checkout under .claude/worktrees/.
-SOURCE_ROOTS := c64cast tests scripts
+# nested checkout under .claude/worktrees/. `.claude/hooks` is here because
+# the hook tests import a hook by path, which caches its bytecode like any
+# other import.
+SOURCE_ROOTS := c64cast tests scripts .claude/hooks
 
 # Default .pyc validation keys on the source's mtime truncated to whole
 # seconds plus its size, so a mutation applied and reverted within one second
