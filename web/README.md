@@ -37,6 +37,25 @@ The bundle **must be rebuilt in the same commit as the source**. CI rebuilds it
 and fails on a diff, the same way it does for the JSON schema and the generated
 reference appendices.
 
+The build is deterministic: fixed asset names (`assets/app.js`, `assets/app.css`)
+rather than content hashes, so a rebuild is one diff on one file instead of a
+new file plus an orphan. `web_static.py` serves them `no-cache` for the same
+reason.
+
+The console's browser floor is whatever Vite's default
+`baseline-widely-available` target resolves to, which moves forward as Vite is
+updated: the Vite 7 to 8 bump raised it (Safari 16 to 16.4, Chrome 107 to 111).
+Both the JavaScript minifier and Lightning CSS emit for it, and it is what
+decides whether Lightning CSS ships a breakpoint as `(width >= 40rem)` or as
+`(min-width: 40rem)`. Pin it by setting `build.target` in `vite.config.ts`;
+read what it is today with:
+
+```bash
+cd web && node --input-type=module -e \
+  "import { resolveConfig } from 'vite'; \
+   console.log((await resolveConfig({}, 'build')).build.target)"
+```
+
 ## Testing
 
 ```bash
@@ -51,24 +70,6 @@ under test today is logic a component imports rather than a component itself,
 which is why there's no `@testing-library/svelte` here yet. `vitest.config.ts`
 is deliberately separate from `vite.config.ts` — the app build needs the Svelte
 and Tailwind plugins, and a logic-only test needs neither.
-
-The build is deterministic: fixed asset names (`assets/app.js`, `assets/app.css`)
-rather than content hashes, so a rebuild is one diff on one file instead of a
-new file plus an orphan. `web_static.py` serves them `no-cache` for the same
-reason.
-
-The console's browser floor is whatever Vite's default
-`baseline-widely-available` target resolves to, which moves forward as Vite is
-updated. Both the JavaScript minifier and Lightning CSS emit for it, so it is
-what decides whether a breakpoint ships as `(min-width: 40rem)` or as
-`(width >= 40rem)`. Pin it by setting `build.target` in `vite.config.ts`; read
-what it is today with:
-
-```bash
-cd web && node --input-type=module -e \
-  "import { resolveConfig } from 'vite'; \
-   console.log((await resolveConfig({}, 'build')).build.target)"
-```
 
 ## Layout
 
