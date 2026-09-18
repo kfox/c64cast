@@ -205,7 +205,7 @@ No ROM bytes enter the repo, the sdist, the wheel, or a release asset. The bytes
 
 ## `c64.py` — the hardware constant register
 
-Every bare hex address in the tree resolves through [c64.py](../../c64cast/hw/c64.py), so the code is greppable (`VIC.D018_MEMORY`, not `"d018"`) and porting to another Commodore variant stays tractable. Most of it is a plain name table; the groups below carry *policy*, which is what earns the module a section:
+Naming an address or register value in [c64.py](../../c64cast/hw/c64.py) is what keeps the code greppable (`VIC.D018_MEMORY` rather than a bare `"d018"`) and porting to another Commodore variant tractable. Most of it is a plain name table; the groups below carry *policy*, which is what earns the module a section:
 
 * **`CIA2.PORT_A_BANK_*` are whole-byte values, not bit masks.** The upper bits of `$DD00` drive the serial bus / RS-232 outputs; c64cast writes the whole byte and deliberately clobbers them, with the `0x97` base keeping the serial lines idle-high to match the kernal's post-init state. Which VIC bank a scene may use is encoded here too: banks 0 and 2 are the only ones with kernal char-ROM mapped at their `$1000` offset, so the char-mode double-buffer swaps between those; bank 1 is normally off-limits because the audio ring lives at `$4000-$5FFF`. The waveform scene is the one exception — bitmap-only (no char-ROM dependency) and it stops the ring at setup (the SID plays on the real chip), so it can claim bank 1 for tunes whose payload occupies banks 0 and 2.
 

@@ -1258,10 +1258,9 @@ class WaveformSceneTest(unittest.TestCase):
         self.addCleanup(scene.teardown)  # setup() starts the register poll thread
         self.assertEqual(api.memories.get("D018"), "18")
         scene.teardown()
-        # The literal is the point: comparing against D018_CHAR_DEFAULT compares
-        # teardown's write to the constant it wrote it from. $14 is the char-mode
-        # byte every char-mode engage in the tree writes (matrix at bank+$0400,
-        # char gen at +$1000, bitmap bit clear).
+        # The literal is the point: comparing against VIC.D018_CHAR_DEFAULT
+        # compares teardown's write to the constant it wrote it from. $14 =
+        # matrix at bank+$0400, char gen at +$1000, bitmap bit clear.
         self.assertEqual(api.memories.get("D018"), "14")
 
     def test_a_failing_irq_restore_does_not_starve_the_silence_and_display(self):

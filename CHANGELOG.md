@@ -484,8 +484,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `$D018` back for the next scene's char mode and then wrote their own hires
   value (`$18`), leaving the VIC's matrix pointer on the bitmap layout. Harmless
   today because the next scene engages its own display mode — but a false claim
-  a maintainer could act on. All three now write `$14`, the value every
-  char-mode engage in the tree uses.
+  a maintainer could act on. All three now write `$14` —
+  `VIC.D018_CHAR_DEFAULT`, matrix at bank+`$0400` with the bitmap bit clear.
 - **An oversized `0x30` timing recipe no longer amplifies every later frame or
   silently deletes a SID chip.** The recipe is a SID write order, so it can be
   no longer than the register table and can name each register once — but
