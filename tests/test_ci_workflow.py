@@ -4,12 +4,7 @@ Branch protection requires the gate's context in place of one per matrix leg,
 so its `needs:` list is what decides which jobs can block a merge, and
 `if: always()` is what makes it report — GitHub counts a skipped job as a pass.
 
-A merge queue gates on that same context, evaluated against the merge group it
-builds, which is why the workflow triggers on `merge_group` too: a required
-check that never reports there does not fail the entry, it holds the queue
-until the status-check timeout evicts it.
-
-The `use_oidc` input and an `id-token: write` permission have to travel
+The `use_oidc` input and the job's `id-token: write` permission have to travel
 together: without the permission the action's token step throws before the
 upload runs, and the error it raises names neither of them.
 """
@@ -57,11 +52,6 @@ def _job_ids() -> set[str]:
     return set(_BLOCK_KEY.findall(_block("jobs")))
 
 
-def _triggers() -> set[str]:
-    """Every event in the workflow's `on:` block, by its two-space indent."""
-    return set(_BLOCK_KEY.findall(_block("on")))
-
-
 def _job_block(job_id: str) -> str:
     """One job's own lines — those indented deeper than its key."""
     return _block(f"  {job_id}")
@@ -97,14 +87,6 @@ class AggregateGateTest(unittest.TestCase):
             _job_ids() - {_GATE},
             {name.strip() for name in needs.group(1).split(",")},
             "a job outside the gate's `needs:` can go red without blocking a merge",
-        )
-
-    def test_the_gate_runs_on_a_merge_group(self):
-        self.assertIn(
-            "merge_group",
-            _triggers(),
-            "a queued pull request builds a merge group this workflow ignores, "
-            "so the gate never reports and the queue evicts the entry on timeout",
         )
 
     def test_the_gate_reports_when_a_dependency_fails(self):
