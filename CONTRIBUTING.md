@@ -102,10 +102,11 @@ whether or not the current shell has `.venv` activated:
 | `make mutation-ready` | arm the tree's bytecode for a mutation proof (see [Proving a test can fail](#proving-a-test-can-fail)) |
 | `make mutation-check` | verify it is still armed — a clean, a new worktree or a `uv sync` un-arms it silently |
 
-CI runs the same tests across Python 3.11–3.14 and three operating systems, the
-same lint and formatting once in the `pre-commit` job, and the same type checks
-once per target platform on Python 3.14 in the `types` job — see
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) for what triggers it.
+CI runs on every pull request and on pushes to `main`
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the same tests across
+Python 3.11–3.14 and three operating systems, the same lint and formatting once
+in the `pre-commit` job, and the same type checks once per target platform on
+Python 3.14 in the `types` job.
 Type-checking is deliberately two-tiered: `pyright` in basic mode across the
 whole tree (including tests), matching Pylance's VS Code defaults so editor
 diagnostics align with CI, plus `mypy --strict` on the state-bearing modules
