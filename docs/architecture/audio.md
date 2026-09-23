@@ -257,6 +257,8 @@ Because the DMA socket can be up while REST is down, `_probe_connectivity` grade
 
 Turn it on if your hardware or source material disagrees. It converts signal-correlated rounding distortion into smooth white-noise hiss, which can sound better on already-noisy sources.
 
+**The dither is a sequence the streamer owns.** `AudioStreamer` builds one `np.random.default_rng` at construction from a 64-bit entropy seed, logs that seed at INFO when dither is on, and hands it to `encode_floats_to_dac` at both realtime call sites; `dither_seed=` pins it for a reproduction. The encoder used to fall back to numpy's *global* RNG when handed no generator, which is why the offline REU pre-encode passed one — not for its own sake, but to keep the whole-track pass from stepping on the sequence the realtime callbacks were drawing from. Two costs came with that fallback: a dithered capture could not be reproduced across runs (what an A/B against `scripts/diags/quant_noise_ab.py` needs), and the audio callbacks shared a sequence with every other numpy caller in the process. `encode_floats_to_dac(dither=True, rng=None)` now raises instead of falling back, so there is no path back to a shared sequence, and `scripts/diags/quant_noise_ab.py`'s `encode_4bit` — which carried the same fallback — refuses the same way. The draw is taken under a lock because `np.random.Generator`, unlike the legacy global `RandomState`, is not thread-safe, and both the host-DMA producer and the REU mic callback reach the encoder.
+
 ### `[audio].digi_boost` (experimental, default off)
 
 Initializes all three SID voices with a locked pulse waveform (control `$49` = gate+pulse+test, sustain `$F0`) so the ADSR envelope D/As feed a steady DC offset into the master mixer.

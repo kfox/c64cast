@@ -182,9 +182,10 @@ def encode_floats_to_dac(
     there would repaint what they cleared). For the companding path the same
     dither is folded in the amplitude-index domain (±1 index step).
 
-    rng: when None (default) uses numpy's legacy global RNG, matching the
-    realtime callback paths; pass a Generator for thread-local / reproducible
-    dither (the offline pre-encode path does)."""
+    rng: the generator the dither is drawn from. Required whenever
+    ``dither`` is True — a ``ValueError`` otherwise, rather than a silent
+    fall back to a process-wide sequence no caller can reproduce or own.
+    Ignored when ``dither`` is False."""
     if curve is None:
         scale = DAC_VOLUME_SCALE
         code_float = (floats + 1.0) * scale
@@ -194,13 +195,8 @@ def encode_floats_to_dac(
         code_max = DAC_AMP_MAX
     if dither:
         if rng is None:
-            d = np.random.random_sample(floats.shape).astype(np.float32) - np.random.random_sample(
-                floats.shape
-            ).astype(np.float32)
-        else:
-            d = rng.random(floats.shape, dtype=np.float32) - rng.random(
-                floats.shape, dtype=np.float32
-            )
+            raise ValueError("encode_floats_to_dac: dither=True needs an rng")
+        d = rng.random(floats.shape, dtype=np.float32) - rng.random(floats.shape, dtype=np.float32)
         d[floats == 0] = 0.0
         code_float = code_float + d
     idx = np.clip(code_float, 0, code_max).astype(np.uint8)

@@ -1416,8 +1416,6 @@ class VideoScene(MediaFileMixin, Scene):
         # The whole track at once, matching the per-chunk DSP the host-DMA path
         # applies in _encode_and_enqueue.
         floats = self.audio.process_offline_dsp(floats)
-        # An explicit Generator, so this offline pass does not perturb the
-        # global RNG state the realtime callbacks draw from.
         rng = np.random.default_rng() if self.audio.dither_enabled else None
         vol = encode_floats_to_dac(
             floats, dither=self.audio.dither_enabled, rng=rng, curve=self.audio.dac_curve
