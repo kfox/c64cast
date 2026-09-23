@@ -8,6 +8,7 @@ import dataclasses
 import math
 import os
 import tempfile
+import tomllib
 import unittest
 from typing import cast
 from unittest import mock
@@ -798,6 +799,89 @@ class FormatTomlErrorTest(unittest.TestCase):
             "E", (), {"lineno": 2, "colno": 5, "msg": "bad value", "doc": "a = 1\nb = ?\n"}
         )()
         self.assertIn("^", cfgmod._format_toml_error("cfg.toml", err))
+
+    def test_a_malformed_credential_line_does_not_echo_the_credential(self):
+        # Every one of these is malformed, which is the only kind of line this function
+        # ever quotes — and in each the value-masking pattern either lands on the
+        # punctuation instead of the value or finds nothing to anchor on.
+        for line, colno in (
+            ('dma_password == "hunter2"', 15),
+            ('dma_password "hunter2"', 14),
+            ('dma_password ""hunter2""', 15),
+        ):
+            with self.subTest(line=line):
+                err = type(
+                    "E",
+                    (),
+                    {
+                        "lineno": 2,
+                        "colno": colno,
+                        "msg": "Invalid value",
+                        "doc": f"[ultimate64]\n{line}\n",
+                    },
+                )()
+                out = cfgmod._format_toml_error("cfg.toml", err)
+                self.assertNotIn("hunter2", out)
+                self.assertIn("dma_password", out)
+                self.assertNotIn("^", out)
+
+    def test_a_parse_failure_inside_a_multiline_password_echoes_no_line(self):
+        # The parse fails *inside* the value, so the offending line is the passphrase
+        # itself with a caret under it — there is no key name on it to key on.
+        doc = '[ultimate64]\ndma_password = """\ncorrect\\horse battery staple\n"""\n'
+        err = type("E", (), {"lineno": 3, "colno": 8, "msg": "Invalid escape", "doc": doc})()
+        out = cfgmod._format_toml_error("cfg.toml", err)
+        for word in ("correct", "horse", "battery", "staple"):
+            self.assertNotIn(word, out)
+        self.assertIn("line 3, column 8", out)
+        self.assertNotIn("^", out)
+
+    def test_a_unicode_line_separator_above_does_not_shift_the_quoted_line(self):
+        # Driven through real tomllib so the line number is the parser's own.
+        # tomllib numbers lines by counting "\n"; str.splitlines() also breaks on
+        # U+0085, U+2028 and U+2029, every one of which tomllib accepts inside a
+        # value. One above the failing line shifted every index after it, and the
+        # quoted "line" became a fragment of the passphrase — no key name on it
+        # for the redaction rules to find, so it went out verbatim with a caret.
+        #
+        # Written to a real file rather than passed a bare name: 3.14 carries
+        # the document on the exception as `.doc` and 3.11-3.13 do not, so a
+        # path that does not exist leaves the older versions with nothing to
+        # quote and exercises the rule only on the newest one.
+        for sep in ("\u0085", "\u2028", "\u2029"):
+            with self.subTest(sep=f"U+{ord(sep):04X}"):
+                doc = f'[ultimate64]\ndma_password = "a{sep}hunter2"\nx = ?\n'
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".toml", delete=False, encoding="utf-8"
+                ) as f:
+                    f.write(doc)
+                with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
+                    tomllib.loads(doc)
+                out = cfgmod._format_toml_error(f.name, ctx.exception)
+                self.assertNotIn("hunter2", out)
+                self.assertIn("x = ?", out)
+
+    def test_an_error_past_the_last_newline_quotes_no_line(self):
+        # An unterminated literal string is scanned to the end of the document,
+        # so the parser points one line past the last one. Splitting on "\n"
+        # turns the document's final newline into a trailing empty element, and
+        # quoting that would answer the passphrase's own line number with a
+        # blank line and a caret under nothing.
+        with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
+            tomllib.loads("[ultimate64]\ndma_password = 'hunter2\n")
+        out = cfgmod._format_toml_error("cfg.toml", ctx.exception)
+        self.assertNotIn("hunter2", out)
+        self.assertNotIn("^", out)
+        # The position is asserted only where tomllib supplies one. This is the
+        # one error whose text carries no `(at line N, column M)` — it reads
+        # `(at end of document)` — so on 3.11-3.13, where `.lineno` does not
+        # exist and `_TOML_POS_RE` is the only source, there is no line number
+        # to report and no line is quoted at all. The two assertions above are
+        # the ones that must hold on every version.
+        if hasattr(ctx.exception, "lineno"):
+            self.assertIn("line 3", out)
+        else:
+            self.assertNotIn("line ", out)
 
 
 class LoadSonglengthsTest(unittest.TestCase):
