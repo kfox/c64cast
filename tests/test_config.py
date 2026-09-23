@@ -843,12 +843,21 @@ class FormatTomlErrorTest(unittest.TestCase):
         # value. One above the failing line shifted every index after it, and the
         # quoted "line" became a fragment of the passphrase — no key name on it
         # for the redaction rules to find, so it went out verbatim with a caret.
-        for sep in ("\u0085", " ", " "):
+        #
+        # Written to a real file rather than passed a bare name: 3.14 carries
+        # the document on the exception as `.doc` and 3.11-3.13 do not, so a
+        # path that does not exist leaves the older versions with nothing to
+        # quote and exercises the rule only on the newest one.
+        for sep in ("\u0085", "\u2028", "\u2029"):
             with self.subTest(sep=f"U+{ord(sep):04X}"):
                 doc = f'[ultimate64]\ndma_password = "a{sep}hunter2"\nx = ?\n'
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".toml", delete=False, encoding="utf-8"
+                ) as f:
+                    f.write(doc)
                 with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
                     tomllib.loads(doc)
-                out = cfgmod._format_toml_error("cfg.toml", ctx.exception)
+                out = cfgmod._format_toml_error(f.name, ctx.exception)
                 self.assertNotIn("hunter2", out)
                 self.assertIn("x = ?", out)
 
@@ -861,9 +870,18 @@ class FormatTomlErrorTest(unittest.TestCase):
         with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
             tomllib.loads("[ultimate64]\ndma_password = 'hunter2\n")
         out = cfgmod._format_toml_error("cfg.toml", ctx.exception)
-        self.assertIn("line 3", out)
         self.assertNotIn("hunter2", out)
         self.assertNotIn("^", out)
+        # The position is asserted only where tomllib supplies one. This is the
+        # one error whose text carries no `(at line N, column M)` — it reads
+        # `(at end of document)` — so on 3.11-3.13, where `.lineno` does not
+        # exist and `_TOML_POS_RE` is the only source, there is no line number
+        # to report and no line is quoted at all. The two assertions above are
+        # the ones that must hold on every version.
+        if hasattr(ctx.exception, "lineno"):
+            self.assertIn("line 3", out)
+        else:
+            self.assertNotIn("line ", out)
 
 
 class LoadSonglengthsTest(unittest.TestCase):
