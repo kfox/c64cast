@@ -1071,12 +1071,41 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
     in reverse, plus restore $DD00 = bank 0 so the next scene's setup
     sees the kernal-default VIC bank.
 
-    Six independent promises to whatever runs next, so each is its own step:
-    under one `try` the first link hiccup skipped the five behind it, leaving
-    $0314/$0315 vectored at RAM the next scene is free to overwrite, $DD00 on
-    a non-default VIC bank, and CIA #1 Timer A masked — which stops the kernal
-    keyboard scan, and with it the C= / CTRL / SHIFT poller, for the rest of
-    the session."""
+    Six steps, each with its own guard: under one `try` the first link hiccup
+    skipped the five behind it, leaving $0314/$0315 vectored at RAM the next
+    scene is free to overwrite, $DD00 on a non-default VIC bank, and CIA #1
+    Timer A masked — which stops the kernal keyboard scan, and with it the
+    C= / CTRL / SHIFT poller, for the rest of the session.
+
+    Five of the six are independent promises. The CIA #1 unmask is not: it
+    re-arms the jiffy IRQ only once `$0314` is back at the kernal, which is
+    why it reads `vector_restored` rather than firing unconditionally. See
+    the comment on `unmask_cia1`."""
+    vector_restored = False
+
+    def restore_kernal_vector() -> None:
+        nonlocal vector_restored
+        api.write_regs(
+            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+        )
+        vector_restored = True
+
+    def unmask_cia1() -> None:
+        # Conditional, unlike every other step: the mask is what makes a failed
+        # vector restore survivable. With $0314 still on the in-RAM handler,
+        # every jiffy IRQ vectors through it — and since $D019's raster flag
+        # latches regardless of $D01A, it re-flips $DD00 to bank 2 on the next
+        # frame, undoing the "VIC bank 0" step, then jumps into whatever the
+        # next scene writes over $C500. A masked Timer A costs the keyboard
+        # scan; an unmasked one costs the machine.
+        if not vector_restored:
+            log.error(
+                "bank-swap IRQ: leaving CIA #1 Timer A masked — $0314 still points at "
+                "the in-RAM handler, so re-arming the jiffy IRQ would vector through it"
+            )
+            return
+        api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
+
     steps: tuple[tuple[str, Callable[[], object]], ...] = (
         # Mask CIA #1 + disable VIC IRQ first, so no source can fire into the
         # about-to-be-unhooked handler.
@@ -1086,12 +1115,7 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
         ),
         ("VIC IRQ disable", lambda: api.write_memory("D01A", "00")),
         # Restore $0314/$0315 → kernal $EA31.
-        (
-            "kernal IRQ vector",
-            lambda: api.write_regs(
-                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
-            ),
-        ),
+        ("kernal IRQ vector", restore_kernal_vector),
         # Ack any pending raster IRQ flag so the next $D019 read is clean.
         ("raster flag ack", lambda: api.write_memory("D019", "01")),
         # Restore VIC bank 0 (kernal default) so the next scene paints into the
@@ -1101,10 +1125,7 @@ def uninstall_bank_swap_irq(api: C64Backend) -> None:
             lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
         ),
         # Keyboard scan must keep running for the C= / CTRL / SHIFT poller.
-        (
-            "CIA1 unmask",
-            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}"),
-        ),
+        ("CIA1 unmask", unmask_cia1),
     )
     run_teardown_steps(log, "bank-swap IRQ", steps)
 

@@ -171,9 +171,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   silencing and the reset, ending a run with the machine still making noise;
   and the oscilloscope's subtune-change pre-silence, where a failed vector
   restore skipped the silencing it exists to do. Each write is now guarded on
-  its own and names itself when it fails. A test sweeps the tree for the shape
-  and fails on a new one, since the previous fix in this class recorded that it
-  was the last instance and was wrong four times over.
+  its own and names itself when it fails — except the raster teardown's last
+  step, re-enabling the C64's keyboard timer, which stays deliberately tied to
+  the IRQ-vector restore above it: re-arming that timer while the vector still
+  points at the departing scene's handler hands every interrupt to RAM the next
+  scene overwrites, so a failed vector restore now leaves the timer masked and
+  says so. A test sweeps the tree for the shape and fails on a new one, since
+  the previous fix in this class recorded that it was the last instance and was
+  wrong four times over.
 
 - **A SID file could paint a system-mismatch arrow that was not there.** The
   oscilloscope's metadata row marks a clock mismatch with a `\x01` sentinel,
