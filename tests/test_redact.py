@@ -20,7 +20,7 @@ import os
 import tempfile
 import unittest
 
-from c64cast._redact import redact_secrets
+from c64cast._redact import redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
 LOGIN_LINE = "web console: open http://127.0.0.1:8123/api/login?token=s3cr3t&next=/"
@@ -143,6 +143,78 @@ class RedactSecretsTest(unittest.TestCase):
         out = redact_secrets("Authorization: Bearer s3cr3t")
         self.assertNotIn("s3cr3t", out)
         self.assertIn("Bearer REDACTED", out)
+
+    def test_a_bare_key_or_sig_parameter_is_covered(self):
+        """The spellings a signed media or feed URL uses. `-vv` releases the
+        urllib3 loggers, whose per-request record carries the query string, so a
+        user-supplied `file =` or RSS URL reaches both redacting destinations."""
+        self.assertEqual(redact_secrets("?key=abc123&next=/"), "?key=REDACTED&next=/")
+        self.assertEqual(redact_secrets("?sig=abc123&x=1"), "?sig=REDACTED&x=1")
+        self.assertNotIn("deadbeef", redact_secrets("X-Amz-Signature=deadbeef"))
+        self.assertNotIn("zzz", redact_secrets("signing_key=zzz"))
+
+    def test_a_name_that_merely_ends_in_key_or_sig_is_left_alone(self):
+        """The short names are why `\\w*` cannot front them: `sortkey` would be
+        masked with the rest, and a masked diagnostic value reads as coverage
+        while telling the reader nothing."""
+        line = "?sortkey=date&hotkey=F1 monkey=1 sig_level=3 sigma=2 keys=3 keyboard=on"
+        self.assertEqual(redact_secrets(line), line)
+
+
+class RedactSourceLineTest(unittest.TestCase):
+    """The malformed-line path. `redact_secrets` needs a value's bounds to mask
+    it, and the lines this function is handed are exactly the ones a parser
+    could not find bounds in — so every case here is a shape where a
+    substitution having happened would have been the wrong question to ask."""
+
+    def test_an_innocent_line_comes_back_verbatim(self):
+        self.assertEqual(redact_source_line(["a = 1", "b = ?"], 2), ("b = ?", True))
+
+    def test_a_secret_line_keeps_the_key_name_and_nothing_after_it(self):
+        """The name says which setting the parser choked on, which is the whole
+        diagnostic; past it there is no source text left to read."""
+        self.assertEqual(
+            redact_source_line(["[ultimate64]", 'dma_password = "hunter2"'], 2),
+            ("dma_password REDACTED", False),
+        )
+
+    def test_a_doubled_equals_does_not_carry_the_value_through(self):
+        """The #426 shape: `==` is what `redact_secrets` masks, so the
+        passphrase survived *and* the caret was dropped — the one signal that
+        the line had been protected fired while the credential was intact."""
+        for line in (
+            'dma_password == "hunter2"',
+            'dma_password "hunter2"',
+            'dma_password ""hunter2""',
+            "dma_password : 'hunter2'",
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line(["[ultimate64]", line], 2)
+                self.assertNotIn("hunter2", safe)
+                self.assertIn("dma_password", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_continuation_line_of_a_secret_value_is_dropped_whole(self):
+        """The second #426 shape. The echoed line *is* the passphrase: the
+        pattern keys on a key name and a continuation line carries none."""
+        for delim in ('"""', "'''"):
+            with self.subTest(delim=delim):
+                lines = ["[ultimate64]", f"dma_password = {delim}", "correct horse", delim]
+                safe, verbatim = redact_source_line(lines, 3)
+                self.assertEqual(safe, "REDACTED")
+                self.assertFalse(verbatim)
+                self.assertNotIn("horse", safe)
+
+    def test_a_closed_multiline_value_does_not_suppress_what_follows(self):
+        """Only an *open* value reaches the rule — otherwise the first
+        triple-quoted string in a file would blank every line after it."""
+        lines = ["notes = '''", "prose", "'''", "b = ?"]
+        self.assertEqual(redact_source_line(lines, 4), ("b = ?", True))
+
+    def test_an_open_innocent_value_is_dropped_too(self):
+        """Deliberately wider than the secret-shaped case: which key owns a
+        continuation line needs a parse, and the parse is what failed."""
+        self.assertEqual(redact_source_line(["notes = '''", "prose"], 2), ("REDACTED", False))
 
 
 class RedactingFormatterTest(unittest.TestCase):

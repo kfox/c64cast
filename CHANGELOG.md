@@ -733,6 +733,31 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Security
 
+- **A TOML syntax error on a `dma_password` line could echo the password into
+  the log, the console and the browser.** The parse error quotes the offending
+  source line, and it was checked by asking whether redacting had *changed* the
+  text — which a malformed line satisfies without the value being touched.
+  `dma_password == "hunter2"` had its doubled `=` masked and the passphrase left
+  whole, and because something had changed the caret was suppressed, so the one
+  signal that the line was protected fired over an intact credential. Near
+  misses redacted nothing and kept the caret pointing straight at the value
+  (`dma_password "hunter2"`), and a parse failure *inside* a `"""`-quoted
+  password echoed the passphrase itself, since a continuation line carries no
+  key name to match. All of it reached `--log-file`, the log buffer the console
+  serves to read-only viewers, and the parse error the console renders in a
+  browser. The quoted line is now decided by where the secret-shaped key *is*
+  rather than by whether a substitution happened: such a line keeps the key name
+  and loses everything after it, and a line inside an open multi-line value is
+  dropped whole. A line with no secret on it is still echoed in full with its
+  caret.
+- **`?key=` and `?sig=` query parameters are now redacted.** The pattern
+  required the literal `api` before `key` and did not know `sig` at all, so the
+  two spellings signed media and feed URLs use passed through to `--log-file`
+  and the console's log buffer — and `-vv` widened that reach, since urllib3's
+  per-request record carries the query string of a user-supplied RSS or HTTP
+  video URL. `signature` and a `_`- or `-`-separated prefix (`signing_key`,
+  `X-Amz-Signature`) are covered too. A glued prefix is not, so `sortkey=`,
+  `hotkey=` and `sig_level=` keep their values and stay diagnostic.
 - **`[wled].listen` bound a tokenless control surface to the network by
   default, and only warned about it.** Mode 1 covers everything the control
   plane's four verbs do and more — `on=false` pauses, `seg[].fx` jumps scenes,

@@ -799,6 +799,42 @@ class FormatTomlErrorTest(unittest.TestCase):
         )()
         self.assertIn("^", cfgmod._format_toml_error("cfg.toml", err))
 
+    def test_a_malformed_credential_line_does_not_echo_the_credential(self):
+        # Every one of these is malformed, which is the only kind of line this function
+        # ever quotes — and in each the value-masking pattern either lands on the
+        # punctuation instead of the value or finds nothing to anchor on.
+        for line, colno in (
+            ('dma_password == "hunter2"', 15),
+            ('dma_password "hunter2"', 14),
+            ('dma_password ""hunter2""', 15),
+        ):
+            with self.subTest(line=line):
+                err = type(
+                    "E",
+                    (),
+                    {
+                        "lineno": 2,
+                        "colno": colno,
+                        "msg": "Invalid value",
+                        "doc": f"[ultimate64]\n{line}\n",
+                    },
+                )()
+                out = cfgmod._format_toml_error("cfg.toml", err)
+                self.assertNotIn("hunter2", out)
+                self.assertIn("dma_password", out)
+                self.assertNotIn("^", out)
+
+    def test_a_parse_failure_inside_a_multiline_password_echoes_no_line(self):
+        # The parse fails *inside* the value, so the offending line is the passphrase
+        # itself with a caret under it — there is no key name on it to key on.
+        doc = '[ultimate64]\ndma_password = """\ncorrect\\horse battery staple\n"""\n'
+        err = type("E", (), {"lineno": 3, "colno": 8, "msg": "Invalid escape", "doc": doc})()
+        out = cfgmod._format_toml_error("cfg.toml", err)
+        for word in ("correct", "horse", "battery", "staple"):
+            self.assertNotIn(word, out)
+        self.assertIn("line 3, column 8", out)
+        self.assertNotIn("^", out)
+
 
 class LoadSonglengthsTest(unittest.TestCase):
     def setUp(self):

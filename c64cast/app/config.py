@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from c64cast._redact import redact_secrets
+from c64cast._redact import redact_source_line
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.dsp import DSPParams
 from c64cast.audio.sampler import SAMPLER_REF_CLOCK_DEFAULT
@@ -2940,14 +2940,13 @@ def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
         out.append(f"  line {lineno}, column {colno}: {msg}")
         lines = doc.splitlines()
         if 0 < lineno <= len(lines):
-            offending = lines[lineno - 1]
-            # A syntax error on a credential-bearing line would otherwise copy the credential
-            # into this message, which cli.py logs at error level and --log-file mirrors to
-            # disk. The caret is dropped when the line was redacted because the substitution
-            # moves the columns it would point at.
-            safe = redact_secrets(offending)
+            # cli.py logs this at error level, --log-file mirrors it to disk, and
+            # config_store._capture_errors folds it into the report the console renders in
+            # a browser — so the offending line reaches three readers of a credential-
+            # bearing config file. redact_source_line decides what is safe to echo.
+            safe, verbatim = redact_source_line(lines, lineno)
             out.append(f"    {safe}")
-            if safe == offending:
+            if verbatim:
                 out.append(f"    {' ' * (colno - 1)}^")
     else:
         out.append(f"  {msg}")
