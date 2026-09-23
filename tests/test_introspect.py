@@ -126,8 +126,21 @@ class CompatMatrixTest(unittest.TestCase):
 
 
 def choices_tuple_names() -> frozenset[str]:
-    """Every `*_CHOICES` vocabulary config.py exports."""
-    return frozenset(n for n in dir(cfgmod) if n.endswith("_CHOICES"))
+    """Every value vocabulary config.py exports: the `*_CHOICES` names, plus any
+    other module-level name a field's `choices` metadata is bound to. The suffix
+    alone is not the boundary — `SCENE_TYPES` and `HIRES_CELL_PICKS` are both
+    `choices` under a name that does not carry it, so keying on the suffix would
+    let the next one ship with no routing decision made."""
+    surfaced = {
+        id(f.metadata["choices"])
+        for v in vars(cfgmod).values()
+        if dataclasses.is_dataclass(v) and isinstance(v, type)
+        for f in dataclasses.fields(v)
+        if "choices" in f.metadata
+    }
+    return frozenset(
+        n for n, v in vars(cfgmod).items() if n.endswith("_CHOICES") or id(v) in surfaced
+    )
 
 
 def mirrored_choices() -> dict[str, tuple[str, object]]:
@@ -145,6 +158,10 @@ def mirrored_choices() -> dict[str, tuple[str, object]]:
         "HDMI_SCAN_RESOLUTION_CHOICES": (
             "('auto', 'keep') + hw.hw_provision.HDMI_RESOLUTION_CHOICES",
             ("auto", "keep") + hw_provision.HDMI_RESOLUTION_CHOICES,
+        ),
+        "SCENE_TYPES": (
+            "app.scene_factory._BUILDERS",
+            set(scene_factory._BUILDERS),
         ),
         "_BACKEND_CHOICES": ("hw.backend.BACKENDS", backend.BACKENDS),
         "_BACKGROUND_CHOICES": (
@@ -192,11 +209,16 @@ def imported_choices() -> dict[str, tuple[str, object]]:
     imports from their owning module instead of copying."""
     from c64cast.audio import dac_curves
     from c64cast.sid import sid_autoconfig
+    from c64cast.video import palette
 
     return {
         "DAC_CURVE_CHOICES": (
             "audio.dac_curves.DAC_CURVE_CHOICES",
             dac_curves.DAC_CURVE_CHOICES,
+        ),
+        "HIRES_CELL_PICKS": (
+            "video.palette.HIRES_CELL_PICKS",
+            palette.HIRES_CELL_PICKS,
         ),
         "SID_MODEL_CHOICES": (
             "sid.sid_autoconfig.SID_MODEL_CHOICES",
@@ -236,9 +258,9 @@ def local_choices() -> dict[str, str]:
 
 class ChoiceVocabSyncTest(unittest.TestCase):
     """config.py duplicates a few value lists to stay import-light. Assert
-    every `*_CHOICES` tuple it exports is routed — to the source it mirrors,
-    to the source it re-exports, or to a recorded reason it has neither — and
-    that each mirror still equals its source."""
+    every value vocabulary it exports (see `choices_tuple_names`) is routed —
+    to the source it mirrors, to the source it re-exports, or to a recorded
+    reason it has neither — and that each mirror still equals its source."""
 
     def test_every_choices_tuple_is_routed(self):
         routed = set(mirrored_choices()) | set(imported_choices()) | set(local_choices())

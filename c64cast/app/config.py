@@ -50,8 +50,11 @@ log = logging.getLogger(__name__)
 # `choices`. They duplicate the authoritative constants in the heavy runtime
 # modules (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, …) so config.py stays
 # import-light. tests/test_introspect.py routes every `*_CHOICES` name in this
-# module to the source it mirrors, the source it re-exports, or a recorded reason
-# it has neither, so a new one fails the suite until it is routed.
+# module, plus any other module-level name a field's `choices` is bound to
+# (SCENE_TYPES, HIRES_CELL_PICKS), to the source it mirrors, the source it
+# re-exports, or a recorded reason it has neither, so a new one fails the suite
+# until it is routed. An inline literal passed straight to `choices` has no name
+# to route and is outside that walk.
 SYSTEM_CHOICES = ("auto", "NTSC", "PAL")
 # [ultimate64].sid_play_rate. "auto"/"off" plus any positive float (Hz), so the
 # schema carries this as a union rather than a plain enum — see schema.py.
