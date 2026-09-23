@@ -755,6 +755,12 @@ def teardown_stack(stack: SystemStack) -> None:
         ("REU restore", lambda: hw_provision.restore_reu(stack.api, stack.reu_restore)),
         # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
         ("sampler restore", lambda: hw_provision.restore_sampler(stack.api, stack.sampler_restore)),
+        # Also while the link is up. `ScreenFeed` retires its receiver only once
+        # `manager.session` is cleared, which happens *after* this teardown — so
+        # by the time the feed asks, `api.close` below has already run and the
+        # OFF command it sends reaches a closed client. Telling the machine here
+        # is what stops ~2.6 MB/s of UDP outliving the show.
+        ("screen stream off", stack.api.stop_video_stream),
         # Before the reset below, so the KERNAL re-autodetects against the
         # restored timing.
         (

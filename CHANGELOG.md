@@ -182,6 +182,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   text fields are now decoded as ISO-8859-1 with control characters replaced by
   spaces.
 
+- **Stopping a show left the C64 streaming its screen for 20 seconds.** With a
+  browser watching the picture, stopping the show from the web console left the
+  Ultimate sending its VIC output — ~2.6 MB/s of UDP — until the firmware's own
+  watchdog expired. The OFF command *was* attempted, and reached a link the
+  teardown had already closed, where the resulting error was swallowed with
+  nothing logged. The machine is now told while the link is still up, as a
+  teardown step beside the REU and sampler restores, and it is told whether or
+  not this host believes anyone is still watching. Sibling of the
+  host-shutdown case below, on a different path and not fixed by it.
+
 - **Shutting the web console down left the C64 streaming its screen.** Once a
   browser had watched the picture, the Ultimate went on sending its VIC output
   — ~2.6 MB/s of UDP — at the host that had just exited, until the firmware's

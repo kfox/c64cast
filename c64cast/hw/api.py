@@ -2012,6 +2012,14 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             raise BackendCapabilityError(f"open_video_stream: no host in {self.base_url!r}")
         return VicStreamReceiver(self.socket_dma, machine_host=host)
 
+    def stop_video_stream(self) -> None:
+        """Tell the machine to stop streaming its VIC output. See the base
+        class for why this is unconditional and why it has to run while the
+        socket-DMA client is still open."""
+        if not self.profile.supports_video_stream:
+            return
+        self.socket_dma.vicstream_off()
+
     def close(self) -> None:
         self.socket_dma.close()
         self.session.close()
