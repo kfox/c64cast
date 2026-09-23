@@ -32,10 +32,12 @@ docstring, which this does not read.
 from __future__ import annotations
 
 import ast
+import io
 import pathlib
 import re
 import subprocess
 import sys
+import tokenize
 
 _DIFF_TIMEOUT_S = 60
 _CONFIG_TIMEOUT_S = 10
@@ -180,12 +182,51 @@ def added_lines(paths: list[str]) -> list[tuple[str, int, str]]:
     return added
 
 
+def comment_lines(path: str) -> set[int] | None:
+    """Which lines of the staged `path` hold a real comment, or None if unknown.
+
+    A line-oriented walk cannot tell a comment from a `#`-leading line inside a
+    string, so a shell or TOML sample in a docstring would be reported as one.
+    None means the staged blob did not tokenize, and the caller keeps its
+    line-oriented verdict rather than dropping it.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "show", f":{path}"],
+            capture_output=True,
+            text=True,
+            timeout=_DIFF_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if done.returncode != 0:
+        return None
+
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(done.stdout).readline)
+        return {token.start[0] for token in tokens if token.type == tokenize.COMMENT}
+    except (SyntaxError, UnicodeDecodeError, ValueError, tokenize.TokenError):
+        return None
+
+
 def findings(paths: list[str]) -> list[tuple[str, int, str, str]]:
     found = []
+    comments: dict[str, set[int] | None] = {}
+
     for path, number, text in added_lines(paths):
         banned = classify(text)
-        if banned is not None:
-            found.append((path, number, banned, text.strip()))
+        if banned is None:
+            continue
+
+        if path not in comments:
+            comments[path] = comment_lines(path)
+
+        real = comments[path]
+        if real is not None and number not in real:
+            continue
+
+        found.append((path, number, banned, text.strip()))
 
     return found
 

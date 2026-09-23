@@ -306,6 +306,17 @@ class StagedDiffTest(unittest.TestCase):
         ).stdout.strip()
         self.assertEqual([path for path, *_ in lint.findings([tracked])], [tracked])
 
+    def test_a_hash_leading_line_inside_a_string_is_not_a_comment(self) -> None:
+        self.stage('SAMPLE = """\n# Step 1: a banner in a sample\n# TODO: a marker too\n"""\n')
+        self.assertEqual(lint.findings(["m.py"]), [])
+
+    def test_a_blob_that_does_not_tokenize_keeps_the_line_oriented_verdict(self) -> None:
+        self.stage('SAMPLE = """\n# TODO: inside an unterminated string\n')
+        self.assertEqual(
+            lint.findings(["m.py"]),
+            [("m.py", 2, "TODO/FIXME marker", "# TODO: inside an unterminated string")],
+        )
+
     def test_nothing_staged_reports_nothing(self) -> None:
         (self.repo / "m.py").write_text("# TODO: unstaged\n", encoding="utf-8")
         self.assertEqual(lint.findings(["m.py"]), [])
