@@ -35,7 +35,7 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FrozenClock  # noqa: E402
+from _fakes import FakeAPI, FakeTime, FrozenClock  # noqa: E402
 
 from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
@@ -895,9 +895,9 @@ class _CostlyAPI(FakeAPI):
     The stock FakeAPI answers every write instantly, which makes the drain's
     work budget invisible: the whole reason MidiScene sizes its own budget is
     that one `write_regs` on an Ultimate outlasts `poll_pending`'s default. The
-    charge lands on a dict the test also hands `_midi._monotonic`, so the
-    drain's clock and the writes it is paying for share one timeline and the
-    test spends none of it in real time.
+    charge lands on a dict the test also reads `_midi.time.monotonic` from, so
+    the drain's clock and the writes it is paying for share one timeline and
+    the test spends none of it in real time.
     """
 
     def __init__(self, clock: dict[str, float]) -> None:
@@ -959,7 +959,7 @@ class ReaderWorkBudgetTests(_MidiTestCase):
 
         stop = threading.Event()
         with (
-            mock.patch.object(_midi, "_monotonic", lambda: clock["now"]),
+            mock.patch.object(_midi, "time", FakeTime(monotonic=lambda: clock["now"])),
             mock.patch.object(midi_scene, "poll_pending", counting_poll_pending),
         ):
             reader = threading.Thread(target=scene._reader, args=(stop,), daemon=True)
