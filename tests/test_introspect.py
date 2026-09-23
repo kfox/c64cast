@@ -125,50 +125,159 @@ class CompatMatrixTest(unittest.TestCase):
             self.assertEqual(ok, not raised, m.name)
 
 
+def choices_tuple_names() -> frozenset[str]:
+    """Every `*_CHOICES` vocabulary config.py exports."""
+    return frozenset(n for n in dir(cfgmod) if n.endswith("_CHOICES"))
+
+
+def mirrored_choices() -> dict[str, tuple[str, object]]:
+    """`name -> (source label, expected value)` for every choices tuple
+    config.py copies out of a runtime module to stay import-light. A `set`
+    expectation is compared unordered; anything else is compared exactly."""
+    from c64cast.control import midi_control
+    from c64cast.hw import backend, hw_provision
+    from c64cast.scenes import backgrounds, effects, generators
+    from c64cast.sid import midi_scene, waveform
+    from c64cast.video import modes
+    from c64cast.video import petscii_styles as ps
+
+    return {
+        "HDMI_SCAN_RESOLUTION_CHOICES": (
+            "('auto', 'keep') + hw.hw_provision.HDMI_RESOLUTION_CHOICES",
+            ("auto", "keep") + hw_provision.HDMI_RESOLUTION_CHOICES,
+        ),
+        "_BACKEND_CHOICES": ("hw.backend.BACKENDS", backend.BACKENDS),
+        "_BACKGROUND_CHOICES": (
+            "scenes.backgrounds.REGISTRY plus 'random'",
+            set(backgrounds.REGISTRY) | {"random"},
+        ),
+        "_DISPLAY_CHOICES": (
+            "introspect.display_modes() plus 'random'",
+            {m.name for m in introspect.display_modes()} | {"random"},
+        ),
+        "_EFFECT_CHOICES": ("scenes.effects.effect_names()", effects.effect_names()),
+        "_GENERATIVE_SOURCE_CHOICES": (
+            "scenes.generators.generator_names()",
+            generators.generator_names(),
+        ),
+        "_MIDI_ACTION_CHOICES": (
+            "control.midi_control._ACTIONS",
+            set(midi_control._ACTIONS),
+        ),
+        "_MIDI_CC_TYPE_CHOICES": (
+            "control.midi_control._CC_TYPES",
+            set(midi_control._CC_TYPES),
+        ),
+        "_MIDI_MMC_COMMAND_CHOICES": (
+            "control.midi_control._MMC_COMMANDS",
+            set(midi_control._MMC_COMMANDS),
+        ),
+        "_MIDI_VOICE_MODE_CHOICES": ("sid.midi_scene.VOICE_MODES", midi_scene.VOICE_MODES),
+        "_MIDI_WAVEFORM_CHOICES": (
+            "sid.midi_scene._WAVEFORM_BITS",
+            set(midi_scene._WAVEFORM_BITS),
+        ),
+        "_PALETTE_MODE_CHOICES": ("video.modes.PALETTE_MODES", modes.PALETTE_MODES),
+        "_PERSISTENCE_CHOICES": ("sid.waveform.PERSISTENCE_NAMES", waveform.PERSISTENCE_NAMES),
+        "_STYLE_CHOICES": (
+            "video.petscii_styles.STYLE_NAMES + (RANDOM_STYLE,)",
+            ps.STYLE_NAMES + (ps.RANDOM_STYLE,),
+        ),
+        "_TIME_BASE_CHOICES": ("sid.waveform.TIME_BASE_NAMES", waveform.TIME_BASE_NAMES),
+    }
+
+
+def imported_choices() -> dict[str, tuple[str, object]]:
+    """`name -> (source label, source object)` for the vocabularies config.py
+    imports from their owning module instead of copying."""
+    from c64cast.audio import dac_curves
+    from c64cast.sid import sid_autoconfig
+
+    return {
+        "DAC_CURVE_CHOICES": (
+            "audio.dac_curves.DAC_CURVE_CHOICES",
+            dac_curves.DAC_CURVE_CHOICES,
+        ),
+        "SID_MODEL_CHOICES": (
+            "sid.sid_autoconfig.SID_MODEL_CHOICES",
+            sid_autoconfig.SID_MODEL_CHOICES,
+        ),
+    }
+
+
+def local_choices() -> dict[str, str]:
+    """`name -> where the value is consumed` for the vocabularies config.py
+    owns outright: no module outside it enumerates them, so there is nothing
+    to compare against. The reason is the exemption — a new tuple has to be
+    routed here or into one of the two tables above before the suite passes."""
+    return {
+        "AUDIO_BACKEND_CHOICES": "scene_factory.resolve_audio_backend branches on the value",
+        "HOST_SID_CHIP_MODEL_CHOICES": "config._validate_host_sid_chips is the only consumer",
+        "HOST_SID_MODEL_CHOICES": "hw.backend carries the value onto HardwareProfile",
+        "HOST_SID_TUNE_MATCH_CHOICES": "sid.waveform's pool picker branches on the value",
+        "SID_PLAY_RATE_CHOICES": "'auto'/'off' plus any rate in Hz — the union enumerates nothing",
+        "SID_VIDEO_MODE_CHOICES": "hw_provision tests `!= 'off'`",
+        "SYSTEM_CHOICES": "hw.backend and hw.hw_provision .upper() the value",
+        "_APPLY_CHOICES": "introspect.FieldDoc.apply carries the value to the on-C64 menu",
+        "_ASPECT_MODE_CHOICES": "scenes._apply_aspect branches on the value",
+        "_AUDIO_SOURCE_CHOICES": "no registry backs the AudioSource family (pinned as a literal below)",
+        "_CLIP_LAUNCH_CHOICES": "performance.PerformanceSession reads the per-clip value",
+        "_CLIP_PAD_TYPE_CHOICES": "control.midi_control maps the grid pad by the value",
+        "_CLIP_QUANTIZE_CHOICES": "performance.PerformanceSession reads the per-clip value",
+        "_COLOR_MODE_CHOICES": "voice_scope validates against an inline pair",
+        "_INPUT_SOURCE_CHOICES": "scenes.LauncherScene branches on the value",
+        "_MIDI_FILTER_MODE_CHOICES": "midi_scene maps the value to filter bits inline",
+        "_MOD_SOURCE_CHOICES": "effects.FrameEffect.mod_source takes the value",
+        "_TEMPO_SOURCE_CHOICES": "control.tempo reads the value off [performance]",
+        "_TR_STORAGE_CHOICES": "connect.py sets and hw.backend branches on the value",
+        "_TR_TRANSPORT_CHOICES": "connect.py sets and hw.backend branches on the value",
+    }
+
+
 class ChoiceVocabSyncTest(unittest.TestCase):
-    """config.py duplicates a few value lists to stay import-light; assert
-    each matches its authoritative source of truth."""
+    """config.py duplicates a few value lists to stay import-light. Assert
+    every `*_CHOICES` tuple it exports is routed — to the source it mirrors,
+    to the source it re-exports, or to a recorded reason it has neither — and
+    that each mirror still equals its source."""
 
-    def test_palette_modes(self):
-        from c64cast.video import modes
+    def test_every_choices_tuple_is_routed(self):
+        routed = set(mirrored_choices()) | set(imported_choices()) | set(local_choices())
+        exported = choices_tuple_names()
+        self.assertEqual(
+            exported - routed,
+            set(),
+            "unrouted config.py choices tuple(s): add them to mirrored_choices(), "
+            "imported_choices() or local_choices() in this module",
+        )
+        self.assertEqual(
+            routed - exported,
+            set(),
+            "routed name(s) config.py no longer exports",
+        )
 
-        self.assertEqual(cfgmod._PALETTE_MODE_CHOICES, modes.PALETTE_MODES)
+    def test_routing_is_a_partition(self):
+        tables = (set(mirrored_choices()), set(imported_choices()), set(local_choices()))
+        for i, a in enumerate(tables):
+            for b in tables[i + 1 :]:
+                self.assertEqual(a & b, set(), "a choices tuple is routed twice")
 
-    def test_styles(self):
-        from c64cast.video import petscii_styles as ps
+    def test_local_choices_record_a_reason(self):
+        for name, reason in local_choices().items():
+            self.assertTrue(reason.strip(), f"{name} is exempted with no reason")
 
-        self.assertEqual(cfgmod._STYLE_CHOICES, ps.STYLE_NAMES + (ps.RANDOM_STYLE,))
+    def test_mirrored_choices_match_their_source(self):
+        for name, (label, expected) in mirrored_choices().items():
+            with self.subTest(choices=name):
+                got = getattr(cfgmod, name)
+                if isinstance(expected, (set, frozenset)):
+                    self.assertEqual(set(got), set(expected), f"{name} drifted from {label}")
+                else:
+                    self.assertEqual(got, expected, f"{name} drifted from {label}")
 
-    def test_time_base_and_persistence(self):
-        from c64cast.sid import waveform
-
-        self.assertEqual(cfgmod._TIME_BASE_CHOICES, waveform.TIME_BASE_NAMES)
-        self.assertEqual(cfgmod._PERSISTENCE_CHOICES, waveform.PERSISTENCE_NAMES)
-
-    def test_midi_waveforms(self):
-        from c64cast.sid import midi_scene
-
-        self.assertEqual(set(cfgmod._MIDI_WAVEFORM_CHOICES), set(midi_scene._WAVEFORM_BITS))
-
-    def test_midi_voice_modes(self):
-        from c64cast.sid import midi_scene
-
-        self.assertEqual(cfgmod._MIDI_VOICE_MODE_CHOICES, midi_scene.VOICE_MODES)
-
-    def test_backgrounds(self):
-        from c64cast.scenes import backgrounds
-
-        self.assertEqual(set(cfgmod._BACKGROUND_CHOICES) - {"random"}, set(backgrounds.REGISTRY))
-
-    def test_generative_sources(self):
-        from c64cast.scenes import generators
-
-        self.assertEqual(cfgmod._GENERATIVE_SOURCE_CHOICES, generators.generator_names())
-
-    def test_effects(self):
-        from c64cast.scenes import effects
-
-        self.assertEqual(cfgmod._EFFECT_CHOICES, effects.effect_names())
+    def test_imported_choices_are_their_source_object(self):
+        for name, (label, source) in imported_choices().items():
+            with self.subTest(choices=name):
+                self.assertIs(getattr(cfgmod, name), source, f"{name} is no longer {label}")
 
     def test_audio_source_choices_pinned(self):
         # No registry backs the AudioSource family, so pin the literal: a new

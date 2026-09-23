@@ -49,16 +49,16 @@ log = logging.getLogger(__name__)
 # Value vocabularies surfaced to `--describe` and the JSON schema as a field's
 # `choices`. They duplicate the authoritative constants in the heavy runtime
 # modules (modes.PALETTE_MODES, petscii_styles.STYLE_NAMES, …) so config.py stays
-# import-light. tests/test_introspect.py pins _PALETTE_MODE_CHOICES and
-# _STYLE_CHOICES against their sources; the rest are unpinned (c64cast#399).
+# import-light. tests/test_introspect.py routes every `*_CHOICES` name in this
+# module to the source it mirrors, the source it re-exports, or a recorded reason
+# it has neither, so a new one fails the suite until it is routed.
 SYSTEM_CHOICES = ("auto", "NTSC", "PAL")
 # [ultimate64].sid_play_rate. "auto"/"off" plus any positive float (Hz), so the
 # schema carries this as a union rather than a plain enum — see schema.py.
 SID_PLAY_RATE_CHOICES = ("auto", "off")
 SID_VIDEO_MODE_CHOICES = ("off", "auto")
 # [ultimate64].hdmi_scan_resolution. "auto"/"keep" plus the firmware's own
-# scan_modes[] labels; mirrors hw_provision.HDMI_RESOLUTION_CHOICES. Nothing
-# pins the two together (c64cast#399).
+# scan_modes[] labels; mirrors hw_provision.HDMI_RESOLUTION_CHOICES.
 HDMI_SCAN_RESOLUTION_CHOICES = (
     "auto",
     "keep",
