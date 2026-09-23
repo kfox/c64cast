@@ -230,6 +230,16 @@ class RefusedDestinationTest(unittest.TestCase):
         self.assertRefused('sh -c "cd ~ && git worktree add .claude/worktrees/mergequeue"')
         self.assertRefused('eval "git worktree add /private/tmp/x"')
 
+    def test_a_heredoc_read_by_a_shell_is_a_script_rather_than_prose(self):
+        # A heredoc body is skipped because a review record is written
+        # through one. When the reader is a shell the body is not prose at
+        # all, it is the script that shell runs — the same bypass as
+        # `bash -c`, written the other way round.
+        self.assertRefused("bash <<'EOF'\ngit worktree add /private/tmp/x\nEOF")
+        self.assertRefused("bash <<EOF\ngit worktree add /private/tmp/x\nEOF")
+        self.assertRefused("sh <<'EOF'\ncd ~\ngit worktree add .claude/worktrees/x\nEOF")
+        self.assertRefused("env bash <<'EOF'\ngit worktree add /private/tmp/x\nEOF")
+
     def test_a_wrapper_in_front_of_the_shell_does_not_hide_the_payload(self):
         # The shell is looked for anywhere in the segment, and its `-c` may
         # arrive clustered with other short flags.

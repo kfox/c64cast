@@ -18,6 +18,11 @@ Code's own location rather than any checkout's.
 
 A path that is not there decides no, so a destination the hook cannot confirm
 is refused rather than waved through.
+
+A command handed to another shell is read as commands, not as an argument:
+`bash -c`, `eval`, and a heredoc whose reader is a shell. A heredoc read by
+anything else stays prose — a review record is written through one and quotes
+the destinations it probed.
 """
 
 from __future__ import annotations
@@ -109,17 +114,25 @@ def _shell_payload(args: list[str]) -> list[str]:
     return []
 
 
-def _inner_commands(argv: list[str]) -> list[str]:
-    """The command strings a segment hands to another shell, which have to be
+def _inner_commands(command: _shell.Command) -> list[str]:
+    """The command strings a command hands to another shell, which have to be
     read as commands rather than as arguments. The shell is looked for
-    anywhere in the segment, because a wrapper in front of it — `env`,
-    `nohup`, `timeout` — keeps it out of `argv[0]`."""
+    anywhere in the argv, because a wrapper in front of it — `env`, `nohup`,
+    `timeout` — keeps it out of `argv[0]`.
+
+    A heredoc body is one of them when the command reading it is a shell.
+    `bash <<'EOF'` is handed a script; `record <<'EOF'` is handed prose, and
+    a review record quotes the destinations it probed — which is why only the
+    command that opened the heredoc can say which of the two it is.
+    """
+    argv = command.argv
     for i, token in enumerate(argv):
         name = Path(token).name
         if name == "eval":
             return [" ".join(argv[i + 1 :])]
         if name in SHELLS:
-            return _shell_payload(argv[i + 1 :])
+            payload = _shell_payload(argv[i + 1 :])
+            return [*payload, command.heredoc_body] if command.heredoc_body else payload
     return []
 
 
@@ -201,11 +214,12 @@ def _refusal(target: str, base: Path, cwd: str) -> str | None:
     return DENY.format(allowed=allowed, target=resolved or "(none given)")
 
 
-def _segment_verdict(argv: list[str], base: Path, cwd: str) -> str | None:
-    for inner in _inner_commands(argv):
+def _segment_verdict(command: _shell.Command, base: Path, cwd: str) -> str | None:
+    for inner in _inner_commands(command):
         reason = verdict(inner, str(base))
         if reason:
             return reason
+    argv = command.argv
     found = _worktree_args(argv)
     if found is None:
         return None
@@ -228,7 +242,7 @@ def verdict(cmd: str, cwd: str) -> str | None:
         base, argv = _after_directory_change(argv, base, stack)
         if not argv:
             continue
-        reason = _segment_verdict(argv, base, cwd)
+        reason = _segment_verdict(command, base, cwd)
         if reason:
             return reason
     if reading.unreadable and _names_a_worktree_command(reading.unreadable):
