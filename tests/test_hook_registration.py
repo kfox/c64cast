@@ -24,13 +24,17 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _HOOKS_DIR = _REPO_ROOT / ".claude" / "hooks"
 _SETTINGS = _REPO_ROOT / ".claude" / "settings.json"
+_POSIX = os.name == "posix"
 
 # The path a registration names, wherever it sits in the shell command that
 # runs it — the command mentions it as a variable assignment, as an argument,
@@ -44,6 +48,42 @@ _DECLARED_EVENT = re.compile(r"^(\w+)\(([^)]*)\)\s+hook\b")
 
 def _settings() -> dict:
     return json.loads(_SETTINGS.read_text(encoding="utf-8"))
+
+
+def _commands() -> list[str]:
+    """Every shell command `settings.json` runs as a hook."""
+    return [
+        hook["command"]
+        for entries in _settings()["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+    ]
+
+
+def _guarded(script: str) -> str:
+    """The registration a hook script gets: run it if it is there, and say
+    nothing at all if it is not."""
+    path = f"$CLAUDE_PROJECT_DIR/.claude/hooks/{script}"
+    return f'f="{path}"; [ -f "$f" ] || exit 0; exec python3 "$f"'
+
+
+def _command_for(script: str) -> str:
+    """The command `settings.json` registers for `script`, as written."""
+    for command in _commands():
+        if script in _SCRIPT_IN_A_COMMAND.findall(command):
+            return command
+    raise AssertionError(f"{script} is not registered in {_SETTINGS}")
+
+
+def _run(command: str, project_dir: str, payload: str) -> subprocess.CompletedProcess[str]:
+    """`command` run the way Claude Code runs a `type: "command"` hook."""
+    return subprocess.run(
+        ["/bin/sh", "-c", command],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "CLAUDE_PROJECT_DIR": project_dir},
+    )
 
 
 def _registrations() -> list[tuple[str, str, str]]:
@@ -97,6 +137,70 @@ class RegistrationTest(unittest.TestCase):
         for event, matcher, name in _registrations():
             with self.subTest(hook=name):
                 self.assertEqual((event, matcher), _declared(name))
+
+
+class MissingScriptTest(unittest.TestCase):
+    """A hook script that is not at `$CLAUDE_PROJECT_DIR` turns its hook off,
+    and does not stop the session.
+
+    `$CLAUDE_PROJECT_DIR` is not always this checkout. A worktree session can
+    be running with the variable pointing at the primary checkout, on another
+    branch, which does not carry the scripts this branch adds — and the
+    variable's value has changed mid-session, so a session can arrive in that
+    state without moving. `python3` on a file that is not there exits 2, and
+    a `PreToolUse` hook exiting non-zero blocks the tool call. With the `Bash`
+    and `Edit|Write|NotebookEdit` matchers both refusing, the session can
+    neither run a command nor change a file, and the way out is to copy the
+    scripts into the other checkout by hand from a shell outside the session.
+
+    So the direction here is the opposite of the usual one: an absent guard
+    that lets work continue costs less than a present guard that stops all of
+    it, because a session that cannot run a command cannot fix anything
+    either — including this. The scope is exactly a missing file. A hook that
+    is there and crashes still exits non-zero and still blocks, because that
+    is a broken guard rather than an absent one, and `… || true` would hide
+    it.
+    """
+
+    def setUp(self):
+        self.empty = tempfile.mkdtemp()
+
+    def test_every_registration_is_the_guarded_form(self):
+        expected = sorted(_guarded(script) for script in _hook_scripts())
+        self.assertEqual(sorted(_commands()), expected)
+
+    @unittest.skipUnless(_POSIX, "the registrations are run by a POSIX shell")
+    def test_a_missing_script_says_nothing_instead_of_blocking(self):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+        for command in _commands():
+            with self.subTest(command=command):
+                done = _run(command, self.empty, payload)
+                self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
+
+    @unittest.skipUnless(_POSIX, "the registrations are run by a POSIX shell")
+    def test_a_script_that_is_there_still_decides(self):
+        # The guard must not swallow the hook it guards: the deny this hook
+        # writes to stdout has to come back through the registration as
+        # written in settings.json.
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "uv pip install x"}})
+        done = _run(_command_for("redirect-to-uv.py"), str(_REPO_ROOT), payload)
+        self.assertEqual(done.returncode, 0)
+        decision = json.loads(done.stdout)["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+
+    @unittest.skipUnless(_POSIX, "the registrations are run by a POSIX shell")
+    def test_a_script_that_crashes_stays_loud(self):
+        # `… || true` would be shorter than the guard and would also turn a
+        # broken hook into a silently absent one.
+        broken = Path(self.empty) / ".claude" / "hooks"
+        broken.mkdir(parents=True)
+        for script in _hook_scripts():
+            (broken / script).write_text("import no_such_module\n", encoding="utf-8")
+        for command in _commands():
+            with self.subTest(command=command):
+                done = _run(command, self.empty, "{}")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("no_such_module", done.stderr)
 
 
 if __name__ == "__main__":
