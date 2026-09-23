@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from _fakes import no_inherited_git_env
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Directories with nothing to check and a great deal to read: build output,
@@ -46,11 +48,57 @@ def _nested_checkout(path: Path) -> bool:
     return (path / ".git").exists()
 
 
+def _git_ignored(root: Path) -> set[Path]:
+    """What git has been told is not this checkout's, directly under `root` or
+    anywhere below it.
+
+    One listing rather than a check per directory. `--directory` collapses an
+    ignored tree into its top entry, so a walk pruning on this set stops at
+    `scripts/diags/out` instead of reading its way through it, and an ignored
+    *file* is dropped by the same set.
+
+    A `root` that is no checkout has nothing ignored, and git saying so is not
+    a failure here — the walk below is exercised over a temp tree.
+    """
+    listing = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return set()
+    return {root / name.rstrip("/") for name in listing.stdout.split("\0") if name}
+
+
 def _text_files() -> list[Path]:
+    """Every file in this tree whose prose these guards police.
+
+    "In this tree" rather than "tracked by git", which is what
+    `_linkable_files` asks: a document written and not yet added is still this
+    checkout's, and a retired path quoted in it is still a mistake to catch.
+    The exception is what git *ignores* — a diagnostic dump, a cache, a
+    downloaded media tree, another tool's output — because that is not ours to
+    police and a guard failing for a file the repo does not carry names
+    nothing the reader can fix.
+    """
+    ignored = _git_ignored(_REPO_ROOT)
     found = []
     stack = [_REPO_ROOT]
     while stack:
         for entry in stack.pop().iterdir():
+            if entry in ignored:
+                continue
             if entry.is_dir():
                 if entry.name not in _SKIP_DIRS and not _nested_checkout(entry):
                     stack.append(entry)
@@ -162,6 +210,14 @@ class RelativeLinkTest(unittest.TestCase):
 
 
 class TextFileWalkTest(unittest.TestCase):
+    """What the walk reads, driven over temp trees.
+
+    `no_inherited_git_env` around every case: the walk shells out to `git -C`
+    now, and the suite runs inside the pre-commit hook, whose exported
+    `GIT_DIR` outranks that `-C` and would answer for the real checkout
+    instead of the fixture.
+    """
+
     def test_a_checkout_under_the_root_is_not_walked(self) -> None:
         """A second checkout of this repo below its own root would otherwise be
         read as this checkout's own prose, and fail these guards for whatever
@@ -182,10 +238,52 @@ class TextFileWalkTest(unittest.TestCase):
         (clone / ".git").mkdir(parents=True)
         (clone / "vendored.md").write_text("vendored", encoding="utf-8")
 
-        with mock.patch(f"{__name__}._REPO_ROOT", root):
+        with no_inherited_git_env(), mock.patch(f"{__name__}._REPO_ROOT", root):
             found = {p.name for p in _text_files()}
 
         self.assertEqual(found, {"ours.md"})
+
+    def test_an_ignored_tree_is_not_walked(self) -> None:
+        """Gitignored output sitting in the checkout is somebody else's file:
+        `scripts/diags/out/` is there on the maintainer's machine and holds
+        `.md` dumps, and one that quoted a retired doc path would fail
+        `RetiredDocsTest` for a file the repo does not carry. An ignored
+        *file* goes the same way — a local `c64cast.toml` is ignored by
+        `/*.toml`.
+
+        The prune is git's own answer rather than a name added to
+        `_SKIP_DIRS`, which would have to be extended once per machine.
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / ".gitignore").write_text("out/\nscratch.md\n", encoding="utf-8")
+        (root / "ours.md").write_text("ours", encoding="utf-8")
+        (root / "scratch.md").write_text("mine alone", encoding="utf-8")
+        dump = root / "out"
+        dump.mkdir()
+        (dump / "dump.md").write_text("quoting docs/usage.md", encoding="utf-8")
+
+        with no_inherited_git_env(isolate_config=True):
+            subprocess.run(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
+            with mock.patch(f"{__name__}._REPO_ROOT", root):
+                found = {p.name for p in _text_files()}
+
+        self.assertEqual(found, {"ours.md"})
+
+    def test_a_file_git_does_not_know_about_yet_is_walked(self) -> None:
+        """The other half of the contract: untracked is not ignored. A document
+        written and not yet added is this checkout's own, so re-seeding the
+        walk from `git ls-files` would have stopped reading exactly the file
+        whose links nobody has reviewed yet.
+        """
+        root = Path(tempfile.mkdtemp())
+        (root / "brand-new.md").write_text("added in a moment", encoding="utf-8")
+
+        with no_inherited_git_env(isolate_config=True):
+            subprocess.run(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
+            with mock.patch(f"{__name__}._REPO_ROOT", root):
+                found = {p.name for p in _text_files()}
+
+        self.assertEqual(found, {"brand-new.md"})
 
 
 class RetiredDocsTest(unittest.TestCase):
