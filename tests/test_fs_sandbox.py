@@ -205,8 +205,6 @@ class GitEnvConflictTest(unittest.TestCase):
         for name, value in (
             ("GIT_DIR", gitdir),
             ("GIT_INDEX_FILE", gitdir / "index"),
-            # `commondir` points here, and it is where `config` actually lives.
-            ("GIT_DIR", root / "primary" / ".git"),
         ):
             with self.subTest(name=name, value=str(value)):
                 self.assertIsNone(
@@ -355,6 +353,39 @@ class GitEnvConflictTest(unittest.TestCase):
         )
         assert complaint is not None
         self.assertIn("outranks -C", complaint)
+
+    def test_the_common_dir_does_not_agree_with_a_linked_worktree(self):
+        """`config` lands in the common dir whichever worktree asked, which is
+        the argument for calling this agreement. `config` is not the dangerous
+        verb: measured against git 2.55, `GIT_DIR=<common>` with `-C <linked
+        worktree>` answers `HEAD` from the *primary* checkout and
+        `--show-toplevel` from the worktree, so a commit puts one tree's files
+        onto the other's branch. The primary checkout, which owns the common
+        dir outright, still agrees with it."""
+        root = Path(tempfile.mkdtemp())
+        primary, tree = root / "primary", root / "tree"
+        common = primary / ".git"
+        gitdir = common / "worktrees" / "tree"
+        gitdir.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(tree), "commit", "-m", "x"],
+            cwd=str(root),
+            env={"GIT_DIR": str(common)},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(primary), "commit", "-m", "x"],
+                cwd=str(root),
+                env={"GIT_DIR": str(common)},
+            )
+        )
 
     def test_the_common_dir_is_the_same_trap(self):
         """`config` lives in the common dir, not in the per-worktree gitdir, so

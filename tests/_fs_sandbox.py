@@ -249,12 +249,16 @@ def _repo_dirs_at(root: str) -> _RepoDirs:
     return _RepoDirs(_key(_resolve(root)), gitfile, _key(private), _key(common))
 
 
-def _git_dirs_at(root: str) -> tuple[str, ...]:
-    """Prefix keys for every directory holding the git metadata of the checkout
-    at ``root``, which is what :func:`violation` has to refuse — the private
-    and the shared half alike, since a test has no business in either."""
-    dirs = _repo_dirs_at(root)
+def _metadata_keys(dirs: _RepoDirs) -> tuple[str, ...]:
+    """Prefix keys for every directory holding one checkout's git metadata,
+    which is what :func:`violation` has to refuse — the private and the shared
+    half alike, since a test has no business in either."""
     return tuple(sorted({_key(dirs.gitfile), dirs.private, dirs.common}))
+
+
+def _git_dirs_at(root: str) -> tuple[str, ...]:
+    """:func:`_metadata_keys` for the checkout at ``root``."""
+    return _metadata_keys(_repo_dirs_at(root))
 
 
 def _repo_dirs(resolved: str) -> _RepoDirs:
@@ -272,7 +276,7 @@ def _repo_dirs(resolved: str) -> _RepoDirs:
 
 
 _REPO = _repo_dirs_at(CHECKOUT)
-_GIT = tuple(sorted({_key(_REPO.gitfile), _REPO.private, _REPO.common}))
+_GIT = _metadata_keys(_REPO)
 #: In a worktree `<checkout>/.git` is a *file*, so the prefix keys above —
 #: which carry a trailing separator on purpose — cannot match it. Case-folded
 #: for the same reason `_key` is: macOS and Windows resolve case-insensitively.
@@ -354,19 +358,31 @@ def _same_repository(candidate: str, dirs: _RepoDirs) -> bool:
     """Whether ``candidate`` — a prefix key — belongs to the repository
     ``dirs`` describes.
 
-    The shared metadata counts: `config` lives there, and `git -C <worktree>
-    config` writes it whichever worktree asked. Another worktree's *private*
-    gitdir never counts, and that is the case worth spelling out, because it
-    sits under that same shared metadata and so reads as agreement to a plain
-    prefix test. git takes `HEAD`, the index and the refs from `GIT_DIR`, so
-    `git -C <worktree A> commit` with worktree B's gitdir in the environment
-    commits A's files onto B's branch — the #482 damage, aimed at a sibling of
-    the tree the work is in. Every change in this repository is made in its own
-    worktree, so those siblings are the normal state here, not a rare layout.
+    Another worktree's *private* gitdir never counts, and that is the case
+    worth spelling out, because it sits under the shared metadata and so reads
+    as agreement to a plain prefix test. git takes `HEAD`, the index and the
+    refs from `GIT_DIR`, so `git -C <worktree A> commit` with worktree B's
+    gitdir in the environment commits A's files onto B's branch — the #482
+    damage, aimed at a sibling of the tree the work is in. Every change in this
+    repository is made in its own worktree, so those siblings are the normal
+    state here, not a rare layout.
+
+    The **shared** metadata counts only for the checkout that owns it outright.
+    `config` does live there, so a `git -C <worktree> config` write lands in
+    the same file either way — but `config` is not the dangerous verb. Measured
+    against git 2.55: with the common dir as `GIT_DIR` and a linked worktree as
+    `-C`, `rev-parse` answers `HEAD` from the *primary* checkout while
+    `--show-toplevel` answers the worktree, so a commit puts one tree's files
+    onto the other's branch. That is a disagreement whatever it does to
+    `config`. Refusing it cannot cost a false positive of the kind that broke
+    this guard's own first commit, because git exports the *private* gitdir to
+    a linked worktree's hooks and never the common one.
     """
     siblings = dirs.common + _WORKTREES
     if candidate.startswith(siblings):
         return dirs.private.startswith(siblings) and candidate.startswith(dirs.private)
+    if dirs.private != dirs.common and candidate.startswith(dirs.common):
+        return False
     return candidate.startswith((dirs.tree, dirs.private, dirs.common))
 
 
