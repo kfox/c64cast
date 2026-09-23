@@ -55,8 +55,10 @@ DUPLICATES = frozenset({">&"})
 DESCRIPTOR_MARK = "\x00"
 
 # The digit run has to be a word of its own for a shell to read it as a
-# descriptor: `echo a2>f` passes `a2` and redirects stdout.
-_GLUED_DESCRIPTOR = re.compile(r"(?<![^\s|&;()<>])(\d+)(?=[<>])")
+# descriptor: `echo a2>f` passes `a2` and redirects stdout. `[0-9]` rather
+# than `\d`, which also matches `٢` and `２` — a shell hands those to the
+# command and sends stdout to the file.
+_GLUED_DESCRIPTOR = re.compile(r"(?<![^\s|&;()<>])([0-9]+)(?=[<>])")
 
 # Longest first, so a greedy walk over a glued run of punctuation prefers
 # `&&` to two `&` and `<<` to two `<`.
@@ -297,7 +299,8 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> None:
     the argv: `-A 3 > f` writes stdout to a file and searches with three
     lines of context. The operand answers the same question from the other
     side: `>&2` names a descriptor rather than a file, and what goes there is
-    read back too.
+    read back too — and it carries a mark of its own when a redirection
+    follows it (`>&2<f`), so the mark comes off before the operand is read.
 
     A group carries over: `(` and the `)` that closes it need not share a
     line. A *closed* group does not, because a newline ends a command the way
@@ -313,9 +316,10 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> None:
     for token in line_tokens:
         for part in split_cluster(token):
             if redirect:
+                operand = part.removesuffix(DESCRIPTOR_MARK)
                 if redirect == HEREDOC:
-                    pending.delimiter, pending.owner = part.lstrip("-"), commands[-1]
-                elif to_file and not (redirect in DUPLICATES and part.isdigit()):
+                    pending.delimiter, pending.owner = operand.lstrip("-"), commands[-1]
+                elif to_file and not (redirect in DUPLICATES and operand.isdigit()):
                     for command in to_file:
                         command.stdout_to_file = True
                 redirect, to_file = "", []

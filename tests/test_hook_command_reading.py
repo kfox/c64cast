@@ -254,6 +254,26 @@ class ReadingTest(unittest.TestCase):
             (command,) = _shell.read(cmd).commands
             self.assertEqual((command.argv[0], command.stdout_to_file), ("grep", to_file), cmd)
 
+    def test_a_duplicates_target_is_a_descriptor_even_with_a_redirect_behind_it(self):
+        # `>&2<f` glues the `2` to the `<`, so it is marked like a descriptor
+        # — but here it is the *operand* of the dup, and a marked token is no
+        # longer a bare digit. Read as a file name it claims stdout landed in
+        # a file, and the spill hook then passes an unbounded search whose
+        # output the caller still reads back off stderr.
+        for cmd in ("grep -r x docs/ >&2<in.txt", "grep -r x docs/ >&1<in.txt"):
+            (command,) = _shell.read(cmd).commands
+            self.assertFalse(command.stdout_to_file, cmd)
+
+    def test_a_non_ascii_digit_is_an_operand_rather_than_a_descriptor(self):
+        # A shell reads only `0`-`9` as a descriptor, so `٢>f` passes `٢` to
+        # the command and sends *stdout* to the file. `\d` matches it, which
+        # both loses the operand and denies a search that is redirected.
+        (command,) = _shell.read("grep -r x docs/ ٢>out.txt").commands
+        self.assertEqual(
+            (command.argv, command.stdout_to_file),
+            (["grep", "-r", "x", "docs/", "٢"], True),
+        )
+
     def test_a_redirection_inside_quotes_stays_the_text_it_was(self):
         # The glue is marked in the raw line, before anything knows about
         # quoting, so the mark has to come back out of a literal that was
@@ -396,6 +416,9 @@ class GluedSeparatorTest(unittest.TestCase):
         # `>&2` reaches the caller exactly as stdout does, so the spill this
         # hook exists to catch is still a spill.
         self.assertIsNotNone(bash_search.line_verdict("grep -rn needle docs/ >&2"))
+        # Still stderr with a redirection glued behind the descriptor, which
+        # marks it the way a descriptor of the command's own is marked.
+        self.assertIsNotNone(bash_search.line_verdict("grep -rn needle docs/ >&2</tmp/in.txt"))
 
     def test_the_search_hook_passes_a_search_whose_last_operand_is_a_number(self):
         # A number before the operator is an argument, not a descriptor. Read
