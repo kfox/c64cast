@@ -14,8 +14,10 @@ reasons to build its subject.
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
+import pathlib
 import re
 import tempfile
 import threading
@@ -373,3 +375,83 @@ class AudioSourceTeardownTests(unittest.TestCase):
                 source.setup()
         self.assertTrue(source._stop.is_set(), "restart released the surviving decode thread")
         self.assertFalse(audio.start_for_external_source.called)
+
+
+class NoSharedTryOverHardwareWritesTest(unittest.TestCase):
+    """The class `run_teardown_steps` exists to close, enforced by a sweep of
+    the tree rather than by a hand search.
+
+    #367 converted the scene teardowns and #368 the audio ones, which said the
+    audio blocks were "as far as the AST sweep can see, the last live instance
+    of the class". That has been falsified three times since — `_disarm_reu_pump`,
+    then `uninstall_bank_swap_irq` (#462), then two more that nobody had looked
+    at. A guard costs less than a fourth hand search.
+    """
+
+    #: Calls whose name says they reach the machine with a promise of their
+    #: own. Deliberately not exhaustive: the shape being caught is a *run* of
+    #: them under one guard, so a name missing here still trips the sweep
+    #: whenever one sibling in the same run is listed.
+    #:
+    #: `flush` is deliberately absent. It commits the write above it rather
+    #: than promising anything separate, so `write_memory` + `flush` under one
+    #: `try` is one operation in two calls and not this defect — counting it
+    #: flagged four such pairs and none of them was wrong.
+    WRITE_NAMES = frozenset(
+        {
+            "write_memory",
+            "write_memory_file",
+            "write_regs",
+            "write_region",
+            "reset",
+            "silence_sid",
+            "restore_kernal_irq_vector",
+            "vicstream_on",
+            "vicstream_off",
+            "run_prg",
+            "keyb",
+        }
+    )
+
+    def _write_call(self, node: ast.stmt) -> str | None:
+        """`node` rendered as `receiver.name` when it is a bare call to a
+        write-shaped method, else None. Only a *statement* counts: a write
+        whose value is used is part of a computation, not a promise kept."""
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+            return None
+        func = node.value.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        if func.attr not in self.WRITE_NAMES and not func.attr.startswith("write_"):
+            return None
+        recv = getattr(func.value, "id", None) or getattr(func.value, "attr", None) or "?"
+        return f"{recv}.{func.attr}"
+
+    @staticmethod
+    def _swallows(node: ast.Try) -> bool:
+        """Whether every handler ends the exception instead of re-raising. A
+        `try` that re-raises is failing its caller rather than making
+        independent promises, which is a different shape and not this one."""
+        return bool(node.handlers) and not any(
+            isinstance(sub, ast.Raise) for h in node.handlers for sub in ast.walk(h)
+        )
+
+    def test_no_run_of_hardware_writes_sits_under_one_swallowing_try(self):
+        offenders: list[str] = []
+        root = pathlib.Path(__file__).resolve().parent.parent / "c64cast"
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Try) or not self._swallows(node):
+                    continue
+                writes = [w for w in (self._write_call(s) for s in node.body) if w]
+                if len(writes) >= 2:
+                    rel = path.relative_to(root.parent)
+                    offenders.append(f"{rel}:{node.lineno} -> {', '.join(writes)}")
+        self.assertEqual(
+            offenders,
+            [],
+            "these hardware writes share one guard, so the first failure skips every "
+            "one behind it; give each its own step and hand them to "
+            "run_teardown_steps:\n  " + "\n  ".join(offenders),
+        )

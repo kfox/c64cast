@@ -19,7 +19,9 @@ See docs/architecture/video-color.md#modes_irqpy--c64-side-irq-handlers--reu-pus
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
@@ -1067,26 +1069,44 @@ def install_bank_swap_irq(
 def uninstall_bank_swap_irq(api: C64Backend) -> None:
     """Tear down the bank-swap raster IRQ. Mirror of install_bank_swap_irq
     in reverse, plus restore $DD00 = bank 0 so the next scene's setup
-    sees the kernal-default VIC bank. Best-effort: any failure logs and
-    swallows so teardown doesn't abort a multi-scene transition."""
-    try:
+    sees the kernal-default VIC bank.
+
+    Six independent promises to whatever runs next, so each is its own step:
+    under one `try` the first link hiccup skipped the five behind it, leaving
+    $0314/$0315 vectored at RAM the next scene is free to overwrite, $DD00 on
+    a non-default VIC bank, and CIA #1 Timer A masked — which stops the kernal
+    keyboard scan, and with it the C= / CTRL / SHIFT poller, for the rest of
+    the session."""
+    steps: tuple[tuple[str, Callable[[], object]], ...] = (
         # Mask CIA #1 + disable VIC IRQ first, so no source can fire into the
         # about-to-be-unhooked handler.
-        api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}")
-        api.write_memory("D01A", "00")
+        (
+            "CIA1 mask",
+            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_DISABLE_TIMER_A:02X}"),
+        ),
+        ("VIC IRQ disable", lambda: api.write_memory("D01A", "00")),
         # Restore $0314/$0315 → kernal $EA31.
-        api.write_regs(
-            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
-        )
+        (
+            "kernal IRQ vector",
+            lambda: api.write_regs(
+                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+            ),
+        ),
         # Ack any pending raster IRQ flag so the next $D019 read is clean.
-        api.write_memory("D019", "01")
+        ("raster flag ack", lambda: api.write_memory("D019", "01")),
         # Restore VIC bank 0 (kernal default) so the next scene paints into the
         # addresses it expects.
-        api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}")
+        (
+            "VIC bank 0",
+            lambda: api.write_memory(f"{CIA2.PORT_A:04X}", f"{DD00_BANK_0:02X}"),
+        ),
         # Keyboard scan must keep running for the C= / CTRL / SHIFT poller.
-        api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}")
-    except Exception as e:
-        log.debug("bank-swap IRQ teardown: %s", e)
+        (
+            "CIA1 unmask",
+            lambda: api.write_memory(f"{CIA1.ICR:04X}", f"{_CIA1_ICR_ENABLE_TIMER_A:02X}"),
+        ),
+    )
+    run_teardown_steps(log, "bank-swap IRQ", steps)
 
 
 def push_bitmap_via_reu(
