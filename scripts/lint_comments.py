@@ -49,7 +49,6 @@ _DIRECTIVE = re.compile(
 _URL = re.compile(r"https?://")
 _BANNER = re.compile(
     r"^#\s*(?:[-=*#~_+]{3,}\s*)+$"
-    # Numbering, not a sentence that happens to cite a numbered step.
     r"|^#\s*(?:Step|STEP|Part|PART)\s*\d+\s*(?:[:.)\]-]|$)"
 )
 _MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b")
@@ -137,9 +136,8 @@ def classify(line: str) -> str | None:
     if _MARKER.search(text):
         return "TODO/FIXME marker"
 
-    # A link exempts only the code check: a linked upstream bug or the
-    # provenance of a constant is exactly the prose that parses as an
-    # assignment. A marker's link is the tracker item it belongs in instead.
+    # Ordered after the other classes: the exemption is for prose that parses
+    # as an assignment, not for a marker that carries its tracker link.
     if _URL.search(text):
         return None
 

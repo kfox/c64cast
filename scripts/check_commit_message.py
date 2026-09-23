@@ -84,8 +84,7 @@ def message_lines(raw: str, comment_char: str = DEFAULT_COMMENT_CHAR) -> list[st
         if line.rstrip() == scissors:
             break
         # Git's cleanup for `-m`/`-F` is `whitespace`, which keeps comment
-        # lines, so a first line opening with the char is a subject like
-        # `#398: fix the pin` and not the editor template.
+        # lines, and its editor template never starts at line one.
         if index and line.startswith(comment_char):
             continue
         lines.append(line.rstrip())
