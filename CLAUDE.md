@@ -178,6 +178,16 @@ poll thread still ticking logs into an unrelated test. Stop and join what the
 test started (the owning object's teardown, from `addCleanup`); a stray gets
 half a second to wind down before it counts.
 
+**A test that stops making progress is interrupted rather than left to run.**
+`unittest_parallel` has no timeout of its own and CI bounds only the whole job,
+so a hang used to spend the job and name nothing — no dot, no test id, no
+stack. [tests/_timeout_sandbox.py](tests/_timeout_sandbox.py), armed from the
+same startup hook, gives every test 60 seconds: past that, every thread's stack
+goes to stderr under the test's name and `TestTimedOut` is raised where the
+test stood, so the run reports that one and carries on. Stepping through a test
+under a debugger wants `C64CAST_TEST_TIMEOUT_S=0`, which turns the watchdog off
+for that run.
+
 ## Quirks worth knowing
 
 Cross-cutting traps that belong to no single module. **Per-subsystem design rationale
