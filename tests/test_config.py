@@ -8,6 +8,7 @@ import dataclasses
 import math
 import os
 import tempfile
+import tomllib
 import unittest
 from typing import cast
 from unittest import mock
@@ -833,6 +834,35 @@ class FormatTomlErrorTest(unittest.TestCase):
         for word in ("correct", "horse", "battery", "staple"):
             self.assertNotIn(word, out)
         self.assertIn("line 3, column 8", out)
+        self.assertNotIn("^", out)
+
+    def test_a_unicode_line_separator_above_does_not_shift_the_quoted_line(self):
+        # Driven through real tomllib so the line number is the parser's own.
+        # tomllib numbers lines by counting "\n"; str.splitlines() also breaks on
+        # U+0085, U+2028 and U+2029, every one of which tomllib accepts inside a
+        # value. One above the failing line shifted every index after it, and the
+        # quoted "line" became a fragment of the passphrase — no key name on it
+        # for the redaction rules to find, so it went out verbatim with a caret.
+        for sep in ("\u0085", " ", " "):
+            with self.subTest(sep=f"U+{ord(sep):04X}"):
+                doc = f'[ultimate64]\ndma_password = "a{sep}hunter2"\nx = ?\n'
+                with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
+                    tomllib.loads(doc)
+                out = cfgmod._format_toml_error("cfg.toml", ctx.exception)
+                self.assertNotIn("hunter2", out)
+                self.assertIn("x = ?", out)
+
+    def test_an_error_past_the_last_newline_quotes_no_line(self):
+        # An unterminated literal string is scanned to the end of the document,
+        # so the parser points one line past the last one. Splitting on "\n"
+        # turns the document's final newline into a trailing empty element, and
+        # quoting that would answer the passphrase's own line number with a
+        # blank line and a caret under nothing.
+        with self.assertRaises(tomllib.TOMLDecodeError) as ctx:
+            tomllib.loads("[ultimate64]\ndma_password = 'hunter2\n")
+        out = cfgmod._format_toml_error("cfg.toml", ctx.exception)
+        self.assertIn("line 3", out)
+        self.assertNotIn("hunter2", out)
         self.assertNotIn("^", out)
 
 

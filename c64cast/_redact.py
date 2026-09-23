@@ -77,8 +77,14 @@ _TRIPLE = ('"""', "'''")
 #: hold no parseable URL at all, and the point is to spot the *shape* of
 #: userinfo without needing the line to be well formed. The netloc ends at the
 #: first `/`, `?` or `#`, so those bound the search and an `@` later in a path
-#: or query is not userinfo.
-_URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/?#\"']*@", re.IGNORECASE)
+#: or query is not userinfo. A quote bounds it too, which keeps one TOML
+#: string's `@` from being read as another's userinfo.
+#:
+#: Whitespace deliberately does *not* bound it. A space is illegal in a URL, so
+#: reading one as the end of the netloc is defensible — but a passphrase with a
+#: space in it is precisely the malformed shape this runs on, and
+#: `u64://kelly:my pass@host` would otherwise come back whole.
+_URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^/?#\"']*@", re.IGNORECASE)
 
 
 def _mask(m: re.Match[str]) -> str:

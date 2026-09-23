@@ -280,6 +280,23 @@ class RedactSourceLineTest(unittest.TestCase):
         line = 'dma_password = "u64://kelly:hunter2@host"'
         self.assertEqual(redact_source_line([line], 1), ("dma_password REDACTED", False))
 
+    def test_a_space_inside_the_userinfo_does_not_evade_the_rule(self):
+        """A space is illegal in a URL, so stopping the netloc at one reads as
+        defensible — but a passphrase with a space in it is exactly the shape
+        that fails to parse and lands here, and it came back whole. The quote
+        and `#` still bound the search, so nothing downwind of the value can
+        pull the cut earlier."""
+        for line in (
+            'url = "u64://kelly:my pass@192.168.2.64',
+            "url = 'u64://kelly:my pass@192.168.2.64'",
+            'url = "u64://my user:my pass@192.168.2.64" bogus',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertNotIn("pass", safe)
+                self.assertFalse(verbatim)
+                self.assertTrue(safe.startswith("url = "), safe)
+
     def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
         """The netloc ends at the first `/`, `?` or `#`. A line truncated over
         an `@` in a path or a query would lose diagnostic text for nothing, and

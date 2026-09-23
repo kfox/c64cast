@@ -2938,7 +2938,15 @@ def _format_toml_error(path: str, err: tomllib.TOMLDecodeError) -> str:
     out = [f"Could not parse config file {path}:"]
     if lineno is not None and colno is not None:
         out.append(f"  line {lineno}, column {colno}: {msg}")
-        lines = doc.splitlines()
+        # Split the way tomllib counts — `doc.count("\n", 0, pos) + 1` — and not
+        # with str.splitlines(), which also breaks on U+0085, U+2028 and U+2029.
+        # tomllib accepts all three inside a value, so one of them above the
+        # failing line shifts every index after it and the quoted "line" becomes
+        # a fragment: no key name on it for the rules below to find, and the
+        # passphrase echoed verbatim with a caret under it.
+        lines = doc.split("\n")
+        if lines and not lines[-1]:
+            lines.pop()
         if 0 < lineno <= len(lines):
             # cli.py logs this at error level, --log-file mirrors it to disk, and
             # config_store._capture_errors folds it into the report the console renders in

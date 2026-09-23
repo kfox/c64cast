@@ -753,8 +753,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   credential sits under a name that is not secret-shaped
   (`url = "u64://user:pass@host"` names `url`) — and that cut wins when it
   comes first, since the key name can sit past the password
-  (`url = "https://user:pass@host/feed?api_key=x"`). A line with no secret on
-  it is still echoed in full with its caret.
+  (`url = "https://user:pass@host/feed?api_key=x"`). Whitespace does not end
+  that netloc, so a passphrase with a space in it no longer rides out whole.
+  And the line the parser pointed at is now found by counting `\n` the way the
+  parser counts it, rather than with `splitlines()`, which also breaks on
+  `U+0085`, `U+2028` and `U+2029`: one of those in a value above the failure
+  shifted every line index after it, and what got quoted was a fragment of the
+  passphrase carrying no key name — echoed verbatim, caret and all. A line with
+  no secret on it is still echoed in full with its caret.
 - **`?key=` and `?sig=` query parameters are now redacted.** The pattern
   required the literal `api` before `key` and did not know `sig` at all, so the
   two spellings signed media and feed URLs use passed through to `--log-file`
