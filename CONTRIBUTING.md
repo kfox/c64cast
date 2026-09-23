@@ -21,6 +21,17 @@ uv sync --all-extras    # creates/updates .venv from uv.lock: every runtime
 uv run --locked pre-commit install   # ruff + pyright + tests run before every commit
 ```
 
+That installs two hook types, `pre-commit` and `commit-msg`. If you set this
+checkout up before the `commit-msg` hook existed, run `install` again — git only
+calls the hook types that were wired at install time, so the message check is
+silently absent otherwise. It refuses a subject over 80 characters or a body
+over 10 non-blank lines (trailers excluded); raise either with `git config
+prose.subjectMax N` / `git config prose.bodyMax N`, and see
+[scripts/check_commit_message.py](scripts/check_commit_message.py) for where the
+numbers came from. The companion `lint-comments` hook reports section banners,
+`TODO:` markers and commented-out code among the comment lines a commit *adds* —
+`git config prose.lintComments false` switches it off.
+
 Then either prefix one-off commands with `uv run`, or let
 [direnv](https://direnv.net/) activate `.venv` for you — `.envrc` is gitignored,
 so write your own with `layout uv` in it (plus `use mise` if you use mise, and

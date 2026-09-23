@@ -147,6 +147,18 @@ also owes step 1's `uv sync` and the prefix/argument split, and must require
 the worktree's path and every fix commit's SHA in its report. Its fixes come
 back by cherry-pick, and a commit you cannot name is one you cannot pick.
 
+**Prose is not review surface, and its prompt has to say so.** The commit
+message, the comments and the docstrings are not reviewed for style, precision
+or thinness, and a finding about one does not get reported. The exception is
+prose that **misstates what the code does**, because whoever edits that line
+acts on it. Every other finding names an actor, an action and a wrong result, or
+it is out of scope — "a reader could be misled" is not one of those. This is a
+scope rule, not a severity rule: a "low" prose finding still costs a full round
+to read, decide and write up, and the fix for one is more prose carrying fresh
+claims, so the loop has no fixed point. The `commit-msg` and `lint-comments`
+hooks decided the mechanical part before this commit existed, so there is
+nothing left here for a reviewer to find.
+
 **Prove coverage by execution**, by step 2's mutation recipe: a coverage claim
 this commit makes is checked by naming a victim, not by reading the test. A
 bounds claim — "no other caller", "the only site" — is a search you ran and its
@@ -198,6 +210,9 @@ A clean pass here does not mean the branch is clean — it means nothing survive
 Three more things its prompt has to carry, because it cannot work them out for
 itself:
 
+- **That prose is not review surface**, in the words step 3 uses. The wide pass
+  is where prose findings are cheapest to produce and least worth having, and
+  this is the reviewer whose findings land with the PR already in sight.
 - **The gate summary** from step 3, so it doesn't spend findings on things
   `ruff`, `mypy`, `pyright`, and the suite already prove.
 - **Where this repo states its rules**, so it can check code against claim:
