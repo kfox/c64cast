@@ -31,11 +31,13 @@ from c64cast.sid.sid_host_emu import (
 )
 from c64cast.sid.sidemu import (
     ACCUMULATOR_RANGE,
+    ENV_SILENCE_EPS,
     WAVE_NOISE,
     WAVE_PULSE,
     WAVE_SAWTOOTH,
     WAVE_TRIANGLE,
     SIDEmulator,
+    Voice,
     primary_waveform,
 )
 from c64cast.sid.waveform import parse_sid_header
@@ -495,6 +497,25 @@ class SidEmulatorTest(unittest.TestCase):
         self.assertTrue(emu.voices[0].is_silent())
         s = emu.voice_samples(0, 64)
         self.assertTrue(np.all(s == 0.0), "a zero-frequency voice must draw the resting line")
+
+    def test_is_audible_holds_a_gated_voice_whatever_its_envelope(self):
+        # The scope scenes gray a voice's strip when this answers False, so a
+        # freshly gated voice whose attack has not started yet must still count
+        # as sounding — otherwise every note-on flickers gray for one frame.
+        self.assertTrue(Voice(control=0x41, envelope_level=0.0).is_audible())
+
+    def test_is_audible_follows_a_released_voice_down_through_the_epsilon(self):
+        # Gated off, the answer is the decay tail against one shared floor.
+        self.assertTrue(Voice(control=0x40, envelope_level=ENV_SILENCE_EPS * 2).is_audible())
+        self.assertFalse(Voice(control=0x40, envelope_level=ENV_SILENCE_EPS).is_audible())
+        self.assertFalse(Voice(control=0x40, envelope_level=0.0).is_audible())
+
+    def test_is_audible_takes_a_caller_supplied_floor(self):
+        # A caller wanting a different floor passes one rather than keeping a
+        # second copy of the default next to a comment claiming they match.
+        v = Voice(control=0x40, envelope_level=0.5)
+        self.assertTrue(v.is_audible())
+        self.assertFalse(v.is_audible(0.9))
 
     def test_system_string_is_normalized_case_insensitively(self):
         # [ultimate64].system is validated case-insensitively and documented as

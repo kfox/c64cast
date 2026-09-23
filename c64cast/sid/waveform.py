@@ -82,7 +82,13 @@ from .sid_hw_config import (
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import host_chip_fit, log_resolved_audio
 from .sid_volume import apply_volume
-from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_waveform
+from .sidemu import (
+    ACCUMULATOR_RANGE,
+    ENV_SILENCE_EPS,
+    SID_REG_COUNT,
+    SIDEmulator,
+    primary_waveform,
+)
 
 # The 3-voice oscilloscope renderer lives in voice_scope.py so MidiScene can
 # share it. The imported-unused names are re-exported because tests still reach
@@ -291,11 +297,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # when the user did not pin duration_s.
     MIN_CYCLE_SUBTUNE_S = 5.0
 
-    # All three voice envelopes below ENV_SILENCE_EPS for END_SILENCE_S, after
-    # the tune has sounded at least once, ends the scene. The window is generous
-    # so brief musical rests do not trip it.
+    # All three voice envelopes below sidemu.ENV_SILENCE_EPS for END_SILENCE_S,
+    # after the tune has sounded at least once, ends the scene. The window is
+    # generous so brief musical rests do not trip it.
     END_SILENCE_S = 6.0
-    ENV_SILENCE_EPS = 1e-3
 
     FALLBACK_DURATION_S = 180.0
 
@@ -1929,7 +1934,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         scene. Arms only after the first audible envelope (so a slow-to-start
         tune isn't killed), tracks the start of the current all-silent
         window, and fires after END_SILENCE_S of continuous silence."""
-        sounding = any(e >= self.ENV_SILENCE_EPS for e in env_levels)
+        sounding = any(e >= ENV_SILENCE_EPS for e in env_levels)
         if sounding:
             self._ever_sounded = True
             self._silence_since = None

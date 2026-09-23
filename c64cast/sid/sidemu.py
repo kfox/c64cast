@@ -63,6 +63,11 @@ PULSE_WIDTH_RANGE = 4096  # 12-bit pulse-width register max + 1
 NOISE_SEED_STRIDE = 1337  # arbitrary, but stable across runs
 NOISE_SEED_OFFSET = 7
 
+# Envelope level at or below which a gated-off voice counts as no longer
+# audible. Owned beside `Voice.is_audible`, its only reader, and imported by
+# WaveformScene's end-of-tune watch so the two cannot drift apart.
+ENV_SILENCE_EPS = 1e-3
+
 
 def primary_waveform(control: int) -> int:
     """Return the dominant waveform bit in the control byte, or 0 for none.
@@ -106,6 +111,18 @@ class Voice:
         Owned here, next to the fields it reads, so `voice_samples` and
         `VoiceScopeRenderer` cannot spell it differently."""
         return primary_waveform(self.control) == 0 or self.freq == 0 or self.envelope_level <= 0.0
+
+    def is_audible(self, eps: float = ENV_SILENCE_EPS) -> bool:
+        """True while this voice is gated on, or gated off and still decaying
+        above `eps` — the question the scope scenes ask to decide whether to
+        draw a voice's strip in its own color or gray it out.
+
+        A sibling of `is_silent()`, not a reuse of it: `is_silent()` asks
+        whether the oscillator can produce a trace at all, this asks whether a
+        released voice's tail has faded. Owned here for the same reason, next
+        to the fields it reads, so MidiScene and AsidScene cannot spell it
+        differently."""
+        return self.gated() or self.envelope_level > eps
 
 
 class SIDEmulator:

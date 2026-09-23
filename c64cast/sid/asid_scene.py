@@ -47,6 +47,7 @@ from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
     D018_HIRES_BITMAP,
+    IDLE_VOICE_COLOR,
     VoiceScopeRenderer,
     _layout_lr,
     restore_char_mode_display,
@@ -61,10 +62,6 @@ _FLUSH_INTERVAL_S = 1.0 / 60.0
 # How often a wire 0x31 may actually retune the CIA; requests inside the window
 # are coalesced (newest wins) rather than queued. See `_retune_if_due`.
 _SPEED_RETUNE_INTERVAL_S = 0.25
-
-# Matches MidiScene / WaveformScene.
-_IDLE_GRAY = "gray"
-_ENV_SILENCE_EPS = 1e-3
 
 _WAVE_ABBREV = {
     SID.WAVE_TRIANGLE: "TRI",
@@ -579,7 +576,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]
         self._last_window_wave = [[-1] * MAX_SIDS for _ in range(SID.N_VOICES)]
         for v in range(SID.N_VOICES):
-            self._paint_strip_color_row(v, [C64_COLORS[_IDLE_GRAY]] * self._n_windows)
+            self._paint_strip_color_row(v, [C64_COLORS[IDLE_VOICE_COLOR]] * self._n_windows)
         self._alloc_scope_buffers()
         self._dirty = True
 
@@ -702,7 +699,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._window_sounding = [[False] * MAX_SIDS for _ in range(SID.N_VOICES)]
         self._last_window_wave = [[-1] * MAX_SIDS for _ in range(SID.N_VOICES)]
         for idx in range(SID.N_VOICES):
-            self._repaint_voice_color(idx, C64_COLORS[_IDLE_GRAY])
+            self._repaint_voice_color(idx, C64_COLORS[IDLE_VOICE_COLOR])
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
@@ -726,13 +723,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         window_emus = self._scope_emulators()
         with self._reg_lock:
             states = [
-                [
-                    (
-                        v.gated() or v.envelope_level > _ENV_SILENCE_EPS,
-                        primary_waveform(v.control),
-                    )
-                    for v in window_emus[c].voices
-                ]
+                [(v.is_audible(), primary_waveform(v.control)) for v in window_emus[c].voices]
                 for c in range(self._active_chips)
             ]
         for v_idx in range(SID.N_VOICES):
@@ -749,7 +740,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
                 color = (
                     self._voice_color_now(v_idx, window_emus[c])
                     if sounding
-                    else C64_COLORS[_IDLE_GRAY]
+                    else C64_COLORS[IDLE_VOICE_COLOR]
                 )
                 window_colors.append(color)
             if strip_changed:

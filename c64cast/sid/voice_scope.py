@@ -131,6 +131,11 @@ DEFAULT_WAVEFORM_COLORS = {
 TITLE_TEXT_COLOR = "white"
 METADATA_TEXT_COLOR = "light gray"
 
+# Idle voice strips are drawn in this color, so a released voice's flat trace
+# reads as "off"; a sounding voice repaints in its own color. Owned here beside
+# the rest of the strip palette, because MidiScene and AsidScene both paint it.
+IDLE_VOICE_COLOR = "gray"
+
 # Per-voice render modes. Named because they are written from two places and
 # dispatched from a third, and a typo degrades to the fast path in silence.
 RENDER_MODE_FAST = "fast"

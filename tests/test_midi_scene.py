@@ -41,7 +41,7 @@ from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
 from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
-from c64cast.sid import midi_scene  # noqa: E402
+from c64cast.sid import midi_scene, voice_scope  # noqa: E402
 from c64cast.sid.midi_scene import MidiScene, _drain_budget_s, _note_to_sid_freq  # noqa: E402
 from c64cast.sid.sidemu import primary_waveform  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
@@ -709,7 +709,7 @@ class PaintTests(_MidiTestCase):
         scene.emulator.voices[0].envelope_level = 0.0
         api.regions.clear()
         scene.process_frame(1.0)
-        gray = C64_COLORS[midi_scene._IDLE_GRAY]
+        gray = C64_COLORS[voice_scope.IDLE_VOICE_COLOR]
         self.assertEqual(api.regions[_SCREEN_BASE], bytes([gray << 4]) * 280)
         self.assertFalse(scene._voice_sounding[0])
 
