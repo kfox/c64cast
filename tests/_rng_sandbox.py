@@ -48,6 +48,13 @@ Blind spots worth knowing:
 * A seed set in `setUpClass`, in `setUpModule` or at module import is
   overwritten before the first test under it runs, since the reseed happens
   per test. Seed inside the test or in `setUp`.
+* A `TestCase` driven from inside another test reseeds too, unlike
+  `_timeout_sandbox`, which skips the nested case on purpose. A test that
+  calls `random.seed()` and *then* drives an inner TestCase draws the rest of
+  its own numbers from the inner test's seed. Reseeding unconditionally is the
+  deliberate choice — it is what lets this module's own test drive a leaking
+  TestCase and watch the guard clear it, which is the only honest way to show
+  the armed hook works.
 """
 
 from __future__ import annotations
