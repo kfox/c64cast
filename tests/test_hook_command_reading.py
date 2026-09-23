@@ -180,9 +180,45 @@ class ReadingTest(unittest.TestCase):
             piped = [c for c in _shell.read(cmd).commands if "grep" in c.argv]
             self.assertEqual([c.stdout_to_pipe for c in piped], [True], cmd)
 
+    def test_a_group_hands_every_command_in_it_to_the_pipe(self):
+        # A group's stdout is the stdout of all of them, so marking only the
+        # last leaves the first looking unpiped — which is the whole shape.
+        for cmd in (
+            "{ grep -r x docs/; echo done; } | head -5",
+            "( grep -r x docs/; echo done ) | head -5",
+        ):
+            piped = [c for c in _shell.read(cmd).commands if "grep" in c.argv or "echo" in c.argv]
+            self.assertEqual([c.stdout_to_pipe for c in piped], [True, True], cmd)
+
+    def test_a_group_the_pipe_reaches_across_a_newline(self):
+        # `(` and the `)` that closes it need not share a line, and the
+        # commands between them are read a line at a time.
+        for cmd in ("(\ngrep -r x docs/\n) | head -5", "{\ngrep -r x docs/\n} | head -5"):
+            (grep,) = [c for c in _shell.read(cmd).commands if "grep" in c.argv]
+            self.assertTrue(grep.stdout_to_pipe, cmd)
+
     def test_a_redirect_after_a_group_marks_what_ran_inside_it(self):
         (inside,) = _shell.read("(grep -r x docs/) > out.txt").commands
         self.assertTrue(inside.stdout_to_file)
+
+    def test_a_redirect_on_the_line_after_a_group_is_not_the_groups(self):
+        # A newline ends a command the way a `;` does: the `> f` on its own
+        # line truncates the file, and the grep still prints to the terminal.
+        (grep,) = _shell.read("(grep -r x docs/)\n> out.txt").commands
+        self.assertFalse(grep.stdout_to_file)
+
+    def test_a_pipe_after_a_substitution_belongs_to_the_enclosing_command(self):
+        # `$(…)` output goes into the operands of `echo`, and it is echo's
+        # output the pipe carries.
+        echo, grep, _head = _shell.read("echo $(grep -r x docs/) | head -5").commands
+        self.assertEqual((echo.stdout_to_pipe, grep.stdout_to_pipe), (True, False))
+
+    def test_a_closing_brace_out_of_quotes_opens_no_group(self):
+        # `find … -name '}'` reaches the reader as a bare `}` token. Reading
+        # it as the end of the enclosing `(…)` would hand the pipe a span
+        # that stops short of the find.
+        (find, _head) = _shell.read("( find /abs -name '}' ) | head -5").commands
+        self.assertTrue(find.stdout_to_pipe)
 
     def test_an_operand_of_the_command_is_not_read_as_a_descriptor(self):
         # The digit only names a descriptor when it is glued to the operator;
@@ -312,8 +348,17 @@ class GluedSeparatorTest(unittest.TestCase):
             "(grep -rn needle docs/) | head -20",
             "{ grep -rn needle docs/; } | head -20",
             "(grep -rn needle docs/) > /dev/null",
+            "{ grep -rn needle docs/; echo done; } | head -20",
+            "(\ngrep -rn needle docs/\n) | head -20",
+            "{\ngrep -rn needle docs/\necho done\n} | head -20",
+            "(grep -rn needle docs/) 2>&1 | head -20",
         ):
             self.assertIsNone(bash_search.line_verdict(cmd), cmd)
+
+    def test_the_search_hook_still_sees_a_group_whose_output_is_not(self):
+        # The `> /tmp/f` on the second line truncates the file and carries
+        # none of the group's output, so the grep is still a spill.
+        self.assertIsNotNone(bash_search.line_verdict("(grep -rn needle docs/)\n> /tmp/f"))
 
     def test_the_search_hook_sees_output_handed_to_stderr(self):
         # `>&2` reaches the caller exactly as stdout does, so the spill this

@@ -180,35 +180,83 @@ def _opens_substitution(command: Command) -> bool:
     return True
 
 
-def _writer(commands: list[Command]) -> Command:
-    """The command a pipe or a redirection belongs to — the last one with
-    words of its own.
+@dataclass
+class _Group:
+    """A `(…)` or `{…}` under way: where its first command sits, what opened
+    it, whether a `$` made it a substitution, and — once it closes — where it
+    ended."""
 
-    A group leaves a placeholder behind it: `)` starts a command no word ever
-    reaches, and a closing `}` is a keyword rather than a command. Marking
-    one of those leaves the command that produced the output unmarked, and
-    `(grep -r … ) | head` then reads as a grep whose output goes nowhere near
-    a pipe.
-    """
-    for command in reversed(commands):
-        if strip_prefix(command.argv):
-            return command
-    return commands[-1]
+    start: int
+    opener: str
+    substitution: bool = False
+    end: int = 0
 
 
 @dataclass
 class _Pending:
-    """What one line leaves open for the next: a heredoc it has not closed,
-    the command that opened it, and whether it ends inside a `$(…)`."""
+    """What the reader carries from one line to the next: a heredoc the line
+    has not closed, the command that opened it, whether it ends inside a
+    `$(…)`, every command read so far, and the groups around them."""
 
     delimiter: str = ""
     owner: Command | None = None
     substitution: bool = False
+    commands: list[Command] = field(default_factory=list)
+    open_groups: list[_Group] = field(default_factory=list)
+    closed_group: _Group | None = None
 
 
-def _read_line(line_tokens: list[str], pending: _Pending) -> list[Command]:
-    """The commands in one readable line. `pending` carries in what the line
-    before left open and carries out what this one does.
+def _writers(pending: _Pending, line_start: int) -> list[Command]:
+    """The commands whose output a pipe or a redirection carries.
+
+    Usually one: the command the operator sits behind. A group is the
+    exception, because it leaves a placeholder behind it — `)` starts a
+    command no word ever reaches, and a closing `}` is a keyword rather than
+    a command — and its stdout is the stdout of *every* command inside it. So
+    `{ grep -r … ; echo done; } | head` pipes the grep as much as the echo,
+    and marking one of them alone leaves the other looking unpiped.
+
+    A `$(…)` is a group whose output goes into the enclosing command's
+    operands instead, so the operator belongs to that command, not to what
+    ran inside the substitution.
+    """
+    commands = pending.commands
+    if strip_prefix(commands[-1].argv):
+        return [commands[-1]]
+    group = pending.closed_group
+    if group is not None:
+        if group.substitution:
+            enclosing = [c for c in commands[line_start : group.start] if strip_prefix(c.argv)]
+            if enclosing:
+                return enclosing[-1:]
+        else:
+            inside = [c for c in commands[group.start : group.end] if strip_prefix(c.argv)]
+            if inside:
+                return inside
+    for command in reversed(commands[line_start:]):
+        if strip_prefix(command.argv) and not command.in_substitution:
+            return [command]
+    return [commands[-1]]
+
+
+def _close_group(pending: _Pending, opener: str, end: int) -> _Group | None:
+    """The group `opener` opened, now that it has ended at `end`.
+
+    A closer whose opener is not the one waiting on the stack belongs to no
+    group this reader saw — a `}` that came out of quotes, or a line the
+    caller handed over from inside a group. Popping for it would hand the
+    next pipe a span no group ever covered, so it is read as no group at all.
+    """
+    if not pending.open_groups or pending.open_groups[-1].opener != opener:
+        return None
+    group = pending.open_groups.pop()
+    group.end = max(end, group.start)
+    return group
+
+
+def _read_line(line_tokens: list[str], pending: _Pending) -> None:
+    """One readable line added to `pending` — the commands it runs, and what
+    it leaves open for the line after it.
 
     A redirection's file descriptor arrives as a token of its own, because
     shlex splits `2>` into `2` and `>`. It is dropped with the redirection,
@@ -217,25 +265,42 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> list[Command]:
     between output a caller can still see and output it cannot. The operand
     answers the same question from the other side: `>&2` names a descriptor
     rather than a file, and what goes there is read back too.
+
+    A group carries over: `(` and the `)` that closes it need not share a
+    line. A *closed* group does not, because a newline ends a command the way
+    a `;` does, and the redirection on the line after a group belongs to no
+    part of it.
     """
-    commands = [Command(in_substitution=pending.substitution)]
+    commands = pending.commands
+    line_start = len(commands)
+    commands.append(Command(in_substitution=pending.substitution))
+    pending.closed_group = None
     redirect = ""
-    to_file: Command | None = None
+    to_file: list[Command] = []
     for token in line_tokens:
         for part in split_cluster(token):
             if redirect:
                 if redirect == HEREDOC:
                     pending.delimiter, pending.owner = part.lstrip("-"), commands[-1]
-                elif to_file is not None and not (redirect in DUPLICATES and part.isdigit()):
-                    to_file.stdout_to_file = True
-                redirect, to_file = "", None
+                elif to_file and not (redirect in DUPLICATES and part.isdigit()):
+                    for command in to_file:
+                        command.stdout_to_file = True
+                redirect, to_file = "", []
             elif part in OPERATORS:
                 if part in PIPES:
-                    _writer(commands).stdout_to_pipe = True
-                if part == "(" and _opens_substitution(commands[-1]):
-                    pending.substitution = True
+                    for command in _writers(pending, line_start):
+                        command.stdout_to_pipe = True
+                if part == "(":
+                    substitution = _opens_substitution(commands[-1])
+                    pending.open_groups.append(_Group(len(commands), "(", substitution))
+                    pending.closed_group = None
+                    if substitution:
+                        pending.substitution = True
                 elif part == ")":
+                    pending.closed_group = _close_group(pending, "(", len(commands))
                     pending.substitution = False
+                else:
+                    pending.closed_group = None
                 commands.append(
                     Command(stdin_from_pipe=part in PIPES, in_substitution=pending.substitution)
                 )
@@ -245,11 +310,17 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> list[Command]:
                     descriptor = commands[-1].argv.pop()
                 redirect = part
                 to_file = (
-                    _writer(commands) if part in WRITES_STDOUT and descriptor in ("", "1") else None
+                    _writers(pending, line_start)
+                    if part in WRITES_STDOUT and descriptor in ("", "1")
+                    else []
                 )
             else:
+                if part == "{":
+                    pending.open_groups.append(_Group(len(commands) - 1, "{"))
+                    pending.closed_group = None
+                elif part == "}":
+                    pending.closed_group = _close_group(pending, "{", len(commands) - 1)
                 pending.substitution = _feed_word(commands, part, pending.substitution)
-    return [command for command in commands if command.argv]
 
 
 def read(cmd: str) -> Reading:
@@ -262,9 +333,9 @@ def read(cmd: str) -> Reading:
     as more body. A line that leaves a quote open is joined to the next
     instead, which is what a shell does with it. A `$(` the line does not
     close carries over as well, so the commands under it are still known to
-    be inside a substitution.
+    be inside a substitution, and so does a group, so that a pipe on the line
+    that closes one reaches back to what ran inside it.
     """
-    commands: list[Command] = []
     body: list[str] = []
     pending = _Pending()
     unread = ""
@@ -286,7 +357,7 @@ def read(cmd: str) -> Reading:
         if line_tokens is None:
             continue
         unread = ""
-        commands.extend(_read_line(line_tokens, pending))
+        _read_line(line_tokens, pending)
     if pending.owner is not None:
         pending.owner.heredoc_body = "\n".join(body)
-    return Reading(commands, unread)
+    return Reading([command for command in pending.commands if command.argv], unread)
