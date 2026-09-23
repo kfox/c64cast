@@ -47,13 +47,18 @@ _WRITE = "write"
 _EVERY_PERMISSION = "write-all"
 
 _EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
-# `needs.build` and `needs['build']` are the same reference to GitHub, so a
-# typo in the second spelling has to be as visible as one in the first. The
-# lookbehind keeps a `needs` key in someone else's object from reading as this
-# workflow's job -- `fromJSON(x).needs.foo`, and `steps.cache-needs.outputs.x`,
-# since a property name may carry a hyphen just as a job id may.
-_JOB_ID = "[A-Za-z_][A-Za-z0-9_-]*"
-_NEEDS_REF = re.compile(rf"(?<![-.\w])needs(?:\.({_JOB_ID})|\[\s*['\"]({_JOB_ID})['\"]\s*\])")
+# `needs` is a reference only where it stands alone as a context name, and
+# whether it does cannot be decided from the character before it: a hyphen
+# there continues an identifier in `steps.cache-needs.outputs.hit` and is
+# subtraction in `8-needs.build.outputs.n`, which differ only at the start of
+# the token -- a variable distance back, where a lookbehind cannot reach.
+# Tokenizing decides it instead, since the greedy identifier swallows
+# `cache-needs` whole and the string alternative swallows `'needs.x'`, both
+# exactly as GitHub reads them. `needs.build` and `needs['build']` are the same
+# reference, so a typo in the second spelling is as visible as in the first.
+_JOB_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*|'(?:''|[^'])*'|\"[^\"]*\"|\S")
+_NEEDS_CONTEXT = "needs"
 
 
 def parse(text: str) -> Any:
@@ -136,16 +141,28 @@ def _expressions(node: Any, is_condition: bool = False) -> Iterator[str]:
             yield from _expressions(item)
 
 
+def _read_through_needs(expression: str) -> Iterator[str]:
+    """Every job id one expression reads, in either `needs` spelling."""
+    tokens = [match.group(0) for match in _TOKEN.finditer(expression)]
+    for index, token in enumerate(tokens):
+        # A `needs` behind a dot is a key in someone else's object.
+        if token != _NEEDS_CONTEXT or (index and tokens[index - 1] == "."):
+            continue
+        after = tokens[index + 1 : index + 4]
+        if len(after) >= 2 and after[0] == ".":
+            name = after[1]
+        elif len(after) >= 3 and after[0] == "[" and after[2] == "]":
+            name = after[1].strip("'\"")
+        else:
+            continue
+        # `needs.*.result` and `toJSON(needs)` name no single job.
+        if _JOB_ID.fullmatch(name):
+            yield name
+
+
 def referenced_needs(job: Any) -> list[str]:
-    """Every job id a job's expressions read, in either `needs` spelling."""
-    found = {
-        name
-        for text in _expressions(job)
-        for match in _NEEDS_REF.finditer(text)
-        for name in match.groups()
-        if name
-    }
-    return sorted(found)
+    """Every job id a job's expressions read through the `needs` context."""
+    return sorted({name for text in _expressions(job) for name in _read_through_needs(text)})
 
 
 def problems(name: str, workflow: Any) -> list[str]:

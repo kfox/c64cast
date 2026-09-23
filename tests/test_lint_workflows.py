@@ -162,6 +162,37 @@ class NeedsExpressionTest(unittest.TestCase):
                 jobs = self._reader(expression, declares="    needs: build\n")
                 self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
 
+    def test_a_reference_after_unspaced_subtraction_is_still_read(self):
+        # `8-needs.build` is arithmetic against a job output, not an identifier
+        # ending in `needs`; the two differ only at the start of the token.
+        for expression in (
+            "${{ 8-needs.build.outputs.count }}",
+            "${{ inputs['n']-needs.build.outputs.count }}",
+        ):
+            with self.subTest(expression=expression):
+                jobs = self._reader(expression, declares="    runs-on: ubuntu-latest\n")
+                found = wf.problems("t.yml", _parse(jobs))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("needs.build", found[0])
+
+    def test_a_hyphenated_job_id_is_read(self):
+        jobs = self._reader(
+            "${{ needs.build-wheels.outputs.version }}", declares="    runs-on: ubuntu-latest\n"
+        )
+        found = wf.problems("t.yml", _parse(jobs))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("needs.build-wheels", found[0])
+
+    def test_a_needs_inside_a_string_literal_is_not_a_reference(self):
+        jobs = self._reader(
+            "${{ format('needs.phantom is text', inputs.x) }}", declares="    needs: build\n"
+        )
+        self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
+    def test_a_wildcard_reference_names_no_single_job(self):
+        jobs = self._reader("${{ needs.*.result }}", declares="    needs: build\n")
+        self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
     def test_the_whole_needs_context_names_no_single_job(self):
         jobs = (
             "  build:\n"
