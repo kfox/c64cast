@@ -177,7 +177,7 @@ _probing = threading.local()
 def _own_read() -> Iterator[None]:
     """Exempt the reads this module makes to locate the git metadata.
 
-    :func:`_git_dirs_at` has to read `<root>/.git` and the `commondir` beside
+    :func:`_repo_dirs_at` has to read `<root>/.git` and the `commondir` beside
     it, and both land on paths :func:`violation` now refuses — so with the hook
     armed the guard's own probe raises, blaming the test for touching `.git`
     when what it did was shell out to `git`. That fires for any `-C` target
@@ -254,11 +254,6 @@ def _metadata_keys(dirs: _RepoDirs) -> tuple[str, ...]:
     which is what :func:`violation` has to refuse — the private and the shared
     half alike, since a test has no business in either."""
     return tuple(sorted({_key(dirs.gitfile), dirs.private, dirs.common}))
-
-
-def _git_dirs_at(root: str) -> tuple[str, ...]:
-    """:func:`_metadata_keys` for the checkout at ``root``."""
-    return _metadata_keys(_repo_dirs_at(root))
 
 
 def _repo_dirs(resolved: str) -> _RepoDirs:

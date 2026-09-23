@@ -601,7 +601,7 @@ class OwnReadTest(unittest.TestCase):
     def test_a_targets_git_file_naming_this_repositorys_metadata_is_readable(self):
         root = Path(tempfile.mkdtemp())
         (root / ".git").write_text(f"gitdir: {CHECKOUT / '.git'}\n", encoding="utf-8")
-        covered = _fs_sandbox._git_dirs_at(str(root))
+        covered = _fs_sandbox._metadata_keys(_fs_sandbox._repo_dirs_at(str(root)))
         self.assertIn(_fs_sandbox._key(str(CHECKOUT / ".git")), covered)
 
     def test_the_probe_flag_is_the_only_thing_that_exempts_it(self):
