@@ -173,6 +173,10 @@ class VIC_BANK_2:
 # there would be shot through by the clear-loop / SID player upload. It is the
 # same page overlays/big_text.py picked, for the same reason — which is why the
 # two cannot be live at once (resolve_flicker_tolerance gates on buffer overlays).
+# Page A is also the plain (non-flickering) hires layout: every bitmap
+# engage in the tree installs it, and the flicker handler alternates away
+# from it and back. Bits 7-4 are the matrix offset in units of $0400, bit 3
+# puts the bitmap at bank+$2000.
 D018_HIRES_PAGE_A: Final = 0x18  # matrix offset $0400, bitmap offset $2000
 D018_HIRES_PAGE_B: Final = 0x38  # matrix offset $0C00, bitmap offset $2000
 

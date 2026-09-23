@@ -32,13 +32,12 @@ from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, pol
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import HardwareProfile
-from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
-    D018_HIRES_BITMAP,
     IDLE_VOICE_COLOR,
     VoiceScopeRenderer,
     _layout_lr,
@@ -320,7 +319,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._screen_base = VIC_BANK_0.SCREEN
         self._bitmap_base = VIC_BANK_0.BITMAP
         self._dd00 = CIA2.PORT_A_BANK_0
-        self._d018 = D018_HIRES_BITMAP
+        self._d018 = D018_HIRES_PAGE_A
 
         # Fed from the register shadow below rather than a py65 host emulator.
         self.emulator = SIDEmulator(system=system)

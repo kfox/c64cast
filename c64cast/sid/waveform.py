@@ -41,7 +41,16 @@ from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, CPU, SCREEN, SID, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import (
+    CIA2,
+    CPU,
+    D018_HIRES_PAGE_A,
+    SCREEN,
+    SID,
+    VIC_BANK_0,
+    VIC_BANK_2,
+    RegionID,
+)
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
@@ -94,7 +103,6 @@ from .sidemu import (
 # share it.
 from .voice_scope import (
     CELL_PX,
-    D018_HIRES_BITMAP,
     LEFT_ARROW_SCREEN_CODE,
     META_ROW,
     METADATA_TEXT_COLOR,
@@ -140,8 +148,8 @@ _LOW_RAM_CLEAR_HI = 0x0400  # exclusive
 # Bank 3 ($C000-$FFFF) overlaps I/O and the player/audio handlers, so it is
 # omitted.
 _DISPLAY_BANKS = (
-    (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
-    (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
+    (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_PAGE_A),
+    (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_PAGE_A),
     (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1),
 )
 
@@ -467,7 +475,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._screen_base: int = VIC_BANK_0.SCREEN
         self._bitmap_base: int = VIC_BANK_0.BITMAP
         self._dd00: int = CIA2.PORT_A_BANK_0
-        self._d018: int = D018_HIRES_BITMAP
+        self._d018: int = D018_HIRES_PAGE_A
         # One display bank free for the UNION of every subtune's PLAY footprint,
         # so SHIFT-cycling never relocates the display — a live bank move garbles
         # the matrix. None = no single bank fits all subtunes, so the per-subtune

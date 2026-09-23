@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import HiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
@@ -260,7 +260,13 @@ class HiresDisplayMode(BitmapDisplayMode):
         # the register off the previous scene's value.
         single_buffer = not self.use_reu_staged and not self.double_buffer
         engage_bitmap_mode(
-            api, d011="3b", d018="18", d016="08", border=0x00, bg0=0x00, clear=single_buffer
+            api,
+            d011="3b",
+            d018=f"{D018_HIRES_PAGE_A:02X}",
+            d016="08",
+            border=0x00,
+            bg0=0x00,
+            clear=single_buffer,
         )
         # None, not 0, so the first push() re-asserts the border/bg0 pair even
         # when the first frame's bg is black.

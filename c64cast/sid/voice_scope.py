@@ -107,13 +107,10 @@ TITLE_ROW = 22
 META_ROW = 23
 
 # VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode,
-# as the hex strings the write_memory API takes.
+# as the hex strings the write_memory API takes. The $D018 value is
+# c64.D018_HIRES_PAGE_A, which every host scene reads from there.
 D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
 D016_STANDARD = "08"  # 40-col, no multicolor
-# $D018 selects the screen matrix (bits 7-4 = offset/$0400 within the bank)
-# and the bitmap (bit 3 = bitmap at bank+$2000). $18 = matrix at bank+$0400
-# + bitmap at bank+$2000 — bank-relative.
-D018_HIRES_BITMAP = 0x18  # bank-relative: screen +$0400, bitmap +$2000
 
 COLOR_NIBBLE_MASK = 0x0F
 

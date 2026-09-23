@@ -30,12 +30,8 @@ import _diaglib as d
 sys.path.insert(0, str(d.Path(__file__).resolve().parents[2]))
 
 from c64cast.hw.api import Ultimate64API  # noqa: E402
-from c64cast.hw.c64 import CIA2, VIC_BANK_0, RegionID  # noqa: E402
-from c64cast.sid.voice_scope import (  # noqa: E402
-    D011_HIRES_ON,
-    D016_STANDARD,
-    D018_HIRES_BITMAP,
-)
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_0, RegionID  # noqa: E402
+from c64cast.sid.voice_scope import D011_HIRES_ON, D016_STANDARD  # noqa: E402
 from c64cast.video.modes import (  # noqa: E402
     HiresDisplayMode,
     MultiHiresDisplayMode,
@@ -57,7 +53,7 @@ def _bring_up_voice_scope(api: Ultimate64API) -> None:
     engage_bitmap_mode(
         api,
         d011=D011_HIRES_ON,
-        d018=f"{D018_HIRES_BITMAP:02X}",
+        d018=f"{D018_HIRES_PAGE_A:02X}",
         d016=D016_STANDARD,
         bitmap_base=VIC_BANK_0.BITMAP,
         screen_base=VIC_BANK_0.SCREEN,

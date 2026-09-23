@@ -149,23 +149,21 @@ class DisplayLayoutTest(unittest.TestCase):
         return _choose_display_layout(lo, hi, fp)
 
     def test_default_bank0_when_clear(self):
-        from c64cast.hw.c64 import CIA2, VIC_BANK_0
-        from c64cast.sid.waveform import D018_HIRES_BITMAP
+        from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_0
 
         s, b, d, d018 = self._layout(0x1000, 0x1800)
         self.assertEqual(
             (s, b, d, d018),
-            (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
+            (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_PAGE_A),
         )
 
     def test_bank2_when_payload_overlaps_bank0_bitmap(self):
-        from c64cast.hw.c64 import CIA2, VIC_BANK_2
-        from c64cast.sid.waveform import D018_HIRES_BITMAP
+        from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_2
 
         s, b, d, d018 = self._layout(0x1000, 0x2F00)  # crosses $2000
         self.assertEqual(
             (s, b, d, d018),
-            (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
+            (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_PAGE_A),
         )
 
     def test_bank2_when_footprint_dirties_bank0(self):

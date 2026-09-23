@@ -23,7 +23,7 @@ from functools import partial
 from c64cast._midi import MIDI_AVAILABLE, open_input_port, poll_pending
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
-from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, SID, VIC_BANK_0
+from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL, D018_HIRES_PAGE_A, SID, VIC_BANK_0
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
@@ -46,7 +46,6 @@ from .sid_resolved import log_resolved_audio
 from .sid_volume import apply_volume
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
-    D018_HIRES_BITMAP,
     IDLE_VOICE_COLOR,
     VoiceScopeRenderer,
     _layout_lr,
@@ -129,7 +128,7 @@ class AsidScene(VoiceScopeRenderer, Scene):
         self._screen_base = VIC_BANK_0.SCREEN
         self._bitmap_base = VIC_BANK_0.BITMAP
         self._dd00 = CIA2.PORT_A_BANK_0
-        self._d018 = D018_HIRES_BITMAP
+        self._d018 = D018_HIRES_PAGE_A
 
         # Off ⇒ extra chips downmix to the primary.
         self._multi_sid = multi_sid and bool(getattr(api.profile, "supports_sid_config", False))
