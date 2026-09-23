@@ -7,10 +7,9 @@ hook can decide, and deciding it here is free: the same observation raised durin
 review costs a round, and acting on it costs a reword, which moves that SHA and
 every SHA stacked on it.
 
-The defaults were measured rather than inherited: across the 200 commits merged
-before this landed, the conventional 72-character subject would have refused 41
-of them, while the bodies authored one commit at a time ran 4 to 12 non-blank
-lines. Hence 80 and 10. Override:
+80 and 10 are a policy choice, not a measurement: short enough to force a cut,
+loose enough that a message saying what changed and why fits without a fight.
+Override:
 
     git config prose.subjectMax 100
     git config prose.bodyMax 20

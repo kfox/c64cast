@@ -155,9 +155,9 @@ acts on it. Every other finding names an actor, an action and a wrong result, or
 it is out of scope — "a reader could be misled" is not one of those. This is a
 scope rule, not a severity rule: a "low" prose finding still costs a full round
 to read, decide and write up, and the fix for one is more prose carrying fresh
-claims, so the loop has no fixed point. The `commit-msg` and `lint-comments`
-hooks decided the mechanical part before this commit existed, so there is
-nothing left here for a reviewer to find.
+claims, so the loop has no fixed point. The `commit-message-shape` and
+`lint-comments` hooks from step 3's gate decide the mechanical part before the
+commit exists, which is the part worth deciding at all.
 
 **Prove coverage by execution**, by step 2's mutation recipe: a coverage claim
 this commit makes is checked by naming a victim, not by reading the test. A
