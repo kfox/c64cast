@@ -153,8 +153,9 @@ anything under `assets/` that git does not carry and anything under `.git/`,
 which the "outside the checkout" rule could never have reached. The hook also
 watches `subprocess`: a `git` call that names one repository with `-C` while
 `GIT_DIR` names a different one is refused, because `GIT_DIR` wins and the
-write lands in the repository the caller did not name. The rule, the reasoning
-and the two known blind spots are in
+write lands in the repository the caller did not name — but only for a `git`
+it can see, which is one started from an argv list and not through a shell.
+The rule, the reasoning and the known blind spots are in
 [`tests/_fs_sandbox.py`](tests/_fs_sandbox.py)'s docstring.
 
 **A test may not leave a thread running either, and the same startup hook
