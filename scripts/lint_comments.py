@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import tokenize
+import warnings
 
 _DIFF_TIMEOUT_S = 60
 _CONFIG_TIMEOUT_S = 10
@@ -94,7 +95,11 @@ def _disabled() -> bool:
 
 def _parses_as_statements(text: str) -> bool:
     try:
-        parsed = ast.parse(text)
+        with warnings.catch_warnings():
+            # Prose like `6.24in` makes the parser emit a SyntaxWarning that
+            # names neither the file nor the comment it came from.
+            warnings.simplefilter("ignore")
+            parsed = ast.parse(text)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
 
@@ -151,7 +156,10 @@ def added_lines(paths: list[str]) -> list[tuple[str, int, str]]:
             # Without core.quotePath off, git C-escapes a non-ASCII path and
             # wraps the whole of it in double quotes, inside the `b/` prefix.
             ["git", "-c", "core.quotePath=false"]
-            + ["diff", "--cached", "--no-color", "-U0", "--", *paths],
+            # An external driver or a textconv filter would answer with
+            # something that is not a unified diff, and -U0 with it.
+            + ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv"]
+            + ["-U0", "--", *paths],
             capture_output=True,
             text=True,
             timeout=_DIFF_TIMEOUT_S,

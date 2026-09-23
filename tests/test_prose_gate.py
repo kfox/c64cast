@@ -12,10 +12,12 @@ import contextlib
 import importlib.util
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -239,6 +241,15 @@ class CommentClassifyTest(unittest.TestCase):
     def test_a_short_word_is_not_read_as_code(self) -> None:
         self.assertIsNone(lint.classify("# ok"))
 
+    def test_prose_the_parser_dislikes_reports_no_warning(self) -> None:
+        """`6.24in` is an invalid decimal literal, which `ast.parse` warns about."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            verdict = lint.classify("# a guide page is 6.24in with 0.82in margins")
+
+        self.assertIsNone(verdict)
+        self.assertEqual([str(warning.message) for warning in caught], [])
+
     def test_a_sentence_citing_a_numbered_step_is_not_a_banner(self) -> None:
         for line in (
             "# Step 8 is where the frame stops being a picture and becomes colors",
@@ -374,6 +385,24 @@ class StagedDiffTest(unittest.TestCase):
         self.assertEqual(
             lint.findings(["m.py"]),
             [("m.py", 2, "TODO/FIXME marker", "# TODO: inside an unterminated string")],
+        )
+
+    def test_an_external_diff_driver_does_not_blind_the_walk(self) -> None:
+        self.git("config", "diff.external", str(shutil.which("true")))
+        self.stage("a = 1\n# TODO: fix this\n")
+        self.assertEqual(
+            lint.findings(["m.py"]),
+            [("m.py", 2, "TODO/FIXME marker", "# TODO: fix this")],
+        )
+
+    def test_a_textconv_filter_does_not_blind_the_walk(self) -> None:
+        self.git("config", "diff.blank.textconv", str(shutil.which("true")))
+        (self.repo / ".gitattributes").write_text("*.py diff=blank\n", encoding="utf-8")
+        self.git("add", ".gitattributes")
+        self.stage("a = 1\n# TODO: fix this\n")
+        self.assertEqual(
+            lint.findings(["m.py"]),
+            [("m.py", 2, "TODO/FIXME marker", "# TODO: fix this")],
         )
 
     def test_nothing_staged_reports_nothing(self) -> None:
