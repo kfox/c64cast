@@ -28,6 +28,7 @@ that refuses on doubt matches against as words rather than tokens.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 
@@ -45,6 +46,17 @@ WRITES_STDOUT = frozenset({">", ">>", ">|", ">&", "&>", "&>>"})
 # The one write whose operand may be a descriptor instead of a file: `>&2`
 # hands stdout to stderr, which the caller still reads back.
 DUPLICATES = frozenset({">&"})
+
+# A file descriptor in front of a redirection is a digit run glued to it, and
+# a shell reads the two spellings differently: `2>f` sends stderr to the
+# file, `-A 3 > f` passes `3` to the command and sends stdout. shlex renders
+# them identically — `2`, `>` either way — so the glued form is marked before
+# lexing, and only a marked token is taken out of the argv as a descriptor.
+DESCRIPTOR_MARK = "\x00"
+
+# The digit run has to be a word of its own for a shell to read it as a
+# descriptor: `echo a2>f` passes `a2` and redirects stdout.
+_GLUED_DESCRIPTOR = re.compile(r"(?<![^\s|&;()<>])(\d+)(?=[<>])")
 
 # Longest first, so a greedy walk over a glued run of punctuation prefers
 # `&&` to two `&` and `<<` to two `<`.
@@ -95,15 +107,33 @@ class Reading:
         return any(command.in_substitution for command in self.commands)
 
 
+def _unmarked(token: str) -> str:
+    """`token` with the descriptor mark kept only where it says something.
+
+    On a bare digit run it is the difference between `2>f` and `2 > f`.
+    Anywhere else the mark landed inside a quoted literal, where the
+    redirection it sat in front of is text — so it comes back out and the
+    token reads as it was written.
+    """
+    if token.endswith(DESCRIPTOR_MARK) and token[:-1].isdigit():
+        return token
+    return token.replace(DESCRIPTOR_MARK, "")
+
+
 def tokens(text: str) -> list[str] | None:
     """`text` split the way a shell splits a command, with the separators,
     redirections and heredoc markers kept as tokens of their own — or None
     when a quote it opens is never closed, which a shell answers by reading
-    on."""
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    on.
+
+    A descriptor glued to a redirection keeps its mark, because nothing after
+    lexing can tell it from an operand that happens to be a number.
+    """
+    marked = _GLUED_DESCRIPTOR.sub(rf"\1{DESCRIPTOR_MARK}", text)
+    lexer = shlex.shlex(marked, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
-        return list(lexer)
+        return [_unmarked(token) for token in lexer]
     except ValueError:
         return None
 
@@ -262,9 +292,12 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> None:
     shlex splits `2>` into `2` and `>`. It is dropped with the redirection,
     so it cannot sit in the argv and shift a positional past the one a caller
     is reading — and it is what tells `2>` from `>`, which is the difference
-    between output a caller can still see and output it cannot. The operand
-    answers the same question from the other side: `>&2` names a descriptor
-    rather than a file, and what goes there is read back too.
+    between output a caller can still see and output it cannot. Only a token
+    `tokens()` marked is dropped, so a number the command was passed stays in
+    the argv: `-A 3 > f` writes stdout to a file and searches with three
+    lines of context. The operand answers the same question from the other
+    side: `>&2` names a descriptor rather than a file, and what goes there is
+    read back too.
 
     A group carries over: `(` and the `)` that closes it need not share a
     line. A *closed* group does not, because a newline ends a command the way
@@ -306,8 +339,8 @@ def _read_line(line_tokens: list[str], pending: _Pending) -> None:
                 )
             elif part in REDIRECTS:
                 descriptor = ""
-                if commands[-1].argv and commands[-1].argv[-1].isdigit():
-                    descriptor = commands[-1].argv.pop()
+                if commands[-1].argv and commands[-1].argv[-1].endswith(DESCRIPTOR_MARK):
+                    descriptor = commands[-1].argv.pop()[: -len(DESCRIPTOR_MARK)]
                 redirect = part
                 to_file = (
                     _writers(pending, line_start)

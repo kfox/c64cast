@@ -210,25 +210,57 @@ class ReadingTest(unittest.TestCase):
     def test_a_pipe_after_a_substitution_belongs_to_the_enclosing_command(self):
         # `$(…)` output goes into the operands of `echo`, and it is echo's
         # output the pipe carries.
-        echo, grep, _head = _shell.read("echo $(grep -r x docs/) | head -5").commands
+        echo, grep, head = _shell.read("echo $(grep -r x docs/) | head -5").commands
+        self.assertEqual([c.argv[0] for c in (echo, grep, head)], ["echo", "grep", "head"])
         self.assertEqual((echo.stdout_to_pipe, grep.stdout_to_pipe), (True, False))
 
     def test_a_closing_brace_out_of_quotes_opens_no_group(self):
         # `find … -name '}'` reaches the reader as a bare `}` token. Reading
         # it as the end of the enclosing `(…)` would hand the pipe a span
         # that stops short of the find.
-        (find, _head) = _shell.read("( find /abs -name '}' ) | head -5").commands
+        find, head = _shell.read("( find /abs -name '}' ) | head -5").commands
+        self.assertEqual((find.argv[0], head.argv[0]), ("find", "head"))
         self.assertTrue(find.stdout_to_pipe)
 
     def test_an_operand_of_the_command_is_not_read_as_a_descriptor(self):
-        # The digit only names a descriptor when it is glued to the operator;
-        # a `)` in between makes it an argument the command keeps.
-        (command,) = _shell.read("(echo 2) > out.txt").commands
-        self.assertEqual((command.argv, command.stdout_to_file), (["echo", "2"], True))
+        # A number the command was passed is an argument, not a descriptor,
+        # and taking it for one loses the operand *and* the answer about
+        # where stdout went. shlex renders `2>f` and `2 > f` identically, so
+        # nothing after lexing can tell them apart — the glue is what says
+        # which it is, and `tokens()` records it before the two forms merge.
+        for cmd, argv in (
+            ("echo 2 > out.txt", ["echo", "2"]),
+            ("rg needle /abs -A 3 > out.txt", ["rg", "needle", "/abs", "-A", "3"]),
+            ("tail -n 5 > out.txt", ["tail", "-n", "5"]),
+            ("(echo 2) > out.txt", ["echo", "2"]),
+            ("echo a2>out.txt", ["echo", "a2"]),
+        ):
+            (command,) = _shell.read(cmd).commands
+            self.assertEqual((command.argv, command.stdout_to_file), (argv, True), cmd)
 
     def test_a_redirects_file_descriptor_does_not_stay_in_the_argv(self):
         (command,) = _shell.read("git worktree move 2>/dev/null a b").commands
         self.assertEqual(command.argv, ["git", "worktree", "move", "a", "b"])
+
+    def test_a_descriptor_glued_to_the_operator_still_names_the_stream(self):
+        # Every descriptor, not only `2`: a shell reads `3>f` as fd 3, so
+        # reading it as an operand would claim stdout went to the file.
+        for cmd, to_file in (
+            ("grep -r x docs/ 1>out.txt", True),
+            ("grep -r x docs/ 2>out.txt", False),
+            ("grep -r x docs/ 3>out.txt", False),
+            ("grep -r x docs/ 2>>out.txt", False),
+        ):
+            (command,) = _shell.read(cmd).commands
+            self.assertEqual((command.argv[0], command.stdout_to_file), ("grep", to_file), cmd)
+
+    def test_a_redirection_inside_quotes_stays_the_text_it_was(self):
+        # The glue is marked in the raw line, before anything knows about
+        # quoting, so the mark has to come back out of a literal that was
+        # only ever text.
+        (command,) = _shell.read("grep -rn 'a 2>b' /abs/path").commands
+        self.assertEqual(command.argv, ["grep", "-rn", "a 2>b", "/abs/path"])
+        self.assertFalse(command.stdout_to_file)
 
     def test_a_heredoc_body_is_held_by_the_command_that_opened_it(self):
         (command,) = _shell.read("record x <<'EOF'\nbody line\nEOF").commands
@@ -364,6 +396,19 @@ class GluedSeparatorTest(unittest.TestCase):
         # `>&2` reaches the caller exactly as stdout does, so the spill this
         # hook exists to catch is still a spill.
         self.assertIsNotNone(bash_search.line_verdict("grep -rn needle docs/ >&2"))
+
+    def test_the_search_hook_passes_a_search_whose_last_operand_is_a_number(self):
+        # A number before the operator is an argument, not a descriptor. Read
+        # as one it took the operand out of the argv and left stdout looking
+        # unredirected, so this hook denied a search whose output goes to a
+        # file — the false deny its docstring promises to avoid.
+        for cmd in (
+            "rg needle /abs/path -A 3 > /tmp/out.txt",
+            "grep -rn -A 3 needle /abs/path > /tmp/out.txt",
+        ):
+            self.assertIsNone(bash_search.line_verdict(cmd), cmd)
+        # The same search with nothing carrying its output away is a spill.
+        self.assertIsNotNone(bash_search.line_verdict("rg needle /abs/path -A 3"))
 
     def test_the_resolvable_target_hook_sees_a_glued_search_after_a_cd(self):
         for cmd in (
