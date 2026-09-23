@@ -21,6 +21,8 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
+from _fakes import no_inherited_git_env
+
 _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _SUBJECT_MAX = 80
@@ -155,15 +157,9 @@ class GitConfigTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        empty = Path(tempfile.mkdtemp()) / "gitconfig"
-        empty.write_text("", encoding="utf-8")
-
-        environ = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        environ["GIT_CONFIG_GLOBAL"] = str(empty)
-        environ["GIT_CONFIG_SYSTEM"] = os.devnull
-        patcher = mock.patch.dict(os.environ, environ, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        isolated = no_inherited_git_env(isolate_config=True)
+        isolated.__enter__()
+        self.addCleanup(isolated.__exit__, None, None, None)
 
         self.repo = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(self.repo), "init", "-q"], capture_output=True, check=True)
@@ -356,10 +352,9 @@ class StagedDiffTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        without_git = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        patcher = mock.patch.dict(os.environ, without_git, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        isolated = no_inherited_git_env()
+        isolated.__enter__()
+        self.addCleanup(isolated.__exit__, None, None, None)
 
         self.repo = Path(tempfile.mkdtemp())
         self.git("init", "-q")

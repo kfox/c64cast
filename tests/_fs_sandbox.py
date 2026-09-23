@@ -21,8 +21,11 @@ This turns that from a convention into an enforced property, in two halves:
   still reaches a real file, under a rule broad enough to catch a leak nobody
   anticipated: **the suite may read and write the checkout, the temp
   directory, and the interpreter's own installation — nothing else under
-  `$HOME`.** `assets/` is carved back out of the checkout, since everything
-  there but the READMEs and the logo is gitignored.
+  `$HOME`.** Two things are carved back *out* of the checkout. `assets/`,
+  since everything there but the READMEs and the logo is gitignored. And
+  `.git/`, which the rule above could never have caught, because the
+  repository's own metadata is *inside* the checkout the suite is otherwise
+  free to write — see :func:`git_env_conflict` for what that cost.
 
 Why an audit hook for the second half rather than patching `builtins.open`:
 the C-level opens in cv2, PyAV and sqlite3 don't go through it, and the paths
@@ -74,7 +77,9 @@ _DATA_DIR_ENV = "C64CAST_DATA_DIR"
 
 # Filesystem audit events whose first argument is a path — not the complete set
 # CPython raises. `open` covers every read and rewrite; the rest catch the directory
-# and metadata operations that create, move or delete without opening.
+# and metadata operations that create, move or delete without opening. A
+# `subprocess.Popen` is handled apart from these: its first argument is a program,
+# and what is out of bounds about it is the environment it inherits.
 _PATH_EVENTS = frozenset(
     {
         "open",
@@ -148,6 +153,74 @@ def _allowed_roots() -> tuple[str, ...]:
 _HOME = _key(_resolve(os.path.expanduser("~")))
 _ALLOWED = _allowed_roots()
 _ASSETS = _key(os.path.join(CHECKOUT, "assets"))
+
+
+def _git_dirs_at(root: str) -> tuple[str, ...]:
+    """Every directory holding the git metadata of the checkout at ``root``.
+
+    Usually just ``<root>/.git``. In a **worktree** that name is a file
+    reading ``gitdir: <path>``, and the real metadata — plus the shared
+    metadata its ``commondir`` names, which is the primary checkout's ``.git``
+    and where ``config`` actually lives — sits outside the tree entirely. Every
+    change in this repository is made in a worktree, so covering only the local
+    name would leave the file that got written in #482 unguarded in the place
+    the work happens.
+
+    That "outside the tree entirely" is also why :func:`git_env_conflict` has
+    to call this rather than ask whether ``GIT_DIR`` sits inside the ``-C``
+    target: in a worktree it never does, and a containment test would read the
+    pre-commit hook's own ``GIT_DIR`` as a conflict with the very worktree it
+    belongs to.
+
+    Read off disk rather than asked of `git rev-parse`: this runs at
+    interpreter startup in every `unittest_parallel` worker, and a subprocess
+    per worker to learn a path that two small files already state is a cost for
+    nothing.
+    """
+    local = os.path.join(root, ".git")
+    found = [local]
+    try:
+        with open(local, encoding="utf-8") as fh:
+            marker = fh.read(4096)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return tuple(_key(_resolve(d)) for d in found)
+    prefix = "gitdir:"
+    line = marker.strip()
+    if line.startswith(prefix):
+        real = _resolve(os.path.join(root, line[len(prefix) :].strip()))
+        found.append(real)
+        with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
+            with open(os.path.join(real, "commondir"), encoding="utf-8") as fh:
+                found.append(_resolve(os.path.join(real, fh.read().strip())))
+    return tuple(sorted({_key(_resolve(d)) for d in found}))
+
+
+def _git_dirs() -> tuple[str, ...]:
+    """Every directory holding *this* checkout's git metadata."""
+    return _git_dirs_at(CHECKOUT)
+
+
+def _repo_paths(resolved: str) -> tuple[str, ...]:
+    """Prefix keys for every path that means "the repository at ``resolved``" —
+    its working tree and its metadata both, because a worktree keeps the two in
+    different places and ``GIT_DIR`` legitimately names the latter.
+
+    A target inside this checkout answers from the values computed at import
+    instead of reading `<target>/.git` again. Not a cache for speed: while the
+    hook is armed that read is *itself* a violation, so asking the question the
+    obvious way makes the guard fail on every call it is meant to allow.
+    """
+    key = _key(resolved)
+    if key.startswith((_key(CHECKOUT), *_GIT)):
+        return (_key(CHECKOUT), *_GIT)
+    return (key, *_git_dirs_at(resolved))
+
+
+_GIT = _git_dirs()
+#: In a worktree `<checkout>/.git` is a *file*, so the prefix key above — which
+#: carries a trailing separator on purpose — cannot match it. Case-folded for
+#: the same reason `_key` is: macOS and Windows resolve case-insensitively.
+_GIT_FILES = frozenset({_resolve(os.path.join(CHECKOUT, ".git")).casefold()})
 _armed = False
 _exempt: tuple[str, ...] = ()
 
@@ -179,6 +252,16 @@ def violation(path: str) -> str | None:
     target = _key(resolved)
     if _exempt and target.startswith(_exempt):
         return None
+    if target.startswith(_GIT) or resolved.casefold() in _GIT_FILES:
+        return (
+            f"test touched {path!r}, inside this checkout's own git metadata. A test has no "
+            f"business reading or writing the repository's metadata, and the damage "
+            f"does not look like a test failure: a fixture that reached .git/config "
+            f"once left `user.name = Test` there and misattributed 17 real commits "
+            f"across four branches before anyone noticed. Build a scratch repo under "
+            f"tempfile.mkdtemp() and strip the ambient GIT_* from its environment — "
+            f"see tests/_fakes.py."
+        )
     if target.startswith(_ASSETS):
         rel = os.path.relpath(resolved, CHECKOUT).replace(os.sep, "/")
         if asset_is_tracked(rel):
@@ -201,8 +284,100 @@ def violation(path: str) -> str | None:
     )
 
 
+#: The three `GIT_*` variables that re-point git at a repository regardless of
+#: where the command was told to run.
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+
+def _git_dash_c_target(argv: list[str], cwd: str) -> str | None:
+    """Where git's own `-C` options land, or None when the call passes none.
+
+    Each `-C` is relative to the one before it, which is why this walks them
+    rather than taking the last.
+    """
+    here = cwd
+    seen = False
+    rest = argv[1:]
+    while rest:
+        if rest[0] == "-C" and len(rest) > 1:
+            here, seen, rest = os.path.join(here, rest[1]), True, rest[2:]
+            continue
+        if rest[0].startswith("-"):
+            rest = rest[1:]
+            continue
+        break
+    return here if seen else None
+
+
+def git_env_conflict(argv: list[str], cwd: str, env: dict[str, str]) -> str | None:
+    """Why this `git` call is ambiguous about which repository it means, or None.
+
+    **`GIT_DIR` outranks `-C`.** A fixture that builds a scratch repo and calls
+    `git -C <tmp> config user.name Test` looks self-contained and is not: when
+    the suite runs under the pre-commit hook, `git commit` exports `GIT_DIR` to
+    its hooks, so every one of those `config` writes landed in the real
+    checkout's `.git/config` instead. That is how `user.name = Test` came to
+    author 17 commits across four branches.
+
+    The rule is disagreement, not presence. A call that names no `-C` is taking
+    the ambient environment on purpose, and a call whose `-C` contains the
+    repository the `GIT_*` variables point at wants that repository either way —
+    `git -C <checkout> ls-files` under the pre-commit hook is the common case
+    and is fine. What is always a bug is the two pointing somewhere different:
+    one of them is what the author meant and the other is what git will do.
+    """
+    target = _git_dash_c_target(argv, cwd)
+    if target is None:
+        return None
+    inside = _repo_paths(_resolve(os.path.join(cwd, target)))
+    for name in _GIT_LOCATION_ENV:
+        raw = env.get(name)
+        if not raw:
+            continue
+        if _key(_resolve(os.path.join(cwd, raw))).startswith(inside):
+            continue
+        return (
+            f"test ran `git -C {target!r}` with {name}={raw!r} in the environment. "
+            f"{name} outranks -C, so this command acts on the repository {name} "
+            f"names and not the one it was told to run in — which is how a fixture "
+            f"wrote its test identity into a real checkout's .git/config. Strip the "
+            f"ambient GIT_* from the environment you hand the subprocess (see "
+            f"tests/_fakes.py), or drop the -C and mean the ambient repository."
+        )
+    return None
+
+
+def _check_subprocess(args: tuple[object, ...]) -> None:
+    if len(args) < 4:
+        return
+    executable, argv, cwd, env = args[0], args[1], args[2], args[3]
+    if not isinstance(argv, (list, tuple)) or not argv:
+        return  # a shell string: no argv to read `-C` out of
+    if not all(isinstance(a, (str, bytes, os.PathLike)) for a in argv):
+        return
+    words = [os.fsdecode(a) for a in argv]
+    if isinstance(executable, (str, bytes, os.PathLike)):
+        program = os.fsdecode(executable)
+    else:
+        program = words[0]
+    if os.path.basename(program) not in ("git", "git.exe"):
+        return
+    here = os.fsdecode(cwd) if isinstance(cwd, (str, bytes, os.PathLike)) else os.getcwd()
+    # `env=None` means the child inherits ours, which is exactly the case that
+    # bit: nothing in the fixture mentioned GIT_DIR because nothing had to.
+    environ = dict(env) if isinstance(env, dict) else dict(os.environ)  # type: ignore[arg-type]
+    complaint = git_env_conflict(words, here, environ)
+    if complaint is not None:
+        raise SandboxViolation(complaint)
+
+
 def _hook(event: str, args: tuple[object, ...]) -> None:
-    if not _armed or event not in _PATH_EVENTS or not args:
+    if not _armed or not args:
+        return
+    if event == "subprocess.Popen":
+        _check_subprocess(args)
+        return
+    if event not in _PATH_EVENTS:
         return
     target = args[0]
     if not isinstance(target, (str, bytes, os.PathLike)):

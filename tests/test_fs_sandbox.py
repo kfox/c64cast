@@ -89,6 +89,152 @@ class RuleTest(unittest.TestCase):
             with self.subTest(rel=rel):
                 self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / rel)))
 
+    def test_the_checkouts_own_git_is_out_of_bounds(self):
+        """The one leak the outside-the-checkout rule could never catch, since
+        `.git` is *inside* the tree the suite is otherwise free to write. A
+        fixture that reached `.git/config` left `user.name = Test` there and
+        misattributed 17 commits."""
+        for rel in (".git/config", ".git/HEAD", ".git/hooks/pre-commit"):
+            with self.subTest(rel=rel):
+                complaint = _fs_sandbox.violation(str(CHECKOUT / rel))
+                assert complaint is not None
+                self.assertIn(".git", complaint)
+
+    def test_a_sibling_of_git_is_not_caught_by_it(self):
+        """`.gitignore` and `.github/` are ordinary tracked files, which is why
+        the key carries a trailing separator."""
+        for rel in (".gitignore", ".github/workflows/ci.yml", ".git-blame-ignore-revs"):
+            with self.subTest(rel=rel):
+                self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / rel)))
+
+    def test_every_git_dir_this_checkout_has_is_covered(self):
+        """In a worktree the metadata is not under the tree at all: `.git` is a
+        file naming a directory in the *primary* checkout, and `config` — the
+        file #482 corrupted — lives in the common dir beside it. Every change in
+        this repository is made in a worktree, so a rule that covered only the
+        local name would be unguarded exactly where the work happens."""
+        for key in _fs_sandbox._GIT:
+            with self.subTest(key=key):
+                complaint = _fs_sandbox.violation(os.path.join(key, "config"))
+                self.assertIsNotNone(complaint)
+        self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / "CHANGELOG.md")))
+
+
+class GitEnvConflictTest(unittest.TestCase):
+    """`GIT_DIR` outranks `-C`, so a fixture that looks self-contained is not.
+
+    The rule is *disagreement*, not presence: under the pre-commit hook every
+    subprocess inherits a `GIT_DIR` naming the checkout, and the calls that
+    genuinely mean the checkout have to keep working.
+    """
+
+    def test_a_git_dir_pointing_away_from_the_dash_c_target_is_refused(self):
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_DIR": str(CHECKOUT / ".git")},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+    def test_the_index_file_and_work_tree_are_the_same_trap(self):
+        for name in ("GIT_WORK_TREE", "GIT_INDEX_FILE"):
+            with self.subTest(name=name):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", "-C", "/tmp/scratch", "add", "m.py"],
+                    cwd=str(CHECKOUT),
+                    env={name: str(CHECKOUT)},
+                )
+                self.assertIsNotNone(complaint)
+
+    def test_a_git_dir_inside_the_dash_c_target_is_what_the_caller_asked_for(self):
+        """`git -C <checkout> ls-files` under the pre-commit hook: the two agree,
+        so there is nothing ambiguous to refuse."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(CHECKOUT), "ls-files", "assets"],
+                cwd=str(CHECKOUT),
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_no_dash_c_means_the_ambient_repository_was_meant(self):
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "config", "user.name", "Test"],
+                cwd="/tmp/scratch",
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_clean_environment_is_never_a_conflict(self):
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", "/tmp/scratch", "init", "-q"], cwd=str(CHECKOUT), env={}
+            )
+        )
+
+    def test_chained_dash_c_options_resolve_relative_to_each_other(self):
+        """git applies each `-C` from where the last one left it, so a rule that
+        read only the final one would resolve `sub` against cwd."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(CHECKOUT), "-C", ".git", "rev-parse", "HEAD"],
+                cwd="/tmp/elsewhere",
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_worktrees_own_git_dir_is_not_a_conflict_with_that_worktree(self):
+        """The case that made the gate refuse its own commit.
+
+        A worktree's metadata lives under the *primary* checkout's `.git`, so
+        `GIT_DIR` is never inside the tree it belongs to. Asking only whether
+        it is read the pre-commit hook's own environment as a conflict with the
+        very worktree it was exported for, and every `git -C <worktree>` in the
+        suite failed — under the hook, where nothing else runs.
+        """
+        root = Path(tempfile.mkdtemp())
+        tree, gitdir = root / "tree", root / "primary" / ".git" / "worktrees" / "tree"
+        gitdir.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+
+        for name, value in (
+            ("GIT_DIR", gitdir),
+            ("GIT_INDEX_FILE", gitdir / "index"),
+            # `commondir` points here, and it is where `config` actually lives.
+            ("GIT_DIR", root / "primary" / ".git"),
+        ):
+            with self.subTest(name=name, value=str(value)):
+                self.assertIsNone(
+                    _fs_sandbox.git_env_conflict(
+                        ["git", "-C", str(tree), "config", "user.name"],
+                        cwd=str(root),
+                        env={name: str(value)},
+                    )
+                )
+
+    def test_a_foreign_worktree_is_still_a_conflict(self):
+        """The near miss: same shape, but `GIT_DIR` names a *different*
+        worktree's metadata. Nothing about the layout makes that agree."""
+        root = Path(tempfile.mkdtemp())
+        tree, mine = root / "tree", root / "primary" / ".git" / "worktrees" / "tree"
+        mine.mkdir(parents=True)
+        theirs = root / "other" / ".git"
+        theirs.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {mine}\n", encoding="utf-8")
+
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(tree), "config", "user.name", "Test"],
+            cwd=str(root),
+            env={"GIT_DIR": str(theirs)},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
 
 class TrackedAssetRuleTest(unittest.TestCase):
     """`asset_is_tracked` is a rule standing in for a list of ten paths, so it
