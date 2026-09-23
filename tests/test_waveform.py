@@ -313,8 +313,6 @@ class EndOfTuneDetectionTest(unittest.TestCase):
     def _scene(self):
         return bare_waveform_scene(_ever_sounded=False, _silence_since=None, name="test")
 
-    EPS = 1e-3
-
     def test_never_ends_before_first_sound(self):
         s = self._scene()
         # Silent from t=0 but the tune never sounded → must not end.

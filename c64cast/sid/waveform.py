@@ -297,9 +297,9 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # when the user did not pin duration_s.
     MIN_CYCLE_SUBTUNE_S = 5.0
 
-    # All three voice envelopes below sidemu.ENV_SILENCE_EPS for END_SILENCE_S,
-    # after the tune has sounded at least once, ends the scene. The window is
-    # generous so brief musical rests do not trip it.
+    # Every voice envelope, on every chip, below sidemu.ENV_SILENCE_EPS for
+    # END_SILENCE_S, after the tune has sounded at least once, ends the scene.
+    # The window is generous so brief musical rests do not trip it.
     END_SILENCE_S = 6.0
 
     FALLBACK_DURATION_S = 180.0
