@@ -751,8 +751,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a multi-line string, an array, an inline table — is dropped whole. A line
   carrying URL userinfo is truncated at the scheme, which is the one place a
   credential sits under a name that is not secret-shaped
-  (`url = "u64://user:pass@host"` names `url`). A line with no secret on it is
-  still echoed in full with its caret.
+  (`url = "u64://user:pass@host"` names `url`) — and that cut wins when it
+  comes first, since the key name can sit past the password
+  (`url = "https://user:pass@host/feed?api_key=x"`). A line with no secret on
+  it is still echoed in full with its caret.
 - **`?key=` and `?sig=` query parameters are now redacted.** The pattern
   required the literal `api` before `key` and did not know `sig` at all, so the
   two spellings signed media and feed URLs use passed through to `--log-file`

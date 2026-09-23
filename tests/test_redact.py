@@ -259,6 +259,27 @@ class RedactSourceLineTest(unittest.TestCase):
                 self.assertFalse(verbatim)
                 self.assertTrue(safe.startswith("url = "), safe)
 
+    def test_a_secret_key_later_on_the_line_does_not_carry_the_userinfo_through(self):
+        """The key rule keeps the text up to the key name, so a password in a
+        URL earlier on the same line rode out inside that prefix — the shape a
+        signed feed URL with credentials has. The earlier cut has to win."""
+        for line in (
+            'url = "https://kelly:hunter2@host/feed?api_key=abc',
+            'url = "https://kelly:hunter2@host/feed?sig=abc"',
+            'opts = { url = "u64://kelly:hunter2@host", token = "t" }',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertNotIn("hunter2", safe)
+                self.assertNotIn("kelly", safe)
+                self.assertFalse(verbatim)
+
+    def test_a_secret_key_before_the_userinfo_still_cuts_at_the_key(self):
+        """The key name is the diagnostic, and it sits earlier than the URL, so
+        truncating at the scheme would throw it away for nothing."""
+        line = 'dma_password = "u64://kelly:hunter2@host"'
+        self.assertEqual(redact_source_line([line], 1), ("dma_password REDACTED", False))
+
     def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
         """The netloc ends at the first `/`, `?` or `#`. A line truncated over
         an `@` in a path or a query would lose diagnostic text for nothing, and

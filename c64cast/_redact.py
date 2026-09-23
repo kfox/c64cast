@@ -159,7 +159,11 @@ def _value_open(lines: Sequence[str], lineno: int) -> bool:
                 if line[i] in "[{":
                     depth += 1
                 elif line[i] in "]}":
-                    depth -= 1
+                    # Floored rather than allowed to go negative: a closer the
+                    # walk cannot account for would otherwise cancel a later
+                    # genuine opener, and an open value read as closed is the
+                    # direction that echoes the continuation line.
+                    depth = max(depth - 1, 0)
                 i += 1
     return delim is not None or depth > 0
 
@@ -182,6 +186,7 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     * A line naming a secret-shaped key keeps the name and loses everything
       after it. The name is the whole diagnostic — it says which setting the
       parser choked on — and no source text survives past it to be read.
+      Everything, that is, unless the userinfo rule below cuts earlier.
     * A line reached while a value is still open is dropped whole, since it may
       be that value. Applied to any open value — a `'''` or `\"\"\"` string, an
       array, an inline table — and secret-shaped or not: which key a
@@ -193,17 +198,20 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
       fires and the password was echoed whole with a caret under it.
       :func:`c64cast.app.connect.redact_target` already collapses userinfo, but
       only once the target has *parsed* — and this function exists for the line
-      that did not.
+      that did not. It wins over the key rule when its cut is the earlier one,
+      because the text that rule keeps is otherwise free to carry the
+      credential through: `url = "https://kelly:hunter2@h/?api_key=x"` names
+      `api_key` well past the password.
 
     `verbatim` is False whenever any of them fired, so a caller drawing a caret
     under a column drops it — the columns no longer point where they did."""
     if _value_open(lines, lineno):
         return REDACTED, False
     line = lines[lineno - 1]
-    m = _SECRET_KEY_RE.search(line)
-    if m is not None:
-        return f"{line[: m.end()]} {REDACTED}", False
-    m = _URL_USERINFO.search(line)
-    if m is not None:
-        return f"{line[: m.start()]}{REDACTED}", False
+    key = _SECRET_KEY_RE.search(line)
+    userinfo = _URL_USERINFO.search(line)
+    if userinfo is not None and (key is None or userinfo.start() < key.end()):
+        return f"{line[: userinfo.start()]}{REDACTED}", False
+    if key is not None:
+        return f"{line[: key.end()]} {REDACTED}", False
     return line, True
