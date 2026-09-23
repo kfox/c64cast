@@ -20,10 +20,12 @@ import os
 import pathlib
 import re
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
 import wave
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
@@ -413,7 +415,13 @@ class NoSharedTryOverHardwareWritesTest(unittest.TestCase):
         }
     )
 
-    def _write_call(self, node: ast.stmt) -> str | None:
+    #: A nested `def` or `class` body is a different frame: its statements do
+    #: not run under the enclosing `try` at definition time, so neither a write
+    #: nor a `raise` inside one belongs to the block being judged.
+    NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    @classmethod
+    def _write_call(cls, node: ast.stmt) -> str | None:
         """`node` rendered as `receiver.name` when it is a bare call to a
         write-shaped method, else None. Only a *statement* counts: a write
         whose value is used is part of a computation, not a promise kept."""
@@ -422,36 +430,213 @@ class NoSharedTryOverHardwareWritesTest(unittest.TestCase):
         func = node.value.func
         if not isinstance(func, ast.Attribute):
             return None
-        if func.attr not in self.WRITE_NAMES and not func.attr.startswith("write_"):
+        if func.attr not in cls.WRITE_NAMES and not func.attr.startswith("write_"):
             return None
         recv = getattr(func.value, "id", None) or getattr(func.value, "attr", None) or "?"
         return f"{recv}.{func.attr}"
 
-    @staticmethod
-    def _swallows(node: ast.Try) -> bool:
+    @classmethod
+    def _sub_blocks(cls, stmt: ast.stmt, *, into_handlers: bool) -> Iterator[list[ast.stmt]]:
+        """``stmt``'s own sub-statement lists — an `if`'s arms, a `for`'s body,
+        a `match`'s cases, a `try`'s handlers when asked for."""
+        for name in ("body", "orelse", "finalbody"):
+            block = getattr(stmt, name, None)
+            if isinstance(block, list):
+                yield [s for s in block if isinstance(s, ast.stmt)]
+        if isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                yield case.body
+        if into_handlers and isinstance(stmt, (ast.Try, ast.TryStar)):
+            for handler in stmt.handlers:
+                yield handler.body
+
+    @classmethod
+    def _own_frame(cls, body: list[ast.stmt]) -> Iterator[ast.stmt]:
+        """Every statement in ``body`` that runs in ``body``'s own frame."""
+        for stmt in body:
+            yield stmt
+            if isinstance(stmt, cls.NESTED_SCOPES):
+                continue
+            for block in cls._sub_blocks(stmt, into_handlers=True):
+                yield from cls._own_frame(block)
+
+    @classmethod
+    def _swallows(cls, node: ast.Try | ast.TryStar) -> bool:
         """Whether every handler ends the exception instead of re-raising. A
         `try` that re-raises is failing its caller rather than making
-        independent promises, which is a different shape and not this one."""
-        return bool(node.handlers) and not any(
-            isinstance(sub, ast.Raise) for h in node.handlers for sub in ast.walk(h)
+        independent promises, which is a different shape and not this one.
+
+        The `raise` has to be in the handler's *own* frame. A handler that
+        merely *defines* a function containing one — a retry closure, a
+        callback stashed for later — has still ended this exception, and
+        reading that nested `raise` as a re-raise exempted the whole block."""
+        if not node.handlers:
+            return False
+        return not any(
+            isinstance(stmt, ast.Raise)
+            for handler in node.handlers
+            for stmt in cls._own_frame(handler.body)
         )
+
+    @classmethod
+    def _sequenced(cls, body: list[ast.stmt]) -> Iterator[ast.stmt]:
+        """The statements that a raise anywhere in ``body`` would abandon.
+
+        Not just ``body``'s direct children: a write inside an `if`, a `for` or
+        a `with` under the guard is abandoned exactly the same way, and reading
+        only the top level let the sweep pass a tree it had not really checked.
+        A nested `try` that swallows is the one exception — it guards its own
+        body, so a failure in there cannot starve a sibling out here — while
+        one that re-raises stops nothing."""
+        for stmt in body:
+            yield stmt
+            if isinstance(stmt, cls.NESTED_SCOPES):
+                continue
+            if isinstance(stmt, (ast.Try, ast.TryStar)):
+                if not cls._swallows(stmt):
+                    yield from cls._sequenced(stmt.body)
+                yield from cls._sequenced(stmt.orelse)
+                yield from cls._sequenced(stmt.finalbody)
+                continue
+            for block in cls._sub_blocks(stmt, into_handlers=False):
+                yield from cls._sequenced(block)
+
+    @classmethod
+    def offenders_in(cls, source: str, label: str) -> list[str]:
+        """Every swallowing `try` in ``source`` that holds a run of writes.
+
+        `try` and `try/except*` alike: the shape is the shared guard, and which
+        of the two spellings holds it makes no difference to a write that never
+        ran."""
+        found: list[str] = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, (ast.Try, ast.TryStar)) or not cls._swallows(node):
+                continue
+            writes = [w for w in (cls._write_call(s) for s in cls._sequenced(node.body)) if w]
+            if len(writes) >= 2:
+                found.append(f"{label}:{node.lineno} -> {', '.join(writes)}")
+        return found
 
     def test_no_run_of_hardware_writes_sits_under_one_swallowing_try(self):
         offenders: list[str] = []
         root = pathlib.Path(__file__).resolve().parent.parent / "c64cast"
         for path in sorted(root.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Try) or not self._swallows(node):
-                    continue
-                writes = [w for w in (self._write_call(s) for s in node.body) if w]
-                if len(writes) >= 2:
-                    rel = path.relative_to(root.parent)
-                    offenders.append(f"{rel}:{node.lineno} -> {', '.join(writes)}")
+            offenders += self.offenders_in(
+                path.read_text(encoding="utf-8"), str(path.relative_to(root.parent))
+            )
         self.assertEqual(
             offenders,
             [],
             "these hardware writes share one guard, so the first failure skips every "
             "one behind it; give each its own step and hand them to "
             "run_teardown_steps:\n  " + "\n  ".join(offenders),
+        )
+
+
+class SweepDepthTest(unittest.TestCase):
+    """What `NoSharedTryOverHardwareWritesTest` can actually see, pinned
+    against a simplification that would quietly narrow it.
+
+    Its first version read only the direct statements of each `try` and matched
+    only `ast.Try`, so a shared guard over an `if`, a `for`, a `with` or a
+    `try/except*` passed it unseen, and a `raise` anywhere inside a handler —
+    including one in a function the handler merely *defined* — exempted the
+    whole block. None of those shapes was live in the tree, which is exactly
+    why the gap would have gone unnoticed until one was: a guard against a
+    class of defect is only worth the coverage it has, and a sweep reports the
+    same empty list whether the tree is clean or it is not looking.
+    """
+
+    def offenders(self, body: str) -> list[str]:
+        return NoSharedTryOverHardwareWritesTest.offenders_in(textwrap.dedent(body), "probe.py")
+
+    def test_a_write_under_an_if_is_still_under_the_guard(self):
+        self.assertTrue(
+            self.offenders("""
+                try:
+                    if cond:
+                        api.write_memory("A", "01")
+                        api.silence_sid()
+                except Exception:
+                    pass
+                """)
+        )
+
+    def test_a_write_under_a_for_is_still_under_the_guard(self):
+        self.assertTrue(
+            self.offenders("""
+                try:
+                    for _ in xs:
+                        api.write_regs("A", 1)
+                    api.reset()
+                except Exception:
+                    pass
+                """)
+        )
+
+    def test_a_write_under_a_with_is_still_under_the_guard(self):
+        self.assertTrue(
+            self.offenders("""
+                try:
+                    with lock:
+                        api.write_memory("A", "01")
+                        api.write_memory("B", "02")
+                except Exception:
+                    pass
+                """)
+        )
+
+    def test_an_except_star_guard_counts_the_same(self):
+        self.assertTrue(
+            self.offenders("""
+                try:
+                    api.write_memory("A", "01")
+                    api.silence_sid()
+                except* Exception:
+                    pass
+                """)
+        )
+
+    def test_a_raise_in_a_function_the_handler_defines_is_not_a_reraise(self):
+        self.assertTrue(
+            self.offenders("""
+                try:
+                    api.write_memory("A", "01")
+                    api.silence_sid()
+                except Exception:
+                    def retry():
+                        raise RuntimeError("later, on somebody else's stack")
+                    schedule(retry)
+                """)
+        )
+
+    def test_a_handler_that_really_reraises_is_not_this_shape(self):
+        self.assertEqual(
+            self.offenders("""
+                try:
+                    api.write_memory("A", "01")
+                    api.silence_sid()
+                except Exception:
+                    raise
+                """),
+            [],
+        )
+
+    def test_a_write_the_inner_try_already_guards_does_not_count(self):
+        """No false positive either: a write with a guard of its own cannot
+        starve the sibling out here, which is the whole property being swept
+        for. Flagging it would send the next reader to split something already
+        split."""
+        self.assertEqual(
+            self.offenders("""
+                try:
+                    try:
+                        api.write_memory("A", "01")
+                    except Exception:
+                        pass
+                    api.silence_sid()
+                except Exception:
+                    pass
+                """),
+            [],
         )
