@@ -4,9 +4,3 @@ uv = "latest"
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
-
-[settings]
-python.uv_venv_auto = "create|source"
-
-[deps.uv]
-auto = true
