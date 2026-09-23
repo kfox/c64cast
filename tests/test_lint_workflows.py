@@ -150,6 +150,18 @@ class NeedsExpressionTest(unittest.TestCase):
         )
         self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
 
+    def test_an_identifier_ending_in_needs_is_not_a_job_reference(self):
+        # A step id may carry a hyphen, and so may a property name GitHub
+        # dereferences, so `cache-needs` is someone else's object in both
+        # spellings -- and `outputs` is not a job in this workflow.
+        for expression in (
+            "${{ steps.cache-needs.outputs.hit }}",
+            "${{ steps.cache-needs['outputs'] }}",
+        ):
+            with self.subTest(expression=expression):
+                jobs = self._reader(expression, declares="    needs: build\n")
+                self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
     def test_the_whole_needs_context_names_no_single_job(self):
         jobs = (
             "  build:\n"

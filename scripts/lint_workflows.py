@@ -49,10 +49,11 @@ _EVERY_PERMISSION = "write-all"
 _EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
 # `needs.build` and `needs['build']` are the same reference to GitHub, so a
 # typo in the second spelling has to be as visible as one in the first. The
-# lookbehind keeps `fromJSON(x).needs.foo` -- a `needs` key in someone else's
-# object -- from reading as this workflow's job.
+# lookbehind keeps a `needs` key in someone else's object from reading as this
+# workflow's job -- `fromJSON(x).needs.foo`, and `steps.cache-needs.outputs.x`,
+# since a property name may carry a hyphen just as a job id may.
 _JOB_ID = "[A-Za-z_][A-Za-z0-9_-]*"
-_NEEDS_REF = re.compile(rf"(?<![.\w])needs(?:\.({_JOB_ID})|\[\s*['\"]({_JOB_ID})['\"]\s*\])")
+_NEEDS_REF = re.compile(rf"(?<![-.\w])needs(?:\.({_JOB_ID})|\[\s*['\"]({_JOB_ID})['\"]\s*\])")
 
 
 def parse(text: str) -> Any:
