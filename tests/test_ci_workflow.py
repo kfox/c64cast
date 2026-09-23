@@ -45,11 +45,25 @@ _JOBS = wf.jobs(_CI)
 _GATE = "ci"
 
 
+def _with_blocks(job: object) -> list[object]:
+    """Every `with:` a job passes inputs through — its steps', and its own.
+
+    A job that calls a reusable workflow has no `steps:`; its inputs sit in a
+    `with:` beside the job's `uses:`, and `permissions:` there is what the
+    called workflow runs under. Reading only the steps would skip such a job,
+    which reads back from the loop below exactly like a job that grants
+    nothing because it needs nothing.
+    """
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps")
+    holders = [job, *(steps if isinstance(steps, list) else [])]
+    return [holder.get("with") for holder in holders if isinstance(holder, dict)]
+
+
 def _asks_for_oidc(job: object) -> bool:
     """Whether a job uploads with OIDC — a value this cannot read counts as yes."""
-    steps = job.get("steps") if isinstance(job, dict) else None
-    for step in steps if isinstance(steps, list) else []:
-        inputs = step.get("with") if isinstance(step, dict) else None
+    for inputs in _with_blocks(job):
         if not isinstance(inputs, dict) or "use_oidc" not in inputs:
             continue
         if str(inputs["use_oidc"]).strip().lower() != "false":
@@ -96,3 +110,24 @@ class OidcUploadTest(unittest.TestCase):
             _oidc_uploaders(),
             "no job asks for OIDC any more, so nothing was checked for a grant",
         )
+
+
+class OidcDetectionTest(unittest.TestCase):
+    """`_asks_for_oidc` against the places a workflow can pass the input."""
+
+    def test_a_step_asking_for_oidc_is_found(self):
+        self.assertTrue(_asks_for_oidc({"steps": [{"with": {"use_oidc": True}}]}))
+
+    def test_a_reusable_workflow_call_asking_for_oidc_is_found(self):
+        self.assertTrue(
+            _asks_for_oidc({"uses": "./.github/workflows/up.yml", "with": {"use_oidc": True}})
+        )
+
+    def test_turning_the_input_off_is_not_asking(self):
+        self.assertFalse(_asks_for_oidc({"steps": [{"with": {"use_oidc": False}}]}))
+
+    def test_a_value_that_cannot_be_read_counts_as_asking(self):
+        self.assertTrue(_asks_for_oidc({"steps": [{"with": {"use_oidc": "${{ inputs.oidc }}"}}]}))
+
+    def test_a_job_passing_no_inputs_is_not_asking(self):
+        self.assertFalse(_asks_for_oidc({"steps": [{"run": "make coverage"}]}))
