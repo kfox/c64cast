@@ -93,6 +93,15 @@ class MessageShapeTest(unittest.TestCase):
         body += "\nNote: one more\nand trailing prose"
         self.assertIn("non-blank lines", _violations("fix: a thing", body)[0])
 
+    def test_a_body_of_nothing_but_trailer_shaped_prose_still_counts(self) -> None:
+        body = "\n".join(f"Note: prose line {n}" for n in range(_BODY_MAX + 1))
+        self.assertIn("non-blank lines", _violations("fix: a thing", body)[0])
+
+    def test_a_trailer_block_below_prose_is_still_dropped(self) -> None:
+        body = "\n".join(f"line {n}" for n in range(_BODY_MAX))
+        body += "\n\nNote: one\nCloses: #12"
+        self.assertEqual(_violations("fix: a thing", body), [])
+
     def test_a_body_not_separated_from_the_subject_is_refused(self) -> None:
         found = msg.violations(["fix: a thing", "straight into prose"], _SUBJECT_MAX, _BODY_MAX)
         self.assertEqual(found, ["no blank line between the subject and the body"])

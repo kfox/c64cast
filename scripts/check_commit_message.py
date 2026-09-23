@@ -23,6 +23,7 @@ way past it.
 
 from __future__ import annotations
 
+import itertools
 import re
 import subprocess
 import sys
@@ -95,14 +96,28 @@ def message_lines(raw: str, comment_char: str = DEFAULT_COMMENT_CHAR) -> list[st
     return lines
 
 
+def _paragraphs(lines: list[str]) -> list[list[str]]:
+    """The blank-line-separated runs of non-blank lines."""
+    return [
+        list(run)
+        for blank, run in itertools.groupby(lines, key=lambda line: not line.strip())
+        if not blank
+    ]
+
+
 def body_lines(lines: list[str]) -> list[str]:
-    """Non-blank body lines that are not part of the trailing trailer block."""
-    body = [line for line in lines[1:] if line.strip()]
+    """Non-blank body lines, less a trailing paragraph that holds only trailers.
 
-    while body and _TRAILER.match(body[-1]):
-        body.pop()
+    The block is the last paragraph and has to be preceded by one, the way git
+    reads trailers. Popping trailer-shaped lines one at a time instead let a
+    whole body of `Note:`-shaped prose count as nothing.
+    """
+    paragraphs = _paragraphs(lines[1:])
 
-    return body
+    if len(paragraphs) > 1 and all(_TRAILER.match(line) for line in paragraphs[-1]):
+        paragraphs.pop()
+
+    return [line for paragraph in paragraphs for line in paragraph]
 
 
 def violations(lines: list[str], subject_max: int, body_max: int) -> list[str]:
