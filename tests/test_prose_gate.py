@@ -120,6 +120,26 @@ class MessageParsingTest(unittest.TestCase):
         self.assertEqual(msg.violations(msg.message_lines(raw), _SUBJECT_MAX, _BODY_MAX), [])
 
 
+class HookStageTest(unittest.TestCase):
+    """Only the message hook may select at git's `commit-msg` stage.
+
+    `default_install_hook_types` wires that hook type, and a hook that does not
+    restrict `stages` is then also handed `.git/COMMIT_EDITMSG` —
+    `mixed-line-ending --fix=lf` rewrites it and fails the commit.
+    """
+
+    def setUp(self) -> None:
+        self.config = (_REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+
+    def test_the_default_stage_excludes_commit_msg(self) -> None:
+        self.assertIn("default_stages: [pre-commit]", self.config)
+
+    def test_only_the_message_hook_opts_into_commit_msg(self) -> None:
+        hooks = self.config.split("- id: ")[1:]
+        opted_in = [hook.split()[0] for hook in hooks if "commit-msg" in hook]
+        self.assertEqual(opted_in, ["commit-message-shape"])
+
+
 class CommentCharTest(unittest.TestCase):
     def test_a_configured_comment_char_is_the_one_stripped(self) -> None:
         raw = (
