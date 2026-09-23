@@ -1416,7 +1416,12 @@ class VideoScene(MediaFileMixin, Scene):
         # The whole track at once, matching the per-chunk DSP the host-DMA path
         # applies in _encode_and_enqueue.
         floats = self.audio.process_offline_dsp(floats)
-        rng = np.random.default_rng() if self.audio.dither_enabled else None
+        # Seeded from the streamer's own seed — the number it logs at INFO —
+        # so a staged capture re-encodes from it like the realtime sites do.
+        # Its own generator rather than the streamer's: a whole-track draw
+        # would otherwise land in the realtime sequence at a point that
+        # depends on how much audio has already played.
+        rng = np.random.default_rng(self.audio.dither_seed) if self.audio.dither_enabled else None
         vol = encode_floats_to_dac(
             floats, dither=self.audio.dither_enabled, rng=rng, curve=self.audio.dac_curve
         )
