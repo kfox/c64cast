@@ -80,10 +80,13 @@ def message_lines(raw: str, comment_char: str = DEFAULT_COMMENT_CHAR) -> list[st
     scissors = f"{comment_char} {_SCISSORS_RULE}"
 
     lines: list[str] = []
-    for line in raw.splitlines():
+    for index, line in enumerate(raw.splitlines()):
         if line.rstrip() == scissors:
             break
-        if line.startswith(comment_char):
+        # Git's cleanup for `-m`/`-F` is `whitespace`, which keeps comment
+        # lines, so a first line opening with the char is a subject like
+        # `#398: fix the pin` and not the editor template.
+        if index and line.startswith(comment_char):
             continue
         lines.append(line.rstrip())
 

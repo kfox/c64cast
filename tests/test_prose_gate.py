@@ -125,6 +125,13 @@ class MessageParsingTest(unittest.TestCase):
     def test_trailing_blank_lines_are_dropped(self) -> None:
         self.assertEqual(msg.message_lines("subject\n\n\n\n"), ["subject"])
 
+    def test_a_first_line_opening_with_the_comment_char_is_the_subject(self) -> None:
+        """`git commit -m` leaves comment lines in place, so this one is prose."""
+        over = "x" * (_SUBJECT_MAX + 1)
+        lines = msg.message_lines(f"#398: fix the pin\n\n{over}\n")
+        self.assertEqual(lines[0], "#398: fix the pin")
+        self.assertEqual(msg.violations(lines, _SUBJECT_MAX, _BODY_MAX), [])
+
     def test_leading_blank_lines_are_dropped_so_the_subject_is_the_subject(self) -> None:
         raw = "\n\nfix: a thing\n\nreal prose\n"
         self.assertEqual(msg.message_lines(raw), ["fix: a thing", "", "real prose"])
