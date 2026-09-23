@@ -385,9 +385,9 @@ class NoSharedTryOverHardwareWritesTest(unittest.TestCase):
 
     #367 converted the scene teardowns and #368 the audio ones, which said the
     audio blocks were "as far as the AST sweep can see, the last live instance
-    of the class". That has been falsified three times since — `_disarm_reu_pump`,
-    then `uninstall_bank_swap_irq` (#462), then two more that nobody had looked
-    at. A guard costs less than a fourth hand search.
+    of the class". That has been falsified five times since — `_disarm_reu_pump`,
+    then `uninstall_bank_swap_irq` (#462), then the three this sweep found that
+    nobody had looked at. A guard costs less than a sixth hand search.
     """
 
     #: Calls whose name says they reach the machine with a promise of their
