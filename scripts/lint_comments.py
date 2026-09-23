@@ -84,6 +84,8 @@ def _disabled() -> bool:
             ["git", "config", "--get", "prose.lintComments"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_CONFIG_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
@@ -160,6 +162,8 @@ def added_lines(paths: list[str]) -> list[tuple[str, int, str]]:
             + ["-U0", "--", *paths],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_DIFF_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
@@ -212,6 +216,8 @@ def comment_lines(path: str) -> set[int] | None:
             ["git", "show", f":{path}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_DIFF_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
