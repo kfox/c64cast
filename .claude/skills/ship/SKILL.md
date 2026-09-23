@@ -117,6 +117,12 @@ The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last. Tell it to review that
 commit's own diff, not `<sha>...HEAD` and not the branch.
 
+Its prompt owes the three payloads step 4 lists — the gate summary, where this
+repo states its rules, and the pinned paths — for the reason step 4 gives: it
+cannot check a claim it was never shown. This is the net that reaches a one-line
+change to a pinned path first, so it is the one that must not give it the cheap
+pass.
+
 **The reviewer fixes what it finds and commits the fixes itself.**
 `/code-review` without `--fix` is a report-only run, so its prompt has to tell
 it to fix what it finds — nothing reaches the tree otherwise. A finding handed
@@ -131,8 +137,9 @@ does not have.
 while it runs — it verifies findings by mutating the tree and running the suite,
 and a concurrent commit fails its pre-commit hook on a mutation you never made.
 Give it `isolation: "worktree"` if you need to keep working; its prompt then
-also owes step 1's `uv sync` and the prefix/argument split, and its fixes come
-back as commits to cherry-pick.
+also owes step 1's `uv sync` and the prefix/argument split, and must require
+the worktree's path and every fix commit's SHA in its report. Its fixes come
+back by cherry-pick, and a commit you cannot name is one you cannot pick.
 
 **Prove coverage by execution.** "Tests cover this" is an argument; a named
 victim is evidence. Mutate the line the commit claims is covered, watch a named
