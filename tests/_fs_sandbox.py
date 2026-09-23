@@ -21,8 +21,11 @@ This turns that from a convention into an enforced property, in two halves:
   still reaches a real file, under a rule broad enough to catch a leak nobody
   anticipated: **the suite may read and write the checkout, the temp
   directory, and the interpreter's own installation — nothing else under
-  `$HOME`.** `assets/` is carved back out of the checkout, since everything
-  there but the READMEs and the logo is gitignored.
+  `$HOME`.** Two things are carved back *out* of the checkout. `assets/`,
+  since everything there but the READMEs and the logo is gitignored. And
+  `.git/`, which the rule above could never have caught, because the
+  repository's own metadata is *inside* the checkout the suite is otherwise
+  free to write — see :func:`git_env_conflict` for what that cost.
 
 Why an audit hook for the second half rather than patching `builtins.open`:
 the C-level opens in cv2, PyAV and sqlite3 don't go through it, and the paths
@@ -44,7 +47,7 @@ than a hook armed from a test module: `unittest_parallel` runs the modules in
 worker processes, and only the environment reaches those whatever start method
 multiprocessing picks.
 
-Two blind spots worth knowing:
+Blind spots worth knowing:
 
 * A violation is raised at the `open()` call site, so code that catches
   broadly can swallow it. `SandboxViolation` derives from `AssertionError` —
@@ -53,6 +56,14 @@ Two blind spots worth knowing:
   hide it. The next unguarded access still reports.
 * A path with no directory part goes unchecked, because it cannot be resolved
   here (see `_hook`).
+* The `subprocess` half reads only a call whose argv is a list and whose
+  program is named `git`. CPython hands the audit hook a list on POSIX and an
+  already-flattened command line on Windows, so on Windows it reads nothing at
+  all; a POSIX `shell=True` call arrives as `/bin/sh -c …` and is skipped like
+  any other program that is not git, as is `os.system`. Parsing a shell word
+  for `-C` is not the fix — quoting and `&&` make it guesswork — so a fixture
+  that shells out to git strips the ambient `GIT_*` itself, with
+  `no_inherited_git_env` from `tests/_fakes.py`.
 """
 
 from __future__ import annotations
@@ -64,7 +75,9 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+import threading
+from collections.abc import Iterator, Mapping
+from typing import NamedTuple
 
 # Private marker that a process in this tree already set the suite up; not one
 # of the two public overrides below.
@@ -74,7 +87,9 @@ _DATA_DIR_ENV = "C64CAST_DATA_DIR"
 
 # Filesystem audit events whose first argument is a path — not the complete set
 # CPython raises. `open` covers every read and rewrite; the rest catch the directory
-# and metadata operations that create, move or delete without opening.
+# and metadata operations that create, move or delete without opening. A
+# `subprocess.Popen` is handled apart from these: its first argument is a program,
+# and what is out of bounds about it is the environment it inherits.
 _PATH_EVENTS = frozenset(
     {
         "open",
@@ -148,6 +163,134 @@ def _allowed_roots() -> tuple[str, ...]:
 _HOME = _key(_resolve(os.path.expanduser("~")))
 _ALLOWED = _allowed_roots()
 _ASSETS = _key(os.path.join(CHECKOUT, "assets"))
+
+
+#: Set while this module is reading a file to answer its *own* question. Kept
+#: per thread rather than as a plain flag for the reason
+#: :func:`allow_outside_checkout` gives for not disarming: the armed flag is
+#: read by every thread, so a process-wide suspend would also un-police
+#: whatever the code under test had running in the background.
+_probing = threading.local()
+
+
+@contextlib.contextmanager
+def _own_read() -> Iterator[None]:
+    """Exempt the reads this module makes to locate the git metadata.
+
+    :func:`_repo_dirs_at` has to read `<root>/.git` and the `commondir` beside
+    it, and both land on paths :func:`violation` now refuses — so with the hook
+    armed the guard's own probe raises, blaming the test for touching `.git`
+    when what it did was shell out to `git`. That fires for any `-C` target
+    whose metadata is this repository's: a sibling worktree, or the primary
+    checkout, which is where every `-C` that is not under `CHECKOUT` but is
+    still this repo ends up.
+    """
+    was = getattr(_probing, "active", False)
+    _probing.active = True
+    try:
+        yield
+    finally:
+        _probing.active = was
+
+
+class _RepoDirs(NamedTuple):
+    """Where one checkout keeps its git metadata, as prefix-comparison keys.
+
+    ``private`` is the gitdir that checkout alone uses — its ``HEAD``, its
+    index, its refs. ``common`` is the metadata every worktree of the
+    repository shares, and is where ``config`` lives. Outside a worktree the
+    two are one directory. ``gitfile`` is the resolved ``<tree>/.git`` itself,
+    kept unkeyed because in a worktree it is a *file*.
+    """
+
+    tree: str
+    gitfile: str
+    private: str
+    common: str
+
+
+def _repo_dirs_at(root: str) -> _RepoDirs:
+    """Where the checkout at ``root`` keeps its git metadata.
+
+    Usually ``<root>/.git`` is all of it. In a **worktree** that name is a file
+    reading ``gitdir: <path>``, the metadata that worktree alone uses sits
+    outside the tree entirely, and the ``commondir`` beside it names the
+    primary checkout's ``.git``, where ``config`` actually lives. Every change
+    in this repository is made in a worktree, so covering only the local name
+    would leave the file that got written in #482 unguarded in the place the
+    work happens.
+
+    That "outside the tree entirely" is also why :func:`git_env_conflict`
+    compares resolved repositories rather than asking whether ``GIT_DIR`` sits
+    inside the ``-C`` target: in a worktree it never does, and a containment
+    test would read the pre-commit hook's own ``GIT_DIR`` as a conflict with
+    the very worktree it was exported for.
+
+    Read off disk rather than asked of `git rev-parse`: this runs at
+    interpreter startup in every `unittest_parallel` worker, and a subprocess
+    per worker to learn a path that two small files already state is a cost for
+    nothing.
+    """
+    local = os.path.join(root, ".git")
+    gitfile = _resolve(local)
+    private = common = gitfile
+    with _own_read():
+        try:
+            with open(local, encoding="utf-8") as fh:
+                marker = fh.read(4096).strip()
+        except (OSError, ValueError, UnicodeDecodeError):
+            marker = ""
+        prefix = "gitdir:"
+        if marker.startswith(prefix):
+            private = common = _resolve(os.path.join(root, marker[len(prefix) :].strip()))
+            with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
+                with open(os.path.join(private, "commondir"), encoding="utf-8") as fh:
+                    common = _resolve(os.path.join(private, fh.read().strip()))
+    return _RepoDirs(_key(_resolve(root)), gitfile, _key(private), _key(common))
+
+
+def _metadata_keys(dirs: _RepoDirs) -> tuple[str, ...]:
+    """Prefix keys for every directory holding one checkout's git metadata,
+    which is what :func:`violation` has to refuse — the private and the shared
+    half alike, since a test has no business in either."""
+    return tuple(sorted({_key(dirs.gitfile), dirs.private, dirs.common}))
+
+
+def _repo_dirs(resolved: str) -> _RepoDirs:
+    """Where the repository at ``resolved`` keeps its metadata.
+
+    A target inside this checkout answers from the values computed at import
+    instead of reading `<target>/.git` again — the common case, and the only
+    one the gates themselves hit. What keeps the read safe for the *other*
+    targets is :func:`_own_read`; without it the probe lands on the metadata
+    :func:`violation` refuses and the guard fails the call it meant to allow.
+
+    A `-C` target need not be a checkout *root*: git changes directory and
+    then discovers the repository by walking up, so this walks up too. Reading
+    only `<target>/.git` hands a subdirectory a repository of its own that
+    nothing can match, and `git -C <repo>/sub` with that same repository's
+    `GIT_DIR` in the environment — agreement, as git resolves it — was refused.
+    """
+    if _key(resolved).startswith((_REPO.tree, _REPO.private, _REPO.common)):
+        return _REPO
+    here = resolved
+    while True:
+        with _own_read():
+            found = os.path.exists(os.path.join(here, ".git"))
+        if found:
+            return _repo_dirs_at(here)
+        parent = os.path.dirname(here)
+        if parent == here:
+            return _repo_dirs_at(resolved)
+        here = parent
+
+
+_REPO = _repo_dirs_at(CHECKOUT)
+_GIT = _metadata_keys(_REPO)
+#: In a worktree `<checkout>/.git` is a *file*, so the prefix keys above —
+#: which carry a trailing separator on purpose — cannot match it. Case-folded
+#: for the same reason `_key` is: macOS and Windows resolve case-insensitively.
+_GIT_FILES = frozenset({_REPO.gitfile.casefold()})
 _armed = False
 _exempt: tuple[str, ...] = ()
 
@@ -179,6 +322,16 @@ def violation(path: str) -> str | None:
     target = _key(resolved)
     if _exempt and target.startswith(_exempt):
         return None
+    if target.startswith(_GIT) or resolved.casefold() in _GIT_FILES:
+        return (
+            f"test touched {path!r}, inside this checkout's own git metadata. A test has no "
+            f"business reading or writing the repository's metadata, and the damage "
+            f"does not look like a test failure: a fixture that reached .git/config "
+            f"once left `user.name = Test` there and misattributed 17 real commits "
+            f"across four branches before anyone noticed. Build a scratch repo under "
+            f"tempfile.mkdtemp() and strip the ambient GIT_* from its environment — "
+            f"see tests/_fakes.py."
+        )
     if target.startswith(_ASSETS):
         rel = os.path.relpath(resolved, CHECKOUT).replace(os.sep, "/")
         if asset_is_tracked(rel):
@@ -201,8 +354,308 @@ def violation(path: str) -> str | None:
     )
 
 
+#: The `GIT_*` variables that re-point git at a repository regardless of where
+#: the command was told to run. `GIT_COMMON_DIR` belongs with them because it
+#: is where `config` — the file #482 wrote into — actually lives, and
+#: `GIT_CONFIG` because it names that file outright: measured against git
+#: 2.55, `GIT_CONFIG=<real>/.git/config git -C <tmp> config user.name Test`
+#: writes `<real>/.git/config` and leaves the scratch repo untouched, which is
+#: #482's file and #482's command reached by a third route.
+_GIT_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_CONFIG",
+)
+
+#: Under the shared metadata, each linked worktree keeps its own `HEAD`, index
+#: and refs in `worktrees/<name>`. Lower-case already, like the keys it extends.
+_WORKTREES = "worktrees" + os.sep
+
+
+def _same_repository(candidate: str, dirs: _RepoDirs) -> bool:
+    """Whether ``candidate`` — a prefix key — belongs to the repository
+    ``dirs`` describes.
+
+    Another worktree's *private* gitdir never counts, and that is the case
+    worth spelling out, because it sits under the shared metadata and so reads
+    as agreement to a plain prefix test. git takes `HEAD`, the index and the
+    refs from `GIT_DIR`, so `git -C <worktree A> commit` with worktree B's
+    gitdir in the environment commits A's files onto B's branch — the #482
+    damage, aimed at a sibling of the tree the work is in. Every change in this
+    repository is made in its own worktree, so those siblings are the normal
+    state here, not a rare layout.
+
+    The **shared** metadata counts only for the checkout that owns it outright.
+    `config` does live there, so a `git -C <worktree> config` write lands in
+    the same file either way — but `config` is not the dangerous verb. Measured
+    against git 2.55: with the common dir as `GIT_DIR` and a linked worktree as
+    `-C`, `rev-parse` answers `HEAD` from the *primary* checkout while
+    `--show-toplevel` answers the worktree, so a commit puts one tree's files
+    onto the other's branch. That is a disagreement whatever it does to
+    `config`. Refusing it cannot cost a false positive of the kind that broke
+    this guard's own first commit, because git exports the *private* gitdir to
+    a linked worktree's hooks and never the common one.
+    """
+    siblings = dirs.common + _WORKTREES
+    if candidate.startswith(siblings):
+        return dirs.private.startswith(siblings) and candidate.startswith(dirs.private)
+    if dirs.private != dirs.common and candidate.startswith(dirs.common):
+        return False
+    return candidate.startswith((dirs.tree, dirs.private, dirs.common))
+
+
+#: git's own global options that take their value as a *separate* argument.
+#: `-C` is walked rather than skipped, so it is not among them; the rest have
+#: to be consumed together with their value, because a value that does not
+#: start with `-` otherwise reads as the subcommand. `--exec-path` is here for
+#: the spelling that takes a path; bare, it prints one and exits, so consuming
+#: the word after it costs nothing — that call reaches no repository.
+_GIT_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--attr-source",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--shallow-file",
+        "--super-prefix",
+        "--work-tree",
+    }
+)
+
+#: git's own global options that take no value. With the set above this is
+#: git's whole option surface before the subcommand, and an option in neither
+#: is the one case the walk below refuses to guess at. Sourced by offering
+#: every `--<word>` in the `git` binary to `git <word> version` and keeping
+#: what it did not call an unknown option, because `git -h` prints only the
+#: documented ones: the four `*-pathspecs` flags and `--no-literal-pathspecs`
+#: are all accepted and none of them is in that usage line.
+_GIT_FLAG_OPTIONS = frozenset(
+    {
+        "-P",
+        "-h",
+        "-p",
+        "-v",
+        "--bare",
+        "--glob-pathspecs",
+        "--help",
+        "--html-path",
+        "--icase-pathspecs",
+        "--info-path",
+        "--literal-pathspecs",
+        "--man-path",
+        "--no-advice",
+        "--no-lazy-fetch",
+        "--no-literal-pathspecs",
+        "--no-optional-locks",
+        "--no-pager",
+        "--no-replace-objects",
+        "--noglob-pathspecs",
+        "--paginate",
+        "--version",
+    }
+)
+
+#: The main-command options that name a repository, and the variable each one
+#: sets. git implements them as a `setenv` of exactly that variable, so an
+#: option here makes the same statement the variable does — it outranks `-C`
+#: for the same reason, and it replaces an ambient value rather than joining
+#: it. Measured against git 2.55: `git --git-dir=<real>/.git -C <tmp> config
+#: user.name Test` writes `<real>/.git/config`, in both the attached and the
+#: separate-word spelling. Every name here is in `_GIT_VALUE_OPTIONS` too,
+#: which is where the walk learns that it consumes a word.
+_GIT_LOCATION_OPTIONS = {"--git-dir": "GIT_DIR", "--work-tree": "GIT_WORK_TREE"}
+
+
+class _GitMainOptions(NamedTuple):
+    """What git's own options — the ones before the subcommand — say.
+
+    ``target`` is where the `-C` options land, or None when the call passes
+    none. ``located`` is the `GIT_*` variables the call set itself, keyed by
+    variable name, from the options in :data:`_GIT_LOCATION_OPTIONS`.
+    ``unreadable`` names an option in neither table, which is also a
+    statement that ``target`` cannot be trusted: if that option takes its value
+    as a separate word, the walk ended on the value instead of on the
+    subcommand, and any later `-C` went unseen.
+    """
+
+    target: str | None
+    unreadable: str | None
+    located: dict[str, str]
+
+
+def _git_main_options(argv: list[str], cwd: str) -> _GitMainOptions:
+    """Read git's own options off ``argv``.
+
+    Each `-C` is relative to the one before it, which is why this walks them
+    rather than taking the last. The walk stops at the subcommand, because a
+    `-C` after that belongs to the subcommand and means something else
+    entirely — `git commit -C <commit>` reuses that commit's message.
+
+    A global option whose value is a separate argument has to be consumed with
+    that value. `git -c core.quotePath=false -C <tmp> config …` is an idiom
+    this repository already writes (`scripts/lint_comments.py`,
+    `test_prose_gate.py`), and reading `core.quotePath=false` as the subcommand
+    ends the walk before the `-C` — which reports no target at all and lets
+    exactly the call this guards against through unchecked.
+
+    An option in *neither* table is reported rather than skipped, because
+    skipping is that same failure for every name the tables do not list yet:
+    `--attr-source <tree>` and `--shallow-file <path>` both take a separate
+    value, and until they were added here they let the write through in
+    silence. Reporting turns the next such option into a named test failure
+    instead. A `--opt=value` spelling carries its value and needs no table, and
+    an attached short spelling needs none either: git rejects both `-C=<path>`
+    and `-C<path>` as unknown options, without reaching a repository.
+
+    An option from :data:`_GIT_LOCATION_OPTIONS` is also collected rather than
+    only consumed, because skipping its value throws away the one thing about
+    the call that decides which repository it writes to.
+    """
+    here, seen = cwd, False
+    located: dict[str, str] = {}
+    rest = argv[1:]
+    while rest:
+        word = rest[0]
+        if word == "--":
+            break
+        if word == "-C" and len(rest) > 1:
+            here, seen, rest = os.path.join(here, rest[1]), True, rest[2:]
+            continue
+        if not word.startswith("-"):
+            break
+        option, attached, value = word.partition("=")
+        variable = _GIT_LOCATION_OPTIONS.get(option)
+        if variable is not None and (attached or len(rest) > 1):
+            located[variable] = value if attached else rest[1]
+            rest = rest[1:] if attached else rest[2:]
+            continue
+        if "=" in word or word in _GIT_FLAG_OPTIONS:
+            rest = rest[1:]
+            continue
+        if word in _GIT_VALUE_OPTIONS:
+            rest = rest[2:]
+            continue
+        return _GitMainOptions(here if seen else None, word, located)
+    return _GitMainOptions(here if seen else None, None, located)
+
+
+def git_env_conflict(argv: list[str], cwd: str, env: dict[str, str]) -> str | None:
+    """Why this `git` call is ambiguous about which repository it means, or None.
+
+    **`GIT_DIR` outranks `-C`.** A fixture that builds a scratch repo and calls
+    `git -C <tmp> config user.name Test` looks self-contained and is not: when
+    the suite runs under the pre-commit hook, `git commit` exports `GIT_DIR` to
+    its hooks, so every one of those `config` writes landed in the real
+    checkout's `.git/config` instead. That is how `user.name = Test` came to
+    author 17 commits across four branches.
+
+    The rule is disagreement, not presence. A call that names no `-C` is taking
+    the ambient environment on purpose, and a call whose `-C` resolves to the
+    same repository the `GIT_*` variables name wants that repository either way
+    — `git -C <checkout> ls-files` under the pre-commit hook is the common case
+    and is fine. What is always a bug is the two naming different repositories,
+    or different worktrees of one: one of them is what the author meant and the
+    other is what git will do.
+
+    A location the call states *itself* — `--git-dir`, `--work-tree` — is the
+    same statement by another route, since git sets the variable from the
+    option, so it is read here alongside the environment and replaces the
+    ambient value of the variable it sets.
+    """
+    main = _git_main_options(argv, cwd)
+    stated = {name: env[name] for name in _GIT_LOCATION_ENV if env.get(name)}
+    from_argv = {name: raw for name, raw in main.located.items() if raw}
+    stated.update(from_argv)
+    named = [name for name in _GIT_LOCATION_ENV if name in stated]
+    if not named:
+        return None
+    if main.unreadable is not None:
+        return (
+            f"test ran `git {main.unreadable} …` with {named[0]} set, "
+            f"and this guard cannot tell whether {main.unreadable} takes the next "
+            f"word as its value — so it cannot say which repository the call's `-C` "
+            f"names, while {named[0]} outranks -C either way. Strip the "
+            f"ambient GIT_* from the environment you hand the subprocess (see "
+            f"tests/_fakes.py), or list the option in _GIT_VALUE_OPTIONS or "
+            f"_GIT_FLAG_OPTIONS in tests/_fs_sandbox.py."
+        )
+    if main.target is None:
+        return None
+    target = _resolve(os.path.join(cwd, main.target))
+    dirs = _repo_dirs(target)
+    for name in named:
+        raw = stated[name]
+        # Resolved against the `-C` target rather than against `cwd`: git has
+        # already changed directory by the time it reads these, so a relative
+        # value names the repository the call asked for. `git commit` exports
+        # GIT_INDEX_FILE=.git/index outside a worktree, and reading that as
+        # cwd-relative refused `git -C <tmp> add` over a trap that was not there.
+        # An option's value resolves the same way, whichever side of the `-C`
+        # it was written on: git sets the variable as it walks the options and
+        # reads it only once they are all walked.
+        if _same_repository(_key(_resolve(os.path.join(target, raw))), dirs):
+            continue
+        where = "on the command line" if name in from_argv else "in the environment"
+        remedy = (
+            "Name one repository: drop the option, or drop the -C."
+            if name in from_argv
+            else "Strip the ambient GIT_* from the environment you hand the "
+            "subprocess (see tests/_fakes.py), or drop the -C and mean the "
+            "ambient repository."
+        )
+        return (
+            f"test ran `git -C {main.target!r}` with {name}={raw!r} {where}. "
+            f"{name} outranks -C, so this command acts on the repository {name} "
+            f"names and not the one it was told to run in — which is how a fixture "
+            f"wrote its test identity into a real checkout's .git/config. {remedy}"
+        )
+    return None
+
+
+def _check_subprocess(args: tuple[object, ...]) -> None:
+    if len(args) < 4:
+        return
+    executable, argv, cwd, env = args[0], args[1], args[2], args[3]
+    if not isinstance(argv, (list, tuple)) or not argv:
+        # Windows flattens the command line before raising the event, so there
+        # is no argv to read a `-C` out of; POSIX always builds a list, and a
+        # `shell=True` call arrives there as `/bin/sh -c …`. Both are in the
+        # module docstring's blind spots.
+        return
+    if not all(isinstance(a, (str, bytes, os.PathLike)) for a in argv):
+        return
+    words = [os.fsdecode(a) for a in argv]
+    if isinstance(executable, (str, bytes, os.PathLike)):
+        program = os.fsdecode(executable)
+    else:
+        program = words[0]
+    if os.path.basename(program) not in ("git", "git.exe"):
+        return
+    here = os.fsdecode(cwd) if isinstance(cwd, (str, bytes, os.PathLike)) else os.getcwd()
+    # `env=None` means the child inherits ours, which is exactly the case that
+    # bit: nothing in the fixture mentioned GIT_DIR because nothing had to.
+    # Any Mapping, not just `dict`: `subprocess` hands the audit hook whatever
+    # the caller passed, and `env=os.environ` is an `os._Environ`. Reading only
+    # `dict` sends every other mapping down the inherit branch, so a fixture
+    # that hands the child a stripped mapping is judged against the ambient
+    # GIT_* it took the trouble to drop.
+    environ = dict(env) if isinstance(env, Mapping) else dict(os.environ)  # type: ignore[arg-type]
+    complaint = git_env_conflict(words, here, environ)
+    if complaint is not None:
+        raise SandboxViolation(complaint)
+
+
 def _hook(event: str, args: tuple[object, ...]) -> None:
-    if not _armed or event not in _PATH_EVENTS or not args:
+    if not _armed or not args or getattr(_probing, "active", False):
+        return
+    if event == "subprocess.Popen":
+        _check_subprocess(args)
+        return
+    if event not in _PATH_EVENTS:
         return
     target = args[0]
     if not isinstance(target, (str, bytes, os.PathLike)):

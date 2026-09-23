@@ -13,8 +13,10 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _fs_sandbox
 
@@ -88,6 +90,524 @@ class RuleTest(unittest.TestCase):
         for rel in ("assets/logo.png", "assets/roms/README.md"):
             with self.subTest(rel=rel):
                 self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / rel)))
+
+    def test_the_checkouts_own_git_is_out_of_bounds(self):
+        """The one leak the outside-the-checkout rule could never catch, since
+        `.git` is *inside* the tree the suite is otherwise free to write. A
+        fixture that reached `.git/config` left `user.name = Test` there and
+        misattributed 17 commits."""
+        for rel in (".git/config", ".git/HEAD", ".git/hooks/pre-commit"):
+            with self.subTest(rel=rel):
+                complaint = _fs_sandbox.violation(str(CHECKOUT / rel))
+                assert complaint is not None
+                self.assertIn(".git", complaint)
+
+    def test_a_sibling_of_git_is_not_caught_by_it(self):
+        """`.gitignore` and `.github/` are ordinary tracked files, which is why
+        the key carries a trailing separator."""
+        for rel in (".gitignore", ".github/workflows/ci.yml", ".git-blame-ignore-revs"):
+            with self.subTest(rel=rel):
+                self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / rel)))
+
+    def test_every_git_dir_this_checkout_has_is_covered(self):
+        """In a worktree the metadata is not under the tree at all: `.git` is a
+        file naming a directory in the *primary* checkout, and `config` — the
+        file #482 corrupted — lives in the common dir beside it. Every change in
+        this repository is made in a worktree, so a rule that covered only the
+        local name would be unguarded exactly where the work happens."""
+        for key in _fs_sandbox._GIT:
+            with self.subTest(key=key):
+                complaint = _fs_sandbox.violation(os.path.join(key, "config"))
+                self.assertIsNotNone(complaint)
+        self.assertIsNone(_fs_sandbox.violation(str(CHECKOUT / "CHANGELOG.md")))
+
+
+class GitEnvConflictTest(unittest.TestCase):
+    """`GIT_DIR` outranks `-C`, so a fixture that looks self-contained is not.
+
+    The rule is *disagreement*, not presence: under the pre-commit hook every
+    subprocess inherits a `GIT_DIR` naming the checkout, and the calls that
+    genuinely mean the checkout have to keep working.
+    """
+
+    def test_a_git_dir_pointing_away_from_the_dash_c_target_is_refused(self):
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_DIR": str(CHECKOUT / ".git")},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+    def test_the_index_file_and_work_tree_are_the_same_trap(self):
+        for name in ("GIT_WORK_TREE", "GIT_INDEX_FILE"):
+            with self.subTest(name=name):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", "-C", "/tmp/scratch", "add", "m.py"],
+                    cwd=str(CHECKOUT),
+                    env={name: str(CHECKOUT)},
+                )
+                self.assertIsNotNone(complaint)
+
+    def test_a_git_dir_inside_the_dash_c_target_is_what_the_caller_asked_for(self):
+        """`git -C <checkout> ls-files` under the pre-commit hook: the two agree,
+        so there is nothing ambiguous to refuse."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(CHECKOUT), "ls-files", "assets"],
+                cwd=str(CHECKOUT),
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_no_dash_c_means_the_ambient_repository_was_meant(self):
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "config", "user.name", "Test"],
+                cwd="/tmp/scratch",
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_clean_environment_is_never_a_conflict(self):
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", "/tmp/scratch", "init", "-q"], cwd=str(CHECKOUT), env={}
+            )
+        )
+
+    def test_chained_dash_c_options_resolve_relative_to_each_other(self):
+        """git applies each `-C` from where the last one left it, so a rule that
+        read only the final one would resolve `sub` against cwd."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(CHECKOUT), "-C", ".git", "rev-parse", "HEAD"],
+                cwd="/tmp/elsewhere",
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_worktrees_own_git_dir_is_not_a_conflict_with_that_worktree(self):
+        """The case that made the gate refuse its own commit.
+
+        A worktree's metadata lives under the *primary* checkout's `.git`, so
+        `GIT_DIR` is never inside the tree it belongs to. Asking only whether
+        it is read the pre-commit hook's own environment as a conflict with the
+        very worktree it was exported for, and every `git -C <worktree>` in the
+        suite failed — under the hook, where nothing else runs.
+        """
+        root = Path(tempfile.mkdtemp())
+        tree, gitdir = root / "tree", root / "primary" / ".git" / "worktrees" / "tree"
+        gitdir.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+
+        for name, value in (
+            ("GIT_DIR", gitdir),
+            ("GIT_INDEX_FILE", gitdir / "index"),
+        ):
+            with self.subTest(name=name, value=str(value)):
+                self.assertIsNone(
+                    _fs_sandbox.git_env_conflict(
+                        ["git", "-C", str(tree), "config", "user.name"],
+                        cwd=str(root),
+                        env={name: str(value)},
+                    )
+                )
+
+    def test_a_foreign_worktree_is_still_a_conflict(self):
+        """The near miss: same shape, but `GIT_DIR` names a *different*
+        worktree's metadata. Nothing about the layout makes that agree."""
+        root = Path(tempfile.mkdtemp())
+        tree, mine = root / "tree", root / "primary" / ".git" / "worktrees" / "tree"
+        mine.mkdir(parents=True)
+        theirs = root / "other" / ".git"
+        theirs.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {mine}\n", encoding="utf-8")
+
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(tree), "config", "user.name", "Test"],
+            cwd=str(root),
+            env={"GIT_DIR": str(theirs)},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+    def test_a_global_option_with_a_separate_value_does_not_hide_the_dash_c(self):
+        """`git -c core.quotePath=false -C <tmp> …` is an idiom this repository
+        already writes. Ending the option walk at the first argument that does
+        not start with `-` reports no `-C` at all, which allows exactly the
+        call the guard exists to refuse.
+
+        Naming the target is what makes this a test of the walk. An option the
+        tables have lost is refused too, for being unreadable, and that
+        complaint carries `outranks -C` as well — so asserting only on that
+        phrase stayed green with `-c` deleted from `_GIT_VALUE_OPTIONS`.
+        """
+        for lead in (
+            ["-c", "core.quotePath=false"],
+            ["--exec-path", "/opt/libexec/git-core"],
+            ["--namespace", "refs/test"],
+            ["--no-pager", "-c", "core.quotePath=false"],
+        ):
+            with self.subTest(lead=" ".join(lead)):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", *lead, "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    cwd=str(CHECKOUT),
+                    env={"GIT_DIR": str(CHECKOUT / ".git")},
+                )
+                assert complaint is not None
+                self.assertIn("outranks -C", complaint)
+                self.assertIn("/tmp/scratch", complaint)
+
+    def test_the_other_separate_value_options_do_not_hide_it_either(self):
+        """`-c` was not the only one: `--attr-source <tree>` and
+        `--shallow-file <path>` take a separate value too, and while the table
+        listed neither, the walk ended on the value and reported no `-C`.
+
+        The complaint has to be the one that names the target: an option the
+        tables do not carry is refused as well, but for not being readable,
+        and that tells the reader to fix a table rather than the fixture.
+        """
+        for lead in (["--attr-source", "HEAD"], ["--shallow-file", "/tmp/shallow"]):
+            with self.subTest(lead=" ".join(lead)):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", *lead, "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    cwd=str(CHECKOUT),
+                    env={"GIT_DIR": str(CHECKOUT / ".git")},
+                )
+                assert complaint is not None
+                self.assertIn("outranks -C", complaint)
+                self.assertIn("/tmp/scratch", complaint)
+
+    def test_an_option_in_neither_table_is_refused_rather_than_skipped(self):
+        """Which is the same hole once more for every name not listed yet.
+        Skipping one that takes a separate value leaves the walk on the value,
+        so the guard reports no `-C` and allows the write. An option it cannot
+        classify now names itself in a failure instead."""
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "--not-yet", "x", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_DIR": str(CHECKOUT / ".git")},
+        )
+        assert complaint is not None
+        self.assertIn("--not-yet", complaint)
+
+    def test_an_unreadable_option_with_nothing_ambient_is_not_a_conflict(self):
+        """`make test` exports no `GIT_*`, so there is no repository for the
+        call to disagree with and no reason to fail it over its spelling."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "--not-yet", "x", "-C", "/tmp/scratch", "status"],
+                cwd=str(CHECKOUT),
+                env={},
+            )
+        )
+
+    def test_another_worktree_of_the_same_repository_is_a_conflict(self):
+        """The near miss `test_a_foreign_worktree_is_still_a_conflict` leaves
+        open: that one uses a separate repository, so nothing about the layout
+        could make it agree. A *sibling worktree's* gitdir sits under the shared
+        metadata the target legitimately writes, so a prefix test reads it as
+        agreement — while git takes HEAD, the index and the refs from it, and
+        `git -C <A> commit` lands A's files on B's branch. Every change in this
+        repository is made in its own worktree, so B is a real directory here.
+        """
+        root = Path(tempfile.mkdtemp())
+        common = root / "primary" / ".git"
+        mine, theirs = common / "worktrees" / "a", common / "worktrees" / "b"
+        for made in (mine, theirs, root / "a"):
+            made.mkdir(parents=True)
+        (root / "a" / ".git").write_text(f"gitdir: {mine}\n", encoding="utf-8")
+        (mine / "commondir").write_text("../..\n", encoding="utf-8")
+
+        for target, name, value in (
+            (root / "a", "GIT_DIR", theirs),
+            (root / "a", "GIT_INDEX_FILE", theirs / "index"),
+            # The primary checkout keeps `worktrees/` *inside* its own gitdir,
+            # so there the sibling reads as agreement twice over.
+            (root / "primary", "GIT_DIR", theirs),
+        ):
+            with self.subTest(target=target.name, name=name):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", "-C", str(target), "commit", "-m", "x"],
+                    cwd=str(root),
+                    env={name: str(value)},
+                )
+                assert complaint is not None
+                self.assertIn("outranks -C", complaint)
+
+    def test_a_relative_env_value_is_resolved_the_way_git_resolves_it(self):
+        """`git commit` outside a worktree exports `GIT_INDEX_FILE=.git/index`,
+        and git reads it *after* `-C` has changed directory — so it names the
+        repository the call asked for and there is no trap to report. Resolving
+        it against cwd instead refused the call and said `GIT_INDEX_FILE` was
+        acting on another repository, which for a relative value is not true.
+        A value that climbs back out still disagrees."""
+        root = Path(tempfile.mkdtemp())
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(root / "scratch"), "add", "c.txt"],
+                cwd=str(CHECKOUT),
+                env={"GIT_INDEX_FILE": os.path.join(".git", "index")},
+            )
+        )
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(root / "scratch"), "add", "c.txt"],
+            cwd=str(CHECKOUT),
+            env={"GIT_INDEX_FILE": os.path.join("..", "elsewhere", ".git", "index")},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+    def test_the_common_dir_does_not_agree_with_a_linked_worktree(self):
+        """`config` lands in the common dir whichever worktree asked, which is
+        the argument for calling this agreement. `config` is not the dangerous
+        verb: measured against git 2.55, `GIT_DIR=<common>` with `-C <linked
+        worktree>` answers `HEAD` from the *primary* checkout and
+        `--show-toplevel` from the worktree, so a commit puts one tree's files
+        onto the other's branch. The primary checkout, which owns the common
+        dir outright, still agrees with it."""
+        root = Path(tempfile.mkdtemp())
+        primary, tree = root / "primary", root / "tree"
+        common = primary / ".git"
+        gitdir = common / "worktrees" / "tree"
+        gitdir.mkdir(parents=True)
+        tree.mkdir()
+        (tree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(tree), "commit", "-m", "x"],
+            cwd=str(root),
+            env={"GIT_DIR": str(common)},
+        )
+        assert complaint is not None
+        self.assertIn("outranks -C", complaint)
+
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(primary), "commit", "-m", "x"],
+                cwd=str(root),
+                env={"GIT_DIR": str(common)},
+            )
+        )
+
+    def test_a_subdirectory_of_the_named_repository_is_not_a_conflict(self):
+        """git changes directory for `-C` and *then* discovers the repository
+        by walking up, so `-C <repo>/sub` names `<repo>`. Reading only
+        `<target>/.git` gave the subdirectory a repository of its own that
+        nothing could match, and refused a call whose `GIT_DIR` names the very
+        repository git would have found."""
+        root = Path(tempfile.mkdtemp())
+        repo, sub = root / "repo", root / "repo" / "sub"
+        (repo / ".git").mkdir(parents=True)
+        sub.mkdir()
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", str(sub), "status"],
+                cwd=str(root),
+                env={"GIT_DIR": str(repo / ".git")},
+            )
+        )
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", str(sub), "status"],
+            cwd=str(root),
+            env={"GIT_DIR": str(CHECKOUT / ".git")},
+        )
+        self.assertIsNotNone(complaint)
+
+    def test_the_common_dir_is_the_same_trap(self):
+        """`config` lives in the common dir, not in the per-worktree gitdir, so
+        `GIT_COMMON_DIR` re-points the very file #482 was written into."""
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_COMMON_DIR": str(CHECKOUT / ".git")},
+        )
+        assert complaint is not None
+        self.assertIn("GIT_COMMON_DIR", complaint)
+
+    def test_git_config_names_the_file_482_wrote_into(self):
+        """The third route to `.git/config`, after `GIT_DIR` and
+        `GIT_COMMON_DIR`. Measured against git 2.55: `GIT_CONFIG=<real>/.git/config
+        git -C <scratch> config user.name Test` writes `<real>/.git/config` and
+        leaves the scratch repo unset — #482's file and #482's command."""
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_CONFIG": str(CHECKOUT / ".git" / "config")},
+        )
+        assert complaint is not None
+        self.assertIn("GIT_CONFIG", complaint)
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                cwd=str(CHECKOUT),
+                env={"GIT_CONFIG": os.path.join("/tmp/scratch", ".git", "config")},
+            )
+        )
+
+    def test_a_location_the_call_states_itself_outranks_the_dash_c_too(self):
+        """`--git-dir` and `--work-tree` are `setenv` of the variables beside
+        them, so they outrank `-C` exactly as the variables do — and the guard
+        read only the environment, so the whole #482 damage was reachable
+        through argv with a clean environment. Measured against git 2.55:
+        `git --git-dir=<real>/.git -C <scratch> config user.name T` wrote
+        `user.name` into `<real>/.git/config`, in both spellings and with the
+        option on either side of the `-C`."""
+        real = str(CHECKOUT / ".git")
+        for argv in (
+            ["git", f"--git-dir={real}", "-C", "/tmp/scratch", "config", "user.name", "T"],
+            ["git", "--git-dir", real, "-C", "/tmp/scratch", "config", "user.name", "T"],
+            ["git", "-C", "/tmp/scratch", "--git-dir", real, "config", "user.name", "T"],
+            ["git", f"--work-tree={CHECKOUT}", "-C", "/tmp/scratch", "commit", "-m", "x"],
+        ):
+            with self.subTest(argv=" ".join(argv[1:4])):
+                complaint = _fs_sandbox.git_env_conflict(argv, cwd=str(CHECKOUT), env={})
+                assert complaint is not None
+                self.assertIn("outranks -C", complaint)
+                self.assertIn("on the command line", complaint)
+
+    def test_an_option_agreeing_with_the_dash_c_is_what_the_caller_asked_for(self):
+        """The other half: naming the same repository twice is not ambiguous,
+        and a relative value resolves against the `-C` target as git resolves
+        it. Without this the guard would refuse every explicit `--git-dir`."""
+        for argv in (
+            [
+                "git",
+                "--git-dir=/tmp/scratch/.git",
+                "-C",
+                "/tmp/scratch",
+                "config",
+                "user.name",
+                "T",
+            ],
+            ["git", "--git-dir=.git", "-C", "/tmp/scratch", "config", "user.name", "T"],
+            ["git", "--work-tree=/tmp/scratch", "-C", "/tmp/scratch", "status"],
+        ):
+            with self.subTest(argv=" ".join(argv[1:4])):
+                self.assertIsNone(_fs_sandbox.git_env_conflict(argv, cwd=str(CHECKOUT), env={}))
+
+    def test_an_option_replaces_the_ambient_variable_it_sets(self):
+        """git's `setenv` overwrites, so a call that spells `--git-dir` out has
+        already answered the question the ambient one would have raised.
+        Measured against git 2.55 with `GIT_DIR=<real>/.git` exported: the
+        write landed in the scratch repo the option named, and `<real>` stayed
+        unset — so refusing this would fail a call git gets right."""
+        self.assertIsNone(
+            _fs_sandbox.git_env_conflict(
+                ["git", "--git-dir=/tmp/scratch/.git", "-C", "/tmp/scratch", "config", "u.n", "T"],
+                cwd=str(CHECKOUT),
+                env={"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_stated_location_is_carried_by_every_table_that_has_to_see_it(self):
+        """Three tables have to agree or a location option goes unread in
+        silence: the walk learns from `_GIT_VALUE_OPTIONS` that the option
+        consumes a word, and `git_env_conflict` reports only variables listed
+        in `_GIT_LOCATION_ENV`, so a name missing from either is collected and
+        then dropped — which is the fail-open this rule exists to close."""
+        for option, variable in _fs_sandbox._GIT_LOCATION_OPTIONS.items():
+            with self.subTest(option=option):
+                self.assertIn(option, _fs_sandbox._GIT_VALUE_OPTIONS)
+                self.assertIn(variable, _fs_sandbox._GIT_LOCATION_ENV)
+
+
+class SubprocessHookTest(unittest.TestCase):
+    """`git_env_conflict` is pure and testable on its own, but nothing reaches
+    it unless `_check_subprocess` unpacks CPython's `subprocess.Popen` audit
+    event correctly — `(executable, args, cwd, env)`. Get that wrong and the
+    whole subprocess half is silently dead while the suite stays green, which
+    is the same failure the `ENTRY_POINTS` agreement is checked for.
+    """
+
+    def test_the_audit_events_argument_order_reaches_the_rule(self):
+        with self.assertRaises(_fs_sandbox.SandboxViolation):
+            _fs_sandbox._check_subprocess(
+                (
+                    "git",
+                    ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    str(CHECKOUT),
+                    {"GIT_DIR": str(CHECKOUT / ".git")},
+                )
+            )
+
+    def test_env_none_means_the_child_inherits_ours(self):
+        """The case that bit: nothing in the fixture mentioned `GIT_DIR`,
+        because nothing had to."""
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(CHECKOUT / ".git")}):
+            with self.assertRaises(_fs_sandbox.SandboxViolation):
+                _fs_sandbox._check_subprocess(
+                    (
+                        "git",
+                        ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                        str(CHECKOUT),
+                        None,
+                    )
+                )
+
+    def test_a_stripped_env_that_is_not_a_dict_is_still_the_childs_env(self):
+        """`env=os.environ` is an `os._Environ`, not a `dict`, and a fixture is
+        free to hand `Popen` any mapping. Reading only `dict` sent those down
+        the inherit branch, so a mapping with `GIT_*` already stripped was
+        judged against the ambient `GIT_DIR` and the correct call failed."""
+        stripped = types.MappingProxyType({"PATH": "/usr/bin"})
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(CHECKOUT / ".git")}):
+            _fs_sandbox._check_subprocess(
+                (
+                    "git",
+                    ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    str(CHECKOUT),
+                    stripped,
+                )
+            )
+            with self.assertRaises(_fs_sandbox.SandboxViolation):
+                _fs_sandbox._check_subprocess(
+                    (
+                        "git",
+                        ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                        str(CHECKOUT),
+                        types.MappingProxyType({"GIT_DIR": str(CHECKOUT / ".git")}),
+                    )
+                )
+
+    def test_a_program_that_is_not_git_is_none_of_this_guards_business(self):
+        _fs_sandbox._check_subprocess(
+            (
+                "/usr/bin/rsync",
+                ["rsync", "-C", "/tmp/scratch", "/tmp/dest"],
+                str(CHECKOUT),
+                {"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_shell_string_has_no_argv_to_read(self):
+        _fs_sandbox._check_subprocess(
+            ("/bin/sh", "git -C /tmp/scratch config user.name Test", str(CHECKOUT), None)
+        )
+
+
+class OwnReadTest(unittest.TestCase):
+    """The guard reads `<root>/.git` and the `commondir` beside it to learn
+    where a target's metadata lives, and both are paths `violation` refuses. A
+    probe the hook polices turns every `git -C <target outside the checkout but
+    still this repo>` into a violation blaming the test for touching `.git`.
+    """
+
+    def test_a_targets_git_file_naming_this_repositorys_metadata_is_readable(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".git").write_text(f"gitdir: {CHECKOUT / '.git'}\n", encoding="utf-8")
+        covered = _fs_sandbox._metadata_keys(_fs_sandbox._repo_dirs_at(str(root)))
+        self.assertIn(_fs_sandbox._key(str(CHECKOUT / ".git")), covered)
+
+    def test_the_probe_flag_is_the_only_thing_that_exempts_it(self):
+        """Paired with the test above so neither can pass by the hook being
+        disarmed: the same path has to be refused outside the probe."""
+        self.assertIsNotNone(_fs_sandbox.violation(str(CHECKOUT / ".git" / "commondir")))
 
 
 class TrackedAssetRuleTest(unittest.TestCase):

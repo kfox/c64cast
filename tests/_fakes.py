@@ -77,6 +77,36 @@ def tmp_cwd() -> Iterator[str]:
             os.chdir(previous)
 
 
+@contextlib.contextmanager
+def no_inherited_git_env(*, isolate_config: bool = False) -> Iterator[None]:
+    """Drop every ``GIT_*`` variable for the block, so a `git` subprocess acts
+    on the repository it was *told* to act on.
+
+    The suite runs inside the pre-commit hook, and ``git commit`` exports
+    ``GIT_DIR`` and ``GIT_INDEX_FILE`` to its hooks. Those outrank ``-C``, so a
+    fixture that builds a scratch repo and calls ``git -C <tmp> config …``
+    writes to the **real checkout's** ``.git`` instead — which is how
+    ``user.name = Test`` came to author 17 commits across four branches before
+    anyone noticed. ``tests/_fs_sandbox.git_env_conflict`` now fails a test that
+    does it; this is the fix it points at.
+
+    ``isolate_config=True`` additionally points ``GIT_CONFIG_GLOBAL`` at an
+    empty file and ``GIT_CONFIG_SYSTEM`` at ``os.devnull``, for a test that
+    *reads* config. Dropping those two is not enough on its own: unset is what
+    tells git to fall back to the developer's own ``~/.gitconfig`` and to
+    ``/etc/gitconfig``, so a value there would decide what the test asserts.
+    """
+    environ = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    if isolate_config:
+        empty = os.path.join(tempfile.mkdtemp(), "gitconfig")
+        with open(empty, "w", encoding="utf-8") as fh:
+            fh.write("")
+        environ["GIT_CONFIG_GLOBAL"] = empty
+        environ["GIT_CONFIG_SYSTEM"] = os.devnull
+    with mock.patch.dict(os.environ, environ, clear=True):
+        yield
+
+
 class MachineSettingsIsolation:
     """Point **both** of ``paths.py``'s environment overrides into a private
     temporary directory *fresh for this module*.
