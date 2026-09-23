@@ -29,40 +29,60 @@ import sys
 
 DEFAULT_SUBJECT_MAX = 80
 DEFAULT_BODY_MAX = 10
+DEFAULT_COMMENT_CHAR = "#"
 
 _CONFIG_TIMEOUT_S = 10
 _GENERATED_SUBJECT = re.compile(r"^(?:Merge\b|Revert\b|fixup!|squash!|amend!)")
 _TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*:\s")
-_SCISSORS = "# ------------------------ >8 ------------------------"
+_SCISSORS_RULE = "------------------------ >8 ------------------------"
 
 
-def _configured(name: str, fallback: int) -> int:
-    """`git config prose.<name>`, or `fallback` when it is unset or unusable."""
+def _git_config(name: str) -> str:
+    """`git config --get <name>`, or "" when it is unset or git cannot be asked."""
     try:
         done = subprocess.run(
-            ["git", "config", "--get", f"prose.{name}"],
+            ["git", "config", "--get", name],
             capture_output=True,
             text=True,
             timeout=_CONFIG_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
-        return fallback
+        return ""
 
+    return done.stdout.strip()
+
+
+def _configured(name: str, fallback: int) -> int:
+    """`git config prose.<name>`, or `fallback` when it is unset or unusable."""
     try:
-        value = int(done.stdout.strip())
+        value = int(_git_config(f"prose.{name}"))
     except ValueError:
         return fallback
 
     return value if value > 0 else fallback
 
 
-def message_lines(raw: str) -> list[str]:
+def _comment_char() -> str:
+    """`git config core.commentChar`, or `#` when unset, multi-character, or `auto`.
+
+    Git resolves `auto` against the message it is about to write, which a hook
+    holding only the finished file cannot redo, and it picks `#` unless a line of
+    that message already starts with one.
+    """
+    char = _git_config("core.commentChar")
+
+    return char if len(char) == 1 else DEFAULT_COMMENT_CHAR
+
+
+def message_lines(raw: str, comment_char: str = DEFAULT_COMMENT_CHAR) -> list[str]:
     """The message as git will store it: comments and the scissors tail removed."""
+    scissors = f"{comment_char} {_SCISSORS_RULE}"
+
     lines: list[str] = []
     for line in raw.splitlines():
-        if line.rstrip() == _SCISSORS:
+        if line.rstrip() == scissors:
             break
-        if line.startswith("#"):
+        if line.startswith(comment_char):
             continue
         lines.append(line.rstrip())
 
@@ -134,7 +154,7 @@ def main(argv: list[str]) -> int:
         print(f"could not read the commit message ({error}); not blocking", file=sys.stderr)
         return 0
 
-    lines = message_lines(raw)
+    lines = message_lines(raw, _comment_char())
     if not lines or _GENERATED_SUBJECT.match(lines[0]):
         return 0
 

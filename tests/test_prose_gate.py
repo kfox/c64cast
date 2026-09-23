@@ -120,6 +120,24 @@ class MessageParsingTest(unittest.TestCase):
         self.assertEqual(msg.violations(msg.message_lines(raw), _SUBJECT_MAX, _BODY_MAX), [])
 
 
+class CommentCharTest(unittest.TestCase):
+    def test_a_configured_comment_char_is_the_one_stripped(self) -> None:
+        raw = (
+            "fix: a thing\n"
+            "\n"
+            "real prose\n"
+            "; Please enter the commit message for your changes.\n"
+            "; ------------------------ >8 ------------------------\n"
+            "diff --git a/x b/x\n" + "noise\n" * 40
+        )
+        lines = msg.message_lines(raw, ";")
+        self.assertEqual(lines, ["fix: a thing", "", "real prose"])
+        self.assertEqual(msg.violations(lines, _SUBJECT_MAX, _BODY_MAX), [])
+
+    def test_the_default_comment_char_is_the_hash(self) -> None:
+        self.assertEqual(msg.DEFAULT_COMMENT_CHAR, "#")
+
+
 class GeneratedMessageTest(unittest.TestCase):
     def test_messages_git_composes_are_left_alone(self) -> None:
         body = "\n".join(f"line {n}" for n in range(40))
