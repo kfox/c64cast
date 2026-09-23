@@ -70,7 +70,7 @@ they are enforced by tests that fail late:
   routes a module to its notes. This is a stated project rule, so a change that
   skips it is a review finding, not a nitpick.
 - **American English everywhere** — prose, identifiers, log messages, commit
-  messages. Three deliberate exceptions are listed in CLAUDE.md.
+  messages. The deliberate exceptions are listed in CLAUDE.md.
 - **A test run prints only pass/fail/skip.** Wrap every by-product where it
   fires: `assertRaises`, `assertLogs`, `redirect_stdout`, or `quiet_logging()`.
   `quiet_logging` and `assertLogs` must never nest.
@@ -80,8 +80,8 @@ they are enforced by tests that fail late:
   first — CPython validates bytecode against the source mtime in whole seconds,
   so a same-length edit applied and reverted inside one second silently runs
   stale bytecode and reports a false result. `PYTHONDONTWRITEBYTECODE=1` does
-  not fix that, and neither does `touch`. Arming does not stay done, and every
-  way it lapses is silent: a fresh worktree has no bytecode at all, `make clean`
+  not fix that, and neither does `touch`. Arming does not stay done, and the
+  ways it lapses are silent: a fresh worktree has no bytecode at all, `make clean`
   deletes it, and a `uv sync` that moves the Python minor invalidates it.
   `make mutation-check` verifies the state — run it before believing a proof
   whose arming happened earlier in the session or in another directory.
@@ -106,6 +106,7 @@ Run the gate before committing:
 make check        # lint + typecheck + test
 make schema       # only if you touched config metadata; CI fails on drift
 make site-check   # only if you touched docs/
+make web          # only if you touched web/; CI fails on a stale bundle
 ```
 
 **Then review the commit you just made, scoped to that commit alone.** Spawn a
@@ -123,15 +124,21 @@ runs. It fixes what it finds there and commits the fixes as their own commits;
 what it finds: `/code-review` without `--fix` is a report-only run, and nothing
 reaches its tree unless the prompt demands it.
 
-The environment is not isolated with it. `pudding worktree` builds one only when
-`pudding.envsetup` is set — `git config --get pudding.envsetup` says whether it
-is. Unset, it prints that it is unset and hands over a tree that inherits
-whatever `UV_PROJECT_ENVIRONMENT` the shell exports: the failure step 1
-describes, where a `uv` command in the worktree reinstalls that source into the
-primary checkout's environment. Then pass the environment by hand there too,
-exactly as step 1 does. `pudding worktree --done` reports on the primary
-checkout's environment only when `pudding.envcheck` is set; unset it prints
-`unchecked`, so that hazard has no automated backstop either.
+The environment comes with it, because `pudding.envsetup` is set here to run
+step 1's `uv sync` inside the new worktree, and `pudding worktree --done`
+re-checks the primary checkout afterwards through `pudding.envcheck`. Those keys
+are repo-local and uncommitted, so `git config --local --get-regexp '^pudding\.'` is
+what says they are still present, while `pudding worktree`'s own output is what
+says the setup ran — it skips a worktree it reused, and a setup that fails is
+not fatal. Without `envsetup`, `pudding worktree` says
+so and hands over a tree that shares whatever `UV_PROJECT_ENVIRONMENT` this
+shell exports — the failure step 1 describes, where a `uv` command in the
+worktree reinstalls that source into the primary checkout's environment — so
+pass the environment by hand there, exactly as step 1 does. Without `envcheck`,
+`--done` reports the environment `unchecked`, and that hazard has no automated
+backstop. Nothing in the tree sets these, so a fresh clone starts without them:
+`envsetup` is step 1's own line, `envcheck` is what `make venv-check` runs, and
+pudding's README documents the rest.
 
 What it reports instead of applying: `contract` and `design` findings, which are
 advisory and never block, and any editorial call about prose, which needs the
@@ -142,7 +149,10 @@ message it reports too, because rewriting a message is yours.
 `TRIGGER` line per obligation, read from the diff, and the class it computed:
 `primary` for the full set, `fix` for a `Closes-findings:` commit, which owes a
 verification pass only. Answer the triggers and nothing else — a trailer that
-was not demanded must be **absent**.
+was not demanded must be **absent**. Not every trigger wants one: `prose-chain`
+fires when the parent chain is already two prose-only commits deep, `pudding
+template` gives it no slot, and its answer is to stop rather than to write
+anything. `pudding brief` has the wording for it.
 
 A claim of coverage is a pointer, not a sentence:
 
@@ -150,20 +160,26 @@ A claim of coverage is a pointer, not a sentence:
     Evidence-search: symbol="<text>" paths=<a,b> result=present|absent
 
 `red` means a test noticed the break. `green` refuses the record and *is* the
-finding, and so does `unexecutable` — the verdict for a pointer whose `replace=`
-text is missing from the victim, changes nothing, or carries a double quote.
-`inconclusive` and `unconfigured` are accepted. Bounds claims — "no other caller", "the only site" — arrive as an
-`Evidence-search:` pointer or they are cut.
+finding, and so does `unexecutable` — the verdict for a pointer the gate cannot
+run, including one whose `replace=` text is missing from the victim, changes
+nothing, or carries a double quote — and for a `test=` that was already failing
+before the mutation, whose red would measure nothing. `inconclusive` and
+`unconfigured` are accepted. Bounds claims — "no other caller", "the only site"
+— arrive as an `Evidence-search:` pointer or they are cut.
 
-Running the `Mutation:` pointer needs `pudding.testcmd`. Without it `record`
-stamps the verdict `unconfigured` and accepts the report anyway, so the coverage
-rests on prose and `pudding status` lists it under "Records that measured
-nothing". Either way the proof is still yours to run the way step 2 says — arm
-`make mutation-ready`, watch a named assertion go red, revert — and the pointer
-records the mutation you ran. `Evidence-search:` needs no configuration.
+`pudding.testcmd` is set here, so `record` runs the pointer rather than reading
+it — but only while the index still matches the reviewed tree, which is what the
+order below is about. Finding the victim and the test that notices it is still
+step 2's work; the pointer is how you hand that to the gate to re-run. A verdict
+of `inconclusive` or `unconfigured`, and no verdict at all against a commit that
+owed a mutation, all mean the record was accepted having measured nothing —
+`pudding status` is what collects them under "Records that measured nothing".
+`Evidence-search:` needs no configuration either way.
 
-Run `make check` over the cherry-picked fixes, then record. Start from the
-skeleton, so the slots come from the tool rather than from memory:
+**Record `<sha>` before you pick anything.** The gate runs a `Mutation:` pointer
+only while the index still matches the reviewed tree, so a cherry-pick made
+first turns the verdict into `inconclusive` and nothing is measured. Start from
+the skeleton, so the slots come from the tool rather than from memory:
 
 ```bash
 pudding template <sha> > report
@@ -171,11 +187,12 @@ pudding template <sha> > report
 pudding record <sha> --file report
 ```
 
-Each fix you cherry-picked is a commit of its own, and each owes a record of its
-own: the gate reads every non-merge commit between `origin/main` and HEAD, not
-only the one you reviewed.
+Then cherry-pick the reviewer's fixes one at a time, running `make check` and
+recording each while it is still the tip: the gate reads every non-merge commit
+between `origin/main` and HEAD, and only the tip's index matches its own tree.
 
-If the commit was amended after its review, the carry-over is declared and then
+If the reviewed SHA moves — an amend, a rebase, or a replant after its parent
+was squash-merged — the carry-over is declared and then
 verified — `pudding record <sha> --carry <old-sha> --file report`. What carries
 over is the discharge of every trigger, not the prose: the new record still owes
 a filled slot of its own, an identical tree earns a `carried` header, and a
@@ -209,8 +226,8 @@ and the run silently reuses whatever level ran last.
 **Its prompt has to tell it to fix what it finds** — that call is a report-only
 run, and nothing reaches the tree unless the subagent applies it. This is the
 reviewer with the whole-branch view, so the editorial calls step 3 sends back
-are its to make. It still reports rather than applies an advisory *design*
-finding, and anything that rewrites a commit message: here that moves the SHA
+are its to make. It still reports rather than applies an advisory `contract` or
+`design` finding, and anything that rewrites a commit message: here that moves the SHA
 a recorded review is keyed to. Route what it hands back once it has reported,
 below.
 
@@ -222,11 +239,11 @@ mutation you never made.
 A clean pass here does not mean the branch is clean — it means nothing survived
 *both* nets. Read a wide pass that finds nothing as weak evidence.
 
-Three more things its prompt has to carry, because it cannot work them out for
+More things its prompt has to carry, because it cannot work them out for
 itself:
 
-- **The gate summary** from step 3, so it doesn't spend findings on things
-  `ruff`, `mypy`, `pyright`, and the suite already prove.
+- **Which gates ran clean** over this branch, so it doesn't spend findings on
+  things `ruff`, `mypy`, `pyright`, and the suite already prove.
 - **Where this repo states its rules**, so it can check code against claim:
   `CLAUDE.md`, `CONTRIBUTING.md`, `docs/architecture/`,
   `c64cast/data/c64cast.schema.json`, `CHANGELOG.md`, and
