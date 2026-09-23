@@ -148,10 +148,13 @@ step 2. A bounds claim — "no other caller", "the only site" — is a search yo
 ran and its result, or it is cut.
 
 **Write the review down.** The reviewer's fix commits are the record: each
-message says what was found and what the fix does. A finding it declined, and
-the reason, goes in that same message; one it deferred becomes a labeled GitHub
-issue. A review that leaves nothing behind did not happen, and a decline that
-was only said out loud is re-litigated by the next reader.
+message says what was found, what the fix does, and what the same pass declined
+and why. A pass that made no fix commit has no message to write in — a clean
+pass, or one that declined everything it found, lands in its report and reaches
+the user in step 7 instead. Neither ever gets recorded by amending the reviewed
+commit: that changes the SHA the review was of. A finding it deferred rather
+than fixed becomes a labeled GitHub issue, and a decline that was only said out
+loud is re-litigated by the next reader.
 
 Run `make check` over the reviewer's fixes — a fix that breaks the suite is not
 a fix — and review each of those commits the way this step does.
@@ -231,11 +234,11 @@ Then, once it has reported:
 - Commit the fixes and review each of those commits the way step 3 does, as you
   make it. Batching them to the end is the batching step 3 forbids, done at the
   point where the branch is closest to shipping.
-- **Write down what was declined and why**, in the message of the commit it
-  belongs to. A declined finding with a reason is a legitimate outcome; one that
-  was only said out loud is re-litigated by the next reader. The commit message
-  is where that belongs — not the PR body, which is for the change and not for
-  the history of reviewing it.
+- **Write down what was declined and why**, where step 3 puts it: the message of
+  a fix commit from the same pass, or the report to the user when the pass made
+  none. A declined finding with a reason is a legitimate outcome; one that was
+  only said out loud is re-litigated by the next reader. Not the PR body, which
+  is for the change and not for the history of reviewing it.
 - **Route everything it handed back before step 5.** Fix an advisory finding on
   this branch when a commit here introduced it or the fix fits the spirit of the
   change, as its own commit under the rule above; otherwise open a labeled
