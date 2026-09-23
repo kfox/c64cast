@@ -57,7 +57,9 @@ _EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
 # exactly as GitHub reads them. `needs.build` and `needs['build']` are the same
 # reference, so a typo in the second spelling is as visible as in the first.
 _JOB_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
-_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*|'(?:''|[^'])*'|\"[^\"]*\"|\S")
+_STRING = r"'(?:''|[^'])*'|\"[^\"]*\""
+_QUOTED = re.compile(_STRING)
+_TOKEN = re.compile(rf"[A-Za-z_][A-Za-z0-9_-]*|{_STRING}|\S")
 _NEEDS_CONTEXT = "needs"
 
 
@@ -145,14 +147,18 @@ def _read_through_needs(expression: str) -> Iterator[str]:
     """Every job id one expression reads, in either `needs` spelling."""
     tokens = [match.group(0) for match in _TOKEN.finditer(expression)]
     for index, token in enumerate(tokens):
-        # A `needs` behind a dot is a key in someone else's object.
-        if token != _NEEDS_CONTEXT or (index and tokens[index - 1] == "."):
+        # GitHub resolves a context name case-insensitively, so `NEEDS.build`
+        # reads this context; a `needs` behind a dot is someone else's key.
+        if token.lower() != _NEEDS_CONTEXT or (index and tokens[index - 1] == "."):
             continue
         after = tokens[index + 1 : index + 4]
         if len(after) >= 2 and after[0] == ".":
             name = after[1]
         elif len(after) >= 3 and after[0] == "[" and after[2] == "]":
-            name = after[1].strip("'\"")
+            # `needs[x]` indexes by a value, so only a literal key names a job.
+            if not _QUOTED.fullmatch(after[1]):
+                continue
+            name = after[1][1:-1]
         else:
             continue
         # `needs.*.result` and `toJSON(needs)` name no single job.

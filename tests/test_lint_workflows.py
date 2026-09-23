@@ -193,6 +193,29 @@ class NeedsExpressionTest(unittest.TestCase):
         jobs = self._reader("${{ needs.*.result }}", declares="    needs: build\n")
         self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
 
+    def test_a_context_name_in_another_case_is_still_a_reference(self):
+        # GitHub matches a context name case-insensitively, so `NEEDS.build`
+        # blanks at dispatch exactly as `needs.build` would.
+        for expression in ("${{ NEEDS.build.outputs.version }}", "${{ Needs.build.result }}"):
+            with self.subTest(expression=expression):
+                jobs = self._reader(expression, declares="    runs-on: ubuntu-latest\n")
+                found = wf.problems("t.yml", _parse(jobs))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("needs.build", found[0])
+
+    def test_a_cased_needs_key_on_another_object_is_not_a_job_reference(self):
+        jobs = self._reader(
+            "${{ fromJSON(inputs.config).NEEDS.absent }}", declares="    needs: build\n"
+        )
+        self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
+    def test_an_index_that_is_not_a_literal_names_no_single_job(self):
+        # `needs[x]` indexes by a value, so the job id is not in the text.
+        for expression in ("${{ needs[inputs].result }}", "${{ needs[matrix.job].result }}"):
+            with self.subTest(expression=expression):
+                jobs = self._reader(expression, declares="    needs: build\n")
+                self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
     def test_the_whole_needs_context_names_no_single_job(self):
         jobs = (
             "  build:\n"
