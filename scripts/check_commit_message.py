@@ -66,6 +66,9 @@ def message_lines(raw: str) -> list[str]:
             continue
         lines.append(line.rstrip())
 
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
     while lines and not lines[-1].strip():
         lines.pop()
 

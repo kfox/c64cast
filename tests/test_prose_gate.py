@@ -114,6 +114,11 @@ class MessageParsingTest(unittest.TestCase):
     def test_trailing_blank_lines_are_dropped(self) -> None:
         self.assertEqual(msg.message_lines("subject\n\n\n\n"), ["subject"])
 
+    def test_leading_blank_lines_are_dropped_so_the_subject_is_the_subject(self) -> None:
+        raw = "\n\nfix: a thing\n\nreal prose\n"
+        self.assertEqual(msg.message_lines(raw), ["fix: a thing", "", "real prose"])
+        self.assertEqual(msg.violations(msg.message_lines(raw), _SUBJECT_MAX, _BODY_MAX), [])
+
 
 class GeneratedMessageTest(unittest.TestCase):
     def test_messages_git_composes_are_left_alone(self) -> None:
