@@ -1,5 +1,10 @@
 exclude: '^(docs/shared/fonts/(?!README\.md)|c64cast/web/dist/)'
 
+default_install_hook_types: [pre-commit, commit-msg]
+# Without this, a hook that does not restrict `stages` also runs at commit-msg,
+# against the message file: `mixed-line-ending --fix=lf` rewrites it and fails.
+default_stages: [pre-commit]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -34,6 +39,16 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: commit-message-shape
+        name: commit message shape
+        entry: uv run --locked python scripts/check_commit_message.py
+        language: system
+        stages: [commit-msg]
+      - id: lint-comments
+        name: comments this commit adds
+        entry: uv run --locked python scripts/lint_comments.py
+        language: system
+        types_or: [python, pyi]
       - id: ruff
         name: ruff
         entry: uv run --locked ruff check --fix --force-exclude
