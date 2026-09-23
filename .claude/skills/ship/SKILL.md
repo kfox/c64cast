@@ -181,8 +181,8 @@ and the run silently reuses whatever level ran last.
 run, and nothing reaches the tree unless the subagent applies it. This is the
 reviewer with the whole-branch view, so the editorial calls step 3 sends back
 are its to make. Only a commit-message rewrite stays with you, because it
-changes that SHA and every SHA after it. Route what it hands back once it has
-reported, below.
+changes that commit's SHA and every SHA after it. Route what it hands back once
+it has reported, below.
 
 Do not commit, or edit anything in this checkout, while it runs, for the reason
 step 3 gives; `isolation: "worktree"` is the same escape hatch here, on the same
@@ -237,12 +237,11 @@ Then, once it has reported:
   none. A declined finding with a reason is a legitimate outcome; one that was
   only said out loud is re-litigated by the next reader. Not the PR body, which
   is for the change and not for the history of reviewing it.
-- **Route everything it handed back before step 5.** Fix an advisory finding on
-  this branch when a commit here introduced it or the fix fits the spirit of the
-  change, as its own commit under the rule above; otherwise open a labeled
-  GitHub issue. A finding that is only mentioned is one nothing tracks, and one
-  fixed after step 6 costs another commit, review and push with the PR already
-  green.
+- **Route everything it handed back before step 5.** Fix it on this branch when
+  a commit here introduced it or the fix fits the spirit of the change, as its
+  own commit under the rule above; otherwise open a labeled GitHub issue. A
+  finding that is only mentioned is one nothing tracks, and one fixed after
+  step 6 costs another commit, review and push with the PR already green.
 
 A defect still open when the subagent is done is a stop, not a pass. Report what
 remains and ask the user how to proceed before opening a PR.
@@ -286,8 +285,8 @@ Report to the user:
 
 - The PR URL and its check status.
 - What the review found, fixed, and declined — with reasons for the declines.
-- Anything the review handed back rather than applied, and where step 4 routed
-  it — the commit that fixed it here, or the issue it became.
+- Anything a review handed back rather than applied, and where it was routed —
+  the commit that fixed it here, or the issue it became.
 - Anything still open, stated plainly.
 
 Then stop. The merge is the user's, and they squash-merge from the GitHub UI.
