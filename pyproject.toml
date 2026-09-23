@@ -140,6 +140,10 @@ dev = [
     "types-requests==2.33.0.20260906",
     "pyright==1.1.414",
     "jsonschema==4.26.0",
+    # scripts/lint_workflows.py and the workflow guards parse
+    # .github/workflows as YAML. It arrives transitively through pre-commit,
+    # which is not a dependency the suite should rest on.
+    "pyyaml==6.0.3",
     # fastapi.testclient (Starlette's TestClient) needs it, and FastAPI
     # declares it optional, so the `control` extra does not pull it.
     "httpx==0.28.1",
