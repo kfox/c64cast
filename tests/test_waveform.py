@@ -648,7 +648,7 @@ class LayoutHelpersTest(unittest.TestCase):
         self.assertIn(" ", line)
 
     def test_lcr_centers_balanced(self):
-        from c64cast.sid.waveform import _layout_lcr
+        from c64cast.sid.voice_scope import _layout_lcr
 
         line = _layout_lcr("1985", "6581", "PAL")
         self.assertEqual(len(line), 40)
@@ -661,7 +661,7 @@ class LayoutHelpersTest(unittest.TestCase):
 
     def test_lcr_collision_avoidance(self):
         # Long left field must push the center right, not overlap.
-        from c64cast.sid.waveform import _layout_lcr
+        from c64cast.sid.voice_scope import _layout_lcr
 
         line = _layout_lcr("A" * 25, "MID", "END")
         self.assertEqual(len(line), 40)
@@ -1882,7 +1882,8 @@ class WaveformSceneTest(unittest.TestCase):
         # _setup_hires, re-writing the bitmap zero-fill and the per-voice color
         # strips on every SHIFT.
         from c64cast.hw.c64 import SCREEN
-        from c64cast.sid.waveform import BITMAP_STRIPS, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_STRIPS
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
@@ -2815,7 +2816,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
 
     def test_auto_time_window_matches_freq(self):
         from c64cast.sid.sidemu import ACCUMULATOR_RANGE
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2841,7 +2843,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         a slice of the full-screen window proportional to n_cols/BITMAP_W.
         Without this scaling, a small scroll batch sampled `auto_cycles`
         full periods into a few pixels and the trace went random."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2861,7 +2864,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         self.assertAlmostEqual(partial, full * 4 / BITMAP_W, places=12)
 
     def test_auto_silent_voice_falls_back_to_wallclock(self):
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2884,10 +2888,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         self.assertAlmostEqual(got_partial, (1.0 / 60.0) * 4 / BITMAP_W, places=10)
 
     def test_persistence_random_resolves_to_named_preset(self):
-        from c64cast.sid.waveform import (
-            _PERSISTENCE_RANDOM_CHOICES,
-            WaveformScene,
-        )
+        from c64cast.sid.voice_scope import _PERSISTENCE_RANDOM_CHOICES
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, persistence="random"
@@ -2948,7 +2950,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         """With scroll_columns=8, after one frame the strip's leftmost
         (BITMAP_W - 8) columns equal the previous frame's columns 8..end —
         a literal FIFO shift."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(
@@ -2981,7 +2984,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         scroll boundary had a single-pixel self-dot, fragmenting the
         trace into N-column chunks. _last_y captures the connection
         across frames; _span_mask uses it as the prev-y for column 0."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(

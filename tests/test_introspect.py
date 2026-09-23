@@ -140,10 +140,10 @@ class ChoiceVocabSyncTest(unittest.TestCase):
         self.assertEqual(cfgmod._STYLE_CHOICES, ps.STYLE_NAMES + (ps.RANDOM_STYLE,))
 
     def test_time_base_and_persistence(self):
-        from c64cast.sid import waveform
+        from c64cast.sid import voice_scope
 
-        self.assertEqual(cfgmod._TIME_BASE_CHOICES, waveform.TIME_BASE_NAMES)
-        self.assertEqual(cfgmod._PERSISTENCE_CHOICES, waveform.PERSISTENCE_NAMES)
+        self.assertEqual(cfgmod._TIME_BASE_CHOICES, voice_scope.TIME_BASE_NAMES)
+        self.assertEqual(cfgmod._PERSISTENCE_CHOICES, voice_scope.PERSISTENCE_NAMES)
 
     def test_midi_waveforms(self):
         from c64cast.sid import midi_scene

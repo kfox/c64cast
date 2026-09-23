@@ -91,27 +91,18 @@ from .sidemu import (
 )
 
 # The 3-voice oscilloscope renderer lives in voice_scope.py so MidiScene can
-# share it. The imported-unused names are re-exported because tests still reach
-# them through this module: tests/test_waveform.py imports BITMAP_STRIPS /
-# BITMAP_W / _layout_lcr / _PERSISTENCE_RANDOM_CHOICES, and
-# tests/test_introspect.py reads TIME_BASE_NAMES / PERSISTENCE_NAMES off it.
+# share it.
 from .voice_scope import (
-    _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
-    BITMAP_STRIPS,  # noqa: F401  (re-exported)
-    BITMAP_W,  # noqa: F401  (re-exported)
     CELL_PX,
     D018_HIRES_BITMAP,
     LEFT_ARROW_SCREEN_CODE,
     META_ROW,
     METADATA_TEXT_COLOR,
-    PERSISTENCE_NAMES,  # noqa: F401  (re-exported)
     RANDOM_PERSISTENCE,
-    TIME_BASE_NAMES,  # noqa: F401  (re-exported)
     TIME_BASE_WALLCLOCK,
     TITLE_ROW,
     TITLE_TEXT_COLOR,
     VoiceScopeRenderer,
-    _layout_lcr,  # noqa: F401  (re-exported; tests import from this module)
     _layout_lr,
     _mirror_glyph_h,
     restore_char_mode_display,
