@@ -50,12 +50,20 @@ def _violations(subject: str, body: str = "") -> list[str]:
 
 
 def _run_main(raw: str) -> tuple[int, str]:
-    """`main` over a message file, with its report captured rather than printed."""
+    """`main` over a message file, at the shipped caps, with its report captured.
+
+    `_configured` is pinned to its fallbacks: it shells out to `git config`, and
+    CONTRIBUTING.md tells a contributor to raise the caps that way, which would
+    otherwise decide the outcome of these tests on their machine.
+    """
     path = Path(tempfile.mkdtemp()) / "COMMIT_EDITMSG"
     path.write_text(raw, encoding="utf-8")
 
     buffer = io.StringIO()
-    with contextlib.redirect_stderr(buffer):
+    with (
+        mock.patch.object(msg, "_configured", lambda name, fallback: fallback),
+        contextlib.redirect_stderr(buffer),
+    ):
         code = msg.main(["check_commit_message.py", str(path)])
 
     return code, buffer.getvalue()
@@ -136,6 +144,64 @@ class MessageParsingTest(unittest.TestCase):
         raw = "\n\nfix: a thing\n\nreal prose\n"
         self.assertEqual(msg.message_lines(raw), ["fix: a thing", "", "real prose"])
         self.assertEqual(msg.violations(msg.message_lines(raw), _SUBJECT_MAX, _BODY_MAX), [])
+
+
+class GitConfigTest(unittest.TestCase):
+    """The config reads, against a scratch repository rather than the machine's.
+
+    `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are redirected as well as every
+    `GIT_*` dropped: a value in the developer's own config would otherwise
+    decide what these assert.
+    """
+
+    def setUp(self) -> None:
+        empty = Path(tempfile.mkdtemp()) / "gitconfig"
+        empty.write_text("", encoding="utf-8")
+
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        environ["GIT_CONFIG_GLOBAL"] = str(empty)
+        environ["GIT_CONFIG_SYSTEM"] = os.devnull
+        patcher = mock.patch.dict(os.environ, environ, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.repo = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], capture_output=True, check=True)
+        previous = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, previous)
+
+    def set(self, name: str, value: str) -> None:
+        subprocess.run(["git", "config", name, value], capture_output=True, check=True)
+
+    def test_an_unset_cap_is_the_shipped_default(self) -> None:
+        self.assertEqual(msg._configured("subjectMax", _SUBJECT_MAX), _SUBJECT_MAX)
+
+    def test_a_configured_cap_is_honored(self) -> None:
+        self.set("prose.subjectMax", "120")
+        self.assertEqual(msg._configured("subjectMax", _SUBJECT_MAX), 120)
+
+    def test_an_unusable_cap_falls_back(self) -> None:
+        for value in ("nonsense", "-5", "0", ""):
+            with self.subTest(value=value):
+                self.set("prose.subjectMax", value)
+                self.assertEqual(msg._configured("subjectMax", _SUBJECT_MAX), _SUBJECT_MAX)
+
+    def test_an_unset_comment_char_is_the_hash(self) -> None:
+        self.assertEqual(msg._comment_char(), "#")
+
+    def test_a_configured_comment_char_is_read(self) -> None:
+        self.set("core.commentChar", ";")
+        self.assertEqual(msg._comment_char(), ";")
+
+    def test_auto_reads_as_the_hash(self) -> None:
+        self.set("core.commentChar", "auto")
+        self.assertEqual(msg._comment_char(), "#")
+
+    def test_the_comment_lint_can_be_switched_off(self) -> None:
+        self.assertFalse(lint._disabled())
+        self.set("prose.lintComments", "false")
+        self.assertTrue(lint._disabled())
 
 
 class HookStageTest(unittest.TestCase):
