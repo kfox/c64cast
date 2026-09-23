@@ -271,6 +271,41 @@ class StagedDiffTest(unittest.TestCase):
             [(3, "TODO/FIXME marker"), (16, "section banner")],
         )
 
+    def test_a_line_that_starts_with_plusses_does_not_shift_the_count(self) -> None:
+        self.stage('PATCH = """\n+++ b/other.py\n"""\n# TODO: under a diff fixture\n')
+        self.assertEqual(
+            lint.findings(["m.py"]),
+            [("m.py", 4, "TODO/FIXME marker", "# TODO: under a diff fixture")],
+        )
+
+    def test_each_file_in_one_diff_keeps_its_own_path_and_numbering(self) -> None:
+        self.stage("a = 1\n# TODO: in the first\n", name="one.py")
+        self.stage("b = 2\nc = 3\n# FIXME: in the second\n", name="two.py")
+        self.assertEqual(
+            lint.findings(["one.py", "two.py"]),
+            [
+                ("one.py", 2, "TODO/FIXME marker", "# TODO: in the first"),
+                ("two.py", 3, "TODO/FIXME marker", "# FIXME: in the second"),
+            ],
+        )
+
+    def test_a_path_with_a_space_loses_the_tab_git_appends(self) -> None:
+        self.stage("# TODO: spaced path\n", name="two words.py")
+        self.assertEqual(
+            lint.findings(["two words.py"]),
+            [("two words.py", 1, "TODO/FIXME marker", "# TODO: spaced path")],
+        )
+
+    def test_a_non_ascii_path_is_reported_as_the_name_git_tracks(self) -> None:
+        self.stage("# TODO: accented path\n", name="café.py")
+        tracked = subprocess.run(
+            ["git", "-C", str(self.repo), "-c", "core.quotePath=false", "ls-files"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual([path for path, *_ in lint.findings([tracked])], [tracked])
+
     def test_nothing_staged_reports_nothing(self) -> None:
         (self.repo / "m.py").write_text("# TODO: unstaged\n", encoding="utf-8")
         self.assertEqual(lint.findings(["m.py"]), [])

@@ -47,7 +47,8 @@ _URL = re.compile(r"https?://")
 _BANNER = re.compile(r"^#\s*(?:[-=*#~_+]{3,}\s*)+$|^#\s*(?:Step|STEP|Part|PART)\s*\d+\b")
 _MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b\s*[:(]")
 
-_FILE_HEADER = re.compile(r"^\+\+\+ (?:b/)?(.*)$")
+_DIFF_HEADER = "diff --git "
+_FILE_HEADER = re.compile(r"^\+\+\+ (?:b/)?(.*?)\t?$")
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 _STATEMENT_NODES = (
@@ -134,7 +135,10 @@ def added_lines(paths: list[str]) -> list[tuple[str, int, str]]:
     """Every line the staged diff adds, as (path, line number, text)."""
     try:
         done = subprocess.run(
-            ["git", "diff", "--cached", "--no-color", "-U0", "--", *paths],
+            # Without core.quotePath off, git C-escapes a non-ASCII path and
+            # wraps the whole of it in double quotes, inside the `b/` prefix.
+            ["git", "-c", "core.quotePath=false"]
+            + ["diff", "--cached", "--no-color", "-U0", "--", *paths],
             capture_output=True,
             text=True,
             timeout=_DIFF_TIMEOUT_S,
@@ -148,19 +152,27 @@ def added_lines(paths: list[str]) -> list[tuple[str, int, str]]:
     added: list[tuple[str, int, str]] = []
     path = ""
     number = 0
+    in_hunk = False
 
     for line in done.stdout.splitlines():
-        header = _FILE_HEADER.match(line)
-        if header:
-            path = header[1]
+        if line.startswith(_DIFF_HEADER):
+            path, in_hunk = "", False
             continue
+
+        # Inside a hunk, `+++` is an added line whose own text starts with `++`.
+        if not in_hunk:
+            header = _FILE_HEADER.match(line)
+            if header:
+                path = header[1]
+                continue
 
         hunk = _HUNK_HEADER.match(line)
         if hunk:
             number = int(hunk[1])
+            in_hunk = True
             continue
 
-        if line.startswith("+") and not line.startswith("+++"):
+        if in_hunk and line.startswith("+"):
             if path and path != "/dev/null":
                 added.append((path, number, line[1:]))
             number += 1
