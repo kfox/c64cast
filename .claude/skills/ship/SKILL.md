@@ -118,13 +118,14 @@ and the run silently reuses whatever level ran last. Tell it to review that
 commit's own diff, not `<sha>...HEAD` and not the branch.
 
 **The reviewer fixes what it finds and commits the fixes itself.**
-`/code-review` without `--fix` is a report-only run, so the prompt has to say
-so — nothing reaches the tree otherwise. A finding handed back as prose gets
-re-implemented from a description, and that re-implementation is new code, which
-earns its own review; the hand-back is the loop that spends an afternoon on a
-small change. Two classes stay with you: a defect in the commit message, because
-rewriting a message changes the SHA, and any editorial call about prose, which
-needs the whole-branch view a single-commit reviewer does not have.
+`/code-review` without `--fix` is a report-only run, so its prompt has to tell
+it to fix what it finds — nothing reaches the tree otherwise. A finding handed
+back as prose gets re-implemented from a description, and that re-implementation
+is new code, which earns its own review; the hand-back is the loop that spends
+an afternoon on a small change. Two classes stay with you: a defect in the
+commit message, because rewriting a message changes the SHA, and any editorial
+call about prose, which needs the whole-branch view a single-commit reviewer
+does not have.
 
 **The reviewer works in this checkout**, so do not commit or edit anything here
 while it runs — it verifies findings by mutating the tree and running the suite,
