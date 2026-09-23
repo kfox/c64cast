@@ -193,6 +193,19 @@ class CommentClassifyTest(unittest.TestCase):
     def test_a_short_word_is_not_read_as_code(self) -> None:
         self.assertIsNone(lint.classify("# ok"))
 
+    def test_a_sentence_citing_a_numbered_step_is_not_a_banner(self) -> None:
+        for line in (
+            "# Step 8 is where the frame stops being a picture and becomes colors",
+            "# Part 2 of the walkthrough enables the REU",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(lint.classify(line))
+
+    def test_step_numbering_itself_is_still_a_banner(self) -> None:
+        for line in ("# Step 3", "# STEP 1 -- setup", "# Part 2."):
+            with self.subTest(line=line):
+                self.assertEqual(lint.classify(line), "section banner")
+
 
 class StagedDiffTest(unittest.TestCase):
     """The diff walk, against a real repository rather than a crafted string.

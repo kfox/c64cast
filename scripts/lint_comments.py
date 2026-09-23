@@ -46,7 +46,11 @@ _DIRECTIVE = re.compile(
     r"^#\s*(?:type:|noqa|pyright:|mypy:|pragma|fmt:|ruff:|nosec|isort:|coding[:=]|!|:schema)"
 )
 _URL = re.compile(r"https?://")
-_BANNER = re.compile(r"^#\s*(?:[-=*#~_+]{3,}\s*)+$|^#\s*(?:Step|STEP|Part|PART)\s*\d+\b")
+_BANNER = re.compile(
+    r"^#\s*(?:[-=*#~_+]{3,}\s*)+$"
+    # Numbering, not a sentence that happens to cite a numbered step.
+    r"|^#\s*(?:Step|STEP|Part|PART)\s*\d+\s*(?:[:.)\]-]|$)"
+)
 _MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b\s*[:(]")
 
 _DIFF_HEADER = "diff --git "
