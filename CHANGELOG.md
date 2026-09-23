@@ -747,9 +747,12 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   serves to read-only viewers, and the parse error the console renders in a
   browser. The quoted line is now decided by where the secret-shaped key *is*
   rather than by whether a substitution happened: such a line keeps the key name
-  and loses everything after it, and a line inside an open multi-line value is
-  dropped whole. A line with no secret on it is still echoed in full with its
-  caret.
+  and loses everything after it, and a line inside a value that is still open —
+  a multi-line string, an array, an inline table — is dropped whole. A line
+  carrying URL userinfo is truncated at the scheme, which is the one place a
+  credential sits under a name that is not secret-shaped
+  (`url = "u64://user:pass@host"` names `url`). A line with no secret on it is
+  still echoed in full with its caret.
 - **`?key=` and `?sig=` query parameters are now redacted.** The pattern
   required the literal `api` before `key` and did not know `sig` at all, so the
   two spellings signed media and feed URLs use passed through to `--log-file`

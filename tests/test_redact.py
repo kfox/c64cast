@@ -216,6 +216,62 @@ class RedactSourceLineTest(unittest.TestCase):
         continuation line needs a parse, and the parse is what failed."""
         self.assertEqual(redact_source_line(["notes = '''", "prose"], 2), ("REDACTED", False))
 
+    def test_a_triple_quote_a_parser_never_saw_does_not_open_a_value(self):
+        """A comment and a literal string can each carry a triple-quote run
+        that opens nothing. Counting the runs instead of placing them flips the
+        parity, so the real opening delimiter reads as a closing one and the
+        continuation line carrying the passphrase comes back verbatim — #426
+        again, one comment away."""
+        triple = '"""'
+        for noise in (f"# see {triple} for the multi-line form", f"notes = 'write {triple} here'"):
+            with self.subTest(noise=noise):
+                lines = [noise, "[ultimate64]", f"dma_password = {triple}", "correct horse"]
+                self.assertEqual(redact_source_line(lines, 4), ("REDACTED", False))
+
+    def test_a_continuation_line_of_an_open_array_is_dropped_too(self):
+        """An array is an open value like any other: a line inside one carries
+        no key name, so nothing on it can be attributed to a setting."""
+        lines = ["[ultimate64]", "extra = [", '  "correct horse" bogus', "]"]
+        self.assertEqual(redact_source_line(lines, 3), ("REDACTED", False))
+
+    def test_a_closed_bracket_does_not_suppress_what_follows(self):
+        """The bracket count has to come back down — a table header is two of
+        them — or the first array in a file would blank every line after it."""
+        for before in ("x = [1, 2]", "[ultimate64]", "x = { a = 1 }", "[[scenes]]"):
+            with self.subTest(before=before):
+                self.assertEqual(redact_source_line([before, "b = ?"], 2), ("b = ?", True))
+
+    def test_a_password_in_a_url_is_dropped_though_its_key_is_not_secret_shaped(self):
+        """`url` names no secret, so the key rule cannot fire, and the line is
+        well formed enough that nothing is open — yet the value carries a
+        password. `connect.redact_target` handles this once the target has
+        parsed; the line reaching here is the one that did not."""
+        for line in (
+            'url = "u64://kelly:hunter2@192.168.2.64"',
+            "url = 'u64://kelly:hunter2@192.168.2.64'  # trailing",
+            'url = "http://kelly:hunter2@host/path?x=1"',
+            'url = "u64://kelly@192.168.2.64"',
+        ):
+            with self.subTest(line=line):
+                safe, verbatim = redact_source_line([line], 1)
+                self.assertNotIn("hunter2", safe)
+                self.assertNotIn("kelly", safe)
+                self.assertFalse(verbatim)
+                self.assertTrue(safe.startswith("url = "), safe)
+
+    def test_an_at_sign_outside_a_netloc_is_not_userinfo(self):
+        """The netloc ends at the first `/`, `?` or `#`. A line truncated over
+        an `@` in a path or a query would lose diagnostic text for nothing, and
+        the rule would fire on ordinary config."""
+        for line in (
+            'url = "u64://192.168.2.64/path@v2"',
+            'url = "https://host/feed?to=me@example.com"',
+            'note = "mail me@example.com"',
+            'path = "/tmp/a@b"',
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(redact_source_line([line], 1), (line, True))
+
 
 class RedactingFormatterTest(unittest.TestCase):
     def test_it_redacts_what_it_formats(self):

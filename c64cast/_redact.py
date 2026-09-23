@@ -70,7 +70,15 @@ _SECRET_VALUE = re.compile(
 
 _SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE | re.VERBOSE)
 
-_TRIPLE_QUOTE = re.compile("\"\"\"|'''")
+_TRIPLE = ('"""', "'''")
+
+#: `scheme://` followed by anything up to an `@` that is still inside the
+#: netloc. Deliberately not `urlsplit`: a line the TOML parser rejected may
+#: hold no parseable URL at all, and the point is to spot the *shape* of
+#: userinfo without needing the line to be well formed. The netloc ends at the
+#: first `/`, `?` or `#`, so those bound the search and an `@` later in a path
+#: or query is not userinfo.
+_URL_USERINFO = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/?#\"']*@", re.IGNORECASE)
 
 
 def _mask(m: re.Match[str]) -> str:
@@ -101,17 +109,59 @@ def redact_secrets(text: str) -> str:
     return _SECRET_VALUE.sub(_mask, text)
 
 
-def _multiline_open(lines: Sequence[str], lineno: int) -> bool:
-    """Whether a `'''` or `\"\"\"` value opened earlier is still open when the
-    1-based `lineno`-th line is reached."""
+def _skip_quoted(line: str, start: int) -> int:
+    """The index just past the single-line string opening at `start`, or the
+    end of the line when nothing closes it. A basic string escapes its own
+    delimiter with `\\`; a literal string has no escapes."""
+    quote = line[start]
+    i = start + 1
+    while i < len(line):
+        if quote == '"' and line[i] == "\\":
+            i += 2
+        elif line[i] == quote:
+            return i + 1
+        else:
+            i += 1
+    return len(line)
+
+
+def _value_open(lines: Sequence[str], lineno: int) -> bool:
+    """Whether a value opened earlier is still open when the 1-based
+    `lineno`-th line is reached — a `'''` or `\"\"\"` string, an array, or an
+    inline table.
+
+    Only the lines *before* `lineno` are read, and the parser consumed those
+    before it rejected this one, so they are well formed enough to walk: a
+    comment runs to the end of its line, and a single-line string is stepped
+    over whole. Counting every `\"\"\"` run instead — including the ones a
+    comment or a literal string merely mentions — flips the parity, and an
+    opening delimiter read as a closing one hands back the continuation line
+    that carries the passphrase."""
     delim: str | None = None
+    depth = 0
     for line in lines[: lineno - 1]:
-        for m in _TRIPLE_QUOTE.finditer(line):
-            if delim is None:
-                delim = m.group()
-            elif m.group() == delim:
-                delim = None
-    return delim is not None
+        i = 0
+        while i < len(line):
+            if delim is not None:
+                if line.startswith(delim, i):
+                    delim, i = None, i + 3
+                elif delim == '"""' and line[i] == "\\":
+                    i += 2
+                else:
+                    i += 1
+            elif line[i] == "#":
+                break
+            elif line.startswith(_TRIPLE, i):
+                delim, i = line[i : i + 3], i + 3
+            elif line[i] in "\"'":
+                i = _skip_quoted(line, i)
+            else:
+                if line[i] in "[{":
+                    depth += 1
+                elif line[i] in "]}":
+                    depth -= 1
+                i += 1
+    return delim is not None or depth > 0
 
 
 def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
@@ -126,23 +176,34 @@ def redact_source_line(lines: Sequence[str], lineno: int) -> tuple[str, bool]:
     of those the substitution either lands on the wrong text or does not
     happen — so "the text changed" is not evidence that the secret is gone.
 
-    Two rules replace that test, and both hold whatever the line is malformed
-    into:
+    Three rules replace that test, and all of them hold whatever the line is
+    malformed into:
 
     * A line naming a secret-shaped key keeps the name and loses everything
       after it. The name is the whole diagnostic — it says which setting the
       parser choked on — and no source text survives past it to be read.
-    * A line reached while a multi-line value is open is dropped whole, since
-      it may be that value. Applied to any open value, secret-shaped or not:
-      which key a continuation line belongs to cannot be answered without
-      parsing, and parsing is what failed.
+    * A line reached while a value is still open is dropped whole, since it may
+      be that value. Applied to any open value — a `'''` or `\"\"\"` string, an
+      array, an inline table — and secret-shaped or not: which key a
+      continuation line belongs to cannot be answered without parsing, and
+      parsing is what failed.
+    * A line carrying URL userinfo is truncated at the scheme. The key is the
+      one place a secret can sit under a name that is not secret-shaped:
+      `url = "u64://kelly:hunter2@host"` names `url`, so neither rule above
+      fires and the password was echoed whole with a caret under it.
+      :func:`c64cast.app.connect.redact_target` already collapses userinfo, but
+      only once the target has *parsed* — and this function exists for the line
+      that did not.
 
-    `verbatim` is False whenever either fired, so a caller drawing a caret
+    `verbatim` is False whenever any of them fired, so a caller drawing a caret
     under a column drops it — the columns no longer point where they did."""
-    if _multiline_open(lines, lineno):
+    if _value_open(lines, lineno):
         return REDACTED, False
     line = lines[lineno - 1]
     m = _SECRET_KEY_RE.search(line)
-    if m is None:
-        return line, True
-    return f"{line[: m.end()]} {REDACTED}", False
+    if m is not None:
+        return f"{line[: m.end()]} {REDACTED}", False
+    m = _URL_USERINFO.search(line)
+    if m is not None:
+        return f"{line[: m.start()]}{REDACTED}", False
+    return line, True
