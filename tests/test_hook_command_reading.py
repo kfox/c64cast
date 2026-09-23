@@ -129,6 +129,17 @@ class ReadingTest(unittest.TestCase):
         self.assertFalse(_shell.read("(ls)").has_substitution())
         self.assertFalse(_shell.read("ls | head").has_substitution())
 
+    def test_a_substitution_glued_to_the_word_before_it_is_still_one(self):
+        # shlex leaves the `$` on the word it touches, so `files=$(` arrives
+        # as `files=$` and only a bare `$` would be recognized. The captured
+        # command's output goes into the variable, never to the caller.
+        reading = _shell.read("files=$(grep -rn needle docs/)")
+        self.assertTrue(reading.has_substitution())
+        self.assertEqual(reading.commands[-1].argv, ["grep", "-rn", "needle", "docs/"])
+
+    def test_a_substitution_left_open_by_a_line_carries_to_the_next(self):
+        self.assertTrue(_shell.read("echo $(\ngrep -rn needle docs/\n)").has_substitution())
+
     def test_a_punctuation_cluster_is_split_into_the_operators_in_it(self):
         self.assertEqual(_shell.split_cluster(";("), [";", "("])
         self.assertEqual(_shell.split_cluster("&&("), ["&&", "("])
@@ -152,6 +163,32 @@ class ReadingTest(unittest.TestCase):
         (to_terminal,) = _shell.read("grep -r x docs/ 2>/dev/null").commands
         self.assertTrue(to_file.stdout_to_file)
         self.assertFalse(to_terminal.stdout_to_file)
+
+    def test_stdout_handed_to_another_descriptor_is_not_a_file(self):
+        # `>&2` puts every line on stderr, which the caller reads back just
+        # as it reads stdout; `>&out.txt` and `&>out.txt` name a file.
+        (dup,) = _shell.read("grep -r x docs/ >&2").commands
+        self.assertFalse(dup.stdout_to_file)
+        for cmd in ("grep -r x docs/ >&out.txt", "grep -r x docs/ &>out.txt"):
+            (to_file,) = _shell.read(cmd).commands
+            self.assertTrue(to_file.stdout_to_file, cmd)
+
+    def test_a_pipe_after_a_group_marks_what_ran_inside_it(self):
+        # `)` and `}` leave a placeholder command behind them, and marking
+        # that one would leave the grep looking unpiped.
+        for cmd in ("(grep -r x docs/) | head -5", "{ grep -r x docs/; } | head -5"):
+            piped = [c for c in _shell.read(cmd).commands if "grep" in c.argv]
+            self.assertEqual([c.stdout_to_pipe for c in piped], [True], cmd)
+
+    def test_a_redirect_after_a_group_marks_what_ran_inside_it(self):
+        (inside,) = _shell.read("(grep -r x docs/) > out.txt").commands
+        self.assertTrue(inside.stdout_to_file)
+
+    def test_an_operand_of_the_command_is_not_read_as_a_descriptor(self):
+        # The digit only names a descriptor when it is glued to the operator;
+        # a `)` in between makes it an argument the command keeps.
+        (command,) = _shell.read("(echo 2) > out.txt").commands
+        self.assertEqual((command.argv, command.stdout_to_file), (["echo", "2"], True))
 
     def test_a_redirects_file_descriptor_does_not_stay_in_the_argv(self):
         (command,) = _shell.read("git worktree move 2>/dev/null a b").commands
@@ -263,7 +300,25 @@ class GluedSeparatorTest(unittest.TestCase):
             self.assertIsNone(bash_search.line_verdict(cmd), cmd)
 
     def test_the_search_hook_declines_a_line_carrying_a_substitution(self):
-        self.assertIsNone(bash_search.line_verdict("echo $(grep -rn needle docs/)"))
+        for cmd in (
+            "echo $(grep -rn needle docs/)",
+            "files=$(grep -rn needle docs/)",
+            "echo $(\ngrep -rn needle docs/\n)",
+        ):
+            self.assertIsNone(bash_search.line_verdict(cmd), cmd)
+
+    def test_the_search_hook_passes_a_group_whose_output_is_piped(self):
+        for cmd in (
+            "(grep -rn needle docs/) | head -20",
+            "{ grep -rn needle docs/; } | head -20",
+            "(grep -rn needle docs/) > /dev/null",
+        ):
+            self.assertIsNone(bash_search.line_verdict(cmd), cmd)
+
+    def test_the_search_hook_sees_output_handed_to_stderr(self):
+        # `>&2` reaches the caller exactly as stdout does, so the spill this
+        # hook exists to catch is still a spill.
+        self.assertIsNotNone(bash_search.line_verdict("grep -rn needle docs/ >&2"))
 
     def test_the_resolvable_target_hook_sees_a_glued_search_after_a_cd(self):
         for cmd in (
