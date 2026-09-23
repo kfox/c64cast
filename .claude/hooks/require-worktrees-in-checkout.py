@@ -24,9 +24,17 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import sys
 from pathlib import Path
+
+# Running `python3 <abs-path>` already puts the script's directory on
+# sys.path, but a loader that does not — `spec_from_file_location`, which is
+# how the tests reach a hook whose filename is no identifier — would raise
+# here at import time, and a PreToolUse hook that cannot be imported is a
+# hook that is silently off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _shell  # noqa: E402
 
 WORKTREE_DIR = Path(".claude") / "worktrees"
 
@@ -39,10 +47,7 @@ VALUE_SHORT_FLAGS = "bB"
 GIT_NAMES = {"git", "git.exe"}
 HELP_FLAGS = {"-h", "--help"}
 SHELLS = {"bash", "dash", "ksh", "sh", "zsh"}
-HEREDOC = "<<"
 SUBSTITUTION = "`$()"
-SEPARATORS = frozenset({"&", "&&", "(", ")", ";", ";;", "|", "||"})
-REDIRECTS = frozenset({"<", "<&", "<<", "<<<", "<>", ">", ">&", ">>", ">|"})
 
 DENY = (
     "Put the worktree under this checkout's `.claude/worktrees/`:\n"
@@ -59,91 +64,10 @@ UNREADABLE = (
 )
 
 
-def _tokens(text: str) -> list[str] | None:
-    """`text` split the way a shell splits a command, with the separators,
-    redirections and heredoc markers kept as tokens of their own — or None when
-    a quote it opens is never closed, which a shell answers by reading on."""
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        return list(lexer)
-    except ValueError:
-        return None
-
-
-def _line_segments(tokens: list[str]) -> tuple[list[list[str]], str]:
-    """The commands in `tokens`, one argv each, with the heredoc delimiter they
-    open.
-
-    Adjacent punctuation arrives as one token — `;(` rather than `;` and `(` —
-    which matches no separator and leaves the commands either side of it in one
-    argv. That is read rather than split, because a segment is only a place to
-    look for `git worktree add` and finding it there is the same answer; a
-    split would instead carry a subshell's `cd` out to the commands after it.
-
-    A redirection's file descriptor arrives as a token of its own, because
-    shlex splits `2>` into `2` and `>`. It is dropped with the redirection, so
-    it cannot sit in the argv and shift `move`'s second positional past the
-    destination.
-    """
-    segments: list[list[str]] = [[]]
-    heredoc = ""
-    redirect = ""
-    for token in tokens:
-        if redirect:
-            heredoc = token.lstrip("-") if redirect == HEREDOC else heredoc
-            redirect = ""
-        elif token in SEPARATORS:
-            segments.append([])
-        elif token in REDIRECTS:
-            if segments[-1] and segments[-1][-1].isdigit():
-                segments[-1].pop()
-            redirect = token
-        else:
-            segments[-1].append(token)
-    return [segment for segment in segments if segment], heredoc
-
-
-def _segments(cmd: str) -> tuple[list[list[str]], str]:
-    """One argv per command in `cmd`, and the tail of it that stayed unreadable.
-
-    A heredoc body is skipped: its lines are text rather than commands, and a
-    trailing backslash in one is text too — joining it to the next line would
-    swallow the terminator and read the rest of the command as more body. A
-    line that leaves a quote open is joined to the next instead, which is what
-    a shell does with it.
-    """
-    segments: list[list[str]] = []
-    delimiter = ""
-    pending = ""
-    for line in cmd.splitlines():
-        if delimiter:
-            delimiter = "" if line.strip() == delimiter else delimiter
-            continue
-        pending = f"{pending}\n{line}" if pending else line
-        if pending.endswith("\\"):
-            pending = pending[:-1]
-            continue
-        tokens = _tokens(pending)
-        if tokens is None:
-            continue
-        pending = ""
-        found, delimiter = _line_segments(tokens)
-        segments.extend(found)
-    return segments, pending
-
-
 def _names_a_worktree_command(text: str) -> bool:
     """Whether unreadable text mentions the command this hook decides on. Read
     on text no lexer could take apart, so it matches words rather than tokens."""
     return "git" in text and "worktree" in text and ("add" in text or "move" in text)
-
-
-def _strip_env(argv: list[str]) -> list[str]:
-    """`argv` without its leading `VAR=value` assignments."""
-    while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
-        argv = argv[1:]
-    return argv
 
 
 def _after_directory_change(
@@ -296,9 +220,9 @@ def verdict(cmd: str, cwd: str) -> str | None:
     None when it creates none outside `.claude/worktrees/`."""
     base = Path(cwd or ".")
     stack: list[Path] = []
-    segments, unreadable = _segments(cmd)
-    for segment in segments:
-        argv = _strip_env(segment)
+    reading = _shell.read(cmd)
+    for command in reading.commands:
+        argv = _shell.strip_prefix(command.argv)
         if not argv:
             continue
         base, argv = _after_directory_change(argv, base, stack)
@@ -307,8 +231,8 @@ def verdict(cmd: str, cwd: str) -> str | None:
         reason = _segment_verdict(argv, base, cwd)
         if reason:
             return reason
-    if unreadable and _names_a_worktree_command(unreadable):
-        return UNREADABLE.format(text=unreadable)
+    if reading.unreadable and _names_a_worktree_command(reading.unreadable):
+        return UNREADABLE.format(text=reading.unreadable)
     return None
 
 
