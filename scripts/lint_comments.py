@@ -51,7 +51,7 @@ _BANNER = re.compile(
     # Numbering, not a sentence that happens to cite a numbered step.
     r"|^#\s*(?:Step|STEP|Part|PART)\s*\d+\s*(?:[:.)\]-]|$)"
 )
-_MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b\s*[:(]")
+_MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b")
 
 _DIFF_HEADER = "diff --git "
 _FILE_HEADER = re.compile(r"^\+\+\+ (?:b/)?(.*?)\t?$")
@@ -124,13 +124,20 @@ def classify(line: str) -> str | None:
     text = line.strip()
     if not text.startswith("#"):
         return None
-    if _DIRECTIVE.match(text) or _URL.search(text):
+    if _DIRECTIVE.match(text):
         return None
 
     if _BANNER.match(text):
         return "section banner"
     if _MARKER.search(text):
         return "TODO/FIXME marker"
+
+    # A link exempts only the code check: a linked upstream bug or the
+    # provenance of a constant is exactly the prose that parses as an
+    # assignment. A marker's link is the tracker item it belongs in instead.
+    if _URL.search(text):
+        return None
+
     if looks_like_code(text.lstrip("#").lstrip(":")):
         return "commented-out code"
 
