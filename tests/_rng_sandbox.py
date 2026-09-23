@@ -1,9 +1,9 @@
 """Start every test from an RNG state no earlier test can have chosen.
 
 `random` and `numpy.random`'s legacy global generator are both process-wide,
-and this program draws from both: eight `c64cast` modules import `random` for
-scene, background and pool picks, and `audio_handlers.quantize` reaches for
-`np.random.random_sample` when no generator is passed. `make test` runs
+and this program draws from both: `c64cast` modules import `random` for scene,
+background and pool picks, and `audio_handlers.encode_floats_to_dac` reaches
+for `np.random.random_sample` when no generator is passed. `make test` runs
 `unittest_parallel`, so a test that seeds either one pins the sequence every
 later test in that worker — and the production code inside it — will draw
 from. Which tests share a worker changes per run, so a failure caused that way

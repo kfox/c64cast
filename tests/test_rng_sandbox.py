@@ -41,9 +41,10 @@ class SeedTest(unittest.TestCase):
         self.assertEqual([random.random() for _ in range(3)], first)
 
     def test_numpys_global_generator_is_reseeded_too(self):
-        """`audio_handlers.quantize` draws from `np.random.random_sample` when
-        no generator is passed, so numpy's legacy global is the other half of
-        what #430 fixed — reseeding `random` alone closes a lookalike."""
+        """`audio_handlers.encode_floats_to_dac` draws from
+        `np.random.random_sample` when no generator is passed, so numpy's
+        legacy global is the other half of what #430 fixed — reseeding
+        `random` alone closes a lookalike."""
         np.random.seed(12345)
         pinned = np.random.random_sample(3).tolist()
         np.random.seed(12345)
