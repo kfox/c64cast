@@ -375,6 +375,7 @@ class StagedDiffTest(unittest.TestCase):
             ["git", "-C", str(self.repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
 
@@ -391,6 +392,7 @@ class StagedDiffTest(unittest.TestCase):
             ["git", "-C", str(self.repo), "ls-files"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.split()
         self.assertEqual(tracked, ["m.py"])
@@ -454,6 +456,7 @@ class StagedDiffTest(unittest.TestCase):
             ["git", "-C", str(self.repo), "-c", "core.quotePath=false", "ls-files"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         ).stdout.strip()
         self.assertEqual([path for path, *_ in lint.findings([tracked])], [tracked])
