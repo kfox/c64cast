@@ -188,6 +188,16 @@ test stood, so the run reports that one and carries on. Stepping through a test
 under a debugger wants `C64CAST_TEST_TIMEOUT_S=0`, which turns the watchdog off
 for that run.
 
+**A test cannot leave the process-wide RNG seeded either.**
+[tests/_rng_sandbox.py](tests/_rng_sandbox.py) reseeds `random` and numpy's
+legacy global generator from the test's own id before every test, so a
+`random.seed()` one test leaves behind cannot decide what the next one — or the
+production code inside it — draws. A test that wants a particular sequence
+still calls `random.seed()` itself, inside the test or in `setUp`; a seed set
+in `setUpClass` or at module import is overwritten before the first test under
+it runs. A `random.Random()` instance or a `np.random.Generator` is not
+process-wide and is the shape to prefer.
+
 ## Quirks worth knowing
 
 Cross-cutting traps that belong to no single module. **Per-subsystem design rationale

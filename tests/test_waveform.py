@@ -2362,8 +2362,6 @@ class WaveformPoolPickTest(unittest.TestCase):
     candidate per setup() and skip SIDs that fail payload validation."""
 
     def setUp(self):
-        rng_state = random.getstate()
-        self.addCleanup(random.setstate, rng_state)
         # The synthetic SIDs here would not survive the real host emulator.
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
