@@ -67,6 +67,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator
 
 # Private marker that a process in this tree already set the suite up; not one
@@ -155,6 +156,34 @@ _ALLOWED = _allowed_roots()
 _ASSETS = _key(os.path.join(CHECKOUT, "assets"))
 
 
+#: Set while this module is reading a file to answer its *own* question. Kept
+#: per thread rather than as a plain flag for the reason
+#: :func:`allow_outside_checkout` gives for not disarming: the armed flag is
+#: read by every thread, so a process-wide suspend would also un-police
+#: whatever the code under test had running in the background.
+_probing = threading.local()
+
+
+@contextlib.contextmanager
+def _own_read() -> Iterator[None]:
+    """Exempt the reads this module makes to locate the git metadata.
+
+    :func:`_git_dirs_at` has to read `<root>/.git` and the `commondir` beside
+    it, and both land on paths :func:`violation` now refuses — so with the hook
+    armed the guard's own probe raises, blaming the test for touching `.git`
+    when what it did was shell out to `git`. That fires for any `-C` target
+    whose metadata is this repository's: a sibling worktree, or the primary
+    checkout, which is where every `-C` that is not under `CHECKOUT` but is
+    still this repo ends up.
+    """
+    was = getattr(_probing, "active", False)
+    _probing.active = True
+    try:
+        yield
+    finally:
+        _probing.active = was
+
+
 def _git_dirs_at(root: str) -> tuple[str, ...]:
     """Every directory holding the git metadata of the checkout at ``root``.
 
@@ -179,19 +208,20 @@ def _git_dirs_at(root: str) -> tuple[str, ...]:
     """
     local = os.path.join(root, ".git")
     found = [local]
-    try:
-        with open(local, encoding="utf-8") as fh:
-            marker = fh.read(4096)
-    except (OSError, ValueError, UnicodeDecodeError):
-        return tuple(_key(_resolve(d)) for d in found)
-    prefix = "gitdir:"
-    line = marker.strip()
-    if line.startswith(prefix):
-        real = _resolve(os.path.join(root, line[len(prefix) :].strip()))
-        found.append(real)
-        with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
-            with open(os.path.join(real, "commondir"), encoding="utf-8") as fh:
-                found.append(_resolve(os.path.join(real, fh.read().strip())))
+    with _own_read():
+        try:
+            with open(local, encoding="utf-8") as fh:
+                marker = fh.read(4096)
+        except (OSError, ValueError, UnicodeDecodeError):
+            return tuple(_key(_resolve(d)) for d in found)
+        prefix = "gitdir:"
+        line = marker.strip()
+        if line.startswith(prefix):
+            real = _resolve(os.path.join(root, line[len(prefix) :].strip()))
+            found.append(real)
+            with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
+                with open(os.path.join(real, "commondir"), encoding="utf-8") as fh:
+                    found.append(_resolve(os.path.join(real, fh.read().strip())))
     return tuple(sorted({_key(_resolve(d)) for d in found}))
 
 
@@ -206,9 +236,10 @@ def _repo_paths(resolved: str) -> tuple[str, ...]:
     different places and ``GIT_DIR`` legitimately names the latter.
 
     A target inside this checkout answers from the values computed at import
-    instead of reading `<target>/.git` again. Not a cache for speed: while the
-    hook is armed that read is *itself* a violation, so asking the question the
-    obvious way makes the guard fail on every call it is meant to allow.
+    instead of reading `<target>/.git` again — the common case, and the only
+    one the gates themselves hit. What keeps the read safe for the *other*
+    targets is :func:`_own_read`; without it the probe lands on the metadata
+    :func:`violation` refuses and the guard fails the call it meant to allow.
     """
     key = _key(resolved)
     if key.startswith((_key(CHECKOUT), *_GIT)):
@@ -284,9 +315,26 @@ def violation(path: str) -> str | None:
     )
 
 
-#: The three `GIT_*` variables that re-point git at a repository regardless of
-#: where the command was told to run.
-_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+#: The `GIT_*` variables that re-point git at a repository regardless of where
+#: the command was told to run. `GIT_COMMON_DIR` belongs with them because it
+#: is where `config` — the file #482 wrote into — actually lives.
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+#: git's own global options that take their value as a *separate* argument.
+#: `-C` is walked rather than skipped, so it is not among them; the rest have
+#: to be consumed together with their value, because a value that does not
+#: start with `-` otherwise reads as the subcommand.
+_GIT_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+)
 
 
 def _git_dash_c_target(argv: list[str], cwd: str) -> str | None:
@@ -294,13 +342,25 @@ def _git_dash_c_target(argv: list[str], cwd: str) -> str | None:
 
     Each `-C` is relative to the one before it, which is why this walks them
     rather than taking the last.
+
+    A global option whose value is a separate argument has to be consumed with
+    that value. `git -c core.quotePath=false -C <tmp> config …` is an idiom
+    this repository already writes (`scripts/lint_comments.py`,
+    `test_prose_gate.py`), and reading `core.quotePath=false` as the subcommand
+    ends the walk before the `-C` — which reports no target at all and lets
+    exactly the call this guards against through unchecked.
     """
     here = cwd
     seen = False
     rest = argv[1:]
     while rest:
+        if rest[0] == "--":
+            break
         if rest[0] == "-C" and len(rest) > 1:
             here, seen, rest = os.path.join(here, rest[1]), True, rest[2:]
+            continue
+        if rest[0] in _GIT_VALUE_OPTIONS and len(rest) > 1:
+            rest = rest[2:]
             continue
         if rest[0].startswith("-"):
             rest = rest[1:]
@@ -372,7 +432,7 @@ def _check_subprocess(args: tuple[object, ...]) -> None:
 
 
 def _hook(event: str, args: tuple[object, ...]) -> None:
-    if not _armed or not args:
+    if not _armed or not args or getattr(_probing, "active", False):
         return
     if event == "subprocess.Popen":
         _check_subprocess(args)

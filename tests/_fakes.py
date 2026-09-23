@@ -92,8 +92,9 @@ def no_inherited_git_env(*, isolate_config: bool = False) -> Iterator[None]:
 
     ``isolate_config=True`` additionally points ``GIT_CONFIG_GLOBAL`` at an
     empty file and ``GIT_CONFIG_SYSTEM`` at ``os.devnull``, for a test that
-    *reads* config: those two are not ``GIT_*``-prefixed, and a value in the
-    developer's own ``~/.gitconfig`` would otherwise decide what it asserts.
+    *reads* config. Dropping those two is not enough on its own: unset is what
+    tells git to fall back to the developer's own ``~/.gitconfig`` and to
+    ``/etc/gitconfig``, so a value there would decide what the test asserts.
     """
     environ = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     if isolate_config:

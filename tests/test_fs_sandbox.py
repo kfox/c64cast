@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _fs_sandbox
 
@@ -234,6 +235,105 @@ class GitEnvConflictTest(unittest.TestCase):
         )
         assert complaint is not None
         self.assertIn("outranks -C", complaint)
+
+    def test_a_global_option_with_a_separate_value_does_not_hide_the_dash_c(self):
+        """`git -c core.quotePath=false -C <tmp> …` is an idiom this repository
+        already writes. Ending the option walk at the first argument that does
+        not start with `-` reports no `-C` at all, which allows exactly the
+        call the guard exists to refuse."""
+        for lead in (
+            ["-c", "core.quotePath=false"],
+            ["--exec-path", "/opt/libexec/git-core"],
+            ["--namespace", "refs/test"],
+            ["--no-pager", "-c", "core.quotePath=false"],
+        ):
+            with self.subTest(lead=" ".join(lead)):
+                complaint = _fs_sandbox.git_env_conflict(
+                    ["git", *lead, "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    cwd=str(CHECKOUT),
+                    env={"GIT_DIR": str(CHECKOUT / ".git")},
+                )
+                assert complaint is not None
+                self.assertIn("outranks -C", complaint)
+
+    def test_the_common_dir_is_the_same_trap(self):
+        """`config` lives in the common dir, not in the per-worktree gitdir, so
+        `GIT_COMMON_DIR` re-points the very file #482 was written into."""
+        complaint = _fs_sandbox.git_env_conflict(
+            ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+            cwd=str(CHECKOUT),
+            env={"GIT_COMMON_DIR": str(CHECKOUT / ".git")},
+        )
+        assert complaint is not None
+        self.assertIn("GIT_COMMON_DIR", complaint)
+
+
+class SubprocessHookTest(unittest.TestCase):
+    """`git_env_conflict` is pure and testable on its own, but nothing reaches
+    it unless `_check_subprocess` unpacks CPython's `subprocess.Popen` audit
+    event correctly — `(executable, args, cwd, env)`. Get that wrong and the
+    whole subprocess half is silently dead while the suite stays green, which
+    is the same failure the `ENTRY_POINTS` agreement is checked for.
+    """
+
+    def test_the_audit_events_argument_order_reaches_the_rule(self):
+        with self.assertRaises(_fs_sandbox.SandboxViolation):
+            _fs_sandbox._check_subprocess(
+                (
+                    "git",
+                    ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                    str(CHECKOUT),
+                    {"GIT_DIR": str(CHECKOUT / ".git")},
+                )
+            )
+
+    def test_env_none_means_the_child_inherits_ours(self):
+        """The case that bit: nothing in the fixture mentioned `GIT_DIR`,
+        because nothing had to."""
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(CHECKOUT / ".git")}):
+            with self.assertRaises(_fs_sandbox.SandboxViolation):
+                _fs_sandbox._check_subprocess(
+                    (
+                        "git",
+                        ["git", "-C", "/tmp/scratch", "config", "user.name", "Test"],
+                        str(CHECKOUT),
+                        None,
+                    )
+                )
+
+    def test_a_program_that_is_not_git_is_none_of_this_guards_business(self):
+        _fs_sandbox._check_subprocess(
+            (
+                "/usr/bin/rsync",
+                ["rsync", "-C", "/tmp/scratch", "/tmp/dest"],
+                str(CHECKOUT),
+                {"GIT_DIR": str(CHECKOUT / ".git")},
+            )
+        )
+
+    def test_a_shell_string_has_no_argv_to_read(self):
+        _fs_sandbox._check_subprocess(
+            ("/bin/sh", "git -C /tmp/scratch config user.name Test", str(CHECKOUT), None)
+        )
+
+
+class OwnReadTest(unittest.TestCase):
+    """The guard reads `<root>/.git` and the `commondir` beside it to learn
+    where a target's metadata lives, and both are paths `violation` refuses. A
+    probe the hook polices turns every `git -C <target outside the checkout but
+    still this repo>` into a violation blaming the test for touching `.git`.
+    """
+
+    def test_a_targets_git_file_naming_this_repositorys_metadata_is_readable(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".git").write_text(f"gitdir: {CHECKOUT / '.git'}\n", encoding="utf-8")
+        covered = _fs_sandbox._git_dirs_at(str(root))
+        self.assertIn(_fs_sandbox._key(str(CHECKOUT / ".git")), covered)
+
+    def test_the_probe_flag_is_the_only_thing_that_exempts_it(self):
+        """Paired with the test above so neither can pass by the hook being
+        disarmed: the same path has to be refused outside the probe."""
+        self.assertIsNotNone(_fs_sandbox.violation(str(CHECKOUT / ".git" / "commondir")))
 
 
 class TrackedAssetRuleTest(unittest.TestCase):
