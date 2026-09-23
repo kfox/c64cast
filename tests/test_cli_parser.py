@@ -105,19 +105,31 @@ class ParserContractTest(unittest.TestCase):
         self.assertEqual(ns.url, "tr://")
         self.assertEqual(ns.inputs, ["clip.mp4", "tune.sid"])
 
-    def test_version_names_the_install_it_runs_from(self):
-        # "I upgraded and it still reports the old version" is answered by the path,
-        # not the number. argparse prints --version to stdout and exits.
+    def _version_output(self) -> str:
+        # argparse prints --version to stdout and exits.
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             build_parser().parse_args(["--version"])
-        printed = out.getvalue().strip()
+        return out.getvalue().strip()
+
+    def test_version_names_the_install_it_runs_from(self):
+        # "I upgraded and it still reports the old version" is answered by the
+        # path, not the number.
+        printed = self._version_output()
         self.assertTrue(printed.startswith(f"c64cast {__version__} ("), printed)
         self.assertIn(str(Path(c64cast.__file__).resolve().parent.parent), printed)
 
-    def test_version_text_carries_no_percent_for_argparse_to_expand(self):
-        # argparse %-formats the version string only when it contains "%(prog)",
-        # which is why this one spells the program name out.
+    def test_version_is_one_unwrapped_line_at_any_terminal_width(self):
+        # The path is printed to be pasted into an upgrade command, which a path
+        # split across lines is not. argparse's stock version action renders
+        # through HelpFormatter, which wraps to COLUMNS.
+        with mock.patch.dict(os.environ, {"COLUMNS": "20"}):
+            printed = self._version_output()
+        self.assertEqual(printed.splitlines(), [_version_text()])
+
+    def test_version_text_spells_the_program_name_out(self):
+        # Nothing %-formats the version string on its way out any more, so a
+        # "%(prog)s" in it would print as those eight characters.
         self.assertNotIn("%(prog)", _version_text())
 
     def test_print_schema_path_names_this_installs_schema(self):

@@ -21,7 +21,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NoReturn
 
 from c64cast import UNINSTALLED_VERSION, __version__
@@ -71,9 +71,9 @@ from .session import (  # noqa: F401 — re-exports; see the module docstring
 
 log = logging.getLogger("c64cast")
 
-# Spelled out rather than argparse's `%(prog)s`, which makes argparse %-format
-# the whole version string — a `%` in an install path (legal on Windows) would
-# then raise on the way to the screen.
+# Spelled out rather than argparse's `%(prog)s`: `_VerbatimVersionAction` prints
+# the version string as composed, so a `%(prog)s` in it would reach the screen as
+# those eight characters.
 PROG = "c64cast"
 
 
@@ -111,6 +111,39 @@ def _version_text() -> str:
     return f"{PROG} {__version__} ({home})"
 
 
+class _VerbatimVersionAction(argparse.Action):
+    """`--version`, printed exactly as `_version_text` composed it.
+
+    argparse's stock version action renders the string through `HelpFormatter`,
+    which rewraps it to the terminal width and, once narrow enough, breaks
+    inside a directory name. The install path is the half of that line meant to
+    be pasted into an upgrade command, which a split path is not — and an
+    install path deep enough in the filesystem reaches the wrap at an ordinary
+    width.
+    """
+
+    def __init__(
+        self,
+        option_strings: Sequence[str],
+        version: str,
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str = "show program's version number and exit",
+    ) -> None:
+        super().__init__(option_strings, dest, nargs=0, default=default, help=help)
+        self.version = version
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[object] | None,
+        option_string: str | None = None,
+    ) -> None:
+        print(self.version)
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Help text reads its `(default: ...)` off the config dataclasses, while
     # every option's argparse default stays None so `merge_cli` can tell "not
@@ -128,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="C64 AV streamer framework (Ultimate 64)",
     )
 
-    p.add_argument("--version", action="version", version=_version_text())
+    p.add_argument("--version", action=_VerbatimVersionAction, version=_version_text())
     p.add_argument(
         "--config",
         default=None,
