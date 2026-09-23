@@ -109,48 +109,78 @@ make site-check   # only if you touched docs/
 ```
 
 **Then review the commit you just made, scoped to that commit alone.** Spawn a
-subagent, hand it `~/.claude/hooks/changeset-review-brief.md`, and have it run:
+subagent, hand it the output of `pudding brief`, and have it run:
 
     Skill(skill="code-review", args="high <sha>")
 
-The effort level goes **first**, and `record` refuses a report whose
-`Reviewed-by:` trailer does not name a subagent review at high effort. Tell it
-to review that commit's own diff, not `<sha>...HEAD` and not the branch.
+The effort level goes **first**. Tell it to review that commit's own diff, not
+`<sha>...HEAD` and not the branch.
 
-**The reviewer applies its own fixes.** `/code-review` without `--fix` reports
-and changes nothing, so the prompt has to say it: fix what you find, leave it
-uncommitted in the working tree, then say what you fixed, what you declined,
-and why. A finding handed back as prose gets re-implemented from a description,
-and the re-implementation is new code that earns its own review.
+**The reviewer works in its own checkout.** `pudding worktree <sha>` gives it an
+isolated tree, so this checkout stays yours and you can keep committing while it
+runs. It fixes what it finds there and commits the fixes as their own commits;
+`pudding worktree --done <sha>` names them to cherry-pick back. Tell it to fix
+what it finds: `/code-review` without `--fix` is a report-only run, and nothing
+reaches its tree unless the prompt demands it.
 
-What it reports instead of applying: an advisory *design* finding, and any
-editorial call about prose, which needs the whole-branch view a single-commit
-reviewer does not have. A defect in the commit message it reports too — the
-amend below is yours, so fold the message fix into it before you record.
+The environment is not isolated with it. `pudding worktree` builds one only when
+`pudding.envsetup` is set — `git config --get pudding.envsetup` says whether it
+is. Unset, it prints that it is unset and hands over a tree that inherits
+whatever `UV_PROJECT_ENVIRONMENT` the shell exports: the failure step 1
+describes, where a `uv` command in the worktree reinstalls that source into the
+primary checkout's environment. Then pass the environment by hand there too,
+exactly as step 1 does. `pudding worktree --done` reports on the primary
+checkout's environment only when `pudding.envcheck` is set; unset it prints
+`unchecked`, so that hazard has no automated backstop either.
 
-Do not commit, or edit anything in this checkout, while it runs: it verifies
-findings by mutating the tree and running the suite, so a concurrent commit
-fails its pre-commit hook on a mutation you never made.
+What it reports instead of applying: `contract` and `design` findings, which are
+advisory and never block, and any editorial call about prose, which needs the
+whole-branch view a single-commit reviewer does not have. A defect in the commit
+message it reports too, because rewriting a message is yours.
 
-Run `make check` over its fixes — a fix that breaks the suite is not a fix —
-amend them into the commit under review, and record the report against the
-amended SHA; the report is read from **stdin**, and an empty one is refused:
+**What the commit owes is computed.** `pudding derive <sha>` prints one
+`TRIGGER` line per obligation, read from the diff, and the class it computed:
+`primary` for the full set, `fix` for a `Closes-findings:` commit, which owes a
+verification pass only. Answer the triggers and nothing else — a trailer that
+was not demanded must be **absent**.
+
+A claim of coverage is a pointer, not a sentence:
+
+    Mutation: victim=<path>[:<line>] replace="<exact text>" with="<new>" test=<test id>
+    Evidence-search: symbol="<text>" paths=<a,b> result=present|absent
+
+`red` means a test noticed the break. `green` refuses the record and *is* the
+finding, and so does `unexecutable` — the verdict for a pointer whose `replace=`
+text is missing from the victim, changes nothing, or carries a double quote.
+`inconclusive` and `unconfigured` are accepted. Bounds claims — "no other caller", "the only site" — arrive as an
+`Evidence-search:` pointer or they are cut.
+
+Running the `Mutation:` pointer needs `pudding.testcmd`. Without it `record`
+stamps the verdict `unconfigured` and accepts the report anyway, so the coverage
+rests on prose and `pudding status` lists it under "Records that measured
+nothing". Either way the proof is still yours to run the way step 2 says — arm
+`make mutation-ready`, watch a named assertion go red, revert — and the pointer
+records the mutation you ran. `Evidence-search:` needs no configuration.
+
+Run `make check` over the cherry-picked fixes, then record. Start from the
+skeleton, so the slots come from the tool rather than from memory:
 
 ```bash
-~/.claude/hooks/changeset-review.sh record <amended-sha> <<'REPORT'
-<looked at / found / did>
-
-Reviewed-by: subagent (<type>) via code-review at high effort
-Comments: <examined / removed / kept and why>
-Docs: <what changed, or what was checked and needed nothing>
-REPORT
+pudding template <sha> > report
+# fill each slot from something you ran; a '# ' line is refused
+pudding record <sha> --file report
 ```
 
-All three trailers are required, and the gate re-checks them at push time.
+Each fix you cherry-picked is a commit of its own, and each owes a record of its
+own: the gate reads every non-merge commit between `origin/main` and HEAD, not
+only the one you reviewed.
 
-The placeholder above is deliberately under the hook's floor: the report has
-to say what you looked at, what you found, and what you did about each
-finding, and a copy of the placeholder is refused rather than recorded.
+If the commit was amended after its review, the carry-over is declared and then
+verified — `pudding record <sha> --carry <old-sha> --file report`. What carries
+over is the discharge of every trigger, not the prose: the new record still owes
+a filled slot of its own, an identical tree earns a `carried` header, and a
+changed one is refused with the delta printed and a `Delta:` trailer demanded.
+Without `--carry` the amended SHA has no record at all.
 
 This is not the branch-wide pass in step 4; it is a narrow pass, and it is the
 one that catches things. Both `git push` and `gh pr create` are denied while
@@ -159,9 +189,7 @@ defer the cost, it blocks step 5.
 
 Do not batch this to the end. The whole point is that the reviewer sees one
 changeset instead of a branch: a wide scope spends its attention before it
-reaches the small commit, and reads back as a clean pass. Step 4 is where a fix
-becomes its own commit instead of an amend, because the commits it touches
-already have records keyed to their SHAs.
+reaches the small commit, and reads back as a clean pass.
 
 ## 4. Branch-wide review at high effort
 
@@ -186,8 +214,10 @@ finding, and anything that rewrites a commit message: here that moves the SHA
 a recorded review is keyed to. Route what it hands back once it has reported,
 below.
 
-Do not commit, or edit anything in this checkout, while it runs — the same as
-step 3.
+Do not commit, or edit anything in this checkout, while it runs: this pass gets
+no worktree of its own, and it verifies findings by mutating the tree and
+running the suite, so a concurrent commit fails its pre-commit hook on a
+mutation you never made.
 
 A clean pass here does not mean the branch is clean — it means nothing survived
 *both* nets. Read a wide pass that finds nothing as weak evidence.
@@ -243,10 +273,11 @@ Then, once it has reported:
   this branch when a commit here introduced it or the fix fits the spirit of the
   change, as its own commit under the rule above; otherwise open a labeled
   GitHub issue. A commit-message rewrite moves that SHA and every SHA after it,
-  and reports are keyed by SHA, so re-record each commit the gate then reports
-  as unreviewed. A finding that is only mentioned is one nothing tracks, and one
-  fixed after step 6 costs another commit, review and push with the PR already
-  green.
+  and records are keyed by SHA, so each commit the gate then reports as
+  unreviewed needs `pudding record <sha> --carry <old-sha>` to carry its record
+  over; `pudding orphans` lists the ones left behind. A finding that is only
+  mentioned is one nothing tracks, and one fixed after step 6 costs another
+  commit, review and push with the PR already green.
 
 A defect still open when the subagent is done is a stop, not a pass. Report what
 remains and ask the user how to proceed before opening a PR.
