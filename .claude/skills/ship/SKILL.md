@@ -229,9 +229,10 @@ itself:
 Then, once it has reported:
 
 - Run `make check` over the fixes. A fix that breaks the suite is not a fix.
-- Commit the fixes and review each of those commits the way step 3 does, as you
-  make it. Batching them to the end is the batching step 3 forbids, done at the
-  point where the branch is closest to shipping.
+- Commit the fixes it left in this checkout, or cherry-pick the ones it
+  committed in a worktree of its own, and review each of those commits the way
+  step 3 does, as you make it. Batching them to the end is the batching step 3
+  forbids, done at the point where the branch is closest to shipping.
 - **Write down what was declined and why**, where step 3 puts it: the message of
   a fix commit from the same pass, or the report to the user when the pass made
   none. A declined finding with a reason is a legitimate outcome; one that was
