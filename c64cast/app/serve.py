@@ -683,7 +683,8 @@ class SessionManager:
             self._session = sess
             self._write_marker(req, gen)
             self._transition_locked(SessionState.RUNNING)
-        self._reaper.start()
+            if not self._closing:
+                self._reaper.start()
         # A stop that arrived mid-build waits for this: a session is only
         # stoppable once it is running.
         if self._cancel.is_set():
