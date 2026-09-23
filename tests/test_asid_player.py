@@ -886,6 +886,38 @@ class BringUpTeardownTest(unittest.TestCase):
             api.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
         )
 
+    def test_a_failing_vector_restore_does_not_starve_the_kernal_latch(self):
+        # The two halves live in one function because each matters alone, and
+        # they used to share one try anyway: a raise on the vector write
+        # skipped the latch restore, the half that keeps the jiffy clock from
+        # running 16x fast until a power cycle.
+        from c64cast.hw.c64 import kernal_cia1_latch
+
+        api, fake = _fake_backend()
+
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        fake.write_regs = link_down
+        with self.assertLogs("c64cast.sid.asid_player", level="ERROR"):
+            ap.restore_kernal_irq(api, "NTSC")
+        self.assertEqual(
+            fake.memories[f"{ap.CIA1.TIMER_A_LO:04X}"], _packed_latch(kernal_cia1_latch("NTSC"))
+        )
+
+    def test_an_unknown_system_cannot_make_the_restore_raise(self):
+        # kernal_cia1_latch raises ValueError on a system string it does not
+        # know, and this function promises never to raise — teardown callers
+        # are already on the shutdown path.
+        from c64cast.hw.c64 import KERNAL
+
+        api, fake = _fake_backend()
+        with self.assertLogs("c64cast.sid.asid_player", level="ERROR"):
+            ap.restore_kernal_irq(api, "SECAM")
+        self.assertEqual(
+            fake.regs["0314"], (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF)
+        )
+
     def test_a_writer_that_outlives_the_join_cannot_arm_behind_teardown(self):
         # PollThread.stop() is documented to return with the worker still alive
         # after a timed-out join, and _try_arm blocks in DMA before it hooks $0314.
