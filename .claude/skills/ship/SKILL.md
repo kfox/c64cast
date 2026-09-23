@@ -111,7 +111,7 @@ make site-check   # only if you touched docs/
 **Then review the commit you just made, scoped to that commit alone.** Spawn a
 subagent with the Agent tool and have it run:
 
-    Skill(skill="code-review", args="high <sha>")
+    Skill(skill="code-review", args="high <sha> --fix")
 
 The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last. Tell it to review that
@@ -123,15 +123,21 @@ cannot check a claim it was never shown. This is the net that reaches a one-line
 change to a pinned path first, so it is the one that must not give it the cheap
 pass.
 
-**The reviewer fixes what it finds and commits the fixes itself.**
-`/code-review` without `--fix` is a report-only run, so its prompt has to tell
-it to fix what it finds — nothing reaches the tree otherwise. A finding handed
-back as prose gets re-implemented from a description, and that re-implementation
-is new code, which earns its own review; the hand-back is the loop that spends
-an afternoon on a small change. Two classes stay with you: a defect in the
-commit message, because rewriting a message changes the SHA, and any editorial
-call about prose, which needs the whole-branch view a single-commit reviewer
-does not have.
+**The reviewer fixes what it finds and commits the fixes itself.** `--fix` is
+what reaches the tree — without it the run reports and leaves the tree
+untouched. Committing is not part of `--fix`, so the prompt still has to ask for
+that. A finding handed back as prose gets re-implemented from a description, and
+that re-implementation is new code, which earns its own review; the hand-back is
+the loop that spends an afternoon on a small change. Two classes stay with you:
+a defect in the commit message, because rewriting a message changes the SHA, and
+any editorial call about prose, which needs the whole-branch view a single-commit
+reviewer does not have.
+
+**Do not open a round over a commit message.** Reword one before the push only
+when it misstates what the code does. A claim that is merely imprecise about
+something the change does not turn on is left alone, and after the push a
+message is history and is not reworded at all: the reword moves that SHA and
+every SHA stacked on it, and the round costs more than the sentence was worth.
 
 **The reviewer works in this checkout**, so do not commit or edit anything here
 while it runs — it verifies findings by mutating the tree and running the suite,
@@ -146,14 +152,12 @@ this commit makes is checked by naming a victim, not by reading the test. A
 bounds claim — "no other caller", "the only site" — is a search you ran and its
 result, or it is cut.
 
-**Write the review down.** The reviewer's fix commits are the record: each
-message says what was found, what the fix does, and what the same pass declined
-and why. A pass that made no fix commit has no message to write in — a clean
-pass, or one that declined everything it found, lands in its report and reaches
-the user in step 7 instead. Neither ever gets recorded by amending the reviewed
-commit: that changes the SHA the review was of. A finding it deferred rather
-than fixed becomes a labeled GitHub issue, and a decline that was only said out
-loud is re-litigated by the next reader.
+**Write the review down, in the reviewer's report.** It says what it looked at,
+what it found, and what it did about each finding — fixed, declined with the
+reason, or deferred to a labeled GitHub issue. That report is what reaches the
+user in step 7, and a decline that was only said out loud is re-litigated by the
+next reader. A fix commit's message describes its fix, the way any commit message
+does; it is not a review log.
 
 Run `make check` over the reviewer's fixes — a fix that breaks the suite is not
 a fix — and review each of those commits the way this step does.
