@@ -141,11 +141,10 @@ also owes step 1's `uv sync` and the prefix/argument split, and must require
 the worktree's path and every fix commit's SHA in its report. Its fixes come
 back by cherry-pick, and a commit you cannot name is one you cannot pick.
 
-**Prove coverage by execution.** "Tests cover this" is an argument; a named
-victim is evidence. Mutate the line the commit claims is covered, watch a named
-assertion go red, revert, re-run green — armed with `make mutation-ready`, per
-step 2. A bounds claim — "no other caller", "the only site" — is a search you
-ran and its result, or it is cut.
+**Prove coverage by execution**, by step 2's mutation recipe: a coverage claim
+this commit makes is checked by naming a victim, not by reading the test. A
+bounds claim — "no other caller", "the only site" — is a search you ran and its
+result, or it is cut.
 
 **Write the review down.** The reviewer's fix commits are the record: each
 message says what was found, what the fix does, and what the same pass declined
@@ -185,10 +184,9 @@ are its to make. Only a commit-message rewrite stays with you, because it
 changes that SHA and every SHA after it. Route what it hands back once it has
 reported, below.
 
-Do not commit, or edit anything in this checkout, while it runs: this pass gets
-no worktree of its own, and it verifies findings by mutating the tree and
-running the suite, so a concurrent commit fails its pre-commit hook on a
-mutation you never made.
+Do not commit, or edit anything in this checkout, while it runs, for the reason
+step 3 gives; `isolation: "worktree"` is the same escape hatch here, on the same
+terms.
 
 A clean pass here does not mean the branch is clean — it means nothing survived
 *both* nets. Read a wide pass that finds nothing as weak evidence.
