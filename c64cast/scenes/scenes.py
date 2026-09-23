@@ -21,6 +21,7 @@ import numpy as np
 
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
+from c64cast._transport_log import quiet_transport
 from c64cast.app.profiler import get_profiler
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -1787,14 +1788,16 @@ class LauncherScene(MediaFileMixin, Scene):
         Never reads $028D, so the app's modifier keys are excluded."""
         parts: list[bytes] = []
         if self.input_source in ("cia", "auto"):
-            cia = self.api.read_memory(self._CIA_BASE, 2)
+            with quiet_transport():
+                cia = self.api.read_memory(self._CIA_BASE, 2)
             if cia is None:
                 return None
             # The upper bits carry keyboard-scan / serial state that churns
             # independently of player input.
             parts.append(bytes(b & CIA1.JOY_MASK for b in cia))
         if self.input_source in ("kernal", "auto"):
-            kern = self.api.read_memory(self._KERNAL_BASE, 2)
+            with quiet_transport():
+                kern = self.api.read_memory(self._KERNAL_BASE, 2)
             if kern is None:
                 return None
             parts.append(kern)

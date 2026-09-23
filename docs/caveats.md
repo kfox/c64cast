@@ -701,6 +701,14 @@ tightens parameter validation. If a previously-working setup starts
 500ing, run `--skip-probe` to bypass the reachability check and watch
 the REST traffic (`-vv` logs a line per HTTP request).
 
+What you will *not* see there is the polling: the Commodore-key poll reads
+`$028D` ten times a second for the whole run, the launcher scene's idle
+detector reads at the same rate while it plays, and the host-DMA audio servo
+reads the ring pointer once per chunk (≈12/s). Those are held out of `-vv`
+because they are unconditional and say nothing about the request you are
+chasing; `-vvv` includes them, which is what to reach for when the poll
+itself is the suspect.
+
 `AudioStreamer` **shares** the render path's `Ultimate64API` instance
 rather than opening its own. The U64 DMA service is single-connection
 only: a second concurrent TCP accept on port 64 succeeds, but its

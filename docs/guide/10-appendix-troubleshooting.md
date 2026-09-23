@@ -187,7 +187,13 @@ adds one more: a line per request c64cast's HTTP client makes — the REST
 link to an Ultimate above all — held back at `-v` because it buries
 everything else. A TeensyROM link is serial or raw TCP, so on one of those
 `-vv` says nothing about the link itself, whatever else the run fetches
-over HTTP. Add `--log-file run.log` to keep it. For a long-running
+over HTTP.
+
+What `-vv` leaves out is the reading c64cast does on a timer: the
+Commodore-key poll reads the machine ten times a second for the whole run,
+and its requests would otherwise be ten lines a second saying only that the
+poll is still running. Add a third `v` when *those* reads are the question —
+a C= hold that never resumes, a launcher scene that never goes idle. Add `--log-file run.log` to keep it. For a long-running
 installation, `--heartbeat` prints a periodic line of throughput
 statistics, which is the quickest way to tell a slow link from a slow
 computer.

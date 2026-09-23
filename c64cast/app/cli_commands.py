@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 
+from c64cast import _transport_log
 from c64cast._native_io import silence_native_stderr
 from c64cast._redact import redact_secrets
 from c64cast.audio import dac_calibration
@@ -59,8 +60,9 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     — clears any existing handlers first so a re-call (e.g. after config
     load) doesn't double up.
 
-    `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, and 2 (`-vv`) additionally
-    releases the urllib3 loggers this otherwise holds at WARNING."""
+    `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, 2 (`-vv`) additionally releases
+    the urllib3 loggers this otherwise holds at WARNING while holding back the
+    background polls' own reads, and 3 (`-vvv`) releases those too."""
     # INFO by default, so lifecycle messages (scene transitions, audio bring-up,
     # resets) need no -v.
     level = logging.INFO
@@ -112,6 +114,7 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     transport = logging.NOTSET if verbosity >= 2 else logging.WARNING
     for noisy in ("urllib3.connectionpool", "urllib3"):
         logging.getLogger(noisy).setLevel(transport)
+    _transport_log.install(verbosity == 2)
 
 
 def list_devices() -> int:

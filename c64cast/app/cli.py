@@ -481,7 +481,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="count",
         default=None,
-        help="Increase log verbosity (default: INFO; -v enables DEBUG, -vv adds HTTP transport)",
+        help="Increase log verbosity (default: INFO; -v enables DEBUG, -vv adds HTTP "
+        "transport minus the background polls' own reads, -vvv adds those too)",
     )
     debug.add_argument(
         "--heartbeat",

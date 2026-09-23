@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from c64cast._teardown import run_teardown_steps
+from c64cast._transport_log import quiet_transport
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -692,7 +693,8 @@ class AudioStreamer:
         bad read as data.
         """
         try:
-            r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
+            with quiet_transport():
+                r = self.api.read_memory(READ_PTR_LO_ADDR, 2)
         except Exception as e:
             log.debug("read R failed: %s", e)
             return None

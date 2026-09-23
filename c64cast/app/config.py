@@ -1689,7 +1689,9 @@ class DebugCfg:
     verbose: int = field(
         default=0,
         metadata={
-            "help": "Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport). CLI: -v / -vv."
+            "help": "Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport, "
+            "minus the background polls' own reads; 3 adds those too). "
+            "CLI: -v / -vv / -vvv."
         },
     )
     heartbeat: float = field(

@@ -411,9 +411,9 @@ The `source` block is scene-type-specific. For `video`, `config.build_scene` (se
 
 `extract_scene_configs(log_text)` pulls every `SCENE_CONFIG_JSON` payload back out of a `--log-file` run (formatter-agnostic — it searches for the marker substring, not a fixed line format), and `render_description(payload)` renders one entry as a human, paste-ready text block; both are pure functions so [scripts/scene_config_to_description.py](../../scripts/scene_config_to_description.py) is a thin argparse+file-I/O shell around them (default: render the last entry; `--all`/`--index N` for the rest).
 
-## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_wire_log.py`
+## The package-root utilities — `_pollthread.py`, `_midi.py`, `_native_io.py`, `_redact.py`, `_teardown.py`, `_transport_log.py`, `_wire_log.py`
 
-The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these six: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
+The 2026-08 reorganization sorted every module into one of the eight topic subpackages except the entry point and these: process-level plumbing with consumers across subpackage boundaries in every direction (`_pollthread` alone is imported from six of the eight areas), belonging to no topic. Their docstrings carry most of the design; the notes here add the tree-wide contract each one anchors, and where each came from.
 
 ### `_pollthread.py` — the background-loop idiom
 
@@ -450,6 +450,18 @@ fd 2 is process-global, and `video._ensure_pyav` is a lazily-triggered entrant r
 It sits at the package root rather than beside its first caller because two layers owe those promises and one of them cannot reach the other: the scenes in `scenes/scenes.py`, and the `AudioSource` implementations in `audio/audio_source.py` that a `SourceScene` teardown calls into. `tests/test_audio_source_sid.py`'s `AudioSourceImportWeightTest` pins `audio_source` against importing numpy (it is imported for *every* SourceScene, mic and null included), and importing `scenes.py` would drag numpy in — so the runner moved down here instead of the callers reaching up.
 
 What the guarantees are per caller, and the two step positions that are *not* free to move once guarded, are in [scenes.md](scenes.md#scenespy--scene-state-machine) and [sid.md](sid.md#waveformpy--sidemupy--sid_host_emupy--sid-oscilloscope-scene).
+
+### `_transport_log.py` — keeping a background poll's transport out of `-vv`
+
+`-vv` releases the urllib3 loggers so a line per REST request surfaces, which is the whole point of the second `v`: the question it answers is about an Ultimate's REST link — a request that never returned, a status the application logged only the consequence of. A steady background read loop defeats that unaided. `CommodoreKeyPoller` reads `$028D` at 10 Hz for the entire run, so a five-minute session carries ~3,000 `urllib3.connectionpool` records that report only that the poll is still polling, and `--log-file` grows at that rate. The few records an operator came for arrive buried in them, which made `-vv` least useful exactly when the link is the problem (c64cast#428).
+
+**The hold-back is scoped to a block, not to a level, a rate or a logger**, because none of those three can separate the poll's requests from anyone else's. A level change cannot: urllib3 raises one record per request at DEBUG whoever called it. A rate limit cannot either — urllib3's logging is not ours to throttle, and throttling by count would drop the operator's request as readily as the poll's. And a separate logger is not available: the record is raised by a library, on a logger it names. What *is* distinguishable is the call: `quiet_transport()` marks the calling thread inside a `with` block, `QuietTransportFilter` (attached to the transport loggers by `configure_logging`) drops transport DEBUG records raised while the mark is set, and every periodic read wraps the one call it repeats. Thread-local because logging is synchronous — the filter runs on the thread that raised the record — and block-scoped rather than thread-scoped so a read that thread makes for another reason still shows up.
+
+**Only DEBUG is dropped.** A urllib3 retry or pool warning raised *during* a poll read is evidence about the link, which is what the operator asked for; dropping it would make the quiet direction the silent one.
+
+**`-vvv` is the escape hatch**, for the run where the poll's own reads are the question — a resume that never fires, a launcher scene that never goes idle. `configure_logging` installs the filter at `verbosity == 2` only, and `install()` removes an existing one rather than stacking, because `cli.main` configures twice: a `[debug] verbose = 3` in a TOML has to undo the filter the command line's first pass installed, the same trap the transport *level* has (see [`cli.py`](#clipy)).
+
+Three sites wrap a read today, and they are the tree's unconditional periodic readers: `keyboard.CommodoreKeyPoller`'s `$028D` and keyboard-buffer reads (10 Hz, whole run), `scenes.LauncherScene._read_snapshot`'s idle detector (10 Hz, while a launcher scene runs), and `AudioStreamer.read_consumer_ptr`'s host-DMA servo pointer (once per chunk, ≈12 Hz). Everything else that reads over REST does so on a scene boundary or on demand, where the record is news.
 
 ### `_wire_log.py` — wire-triggered logging is O(1) per stream
 

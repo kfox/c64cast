@@ -40,6 +40,8 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 
 The poller distinguishes "definitely not pressed" from "couldn't tell" — a failed HTTP read returns `None` and is ignored rather than phantom-resetting the held-time counter. The kernal IRQ must be intact for $028D to stay current.
 
+Every read the poller repeats is wrapped in `quiet_transport()`, so its HTTP-transport records are held out of `-vv` — ten lines a second for the length of the run, reporting only that the poll is still polling, is what made `-vv` least readable exactly when an Ultimate's REST link is the problem. `-vvv` puts them back; the mechanism and the reasoning are [`_transport_log.py`](config.md#_transport_logpy--keeping-a-background-polls-transport-out-of--vv). The poller's own DEBUG and WARNING records are untouched, so a failing read still says so.
+
 ### SHIFT style cycling
 
 On a `cycle_event` the run loop calls three things:
