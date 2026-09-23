@@ -135,6 +135,21 @@ class NeedsExpressionTest(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("needs.build", found[0])
 
+    def test_the_index_spelling_of_a_reference_is_read_too(self):
+        # `needs['build']` and `needs.build` are the same reference to GitHub.
+        jobs = self._reader(
+            "${{ needs['build'].outputs.version }}", declares="    runs-on: ubuntu-latest\n"
+        )
+        found = wf.problems("t.yml", _parse(jobs))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("needs.build", found[0])
+
+    def test_a_needs_key_on_another_object_is_not_a_job_reference(self):
+        jobs = self._reader(
+            "${{ fromJSON(inputs.config).needs.absent }}", declares="    needs: build\n"
+        )
+        self.assertEqual(wf.problems("t.yml", _parse(jobs)), [])
+
     def test_the_whole_needs_context_names_no_single_job(self):
         jobs = (
             "  build:\n"
@@ -226,6 +241,25 @@ class FileReadingTest(unittest.TestCase):
         found = wf.file_problems(path)
         self.assertEqual(len(found), 1, found)
         self.assertIn("does not parse as YAML", found[0])
+
+    def test_a_path_that_cannot_be_opened_is_reported_rather_than_raised(self):
+        # The hook reaches these: a directory named `x.yml` beside the
+        # workflows, a broken symlink, a path typed by hand at the prompt.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (directory / "a-directory.yml").mkdir()
+        for name in ("a-directory.yml", "missing.yml"):
+            with self.subTest(name=name):
+                found = wf.file_problems(str(directory / name))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("could not be read", found[0])
+
+    def test_a_file_that_is_not_utf8_is_reported_rather_than_raised(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = directory / "latin1.yml"
+        path.write_bytes(b"name: caf\xe9\njobs:\n  build:\n    runs-on: ubuntu-latest\n")
+        found = wf.file_problems(str(path))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("could not be read", found[0])
 
     def test_main_names_the_problem_and_exits_nonzero(self):
         dangling = _CLEAN.replace("needs: build", "needs: tset")

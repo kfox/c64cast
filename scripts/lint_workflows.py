@@ -47,7 +47,12 @@ _WRITE = "write"
 _EVERY_PERMISSION = "write-all"
 
 _EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
-_NEEDS_REF = re.compile(r"\bneeds\.([A-Za-z_][A-Za-z0-9_-]*)")
+# `needs.build` and `needs['build']` are the same reference to GitHub, so a
+# typo in the second spelling has to be as visible as one in the first. The
+# lookbehind keeps `fromJSON(x).needs.foo` -- a `needs` key in someone else's
+# object -- from reading as this workflow's job.
+_JOB_ID = "[A-Za-z_][A-Za-z0-9_-]*"
+_NEEDS_REF = re.compile(rf"(?<![.\w])needs(?:\.({_JOB_ID})|\[\s*['\"]({_JOB_ID})['\"]\s*\])")
 
 
 def parse(text: str) -> Any:
@@ -55,9 +60,13 @@ def parse(text: str) -> Any:
     return yaml.safe_load(text)
 
 
-def load(path: str) -> Any:
+def _read_text(path: str) -> str:
     with open(path, encoding="utf-8") as f:
-        return parse(f.read())
+        return f.read()
+
+
+def load(path: str) -> Any:
+    return parse(_read_text(path))
 
 
 def jobs(workflow: Any) -> dict[str, Any]:
@@ -127,8 +136,14 @@ def _expressions(node: Any, is_condition: bool = False) -> Iterator[str]:
 
 
 def referenced_needs(job: Any) -> list[str]:
-    """Every job id a job's expressions read through `needs.<id>`."""
-    found = {name for text in _expressions(job) for name in _NEEDS_REF.findall(text)}
+    """Every job id a job's expressions read, in either `needs` spelling."""
+    found = {
+        name
+        for text in _expressions(job)
+        for match in _NEEDS_REF.finditer(text)
+        for name in match.groups()
+        if name
+    }
     return sorted(found)
 
 
@@ -175,10 +190,19 @@ def problems(name: str, workflow: Any) -> list[str]:
 
 
 def file_problems(path: str) -> list[str]:
-    """Everything wrong with the workflow at `path`, including not being YAML."""
+    """Everything wrong with the workflow at `path`, down to not being readable.
+
+    A path that cannot be opened is reported like any other finding: a
+    traceback out of a commit hook says nothing about which file it was or
+    what to do, and the caller cannot tell it from the lint crashing.
+    """
     name = os.path.basename(path)
     try:
-        workflow = load(path)
+        text = _read_text(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"{name}: could not be read: {exc}"]
+    try:
+        workflow = parse(text)
     except yaml.YAMLError as exc:
         return [f"{name}: does not parse as YAML: {exc}"]
     return problems(name, workflow)
