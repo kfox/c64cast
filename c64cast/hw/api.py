@@ -2013,9 +2013,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         return VicStreamReceiver(self.socket_dma, machine_host=host)
 
     def stop_video_stream(self) -> None:
-        """Tell the machine to stop streaming its VIC output. See the base
-        class for why this is unconditional and why it has to run while the
-        socket-DMA client is still open."""
+        """Tell the machine to stop streaming its VIC output. Over socket DMA,
+        so it has to run before :meth:`close`. See the base class for why it is
+        unconditional, and ``app.session.teardown_stack`` for why its one
+        caller sits where it does in the teardown order."""
         if not self.profile.supports_video_stream:
             return
         self.socket_dma.vicstream_off()

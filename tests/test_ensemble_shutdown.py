@@ -221,24 +221,29 @@ class TeardownStackOrderTest(unittest.TestCase):
     def test_teardown_order(self):
         # Preview/recording first (avoid rendering after API close);
         # audio before reset (NMI timer can't fire into a cleared buffer);
-        # the screen stream off while the link is still up; api.reset →
-        # api.close; camera release last.
+        # api.reset → the screen stream off, last while the link is still up
+        # → api.close; camera release last.
         st, order = self._record_order()
         teardown_stack(st)
         self.assertEqual(
             order,
-            ["preview", "recorder", "audio", "stream_off", "reset", "api_close", "source"],
+            ["preview", "recorder", "audio", "reset", "stream_off", "api_close", "source"],
         )
 
-    def test_the_screen_stream_is_stopped_before_the_link_closes(self):
+    def test_the_screen_stream_is_stopped_immediately_before_the_link_closes(self):
         """#419: `ScreenFeed` retires its receiver only after this teardown has
         returned, so the OFF it sends then reaches a client `api.close` has
         already shut — and the machine goes on sending ~2.6 MB/s until the
         firmware's own 20 s watchdog expires. Stopping it here is what makes
-        the stream end with the show."""
+        the stream end with the show.
+
+        Immediately before, not merely before: that receiver's poll thread is
+        still renewing the watchdog every `vic_stream.REARM_EVERY_S`, so any
+        step left between the OFF and `api.close` is a window in which a
+        re-arm turns the stream back on with nothing able to stop it again."""
         st, order = self._record_order()
         teardown_stack(st)
-        self.assertLess(order.index("stream_off"), order.index("api_close"))
+        self.assertEqual(order[order.index("stream_off") + 1], "api_close")
 
     def test_one_failure_doesnt_strand_remaining_steps(self):
         st, order = self._record_order()
@@ -247,7 +252,7 @@ class TeardownStackOrderTest(unittest.TestCase):
             teardown_stack(st)
         # The failing step is skipped; everything after it still runs.
         self.assertEqual(
-            order, ["preview", "recorder", "stream_off", "reset", "api_close", "source"]
+            order, ["preview", "recorder", "reset", "stream_off", "api_close", "source"]
         )
 
     def test_missing_optional_resources_skipped(self):

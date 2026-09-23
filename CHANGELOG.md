@@ -192,8 +192,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   Ultimate sending its VIC output — ~2.6 MB/s of UDP — until the firmware's own
   watchdog expired. The OFF command *was* attempted, and reached a link the
   teardown had already closed, where the resulting error was swallowed with
-  nothing logged. The machine is now told while the link is still up, as a
-  teardown step beside the REU and sampler restores, and it is told whether or
+  nothing logged. The machine is now told while the link is still up, as the
+  last teardown step before it closes, and it is told whether or
   not this host believes anyone is still watching. Sibling of the
   host-shutdown case below, on a different path and not fixed by it.
 
