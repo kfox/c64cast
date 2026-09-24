@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import _fs_sandbox
+from _child_process import run_bounded
 
 from c64cast.app import paths
 from c64cast.hw import char_rom
@@ -616,7 +617,7 @@ class TrackedAssetRuleTest(unittest.TestCase):
 
     def _tracked(self) -> list[str]:
         try:
-            out = subprocess.run(
+            out = run_bounded(
                 ["git", "ls-files", "assets"],
                 cwd=CHECKOUT,
                 capture_output=True,

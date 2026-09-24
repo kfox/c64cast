@@ -188,6 +188,21 @@ test stood, so the run reports that one and carries on. Stepping through a test
 under a debugger wants `C64CAST_TEST_TIMEOUT_S=0`, which turns the watchdog off
 for that run.
 
+**A test module starts a child process only through `run_bounded`.** `subprocess.run`
+with no `timeout` waits forever, and on Windows it waits inside
+`Popen._communicate`'s `stdout_thread.join(None)` — which is how a `node
+--check` that never returned blocked PR #491's Windows job until the cap above
+reported it as "no progress", naming the test but not the cause.
+`run_bounded()` in [tests/_child_process.py](tests/_child_process.py) is
+`subprocess.run` under a 20-second bound; a child that outlives it is killed
+and the test fails naming the command and whatever the child had written. The
+AST sweep in [tests/test_child_process.py](tests/test_child_process.py) fails
+any module under `tests/` that reaches `subprocess` without a `timeout` —
+`timeout=None` counts as none — so the bound cannot be omitted the way all
+twelve call sites before it omitted it. `scripts/` is out of scope: the scripts that run under a gate already
+bound their own calls, and `scripts/diags/` drives real hardware from a
+terminal, where a child running for minutes is the measurement.
+
 **A test cannot leave the process-wide RNG seeded either.**
 [tests/_rng_sandbox.py](tests/_rng_sandbox.py) reseeds `random` and numpy's
 legacy global generator from the test's own id before every test, so a

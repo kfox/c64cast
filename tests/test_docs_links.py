@@ -9,12 +9,12 @@ destination is gone.
 from __future__ import annotations
 
 import re
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from _child_process import run_bounded
 from _fakes import no_inherited_git_env
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -60,7 +60,7 @@ def _git_ignored(root: Path) -> set[Path]:
     A `root` that is no checkout has nothing ignored, and git saying so is not
     a failure here — the walk below is exercised over a temp tree.
     """
-    listing = subprocess.run(
+    listing = run_bounded(
         [
             "git",
             "-C",
@@ -170,7 +170,7 @@ def _linkable_files() -> list[Path]:
     `git ls-files` rather than a walk: it reaches `assets/`, which `_SKIP_DIRS`
     excludes, while still ignoring build output and anything untracked.
     """
-    listing = subprocess.run(
+    listing = run_bounded(
         ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
         capture_output=True,
         text=True,
@@ -263,7 +263,7 @@ class TextFileWalkTest(unittest.TestCase):
         (dump / "dump.md").write_text("quoting docs/usage.md", encoding="utf-8")
 
         with no_inherited_git_env(isolate_config=True):
-            subprocess.run(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
+            run_bounded(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
             with mock.patch(f"{__name__}._REPO_ROOT", root):
                 found = {p.name for p in _text_files()}
 
@@ -279,7 +279,7 @@ class TextFileWalkTest(unittest.TestCase):
         (root / "brand-new.md").write_text("added in a moment", encoding="utf-8")
 
         with no_inherited_git_env(isolate_config=True):
-            subprocess.run(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
+            run_bounded(["git", "-C", str(root), "init", "-q"], capture_output=True, check=True)
             with mock.patch(f"{__name__}._REPO_ROOT", root):
                 found = {p.name for p in _text_files()}
 

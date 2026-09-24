@@ -13,7 +13,6 @@ import importlib.util
 import io
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +20,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
+from _child_process import run_bounded
 from _fakes import no_inherited_git_env
 
 _REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -162,13 +162,13 @@ class GitConfigTest(unittest.TestCase):
         self.addCleanup(isolated.__exit__, None, None, None)
 
         self.repo = Path(tempfile.mkdtemp())
-        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], capture_output=True, check=True)
+        run_bounded(["git", "-C", str(self.repo), "init", "-q"], capture_output=True, check=True)
         previous = os.getcwd()
         os.chdir(self.repo)
         self.addCleanup(os.chdir, previous)
 
     def set(self, name: str, value: str) -> None:
-        subprocess.run(["git", "config", name, value], capture_output=True, check=True)
+        run_bounded(["git", "config", name, value], capture_output=True, check=True)
 
     def test_an_unset_cap_is_the_shipped_default(self) -> None:
         self.assertEqual(msg._configured("subjectMax", _SUBJECT_MAX), _SUBJECT_MAX)
@@ -366,7 +366,7 @@ class StagedDiffTest(unittest.TestCase):
         self.addCleanup(os.chdir, previous)
 
     def git(self, *args: str) -> None:
-        subprocess.run(
+        run_bounded(
             ["git", "-C", str(self.repo), *args],
             capture_output=True,
             text=True,
@@ -383,7 +383,7 @@ class StagedDiffTest(unittest.TestCase):
 
     def test_the_fixture_stages_into_its_own_repository(self) -> None:
         self.stage("a = 1\n")
-        tracked = subprocess.run(
+        tracked = run_bounded(
             ["git", "-C", str(self.repo), "ls-files"],
             capture_output=True,
             text=True,
@@ -447,7 +447,7 @@ class StagedDiffTest(unittest.TestCase):
 
     def test_a_non_ascii_path_is_reported_as_the_name_git_tracks(self) -> None:
         self.stage("# TODO: accented path\n", name="café.py")
-        tracked = subprocess.run(
+        tracked = run_bounded(
             ["git", "-C", str(self.repo), "-c", "core.quotePath=false", "ls-files"],
             capture_output=True,
             text=True,

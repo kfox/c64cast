@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from typing import cast
 
+from _child_process import run_bounded
 from _fakes import FakeAPI, make_psid, quiet_logging
 
 from c64cast.audio.audio_source import SidFileAudioSource
@@ -518,7 +519,6 @@ class AudioSourceImportWeightTest(unittest.TestCase):
     py65. The SID helpers are lazy-imported inside SidFileAudioSource methods."""
 
     def test_import_does_not_pull_heavy_modules(self):
-        import subprocess
         import sys
 
         code = (
@@ -527,7 +527,9 @@ class AudioSourceImportWeightTest(unittest.TestCase):
             "'c64cast.sid.voice_scope') if m in sys.modules]; "
             "print(','.join(heavy))"
         )
-        out = subprocess.check_output([sys.executable, "-c", code], text=True).strip()
+        out = run_bounded(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        ).stdout.strip()
         self.assertEqual(out, "", f"audio_source import pulled in heavy modules: {out}")
 
 

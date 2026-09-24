@@ -36,14 +36,22 @@ to. It is also the half that survives the first blind spot below.
 Blind spots worth knowing:
 
 * An async exception is delivered between bytecodes, so a test blocked in a
-  call that never returns to the interpreter — `Thread.join()` with no
-  timeout, a socket read, `lock.acquire()` — is not interrupted. The stderr
-  dump still names it and prints every thread's stack, and the watchdog keeps
-  re-injecting in case the call does return, but such a run still ends at the
-  CI job's own timeout. `signal` would reach a blocked main thread and is not
-  portable: `SIGALRM` does not exist on Windows, and the spelling that is
-  portable, `_thread.interrupt_main()`, raises `KeyboardInterrupt` — which
-  unittest reads as "abort the run" and `Playlist.run` catches on purpose.
+  call that never returns to the interpreter — `threading.Event().wait()` with
+  no timeout, `lock.acquire()` — is not interrupted. Both were measured parked
+  through an injection, and an `Event().wait()` probe ran 7m48s past its cap
+  before being killed by hand. The stderr dump still names such a test and
+  prints every thread's stack, and the watchdog keeps re-injecting in case the
+  call does return, but the run still ends at the CI job's own timeout.
+  `signal` would reach a blocked main thread and is not portable: `SIGALRM`
+  does not exist on Windows, and the spelling that is portable,
+  `_thread.interrupt_main()`, raises `KeyboardInterrupt` — which unittest
+  reads as "abort the run" and `Playlist.run` catches on purpose.
+* `Thread.join()` with no timeout used to head that list and does not belong
+  there: PR #491's Windows py3.14 run delivered `TestTimedOut` inside
+  `ThreadHandle.join`, naming the test and carrying on, where the same shape
+  stays parked on macOS py3.14.6 through an 8 s window. A thread-handle join
+  is therefore platform-dependent rather than reliably a blind spot, and
+  nobody has tested a blocked socket read either way.
 * The watchdog is an ordinary Python thread, so a test spinning inside C with
   the GIL held is not seen at all.
 * An interruption can arrive after the test body is over — the test ended
