@@ -257,12 +257,22 @@ class LogThrottleLockTest(unittest.TestCase):
                 parked = inside.wait(timeout=5.0)
                 reached_warn = calling.wait(timeout=5.0)
                 got_through = returned.wait(timeout=0.25)
+                # Snapshot while the first thread is still parked: releasing
+                # it lets the second through, which is the whole point.
+                reads_while_parked = len(reads)
             finally:
                 release.set()
                 holder.join(timeout=5.0)
                 waiter.join(timeout=5.0)
         self.assertTrue(parked, "the first thread never reached the gate")
         self.assertTrue(reached_warn, "the second thread never called `warn`")
+        self.assertEqual(
+            reads_while_parked,
+            1,
+            "a second thread reached the clock inside `_admit` while another "
+            "was parked there, so the accounting between the increment and the "
+            "reset is not exclusive",
+        )
         self.assertFalse(
             got_through,
             "a second thread completed `_admit` while another was inside it, so "
