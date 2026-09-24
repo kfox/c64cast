@@ -31,7 +31,7 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, quiet_logging  # noqa: E402
+from _fakes import FakeAPI, FrozenClock, quiet_logging  # noqa: E402
 
 from c64cast.hw.c64 import SID  # noqa: E402
 from c64cast.sid import asid  # noqa: E402
@@ -168,6 +168,34 @@ class AsidSceneTest(unittest.TestCase):
         scene._handle_sysex((asid.ASID_MANUFACTURER_ID, asid.CMD_SPEED, 0x00))  # PAL
         self.assertEqual(scene.system, "PAL")
         self.assertEqual(scene.emulator.clock, CLOCK_PAL)
+
+    def test_voice_strip_grays_when_idle_colors_when_sounding(self):
+        # The sibling of MidiScene's own strip-color test. Both scenes ask
+        # `Voice.is_audible()`, so this is the second caller that has to go red
+        # if that predicate changes — with the copies each scene used to keep,
+        # only one of them did.
+        from c64cast.sid.voice_scope import IDLE_VOICE_COLOR
+        from c64cast.video.palette import C64_COLORS
+
+        scene, api = self._make(voice_colors=["light green", "cyan", "yellow"])
+        self._bring_up(scene)
+        # Voice 1 gated on: freq lo/hi (ASID ids 0/1) + control (id 22).
+        scene._handle_sysex(_reg_msg({0: 0x34, 1: 0x12, 22: 0x41}))
+        scene._flush_to_sid()
+        api.regions.clear()
+        scene.process_frame(0.0)
+        green = C64_COLORS["light green"]
+        self.assertEqual(api.regions[0x0400], bytes([green << 4]) * 280)
+        self.assertTrue(scene._window_sounding[0][0])
+        # Gate off and let the release tail reach zero: the strip grays.
+        scene._handle_sysex(_reg_msg({22: 0x40}))
+        scene._flush_to_sid()
+        scene._emulators[0].voices[0].envelope_level = 0.0
+        api.regions.clear()
+        scene.process_frame(1.0)
+        gray = C64_COLORS[IDLE_VOICE_COLOR]
+        self.assertEqual(api.regions[0x0400], bytes([gray << 4]) * 280)
+        self.assertFalse(scene._window_sounding[0][0])
 
     def test_validate_asid_returns_bitmap_mode(self):
         from c64cast.app.config import Config, SceneCfg
@@ -520,11 +548,7 @@ class AsidSceneTest(unittest.TestCase):
 
         # Each message costs a third of the drain's work budget — the same shape
         # as a Rich-rendered WARNING, an order of magnitude cheaper.
-        clock = {"now": 1000.0}
-
-        def monotonic():
-            clock["now"] += _midi.MAX_DRAIN_WORK_S / 3
-            return clock["now"]
+        clock = FrozenClock(1000.0, "monotonic", _midi.MAX_DRAIN_WORK_S / 3)
 
         polls_at_first_flush: list[int] = []
         real_flush = scene._flush_to_sid
@@ -535,7 +559,7 @@ class AsidSceneTest(unittest.TestCase):
             stop.set()
 
         scene._midi_port = SimpleNamespace(poll=poll, iter_pending=lambda: iter(poll, None))
-        with mock.patch.object(_midi, "_monotonic", monotonic):
+        with mock.patch.object(_midi, "time", clock):
             with mock.patch.object(scene, "_flush_to_sid", side_effect=flush):
                 scene._reader(stop)
         # The flush ran, with the backlog still deep and long before the count

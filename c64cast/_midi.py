@@ -9,7 +9,9 @@ touching it. `open_input_port` is the shared input-port resolver behind each
 consumer's `_open_port`. Consumers re-import `mido` under their own module
 name, so patching `<consumer>.mido` still works for code in that module —
 but port *resolution* reads this module's `mido`, so tests faking ports
-patch `c64cast._midi.mido`.
+patch `c64cast._midi.mido`. `poll_pending`'s work bound reads the clock as
+`time.monotonic()` through this module's own `time` name, so a test drives a
+pass by binding `tests._fakes.FrozenClock` over `c64cast._midi.time`.
 """
 
 from __future__ import annotations
@@ -21,10 +23,6 @@ from collections.abc import Iterator
 from typing import Any
 
 log = logging.getLogger(__name__)
-
-# The drain's work bound reads the clock through this name, so rebinding the
-# module attribute lets a test drive a pass without sleeping through one.
-_monotonic = time.monotonic
 
 try:
     import mido as _mido
@@ -157,9 +155,9 @@ def poll_pending(
     if budget_s is None:
         budget_s = MAX_DRAIN_WORK_S
 
-    deadline = _monotonic() + budget_s
+    deadline = time.monotonic() + budget_s
     for retired in range(limit):
-        if retired and _monotonic() >= deadline:
+        if retired and time.monotonic() >= deadline:
             return
         msg = port.poll()
         if msg is None or stop.is_set():

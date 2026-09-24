@@ -990,5 +990,63 @@ class FlickerMirrorTest(unittest.TestCase):
         np.testing.assert_array_equal(fb.render()[100, 160], palette.C64_PALETTE_BGR[2])
 
 
+class D018HiresPageATest(unittest.TestCase):
+    """`D018_HIRES_PAGE_A` is reached by two paths inside one hires `setup()`:
+    the mode engages it into `$D018`, and the flicker tracker's page-A slot is
+    seeded from it. Every other assertion in this file imports the constant it
+    compares against, so setting `D018_HIRES_PAGE_A = 0x58` left the whole
+    suite green while the swap handler installed a page the engage had never
+    pointed at — a relocated matrix on every other field.
+
+    This is the independent half, in two forms that do not compare the
+    constant to itself: the literal byte a real engage leaves in `$D018`, and
+    the page pair decoded back into the bank offsets `VIC_BANK_0` names.
+    """
+
+    def setUp(self):
+        # setup() with no flicker tolerance emits no warning; the flicker case
+        # below is the one FlickerSetupWarningTest owns the assertion for.
+        self.enterContext(quiet_logging())
+
+    def test_a_hires_engage_leaves_the_vic_on_page_a(self):
+        api = FakeAPI()
+        HiresDisplayMode("normal").setup(api)
+        self.assertEqual(api.memories["D018"], "18")
+
+    def test_an_mhires_engage_leaves_the_vic_on_page_a(self):
+        api = FakeAPI()
+        MultiHiresDisplayMode().setup(api)
+        self.assertEqual(api.memories["D018"], "18")
+
+    def test_the_scope_engages_the_same_page(self):
+        # The scope relocates its bank but not its sub-bank offsets, so the
+        # byte it engages is the display modes' — it used to keep its own copy.
+        from c64cast.sid.midi_scene import MidiScene
+
+        api = FakeAPI()
+        MidiScene(api, None)._apply_vic_hires_bank()
+        self.assertEqual(api.memories["D018"], "18")
+
+    def test_the_flicker_tracker_seeds_the_page_the_engage_installed(self):
+        api = FakeAPI()
+        HiresDisplayMode("normal", flicker_tolerance=ALL_TIERS).setup(api)
+        tracker = api.mem_files[f"{FRAME_TRACKER_ADDR:04X}"]
+        self.assertEqual(tracker[FLICKER_TRACKER_OFF_D018], 0x18)
+        self.assertEqual(tracker[FLICKER_TRACKER_OFF_D018 + 1], 0x38)
+
+    def test_the_page_pair_decodes_to_the_bank_offsets_it_claims(self):
+        # $D018 bits 7-4 are the matrix offset in units of $0400 and bit 3 puts
+        # the bitmap at bank+$2000. Derived from VIC_BANK_0's own addresses, so
+        # this holds a wrong constant to the layout rather than to itself.
+        for value, screen in (
+            (D018_HIRES_PAGE_A, VIC_BANK_0.SCREEN),
+            (D018_HIRES_PAGE_B, VIC_BANK_0.SCREEN_ALT),
+        ):
+            with self.subTest(d018=value):
+                self.assertEqual((value >> 4) * 0x0400, screen - VIC_BANK_0.BASE)
+                self.assertEqual(value & 0x08, 0x08, "bitmap must sit at bank+$2000")
+        self.assertEqual(VIC_BANK_0.BITMAP - VIC_BANK_0.BASE, 0x2000)
+
+
 if __name__ == "__main__":
     unittest.main()
