@@ -243,7 +243,7 @@ class ArmedTest(unittest.TestCase):
         self.assertIs(_timeout_sandbox._running[ident], mine, "the outer test is still watched")
 
     def test_a_timeout_arriving_during_retirement_is_recorded_not_raised(self):
-        """The third blind spot: a re-injection can land once
+        """The blind spot for a late interruption: a re-injection can land once
         `testPartExecutor` is off the stack. Out of `TestCase.run` it would end
         the worker's thread, and `Pool.map` never completes a job whose worker
         died — so the guard against hanging would itself be the hang. It has to
