@@ -12,6 +12,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 // `loadConfigFromFile` returns the config as the file writes it, before Vite
 // applies any default, which is what makes "states none" distinguishable from
 // "states today's default".
+//
+// Named for its subject rather than `vite.config.test.ts`: that spelling
+// matches the `**/{…,vite,vitest,…}.config.*` exclude Vitest shipped as a
+// default through v2, and a guard dropped from the run reports nothing at all.
 
 // A name carrying the version it is supported from, as esbuild and Lightning
 // CSS spell a target: chrome111, safari16.4, ios16.4. What it is here to

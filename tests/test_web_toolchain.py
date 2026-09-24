@@ -29,7 +29,7 @@ so a new one has to be read before it is skipped.
 
 `build.target` in `web/vite.config.ts` is the console's browser floor, pinned
 for the same reason the Node version is. Its guard lives in
-`web/vite.config.test.ts`, not here: whether the config *states* a target is a
+`web/buildTarget.test.ts`, not here: whether the config *states* a target is a
 question about TypeScript, there is no parser for that at Python-test time, and
 Vite's own `loadConfigFromFile` answers it without one.
 
