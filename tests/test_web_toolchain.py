@@ -135,8 +135,12 @@ _BUILD_BLOCK = re.compile(r"\bbuild\s*:\s*\{")
 # The key alone, matched against the string-blanked view so a `target:` that
 # lives inside a string literal is not one of build's keys.
 _TARGET_KEY = re.compile(r"\btarget\s*:")
-# Either shape Vite accepts: a list of targets, or one target on its own.
-_TARGET = re.compile(r"""\btarget\s*:\s*(?P<value>\[[^]]*]|["'`][^"'`]*["'`])""")
+# Either shape Vite accepts: a list of targets, or one target on its own. Built
+# from the key above rather than spelling it a second time: the search and the
+# read have to agree on what a key is, and a narrowing applied to one of two
+# copies is silent — the key is found and the value then refuses to match, so a
+# config that states a floor reads as stating none.
+_TARGET = re.compile(rf"""{_TARGET_KEY.pattern}\s*(?P<value>\[[^]]*]|["'`][^"'`]*["'`])""")
 _QUOTED = re.compile(r"""["'`]([^"'`]*)["'`]""")
 # A browser and the version it is supported from, as esbuild and Lightning CSS
 # name it: `chrome111`, `safari16.4`, `ios16.4`.
@@ -502,6 +506,19 @@ export default defineConfig({
 });
 """
 
+# An escaped quote inside a string, which the scan consumes two characters at a
+# time — the one place the two views can come out of step without any fixture
+# above noticing, since reading the key out of one view and the value out of
+# the other is only sound while an index into either means the same character.
+_VITE_ESCAPED_LITERAL = """\
+export default defineConfig({
+  build: {
+    target: ["chrome111"],
+    rollupOptions: { output: { banner: "a \\" } and // still the string" } },
+  },
+});
+"""
+
 
 class ViteConfigReadingTest(unittest.TestCase):
     """The config reader against the shapes a Vite config can be written in."""
@@ -523,6 +540,24 @@ class ViteConfigReadingTest(unittest.TestCase):
 
     def test_a_target_inside_a_string_is_not_read_as_the_floor(self):
         self.assertIsNone(_declared_target(_VITE_STRING_TARGET))
+
+    def test_the_kept_and_blanked_views_index_the_same_characters(self):
+        text, code = _text_and_code(_VITE_ESCAPED_LITERAL)
+        self.assertEqual(
+            len(text),
+            len(code),
+            "the views are read at shared indices, so one shorter than the other "
+            "reads the value out of the wrong place — or off the end",
+        )
+        self.assertEqual(
+            [],
+            [index for index, char in enumerate(code) if char != " " and text[index] != char],
+            "a character kept in the blanked view is that character in the written "
+            "one, or a key found in the first is not the key read out of the second",
+        )
+        options, blanked = _build_options(_VITE_ESCAPED_LITERAL)
+        self.assertEqual(len(options), len(blanked))
+        self.assertEqual(["chrome111"], _declared_target(_VITE_ESCAPED_LITERAL))
 
     def test_a_brace_or_comment_start_inside_a_string_is_neither(self):
         self.assertEqual(["chrome111"], _declared_target(_VITE_AWKWARD_LITERALS))
