@@ -41,7 +41,7 @@ log = logging.getLogger("c64cast")
 
 #: The library loggers `configure_logging` holds back: each group of names
 #: paired with the `(-v count, level)` steps that loosen it. WARNING until the
-#: first step's count is met, then the last step the run reaches.
+#: lowest step's count is met, then the highest step the run reaches.
 #:
 #: The parent `uvicorn` logger is named so that any descendant uvicorn adds
 #: later is held back by inheritance, and its present children are named as
@@ -146,9 +146,9 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     # `Config.configure_logging` may have written in between.
     for names, steps in HELD_BACK_LOGGERS:
         held = logging.WARNING
-        for release_at, level in steps:
+        for release_at, step_level in sorted(steps):
             if verbosity >= release_at:
-                held = level
+                held = step_level
         for noisy in names:
             logging.getLogger(noisy).setLevel(held)
     _transport_log.install(verbosity == 2)

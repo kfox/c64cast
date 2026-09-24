@@ -449,7 +449,7 @@ class WebSocketFrameLogTest(_DrivesAProbeServer):
         with self.assertLogs(level=logging.DEBUG) as cm:
             server, port = self._start_probe()
             with connect(f"ws://127.0.0.1:{port}/perf/ws", open_timeout=5) as ws:
-                self.assertEqual(ws.recv(), '{"pushed":"state"}')
+                self.assertEqual(ws.recv(timeout=5), '{"pushed":"state"}')
                 ws.send("bye")
             server.stop()
         return [r for r in cm.records if r.name == "uvicorn.error" and r.levelno == logging.DEBUG]
