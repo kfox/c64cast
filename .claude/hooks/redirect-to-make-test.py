@@ -7,18 +7,28 @@ typecheck`, `make check`) so they always hit the uv-synced project env
 activated `.venv`. A bare `python -m unittest` / `pytest` from an agent shell
 silently misses that env.
 
-Trips on a command segment that runs `unittest` or `pytest` directly —
+Trips on a command that runs `unittest` or `pytest` directly —
 `python -m unittest …`, `uv run python -m unittest …`, `pytest …`,
-`coverage run -m pytest …`. `make test` (which runs unittest inside the recipe,
-invisible to this hook) passes untouched, as does any segment whose leading
-command is `make`.
+`coverage run -m pytest …`. Every command on the line is read, wherever it
+sits in a compound — `_shell.read` finds the ones a glued separator hides.
+`make test` (which runs unittest inside the recipe, invisible to this hook)
+passes untouched, as does any command whose leading word is `make`.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 import sys
+from pathlib import Path
+
+# Running `python3 <abs-path>` already puts the script's directory on
+# sys.path, but a loader that does not — `spec_from_file_location`, which is
+# how the tests reach a hook whose filename is no identifier — would raise
+# here at import time, and a PreToolUse hook that cannot be imported is a
+# hook that is silently off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _shell  # noqa: E402
 
 RUNNER_CMDS = {"pytest", "py.test"}
 TEST_MODULES = {"unittest", "pytest"}
@@ -36,34 +46,13 @@ DENY = (
 )
 
 
-def _segments(cmd: str) -> list[list[str]]:
-    """Split the command into argv segments on shell separators. Returns [] if
-    it can't be parsed (hook then allows — never block on a parse failure)."""
-    try:
-        toks = shlex.split(cmd, comments=True)
-    except ValueError:
-        return []
-    segs: list[list[str]] = []
-    cur: list[str] = []
-    for t in toks:
-        if t in ("&&", "||", "&", "|", ";"):
-            segs.append(cur)
-            cur = []
-        else:
-            cur.append(t)
-    if cur:
-        segs.append(cur)
-    return [s for s in segs if s]
-
-
 def _strip_prefix(argv: list[str]) -> list[str]:
-    """Drop leading `VAR=value` env assignments and a leading `cd <dir>`."""
-    while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
-        argv = argv[1:]
-    if len(argv) >= 2 and argv[0] == "cd":
+    """Drop leading env assignments, shell keywords and a leading `cd <dir>`."""
+    while True:
+        argv = _shell.strip_prefix(argv)
+        if len(argv) < 2 or argv[0] != "cd":
+            return argv
         argv = argv[2:]
-        argv = _strip_prefix(argv)
-    return argv
 
 
 def _is_raw_test_run(argv: list[str]) -> bool:
@@ -90,7 +79,7 @@ def main() -> int:
     cmd = (payload.get("tool_input") or {}).get("command") or ""
     if not cmd:
         return 0
-    if any(_is_raw_test_run(seg) for seg in _segments(cmd)):
+    if any(_is_raw_test_run(command.argv) for command in _shell.read(cmd).commands):
         print(
             json.dumps(
                 {

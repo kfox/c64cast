@@ -24,27 +24,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-bash-search.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-bash-search.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking for file-search commands that belong in Grep/Read"
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-resolvable-search-target.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-resolvable-search-target.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking that the search target resolves"
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-make-test.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-make-test.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking that tests run via make"
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-uv.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/redirect-to-uv.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking that installs and checks go through uv/make"
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-worktrees-in-checkout.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-worktrees-in-checkout.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking that a new worktree lands under .claude/worktrees"
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-edits-in-a-worktree.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/require-edits-in-a-worktree.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
             "statusMessage": "Checking that the edit is not in the primary checkout"
           }
         ]
