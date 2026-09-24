@@ -25,6 +25,14 @@ from _child_process import BOUND_S, run_bounded
 #: Short enough that driving a real expiry costs a fraction of a second.
 _TEST_BOUND_S = 0.3
 
+#: The bound for an expiry whose assertion is about what the child wrote.
+#: Those tests need the child to reach its `print` before it is killed, and
+#: `_TEST_BOUND_S` does not clear interpreter startup with a margin: starting
+#: `sys.executable` with `PYTHONPATH=tests` measures ~0.1 s on a warm
+#: workstation and several times that on a loaded Windows runner, which is the
+#: machine this whole module exists because of.
+_PRINTED_BOUND_S = 2.0
+
 
 def _hangs_after(statement: str = "pass") -> list[str]:
     """A child that runs `statement`, flushes, and then never exits.
@@ -78,7 +86,7 @@ class RunBoundedTest(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             run_bounded(
                 _hangs_after("print('reached step 3')"),
-                timeout=_TEST_BOUND_S,
+                timeout=_PRINTED_BOUND_S,
                 capture_output=True,
                 text=True,
             )
@@ -93,7 +101,7 @@ class RunBoundedTest(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             run_bounded(
                 _hangs_after("sys.stdout.write('x' * 5000)"),
-                timeout=_TEST_BOUND_S,
+                timeout=_PRINTED_BOUND_S,
                 capture_output=True,
                 text=True,
             )
@@ -104,7 +112,7 @@ class RunBoundedTest(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             run_bounded(
                 _hangs_after("sys.stderr.buffer.write(b'\\xff bad')"),
-                timeout=_TEST_BOUND_S,
+                timeout=_PRINTED_BOUND_S,
                 capture_output=True,
             )
         self.assertIn("bad", str(caught.exception))
@@ -201,14 +209,27 @@ class EveryChildProcessIsBoundTest(unittest.TestCase):
             return f"{func.id}() [from subprocess import {names[func.id]}]"
         return None
 
+    @staticmethod
+    def _bounds(kw: ast.keyword) -> bool:
+        """Whether `kw` is a `timeout=` that actually bounds the call.
+
+        `timeout=None` is what `subprocess` itself spells "wait forever", so
+        it is refused exactly like an omitted keyword — otherwise the one
+        wording that means no bound is the one wording that satisfies a sweep
+        demanding a bound.
+        """
+        if kw.arg != "timeout":
+            return False
+        return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+
     @classmethod
     def offenders_in(cls, source: str, label: str) -> list[str]:
         """Every unbounded child-starting call in `source`.
 
-        A literal `timeout=` keyword and nothing else. `**kwargs` is not
-        accepted as one: whether it carries a bound is a fact about the
-        caller, and a sweep that took the possibility for an answer would pass
-        every call site in the suite by writing `**{}`.
+        A literal `timeout=` keyword that is not `None`, and nothing else.
+        `**kwargs` is not accepted as one: whether it carries a bound is a
+        fact about the caller, and a sweep that took the possibility for an
+        answer would pass every call site in the suite by writing `**{}`.
         """
         tree = ast.parse(source)
         modules, names = cls._imports(tree)
@@ -217,7 +238,7 @@ class EveryChildProcessIsBoundTest(unittest.TestCase):
             if not isinstance(node, ast.Call):
                 continue
             starter = cls._starter(node, modules, names)
-            if starter and not any(kw.arg == "timeout" for kw in node.keywords):
+            if starter and not any(cls._bounds(kw) for kw in node.keywords):
                 found.append(f"{label}:{node.lineno} -> {starter}")
         return found
 
@@ -268,6 +289,14 @@ class SweepDepthTest(unittest.TestCase):
                 subprocess.run(["git", "status"], timeout=5)
                 """),
             [],
+        )
+
+    def test_a_timeout_of_none_is_not_a_bound(self):
+        self.assertTrue(
+            self.offenders("""
+                import subprocess
+                subprocess.run(["git", "status"], timeout=None)
+                """)
         )
 
     def test_an_aliased_module_is_caught(self):
