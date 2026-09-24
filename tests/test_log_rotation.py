@@ -13,8 +13,8 @@ What is pinned here is the bound rather than the arithmetic behind it:
 ones that actually rotate, the file set stops growing where the numbers say,
 the tail of the run survives the rotation, and the redaction the file handler
 wears applies to the rotated backups too. `AstSweepTest` holds the rest of the
-package to the same shape, since a second plain `FileHandler` would reopen the
-class somewhere else.
+package to the same shape, since a second file handler that names no ceiling
+would reopen the class somewhere else.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ import pathlib
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from _fakes import RestoresLogging
 
 import c64cast
 from c64cast.app import cli_commands
@@ -49,28 +51,7 @@ def _sizes(path: str) -> dict[str, int]:
     }
 
 
-class _RestoresLogging(unittest.TestCase):
-    """`configure_logging` replaces the root handlers and moves the levels of
-    the loggers it holds back, all of which belong to the process."""
-
-    HELD_BACK = ("urllib3", "urllib3.connectionpool", "uvicorn", "uvicorn.error")
-
-    def setUp(self):
-        root = logging.getLogger()
-        handlers, level = root.handlers[:], root.level
-        saved = {name: logging.getLogger(name).level for name in self.HELD_BACK}
-
-        def restore() -> None:
-            for handler in root.handlers[:]:
-                if handler not in handlers:
-                    handler.close()
-            root.handlers[:] = handlers
-            root.setLevel(level)
-            for name, lvl in saved.items():
-                logging.getLogger(name).setLevel(lvl)
-
-        self.addCleanup(restore)
-
+class _DrivesALogFile(RestoresLogging):
     def configure_file_only(self, verbosity: int = 0) -> str:
         """Configure logging onto a throwaway path and drop the terminal half.
 
@@ -116,11 +97,17 @@ class ShippedBoundTest(unittest.TestCase):
         quotes — config.py is below cli_commands.py in the import order."""
         help_text = DebugCfg.__dataclass_fields__["log_file"].metadata["help"]
         megabytes = cli_commands.LOG_FILE_MAX_BYTES // (1024 * 1024)
+        backups = cli_commands.LOG_FILE_BACKUP_COUNT
         self.assertIn(f"{megabytes} MiB", help_text)
-        self.assertIn(f"{cli_commands.LOG_FILE_BACKUP_COUNT} rotated backups", help_text)
+        self.assertIn(f"{backups} rotated backups", help_text)
+        # The total is the number an operator sizes a disk against, and it is
+        # the one a raised `maxBytes` leaves behind: the two assertions above
+        # both still pass with the old total quoted beside the new per-file
+        # size.
+        self.assertIn(f"{megabytes * (backups + 1)} MiB for the set", help_text)
 
 
-class InstalledHandlerTest(_RestoresLogging):
+class InstalledHandlerTest(_DrivesALogFile):
     def test_configure_logging_installs_a_rotating_handler(self):
         self.configure_file_only()
         handlers = logging.getLogger().handlers
@@ -150,7 +137,7 @@ class InstalledHandlerTest(_RestoresLogging):
 
 @patch.object(cli_commands, "LOG_FILE_MAX_BYTES", 2048)
 @patch.object(cli_commands, "LOG_FILE_BACKUP_COUNT", 2)
-class BoundedGrowthTest(_RestoresLogging):
+class BoundedGrowthTest(_DrivesALogFile):
     """The bound itself, driven with the record the issue measured.
 
     `configure_logging` reads both constants from the module body at call
@@ -211,14 +198,27 @@ class BoundedGrowthTest(_RestoresLogging):
 
 
 class AstSweepTest(unittest.TestCase):
-    """No module under `c64cast/` may install a plain `FileHandler`.
+    """No module under `c64cast/` may install a file handler with no ceiling.
 
     One unrotated handler was the defect; a second one added later would be
     the same defect under a different name, and it would not be found by a
-    test that reads only `configure_logging`.
+    test that reads only `configure_logging`. Naming only `FileHandler` is
+    not enough to hold that: `maxBytes` and `backupCount` both default to 0,
+    so `RotatingFileHandler(path)` never rotates and
+    `TimedRotatingFileHandler(path, when="D")` never deletes what it rotated
+    — each an unbounded destination wearing a bounded class's name.
     """
 
-    UNROTATED = {"FileHandler", "WatchedFileHandler"}
+    #: Every `logging` handler that writes a file, mapped to the arguments
+    #: that have to be given and non-zero for the bytes it owns to have a
+    #: ceiling, by keyword name and by the position each may also be passed
+    #: at. An empty mapping means the class has no bound to give it at all.
+    BOUNDED_BY: dict[str, dict[str, int]] = {
+        "FileHandler": {},
+        "WatchedFileHandler": {},
+        "RotatingFileHandler": {"maxBytes": 2, "backupCount": 3},
+        "TimedRotatingFileHandler": {"backupCount": 3},
+    }
 
     def _handler_name(self, node: ast.AST) -> str | None:
         if isinstance(node, ast.Attribute):
@@ -227,7 +227,22 @@ class AstSweepTest(unittest.TestCase):
             return node.id
         return None
 
-    def test_the_package_installs_no_unrotated_file_handler(self):
+    def _unbounded(self, node: ast.Call, bounds: dict[str, int]) -> list[str]:
+        """Why `node` has no ceiling, or an empty list if it has one."""
+        if not bounds:
+            return ["the class has no size of its own"]
+        faults = []
+        for keyword, position in bounds.items():
+            given = next((k.value for k in node.keywords if k.arg == keyword), None)
+            if given is None and len(node.args) > position:
+                given = node.args[position]
+            if given is None:
+                faults.append(f"{keyword} is not given, so it defaults to 0")
+            elif isinstance(given, ast.Constant) and given.value == 0:
+                faults.append(f"{keyword}=0")
+        return faults
+
+    def test_the_package_installs_no_unbounded_file_handler(self):
         root = pathlib.Path(c64cast.__file__).parent
         offenders: list[str] = []
         for source in sorted(root.rglob("*.py")):
@@ -235,10 +250,44 @@ class AstSweepTest(unittest.TestCase):
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                name = self._handler_name(node.func)
-                if name in self.UNROTATED:
-                    offenders.append(f"{source.relative_to(root)}:{node.lineno} {name}")
+                bounds = self.BOUNDED_BY.get(self._handler_name(node.func) or "")
+                if bounds is None:
+                    continue
+                for fault in self._unbounded(node, bounds):
+                    offenders.append(f"{source.relative_to(root)}:{node.lineno}: {fault}")
         self.assertEqual(offenders, [])
+
+    def test_the_sweep_recognizes_a_handler_that_names_no_bound(self):
+        """Every shape that reaches an unbounded file, so that widening the
+        table cannot quietly stop covering one of them. `_unbounded` is fed
+        the call directly: driving the whole sweep would need a throwaway
+        module inside the package it walks."""
+        unbounded = [
+            "logging.FileHandler(p)",
+            "WatchedFileHandler(p)",
+            "logging.handlers.RotatingFileHandler(p, encoding='utf-8')",
+            "RotatingFileHandler(p, maxBytes=MAX, backupCount=0)",
+            "RotatingFileHandler(p, 'a', 0, 4)",
+            "handlers.TimedRotatingFileHandler(p, when='D')",
+        ]
+        bounded = [
+            "RotatingFileHandler(p, maxBytes=MAX, backupCount=COUNT)",
+            "RotatingFileHandler(p, 'a', MAX, COUNT)",
+            "handlers.TimedRotatingFileHandler(p, when='D', backupCount=COUNT)",
+            "StreamHandler(sys.stderr)",
+        ]
+        for source in unbounded + bounded:
+            with self.subTest(source=source):
+                call = self._call(source)
+                bounds = self.BOUNDED_BY.get(self._handler_name(call.func) or "")
+                faults = [] if bounds is None else self._unbounded(call, bounds)
+                self.assertEqual(bool(faults), source in unbounded, faults)
+
+    def _call(self, source: str) -> ast.Call:
+        node = ast.parse(source, mode="eval").body
+        if not isinstance(node, ast.Call):
+            self.fail(f"not a call: {source}")
+        return node
 
 
 if __name__ == "__main__":

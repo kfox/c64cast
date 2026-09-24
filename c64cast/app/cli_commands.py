@@ -114,8 +114,15 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
         level = logging.DEBUG
 
     root = logging.getLogger()
+    # Closed, not merely dropped. `cli.main` calls this twice, and a file
+    # handle left open on the first call's `--log-file` survives for as long
+    # as the interpreter is willing to collect the handler — while
+    # `RotatingFileHandler` renames that file out from under it, which a
+    # second open handle makes fail outright on Windows. Every root handler
+    # reaching here is one of this function's own.
     for h in list(root.handlers):
         root.removeHandler(h)
+        h.close()
     root.setLevel(level)
 
     try:

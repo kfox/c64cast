@@ -32,7 +32,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from unittest.mock import patch
 
-from _fakes import FakeAPI
+from _fakes import FakeAPI, RestoresLogging
 
 from c64cast import _transport_log
 from c64cast.app import cli_commands
@@ -135,35 +135,7 @@ def _levels_after(verbosity: int | None) -> dict[str, int]:
     return after
 
 
-class _RestoresLogging(unittest.TestCase):
-    """`configure_logging` moves the root logger and every held-back logger, so
-    each test restores all of them — those levels and filters belong to the
-    process, and the suite's other tests are entitled to find them as they
-    were."""
-
-    def setUp(self):
-        root = logging.getLogger()
-        handlers, level = root.handlers[:], root.level
-        saved = {
-            name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
-            for name in _HELD_BACK
-        }
-
-        def restore() -> None:
-            for handler in root.handlers[:]:
-                if handler not in handlers:
-                    handler.close()
-            root.handlers[:] = handlers
-            root.setLevel(level)
-            for name, (lvl, filters) in saved.items():
-                logger = logging.getLogger(name)
-                logger.setLevel(lvl)
-                logger.filters[:] = filters
-
-        self.addCleanup(restore)
-
-
-class TransportVerbosityTest(_RestoresLogging):
+class TransportVerbosityTest(RestoresLogging):
     def _transport_debug(self) -> list[bool]:
         """Whether a urllib3 DEBUG record would be emitted, root level included."""
         return [logging.getLogger(name).isEnabledFor(logging.DEBUG) for name in _TRANSPORT]
@@ -241,7 +213,7 @@ class TransportVerbosityTest(_RestoresLogging):
         self.assertEqual(held, set(_HELD_BACK))
 
 
-class UvicornVerbosityTest(_RestoresLogging):
+class UvicornVerbosityTest(RestoresLogging):
     """The web console's server loggers arrive at `-vv`, its access log and
     `uvicorn.error`'s DEBUG at `-vvv`. Effective levels rather than own
     levels, because a release writes NOTSET and leaves the root logger to
@@ -346,7 +318,7 @@ class UvicornVerbosityTest(_RestoresLogging):
         self.assertEqual((cfg.log_config, cfg.log_level, cfg.access_log), (None, None, True))
 
 
-class _DrivesAProbeServer(_RestoresLogging):
+class _DrivesAProbeServer(RestoresLogging):
     """A real `ControlServer` on a loopback port, for the end-to-end halves.
 
     The server is constructed *after* `configure_logging`, which is the
@@ -487,7 +459,7 @@ class WebSocketFrameLogTest(_DrivesAProbeServer):
         self.assertIn('> TEXT \'{"pushed":"state"}\' [18 bytes]', messages)
 
 
-class TransportFilterTest(_RestoresLogging):
+class TransportFilterTest(RestoresLogging):
     """The poll hold-back: a transport DEBUG record raised inside a
     `quiet_transport()` block is dropped at `-vv` and kept at `-vvv`."""
 
