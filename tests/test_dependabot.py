@@ -11,6 +11,13 @@ installed, so the weekly bump that widens it is also what turns this red. The
 only way back to green is deleting the `ignore` block, which is the decision
 the hold was deferring. Whether to then take TypeScript 7 is a separate one,
 made on the Dependabot pull request that proposes it.
+
+`.github/dependabot.yml` is read with a YAML parser, which is what `pyyaml` is
+a dev dependency for: an entry is a mapping whichever key it leads with and
+whether it is written block or flow style, so a reformat moves the hold
+without moving it out of sight. A reader that matched the raw text would
+answer "no hold here" for a file that still holds — and once svelte-check
+widens, that is the answer this module reads as green.
 """
 
 from __future__ import annotations
@@ -19,6 +26,9 @@ import json
 import os
 import re
 import unittest
+from typing import Any
+
+import yaml
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEPENDABOT = os.path.join(_REPO, ".github", "dependabot.yml")
@@ -28,56 +38,40 @@ _HELD = "typescript"
 _HELD_MAJOR = 7
 _PEERED_ON_BY = "node_modules/svelte-check"
 
-_IGNORE_ENTRY = re.compile(
-    r"\A(?P<indent>\s*)-\s+dependency-name:\s*[\"']?(?P<name>[^\"'\s]+)[\"']?\s*\Z"
-)
-_VERSIONS_KEY = re.compile(r"\A\s*versions:\s*\Z")
-_LIST_ITEM = re.compile(r"\A\s*-\s*[\"']?(?P<value>[^\"'\n]+?)[\"']?\s*\Z")
 _COMPARATOR = re.compile(r"\A(?P<op>\^|~|>=|=)?(?P<major>\d+)(?:\.[\w.+-]*)?\Z")
 # `>= 7.0.0` is one comparator; the space left in it is not the AND that
 # separates two, as in `>=5.0.0 <8.0.0`.
 _PADDED_OPERATOR = re.compile(r"([<>=~^]+)\s+")
 
 
-def _lines(path: str) -> list[str]:
-    with open(path, encoding="utf-8") as handle:
-        return handle.read().splitlines()
+def _dependabot() -> Any:
+    with open(_DEPENDABOT, encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
 
 
-def _indented_past(lines: list[str], start: int, indent: int) -> list[str]:
-    """The lines after `start`, up to the first one not indented past `indent`.
-
-    A blank line and a comment sit wherever the writer left them, so neither
-    ends the block nor enters it — a blank line between the hold and the next
-    key is a formatting choice, not a `versions:` list item.
-    """
-    block = []
-    for text in lines[start + 1 :]:
-        stripped = text.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if len(text) - len(text.lstrip()) <= indent:
-            break
-        block.append(text)
-    return block
+def _ignore_entries(document: Any) -> list[Any]:
+    """Every `ignore:` entry in every `updates:` block."""
+    updates = document.get("updates") if isinstance(document, dict) else None
+    entries: list[Any] = []
+    for update in updates if isinstance(updates, list) else []:
+        ignored = update.get("ignore") if isinstance(update, dict) else None
+        entries += ignored if isinstance(ignored, list) else []
+    return entries
 
 
-def _ignored_versions(name: str, lines: list[str] | None = None) -> list[str]:
+def _ignored_versions(name: str, document: Any = None) -> list[str]:
     """The specs every `ignore:` entry for `name` lists under `versions:`."""
-    lines = _lines(_DEPENDABOT) if lines is None else lines
-    specs = []
-    for start, line in enumerate(lines):
-        entry = _IGNORE_ENTRY.match(line)
-        if entry is None or entry.group("name") != name:
+    document = _dependabot() if document is None else document
+    specs: list[str] = []
+    for entry in _ignore_entries(document):
+        if not isinstance(entry, dict) or entry.get("dependency-name") != name:
             continue
-        body = _indented_past(lines, start, len(entry.group("indent")))
-        for offset, text in enumerate(body):
-            if _VERSIONS_KEY.match(text) is None:
-                continue
-            for item in _indented_past(body, offset, len(text) - len(text.lstrip())):
-                match = _LIST_ITEM.match(item)
-                assert match is not None, f"{item!r} is not a `versions:` list item"
-                specs.append(match.group("value"))
+        declared = entry.get("versions")
+        assert declared is None or isinstance(declared, list), (
+            f"{declared!r} is not a `versions:` list, so whether the {_HELD} hold "
+            "is still held cannot be answered"
+        )
+        specs += [str(spec) for spec in declared or []]
     return specs
 
 
@@ -174,8 +168,37 @@ class RangeReadingTest(unittest.TestCase):
                 _admits_major(spec, 7)
 
 
+_ENTRIES = """\
+updates:
+  - package-ecosystem: "npm"
+    directory: "/web"
+    ignore:
+      # until svelte-check catches up
+      - dependency-name: typescript
+        update-types:
+          - "version-update:semver-major"
+        versions:
+          - ">= 7.0.0"
+      - versions: [">= 6.0.0"]
+        dependency-name: svelte
+      - dependency-name: vite
+        update-types:
+          - "version-update:semver-major"
+
+    groups:
+      npm:
+        patterns:
+          - "*"
+  - package-ecosystem: "uv"
+    directory: "/"
+"""
+
+
 class IgnoreEntryReadingTest(unittest.TestCase):
     """`_ignored_versions` against the committed file and its neighbors."""
+
+    def setUp(self):
+        self.document = yaml.safe_load(_ENTRIES)
 
     def test_the_committed_hold_is_found(self):
         self.assertTrue(
@@ -186,44 +209,20 @@ class IgnoreEntryReadingTest(unittest.TestCase):
     def test_a_name_with_no_entry_has_no_specs(self):
         self.assertEqual([], _ignored_versions("svelte-check"))
 
-    def test_only_the_named_entrys_versions_are_collected(self):
-        lines = [
-            "    ignore:",
-            "      - dependency-name: typescript",
-            "        versions:",
-            '          - ">= 7.0.0"',
-            "      - dependency-name: svelte",
-            "        versions:",
-            '          - ">= 6.0.0"',
-        ]
-        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
-        self.assertEqual([">= 6.0.0"], _ignored_versions("svelte", lines))
+    def test_each_entry_yields_its_own_versions_and_no_others(self):
+        """The two entries differ in every way Dependabot allows them to.
 
-    def test_a_blank_line_after_the_list_does_not_end_up_in_it(self):
-        lines = [
-            "      - dependency-name: typescript",
-            "        versions:",
-            '          - ">= 7.0.0"',
-            "",
-            "    groups:",
-        ]
-        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
+        `typescript` is written in block style with an `update-types:` sibling
+        above its list; `svelte` leads with a flow-style `versions:` and names
+        itself afterwards. Both are the same mapping to a parser.
+        """
+        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", self.document))
+        self.assertEqual([">= 6.0.0"], _ignored_versions("svelte", self.document))
 
-    def test_a_comment_in_the_list_is_not_read_as_a_version(self):
-        lines = [
-            "      - dependency-name: typescript",
-            "        versions:",
-            "          # until svelte-check catches up",
-            '          - ">= 7.0.0"',
-        ]
-        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
+    def test_an_entry_holding_no_versions_contributes_none(self):
+        self.assertEqual([], _ignored_versions("vite", self.document))
 
-    def test_a_sibling_key_in_the_entry_is_not_read_as_a_version(self):
-        lines = [
-            "      - dependency-name: typescript",
-            "        update-types:",
-            '          - "version-update:semver-major"',
-            "        versions:",
-            '          - ">= 7.0.0"',
-        ]
-        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
+    def test_a_versions_value_that_is_not_a_list_raises(self):
+        document = {"updates": [{"ignore": [{"dependency-name": "typescript", "versions": 7}]}]}
+        with self.assertRaises(AssertionError):
+            _ignored_versions("typescript", document)

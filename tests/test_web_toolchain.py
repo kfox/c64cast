@@ -15,6 +15,12 @@ npm applies that one switch to `npm run` as well — it runs the named script bu
 silently skips its `pre`/`post` hook — so a hook added to `web/package.json`
 would stop running without a word. That is the failure this module makes noisy.
 
+The scripts the switch is actually aimed at are the dependencies', and
+`web/package-lock.json` records which package has one. A package that needs
+its install script to put a binary in place installs clean under the switch
+and fails later, in `vite build`, naming neither the script nor the setting —
+so a new one has to be read before it is skipped.
+
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
 a mapping there whether it leads with `uses:` or with `name:`, and a value is
@@ -36,6 +42,7 @@ from typing import Any
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _NPMRC = os.path.join(_REPO, "web", ".npmrc")
 _PACKAGE_JSON = os.path.join(_REPO, "web", "package.json")
+_LOCKFILE = os.path.join(_REPO, "web", "package-lock.json")
 _NODE_VERSION = os.path.join(_REPO, ".node-version")
 _MISE = os.path.join(_REPO, "mise.toml")
 
@@ -94,6 +101,11 @@ _SELF_FIRING_HOOKS = frozenset(
 
 _TRUE = frozenset({"true", "1", "yes", "on"})
 
+# The locked packages whose install script has been read and found skippable.
+# fsevents ships its prebuilt binding in the tarball, so the `node-gyp rebuild`
+# its `install` script runs is a fallback that never has to fire.
+_SKIPPABLE_INSTALL_SCRIPTS = frozenset({"node_modules/fsevents"})
+
 
 def _npmrc() -> dict[str, str]:
     """`web/.npmrc` as a mapping, ignoring blank lines and comments.
@@ -115,6 +127,13 @@ def _npmrc() -> dict[str, str]:
 def _scripts() -> dict[str, str]:
     with open(_PACKAGE_JSON, encoding="utf-8") as handle:
         return dict(json.load(handle).get("scripts", {}))
+
+
+def _install_scripted() -> set[str]:
+    """Every locked package npm would run an install script for."""
+    with open(_LOCKFILE, encoding="utf-8") as handle:
+        packages = json.load(handle)["packages"]
+    return {name for name, entry in packages.items() if entry.get("hasInstallScript")}
 
 
 def _workflows(directory: str | None = None) -> list[tuple[str, Any]]:
@@ -173,6 +192,19 @@ class InstallScriptsTest(unittest.TestCase):
             _TRUE,
             "without ignore-scripts, every dependency's preinstall/install/postinstall "
             "runs on `npm ci` in CI and on a contributor's `npm install`",
+        )
+
+
+class DependencyInstallScriptTest(unittest.TestCase):
+    """The dependency half of `ignore-scripts`: which scripts it drops."""
+
+    def test_every_install_script_it_skips_has_been_read(self):
+        self.assertEqual(
+            set(_SKIPPABLE_INSTALL_SCRIPTS),
+            _install_scripted(),
+            "web/.npmrc skips these — a new one installs a package that may need "
+            "its script to place a binary, and an entry with no package left to "
+            "name is an allowance for nothing",
         )
 
 
