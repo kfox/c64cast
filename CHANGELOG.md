@@ -71,6 +71,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **`-vv` no longer shows the reads c64cast makes on a timer, and `-vvv` is
+  new.** The Commodore-key poll reads the machine ten times a second for the
+  whole run, so a five-minute session buried `-vv` under ~3,000 HTTP-transport
+  lines that said only that the poll was still polling — and `--log-file` grew
+  at that rate. Those reads, the launcher scene's idle detector and the
+  host-DMA audio servo's ring-pointer read are now held out of `-vv`, which
+  leaves it showing the requests an operator is actually asking about. A
+  warning raised during one of those reads is not held back: a retry says
+  something about the link, which is the whole question. `-vvv` puts the poll
+  traffic back, for the run where the poll itself is the suspect — a C= hold
+  that never resumes, a launcher scene that never goes idle.
+
 - **The web console's build toolchain moved to Vite 8.** Vite 8 bundles with
   Rolldown and minifies stylesheets with Lightning CSS, where Vite 7 used
   Rollup and esbuild, so the committed bundle is rebuilt here with no source
@@ -87,8 +99,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   meant exactly what `-v` means: DEBUG is reached at the first `-v`, and no
   code anywhere read a verbosity of 2. It now releases urllib3, whose record
   per HTTP request `-v` holds back at WARNING because it buries everything
-  else in the log. `configure_logging` holds back no other logger, so that
-  release is the whole of the difference. Reach for `-vv` when the question
+  else in the log. No other logger's level moves, so that release is the whole
+  of what the second `v` does to the levels. Reach for `-vv` when the question
   is about an Ultimate's REST link itself: a request that never returned, a
   status the application logged only the consequence of. A TeensyROM link
   is serial or raw TCP, so on one of those the second `v` says nothing about
@@ -150,6 +162,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   request outright with an `AttributeError` if the close landed between the two
   statements. Both threads now start inside the lock that publishes the state
   they depend on, and neither starts once its owner is closing.
+
+- **`[audio].dither` drew from a process-wide random sequence, so a dithered
+  capture could not be reproduced.** The realtime encoder fell back to numpy's
+  global RNG, which every other numpy caller in the process shares and no run
+  records — two takes of the same source produced different dither, and an A/B
+  against `scripts/diags/quant_noise_ab.py` had nothing to hold fixed. Each
+  `AudioStreamer` now owns one generator, seeded from system entropy and
+  logged once at INFO (`audio: TPDF dither seed=N`) whenever dither is on, so
+  a capture can be re-encoded from the seed its run wrote down. The dither
+  itself is unchanged: same TPDF shape, same ±1 LSB, same exact-zero skip.
 
 - **`--version` wrapped its install path to the terminal width.** argparse's
   stock version action renders through `HelpFormatter`, so the path — the half
