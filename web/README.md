@@ -84,8 +84,10 @@ Which bumps move it:
 - `svelte`, and its `esrap`: svelte ships both the runtime that gets bundled
   and, through `esrap`, the printer that emits the compiled component code, so a
   bump of either can rewrite `assets/app.js`. 5.57.0 → 5.57.1 did.
-- `vite`, `lightningcss`, `tailwindcss`: these can move the resolved
-  `build.target` above, and with it `assets/app.css`.
+- `vite`, `lightningcss`, `tailwindcss`: these emit `assets/app.css`, so a bump
+  of any of them can rewrite it. None of them moves the browser floor any more
+  — `build.target` is stated above rather than resolved per Vite version — so a
+  floor change is an edit somebody made, never a bump's side effect.
 - Dev-only packages — `@types/node`, `svelte-check`, `vitest`, `typescript` —
   do not reach the bundle at all.
 
