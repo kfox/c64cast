@@ -3,8 +3,14 @@
 `.node-version` is the one place the Node version is written. Every reader of
 it resolves the same number — `actions/setup-node` through `node-version-file`,
 and mise through the idiomatic-version-file setting in `mise.toml` — so a
-second statement of it anywhere is a statement that can disagree, and the
-disagreement surfaces as a byte diff in the committed `c64cast/web/dist`.
+second statement of it anywhere is a statement that can disagree.
+
+A disagreement is silent, which is why the pin is guarded here rather than
+left to CI to notice. Node 24 and Node 26 build a byte-identical
+`c64cast/web/dist`, so `git diff --exit-code` on the committed bundle stays
+green across a Node major — and the three-way split this file closed, between
+CI's `web` job, CI's `docs` job on the runner image's default, and a local
+mise, ran that way unnoticed.
 
 `web/.npmrc` is where install lifecycle scripts are turned off, rather than a
 `--ignore-scripts` flag on one invocation: it is the only form that also covers
