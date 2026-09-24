@@ -223,6 +223,7 @@ class LogThrottleLockTest(unittest.TestCase):
         # only once the first is in there.
         inside = threading.Event()
         release = threading.Event()
+        calling = threading.Event()
         returned = threading.Event()
         reads: list[None] = []
 
@@ -237,6 +238,7 @@ class LogThrottleLockTest(unittest.TestCase):
 
         def report_once_the_gate_is_occupied() -> None:
             inside.wait(timeout=5.0)
+            calling.set()
             throttle.warn("second")
             returned.set()
 
@@ -246,11 +248,21 @@ class LogThrottleLockTest(unittest.TestCase):
             holder.start()
             waiter.start()
             try:
+                # Both preconditions are waited for before the window opens.
+                # `returned.wait(0.25)` alone answers "the second thread did
+                # not finish", which is also what a machine that has not yet
+                # scheduled either thread answers — measured against the
+                # lock-free body with the first thread 0.5 s late to the gate,
+                # the test passed.
+                parked = inside.wait(timeout=5.0)
+                reached_warn = calling.wait(timeout=5.0)
                 got_through = returned.wait(timeout=0.25)
             finally:
                 release.set()
                 holder.join(timeout=5.0)
                 waiter.join(timeout=5.0)
+        self.assertTrue(parked, "the first thread never reached the gate")
+        self.assertTrue(reached_warn, "the second thread never called `warn`")
         self.assertFalse(
             got_through,
             "a second thread completed `_admit` while another was inside it, so "
