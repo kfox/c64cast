@@ -30,6 +30,7 @@ import threading
 import unittest
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from unittest.mock import patch
 
 from _fakes import FakeAPI
 
@@ -295,6 +296,27 @@ class UvicornVerbosityTest(_RestoresLogging):
         cli_commands.configure_logging(0)
 
         self.assertEqual(set(self._enabled().values()), {False})
+
+    def test_a_group_whose_steps_are_written_descending_resolves_the_same(self):
+        """`configure_logging` folds a group by taking the last step the run's
+        verbosity meets, which reads the literal's order unless it sorts
+        first. Without the sort a descending group resolves to the *more*
+        verbose level, so `uvicorn.error` written this way would reach NOTSET
+        at `-vv` — the WebSocket frame dump the steps exist to hold back.
+
+        Pinned against a literal rather than against the shipped table, which
+        is ascending: nothing else here goes red if the sort is dropped, so
+        the sort would be deletable-green and it fails in the loud
+        direction."""
+        descending = ((("uvicorn.error",), ((3, logging.NOTSET), (2, logging.INFO))),)
+
+        got = []
+        with patch.object(cli_commands, "HELD_BACK_LOGGERS", descending):
+            for verbosity in (1, 2, 3):
+                cli_commands.configure_logging(verbosity)
+                got.append(logging.getLogger("uvicorn.error").level)
+
+        self.assertEqual(got, [logging.WARNING, logging.INFO, logging.NOTSET])
 
     @unittest.skipUnless(HAVE_UVICORN, "uvicorn not installed")
     def test_a_server_built_afterwards_does_not_re_pin_them(self):
