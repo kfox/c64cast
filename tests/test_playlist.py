@@ -95,9 +95,11 @@ class FakeScene:
 
 
 class FakeApi:
-    """A Playlist's backend: the heartbeat reads `.stats` and
-    `.format_write_latency()`, and the pause path calls the four machine
-    methods below, which record their own names on `.calls`.
+    """A Playlist's backend: the run loop reads `.stats` (for the heartbeat
+    and for the profiler's per-frame write counters) and calls
+    `.format_write_latency()` on the profiler's emit cadence, and the pause
+    path calls the four machine methods below, which record their own names
+    on `.calls`.
 
     Those four are here rather than assigned onto an instance by the test that
     needs them, because `_handle_pause` runs each inside `except Exception:
