@@ -332,7 +332,7 @@ for why, and for the PSID-only limitation that follows from it.
 Bug reports, feature ideas, and pull requests are all welcome. See
 [CONTRIBUTING.md](https://github.com/kfox/c64cast/blob/main/CONTRIBUTING.md)
 for the development setup (a git checkout and `uv sync --all-extras`), the
-`make check` gate, and the conventions this repo follows. Security reports go
+pre-PR gate, and the conventions this repo follows. Security reports go
 through [SECURITY.md](https://github.com/kfox/c64cast/blob/main/SECURITY.md)
 rather than a public issue.
 

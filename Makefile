@@ -98,7 +98,7 @@ help:
 	@echo "  reference-figures  redraw the reference guide's diagrams"
 	@echo "  reference-appendices  regenerate the reference guide's appendices A-I + index"
 	@echo "  check      lint + typecheck + test"
-	@echo "  preflight  lint + hygiene hooks + test + Linux/Darwin/Windows type-checks + docs/web drift (full CI mirror)"
+	@echo "  preflight  lint + hygiene hooks + test + Linux/Darwin/Windows type-checks + docs/web drift + docs search (all of CI but coverage and the OS/Python matrix)"
 	@echo "  clean      remove build artifacts"
 
 venv-check:
@@ -155,14 +155,21 @@ bench: $(GUARD)
 schema: $(GUARD)
 	$(PY) -m c64cast --print-schema > c64cast/data/c64cast.schema.json
 
-# c64cast/web/dist is committed build output, so a source change and its
-# rebuilt bundle belong in the same commit — CI reruns this and fails on a diff.
-web:
-	@command -v npm >/dev/null 2>&1 || { \
-	  echo "Building the web console needs Node, which is not a Python package."; \
+# Node is not a Python package, so the steps needing it say where to get it
+# rather than failing as "command not found": $(1) is the binary, $(2) names
+# what wanted it.
+define require-node
+	@command -v $(1) >/dev/null 2>&1 || { \
+	  echo "$(2) needs $(1), which is not a Python package."; \
 	  echo "Install it with:  brew install node"; \
 	  echo "(see https://nodejs.org for other platforms)"; \
 	  exit 1; }
+endef
+
+# c64cast/web/dist is committed build output, so a source change and its
+# rebuilt bundle belong in the same commit — CI reruns this and fails on a diff.
+web:
+	$(call require-node,npm,Building the web console)
 	cd web && npm ci --no-audit --no-fund && npm run build && npm test
 
 # Real captures saved over the same filenames are left alone; the script's
@@ -209,6 +216,8 @@ preflight: lint test
 	  $(PY) scripts/build_book.py --book-dir "$$(dirname "$$book")" --check || exit 1; \
 	done
 	$(MAKE) site-check
+	$(call require-node,node,The docs search test)
+	node --test docs/shared/search.test.mjs
 	$(MAKE) web
 	git diff --exit-code -- c64cast/web/dist
 

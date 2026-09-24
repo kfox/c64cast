@@ -354,8 +354,11 @@ def encode_png(frame: VicFrame, palette: np.ndarray | None = None) -> bytes:
 def multipart_frames(read: Callable[[], VicFrame | None], *, fps: float) -> Generator[bytes]:
     """`multipart/x-mixed-replace` parts, one per frame, forever.
 
-    Ending is the caller's: it closes the generator, which unwinds whatever
-    `with` block is holding the machine's stream up. Nothing here polls for a
+    Ending is the caller's, and not by closing this: `_until_gone` abandons the
+    generator at a yield rather than closing it, so a `finally` here would run
+    when the collector reached it and not when the client left — nothing here
+    may hold a resource whose release has to be prompt. The machine's stream
+    belongs to the response's background task. Nothing here polls for a
     departed client, because a plain generator has no way to ask.
 
     Only *new* frames are encoded. The receiver keeps the latest and nothing
