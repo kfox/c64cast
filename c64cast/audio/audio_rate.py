@@ -27,6 +27,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from c64cast._transport_log import quiet_transport
 from c64cast.hw.c64 import (
     CIA2,
     CLOCK_NTSC,
@@ -276,7 +277,12 @@ class RateServo:
         st = self._st
         if not st.host_dma_servo:
             return chunk_period
-        r_addr = st.read_consumer_ptr()
+        # The one read this class repeats — held out of `-vv` so a chunk-rate
+        # transport record doesn't bury the requests an operator came for. The
+        # arm verification and the pause stomp call `read_consumer_ptr` too,
+        # and those are one-shot, so they stay visible.
+        with quiet_transport():
+            r_addr = st.read_consumer_ptr()
         if r_addr is None:
             return chunk_period
         self.note_r_reading(r_addr)

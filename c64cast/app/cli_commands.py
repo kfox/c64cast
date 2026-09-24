@@ -112,7 +112,7 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     # transport noise. `cli.main` calls this again on the loaded config, so a
     # one-sided hold-back here would outlive the second call's -vv.
     transport = logging.NOTSET if verbosity >= 2 else logging.WARNING
-    for noisy in ("urllib3.connectionpool", "urllib3"):
+    for noisy in _transport_log.TRANSPORT_LOGGERS:
         logging.getLogger(noisy).setLevel(transport)
     _transport_log.install(verbosity == 2)
 

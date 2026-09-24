@@ -325,13 +325,26 @@ class PolledReadsAreQuietTest(unittest.TestCase):
         self.assertTrue(probe.quiet and all(probe.quiet), probe.quiet)
 
     def test_the_audio_servo_reads_quietly(self):
+        from c64cast.audio.audio import RING_BUFFER_ADDR, AudioStreamer
+
+        probe = _QuietProbe()
+        streamer = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC", dither=False)
+        streamer.api = cast(C64Backend, probe)
+        streamer.host_dma_servo = True
+        streamer.servo.next_pace_increment(RING_BUFFER_ADDR + 4096, 0.1)
+        self.assertTrue(probe.quiet and all(probe.quiet), probe.quiet)
+
+    def test_the_audio_arm_verification_read_is_not_quiet(self):
+        """`read_consumer_ptr`'s other callers are one-shot — the NMI arm
+        verification and the pause stomp — and a run that lost its audio is
+        exactly when those reads are the evidence `-vv` was asked for."""
         from c64cast.audio.audio import AudioStreamer
 
         probe = _QuietProbe()
         streamer = AudioStreamer(cast(C64Backend, FakeAPI()), 8000, "NTSC", dither=False)
         streamer.api = cast(C64Backend, probe)
         streamer.read_consumer_ptr()
-        self.assertTrue(probe.quiet and all(probe.quiet), probe.quiet)
+        self.assertEqual(probe.quiet, [False])
 
 
 if __name__ == "__main__":

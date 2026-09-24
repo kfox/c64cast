@@ -25,10 +25,13 @@ import logging
 import threading
 from collections.abc import Iterator
 
-#: Loggers whose records this module treats as transport chatter. Matched as a
-#: whole name or a dotted prefix, so `urllib3.connectionpool` is in and a
-#: hypothetical `urllib3x` is not.
-TRANSPORT_LOGGERS = ("urllib3",)
+#: The transport loggers, in one place: `configure_logging` moves their level
+#: for `-vv`, and :func:`install` attaches the filter to each. Every logger
+#: that raises records of its own has to be named here — a logger filter sees
+#: only the records raised on that exact logger, never a descendant's. Record
+#: *names* are matched as a whole name or a dotted prefix, so `urllib3x` is
+#: out.
+TRANSPORT_LOGGERS = ("urllib3", "urllib3.connectionpool")
 
 _local = threading.local()
 
@@ -68,11 +71,12 @@ class QuietTransportFilter(logging.Filter):
 def install(enabled: bool) -> None:
     """Attach the filter to the transport loggers, or remove it.
 
-    `configure_logging` runs more than once per process, so this replaces
-    rather than stacks: a re-call with `enabled` False has to undo the previous
-    call's attach, or a `[debug] verbose` of 3 read from a TOML would inherit
-    the hold-back the command line's `-vv` installed on the first pass."""
-    for name in TRANSPORT_LOGGERS + ("urllib3.connectionpool",):
+    `configure_logging` runs more than once per process — `cli.main` calls it
+    on the command line's verbosity and again on the loaded config's — so this
+    replaces rather than stacks: a second `-vv` pass would otherwise hang a
+    second filter off every transport logger, and a pass that drops to `-vvv`
+    or below has to take the first pass's filter back off."""
+    for name in TRANSPORT_LOGGERS:
         logger = logging.getLogger(name)
         for f in list(logger.filters):
             if isinstance(f, QuietTransportFilter):
