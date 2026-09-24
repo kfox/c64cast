@@ -133,9 +133,10 @@ class BoundSitsBelowThePerTestCapTest(unittest.TestCase):
         self.assertLess(BOUND_S * 2, _timeout_sandbox._CAP_S)
 
     def test_the_bound_clears_the_slowest_child_this_suite_runs(self):
-        # Measured at 0.73 s over the 155 children a full run starts. An order
-        # of magnitude is the floor: below it, a loaded CI runner fails a
-        # healthy child.
+        # Measured at 0.41 s over the 192 children a full run starts, the
+        # `uv lock --check` calls `_child_sandbox` now covers included. An
+        # order of magnitude is the floor: below it, a loaded CI runner fails
+        # a healthy child.
         self.assertGreater(BOUND_S, 10.0)
 
 
