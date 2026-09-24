@@ -58,25 +58,40 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 echo "==> Reading PR #$PR"
-# Read into a variable first: `read` from a process substitution that produced
-# nothing fails under set -e, which would take the script down before it could
-# say which step failed or why.
+# Into a variable, then split with `cut`, rather than `read` from a process
+# substitution. Two reasons, both of which cost the diagnostic below. `read`
+# fails under set -e when the substitution produced nothing, taking the script
+# down at that line before it can say what failed; and tab is IFS *whitespace*,
+# so `IFS=$'\t' read` collapses an empty @tsv field and shifts every later field
+# left - an empty headRefName lands the sha in head_ref and the base ref in
+# head_sha, which passes an emptiness check on head_sha alone. `cut -s` keeps
+# empty fields empty and prints nothing for a line holding no tab at all.
 fields=$(
   gh pr view "$PR" --json headRefName,headRefOid,baseRefName \
     --jq '[.headRefName, .headRefOid, .baseRefName] | @tsv'
 ) || die "Could not read PR #$PR from gh."
-IFS=$'\t' read -r head_ref head_sha base_ref <<< "$fields"
-[ -n "$head_sha" ] || die "Could not read PR #$PR from gh."
+head_ref=$(printf '%s\n' "$fields" | cut -s -f1)
+head_sha=$(printf '%s\n' "$fields" | cut -s -f2)
+base_ref=$(printf '%s\n' "$fields" | cut -s -f3)
+[ -n "$head_ref" ] && [ -n "$head_sha" ] && [ -n "$base_ref" ] ||
+  die "Could not read PR #$PR from gh."
 touched=$(gh pr view "$PR" --json files --jq '.files[].path' | sort) ||
   die "Could not read PR #$PR's file list from gh."
 
 # A bump that also edits sources or config is not this script's shape: the
-# rebuild would carry those edits into the replacement branch unremarked.
-expected=$(printf '%s\n%s\n' "$LOCK" "$MANIFEST" | sort)
-if [ "$touched" != "$expected" ]; then
+# rebuild would carry those edits into the replacement branch unremarked. A bump
+# that touches only the lockfile *is* this shape - that is what Dependabot opens
+# for a transitive dependency, which is the `esrap` case web/README.md names -
+# so the test is "nothing beyond these two", not "exactly these two".
+extra=$(printf '%s\n' "$touched" | grep -vxF -e "$LOCK" -e "$MANIFEST") || extra=
+if [ -n "$extra" ]; then
   die "PR #$PR touches more than the two dependency files, so it is not a plain bump:
-$(printf '%s\n' "$touched" | sed 's/^/  /')
+$(printf '%s\n' "$extra" | sed 's/^/  /')
 Rebuild it by hand."
+fi
+if ! printf '%s\n' "$touched" | grep -qxF "$LOCK"; then
+  die "PR #$PR does not touch $LOCK, so there is no resolved-version change here to
+rebuild for. Rebuild it by hand."
 fi
 
 readonly BRANCH=${2:-build/web-bundle-pr$PR}
@@ -157,9 +172,25 @@ moved=$(git diff --cached --name-only -- "$DIST")
 echo
 echo "Staged on $BRANCH. Measured facts for the commit message:"
 echo
+# A resolved URL is <registry>/<name>/-/<unscoped-name>-<version>.tgz, and the
+# name carries its scope one segment further left. Printing the tarball basename
+# alone drops that scope and gives two different packages the same label:
+# `@tailwindcss/vite` reads as `vite-4.3.3` beside the real `vite` at 8.3.0, and
+# `@types/node` as `node-26.6.1`. These lines go into a commit message.
 echo "  packages that moved:"
 git diff --cached -- "$LOCK" |
-  sed -n 's#^\([+-]\).*/-/\(.*\)\.tgz".*#    \1 \2#p' | sort -u
+  sed -n 's#^\([+-]\).*"resolved": "\([^"]*\)\.tgz".*#\1 \2#p' |
+  while read -r sign url; do
+    base=${url##*/-/}
+    [ "$base" != "$url" ] || continue   # not a <registry>/<name>/-/<file> URL
+    path=${url%/-/*}
+    unscoped=${path##*/}
+    name=$unscoped
+    scope=${path%/*}
+    scope=${scope##*/}
+    case $scope in @*) name="$scope/$unscoped" ;; esac
+    printf '    %s %s@%s\n' "$sign" "$name" "${base#"$unscoped"-}"
+  done | sort -u
 echo "  bundle files that moved:"
 printf '%s\n' "$moved" | sed 's/^/    /'
 echo "  bundle files that held still:"
