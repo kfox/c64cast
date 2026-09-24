@@ -92,10 +92,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   we send to the Commodore". The servers now install no logging of their own,
   so uvicorn's records ride the program's root logger like every other line:
   `-vv` releases the server log (bind, startup, shutdown), and `-vvv` releases
-  the access log, which is one line per asset a browser fetches and names every
-  URL requested — a firehose, and so behind the same third `v` as the timer
-  reads. A default run and `-v` are unchanged: neither shows anything from
-  uvicorn.
+  the access log — one line per asset a browser fetches, naming every URL
+  requested — together with the WebSocket frame log, one line per frame in
+  either direction for as long as a console stays connected. Both are
+  firehoses, and so both sit behind the same third `v` as the timer reads. A
+  default run and `-v` are unchanged: neither shows anything from uvicorn.
 
   Two consequences beyond the new lines. A uvicorn *error* — a bind failure,
   most likely — used to go straight to stderr through a handler of uvicorn's

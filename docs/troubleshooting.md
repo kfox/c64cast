@@ -18,7 +18,7 @@ an Ultimate's REST link above all — minus the reads c64cast makes on a timer,
 which `-vvv` puts back. A TeensyROM link is serial or raw TCP and
 contributes none. `-vv` also lets the web console's own server log through,
 and `-vvv` adds its access log — a line per request a phone makes, naming
-each URL.
+each URL — plus a line per WebSocket frame the console sends or receives.
 
 ## Audio symptoms
 

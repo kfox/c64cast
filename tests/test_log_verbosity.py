@@ -4,18 +4,19 @@ urllib3 logs a line per REST request to the Commodore and uvicorn's access log
 a line per asset a phone fetches, either of which buries the application's own
 DEBUG records — so `configure_logging` holds a list of library loggers at
 WARNING and the extra `v`s release it in two steps. `-vv` takes in urllib3 and
-uvicorn's server loggers (program-level detail); `-vvv` adds uvicorn's access
-log, which is firehose-shaped and names every URL requested. Nothing outside
-that list has its level moved either way.
+uvicorn's server loggers (program-level detail, which for `uvicorn.error`
+means INFO and no further); `-vvv` adds uvicorn's access log and its WebSocket
+frame debug, both firehose-shaped and both naming what was requested or
+pushed. Nothing outside that list has its level moved either way.
 
 `-vv` additionally attaches a filter that drops the records a background poll
 loop raises, since those are unconditional and say nothing about the link an
 operator is asking about; `-vvv` leaves the filter off. That half is
 `TransportFilterTest`.
 
-`AccessLogTest` is the end-to-end half: a real `ControlServer`, built *after*
-`configure_logging` — the ordering uvicorn's own `dictConfig` was breaking —
-answering a real request.
+`AccessLogTest` and `WebSocketFrameLogTest` are the end-to-end half: a real
+`ControlServer`, built *after* `configure_logging` — the ordering uvicorn's own
+`dictConfig` was breaking — answering a real request and pushing a real frame.
 """
 
 from __future__ import annotations
@@ -43,6 +44,13 @@ try:
 except ImportError:
     HAVE_UVICORN = False
 
+try:
+    import websockets  # noqa: F401
+
+    HAVE_WEBSOCKETS = True
+except ImportError:
+    HAVE_WEBSOCKETS = False
+
 # Spelled out rather than imported from the subject, so that a name dropped
 # from `cli_commands.HELD_BACK_LOGGERS` fails here instead of agreeing with
 # itself.
@@ -58,10 +66,10 @@ async def _ok_app(
     receive: Callable[[], Awaitable[dict[str, Any]]],
     send: Callable[[dict[str, Any]], Awaitable[None]],
 ) -> None:
-    """The smallest ASGI app that answers a request and speaks the lifespan
-    protocol. Raw ASGI rather than FastAPI so that the access log can be driven
-    with nothing between uvicorn and the assertion — and so these tests need
-    only uvicorn installed."""
+    """The smallest ASGI app that answers a request, pushes a WebSocket frame
+    and speaks the lifespan protocol. Raw ASGI rather than FastAPI so that the
+    access log and the frame log can be driven with nothing between uvicorn and
+    the assertion — and so these tests need only uvicorn installed."""
     if scope["type"] == "lifespan":
         while True:
             message = await receive()
@@ -70,6 +78,12 @@ async def _ok_app(
             elif message["type"] == "lifespan.shutdown":
                 await send({"type": "lifespan.shutdown.complete"})
                 return
+    if scope["type"] == "websocket":
+        await receive()
+        await send({"type": "websocket.accept"})
+        await send({"type": "websocket.send", "text": '{"pushed":"state"}'})
+        await receive()
+        return
     await send(
         {
             "type": "http.response.start",
@@ -203,15 +217,16 @@ class TransportVerbosityTest(_RestoresLogging):
         moved = {n for n in at_two.keys() | at_one.keys() if at_two.get(n) != at_one.get(n)}
         self.assertEqual(moved, set(_TRANSPORT) | set(_SERVER))
 
-    def test_only_the_access_log_moves_between_the_second_and_third_v(self):
-        """`-vvv`'s whole effect on the levels is uvicorn's access log — the
-        poll filter it also takes off is not a level. A second firehose parked
-        behind the third `v` shows up here."""
+    def test_only_the_two_firehoses_move_between_the_second_and_third_v(self):
+        """`-vvv`'s whole effect on the levels is uvicorn's access log plus the
+        last step of `uvicorn.error`, which goes from INFO to DEBUG — the poll
+        filter it also takes off is not a level. A third firehose parked behind
+        the third `v` shows up here."""
         at_three = _levels_after(3)
         at_two = _levels_after(2)
 
         moved = {n for n in at_three.keys() | at_two.keys() if at_three.get(n) != at_two.get(n)}
-        self.assertEqual(moved, set(_ACCESS))
+        self.assertEqual(moved, set(_ACCESS) | {"uvicorn.error"})
 
     def test_one_v_holds_back_the_named_list_and_nothing_else(self):
         """The two tests above compare verbosities, so a logger held back at
@@ -226,12 +241,16 @@ class TransportVerbosityTest(_RestoresLogging):
 
 
 class UvicornVerbosityTest(_RestoresLogging):
-    """The web console's server loggers arrive at `-vv`, its access log at
-    `-vvv`. Effective levels rather than own levels, because a release writes
-    NOTSET and leaves the root logger to decide."""
+    """The web console's server loggers arrive at `-vv`, its access log and
+    `uvicorn.error`'s DEBUG at `-vvv`. Effective levels rather than own
+    levels, because a release writes NOTSET and leaves the root logger to
+    decide."""
 
     def _enabled(self) -> dict[str, bool]:
         return {name: logging.getLogger(name).isEnabledFor(logging.INFO) for name in _UVICORN}
+
+    def _debug_enabled(self) -> dict[str, bool]:
+        return {name: logging.getLogger(name).isEnabledFor(logging.DEBUG) for name in _UVICORN}
 
     def test_a_default_run_holds_every_uvicorn_logger_back(self):
         cli_commands.configure_logging(0)
@@ -248,9 +267,19 @@ class UvicornVerbosityTest(_RestoresLogging):
             {"uvicorn": True, "uvicorn.error": True, "uvicorn.asgi": True, "uvicorn.access": False},
         )
 
+    def test_two_vs_stop_the_error_logger_at_info(self):
+        """`uvicorn.error` is where the `websockets` library's per-frame debug
+        lands, so `-vv` gets uvicorn's lifecycle lines without it."""
+        cli_commands.configure_logging(2)
+        self.assertFalse(self._debug_enabled()["uvicorn.error"])
+
     def test_three_vs_release_the_access_log_too(self):
         cli_commands.configure_logging(3)
         self.assertEqual(set(self._enabled().values()), {True})
+
+    def test_three_vs_release_every_uvicorn_logger_to_debug(self):
+        cli_commands.configure_logging(3)
+        self.assertEqual(set(self._debug_enabled().values()), {True})
 
     def test_the_second_call_of_a_run_decides(self):
         """`cli.main` configures twice — once on the CLI args, once on the
@@ -295,8 +324,32 @@ class UvicornVerbosityTest(_RestoresLogging):
         self.assertEqual((cfg.log_config, cfg.log_level, cfg.access_log), (None, None, True))
 
 
+class _DrivesAProbeServer(_RestoresLogging):
+    """A real `ControlServer` on a loopback port, for the end-to-end halves.
+
+    The server is constructed *after* `configure_logging`, which is the
+    ordering `uvicorn.Config.__init__`'s `dictConfig` was breaking."""
+
+    def _start_probe(self) -> tuple[Any, int]:
+        """A started probe server and the port it is listening on. The caller
+        has already chosen the verbosity, which is the subject."""
+        from c64cast.control.control_plane import ControlServer
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        server = ControlServer("127.0.0.1", port, _ok_app, label="probe")
+        # Belt for a failing assertion in the caller; `stop()` is idempotent,
+        # and the thread sandbox wants the serve thread joined however the
+        # test ends.
+        self.addCleanup(server.stop)
+
+        self.assertTrue(server.start(), "the probe server did not bind")
+        return server, port
+
+
 @unittest.skipUnless(HAVE_UVICORN, "uvicorn not installed")
-class AccessLogTest(_RestoresLogging):
+class AccessLogTest(_DrivesAProbeServer):
     """One real request through a real `ControlServer`, and what it logged.
 
     The capture is on the **root** logger rather than on `uvicorn.access`,
@@ -304,25 +357,11 @@ class AccessLogTest(_RestoresLogging):
     and `assertLogs` sets the level of whichever logger it is handed — so
     asserting there would overwrite the thing under test and pass at every
     verbosity. Root is also where the records really go, since the server is
-    built to install no handlers of its own.
-
-    The server is constructed *after* `configure_logging`, which is the
-    ordering `uvicorn.Config.__init__`'s `dictConfig` was breaking."""
+    built to install no handlers of its own."""
 
     def _drive_one_request(self, request_path: str) -> None:
-        """Start a probe server, answer one request from it, stop it again.
-        The caller has already chosen the verbosity, which is the subject."""
-        from c64cast.control.control_plane import ControlServer
-
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = int(probe.getsockname()[1])
-        server = ControlServer("127.0.0.1", port, _ok_app, label="probe")
-        # Belt for a failing assertion below; `stop()` is idempotent, and the
-        # thread sandbox wants the serve thread joined however the test ends.
-        self.addCleanup(server.stop)
-
-        self.assertTrue(server.start(), "the probe server did not bind")
+        """Start a probe server, answer one request from it, stop it again."""
+        server, port = self._start_probe()
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         try:
             conn.request("GET", request_path)
@@ -386,6 +425,44 @@ class AccessLogTest(_RestoresLogging):
 
         self.assertIn('"GET /login?token=REDACTED HTTP/1.1" 200', written)
         self.assertNotIn("s3cr3t-abcdef", written)
+
+
+@unittest.skipUnless(HAVE_UVICORN and HAVE_WEBSOCKETS, "uvicorn/websockets not installed")
+class WebSocketFrameLogTest(_DrivesAProbeServer):
+    """The other firehose on `uvicorn.error`, and why that logger stops at
+    INFO on the second `v`.
+
+    uvicorn hands `uvicorn.error` to the `websockets` library, which latches
+    `logger.isEnabledFor(DEBUG)` once per connection and then logs every
+    handshake header and every frame in either direction. The console's state
+    feed pushes frames for the length of the run, so releasing that logger all
+    the way to DEBUG at `-vv` would bury the lifecycle lines `-vv` is for —
+    which is exactly what one connection's worth of records measures here."""
+
+    def _uvicorn_debug_at(self, verbosity: int) -> list[logging.LogRecord]:
+        from websockets.sync.client import connect
+
+        cli_commands.configure_logging(verbosity)
+        # The whole exchange, teardown included, runs inside the capture:
+        # uvicorn logs its shutdown at INFO, and at `-vv` that is on a logger
+        # released far enough to reach the terminal handler otherwise.
+        with self.assertLogs(level=logging.DEBUG) as cm:
+            server, port = self._start_probe()
+            with connect(f"ws://127.0.0.1:{port}/perf/ws", open_timeout=5) as ws:
+                self.assertEqual(ws.recv(), '{"pushed":"state"}')
+                ws.send("bye")
+            server.stop()
+        return [r for r in cm.records if r.name == "uvicorn.error" and r.levelno == logging.DEBUG]
+
+    def test_two_vs_keep_the_frame_log_out(self):
+        self.assertEqual(self._uvicorn_debug_at(2), [])
+
+    def test_three_vs_let_the_frame_log_through(self):
+        """Which also proves the hold-back above is a level and not the
+        `websockets` library declining to log at all."""
+        messages = [r.getMessage() for r in self._uvicorn_debug_at(3)]
+
+        self.assertIn('> TEXT \'{"pushed":"state"}\' [18 bytes]', messages)
 
 
 class TransportFilterTest(_RestoresLogging):
