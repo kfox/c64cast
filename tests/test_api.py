@@ -1313,6 +1313,22 @@ class OpenVideoStreamTest(unittest.TestCase):
         self.api.profile = replace(self.api.profile, supports_video_stream=True)
         self.assertIsInstance(self.api.open_video_stream(), VicStreamReceiver)
 
+    def test_stopping_the_stream_asks_the_machine_whatever_this_host_believes(self):
+        """Unconditional on purpose: #419 was the case where this process had
+        already retired its receiver while the machine went on sending."""
+        self.api.profile = replace(self.api.profile, supports_video_stream=True)
+        with patch.object(self.api.socket_dma, "vicstream_off") as off:
+            self.api.stop_video_stream()
+        off.assert_called_once_with()
+
+    def test_stopping_the_stream_is_silent_on_a_machine_without_one(self):
+        """The one caller is a teardown step, so a refusal here would log an
+        error on every run of a backend that has no VIC of its own."""
+        self.api.profile = replace(self.api.profile, supports_video_stream=False)
+        with patch.object(self.api.socket_dma, "vicstream_off") as off:
+            self.api.stop_video_stream()
+        off.assert_not_called()
+
 
 class ParsePsidEdgeCaseTest(unittest.TestCase):
     """Malformed PSID headers parse_psid_for_player must reject with a

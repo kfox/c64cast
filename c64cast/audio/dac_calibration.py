@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
 from c64cast.hw.c64 import CIA2, SCREEN
 from c64cast.sid.asid_sidmap import (
@@ -584,15 +585,22 @@ def _measure_each_socket(
     return entries
 
 
-def _silence_and_reset(be: C64Backend, log_fn: Callable[[str], None]) -> None:
+def _silence_and_reset(be: C64Backend) -> None:
     """Best-effort teardown: stop the CIA #2 NMI source, silence the SID,
-    reset — a failure here must not mask the measurement's own outcome."""
-    try:
-        be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP)
-        be.silence_sid()
-        be.reset()
-    except Exception as e:  # noqa: BLE001 — best-effort cleanup
-        log_fn(f"[calib] cleanup warning: {e}")
+    reset — a failure here must not mask the measurement's own outcome.
+
+    Three steps rather than one guarded run, because a machine left making
+    noise is what the second and third are for: under a shared `try` a failed
+    CIA write skipped both, and the run ended with the DAC still driven."""
+    steps: tuple[tuple[str, Callable[[], object]], ...] = (
+        (
+            "CIA2 NMI stop",
+            lambda: be.write_regs(f"{CIA2.ICR:04X}", CIA2_ICR_DISABLE_ALL, CIA2_CRA_STOP),
+        ),
+        ("SID silence", be.silence_sid),
+        ("reset", be.reset),
+    )
+    run_teardown_steps(log, "dac calibration", steps)
 
 
 def _report_run(
@@ -669,7 +677,7 @@ def run_calibration(
             sidtable, metrics, raw = _measure_one(ctx, "SID")
             entries = {"default": CalibrationResult(sidtable, metrics, None, raw)}
     finally:
-        _silence_and_reset(be, log_fn)
+        _silence_and_reset(be)
 
     path = save_calibration(
         cfg,

@@ -1406,6 +1406,48 @@ class StatusScreenTest(unittest.TestCase):
         self.assertTrue(max(paints) < min(measures), api.ops)
 
 
+class SilenceAndResetTest(unittest.TestCase):
+    """`_silence_and_reset` runs in `run_calibration`'s `finally`, and its
+    three steps are independent promises: under one `try` a failed CIA #2
+    write skipped both the SID silencing and the reset, ending a run with the
+    DAC still driven."""
+
+    def _recorder(self, *, failing: str | None = None) -> SimpleNamespace:
+        ops: list[str] = []
+
+        def step(name: str):
+            def run(*args, **kwargs) -> None:
+                if name == failing:
+                    raise RuntimeError("DMA link down")
+                ops.append(name)
+
+            return run
+
+        return SimpleNamespace(
+            ops=ops,
+            write_regs=step("write_regs"),
+            silence_sid=step("silence_sid"),
+            reset=step("reset"),
+        )
+
+    def test_every_step_runs_in_order(self):
+        be = self._recorder()
+        dc._silence_and_reset(be)
+        self.assertEqual(be.ops, ["write_regs", "silence_sid", "reset"])
+
+    def test_a_failing_cia_write_does_not_starve_the_silence_and_reset(self):
+        be = self._recorder(failing="write_regs")
+        with self.assertLogs("c64cast.audio.dac_calibration", level="ERROR"):
+            dc._silence_and_reset(be)
+        self.assertEqual(be.ops, ["silence_sid", "reset"])
+
+    def test_a_failing_silence_does_not_starve_the_reset(self):
+        be = self._recorder(failing="silence_sid")
+        with self.assertLogs("c64cast.audio.dac_calibration", level="ERROR"):
+            dc._silence_and_reset(be)
+        self.assertEqual(be.ops, ["write_regs", "reset"])
+
+
 class RunCalibrateDacBackendLeakTest(unittest.TestCase):
     """cli_commands.run_calibrate_dac: hw_provision.resolve_system() talks to
     the machine to settle `system = "auto"`, so an unreachable/unresponsive
