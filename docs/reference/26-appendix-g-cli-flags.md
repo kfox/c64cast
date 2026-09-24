@@ -126,7 +126,7 @@ Every option `c64cast` accepts, in the groups `-h` prints them in. A flag given 
 | **`--list-devices`** | List available audio and video input devices and exit |
 | **`--doctor`** | Validate the whole config (all scenes/overlays at once), check optional extras + probe each U64, then exit. Add `--skip-probe` for a fast, offline, hardware-free config check. |
 | **`--calibrate-dac`** | Measure the connected SID's Mahoney 8-bit $D418 DAC transfer curve (requires a capture device — Cam Link — on the SID audio output) and save a per-device calibrated table, then exit. On a U64/U2+, every populated physical SID socket is measured independently. Playback with [audio].dac_curve = 'auto' (the default) then uses the applicable table automatically. Most valuable for physical 6581/8580 chips and SID replacements, which vary chip-to-chip. |
-| **`--log-file`**<br>`PATH` | Mirror log output to PATH (useful for headless runs) |
+| **`--log-file`**<br>`PATH` | Mirror log output to PATH, rotating at 4 MiB with 4 backups (useful for headless runs) |
 | **`--profile`, `--no-profile`** | Emit per-scene frame timing summaries (cpu_render / compose / push / wait, plus DMA writes/bytes per frame) (default: False) |
 | **`--profile-interval`**<br>`SECONDS` | Seconds between profiler summary lines (default: 10.0) |
 | **`--frame-numbers`** | Overlay playback timecode + source frame number on video frames (debug aid for locating flashing frames) (default: False) |

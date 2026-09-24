@@ -198,10 +198,14 @@ poll is still running; the console's access log is a line per asset a
 browser fetches, and its WebSocket log a line per frame pushed to a
 connected phone. Add a third `v` when one of *those* is the question — a C=
 hold that never resumes, a launcher scene that never goes idle, a console
-that will not load or will not update. Add `--log-file run.log` to keep it. For a long-running
-installation, `--heartbeat` prints a periodic line of throughput
-statistics, which is the quickest way to tell a slow link from a slow
-computer.
+that will not load or will not update. Add `--log-file run.log` to keep
+it. That file rotates: when it reaches 4 MiB it becomes `run.log.1` and a
+fresh `run.log` starts, four older copies are kept beside it, and the set
+stops at 20 MiB — which matters most when the web console is reachable
+from the network, since a stranger's malformed connection writes a line
+there too. For a long-running installation, `--heartbeat` prints a
+periodic line of throughput statistics, which is the quickest way to tell
+a slow link from a slow computer.
 
 ## Still Stuck
 

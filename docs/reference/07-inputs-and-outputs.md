@@ -1015,7 +1015,9 @@ python scripts/scene_config_to_description.py run.log
 ```
 
 renders the last entry as a paste-ready block, with `--all` or `--index N` for
-the rest.
+the rest. `--log-file` rotates at 4 MiB and keeps four older copies, so a run
+long enough to fill one leaves its earlier entries in `run.log.1` through
+`run.log.4`; the script reads whichever file you name.
 
 ## Several Commodores at Once
 

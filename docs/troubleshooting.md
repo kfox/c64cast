@@ -19,6 +19,10 @@ which `-vvv` puts back. A TeensyROM link is serial or raw TCP and
 contributes none. `-vv` also lets the web console's own server log through,
 and `-vvv` adds its access log — a line per request a phone makes, naming
 each URL — plus a line per WebSocket frame the console sends or receives.
+`--log-file PATH` mirrors all of it to a file, which rotates at 4 MiB and
+keeps four older copies beside it (`run.log.1` … `run.log.4`), so the set
+stops at 20 MiB however long the run is and whatever the network sends at
+the web console's port.
 
 ## Audio symptoms
 

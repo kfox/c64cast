@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import subprocess
@@ -66,6 +67,18 @@ HELD_BACK_LOGGERS: tuple[tuple[tuple[str, ...], tuple[tuple[int, int], ...]], ..
 )
 
 
+#: The ceiling on a ``--log-file`` destination: ``maxBytes`` per file plus this
+#: many rotated backups beside it, 20 MiB for the set. That file's growth is
+#: not the operator's to bound — one malformed TCP connection to the web
+#: console costs a 74-byte ``uvicorn.error`` line at every verbosity, and
+#: ``control/web_api.py``'s refusal warning is request-driven as well. The
+#: per-file size is set by what an unattended run writes on its own, so an
+#: ordinary run finishes without rotating at all; the measurements behind both
+#: numbers are in the architecture note.
+LOG_FILE_MAX_BYTES = 4 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT = 4
+
+
 class RedactingFormatter(logging.Formatter):
     """A formatter that strips secrets out of the line it produces.
 
@@ -83,9 +96,10 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
 
     Terminal: RichHandler (color + columns) when `rich` is installed; plain
     StreamHandler otherwise. File: when `log_file` is given, also append to
-    that path with a verbose plain-text format. Safe to call more than once
-    — clears any existing handlers first so a re-call (e.g. after config
-    load) doesn't double up.
+    that path with a verbose plain-text format, rotating at
+    `LOG_FILE_MAX_BYTES` and keeping `LOG_FILE_BACKUP_COUNT` rotated backups.
+    Safe to call more than once — clears any existing handlers first so a
+    re-call (e.g. after config load) doesn't double up.
 
     `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, 2 (`-vv`) additionally releases
     the urllib3 loggers this otherwise holds at WARNING and lets uvicorn's own
@@ -124,7 +138,12 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
 
     if log_file:
         try:
-            fh = logging.FileHandler(paths.expand_user(log_file), encoding="utf-8")
+            fh = logging.handlers.RotatingFileHandler(
+                paths.expand_user(log_file),
+                maxBytes=LOG_FILE_MAX_BYTES,
+                backupCount=LOG_FILE_BACKUP_COUNT,
+                encoding="utf-8",
+            )
         except OSError as e:
             log.warning("could not open log file %s: %s", log_file, e)
         else:

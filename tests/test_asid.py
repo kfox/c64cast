@@ -268,8 +268,9 @@ class TimingRecipeTest(unittest.TestCase):
 
     def test_a_repeated_over_cap_recipe_reports_once_not_once_per_message(self):
         # The decoder retires ~105,000 over-cap messages a second, so one
-        # WARNING each is 18 MB/s into an unrotated --log-file: the report
-        # has to be O(1) per stream.
+        # WARNING each is 18 MB/s — enough to cycle the whole rotated
+        # --log-file set in about a second: the report has to be O(1) per
+        # stream.
         payload = [asid.ASID_MANUFACTURER_ID, asid.CMD_TIMING]
         for i in range(asid.MAX_TIMING_RECIPE_PAIRS + 1):
             payload += [i & 0x3F, 0x00]

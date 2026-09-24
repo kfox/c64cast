@@ -142,7 +142,7 @@ profile = false
 | **`verbose`**<br>*Type:* `int`<br>*Default:* `0` | Log verbosity (0 = INFO; 1 = DEBUG; 2 adds HTTP transport and the web console's server log; 3 adds the background polls' own reads and the console's access log). CLI: -v / -vv / -vvv. |
 | **`heartbeat`**<br>*Type:* `float`<br>*Default:* `10.0` | Seconds between health heartbeat log lines (0 disables). |
 | **`skip_probe`**<br>*Type:* `bool`<br>*Default:* `False` | Skip the startup U64 reachability probe. |
-| **`log_file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Also mirror log output to this file (useful for headless runs). |
+| **`log_file`**<br>*Type:* `str \| None`<br>*Default:* `None` | Also mirror log output to this file (useful for headless runs). The file rotates at 4 MiB, keeping 4 rotated backups beside it (20 MiB for the set). |
 | **`profile`**<br>*Type:* `bool`<br>*Default:* `False` | Emit per-scene frame-timing summaries (render/compose/push/wait). |
 | **`profile_interval`**<br>*Type:* `float`<br>*Default:* `10.0` | Seconds between profiler summary lines. |
 | **`frame_numbers`**<br>*Type:* `bool`<br>*Default:* `False` | Overlay the playback timecode + source frame number on video/slideshow/webcam frames (debug aid for locating flashing/flickering frames). |

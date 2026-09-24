@@ -36,6 +36,8 @@ from . import (
     upgrade,
 )
 from .cli_commands import (
+    LOG_FILE_BACKUP_COUNT,
+    LOG_FILE_MAX_BYTES,
     SAVABLE_SETTINGS_FIELDS,
     configure_logging,
     list_devices,
@@ -525,7 +527,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-file",
         default=None,
         metavar="PATH",
-        help="Mirror log output to PATH (useful for headless runs)",
+        help=(
+            "Mirror log output to PATH, rotating at "
+            f"{LOG_FILE_MAX_BYTES // (1024 * 1024)} MiB with "
+            f"{LOG_FILE_BACKUP_COUNT} backups "
+            "(useful for headless runs)"
+        ),
     )
     debug.add_argument(
         "--profile",
