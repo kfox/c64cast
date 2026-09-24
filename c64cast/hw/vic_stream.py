@@ -37,6 +37,7 @@ import socket
 import struct
 import threading
 import time
+from collections.abc import Generator
 from dataclasses import dataclass
 
 import numpy as np
@@ -47,10 +48,22 @@ from .socket_dma import SocketDMAError
 
 log = logging.getLogger(__name__)
 
-#: A stop that cannot reach the machine has still stopped listening, and a
-#: watchdog re-arm that misses one round is renewed on the next — neither is
-#: worth failing a caller over.
-_link_trouble = contextlib.suppress(OSError, SocketDMAError)
+
+@contextlib.contextmanager
+def _link_trouble(what: str) -> Generator[None]:
+    """Swallow a link failure during `what`, but say so.
+
+    A stop that cannot reach the machine has still stopped listening, and a
+    watchdog re-arm that misses one round is renewed on the next — neither is
+    worth failing a caller over. Logged rather than suppressed outright,
+    because a bare `contextlib.suppress` here is what made #419 invisible: the
+    OFF command was reaching a closed DMA client, raising, and being dropped
+    with nothing anywhere to say the machine was never told."""
+    try:
+        yield
+    except (OSError, SocketDMAError) as e:
+        log.debug("vic stream: %s: %s", what, e)
+
 
 #: The firmware's default port for stream 0 (`11000 + streamID`). We bind an
 #: ephemeral port and name it in the command instead, so two hosts on one LAN
@@ -177,7 +190,7 @@ class VicStreamReceiver:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # One frame is ~52 KB across ~68 back-to-back packets; the default
         # receive buffer is under that on some systems, which tears frames.
-        with _link_trouble:
+        with _link_trouble("receive buffer resize"):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         sock.settimeout(0.2)
         try:
@@ -205,7 +218,7 @@ class VicStreamReceiver:
         closed port and the OS answers them with ICMP nobody asked for."""
         poll, self._poll = self._poll, None
         sock, self._sock = self._sock, None
-        with _link_trouble:
+        with _link_trouble("stream off"):
             self._dma.vicstream_off()
         if poll is not None:
             poll.stop()
@@ -300,7 +313,7 @@ class VicStreamReceiver:
         if now < self._rearm_at:
             return
         self._rearm_at = now + REARM_EVERY_S
-        with _link_trouble:
+        with _link_trouble("watchdog re-arm"):
             self._dma.vicstream_on(self._destination, stop_after_s=WATCHDOG_S)
 
     def _reachable_address(self) -> str:
