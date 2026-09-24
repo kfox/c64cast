@@ -17,6 +17,8 @@ export default defineConfig({
     outDir: "../c64cast/web/dist",
     emptyOutDir: true,
     sourcemap: false,
+    // The console's browser floor — see web/README.md.
+    target: ["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"],
     rollupOptions: {
       output: {
         entryFileNames: "assets/app.js",

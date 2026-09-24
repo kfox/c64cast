@@ -93,7 +93,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   targets. One consequence is visible in the stylesheet: the two responsive
   breakpoints ship as media-query range syntax, `(width >= 40rem)` in place of
   `(min-width: 40rem)`, which Safari and iOS below 16.4 match at no width,
-  leaving them on the narrow layout.
+  leaving them on the narrow layout. That floor is now written out in
+  `web/vite.config.ts` rather than inherited from Vite, so a later Vite release
+  does not move it on its own.
 
 - **`-vv` now does something.** It has always been accepted and has always
   meant exactly what `-v` means: DEBUG is reached at the first `-v`, and no

@@ -27,6 +27,20 @@ its install script to put a binary in place installs clean under the switch
 and fails later, in `vite build`, naming neither the script nor the setting —
 so a new one has to be read before it is skipped.
 
+`build.target` in `web/vite.config.ts` is the console's browser floor, and it
+is guarded for the same reason the Node pin is: left unstated it is Vite's
+`baseline-widely-available` default, which resolves to a later set of browsers
+with each Vite version. The bundle diff CI runs cannot tell that move from an
+ordinary re-minification, and deleting the stated value does not move the
+bundle at all for as long as the default still matches it — so the rebuild is
+green either way, and this is the only reader that fails.
+
+The target is read out of the config as text, there being no TypeScript parser
+here to read it with. Two shapes make that reading narrower than a search for
+`target:`: the dev-server proxy entries each have a `target` of their own, so
+the read is scoped to the `build` block, and a commented-out line is still a
+line, so comments come out first.
+
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
 a mapping there whether it leads with `uses:` or with `name:`, and a value is
@@ -51,6 +65,7 @@ _PACKAGE_JSON = os.path.join(_REPO, "web", "package.json")
 _LOCKFILE = os.path.join(_REPO, "web", "package-lock.json")
 _NODE_VERSION = os.path.join(_REPO, ".node-version")
 _MISE = os.path.join(_REPO, "mise.toml")
+_VITE_CONFIG = os.path.join(_REPO, "web", "vite.config.ts")
 
 
 def _load_lint_workflows():
@@ -111,6 +126,83 @@ _TRUE = frozenset({"true", "1", "yes", "on"})
 # fsevents ships its prebuilt binding in the tarball, so the `node-gyp rebuild`
 # its `install` script runs is a fallback that never has to fire.
 _SKIPPABLE_INSTALL_SCRIPTS = frozenset({"node_modules/fsevents"})
+
+_BUILD_BLOCK = re.compile(r"\bbuild\s*:\s*\{")
+# Either shape Vite accepts: a list of targets, or one target on its own.
+_TARGET = re.compile(r"""\btarget\s*:\s*(?P<value>\[[^]]*]|["'`][^"'`]*["'`])""")
+_QUOTED = re.compile(r"""["'`]([^"'`]*)["'`]""")
+# A browser and the version it is supported from, as esbuild and Lightning CSS
+# name it: `chrome111`, `safari16.4`, `ios16.4`.
+_BROWSER_VERSION = re.compile(r"\A[a-z]+\d+(?:\.\d+)*\Z")
+
+
+def _without_comments(source: str) -> str:
+    """`source` with its `//` and `/* */` comments dropped.
+
+    A scan rather than a regex because `"http://127.0.0.1:8123"` in the
+    dev-server proxy holds what a regex reads as the start of a comment, and
+    dropping the rest of that line drops a closing brace with it.
+    """
+    kept: list[str] = []
+    index = 0
+    quote = ""
+    while index < len(source):
+        char = source[index]
+        pair = source[index : index + 2]
+        if quote:
+            if char == "\\":
+                kept.append(source[index : index + 2])
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'`":
+            quote = char
+        elif pair == "//":
+            while index < len(source) and source[index] != "\n":
+                index += 1
+            continue
+        elif pair == "/*":
+            end = source.find("*/", index + 2)
+            index = len(source) if end < 0 else end + 2
+            continue
+        kept.append(char)
+        index += 1
+    return "".join(kept)
+
+
+def _build_options(source: str) -> str:
+    """The body of a Vite config's `build: { … }`, comments already dropped.
+
+    Scoped to that block because every `server.proxy` entry states a `target`
+    of its own: a reader that took the first one in the file would read a proxy
+    URL as the browser floor and pass for a config that states no floor.
+    """
+    source = _without_comments(source)
+    opened = _BUILD_BLOCK.search(source)
+    if opened is None:
+        return ""
+    depth = 0
+    start = opened.end() - 1
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index]
+    return ""
+
+
+def _declared_target(source: str) -> list[str] | None:
+    """The `build.target` a Vite config states, or None if it states none."""
+    stated = _TARGET.search(_build_options(source))
+    return None if stated is None else _QUOTED.findall(stated.group("value"))
+
+
+def _vite_config() -> str:
+    with open(_VITE_CONFIG, encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _npmrc() -> dict[str, str]:
@@ -276,6 +368,81 @@ class NodeVersionPinTest(unittest.TestCase):
             f"without this mise ignores {_PIN_FILE}, so a local `make web` builds "
             "the committed bundle on a different Node than CI rebuilds it on",
         )
+
+
+class BrowserFloorTest(unittest.TestCase):
+    def test_the_floor_is_stated(self):
+        self.assertTrue(
+            _declared_target(_vite_config()),
+            "web/vite.config.ts states no build.target, so the console's browser "
+            "floor is Vite's default again and the next Vite bump moves it — as a "
+            "rebuilt bundle indistinguishable from a re-minified one",
+        )
+
+    def test_every_browser_in_the_floor_carries_a_version(self):
+        stated = _declared_target(_vite_config())
+        assert stated, "no build.target stated; a loop over nothing is not a pass"
+        for entry in stated:
+            with self.subTest(target=entry):
+                self.assertRegex(
+                    entry,
+                    _BROWSER_VERSION,
+                    "a target such as `baseline-widely-available` is Vite's moving "
+                    "default written out rather than a floor: it names a different "
+                    "set of browsers per Vite version",
+                )
+
+
+_VITE_SHAPES = """\
+export default defineConfig({
+  build: {
+    outDir: "../c64cast/web/dist",
+    // target: ["chrome1"],
+    target: ["chrome111", "safari16.4"],
+    rollupOptions: { output: { assetFileNames: "assets/app.[ext]" } },
+  },
+  server: {
+    proxy: {
+      "/api": { target: "http://127.0.0.1:8123", ws: true },
+    },
+  },
+});
+"""
+
+_VITE_NO_FLOOR = """\
+export default defineConfig({
+  build: { outDir: "../c64cast/web/dist" },
+  server: { proxy: { "/api": { target: "http://127.0.0.1:8123" } } },
+});
+"""
+
+_VITE_ONE_TARGET = 'export default defineConfig({ build: { target: "chrome111" } });\n'
+
+_VITE_PROXY_FIRST = """\
+export default defineConfig({
+  server: { proxy: { "/api": { target: "http://127.0.0.1:8123" } } },
+  build: { target: ["chrome111"] },
+});
+"""
+
+
+class ViteConfigReadingTest(unittest.TestCase):
+    """The config reader against the shapes a Vite config can be written in."""
+
+    def test_a_commented_out_target_is_not_read_as_the_stated_one(self):
+        self.assertEqual(["chrome111", "safari16.4"], _declared_target(_VITE_SHAPES))
+
+    def test_one_target_on_its_own_reads_as_one_entry(self):
+        self.assertEqual(["chrome111"], _declared_target(_VITE_ONE_TARGET))
+
+    def test_a_config_stating_no_floor_reads_as_stating_none(self):
+        self.assertIsNone(_declared_target(_VITE_NO_FLOOR))
+
+    def test_a_nested_object_does_not_end_the_build_block(self):
+        self.assertIn("rollupOptions", _build_options(_VITE_SHAPES))
+
+    def test_a_proxy_url_ahead_of_the_build_block_is_not_a_comment(self):
+        self.assertEqual(["chrome111"], _declared_target(_VITE_PROXY_FIRST))
 
 
 _SHAPES = """\
