@@ -40,9 +40,10 @@ here to read it with. Three shapes make that reading narrower than a search for
 `target:`. The dev-server proxy entries each have a `target` of their own and
 an option nested under `build` may have one too, so the read is scoped to the
 `build` block's own keys. A commented-out line is still a line, so comments
-come out first. And a brace or a `//` inside a string literal is neither, so
-strings are read in the same scan as the comments — either one taken first
-swallows the other's delimiter.
+come out first. And a brace, a `//` or a `target:` inside a string literal is
+none of those, so strings are read in the same scan as the comments — either
+one taken first swallows the other's delimiter — and every key is looked for
+in the view with the literals blanked.
 
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
@@ -131,6 +132,9 @@ _TRUE = frozenset({"true", "1", "yes", "on"})
 _SKIPPABLE_INSTALL_SCRIPTS = frozenset({"node_modules/fsevents"})
 
 _BUILD_BLOCK = re.compile(r"\bbuild\s*:\s*\{")
+# The key alone, matched against the string-blanked view so a `target:` that
+# lives inside a string literal is not one of build's keys.
+_TARGET_KEY = re.compile(r"\btarget\s*:")
 # Either shape Vite accepts: a list of targets, or one target on its own.
 _TARGET = re.compile(r"""\btarget\s*:\s*(?P<value>\[[^]]*]|["'`][^"'`]*["'`])""")
 _QUOTED = re.compile(r"""["'`]([^"'`]*)["'`]""")
@@ -189,8 +193,15 @@ def _text_and_code(source: str) -> tuple[str, str]:
     return "".join(text), "".join(code)
 
 
-def _build_options(source: str) -> str:
+def _build_options(source: str) -> tuple[str, str]:
     """A Vite config's `build: { … }` options, its nested objects dropped.
+
+    Both views `_text_and_code` yields, cut to the same span and so still
+    equal in length: the options as written, and the same text with its string
+    literals blanked. A key is looked for in the second and read out of the
+    first, because a `target:` written inside a string is not a key of
+    `build` — and a config whose only `target:` sits in a `banner` string
+    would otherwise read as stating a floor with `build.target` deleted.
 
     Scoped to that block because every `server.proxy` entry states a `target`
     of its own: a reader that took the first one in the file would read a proxy
@@ -206,9 +217,10 @@ def _build_options(source: str) -> str:
     text, code = _text_and_code(source)
     opened = _BUILD_BLOCK.search(code)
     if opened is None:
-        return ""
+        return "", ""
     depth = 0
-    own: list[str] = []
+    own_text: list[str] = []
+    own_code: list[str] = []
     for index in range(opened.end() - 1, len(code)):
         char = code[index]
         if char == "{":
@@ -216,15 +228,20 @@ def _build_options(source: str) -> str:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return "".join(own)
+                return "".join(own_text), "".join(own_code)
         elif depth == 1:
-            own.append(text[index])
-    return ""
+            own_text.append(text[index])
+            own_code.append(char)
+    return "", ""
 
 
 def _declared_target(source: str) -> list[str] | None:
     """The `build.target` a Vite config states, or None if it states none."""
-    stated = _TARGET.search(_build_options(source))
+    text, code = _build_options(source)
+    key = _TARGET_KEY.search(code)
+    if key is None:
+        return None
+    stated = _TARGET.match(text, key.start())
     return None if stated is None else _QUOTED.findall(stated.group("value"))
 
 
@@ -475,6 +492,16 @@ export default defineConfig({
 });
 """
 
+# `build.target` deleted, with a `target:` left inside a string among build's
+# own keys — text a rollup `banner` or `footer` can carry verbatim.
+_VITE_STRING_TARGET = """\
+export default defineConfig({
+  build: {
+    footer: "target: 'chrome111'",
+  },
+});
+"""
+
 
 class ViteConfigReadingTest(unittest.TestCase):
     """The config reader against the shapes a Vite config can be written in."""
@@ -489,10 +516,13 @@ class ViteConfigReadingTest(unittest.TestCase):
         self.assertIsNone(_declared_target(_VITE_NO_FLOOR))
 
     def test_a_nested_object_does_not_end_the_build_block(self):
-        self.assertIn("rollupOptions", _build_options(_VITE_SHAPES))
+        self.assertIn("rollupOptions", _build_options(_VITE_SHAPES)[0])
 
     def test_a_target_nested_under_build_is_not_read_as_the_floor(self):
         self.assertIsNone(_declared_target(_VITE_NESTED_TARGET))
+
+    def test_a_target_inside_a_string_is_not_read_as_the_floor(self):
+        self.assertIsNone(_declared_target(_VITE_STRING_TARGET))
 
     def test_a_brace_or_comment_start_inside_a_string_is_neither(self):
         self.assertEqual(["chrome111"], _declared_target(_VITE_AWKWARD_LITERALS))
