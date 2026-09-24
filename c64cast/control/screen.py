@@ -256,14 +256,17 @@ class ScreenFeed:
         never ticks for them and the machine keeps sending after the last tab
         closes. Costing nothing at idle is preserved by *lifetime* instead —
         the sweeper exists only while a receiver does, and ends itself when the
-        last one goes."""
+        last one goes. A closed feed never gets one: :meth:`close` is the last
+        word on this thread, and it has already run by the time `_closed` is
+        visible here."""
         with self._lock:
-            if self._sweeper is not None:
+            if self._closed or self._sweeper is not None:
                 return
-            self._sweeper = PollThread(
+            sweeper = PollThread(
                 self._sweep_forever, name="screen-sweeper", manual=True, join_timeout=2.0
             )
-        self._sweeper.start()
+            sweeper.start()
+            self._sweeper = sweeper
 
     def _sweep_forever(self, stop: threading.Event) -> None:
         while not stop.wait(_SWEEP_EVERY_S):

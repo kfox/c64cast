@@ -450,6 +450,35 @@ class ReapTest(SupervisorTestCase):
         self.assertEqual(mgr.state, SessionState.RUNNING)
 
 
+class ReaperShutdownTest(SupervisorTestCase):
+    """`close()` has to be the last word on the reap poller.
+
+    It stops the poller and only then joins the start workers, so a build that
+    was still in flight when it gave up waiting comes up *behind* it — and the
+    start that follows clears the poller's stop event and spawns a fresh
+    thread with nobody left holding it. `session-reap` then outlives the host's
+    shutdown, ticking against a supervisor that is closed."""
+
+    def test_a_build_that_lands_after_close_gave_up_does_not_start_the_reaper(self):
+        build = _Build()
+        build.gate = threading.Event()
+        mgr = self.manager(build=build, teardown=_Teardown())
+        # Before the manager's own close cleanup, which would otherwise spend
+        # its whole timeout on a build still parked at the gate.
+        self.addCleanup(build.gate.set)
+        mgr.start(_request("a"))
+        self.assertReaches(mgr, SessionState.STARTING)
+        with self.assertLogs("c64cast", level="INFO") as cm:
+            # `starting` is not startable and the gated build is the only way
+            # out of it, so this close cannot reach idle: it stops the poller
+            # with the start still in flight, which is the whole window.
+            mgr.close(timeout=0.05)
+        self.assertTrue(any("still starting after close()" in line for line in cm.output))
+        build.gate.set()
+        self.assertReaches(mgr, SessionState.IDLE)
+        self.assertFalse(mgr._reaper.is_running())
+
+
 class SwitchTest(SupervisorTestCase):
     def test_switch_stops_the_old_session_before_starting_the_new_one(self):
         req = _request("a")
