@@ -4,12 +4,15 @@
 children a *test module* starts, and the AST sweep that makes it compulsory
 reads `tests/` only. Production code under test starts children of its own,
 under bounds chosen for a user at a terminal rather than for a test run — and
-two of those in this tree are exactly `_timeout_sandbox._CAP_S`:
+three of those in this tree are exactly `_timeout_sandbox._CAP_S`:
 
 * `doctor._probe_uv_lock` runs a real `uv lock --check` under `timeout=60`,
   in 31 of `test_doctor`'s tests (#496);
 * `scripts/lint_comments.py` runs `git diff --cached` and `git show` under
-  `_DIFF_TIMEOUT_S = 60`, in 17 of `test_prose_gate`'s.
+  `_DIFF_TIMEOUT_S = 60`, in 17 of `test_prose_gate`'s;
+* `scripts/check_venv_target.py` runs the project environment's interpreter
+  under `_RESOLVE_TIMEOUT_S = 60`, in `test_venv_target`'s
+  interpreter-isolation tests.
 
 A bound equal to the cap can never fire first: the per-test deadline starts
 when the test starts and the child starts after it, so the cap always expires
@@ -23,13 +26,15 @@ for 60s`, which names the test and not the command — the blindness
 numbers do not move — `--doctor` run by hand still gives `uv` its 60 seconds.
 
 `ChildProcessHung` derives from `BaseException` for the reason `TestTimedOut`
-does. Both call sites above catch their own expiry —
-`except (OSError, subprocess.TimeoutExpired)` in one, `except (OSError,
-subprocess.SubprocessError)` in the other — so re-raising the `TimeoutExpired`
-would be swallowed into a "could not check" diagnostic in `doctor` and into an
-empty diff the prose gate then passes in `lint_comments`, and the test would go
+does. Every call site above catches its own expiry —
+`except (OSError, subprocess.TimeoutExpired)` in `doctor`, `except (OSError,
+subprocess.SubprocessError)` in the other two — so re-raising the
+`TimeoutExpired` would be swallowed into a "could not check" diagnostic in
+`doctor`, into an empty diff the prose gate then passes (or an unknown comment
+map it judges the line without) in `lint_comments`, and into a waved-through
+or unrunnable environment in `check_venv_target`, and the test would go
 green over a command that never returned. A distinct type is what clears those
-two; `BaseException` also clears the `except Exception` that `doctor` and
+three; `BaseException` also clears the `except Exception` that `doctor` and
 `upgrade` degrade through elsewhere, and whichever one the next probe writes.
 unittest's `testPartExecutor` catches with a bare `except`, so a BaseException
 that is not `KeyboardInterrupt` is still recorded against the test that earned

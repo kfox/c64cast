@@ -205,19 +205,22 @@ terminal, where a child running for minutes is the measurement.
 
 **A child that the code *under test* starts is bounded too, by a different
 guard.** That sweep reads `tests/` only, so a timeout a module chose for a user
-at a terminal ends up governing the suite as well — and two of them are the
+at a terminal ends up governing the suite as well — and three of them are the
 per-test cap exactly: `doctor._probe_uv_lock` gives `uv lock --check` 60
-seconds (31 real children per run) and `scripts/lint_comments.py` gives `git
-diff --cached` the same. A wedged command there cost 60 seconds and came back
-either as the cap's "no progress" or as the probe's own swallowed "could not
-check", never as the command.
+seconds (31 real children per run), `scripts/lint_comments.py` gives `git
+diff --cached` the same, and `scripts/check_venv_target.py` gives the project
+environment's own interpreter the same. A wedged command there cost 60 seconds
+and came back either as the cap's "no progress" or as the probe's own swallowed
+"could not check", never as the command.
 [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from the same startup
 hook, shortens any wait past the 20-second bound for the length of the test
 process and raises `ChildProcessHung` naming the command and what it had
 written. It derives from `BaseException` so no `except Exception` can swallow
-it: both of those sites swallow the `TimeoutExpired` it replaces — `doctor`
-into a `warn` row, the prose gate into an empty diff it then passes — and
-`doctor` and `upgrade` degrade through `except Exception` elsewhere. The
+it: every one of those sites swallows the `TimeoutExpired` it replaces —
+`doctor` into a `warn` row, the prose gate into an empty diff it then passes,
+`check_venv_target` into an environment it either waves through or reports as
+unrunnable — and `doctor` and `upgrade` degrade through `except Exception`
+elsewhere. The
 production numbers do not move, and a caller that asked for *no more than* the
 bound keeps its own `TimeoutExpired`.
 

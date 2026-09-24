@@ -228,12 +228,14 @@ for minutes is the measurement rather than a hang.
 
 **A child the code under test starts is bounded too, and the sweep cannot see
 it.** The sweep reads `tests/`; production code starts children of its own,
-under bounds chosen for a user at a terminal. Two of those are
+under bounds chosen for a user at a terminal. Three of those are
 `_timeout_sandbox`'s cap exactly — `doctor._probe_uv_lock` runs a real `uv
-lock --check` under `timeout=60` in 31 of `test_doctor`'s tests, and
+lock --check` under `timeout=60` in 31 of `test_doctor`'s tests,
 `scripts/lint_comments.py` runs `git diff --cached` and `git show` under a
-`_DIFF_TIMEOUT_S` of 60 in 17 of `test_prose_gate`'s. A bound equal to the cap
-cannot fire first in any useful way: measured with a `uv` that never returns,
+`_DIFF_TIMEOUT_S` of 60 in 17 of `test_prose_gate`'s, and
+`scripts/check_venv_target.py` runs the project environment's interpreter under
+a `_RESOLVE_TIMEOUT_S` of 60 in `test_venv_target`'s interpreter-isolation
+tests. A bound equal to the cap cannot fire first in any useful way: measured with a `uv` that never returns,
 one shape reported `TestTimedOut: no progress for 60s` and the other spent the
 same 60 seconds and then caught its own `TimeoutExpired` into a `warn`
 diagnostic, so the test failed on an unrelated assertion — or passed.
@@ -241,9 +243,11 @@ diagnostic, so the test failed on an unrelated assertion — or passed.
 startup hook, shortens any wait past `BOUND_S` inside the test process, kills
 the child and raises `ChildProcessHung` naming the command, the bound the
 caller had asked for and the tail of whatever the child wrote. It derives from
-`BaseException` for the reason `TestTimedOut` does: both sites above swallow
+`BaseException` for the reason `TestTimedOut` does: every site above swallows
 the `TimeoutExpired` it replaces — `doctor` into a "could not check" `warn`
-row, `lint_comments` into an empty diff the gate then passes — and `doctor` and
+row, `lint_comments` into an empty diff the gate then passes or an unknown
+comment map it judges the line without, `check_venv_target` into an
+environment it either waves through or reports as unrunnable — and `doctor` and
 `upgrade` degrade through `except Exception` elsewhere, so nothing short of a
 `BaseException` clears every such handler. The production numbers stay where
 they are — `--doctor` run by hand still gives `uv` its 60 seconds — and a
