@@ -91,14 +91,23 @@ scripts/c64cast.sh --doctor --skip-probe
 ## The pre-PR gate
 
 ```bash
-make check      # lint + typecheck + test — run this before opening a PR
+make check      # lint + typecheck + test — the quick one, for every commit
+make preflight  # everything CI runs but coverage and the version matrix
 ```
+
+`preflight` is the one to have green before you open a PR. `check` runs none
+of the hygiene hooks CI's `pre-commit` job does, so a change to YAML, TOML or
+Markdown gets a green `check` that has looked at none of it. It needs Node,
+for the web bundle and the docs search test; without Node, run `check` and
+leave the rest to CI.
 
 Every target routes through `uv run`, so they hit the synced project env
 whether or not the current shell has `.venv` activated:
 
 | Target | What it does |
 |---|---|
+| `make check` | `lint` + `typecheck` + `test` |
+| `make preflight` | `lint` + `test`, the hygiene hooks, `pyright`/`mypy` once per target platform, the book and site renders, the docs search test, and the web bundle drift check |
 | `make sync` | `uv sync --all-extras` (refresh the project env) |
 | `make lint` | `ruff check` + `ruff format --check` |
 | `make fmt` | `ruff format` |
@@ -115,9 +124,15 @@ whether or not the current shell has `.venv` activated:
 
 CI runs on every pull request and on pushes to `main`
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the same tests across
-Python 3.11–3.14 and three operating systems, the same lint and formatting once
-in the `pre-commit` job, and the same type checks once per target platform on
-Python 3.14 in the `types` job.
+Python 3.11–3.14 and three operating systems, the same type checks once per
+target platform on Python 3.14 in the `types` job, the same book and site
+renders and search test in `docs`, the same bundle rebuild in `web`, and the
+whole of [`.pre-commit-config.yaml`](.pre-commit-config.yaml) in the
+`pre-commit` job — not only lint and formatting but the dependabot, YAML and
+TOML schema checks, the whitespace and line-ending hooks and the comment lint,
+everything except `pyright` and `unittest`, which other jobs own. `make
+preflight` is that set run once on one platform; what it leaves to CI is the
+coverage job and the twelve `os` x `python-version` legs.
 Type-checking is deliberately two-tiered: `pyright` in basic mode across the
 whole tree (including tests), matching Pylance's VS Code defaults so editor
 diagnostics align with CI, plus `mypy --strict` on the state-bearing modules
@@ -242,7 +257,8 @@ and reset when you are done.
   own commit.
 - **Work on a branch and open a PR** — `main` is protected by CI and every
   change lands through review.
-- `make check` must be green before you open the PR.
+- `make preflight` must be green before you open the PR — see
+  [The pre-PR gate](#the-pre-pr-gate).
 - Do not commit user media, personal configs, or machine-specific details (IP
   addresses, capture-device names, local paths). `assets/` tracks only its
   per-directory READMEs by design; everything else there is gitignored.
