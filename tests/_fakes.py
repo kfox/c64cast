@@ -19,13 +19,44 @@ import os
 import tempfile
 import time
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from unittest import mock
 
 from c64cast._wire_log import LogThrottle
 from c64cast.hw import vdc
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
+
+
+def _save_logging_state() -> Callable[[], None]:
+    """Snapshot what `configure_logging` writes, and return the function that
+    puts it back: the root logger's handlers and level, and the level and
+    filter list of every logger in `cli_commands.HELD_BACK_LOGGERS`. A root
+    handler added after the snapshot is closed on restore, so a `--log-file`
+    the code under test opened does not stay open for the worker's lifetime.
+    """
+    from c64cast.app import cli_commands
+
+    held_back = [name for names, _ in cli_commands.HELD_BACK_LOGGERS for name in names]
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    saved = {
+        name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
+        for name in held_back
+    }
+
+    def restore() -> None:
+        for handler in root.handlers[:]:
+            if handler not in handlers:
+                handler.close()
+        root.handlers[:] = handlers
+        root.setLevel(level)
+        for name, (lvl, filters) in saved.items():
+            logger = logging.getLogger(name)
+            logger.setLevel(lvl)
+            logger.filters[:] = filters
+
+    return restore
 
 
 class RestoresLogging(unittest.TestCase):
@@ -42,34 +73,14 @@ class RestoresLogging(unittest.TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        from c64cast.app import cli_commands
-
-        held_back = [name for names, _ in cli_commands.HELD_BACK_LOGGERS for name in names]
-        root = logging.getLogger()
-        handlers, level = root.handlers[:], root.level
-        saved = {
-            name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
-            for name in held_back
-        }
-
-        def restore() -> None:
-            for handler in root.handlers[:]:
-                if handler not in handlers:
-                    handler.close()
-            root.handlers[:] = handlers
-            root.setLevel(level)
-            for name, (lvl, filters) in saved.items():
-                logger = logging.getLogger(name)
-                logger.setLevel(lvl)
-                logger.filters[:] = filters
-
-        self.addCleanup(restore)
+        self.addCleanup(_save_logging_state())
 
 
 @contextlib.contextmanager
 def quiet_logging() -> Iterator[None]:
     """Swallow log records for the duration of the block, and undo any
-    root-logger reconfiguration the code under test performs.
+    logging reconfiguration the code under test performs — the same state
+    `RestoresLogging` restores.
 
     Use this only where the log line is incidental to what the test asserts.
     Where the message *is* the documented behavior, `assertLogs` says so and
@@ -82,16 +93,14 @@ def quiet_logging() -> Iterator[None]:
     later INFO record in the same worker process — from modules with no
     connection to the CLI — prints to the console mid-run.
     """
-    root = logging.getLogger()
-    handlers, level = root.handlers[:], root.level
-    previous = root.manager.disable
+    restore = _save_logging_state()
+    previous = logging.getLogger().manager.disable
     logging.disable(logging.CRITICAL)
     try:
         yield
     finally:
         logging.disable(previous)
-        root.handlers[:] = handlers
-        root.setLevel(level)
+        restore()
 
 
 @contextlib.contextmanager
