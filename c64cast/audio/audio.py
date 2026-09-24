@@ -18,6 +18,7 @@ import dataclasses
 import functools
 import logging
 import queue
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -218,6 +219,7 @@ class AudioStreamer:
         host_dma_servo: bool = True,
         nmi_rate_adaptive: bool = False,
         dsp_params: DSPParams | None = None,
+        dither_seed: int | None = None,
     ):
         # Shares the render path's C64Backend: the U64 DMA service takes one
         # connection at a time, so a second socket would TCP-accept and then
@@ -227,6 +229,16 @@ class AudioStreamer:
         self.sample_rate = sample_rate
         self.system = system
         self.dither_enabled = dither
+        # One generator per streamer rather than numpy's process-wide one, so a
+        # run's dither is a sequence this object owns and a capture can be
+        # reproduced from the seed. np.random.Generator is not thread-safe and
+        # both the host-DMA producer and the mic callback reach _encode_dac, so
+        # the draw is taken under _dither_lock.
+        self.dither_seed = secrets.randbits(64) if dither_seed is None else int(dither_seed)
+        self._dither_rng = np.random.default_rng(self.dither_seed)
+        self._dither_lock = threading.Lock()
+        if dither:
+            log.info("audio: TPDF dither seed=%d", self.dither_seed)
         self.digi_boost = digi_boost
         # An active curve is a uint8[256] amplitude→$D418 table (dac_curves.py);
         # "linear" leaves it None. It needs the Mahoney SID env that
@@ -1100,6 +1112,19 @@ class AudioStreamer:
         dsp = AudioDSP(self._dsp_params, sample_rate=self.sample_rate, is_mic=False)
         return dsp.process(floats) if dsp.active else floats
 
+    def _encode_dac(self, floats: np.ndarray) -> np.ndarray:
+        """Quantize `floats` to DAC bytes through this streamer's dither
+        generator. The lock is load-bearing: np.random.Generator is not
+        thread-safe, and the host-DMA producer (demuxer or mic callback
+        thread) and the REU mic callback both land here."""
+        with self._dither_lock:
+            return encode_floats_to_dac(
+                floats,
+                dither=self.dither_enabled,
+                rng=self._dither_rng,
+                curve=self._dac_curve,
+            )
+
     def _encode_and_enqueue(self, floats: np.ndarray, block_on_full: bool = False) -> int:
         """Push float samples in [-1, 1] through the FFT tap and into the
         DAC queue as 4-bit values. Returns the number of samples enqueued.
@@ -1122,7 +1147,7 @@ class AudioStreamer:
         epoch = self._flush_epoch
         floats = self._apply_dsp(floats)
         self._push_to_tap(floats.astype(np.float32, copy=False))
-        vol = encode_floats_to_dac(floats, dither=self.dither_enabled, curve=self._dac_curve)
+        vol = self._encode_dac(floats)
         n = int(vol.size)
         payload = vol.tobytes()
         # Reading _queued_samples unlocked races the worker's decrement; the
@@ -1193,7 +1218,7 @@ class AudioStreamer:
             mono[np.abs(mono) < self.noise_gate] = 0
         mono = self._apply_dsp(mono.astype(np.float32, copy=False))
         self._push_to_tap(mono)
-        vol = encode_floats_to_dac(mono, dither=self.dither_enabled, curve=self._dac_curve)
+        vol = self._encode_dac(mono)
         self._push_mic_to_reu(vol.tobytes())
 
     def _push_mic_to_reu(self, encoded: bytes) -> None:

@@ -64,7 +64,9 @@ class EncodeCurveTest(unittest.TestCase):
 
     def test_curve_zero_maps_to_neutral_index_byte(self):
         curve = np.frombuffer(MAHONEY_ULTISID, dtype=np.uint8)
-        out = encode_floats_to_dac(np.zeros(16, np.float32), dither=True, curve=curve)
+        out = encode_floats_to_dac(
+            np.zeros(16, np.float32), dither=True, rng=np.random.default_rng(11), curve=curve
+        )
         self.assertTrue(np.all(out == curve[NEUTRAL_INDEX]))
 
     def test_curve_endpoints(self):

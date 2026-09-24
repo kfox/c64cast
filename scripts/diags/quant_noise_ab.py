@@ -69,8 +69,11 @@ def encode_4bit(
     error)."""
     vol = (floats.astype(np.float64) + 1.0) * DAC_VOLUME_SCALE
     if dither:
-        draw = rng.random if rng is not None else np.random.random_sample
-        dth = draw(floats.shape).astype(np.float64) - draw(floats.shape).astype(np.float64)
+        if rng is None:
+            raise ValueError("encode_4bit: dither=True needs an rng")
+        dth = rng.random(floats.shape).astype(np.float64) - rng.random(floats.shape).astype(
+            np.float64
+        )
         dth[floats == 0] = 0.0
         vol = vol + dth
     coeffs = np.asarray(SHAPER_COEFFS[mode], dtype=np.float64)
