@@ -27,6 +27,12 @@ its install script to put a binary in place installs clean under the switch
 and fails later, in `vite build`, naming neither the script nor the setting —
 so a new one has to be read before it is skipped.
 
+`build.target` in `web/vite.config.ts` is the console's browser floor, pinned
+for the same reason the Node version is. Its guard lives in
+`web/buildTarget.test.ts`, not here: whether the config *states* a target is a
+question about TypeScript, there is no parser for that at Python-test time, and
+Vite's own `loadConfigFromFile` answers it without one.
+
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
 a mapping there whether it leads with `uses:` or with `name:`, and a value is

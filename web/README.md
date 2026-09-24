@@ -54,18 +54,22 @@ rather than content hashes, so a rebuild is one diff on one file instead of a
 new file plus an orphan. `web_static.py` serves them `no-cache` for the same
 reason.
 
-The console's browser floor is whatever Vite's default
-`baseline-widely-available` target resolves to, which moves forward as Vite is
-updated: the Vite 7 to 8 bump raised it (Safari 16 to 16.4, Chrome 107 to 111).
-Both the JavaScript minifier and Lightning CSS emit for it, and it is what
-decides whether Lightning CSS ships a breakpoint as `(width >= 40rem)` or as
-`(min-width: 40rem)`. Pin it by setting `build.target` in `vite.config.ts`;
-read what it is today with:
+The console's browser floor is `build.target` in `vite.config.ts`, stated there
+rather than inherited: Vite's `baseline-widely-available` default moves forward
+with Vite, and the 7 to 8 bump raised the floor with no source change behind it.
+Both the JavaScript minifier and Lightning CSS emit for that value — it decides
+whether a breakpoint ships as `(width >= 40rem)` or as `(min-width: 40rem)` —
+so editing it moves the bundle, and the diff above is what makes the move
+visible. `buildTarget.test.ts` fails if the value goes missing, which a rebuild
+cannot notice for as long as Vite's default still matches it.
+
+Moving the floor is that edit plus a rebuild, in one commit. What the installed
+Vite would default to on its own, for choosing the value:
 
 ```bash
 cd web && node --input-type=module -e \
   "import { resolveConfig } from 'vite'; \
-   console.log((await resolveConfig({}, 'build')).build.target)"
+   console.log((await resolveConfig({ configFile: false }, 'build')).build.target)"
 ```
 
 ## When Dependabot bumps a web dependency
@@ -80,8 +84,12 @@ Which bumps move it:
 - `svelte`, and its `esrap`: svelte ships both the runtime that gets bundled
   and, through `esrap`, the printer that emits the compiled component code, so a
   bump of either can rewrite `assets/app.js`. 5.57.0 → 5.57.1 did.
-- `vite`, `lightningcss`, `tailwindcss`: these can move the resolved
-  `build.target` above, and with it `assets/app.css`.
+- `vite`, `lightningcss`, `tailwindcss`: these emit `assets/app.css`, so a bump
+  of any of them can rewrite it — and `vite`, which also bundles and minifies
+  the JavaScript, can rewrite `assets/app.js` with it. None of them moves the
+  browser floor any more — `build.target` is stated above rather than resolved
+  per Vite version — so a floor change is an edit somebody made, never a bump's
+  side effect.
 - Dev-only packages — `@types/node`, `svelte-check`, `vitest`, `typescript` —
   do not reach the bundle at all.
 
@@ -122,11 +130,14 @@ npx vitest         # watch mode
 ```
 
 Pure logic pulled out of a component — `*.test.ts` beside the module it tests,
-e.g. `src/lib/configListLogic.test.ts`. Plain `vitest`, no DOM: everything
-under test today is logic a component imports rather than a component itself,
-which is why there's no `@testing-library/svelte` here yet. `vitest.config.ts`
-is deliberately separate from `vite.config.ts` — the app build needs the Svelte
-and Tailwind plugins, and a logic-only test needs neither.
+e.g. `src/lib/configListLogic.test.ts`. Plain `vitest`, no DOM: nothing under
+test today is a component, which is why there's no `@testing-library/svelte`
+here yet. `buildTarget.test.ts` is the one test whose subject is not logic a
+component imports: it holds `vite.config.ts` to stating a browser floor, under
+a name of its own for a reason its header gives.
+`vitest.config.ts` is deliberately separate from `vite.config.ts` — the app
+build needs the Svelte and Tailwind plugins, and a logic-only test needs
+neither.
 
 ## Layout
 
