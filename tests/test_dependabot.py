@@ -100,9 +100,10 @@ def _admits_major(spec: str, major: int) -> bool:
         f"{spec!r} is a range this module cannot read — npm reads an empty clause as "
         f"`*`, so answering it would hide a widened peer rather than report one"
     )
-    return any(
-        all(_comparator_admits(text, major) for text in comparators) for comparators in clauses
-    )
+    verdicts = [
+        [_comparator_admits(text, major) for text in comparators] for comparators in clauses
+    ]
+    return any(all(clause) for clause in verdicts)
 
 
 def _peer_range() -> str | None:
@@ -163,8 +164,9 @@ class RangeReadingTest(unittest.TestCase):
         self.assertFalse(_admits_major("6.0.3", 7))
 
     def test_a_shape_this_cannot_read_raises_instead_of_answering(self):
-        with self.assertRaises(AssertionError):
-            _admits_major(">=5.0.0 <8.0.0", 7)
+        for spec in (">=5.0.0 <8.0.0", ">=8.0.0 <9.0.0", "5.0.0 - 7.0.0"):
+            with self.subTest(spec=spec), self.assertRaises(AssertionError):
+                _admits_major(spec, 7)
 
     def test_an_empty_range_raises_instead_of_reading_as_admitting_nothing(self):
         for spec in ("", "^5.0.0 ||"):
