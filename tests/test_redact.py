@@ -6,11 +6,12 @@ printed there is the only entry point a phone gets, and has to be *gone* from
 `--log-file`, which outlives the run and is not created `0600`. The buffer half
 of the same split is in `test_serve.py`, next to the buffer.
 
-Nothing here reconfigures the root logger. `configure_logging` clears the root
-handlers and installs its own, and that outlives the test — the hazard
+`ConfigureLoggingWiringTest` is the only class here that reconfigures the root
+logger, and it undoes it: `configure_logging` clears the root handlers and
+installs its own, and that outlives the test — the hazard
 `_fakes.quiet_logging` exists for. So the end-to-end check drives a handler the
-test owns outright, and the wiring check inspects what `configure_logging`
-attached without emitting through it.
+test owns outright, and the wiring check calls `configure_logging` under
+`RestoresLogging` and inspects what it attached without emitting through it.
 """
 
 from __future__ import annotations
