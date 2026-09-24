@@ -1309,14 +1309,29 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         re-installs the vector and restarts PLAY for the new subtune. The
         host-emu poll thread keeps ticking until the _poll.stop() that follows
         the candidate walk — harmless, since the blocked main thread paints
-        nothing."""
-        try:
+        nothing.
+
+        Two independent promises, so two steps: under one `try` a failed vector
+        restore skipped the silencing, which is the half that stops the old
+        tune sounding through the footprint work — the exact lingering audio
+        the order above exists to prevent."""
+
+        def unhook_irq() -> None:
             self.api.restore_kernal_irq_vector()
             self.api.flush()
+
+        def silence() -> None:
             self.api.silence_sid()
             self.api.flush()
-        except Exception:
-            log.exception("waveform: cycle pre-silence failed")
+
+        run_teardown_steps(
+            log,
+            "waveform cycle pre-silence",
+            (
+                ("kernal IRQ vector", unhook_irq),
+                ("SID silence", silence),
+            ),
+        )
 
     def _cycle_pick_candidate(
         self, n: int, budget: HostEmuBudget

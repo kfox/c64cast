@@ -17,62 +17,38 @@ A deny is handed back to the agent, which retries with a correct shape, and the
 user sees nothing.
 
 Fires only when a `cd` is present *and* a search command in the same line has an
-unresolvable target. A search with absolute operands, a search with no `cd`, and
-every non-search command pass untouched — as does anything with a heredoc or
-command substitution.
+unresolvable target. Every command on the line is read, wherever it sits in a
+compound — `_shell.read` finds the ones a glued separator hides. A search with
+absolute operands, a search with no `cd`, a search fed by a pipe, and every
+non-search command pass untouched — as does anything with a command
+substitution.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 import sys
+from pathlib import Path
+
+# Running `python3 <abs-path>` already puts the script's directory on
+# sys.path, but a loader that does not — `spec_from_file_location`, which is
+# how the tests reach a hook whose filename is no identifier — would raise
+# here at import time, and a PreToolUse hook that cannot be imported is a
+# hook that is silently off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _shell  # noqa: E402
 
 GREP_LIKE = {"grep", "egrep", "fgrep", "rg", "ack", "ag"}
 FIND_LIKE = {"find", "fd", "fdfind"}
 SEARCH = GREP_LIKE | FIND_LIKE
-SEPARATORS = ("&&", "||", "|", ";", "&")
-BAILOUT = ("<<", "$(", "`")
 GREP_VALUE_FLAGS = {"-e", "-f", "-m", "--regexp", "--file", "--max-count", "-A", "-B", "-C"}
 GREP_PATTERN_FLAGS = {"-e", "-f", "--regexp", "--file"}
 
 
-def segments(cmd: str) -> list[tuple[list[str], bool]] | None:
-    """`(argv, reads_stdin)` per command, or None if we shouldn't touch it.
-
-    `reads_stdin` marks a segment fed by a pipe. Such a command has no
-    filesystem target at all — `… | grep foo` searches its input, not `.` — so
-    it can never be the unresolvable shape this hook is about.
-    """
-    if any(tok in cmd for tok in BAILOUT):
-        return None
-    try:
-        toks = shlex.split(cmd, comments=True)
-    except ValueError:
-        return None
-    if not toks:
-        return None
-    segs: list[tuple[list[str], bool]] = []
-    cur: list[str] = []
-    piped = False
-    for t in toks:
-        if t in SEPARATORS:
-            if cur:
-                segs.append((cur, piped))
-            piped = t == "|"
-            cur = []
-        else:
-            cur.append(t)
-    if cur:
-        segs.append((cur, piped))
-    return segs or None
-
-
 def strip_env(argv: list[str]) -> list[str]:
-    """Drop leading VAR=value assignments (e.g. `CI=1 grep …`)."""
-    while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
-        argv = argv[1:]
-    return argv
+    """Drop leading VAR=value assignments and shell keywords (`CI=1 grep …`)."""
+    return _shell.strip_prefix(argv)
 
 
 def path_operands(argv: list[str]) -> list[str] | None:
@@ -106,14 +82,23 @@ def path_operands(argv: list[str]) -> list[str] | None:
 
 
 def verdict(cmd: str) -> str | None:
-    segs = segments(cmd)
-    if not segs:
+    """Why some search on `cmd` has a target the classifier cannot resolve,
+    or None.
+
+    A line carrying a command substitution is left alone: lifting the
+    substituted command out leaves the enclosing one's operand list
+    incomplete, and a deny built on a half-read operand list is the false
+    deny this hook exists to avoid causing.
+    """
+    reading = _shell.read(cmd)
+    if reading.unreadable or reading.has_substitution() or not reading.commands:
         return None
-    if not any(strip_env(argv)[:1] == ["cd"] for argv, _ in segs):
+    if not any(strip_env(command.argv)[:1] == ["cd"] for command in reading.commands):
         return None
 
-    for argv, reads_stdin in segs:
-        if reads_stdin:
+    for command in reading.commands:
+        argv = command.argv
+        if command.stdin_from_pipe:
             continue
         paths = path_operands(argv)
         if paths is None:

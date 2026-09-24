@@ -25,6 +25,7 @@ from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import (
+    CIA1,
     CIA2,
     KERNAL,
     REU,
@@ -33,6 +34,7 @@ from c64cast.hw.c64 import (
     VIC_BANK_0,
     VIC_BANK_2,
 )
+from c64cast.video import modes_irq
 from c64cast.video.modes import (
     BlankDisplayMode,
     HiresDisplayMode,
@@ -70,6 +72,7 @@ from c64cast.video.modes_irq import (
     TRACKER_OFF_BITMAP_REGS,
     TRACKER_OFF_READY_FLAG,
     TRACKER_OFF_SCREEN_REGS,
+    uninstall_bank_swap_irq,
 )
 
 
@@ -1001,6 +1004,54 @@ class ReuMHiresTeardownTest(unittest.TestCase):
         mode.teardown(api)
         self.assertEqual(fake.regs, prior_regs)
         self.assertEqual(fake.memories, prior_mem)
+
+
+class BankSwapIrqTeardownGuardTest(unittest.TestCase):
+    """Every write in `uninstall_bank_swap_irq` is guarded on its own so one
+    link hiccup cannot starve the rest — except the CIA #1 unmask, which is
+    not a free-standing promise. Re-arming Timer A while `$0314` still points
+    at the `$C500` handler hands every jiffy IRQ to RAM the next scene
+    overwrites, and (because `$D019`'s raster flag latches regardless of
+    `$D01A`) re-flips `$DD00` to bank 2 on the next frame."""
+
+    _CIA1_ICR = f"{CIA1.ICR:04X}"
+
+    def test_a_failed_vector_restore_leaves_cia1_masked(self):
+        fake = FakeAPI()
+
+        def link_down(*args, **kwargs):
+            raise RuntimeError("DMA link down")
+
+        fake.write_regs = link_down  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
+            uninstall_bank_swap_irq(cast(Ultimate64API, fake))
+        self.assertEqual(
+            fake.memories[self._CIA1_ICR],
+            f"{modes_irq._CIA1_ICR_DISABLE_TIMER_A:02X}",
+            "Timer A must stay masked while $0314 is still on the in-RAM handler",
+        )
+
+    def test_a_failed_vector_restore_does_not_starve_the_other_writes(self):
+        fake = FakeAPI()
+
+        def link_down(*args, **kwargs):
+            raise RuntimeError("DMA link down")
+
+        fake.write_regs = link_down  # type: ignore[method-assign]
+        with self.assertLogs("c64cast.video.modes_irq", level="ERROR"):
+            uninstall_bank_swap_irq(cast(Ultimate64API, fake))
+        self.assertEqual(fake.memories["D01A"], "00")
+        self.assertEqual(fake.memories["D019"], "01")
+        self.assertEqual(fake.memories[f"{CIA2.PORT_A:04X}"], f"{CIA2.PORT_A_BANK_0:02X}")
+
+    def test_a_clean_teardown_unmasks_cia1(self):
+        fake = FakeAPI()
+        uninstall_bank_swap_irq(cast(Ultimate64API, fake))
+        self.assertEqual(
+            fake.regs[f"{VECTORS.IRQ:04X}"],
+            (KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF),
+        )
+        self.assertEqual(fake.memories[self._CIA1_ICR], f"{modes_irq._CIA1_ICR_ENABLE_TIMER_A:02X}")
 
 
 class ReuMHiresPushTest(unittest.TestCase):
