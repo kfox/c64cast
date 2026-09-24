@@ -5,12 +5,17 @@ even the `midi` extra) is needed."""
 
 from __future__ import annotations
 
+import sys
 import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from c64cast import _midi
+sys.path.insert(0, str(Path(__file__).parent))
+from _fakes import FrozenClock  # noqa: E402
+
+from c64cast import _midi  # noqa: E402
 
 
 class _FakePort:
@@ -77,7 +82,7 @@ class PollPendingTest(unittest.TestCase):
     def setUp(self):
         # These pin the *count* bound, so freeze the clock the *work* bound reads:
         # a stalled worker must not release a pass early and flake the count.
-        patcher = mock.patch.object(_midi, "_monotonic", lambda: 0.0)
+        patcher = mock.patch.object(_midi, "time", FrozenClock(0.0, "monotonic"))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -138,7 +143,7 @@ class PollPendingTest(unittest.TestCase):
 
     def test_the_count_bound_is_read_when_the_pass_runs_not_when_the_file_loads(self):
         # As a parameter default the constant was bound at definition time, so
-        # rebinding it here was a silent no-op — while `_monotonic`, this file's
+        # rebinding it here was a silent no-op — while `_midi.time`, this file's
         # other injection point, is rebound exactly this way and does work.
         stop = threading.Event()
         port = self._port(50)
@@ -178,23 +183,11 @@ class DrainWorkBoundTest(unittest.TestCase):
 
         return SimpleNamespace(poll=poll, served=state)
 
-    @staticmethod
-    def _clock(step):
-        """A monotonic stand-in advancing `step` per read, so a pass can burn
-        its work budget without the test spending that time."""
-        state = {"now": 1000.0}
-
-        def monotonic():
-            state["now"] += step
-            return state["now"]
-
-        return monotonic
-
     def test_a_pass_releases_once_it_has_spent_its_work_budget(self):
         stop = threading.Event()
         port = self._port(1000)
-        expensive = self._clock(_midi.MAX_DRAIN_WORK_S / 3)
-        with mock.patch.object(_midi, "_monotonic", expensive):
+        expensive = FrozenClock(1000.0, "monotonic", _midi.MAX_DRAIN_WORK_S / 3)
+        with mock.patch.object(_midi, "time", expensive):
             drained = list(_midi.poll_pending(port, stop))
         self.assertLess(len(drained), _midi.MAX_MSGS_PER_DRAIN)
         self.assertGreater(len(drained), 0)
@@ -204,7 +197,7 @@ class DrainWorkBoundTest(unittest.TestCase):
         # rather than spin: the deadline is not checked before the first message.
         stop = threading.Event()
         port = self._port(1000)
-        with mock.patch.object(_midi, "_monotonic", self._clock(1.0)):
+        with mock.patch.object(_midi, "time", FrozenClock(1000.0, "monotonic", 1.0)):
             self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
 
     def test_a_zero_work_budget_releases_after_one_message(self):
@@ -213,7 +206,7 @@ class DrainWorkBoundTest(unittest.TestCase):
         # and the real default both release after one message.
         stop = threading.Event()
         port = self._port(1000)
-        with mock.patch.object(_midi, "_monotonic", lambda: 1000.0):
+        with mock.patch.object(_midi, "time", FrozenClock(1000.0, "monotonic")):
             self.assertEqual(len(list(_midi.poll_pending(port, stop, budget_s=0.0))), 1)
 
     def test_the_work_budget_is_read_when_the_pass_runs_not_when_the_file_loads(self):
@@ -228,7 +221,7 @@ class DrainWorkBoundTest(unittest.TestCase):
         step = _midi.MAX_DRAIN_WORK_S / 3
         with (
             mock.patch.object(_midi, "MAX_DRAIN_WORK_S", 1000.0),
-            mock.patch.object(_midi, "_monotonic", self._clock(step)),
+            mock.patch.object(_midi, "time", FrozenClock(1000.0, "monotonic", step)),
         ):
             drained = list(_midi.poll_pending(port, stop))
         self.assertEqual(len(drained), _midi.MAX_MSGS_PER_DRAIN)
@@ -240,7 +233,8 @@ class DrainWorkBoundTest(unittest.TestCase):
         stop = threading.Event()
         port = self._port(20)
         seen = []
-        with mock.patch.object(_midi, "_monotonic", self._clock(_midi.MAX_DRAIN_WORK_S / 3)):
+        clock = FrozenClock(1000.0, "monotonic", _midi.MAX_DRAIN_WORK_S / 3)
+        with mock.patch.object(_midi, "time", clock):
             for _ in range(20):
                 seen.extend(_midi.poll_pending(port, stop))
         self.assertEqual(seen, [f"msg{i}" for i in range(1, 21)])

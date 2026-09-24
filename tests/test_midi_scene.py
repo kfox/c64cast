@@ -35,13 +35,13 @@ except ImportError:
     HAVE_MIDI = False
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _fakes import FakeAPI, FrozenClock  # noqa: E402
+from _fakes import FakeAPI, FakeTime, FrozenClock  # noqa: E402
 
 from c64cast import _midi  # noqa: E402
 from c64cast._midi import MAX_DRAIN_WORK_S  # noqa: E402
 from c64cast.hw.backend import TEENSYROM_PROFILE, ULTIMATE_PROFILE  # noqa: E402
 from c64cast.hw.c64 import SID  # noqa: E402
-from c64cast.sid import midi_scene  # noqa: E402
+from c64cast.sid import midi_scene, voice_scope  # noqa: E402
 from c64cast.sid.midi_scene import MidiScene, _drain_budget_s, _note_to_sid_freq  # noqa: E402
 from c64cast.sid.sidemu import primary_waveform  # noqa: E402
 from c64cast.video.modes import DisplayMode  # noqa: E402
@@ -709,7 +709,7 @@ class PaintTests(_MidiTestCase):
         scene.emulator.voices[0].envelope_level = 0.0
         api.regions.clear()
         scene.process_frame(1.0)
-        gray = C64_COLORS[midi_scene._IDLE_GRAY]
+        gray = C64_COLORS[voice_scope.IDLE_VOICE_COLOR]
         self.assertEqual(api.regions[_SCREEN_BASE], bytes([gray << 4]) * 280)
         self.assertFalse(scene._voice_sounding[0])
 
@@ -895,9 +895,9 @@ class _CostlyAPI(FakeAPI):
     The stock FakeAPI answers every write instantly, which makes the drain's
     work budget invisible: the whole reason MidiScene sizes its own budget is
     that one `write_regs` on an Ultimate outlasts `poll_pending`'s default. The
-    charge lands on a dict the test also hands `_midi._monotonic`, so the
-    drain's clock and the writes it is paying for share one timeline and the
-    test spends none of it in real time.
+    charge lands on a dict the test also reads `_midi.time.monotonic` from, so
+    the drain's clock and the writes it is paying for share one timeline and
+    the test spends none of it in real time.
     """
 
     def __init__(self, clock: dict[str, float]) -> None:
@@ -959,7 +959,7 @@ class ReaderWorkBudgetTests(_MidiTestCase):
 
         stop = threading.Event()
         with (
-            mock.patch.object(_midi, "_monotonic", lambda: clock["now"]),
+            mock.patch.object(_midi, "time", FakeTime(monotonic=lambda: clock["now"])),
             mock.patch.object(midi_scene, "poll_pending", counting_poll_pending),
         ):
             reader = threading.Thread(target=scene._reader, args=(stop,), daemon=True)

@@ -150,7 +150,7 @@ def mirrored_choices() -> dict[str, tuple[str, object]]:
     from c64cast.control import midi_control
     from c64cast.hw import backend, hw_provision
     from c64cast.scenes import backgrounds, effects, generators
-    from c64cast.sid import midi_scene, waveform
+    from c64cast.sid import midi_scene, voice_scope
     from c64cast.video import modes
     from c64cast.video import petscii_styles as ps
 
@@ -195,12 +195,15 @@ def mirrored_choices() -> dict[str, tuple[str, object]]:
             set(midi_scene._WAVEFORM_BITS),
         ),
         "_PALETTE_MODE_CHOICES": ("video.modes.PALETTE_MODES", modes.PALETTE_MODES),
-        "_PERSISTENCE_CHOICES": ("sid.waveform.PERSISTENCE_NAMES", waveform.PERSISTENCE_NAMES),
+        "_PERSISTENCE_CHOICES": (
+            "sid.voice_scope.PERSISTENCE_NAMES",
+            voice_scope.PERSISTENCE_NAMES,
+        ),
         "_STYLE_CHOICES": (
             "video.petscii_styles.STYLE_NAMES + (RANDOM_STYLE,)",
             ps.STYLE_NAMES + (ps.RANDOM_STYLE,),
         ),
-        "_TIME_BASE_CHOICES": ("sid.waveform.TIME_BASE_NAMES", waveform.TIME_BASE_NAMES),
+        "_TIME_BASE_CHOICES": ("sid.voice_scope.TIME_BASE_NAMES", voice_scope.TIME_BASE_NAMES),
     }
 
 

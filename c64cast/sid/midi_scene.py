@@ -32,13 +32,13 @@ from c64cast._midi import MAX_DRAIN_WORK_S, MIDI_AVAILABLE, open_input_port, pol
 from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast.hw.backend import HardwareProfile
-from c64cast.hw.c64 import CIA2, SID, VIC_BANK_0, cpu_clock
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, SID, VIC_BANK_0, cpu_clock
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
 
 from .sidemu import SID_REG_COUNT, SIDEmulator, primary_waveform
 from .voice_scope import (
-    D018_HIRES_BITMAP,
+    IDLE_VOICE_COLOR,
     VoiceScopeRenderer,
     _layout_lr,
     restore_char_mode_display,
@@ -180,12 +180,6 @@ _CC_ATTACK = 73  # envelope attack
 _CC_CUTOFF = 74  # filter cutoff
 _CC_DECAY = 75  # envelope decay
 
-# Idle voice strips are drawn in this gray, so a released voice's flat trace
-# reads as "off"; a sounding voice repaints in its own color.
-_IDLE_GRAY = "gray"
-# Envelope level below which a voice counts as idle. Matches WaveformScene's.
-_ENV_SILENCE_EPS = 1e-3
-
 
 def _note_to_sid_freq(midi_note: float, system: str) -> int:
     """Convert a MIDI note number (fractional allowed for pitch-bend) to a
@@ -325,7 +319,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._screen_base = VIC_BANK_0.SCREEN
         self._bitmap_base = VIC_BANK_0.BITMAP
         self._dd00 = CIA2.PORT_A_BANK_0
-        self._d018 = D018_HIRES_BITMAP
+        self._d018 = D018_HIRES_PAGE_A
 
         # Fed from the register shadow below rather than a py65 host emulator.
         self.emulator = SIDEmulator(system=system)
@@ -825,7 +819,7 @@ class MidiScene(VoiceScopeRenderer, Scene):
         self._voice_sounding = [False, False, False]
         self._last_voice_wave = [-1, -1, -1]
         for idx in range(SID.N_VOICES):
-            self._repaint_voice_color(idx, C64_COLORS[_IDLE_GRAY])
+            self._repaint_voice_color(idx, C64_COLORS[IDLE_VOICE_COLOR])
         self._paint_info_rows()
         self._alloc_scope_buffers()
         self._open_port()
@@ -845,16 +839,13 @@ class MidiScene(VoiceScopeRenderer, Scene):
         # idle one in gray. Change-detected, so the screen-RAM color write fires
         # only on a transition.
         with self._reg_lock:
-            states = [
-                (v.gated() or v.envelope_level > _ENV_SILENCE_EPS, primary_waveform(v.control))
-                for v in self.emulator.voices
-            ]
+            states = [(v.is_audible(), primary_waveform(v.control)) for v in self.emulator.voices]
         for i, (sounding, wave) in enumerate(states):
             changed = sounding != self._voice_sounding[i] or (
                 sounding and wave != self._last_voice_wave[i]
             )
             if changed:
-                color = self._voice_color_now(i) if sounding else C64_COLORS[_IDLE_GRAY]
+                color = self._voice_color_now(i) if sounding else C64_COLORS[IDLE_VOICE_COLOR]
                 self._repaint_voice_color(i, color)
                 self._voice_sounding[i] = sounding
                 self._last_voice_wave[i] = wave
