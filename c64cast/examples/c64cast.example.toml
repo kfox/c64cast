@@ -1215,7 +1215,9 @@ name = "c64cast"                    # friendly/mDNS name shown in the WLED app
 
 [debug]
 verbose = 0                         # 0 info (default), 1 debug (-v), 2 adds
-                                    # HTTP transport too (-vv)
+                                    # HTTP transport and the web console's
+                                    # server log (-vv), 3 adds the timer reads
+                                    # and the console's access log (-vvv)
 heartbeat = 10.0                    # seconds between health log lines
 skip_probe = false                  # skip the U64 reachability check at startup
 # log_file = "c64cast.log"        # mirror log output to this file (headless use)

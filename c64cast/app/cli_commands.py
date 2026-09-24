@@ -39,6 +39,33 @@ from . import paths
 log = logging.getLogger("c64cast")
 
 
+#: The library loggers `configure_logging` holds back: each group of names
+#: paired with the `(-v count, level)` steps that loosen it. WARNING until the
+#: lowest step's count is met, then the highest step the run reaches.
+#:
+#: The parent `uvicorn` logger is named so that any descendant uvicorn adds
+#: later is held back by inheritance, and its present children are named as
+#: well because a level written on the child outranks the parent's — and
+#: uvicorn's own `Config.configure_logging` writes `uvicorn.error`,
+#: `uvicorn.access` and `uvicorn.asgi`.
+#:
+#: `uvicorn.error` stops at INFO on the second `v` rather than going to
+#: NOTSET with the rest of the server group, which is the whole reason a
+#: group carries steps instead of one threshold. uvicorn hands that logger to
+#: the `websockets` library, which latches `logger.isEnabledFor(DEBUG)` once
+#: per connection and then logs every handshake header and every frame sent
+#: or received. The console's state feed pushes several frames a second for
+#: the length of the run, so DEBUG there buries the handful of lifecycle
+#: lines `-vv` is for — a firehose, and so `-vvv`'s, on the precedent the
+#: access log and the poll reads set.
+HELD_BACK_LOGGERS: tuple[tuple[tuple[str, ...], tuple[tuple[int, int], ...]], ...] = (
+    (_transport_log.TRANSPORT_LOGGERS, ((2, logging.NOTSET),)),
+    (("uvicorn", "uvicorn.asgi"), ((2, logging.NOTSET),)),
+    (("uvicorn.error",), ((2, logging.INFO), (3, logging.NOTSET))),
+    (("uvicorn.access",), ((3, logging.NOTSET),)),
+)
+
+
 class RedactingFormatter(logging.Formatter):
     """A formatter that strips secrets out of the line it produces.
 
@@ -61,8 +88,11 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     load) doesn't double up.
 
     `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, 2 (`-vv`) additionally releases
-    the urllib3 loggers this otherwise holds at WARNING while holding back the
-    background polls' own reads, and 3 (`-vvv`) releases those too."""
+    the urllib3 loggers this otherwise holds at WARNING and lets uvicorn's own
+    lifecycle lines through at INFO, while holding back the background polls'
+    own reads, and 3 (`-vvv`) releases those plus uvicorn's access log and its
+    WebSocket frame debug. `HELD_BACK_LOGGERS` is the whole list and the
+    thresholds."""
     # INFO by default, so lifecycle messages (scene transitions, audio bring-up,
     # resets) need no -v.
     level = logging.INFO
@@ -108,12 +138,19 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             )
             root.addHandler(fh)
 
-    # urllib3 logs every REST request to the U64, which drowns -v in HTTP
-    # transport noise. `cli.main` calls this again on the loaded config, so a
-    # one-sided hold-back here would outlive the second call's -vv.
-    transport = logging.NOTSET if verbosity >= 2 else logging.WARNING
-    for noisy in _transport_log.TRANSPORT_LOGGERS:
-        logging.getLogger(noisy).setLevel(transport)
+    # urllib3 logs every REST request to the U64 and uvicorn's access log a
+    # line per asset a phone fetches, either of which drowns -v in HTTP noise.
+    # Written on every pass, every group: `cli.main` calls this again on the
+    # loaded config, so a one-sided hold-back here would outlive the second
+    # call's -vv, and a release has to un-pin what uvicorn's own
+    # `Config.configure_logging` may have written in between.
+    for names, steps in HELD_BACK_LOGGERS:
+        held = logging.WARNING
+        for release_at, step_level in sorted(steps):
+            if verbosity >= release_at:
+                held = step_level
+        for noisy in names:
+            logging.getLogger(noisy).setLevel(held)
     _transport_log.install(verbosity == 2)
 
 

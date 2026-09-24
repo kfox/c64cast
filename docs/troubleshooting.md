@@ -16,7 +16,9 @@ If your problem isn't here, check the stats line printed every 10 s —
 adds debug logging; `-vv` adds a line per HTTP request on top of it —
 an Ultimate's REST link above all — minus the reads c64cast makes on a timer,
 which `-vvv` puts back. A TeensyROM link is serial or raw TCP and
-contributes none.
+contributes none. `-vv` also lets the web console's own server log through,
+and `-vvv` adds its access log — a line per request a phone makes, naming
+each URL — plus a line per WebSocket frame the console sends or receives.
 
 ## Audio symptoms
 

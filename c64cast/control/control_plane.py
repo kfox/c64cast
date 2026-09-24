@@ -74,7 +74,18 @@ _BIND_POLL_S = 0.02
 
 
 class ControlServer:
-    """Starts a uvicorn server bound to (host, port) on a background thread."""
+    """Starts a uvicorn server bound to (host, port) on a background thread.
+
+    `log_config=None` is load-bearing and is the only logging argument passed:
+    uvicorn's default config runs `dictConfig` from `Config.__init__`, which
+    re-pins its own loggers over whatever `configure_logging` had set — so a
+    server built after the command line was parsed came up with no verbose
+    mode at all. With no config of its own, uvicorn installs neither handlers
+    nor levels, its records propagate to the root logger, and
+    `cli_commands.HELD_BACK_LOGGERS` is the one thing that decides which
+    verbosity shows them. Leaving `log_level` and `access_log` at their
+    defaults is the other half: either one set here writes a level or strips
+    the access handler behind `configure_logging`'s back."""
 
     def __init__(self, host: str, port: int, app, *, label: str = "control plane"):
         try:
@@ -90,8 +101,7 @@ class ControlServer:
             app,
             host=host,
             port=port,
-            log_level="warning",
-            access_log=False,
+            log_config=None,
         )
         self._server = uvicorn.Server(self._cfg)
         # uvicorn has its own stop signal (should_exit, set in stop()), so the
