@@ -219,6 +219,8 @@ The web console is the same idea in build output rather than in docs: its
 sources are in `web/` and its compiled bundle is committed under
 `c64cast/web/dist` so that installing c64cast never needs Node. Change the
 sources and `make web` in the same commit — CI rebuilds it and fails on a diff.
+Which Node that rebuild runs on is [`.node-version`](.node-version) at the repo
+root: CI's `actions/setup-node` reads it, and so do mise, nvm, fnm and asdf.
 
 ## Hardware for development
 
