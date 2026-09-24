@@ -36,10 +36,13 @@ bundle at all for as long as the default still matches it — so the rebuild is
 green either way, and this is the only reader that fails.
 
 The target is read out of the config as text, there being no TypeScript parser
-here to read it with. Two shapes make that reading narrower than a search for
-`target:`: the dev-server proxy entries each have a `target` of their own, so
-the read is scoped to the `build` block, and a commented-out line is still a
-line, so comments come out first.
+here to read it with. Three shapes make that reading narrower than a search for
+`target:`. The dev-server proxy entries each have a `target` of their own and
+an option nested under `build` may have one too, so the read is scoped to the
+`build` block's own keys. A commented-out line is still a line, so comments
+come out first. And a brace or a `//` inside a string literal is neither, so
+strings are read in the same scan as the comments — either one taken first
+swallows the other's delimiter.
 
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
@@ -136,61 +139,86 @@ _QUOTED = re.compile(r"""["'`]([^"'`]*)["'`]""")
 _BROWSER_VERSION = re.compile(r"\A[a-z]+\d+(?:\.\d+)*\Z")
 
 
-def _without_comments(source: str) -> str:
-    """`source` with its `//` and `/* */` comments dropped.
+def _text_and_code(source: str) -> tuple[str, str]:
+    """`source` with comments dropped, and that same text with strings blanked.
 
-    A scan rather than a regex because `"http://127.0.0.1:8123"` in the
-    dev-server proxy holds what a regex reads as the start of a comment, and
-    dropping the rest of that line drops a closing brace with it.
+    Both come out of one scan because neither can be found without the other:
+    an apostrophe in `// the console's floor` opens a string literal for a
+    reader that takes strings first, and the `//` inside
+    `"http://127.0.0.1:8123"` opens a comment for one that takes comments
+    first — each swallowing code up to the next delimiter, closing braces
+    included.
+
+    The two are equal in length, so an index into the blanked text indexes the
+    kept text: a brace or a `target:` found in the first is that character in
+    the second, and one that only appears inside a string is not found at all.
     """
-    kept: list[str] = []
+    text: list[str] = []
+    code: list[str] = []
     index = 0
     quote = ""
     while index < len(source):
         char = source[index]
         pair = source[index : index + 2]
         if quote:
-            if char == "\\":
-                kept.append(source[index : index + 2])
+            text.append(char)
+            code.append(" ")
+            if char == "\\" and index + 1 < len(source):
+                text.append(source[index + 1])
+                code.append(" ")
                 index += 2
                 continue
             if char == quote:
                 quote = ""
-        elif char in "\"'`":
-            quote = char
         elif pair == "//":
-            while index < len(source) and source[index] != "\n":
-                index += 1
+            end = source.find("\n", index)
+            index = len(source) if end < 0 else end
             continue
         elif pair == "/*":
             end = source.find("*/", index + 2)
             index = len(source) if end < 0 else end + 2
             continue
-        kept.append(char)
+        elif char in "\"'`":
+            quote = char
+            text.append(char)
+            code.append(" ")
+        else:
+            text.append(char)
+            code.append(char)
         index += 1
-    return "".join(kept)
+    return "".join(text), "".join(code)
 
 
 def _build_options(source: str) -> str:
-    """The body of a Vite config's `build: { … }`, comments already dropped.
+    """A Vite config's `build: { … }` options, its nested objects dropped.
 
     Scoped to that block because every `server.proxy` entry states a `target`
     of its own: a reader that took the first one in the file would read a proxy
-    URL as the browser floor and pass for a config that states no floor.
+    URL as the browser floor and pass for a config that states no floor. And
+    scoped to the block's own keys, because a `target` nested under it — an
+    option of `rollupOptions`, say — is not the floor either, and a reader that
+    took the first one *inside* the block would pass for the same config with
+    `build.target` deleted from it.
+
+    A nested object's key is kept, only its body goes: what is dropped is
+    everything a `{` opens.
     """
-    source = _without_comments(source)
-    opened = _BUILD_BLOCK.search(source)
+    text, code = _text_and_code(source)
+    opened = _BUILD_BLOCK.search(code)
     if opened is None:
         return ""
     depth = 0
-    start = opened.end() - 1
-    for index in range(start, len(source)):
-        if source[index] == "{":
+    own: list[str] = []
+    for index in range(opened.end() - 1, len(code)):
+        char = code[index]
+        if char == "{":
             depth += 1
-        elif source[index] == "}":
+        elif char == "}":
             depth -= 1
             if depth == 0:
-                return source[start + 1 : index]
+                return "".join(own)
+        elif depth == 1:
+            own.append(text[index])
     return ""
 
 
@@ -425,6 +453,28 @@ export default defineConfig({
 });
 """
 
+# `build.target` deleted, with an option nested under `build` that has a
+# `target` of its own left standing in front of where it was.
+_VITE_NESTED_TARGET = """\
+export default defineConfig({
+  build: {
+    rollupOptions: { output: { target: "chrome111" } },
+  },
+});
+"""
+
+# An apostrophe in a comment, and a brace inside a string — each of which ends
+# the `build` block early for a reader that takes strings and comments apart.
+_VITE_AWKWARD_LITERALS = """\
+export default defineConfig({
+  build: {
+    // The console's browser floor.
+    target: ["chrome111"],
+    rollupOptions: { output: { banner: "} //" } },
+  },
+});
+"""
+
 
 class ViteConfigReadingTest(unittest.TestCase):
     """The config reader against the shapes a Vite config can be written in."""
@@ -440,6 +490,12 @@ class ViteConfigReadingTest(unittest.TestCase):
 
     def test_a_nested_object_does_not_end_the_build_block(self):
         self.assertIn("rollupOptions", _build_options(_VITE_SHAPES))
+
+    def test_a_target_nested_under_build_is_not_read_as_the_floor(self):
+        self.assertIsNone(_declared_target(_VITE_NESTED_TARGET))
+
+    def test_a_brace_or_comment_start_inside_a_string_is_neither(self):
+        self.assertEqual(["chrome111"], _declared_target(_VITE_AWKWARD_LITERALS))
 
     def test_a_proxy_url_ahead_of_the_build_block_is_not_a_comment(self):
         self.assertEqual(["chrome111"], _declared_target(_VITE_PROXY_FIRST))
