@@ -269,6 +269,10 @@ ignore_missing_imports = true
 
 [tool.pyright]
 include = ["c64cast", "tests"]
+# The hook tests import `.claude/hooks/_shell.py` the way a running hook
+# does — by name, off the hooks directory. Without this the import is
+# unresolved and every call through it goes unchecked.
+extraPaths = [".claude/hooks"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = "warning"
