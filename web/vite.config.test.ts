@@ -13,9 +13,12 @@ import { describe, expect, it } from "vitest";
 // applies any default, which is what makes "states none" distinguishable from
 // "states today's default".
 
-// A browser and the version it is supported from, as esbuild and Lightning CSS
-// name it: chrome111, safari16.4, ios16.4.
-const BROWSER_VERSION = /^[a-z]+\d+(\.\d+)*$/;
+// A name carrying the version it is supported from, as esbuild and Lightning
+// CSS spell a target: chrome111, safari16.4, ios16.4. What it is here to
+// reject is a target that names no version and so resolves per Vite release;
+// a fixed target that is not a browser, `es2020`, passes it and moves the
+// bundle, which the committed-bundle diff catches instead.
+const VERSIONED_TARGET = /^[a-z]+\d+(\.\d+)*$/;
 
 const statedTarget = async (): Promise<string | string[] | false | undefined> => {
   const loaded = await loadConfigFromFile(
@@ -36,17 +39,17 @@ describe("the console's browser floor", () => {
     ).toBeTruthy();
   });
 
-  it("names a version for every browser in it", async () => {
+  it("names a version for every target in it", async () => {
     const stated = await statedTarget();
     const entries = typeof stated === "string" ? [stated] : stated || [];
-    expect(entries.length, "a floor of no browsers is not a floor").toBeGreaterThan(0);
+    expect(entries.length, "a floor of no targets is not a floor").toBeGreaterThan(0);
     for (const entry of entries) {
       expect(
         entry,
         "a target such as `baseline-widely-available` is Vite's moving default " +
           "written out rather than a floor: it names a different set of browsers " +
           "per Vite version",
-      ).toMatch(BROWSER_VERSION);
+      ).toMatch(VERSIONED_TARGET);
     }
   });
 });
