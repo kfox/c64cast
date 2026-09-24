@@ -214,9 +214,11 @@ check", never as the command.
 [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from the same startup
 hook, shortens any wait past the 20-second bound for the length of the test
 process and raises `ChildProcessHung` naming the command and what it had
-written. It derives from `BaseException` because both of those sites catch
-`Exception` and degrade to a warning. The production numbers do not move, and a
-caller that asked for *less* than the bound keeps its own `TimeoutExpired`.
+written. It derives from `BaseException` so no `except Exception` can swallow
+it: both of those sites degrade the `TimeoutExpired` it replaces to a warning,
+and `doctor` and `upgrade` degrade through `except Exception` elsewhere. The
+production numbers do not move, and a caller that asked for *no more than* the
+bound keeps its own `TimeoutExpired`.
 
 **A test cannot leave the process-wide RNG seeded either.**
 [tests/_rng_sandbox.py](tests/_rng_sandbox.py) reseeds `random` and numpy's

@@ -25,16 +25,20 @@ numbers do not move — `--doctor` run by hand still gives `uv` its 60 seconds.
 `ChildProcessHung` derives from `BaseException` for the reason `TestTimedOut`
 does. Both call sites above catch their own expiry and degrade to a warning —
 `except (OSError, subprocess.TimeoutExpired)` in one, `except (OSError,
-subprocess.SubprocessError)` in the other — so an ordinary exception raised
-here would be swallowed into a "could not check" diagnostic and the test would
-go green over a command that never returned. unittest's `testPartExecutor`
-catches with a bare `except`, so a BaseException that is not
-`KeyboardInterrupt` is still recorded against the test that earned it.
+subprocess.SubprocessError)` in the other — so re-raising the `TimeoutExpired`
+would be swallowed into a "could not check" diagnostic and the test would go
+green over a command that never returned. A distinct type is what clears those
+two; `BaseException` also clears the `except Exception` that `doctor` and
+`upgrade` degrade through elsewhere, and whichever one the next probe writes.
+unittest's `testPartExecutor` catches with a bare `except`, so a BaseException
+that is not `KeyboardInterrupt` is still recorded against the test that earned
+it.
 
-A caller that asked for *less* than `BOUND_S` keeps its own `TimeoutExpired`.
-That tighter bound is the caller's own behavior — `upgrade._stop`'s 20-second
-interrupt grace, `run_bounded`'s `timeout=`, both of which their tests grade —
-and converting it would grade something else.
+A caller that asked for *no more than* `BOUND_S` keeps its own
+`TimeoutExpired`. That bound is the caller's own behavior — `upgrade._stop`'s
+interrupt grace, which is `BOUND_S` exactly, and `run_bounded`'s `timeout=`,
+both of which their tests grade — and converting it would grade something
+else.
 
 `Popen.communicate` and `Popen.wait` are the two hooks because every spelling
 that waits reaches one of them: `run` and `check_output` through

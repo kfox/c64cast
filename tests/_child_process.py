@@ -94,13 +94,14 @@ def hung_message(
 
 
 def _argv_text(argv: Any) -> str:
-    """`argv` as one readable string, for either spelling `Popen` accepts.
+    """`argv` as one readable string, for every spelling `Popen` accepts.
 
     `list()` is wrong for the `shell=True` spelling, where `Popen.args` is a
     single string and listing it spells the command out one character per
-    element.
+    element — and it raises outright on the `Popen(Path(...))` spelling, which
+    would replace the named hang with a `TypeError` from here.
     """
-    if isinstance(argv, (str, bytes)):
+    if isinstance(argv, (str, bytes, os.PathLike)):
         return os.fsdecode(argv)
     return str(list(argv))
 

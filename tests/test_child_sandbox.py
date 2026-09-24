@@ -110,9 +110,10 @@ class ClampTest(unittest.TestCase):
             subprocess.run(_hangs(), timeout=_TEST_BOUND_S, capture_output=True)
 
     def test_an_except_exception_around_the_call_cannot_swallow_it(self):
-        # Both production sites catch their own expiry and degrade to a
-        # warning. An ordinary exception here would land in one of those and
-        # the test would go green over a command that never returned.
+        # Neither production site catches `Exception`, but both swallow the
+        # `TimeoutExpired` this replaces, and `doctor` and `upgrade` degrade
+        # through `except Exception` elsewhere. BaseException is what clears
+        # every such handler rather than only the two named ones.
         def swallows() -> str:
             try:
                 subprocess.run(_hangs(), timeout=60, capture_output=True)

@@ -241,12 +241,14 @@ diagnostic, so the test failed on an unrelated assertion — or passed.
 startup hook, shortens any wait past `BOUND_S` inside the test process, kills
 the child and raises `ChildProcessHung` naming the command, the bound the
 caller had asked for and the tail of whatever the child wrote. It derives from
-`BaseException` for the reason `TestTimedOut` does: both sites above catch
-`Exception`, and an ordinary exception would be swallowed into "could not
-check". The production numbers stay where they are — `--doctor` run by hand
-still gives `uv` its 60 seconds — and a caller that asked for *less* than
-`BOUND_S` keeps its own `TimeoutExpired`, because that tighter bound is the
-caller's own behavior and its own tests grade it.
+`BaseException` for the reason `TestTimedOut` does: both sites above swallow
+the `TimeoutExpired` it replaces into "could not check", and `doctor` and
+`upgrade` degrade through `except Exception` elsewhere, so nothing short of a
+`BaseException` clears every such handler. The production numbers stay where
+they are — `--doctor` run by hand still gives `uv` its 60 seconds — and a
+caller that asked for *no more than* `BOUND_S` keeps its own `TimeoutExpired`
+(`upgrade._stop`'s interrupt grace is `BOUND_S` exactly), because that bound is
+the caller's own behavior and its own tests grade it.
 
 **A test may not leave the process-wide RNG seeded.** `random` and numpy's
 legacy global generator both carry state across tests in a worker, and this

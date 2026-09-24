@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 import _child_process
@@ -116,6 +117,27 @@ class RunBoundedTest(unittest.TestCase):
                 capture_output=True,
             )
         self.assertIn("bad", str(caught.exception))
+
+
+class HungMessageNamesEveryArgvSpellingTest(unittest.TestCase):
+    """`Popen.args` is a sequence, a string under `shell=True`, or a path.
+
+    `tests/_child_sandbox.py` renders the args of a `Popen` it did not start,
+    so all three reach here — and a spelling this cannot render raises a
+    `TypeError` in place of the hang it was called to name.
+    """
+
+    def message(self, argv: Any) -> str:
+        return _child_process.hung_message(argv, 1.0, subprocess.TimeoutExpired(argv, 1.0))
+
+    def test_a_sequence_is_rendered_as_one(self):
+        self.assertIn("['git', 'status']", self.message(["git", "status"]))
+
+    def test_a_shell_string_is_not_spelled_out_one_character_per_element(self):
+        self.assertIn("git status", self.message("git status"))
+
+    def test_a_path_renders_rather_than_raising(self):
+        self.assertIn("/bin/true", self.message(pathlib.Path("/bin/true")))
 
 
 class BoundSitsBelowThePerTestCapTest(unittest.TestCase):
