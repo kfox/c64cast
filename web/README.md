@@ -16,6 +16,12 @@ npm install
 npm run dev        # http://localhost:5173, proxying /api to the daemon
 ```
 
+`web/.npmrc` sets `ignore-scripts=true`, so no dependency's `preinstall`,
+`install` or `postinstall` runs on an install here — npm 11, which is what Node
+24 ships and what CI builds with, runs them by default. The same setting makes
+`npm run X` skip `preX`/`postX`, which is why `package.json` declares no such
+hook and `tests/test_web_toolchain.py` fails if one appears.
+
 Run the daemon alongside it, on its default port:
 
 ```bash
