@@ -107,8 +107,10 @@ TITLE_ROW = 22
 META_ROW = 23
 
 # VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode,
-# as the hex strings the write_memory API takes. The $D018 value is
-# c64.D018_HIRES_PAGE_A, which every host scene reads from there.
+# as the hex strings the write_memory API takes. $D018 is not one of them: it
+# comes from the host scene's self._d018, which is c64.D018_HIRES_PAGE_A for
+# every scene and bank except waveform.py's bank-1 fallback, whose matrix
+# offset has to clear the SID payload (waveform.D018_BANK1).
 D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
 D016_STANDARD = "08"  # 40-col, no multicolor
 
