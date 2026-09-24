@@ -26,7 +26,7 @@ except ImportError:
     mido = None
     HAVE_MIDI = False
 
-from _fakes import frozen_throttles
+from _fakes import frozen_throttles, logged_exception_type
 
 from c64cast.app import config as cfgmod
 from c64cast.control import midi_control
@@ -622,7 +622,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         ):
             self._run_reader(listener, listener._reader, "_midi_port", batch)
         self.assertEqual(len(cm.records), 1)
-        self.assertIsNotNone(cm.records[0].exc_info)
+        self.assertIs(logged_exception_type(cm.records[0]), RuntimeError)
 
     def test_a_repeating_clock_feed_failure_reports_once_not_once_per_message(self):
         with frozen_throttles(midi_control):
@@ -634,7 +634,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
         ):
             self._run_reader(listener, listener._clock_reader, "_clock_port", batch)
         self.assertEqual(len(cm.records), 1)
-        self.assertIsNotNone(cm.records[0].exc_info)
+        self.assertIs(logged_exception_type(cm.records[0]), RuntimeError)
 
     def test_a_repeating_action_failure_reports_once_not_once_per_message(self):
         # `_apply` raising is per message too, and a held pad repeats it at
@@ -650,7 +650,7 @@ class WireTriggeredErrorThrottleTests(_MidiControlTestCase):
             for _ in range(self.N_MESSAGES):
                 listener._dispatch(mido.Message("note_on", note=36, velocity=100))
         self.assertEqual(len(cm.records), 1)
-        self.assertIsNotNone(cm.records[0].exc_info)
+        self.assertIs(logged_exception_type(cm.records[0]), RuntimeError)
 
     def test_each_reader_holds_its_own_report_budget(self):
         # A jammed dispatch must not swallow the clock port's first report:
