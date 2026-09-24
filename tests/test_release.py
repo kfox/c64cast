@@ -16,18 +16,19 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS = os.path.join(_REPO, "scripts")
 
 
-def _load_bump_version():
-    """Import scripts/bump_version.py by path; `scripts/` is not a package."""
-    path = os.path.join(_SCRIPTS, "bump_version.py")
-    spec = importlib.util.spec_from_file_location("bump_version", path)
+def _load_script(name: str):
+    """Import scripts/<name>.py by path; `scripts/` is not a package."""
+    path = os.path.join(_SCRIPTS, f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["bump_version"] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-bv = _load_bump_version()
+bv = _load_script("bump_version")
+wf = _load_script("lint_workflows")
 
 
 def _read(name: str) -> str:
@@ -52,6 +53,31 @@ def _workflow_action_refs() -> list[tuple[str, str, str]]:
         for ref, annotation in _USES.findall(_read(f".github/workflows/{name}")):
             refs.append((name, ref, annotation))
     return refs
+
+
+_PUBLISH_COMMAND = "uv publish"
+_TRUSTED_PUBLISHING = "--trusted-publishing always"
+_PYPI_ENVIRONMENT = "pypi"
+_RELEASE_COMMAND = "gh release create"
+
+
+def _run_steps(job: object) -> list[str]:
+    """Every `run:` script in a job, in order."""
+    steps = job.get("steps") if isinstance(job, dict) else None
+    if not isinstance(steps, list):
+        return []
+    return [str(step["run"]) for step in steps if isinstance(step, dict) and "run" in step]
+
+
+def _environment_name(job: object) -> str | None:
+    """The deployment environment a job runs in, in either spelling."""
+    environment = job.get("environment") if isinstance(job, dict) else None
+    if isinstance(environment, str):
+        return environment
+    if isinstance(environment, dict):
+        name = environment.get("name")
+        return name if isinstance(name, str) else None
+    return None
 
 
 def _book_outputs() -> list[str]:
@@ -271,6 +297,24 @@ class TestReleaseWorkflow(unittest.TestCase):
         cls.code = "\n".join(
             line for line in cls.yaml.splitlines() if not line.lstrip().startswith("#")
         )
+        cls.workflow = wf.parse(cls.yaml)
+
+    def _jobs_running(self, command: str) -> dict[str, object]:
+        """Every job with a `run:` step containing `command`, by job id."""
+        return {
+            job_id: job
+            for job_id, job in wf.jobs(self.workflow).items()
+            if any(command in script for script in _run_steps(job))
+        }
+
+    def _one_job_running(self, command: str) -> tuple[str, object]:
+        found = self._jobs_running(command)
+        self.assertEqual(
+            len(found),
+            1,
+            f"expected exactly one job to run `{command}`, found {sorted(found)}",
+        )
+        return next(iter(found.items()))
 
     def test_it_triggers_on_version_tags(self) -> None:
         self.assertIn('tags: ["v*"]', self.code)
@@ -345,12 +389,41 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertRegex(makefile, r"(?m)^books:", "the `books` Make target is gone")
 
     def test_publishing_happens_before_the_github_release(self) -> None:
-        self.assertIn("needs: [build, publish-pypi]", self.code)
+        publisher, _ = self._one_job_running(_PUBLISH_COMMAND)
+        releaser, job = self._one_job_running(_RELEASE_COMMAND)
+        self.assertIn(
+            publisher,
+            wf.needs_of(job) or [],
+            f"the `{releaser}` job does not wait for `{publisher}`, so a release "
+            f"can be announced for a version PyPI never received",
+        )
 
     def test_pypi_upload_uses_trusted_publishing(self) -> None:
-        self.assertIn("id-token: write", self.code)
-        self.assertIn("name: pypi", self.code)
-        self.assertIn("--trusted-publishing always", self.code)
+        """Asked of the job that publishes, not of the file.
+
+        `id-token` is in no default and a job's `permissions:` replaces the
+        workflow-level block rather than merging with it, so the grant only
+        counts in whichever block wins for this job. Searching the whole file
+        says the words are present somewhere, which a grant sitting where no
+        publishing job can reach it satisfies just as well (#471).
+        """
+        job_id, job = self._one_job_running(_PUBLISH_COMMAND)
+        self.assertTrue(
+            wf.grants_oidc(wf.effective_permissions(self.workflow, job)),
+            f"the `{job_id}` job publishes to PyPI, but the permissions it runs "
+            f"under grant no `id-token: write` — minting the token throws before "
+            f"anything uploads",
+        )
+        self.assertEqual(
+            _environment_name(job),
+            _PYPI_ENVIRONMENT,
+            f"the `{job_id}` job does not run in the `{_PYPI_ENVIRONMENT}` "
+            f"deployment environment, which is what holds the token to v* tags",
+        )
+        self.assertTrue(
+            any(_TRUSTED_PUBLISHING in script for script in _run_steps(job)),
+            f"the `{job_id}` job no longer passes `{_TRUSTED_PUBLISHING}`",
+        )
 
     def test_the_upload_is_digest_pinnable(self) -> None:
         # A Docker action resolving its image by action ref cannot be pinned.

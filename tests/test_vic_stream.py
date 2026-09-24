@@ -235,6 +235,24 @@ class WatchdogTest(unittest.TestCase):
         self.rx._rearm_at = 0.0
         self.rx._maybe_rearm()  # must not raise; the next round renews
 
+    def test_a_swallowed_link_failure_leaves_a_record(self):
+        """#419 stayed invisible because the swallow was a bare
+        `contextlib.suppress`: a command the machine never received left
+        nothing anywhere to find. Still not worth failing a caller over, so it
+        is a DEBUG line rather than a raise."""
+
+        def boom(destination: str, *, stop_after_s: float = 0.0) -> None:
+            raise OSError("link went away")
+
+        self.dma.vicstream_on = boom  # type: ignore[method-assign]
+        self.rx._rearm_at = 0.0
+        with self.assertLogs("c64cast.hw.vic_stream", level="DEBUG") as cm:
+            self.rx._maybe_rearm()
+        self.assertTrue(
+            any("watchdog re-arm" in m and "link went away" in m for m in cm.output),
+            cm.output,
+        )
+
 
 class StreamCommandTest(unittest.TestCase):
     """The two socket-DMA opcodes, and the duration's unit — which is the

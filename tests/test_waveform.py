@@ -1297,6 +1297,31 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertIn("SILENCE", api.regs)
         self.assertEqual(api.memories.get("D018"), "14")
 
+    def test_a_failing_irq_restore_does_not_starve_the_cycle_pre_silence(self):
+        # _cycle_silence_current's two halves also shared one try: a failed
+        # vector restore skipped the silencing, which is the lingering audio
+        # through the (CPU-bound) candidate footprinting that the method exists
+        # to prevent.
+        from c64cast.sid.waveform import WaveformScene
+
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path)
+        scene.setup()
+        self.addCleanup(scene.teardown)  # setup() starts the register poll thread
+        healthy = api.restore_kernal_irq_vector
+        # Registered after the teardown cleanup, so LIFO undoes the break
+        # first: a teardown still running against `link_down` would log its
+        # own failure outside any assertLogs.
+        self.addCleanup(setattr, api, "restore_kernal_irq_vector", healthy)
+        api.restore_kernal_irq_vector = link_down  # type: ignore[method-assign]
+        api.regs.pop("SILENCE", None)
+        with self.assertLogs("c64cast.sid.waveform", level="ERROR"):
+            scene._cycle_silence_current()
+        self.assertIn("SILENCE", api.regs)
+
     def test_teardown_silences_extra_chips_before_config_restore(self):
         # A 2SID tune on the U2+ emulated-stereo-SID surface: teardown must zero
         # the chip at $D420 BEFORE the config restore re-points that side at its
@@ -2380,8 +2405,6 @@ class WaveformPoolPickTest(unittest.TestCase):
     candidate per setup() and skip SIDs that fail payload validation."""
 
     def setUp(self):
-        rng_state = random.getstate()
-        self.addCleanup(random.setstate, rng_state)
         # The synthetic SIDs here would not survive the real host emulator.
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
