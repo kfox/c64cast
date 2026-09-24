@@ -23,10 +23,11 @@ for 60s`, which names the test and not the command — the blindness
 numbers do not move — `--doctor` run by hand still gives `uv` its 60 seconds.
 
 `ChildProcessHung` derives from `BaseException` for the reason `TestTimedOut`
-does. Both call sites above catch their own expiry and degrade to a warning —
+does. Both call sites above catch their own expiry —
 `except (OSError, subprocess.TimeoutExpired)` in one, `except (OSError,
 subprocess.SubprocessError)` in the other — so re-raising the `TimeoutExpired`
-would be swallowed into a "could not check" diagnostic and the test would go
+would be swallowed into a "could not check" diagnostic in `doctor` and into an
+empty diff the prose gate then passes in `lint_comments`, and the test would go
 green over a command that never returned. A distinct type is what clears those
 two; `BaseException` also clears the `except Exception` that `doctor` and
 `upgrade` degrade through elsewhere, and whichever one the next probe writes.

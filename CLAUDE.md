@@ -215,8 +215,9 @@ check", never as the command.
 hook, shortens any wait past the 20-second bound for the length of the test
 process and raises `ChildProcessHung` naming the command and what it had
 written. It derives from `BaseException` so no `except Exception` can swallow
-it: both of those sites degrade the `TimeoutExpired` it replaces to a warning,
-and `doctor` and `upgrade` degrade through `except Exception` elsewhere. The
+it: both of those sites swallow the `TimeoutExpired` it replaces — `doctor`
+into a `warn` row, the prose gate into an empty diff it then passes — and
+`doctor` and `upgrade` degrade through `except Exception` elsewhere. The
 production numbers do not move, and a caller that asked for *no more than* the
 bound keeps its own `TimeoutExpired`.
 

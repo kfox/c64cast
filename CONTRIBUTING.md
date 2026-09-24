@@ -242,7 +242,8 @@ startup hook, shortens any wait past `BOUND_S` inside the test process, kills
 the child and raises `ChildProcessHung` naming the command, the bound the
 caller had asked for and the tail of whatever the child wrote. It derives from
 `BaseException` for the reason `TestTimedOut` does: both sites above swallow
-the `TimeoutExpired` it replaces into "could not check", and `doctor` and
+the `TimeoutExpired` it replaces — `doctor` into a "could not check" `warn`
+row, `lint_comments` into an empty diff the gate then passes — and `doctor` and
 `upgrade` degrade through `except Exception` elsewhere, so nothing short of a
 `BaseException` clears every such handler. The production numbers stay where
 they are — `--doctor` run by hand still gives `uv` its 60 seconds — and a
