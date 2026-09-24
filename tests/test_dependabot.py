@@ -45,10 +45,18 @@ def _lines(path: str) -> list[str]:
 
 
 def _indented_past(lines: list[str], start: int, indent: int) -> list[str]:
-    """The lines after `start`, up to the first one not indented past `indent`."""
+    """The lines after `start`, up to the first one not indented past `indent`.
+
+    A blank line and a comment sit wherever the writer left them, so neither
+    ends the block nor enters it — a blank line between the hold and the next
+    key is a formatting choice, not a `versions:` list item.
+    """
     block = []
     for text in lines[start + 1 :]:
-        if text.strip() and len(text) - len(text.lstrip()) <= indent:
+        stripped = text.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(text) - len(text.lstrip()) <= indent:
             break
         block.append(text)
     return block
@@ -88,10 +96,12 @@ def _comparator_admits(text: str, major: int) -> bool:
 def _admits_major(spec: str, major: int) -> bool:
     """Whether a semver range lets through any version with this major."""
     clauses = [_PADDED_OPERATOR.sub(r"\1", clause).split() for clause in spec.split("||")]
+    assert all(clauses), (
+        f"{spec!r} is a range this module cannot read — npm reads an empty clause as "
+        f"`*`, so answering it would hide a widened peer rather than report one"
+    )
     return any(
-        all(_comparator_admits(text, major) for text in comparators)
-        for comparators in clauses
-        if comparators
+        all(_comparator_admits(text, major) for text in comparators) for comparators in clauses
     )
 
 
@@ -156,6 +166,11 @@ class RangeReadingTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             _admits_major(">=5.0.0 <8.0.0", 7)
 
+    def test_an_empty_range_raises_instead_of_reading_as_admitting_nothing(self):
+        for spec in ("", "^5.0.0 ||"):
+            with self.subTest(spec=spec), self.assertRaises(AssertionError):
+                _admits_major(spec, 7)
+
 
 class IgnoreEntryReadingTest(unittest.TestCase):
     """`_ignored_versions` against the committed file and its neighbors."""
@@ -181,6 +196,25 @@ class IgnoreEntryReadingTest(unittest.TestCase):
         ]
         self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
         self.assertEqual([">= 6.0.0"], _ignored_versions("svelte", lines))
+
+    def test_a_blank_line_after_the_list_does_not_end_up_in_it(self):
+        lines = [
+            "      - dependency-name: typescript",
+            "        versions:",
+            '          - ">= 7.0.0"',
+            "",
+            "    groups:",
+        ]
+        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
+
+    def test_a_comment_in_the_list_is_not_read_as_a_version(self):
+        lines = [
+            "      - dependency-name: typescript",
+            "        versions:",
+            "          # until svelte-check catches up",
+            '          - ">= 7.0.0"',
+        ]
+        self.assertEqual([">= 7.0.0"], _ignored_versions("typescript", lines))
 
     def test_a_sibling_key_in_the_entry_is_not_read_as_a_version(self):
         lines = [
