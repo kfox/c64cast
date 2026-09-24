@@ -177,6 +177,30 @@ names every loop at its construction site, so the name identifies the owner;
 the fix is to call that object's teardown from `addCleanup`. A stray gets half
 a second to finish first, so a thread genuinely winding down is not a failure.
 
+**A test that stops making progress is interrupted, not waited out.**
+`unittest_parallel` exposes no timeout and the CI jobs bound only the whole
+job, so a hung test used to spend that budget and identify itself nowhere.
+[`tests/_timeout_sandbox.py`](tests/_timeout_sandbox.py), armed from the same
+startup hook, caps a test at 60 seconds — far above the slowest legitimate one
+here, which measures about a second. Past the cap it writes every thread's
+stack to stderr under the test's name and raises `TestTimedOut` in the thread
+running it, so the run reports that test and goes on to the next. Set
+`C64CAST_TEST_TIMEOUT_S=0` to turn the watchdog off while stepping through a
+test under a debugger. What it cannot reach is a test blocked in a call that
+never returns to the interpreter — the module docstring has that and the rest
+of the blind spots.
+
+**A test may not leave the process-wide RNG seeded.** `random` and numpy's
+legacy global generator both carry state across tests in a worker, and this
+program draws from both, so a `random.seed()` left behind decides what a later
+test's production code draws — and which tests share a worker changes per run.
+[`tests/_rng_sandbox.py`](tests/_rng_sandbox.py) reseeds both from the test's
+own id before every test. A test that wants a particular sequence still calls
+`random.seed()` itself, in the test or in `setUp`; a seed set in `setUpClass`
+or at module import is overwritten before the first test under it runs. Prefer
+a `random.Random()` instance or a `np.random.Generator`, which are nobody
+else's state.
+
 If a test trips the filesystem hook, the fix is almost always to point the code
 under test at a file the test writes under `tempfile.mkdtemp()`, or to run the
 block from `tmp_cwd()` (in [`tests/_fakes.py`](tests/_fakes.py)) when what it
