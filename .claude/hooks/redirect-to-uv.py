@@ -17,16 +17,27 @@ Three shapes of command silently do the wrong thing in this repo:
 
 A `uv run` prefix exempts the interpreter case only, not the four checkers.
 Left alone: a `python3` one-liner that does not import `c64cast`,
-`scripts/diags/*.py`, and any `make` target. Sibling hooks own the neighboring
-cases: `redirect-to-make-test.py` for raw `unittest`/`pytest`, and
+`scripts/diags/*.py`, and any `make` target. Every command on the line is
+read, wherever it sits in a compound — `_shell.read` finds the ones a glued
+separator hides. Sibling hooks own the neighboring cases:
+`redirect-to-make-test.py` for raw `unittest`/`pytest`, and
 `redirect-bash-search.py` for unbounded searches and whole-file `cat`.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 import sys
+from pathlib import Path
+
+# Running `python3 <abs-path>` already puts the script's directory on
+# sys.path, but a loader that does not — `spec_from_file_location`, which is
+# how the tests reach a hook whose filename is no identifier — would raise
+# here at import time, and a PreToolUse hook that cannot be imported is a
+# hook that is silently off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _shell  # noqa: E402
 
 PIP_CMDS = {"pip", "pip3"}
 CHECKER_TARGETS = {
@@ -60,37 +71,19 @@ PYTHON_DENY = (
 )
 
 
-def _segments(cmd: str) -> list[list[str]]:
-    """Split into argv segments on shell separators. [] if unparseable (the hook
-    then allows — never block on a parse failure)."""
-    try:
-        toks = shlex.split(cmd, comments=True)
-    except ValueError:
-        return []
-    segs: list[list[str]] = []
-    cur: list[str] = []
-    for t in toks:
-        if t in ("&&", "||", "&", "|", ";"):
-            segs.append(cur)
-            cur = []
-        else:
-            cur.append(t)
-    if cur:
-        segs.append(cur)
-    return [s for s in segs if s]
-
-
 def _peel(argv: list[str]) -> tuple[list[str], bool]:
-    """Strip leading env assignments and run-wrappers off a segment.
+    """Strip leading env assignments, shell keywords and run-wrappers off a
+    command.
 
     Returns the remaining argv and whether a uv wrapper was among the things
     stripped (which is what makes a `python` invocation acceptable)."""
     uv = False
     while argv:
+        argv = _shell.strip_prefix(argv)
+        if not argv:
+            break
         first = argv[0]
-        if "=" in first and first.split("=", 1)[0].isidentifier():
-            argv = argv[1:]
-        elif first == "uv" and len(argv) > 1 and argv[1] == "run":
+        if first == "uv" and argv[1:2] == ["run"]:
             argv, uv = argv[2:], True
         elif first in ("uv", "uvx"):
             argv, uv = argv[1:], True
@@ -155,8 +148,8 @@ def main() -> int:
     cmd = (payload.get("tool_input") or {}).get("command") or ""
     if not cmd:
         return 0
-    for seg in _segments(cmd):
-        reason = verdict(seg)
+    for command in _shell.read(cmd).commands:
+        reason = verdict(command.argv)
         if reason:
             print(
                 json.dumps(

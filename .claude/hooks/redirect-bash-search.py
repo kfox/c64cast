@@ -3,56 +3,42 @@
 text into the context window.
 
 Trips on an unbounded recursive grep (`grep -r …`, or ripgrep/ag/ack, which
-recurse by default) with no `-l`/`-c`/`-m` bound, and on a whole-file
-`cat <file>`. A non-recursive grep, an already-bounded one, a pipe, a heredoc, a
-command substitution, a redirect, and any compound beyond `cd … && cmd` pass
-untouched. Every deny offers an alternative: add a bound, pipe to `head`, narrow
-the path, use Read for a file, or use the Grep tool if this session has one.
+recurse by default) with no `-l`/`-c`/`-m`/`-q` bound, and on a whole-file
+`cat <file>`. Every command on the line is read, wherever it sits in a
+compound — `_shell.read` finds the ones a glued separator hides. A
+non-recursive grep, an already-bounded one, a command whose output goes to a
+pipe or a file, and a line carrying a command substitution pass untouched.
+Every deny offers an alternative: add a bound, pipe to `head`, narrow the
+path, use Read for a file, or use the Grep tool if this session has one.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 import sys
+from pathlib import Path
+
+# Running `python3 <abs-path>` already puts the script's directory on
+# sys.path, but a loader that does not — `spec_from_file_location`, which is
+# how the tests reach a hook whose filename is no identifier — would raise
+# here at import time, and a PreToolUse hook that cannot be imported is a
+# hook that is silently off.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _shell  # noqa: E402
 
 SEARCH = {"grep", "egrep", "fgrep", "rg", "ack", "ag"}
 RECURSIVE_BY_DEFAULT = {"rg", "ack", "ag"}
-BOUND_LONG = {"-l", "--files-with-matches", "-L", "--files-without-match", "-c", "--count"}
-BAILOUT = ("|", "<<", "$(", "`", ">", "<", ";", "\n")
-
-
-def leading_argv(cmd: str) -> list[str] | None:
-    """argv of the first real command, or None if we shouldn't touch it."""
-    if any(tok in cmd for tok in BAILOUT):
-        return None
-    try:
-        toks = shlex.split(cmd, comments=True)
-    except ValueError:
-        return None
-    if not toks:
-        return None
-    segs: list[list[str]] = []
-    cur: list[str] = []
-    for t in toks:
-        if t in ("&&", "||", "&"):
-            segs.append(cur)
-            cur = []
-        else:
-            cur.append(t)
-    if cur:
-        segs.append(cur)
-    segs = [s for s in segs if s]
-    if not segs:
-        return None
-    if len(segs) >= 2 and segs[0][0] == "cd":
-        segs = segs[1:]
-    if len(segs) != 1:
-        return None
-    argv = segs[0]
-    while argv and "=" in argv[0] and argv[0].split("=", 1)[0].isidentifier():
-        argv = argv[1:]
-    return argv or None
+BOUND_LONG = {
+    "-l",
+    "--files-with-matches",
+    "-L",
+    "--files-without-match",
+    "-c",
+    "--count",
+    "--quiet",
+    "--silent",
+}
 
 
 def _short_bundles(args: list[str]) -> str:
@@ -73,7 +59,7 @@ def _is_bounded(args: list[str]) -> bool:
     if any(a.startswith("-m") or a.startswith("--max-count") for a in args):
         return True
     bundles = _short_bundles(args)
-    return ("l" in bundles) or ("c" in bundles)
+    return any(letter in bundles for letter in "lcq")
 
 
 def verdict(argv: list[str]) -> str | None:
@@ -102,16 +88,37 @@ def verdict(argv: list[str]) -> str | None:
     return None
 
 
+def line_verdict(cmd: str) -> str | None:
+    """Why some command on `cmd` would spill unbounded text, or None.
+
+    Output that goes to a pipe or a file never reaches the context window,
+    however much of it there is, so those commands are passed over. A line
+    carrying a command substitution is left alone entirely: lifting the
+    substituted command out leaves the enclosing one's operands incomplete,
+    and this hook's costly direction is the false deny — it nudges, and a
+    wrong nudge spends a round trip on a command that was fine.
+    """
+    reading = _shell.read(cmd)
+    if reading.unreadable or reading.has_substitution():
+        return None
+    for command in reading.commands:
+        if command.stdout_to_pipe or command.stdout_to_file:
+            continue
+        argv = _shell.strip_prefix(command.argv)
+        if not argv:
+            continue
+        reason = verdict(argv)
+        if reason:
+            return reason
+    return None
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except Exception:
         return 0  # never block on a parse failure
-    cmd = (payload.get("tool_input") or {}).get("command") or ""
-    argv = leading_argv(cmd)
-    if not argv:
-        return 0
-    reason = verdict(argv)
+    reason = line_verdict((payload.get("tool_input") or {}).get("command") or "")
     if not reason:
         return 0
     print(

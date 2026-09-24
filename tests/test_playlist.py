@@ -419,7 +419,14 @@ class PlaylistTest(unittest.TestCase):
             f"expected advance-failure log, got: {cap.output!r}",
         )
 
-    def test_stop_event_halts_loop_promptly(self):
+    def test_stop_event_halts_the_loop_between_frames(self):
+        # What this has to assert is that the run loop re-reads stop_event
+        # between frames instead of running the scene to completion. It used
+        # to assert that pl.run() returned inside 1.0 s of wall clock, which
+        # measures how loaded the box is; the frame count says the same thing
+        # about the loop and nothing at all about the machine. Ten million
+        # frames from done, so a loop that only looked once would render them
+        # all rather than come back under a hundred.
         s = FakeScene("A", frames_until_done=10_000_000)
         stop = threading.Event()
         api = FakeApi()
@@ -432,11 +439,15 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        arm_deadline(self, 0.05, stop.set)
-        t0 = time.time()
+        driven = _drive(stop, lambda: s.frame_count >= 1)
         pl.run()
-        dt = time.time() - t0
-        self.assertLess(dt, 1.0, f"stop_event should interrupt within ~50ms, took {dt:.2f}s")
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the scene never rendered a frame to stop it after")
+        self.assertLess(
+            s.frame_count,
+            100,
+            f"the loop ran on past the stop: {s.frame_count} frames rendered",
+        )
         self.assertGreater(s.teardown_count, 0, "current scene must be torn down")
 
     def test_keyboard_interrupt_triggers_clean_teardown(self):
