@@ -23,27 +23,31 @@ that reaches `subprocess` without a `timeout`, counting `timeout=None` as none
 — which is why there is no second copy of this reasoning at a call site.
 
 Not every child the suite starts, though, because the sweep reads `tests/`
-only. Production code under test starts its own: `doctor._probe_uv_lock` runs
-a real `uv lock --check` in 31 of `test_doctor`'s tests, bounded at 60 s — the
-same number as `_timeout_sandbox._CAP_S`, so a hung `uv` there still reports as
-the cap rather than as a stuck child. That bound is a production choice for a
-legitimately slow command and is not this module's to change.
+only: production code under test starts its own, under bounds that are a
+production choice and not this module's to rewrite. `tests/_child_sandbox.py`
+holds those to :data:`BOUND_S` for the length of the test process — the
+production numbers stay where they are — and raises past the caller's
+`except` when one of them expires.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Any
 
-#: Seconds a child process started by a test may run.
+#: Seconds a child process started under a test may run — one a test module
+#: starts through :func:`run_bounded`, and, through `tests/_child_sandbox.py`,
+#: one that production code under test starts for itself.
 #:
-#: A full run of the suite's subprocess-bearing modules starts 155 children and
-#: the slowest measures 0.73 s (a `git` call against a scratch repository), so
-#: this is ~27x the real ceiling — no honest child is near it even on a runner
-#: several times slower. The other end is `_timeout_sandbox._CAP_S`: staying at
-#: a third of it means two expirations inside one test still report as stuck
-#: children rather than as the per-test cap's vaguer "no progress", and the
-#: first of them arrives 40 s before that cap would.
+#: A full run starts 192 children and the slowest measures 0.41 s (a `git
+#: commit` against a scratch repository); the 31 real `uv lock --check` calls
+#: `doctor._probe_uv_lock` makes come in under 0.1 s each. So this is ~48x the
+#: real ceiling — no honest child is near it even on a runner several times
+#: slower. The other end is `_timeout_sandbox._CAP_S`: staying at a third of it
+#: means two expirations inside one test still report as stuck children rather
+#: than as the per-test cap's vaguer "no progress", and the first of them
+#: arrives 40 s before that cap would.
 #: tests/test_child_process.py pins both ends.
 BOUND_S = 20.0
 
@@ -68,10 +72,38 @@ def run_bounded(
     try:
         return subprocess.run(argv, timeout=timeout, **kwargs)
     except subprocess.TimeoutExpired as expired:
-        raise AssertionError(
-            f"child process did not exit within {timeout:g}s and was killed: "
-            f"{list(argv)}{_captured(expired)}"
-        ) from expired
+        raise AssertionError(hung_message(argv, timeout, expired)) from expired
+
+
+def hung_message(
+    argv: Any, bound: float, expired: subprocess.TimeoutExpired, *, note: str = ""
+) -> str:
+    """What a child that had to be killed was, and what it had written.
+
+    Shared with `tests/_child_sandbox.py`, which kills children this module
+    never started: two renderings of one failure would drift, and the tail of
+    the stream is the part a reader has to be able to rely on finding.
+
+    `note` goes between the command and that tail, for a caller whose bound is
+    not the one the command was written against.
+    """
+    return (
+        f"child process did not exit within {bound:g}s and was killed: "
+        f"{_argv_text(argv)}{note}{_captured(expired)}"
+    )
+
+
+def _argv_text(argv: Any) -> str:
+    """`argv` as one readable string, for every spelling `Popen` accepts.
+
+    `list()` is wrong for the `shell=True` spelling, where `Popen.args` is a
+    single string and listing it spells the command out one character per
+    element — and it raises outright on the `Popen(Path(...))` spelling, which
+    would replace the named hang with a `TypeError` from here.
+    """
+    if isinstance(argv, (str, bytes, os.PathLike)):
+        return os.fsdecode(argv)
+    return str(list(argv))
 
 
 def _captured(expired: subprocess.TimeoutExpired) -> str:

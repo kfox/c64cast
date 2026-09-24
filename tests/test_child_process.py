@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 import _child_process
@@ -118,6 +119,31 @@ class RunBoundedTest(unittest.TestCase):
         self.assertIn("bad", str(caught.exception))
 
 
+class HungMessageNamesEveryArgvSpellingTest(unittest.TestCase):
+    """`Popen.args` is a sequence, a string under `shell=True`, or a path.
+
+    `tests/_child_sandbox.py` renders the args of a `Popen` it did not start,
+    so all three reach here — and a spelling this cannot render raises a
+    `TypeError` in place of the hang it was called to name.
+    """
+
+    def message(self, argv: Any) -> str:
+        return _child_process.hung_message(argv, 1.0, subprocess.TimeoutExpired(argv, 1.0))
+
+    def test_a_sequence_is_rendered_as_one(self):
+        self.assertIn("['git', 'status']", self.message(["git", "status"]))
+
+    def test_a_shell_string_is_not_spelled_out_one_character_per_element(self):
+        self.assertIn("git status", self.message("git status"))
+
+    def test_a_path_renders_rather_than_raising(self):
+        # `str(path)` rather than the literal: `Path("/bin/true")` renders as
+        # `\bin\true` on Windows, where the separator is the platform's and
+        # not this test's subject.
+        path = pathlib.Path("/bin/true")
+        self.assertIn(str(path), self.message(path))
+
+
 class BoundSitsBelowThePerTestCapTest(unittest.TestCase):
     """The relation the bound exists for, pinned so raising it goes red.
 
@@ -133,9 +159,10 @@ class BoundSitsBelowThePerTestCapTest(unittest.TestCase):
         self.assertLess(BOUND_S * 2, _timeout_sandbox._CAP_S)
 
     def test_the_bound_clears_the_slowest_child_this_suite_runs(self):
-        # Measured at 0.73 s over the 155 children a full run starts. An order
-        # of magnitude is the floor: below it, a loaded CI runner fails a
-        # healthy child.
+        # Measured at 0.41 s over the 192 children a full run starts, the
+        # `uv lock --check` calls `_child_sandbox` now covers included. An
+        # order of magnitude is the floor: below it, a loaded CI runner fails
+        # a healthy child.
         self.assertGreater(BOUND_S, 10.0)
 
 

@@ -203,6 +203,21 @@ twelve call sites before it omitted it. `scripts/` is out of scope: the scripts 
 bound their own calls, and `scripts/diags/` drives real hardware from a
 terminal, where a child running for minutes is the measurement.
 
+**A child that the code *under test* starts is bounded too, by a different
+guard.** That sweep reads `tests/` only, so a timeout a module chose for a user
+at a terminal ends up governing the suite as well — and several of them are the
+per-test cap exactly, `doctor._probe_uv_lock`'s 60 seconds for `uv lock
+--check` among them. A wedged command there cost 60 seconds and came back
+either as the cap's "no progress" or as the site's own swallowed answer, never
+as the command. [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from
+the same startup hook, shortens any wait past the 20-second bound for the
+length of the test process and raises `ChildProcessHung` naming the command and
+what it had written. It derives from `BaseException` because every one of those
+sites catches the `TimeoutExpired` it replaces and carries on. The production
+numbers do not move, and a caller that asked for *no more than* the bound keeps
+its own `TimeoutExpired`. That module's docstring is where the capped sites are
+listed, with what each one does when its child's expiry is swallowed.
+
 **A test cannot leave the process-wide RNG seeded either.**
 [tests/_rng_sandbox.py](tests/_rng_sandbox.py) reseeds `random` and numpy's
 legacy global generator from the test's own id before every test, so a
