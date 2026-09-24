@@ -762,6 +762,17 @@ def teardown_stack(stack: SystemStack) -> None:
             lambda: hw_provision.restore_video_output(stack.api, stack.video_output_restore),
         ),
         ("U64 reset", stack.api.reset),
+        # The last thing before the link goes, and that position is the point.
+        # `ScreenFeed` retires its receiver only once `manager.session` is
+        # cleared, which happens *after* this teardown returns — so its poll
+        # thread is still renewing the machine's watchdog every
+        # `vic_stream.REARM_EVERY_S`, and an OFF sent earlier in this list can
+        # be undone by a re-arm landing in front of `api.close`. After that
+        # close nothing can reach the machine, and ~2.6 MB/s of UDP outlives
+        # the show for the firmware's full 20 s watchdog. Sending it here
+        # leaves the re-arm one round trip to hit rather than several seconds
+        # of REST restores and the reset.
+        ("screen stream off", stack.api.stop_video_stream),
         ("API close", stack.api.close),
         ("camera release", lambda: stack.source.release() if stack.source else None),
     )

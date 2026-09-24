@@ -419,6 +419,22 @@ class C64Backend(ABC):
         second and must not outlive whoever is watching it."""
         raise BackendCapabilityError("open_video_stream")
 
+    def stop_video_stream(self) -> None:  # noqa: B027 — not abstract; the no-op is the default
+        """Tell the machine to stop sending its VIC output, whether or not this
+        process believes a receiver is up.
+
+        A no-op by default rather than a `BackendCapabilityError`, unlike every
+        other capability method here: the one caller is a teardown step, and a
+        raise there would log an error on every run of a backend that has no
+        VIC of its own to stop.
+
+        Idempotent and unconditional on purpose. Whether a receiver is still
+        registered is this process's bookkeeping, and #419 was exactly the case
+        where that bookkeeping said "nobody is watching" while the machine went
+        on sending ~2.6 MB/s at a socket that had closed, until the firmware's
+        own 20-second watchdog expired. One control frame on teardown costs a
+        round trip and answers the question outright."""
+
     def put_config_item(
         self, category: str, item: str, value: str, *, timeout: float = 3.0
     ) -> None:
