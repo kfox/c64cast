@@ -17,7 +17,7 @@ HAS_PARALLEL := $(shell command -v parallel 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help sync venv-check lint fmt test coverage typecheck doctor bench check preflight clean schema web \
+.PHONY: help sync venv-check lint fmt test coverage typecheck doctor bench check preflight clean schema web web-check \
 	mutation-ready \
 	mutation-check \
         guide reference card books guide-figures reference-figures \
@@ -88,6 +88,7 @@ help:
 	@echo "  bench      scripts/bench.py — async write pipeline"
 	@echo "  schema     regenerate c64cast/data/c64cast.schema.json from the config metadata"
 	@echo "  web        rebuild the web console into c64cast/web/dist (needs Node)"
+	@echo "  web-check  the committed bundle matches a fresh build, emitted files and all (what CI runs)"
 	@echo "  guide      render docs/guide/*.md to the User's Guide PDF (needs typst)"
 	@echo "  reference  render docs/reference/*.md to the Reference Guide PDF (needs typst)"
 	@echo "  card       render docs/card/*.md to the Performance Card PDF (needs typst)"
@@ -172,6 +173,20 @@ web:
 	$(call require-node,npm,Building the web console)
 	cd web && npm ci --no-audit --no-fund && npm run build && npm test
 
+# `git diff` alone is blind to a path the build newly emitted and nobody
+# committed, because an untracked file is not a diff: a source change that adds a
+# dynamic import emits a chunk, `git commit -a` stages only the tracked half, and
+# the diff then reports a bundle that is missing a file its own app.js imports.
+# Both halves, or this gate passes a console that 404s on load.
+web-check:
+	git diff --exit-code -- c64cast/web/dist
+	@stray=$$(git ls-files --others --exclude-standard -- c64cast/web/dist); \
+	  [ -z "$$stray" ] || { \
+	    echo "The build emitted files under c64cast/web/dist that are not committed:"; \
+	    echo "$$stray" | sed 's/^/  /'; \
+	    echo "Stage them: git add c64cast/web/dist"; \
+	    exit 1; }
+
 # Real captures saved over the same filenames are left alone; the script's
 # --force-all is the escape.
 guide-figures: $(SYNC)
@@ -219,7 +234,7 @@ preflight: lint test
 	$(call require-node,node,The docs search test)
 	node --test docs/shared/search.test.mjs
 	$(MAKE) web
-	git diff --exit-code -- c64cast/web/dist
+	$(MAKE) web-check
 
 clean:
 	rm -rf build dist .coverage .coverage.* htmlcov coverage.xml
