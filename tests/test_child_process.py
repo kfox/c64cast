@@ -137,7 +137,11 @@ class HungMessageNamesEveryArgvSpellingTest(unittest.TestCase):
         self.assertIn("git status", self.message("git status"))
 
     def test_a_path_renders_rather_than_raising(self):
-        self.assertIn("/bin/true", self.message(pathlib.Path("/bin/true")))
+        # `str(path)` rather than the literal: `Path("/bin/true")` renders as
+        # `\bin\true` on Windows, where the separator is the platform's and
+        # not this test's subject.
+        path = pathlib.Path("/bin/true")
+        self.assertIn(str(path), self.message(path))
 
 
 class BoundSitsBelowThePerTestCapTest(unittest.TestCase):
