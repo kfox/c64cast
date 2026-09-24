@@ -21,7 +21,8 @@ updates:
     labels:
       - "dependencies"
       - "javascript"
-    # svelte-check peers on typescript ^5.0.0 || ^6.0.0.
+    # svelte-check does not peer on typescript 7 yet; tests/test_dependabot.py
+    # fails once it does, which is when this entry goes.
     ignore:
       - dependency-name: "typescript"
         versions:
