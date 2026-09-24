@@ -19,8 +19,8 @@ finite, so the join is bounded, `_communicate` raises `TimeoutExpired`, and
 
 :func:`run_bounded` is how a *test module* starts a child, and
 `tests/test_child_process.py` sweeps every module under `tests/` and fails one
-that reaches `subprocess` without a `timeout` — which is why there is no second
-copy of this reasoning at a call site.
+that reaches `subprocess` without a `timeout`, counting `timeout=None` as none
+— which is why there is no second copy of this reasoning at a call site.
 
 Not every child the suite starts, though, because the sweep reads `tests/`
 only. Production code under test starts its own: `doctor._probe_uv_lock` runs

@@ -255,7 +255,7 @@ class EveryChildProcessIsBoundTest(unittest.TestCase):
             "these calls start a child process with nothing bounding it, so one that "
             "never exits blocks until the 60s per-test cap reports 'no progress' "
             "instead of naming it; call run_bounded() from tests/_child_process.py, "
-            "or pass timeout= yourself:\n  " + "\n  ".join(offenders),
+            "or pass a timeout= of your own that is not None:\n  " + "\n  ".join(offenders),
         )
 
 

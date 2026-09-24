@@ -218,7 +218,8 @@ actually runs; when it expires the child is killed and the test fails naming
 the command and the tail of whatever it wrote. Pass `timeout=` to it for a
 child genuinely slower than the default. An AST sweep in
 [`tests/test_child_process.py`](tests/test_child_process.py) fails any module
-under `tests/` that reaches `subprocess` without a `timeout` — including
+under `tests/` that reaches `subprocess` without a bound — a missing
+`timeout=` and a `timeout=None` alike — including
 `Popen`, which takes none, so a test that needs one extends
 `_child_process.py` rather than hand-rolling the bound. `scripts/` is out of
 scope: the ones a gate runs already bound their own calls, and

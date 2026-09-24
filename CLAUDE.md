@@ -197,9 +197,9 @@ reported it as "no progress", naming the test but not the cause.
 `subprocess.run` under a 20-second bound; a child that outlives it is killed
 and the test fails naming the command and whatever the child had written. The
 AST sweep in [tests/test_child_process.py](tests/test_child_process.py) fails
-any module under `tests/` that reaches `subprocess` without a `timeout`, so
-the bound cannot be omitted the way all twelve call sites before it omitted
-it. `scripts/` is out of scope: the scripts that run under a gate already
+any module under `tests/` that reaches `subprocess` without a `timeout` —
+`timeout=None` counts as none — so the bound cannot be omitted the way all
+twelve call sites before it omitted it. `scripts/` is out of scope: the scripts that run under a gate already
 bound their own calls, and `scripts/diags/` drives real hardware from a
 terminal, where a child running for minutes is the measurement.
 
