@@ -31,6 +31,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from _child_process import run_bounded
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _HOOKS_DIR = _REPO_ROOT / ".claude" / "hooks"
 _SETTINGS = _REPO_ROOT / ".claude" / "settings.json"
@@ -77,7 +79,7 @@ def _command_for(script: str) -> str:
 
 def _run(command: str, project_dir: str, payload: str) -> subprocess.CompletedProcess[str]:
     """`command` run the way Claude Code runs a `type: "command"` hook."""
-    return subprocess.run(
+    return run_bounded(
         ["/bin/sh", "-c", command],
         input=payload,
         capture_output=True,

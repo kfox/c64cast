@@ -9,11 +9,12 @@ destination is gone.
 from __future__ import annotations
 
 import re
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from _child_process import run_bounded
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -122,7 +123,7 @@ def _linkable_files() -> list[Path]:
     `git ls-files` rather than a walk: it reaches `assets/`, which `_SKIP_DIRS`
     excludes, while still ignoring build output and anything untracked.
     """
-    listing = subprocess.run(
+    listing = run_bounded(
         ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
         capture_output=True,
         text=True,

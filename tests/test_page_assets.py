@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 import unittest
 from html.parser import HTMLParser
+
+from _child_process import run_bounded
 
 from c64cast.control import page_assets
 from c64cast.control.perf_console import perf_page_html
@@ -147,7 +148,7 @@ class ScriptSyntaxTest(unittest.TestCase):
                         path = os.path.join(tmp, f"{i}.js")
                         with open(path, "w", encoding="utf-8") as fh:
                             fh.write(body)
-                        proc = subprocess.run(
+                        proc = run_bounded(
                             ["node", "--check", path],
                             capture_output=True,
                             text=True,

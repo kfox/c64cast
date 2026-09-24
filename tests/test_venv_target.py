@@ -17,13 +17,13 @@ import importlib.util
 import io
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from _child_process import run_bounded
 from _fakes import tmp_cwd
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -238,7 +238,7 @@ class InterpreterIsolationTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.env = self.root / "env"
-        subprocess.run(
+        run_bounded(
             [sys.executable, "-m", "venv", "--without-pip", str(self.env)],
             check=True,
             capture_output=True,

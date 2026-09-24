@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import tomllib
 import unittest
+
+from _child_process import run_bounded
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PYPROJECT = os.path.join(_REPO, "pyproject.toml")
@@ -76,7 +77,7 @@ def _tracked_text() -> list[tuple[str, str]]:
     `git ls-files` rather than a walk: it skips build output and anything
     untracked without a directory blocklist to keep current.
     """
-    listing = subprocess.run(
+    listing = run_bounded(
         ["git", "-C", _REPO, "ls-files", "-z"],
         capture_output=True,
         text=True,

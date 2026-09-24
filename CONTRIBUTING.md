@@ -190,6 +190,25 @@ test under a debugger. What it cannot reach is a test blocked in a call that
 never returns to the interpreter — the module docstring has that and the rest
 of the blind spots.
 
+**A test starts a child process only through `run_bounded`.** `subprocess.run`
+with no `timeout` waits forever; on Windows it waits in `Popen._communicate`,
+where `endtime` is None and the reader-thread join is `join(None)`. That is
+what PR #491's Windows job hit — a `node --check` that never returned, blocking
+until the per-test cap above reported "no progress", which names the test and
+not the cause. `run_bounded()` in
+[`tests/_child_process.py`](tests/_child_process.py) is `subprocess.run` under
+a 20-second bound, a third of that cap and ~27x the slowest child this suite
+actually runs; when it expires the child is killed and the test fails naming
+the command and the tail of whatever it wrote. Pass `timeout=` to it for a
+child genuinely slower than the default. An AST sweep in
+[`tests/test_child_process.py`](tests/test_child_process.py) fails any module
+under `tests/` that reaches `subprocess` without a `timeout` — including
+`Popen`, which takes none, so a test that needs one extends
+`_child_process.py` rather than hand-rolling the bound. `scripts/` is out of
+scope: the ones a gate runs already bound their own calls, and
+`scripts/diags/` drives real hardware from a terminal, where a child running
+for minutes is the measurement rather than a hang.
+
 **A test may not leave the process-wide RNG seeded.** `random` and numpy's
 legacy global generator both carry state across tests in a worker, and this
 program draws from both, so a `random.seed()` left behind decides what a later
