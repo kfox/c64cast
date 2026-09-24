@@ -39,6 +39,20 @@ from . import paths
 log = logging.getLogger("c64cast")
 
 
+#: The library loggers `configure_logging` holds at WARNING, each paired with
+#: the `-v` count that releases it.
+#:
+#: The parent `uvicorn` logger is named so that any descendant uvicorn adds
+#: later is held back by inheritance, and its two present children are named
+#: as well because a level written on the child outranks the parent's — and
+#: uvicorn's own `Config.configure_logging` writes exactly those three.
+HELD_BACK_LOGGERS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (2, _transport_log.TRANSPORT_LOGGERS),
+    (2, ("uvicorn", "uvicorn.error", "uvicorn.asgi")),
+    (3, ("uvicorn.access",)),
+)
+
+
 class RedactingFormatter(logging.Formatter):
     """A formatter that strips secrets out of the line it produces.
 
@@ -61,8 +75,10 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
     load) doesn't double up.
 
     `verbosity` 0 is INFO, 1 (`-v`) is DEBUG, 2 (`-vv`) additionally releases
-    the urllib3 loggers this otherwise holds at WARNING while holding back the
-    background polls' own reads, and 3 (`-vvv`) releases those too."""
+    the urllib3 and uvicorn server loggers this otherwise holds at WARNING
+    while holding back the background polls' own reads, and 3 (`-vvv`)
+    releases those plus uvicorn's access log. `HELD_BACK_LOGGERS` is the whole
+    list and the thresholds."""
     # INFO by default, so lifecycle messages (scene transitions, audio bring-up,
     # resets) need no -v.
     level = logging.INFO
@@ -108,12 +124,16 @@ def configure_logging(verbosity: int, log_file: str | None = None) -> None:
             )
             root.addHandler(fh)
 
-    # urllib3 logs every REST request to the U64, which drowns -v in HTTP
-    # transport noise. `cli.main` calls this again on the loaded config, so a
-    # one-sided hold-back here would outlive the second call's -vv.
-    transport = logging.NOTSET if verbosity >= 2 else logging.WARNING
-    for noisy in _transport_log.TRANSPORT_LOGGERS:
-        logging.getLogger(noisy).setLevel(transport)
+    # urllib3 logs every REST request to the U64 and uvicorn's access log a
+    # line per asset a phone fetches, either of which drowns -v in HTTP noise.
+    # Written on every pass, both directions: `cli.main` calls this again on
+    # the loaded config, so a one-sided hold-back here would outlive the
+    # second call's -vv, and a release has to un-pin what uvicorn's own
+    # `Config.configure_logging` may have written in between.
+    for release_at, names in HELD_BACK_LOGGERS:
+        held = logging.NOTSET if verbosity >= release_at else logging.WARNING
+        for noisy in names:
+            logging.getLogger(noisy).setLevel(held)
     _transport_log.install(verbosity == 2)
 
 

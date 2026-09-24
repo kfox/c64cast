@@ -1,24 +1,34 @@
-"""`-v`, `-vv` and `-vvv` are different runs, and one logger is the difference.
+"""`-v`, `-vv` and `-vvv` are different runs, and a named list is the difference.
 
-urllib3 logs a line per REST request to the Commodore, which buries the
-application's own DEBUG records — so `configure_logging` holds it at WARNING,
-and `-vv` is what releases it. No other logger's *level* moves, so that
-release is the whole of what the second `v` does to the levels.
+urllib3 logs a line per REST request to the Commodore and uvicorn's access log
+a line per asset a phone fetches, either of which buries the application's own
+DEBUG records — so `configure_logging` holds a list of library loggers at
+WARNING and the extra `v`s release it in two steps. `-vv` takes in urllib3 and
+uvicorn's server loggers (program-level detail); `-vvv` adds uvicorn's access
+log, which is firehose-shaped and names every URL requested. Nothing outside
+that list has its level moved either way.
 
 `-vv` additionally attaches a filter that drops the records a background poll
 loop raises, since those are unconditional and say nothing about the link an
 operator is asking about; `-vvv` leaves the filter off. That half is
 `TransportFilterTest`.
+
+`AccessLogTest` is the end-to-end half: a real `ControlServer`, built *after*
+`configure_logging` — the ordering uvicorn's own `dictConfig` was breaking —
+answering a real request.
 """
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
+import socket
 import tempfile
 import threading
 import unittest
-from typing import cast
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from _fakes import FakeAPI
 
@@ -26,7 +36,48 @@ from c64cast import _transport_log
 from c64cast.app import cli_commands
 from c64cast.hw.backend import C64Backend
 
+try:
+    import uvicorn  # noqa: F401
+
+    HAVE_UVICORN = True
+except ImportError:
+    HAVE_UVICORN = False
+
+# Spelled out rather than imported from the subject, so that a name dropped
+# from `cli_commands.HELD_BACK_LOGGERS` fails here instead of agreeing with
+# itself.
 _TRANSPORT = ("urllib3", "urllib3.connectionpool")
+_SERVER = ("uvicorn", "uvicorn.error", "uvicorn.asgi")
+_ACCESS = ("uvicorn.access",)
+_UVICORN = _SERVER + _ACCESS
+_HELD_BACK = _TRANSPORT + _UVICORN
+
+
+async def _ok_app(
+    scope: dict[str, Any],
+    receive: Callable[[], Awaitable[dict[str, Any]]],
+    send: Callable[[dict[str, Any]], Awaitable[None]],
+) -> None:
+    """The smallest ASGI app that answers a request and speaks the lifespan
+    protocol. Raw ASGI rather than FastAPI so that the access log can be driven
+    with nothing between uvicorn and the assertion — and so these tests need
+    only uvicorn installed."""
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain"), (b"content-length", b"2")],
+        }
+    )
+    await send({"type": "http.response.body", "body": b"ok"})
 
 
 def _own_levels() -> dict[str, int]:
@@ -69,15 +120,19 @@ def _levels_after(verbosity: int | None) -> dict[str, int]:
     return after
 
 
-class TransportVerbosityTest(unittest.TestCase):
-    """`configure_logging` moves the root logger and the transport loggers, so
-    each test restores both — the transport levels belong to the process, and
-    the suite's other tests are entitled to find them as they were."""
+class _RestoresLogging(unittest.TestCase):
+    """`configure_logging` moves the root logger and every held-back logger, so
+    each test restores all of them — those levels and filters belong to the
+    process, and the suite's other tests are entitled to find them as they
+    were."""
 
     def setUp(self):
         root = logging.getLogger()
         handlers, level = root.handlers[:], root.level
-        levels = {name: logging.getLogger(name).level for name in _TRANSPORT}
+        saved = {
+            name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
+            for name in _HELD_BACK
+        }
 
         def restore() -> None:
             for handler in root.handlers[:]:
@@ -85,11 +140,15 @@ class TransportVerbosityTest(unittest.TestCase):
                     handler.close()
             root.handlers[:] = handlers
             root.setLevel(level)
-            for name, saved in levels.items():
-                logging.getLogger(name).setLevel(saved)
+            for name, (lvl, filters) in saved.items():
+                logger = logging.getLogger(name)
+                logger.setLevel(lvl)
+                logger.filters[:] = filters
 
         self.addCleanup(restore)
 
+
+class TransportVerbosityTest(_RestoresLogging):
     def _transport_debug(self) -> list[bool]:
         """Whether a urllib3 DEBUG record would be emitted, root level included."""
         return [logging.getLogger(name).isEnabledFor(logging.DEBUG) for name in _TRANSPORT]
@@ -125,7 +184,7 @@ class TransportVerbosityTest(unittest.TestCase):
 
         self.assertEqual(self._transport_debug(), [False, False])
 
-    def test_the_second_v_moves_nothing_but_the_transport(self):
+    def test_the_second_v_does_not_move_the_application_logger(self):
         cli_commands.configure_logging(1)
         at_one = logging.getLogger("c64cast").isEnabledFor(logging.DEBUG)
         cli_commands.configure_logging(2)
@@ -133,52 +192,205 @@ class TransportVerbosityTest(unittest.TestCase):
 
         self.assertEqual((at_one, at_two), (True, True))
 
-    def test_no_other_logger_moves_between_the_two(self):
-        """The changelog entry and this module both say urllib3 is the whole of
-        the difference. Holding back a second logger on `-vv` has to fail here,
-        whether the new code clears it on the `-v` path or only ever sets it."""
+    def test_no_other_logger_moves_between_the_first_two_vs(self):
+        """The changelog entry and this module both say the second `v` is
+        urllib3 plus uvicorn's server loggers and nothing else. Holding back a
+        further logger on `-vv` has to fail here, whether the new code clears
+        it on the `-v` path or only ever sets it."""
         at_two = _levels_after(2)
         at_one = _levels_after(1)
 
         moved = {n for n in at_two.keys() | at_one.keys() if at_two.get(n) != at_one.get(n)}
-        self.assertEqual(moved, set(_TRANSPORT))
+        self.assertEqual(moved, set(_TRANSPORT) | set(_SERVER))
 
-    def test_one_v_holds_back_the_transport_and_nothing_else(self):
-        """The test above compares the two verbosities, so a logger held back
-        at both escapes it — and that is the shape of the claim, which is about
-        what `configure_logging` holds back rather than about the second `v`.
-        Measured against not calling it at all, such a logger shows up."""
+    def test_only_the_access_log_moves_between_the_second_and_third_v(self):
+        """`-vvv`'s whole effect on the levels is uvicorn's access log — the
+        poll filter it also takes off is not a level. A second firehose parked
+        behind the third `v` shows up here."""
+        at_three = _levels_after(3)
+        at_two = _levels_after(2)
+
+        moved = {n for n in at_three.keys() | at_two.keys() if at_three.get(n) != at_two.get(n)}
+        self.assertEqual(moved, set(_ACCESS))
+
+    def test_one_v_holds_back_the_named_list_and_nothing_else(self):
+        """The two tests above compare verbosities, so a logger held back at
+        both escapes them — and that is the shape of the claim, which is about
+        what `configure_logging` holds back rather than about one `v`. Measured
+        against not calling it at all, such a logger shows up."""
         untouched = _levels_after(None)
         at_one = _levels_after(1)
 
         held = {n for n in untouched.keys() | at_one.keys() if untouched.get(n) != at_one.get(n)}
-        self.assertEqual(held, set(_TRANSPORT))
+        self.assertEqual(held, set(_HELD_BACK))
 
 
-class TransportFilterTest(unittest.TestCase):
+class UvicornVerbosityTest(_RestoresLogging):
+    """The web console's server loggers arrive at `-vv`, its access log at
+    `-vvv`. Effective levels rather than own levels, because a release writes
+    NOTSET and leaves the root logger to decide."""
+
+    def _enabled(self) -> dict[str, bool]:
+        return {name: logging.getLogger(name).isEnabledFor(logging.INFO) for name in _UVICORN}
+
+    def test_a_default_run_holds_every_uvicorn_logger_back(self):
+        cli_commands.configure_logging(0)
+        self.assertEqual(set(self._enabled().values()), {False})
+
+    def test_one_v_holds_them_back_as_well(self):
+        cli_commands.configure_logging(1)
+        self.assertEqual(set(self._enabled().values()), {False})
+
+    def test_two_vs_release_the_server_loggers_but_not_the_access_log(self):
+        cli_commands.configure_logging(2)
+        self.assertEqual(
+            self._enabled(),
+            {"uvicorn": True, "uvicorn.error": True, "uvicorn.asgi": True, "uvicorn.access": False},
+        )
+
+    def test_three_vs_release_the_access_log_too(self):
+        cli_commands.configure_logging(3)
+        self.assertEqual(set(self._enabled().values()), {True})
+
+    def test_the_second_call_of_a_run_decides(self):
+        """`cli.main` configures twice — once on the CLI args, once on the
+        loaded config — so a WARNING left standing by the first call would
+        outrank the second call's `-vvv`."""
+        cli_commands.configure_logging(0)
+        cli_commands.configure_logging(3)
+
+        self.assertEqual(set(self._enabled().values()), {True})
+
+    def test_and_the_other_way_round(self):
+        cli_commands.configure_logging(3)
+        cli_commands.configure_logging(0)
+
+        self.assertEqual(set(self._enabled().values()), {False})
+
+    @unittest.skipUnless(HAVE_UVICORN, "uvicorn not installed")
+    def test_a_server_built_afterwards_does_not_re_pin_them(self):
+        """The ordering hazard: `uvicorn.Config.__init__` runs `dictConfig`,
+        which is global, so a `ControlServer` built after the command line was
+        parsed used to put every level back to uvicorn's own."""
+        from c64cast.control.control_plane import ControlServer
+
+        cli_commands.configure_logging(3)
+        before = self._enabled()
+        ControlServer("127.0.0.1", 0, _ok_app, label="probe")
+        after = self._enabled()
+
+        self.assertEqual(before, dict.fromkeys(_UVICORN, True))
+        self.assertEqual(after, before)
+
+    @unittest.skipUnless(HAVE_UVICORN, "uvicorn not installed")
+    def test_the_server_passes_uvicorn_no_logging_configuration_at_all(self):
+        """Each of the three is a way for uvicorn to overwrite what
+        `configure_logging` decided: `log_config` runs `dictConfig`,
+        `log_level` writes the three server levels, and `access_log=False`
+        strips the access handler rather than filtering it."""
+        from c64cast.control.control_plane import ControlServer
+
+        cfg = ControlServer("127.0.0.1", 0, _ok_app, label="probe")._cfg
+
+        self.assertEqual((cfg.log_config, cfg.log_level, cfg.access_log), (None, None, True))
+
+
+@unittest.skipUnless(HAVE_UVICORN, "uvicorn not installed")
+class AccessLogTest(_RestoresLogging):
+    """One real request through a real `ControlServer`, and what it logged.
+
+    The capture is on the **root** logger rather than on `uvicorn.access`,
+    deliberately: the hold-back is a level written on `uvicorn.access` itself,
+    and `assertLogs` sets the level of whichever logger it is handed — so
+    asserting there would overwrite the thing under test and pass at every
+    verbosity. Root is also where the records really go, since the server is
+    built to install no handlers of its own.
+
+    The server is constructed *after* `configure_logging`, which is the
+    ordering `uvicorn.Config.__init__`'s `dictConfig` was breaking."""
+
+    def _drive_one_request(self, request_path: str) -> None:
+        """Start a probe server, answer one request from it, stop it again.
+        The caller has already chosen the verbosity, which is the subject."""
+        from c64cast.control.control_plane import ControlServer
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        server = ControlServer("127.0.0.1", port, _ok_app, label="probe")
+        # Belt for a failing assertion below; `stop()` is idempotent, and the
+        # thread sandbox wants the serve thread joined however the test ends.
+        self.addCleanup(server.stop)
+
+        self.assertTrue(server.start(), "the probe server did not bind")
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", request_path)
+            self.assertEqual(conn.getresponse().read(), b"ok")
+        finally:
+            conn.close()
+        server.stop()
+
+    def _records_at(self, verbosity: int) -> list[logging.LogRecord]:
+        cli_commands.configure_logging(verbosity)
+        with self.assertLogs(level=logging.INFO) as cm:
+            self._drive_one_request("/api/state?system=all")
+        return cm.records
+
+    def _log_file_at(self, verbosity: int, request_path: str) -> str:
+        """What `--log-file` holds after one request at this verbosity.
+
+        `assertLogs` is no use here: it replaces the root handlers for the
+        duration of its block, and the redacting file handler under test is
+        one of them. Dropping the *terminal* handler instead is what keeps the
+        run silent, and the file is where the records are verified."""
+        path = os.path.join(tempfile.mkdtemp(), "run.log")
+        cli_commands.configure_logging(verbosity, log_file=path)
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if not isinstance(handler, logging.FileHandler):
+                root.removeHandler(handler)
+                handler.close()
+
+        self._drive_one_request(request_path)
+
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_default_run_logs_nothing_from_uvicorn(self):
+        names = [r.name for r in self._records_at(0)]
+        self.assertEqual([n for n in names if n.startswith("uvicorn")], [])
+
+    def test_two_vs_show_the_server_coming_up_and_no_access_log(self):
+        names = [r.name for r in self._records_at(2)]
+        self.assertIn("uvicorn.error", names)
+        self.assertNotIn("uvicorn.access", names)
+
+    def test_three_vs_add_the_access_log(self):
+        access = [r for r in self._records_at(3) if r.name == "uvicorn.access"]
+        self.assertEqual(len(access), 1)
+        # The client's ephemeral port leads the line, so the assertion starts
+        # after it — the URL is the half that makes this a `-vvv` record.
+        self.assertEqual(
+            access[0].getMessage().split(" - ", 1)[1],
+            '"GET /api/state?system=all HTTP/1.1" 200',
+        )
+
+    def test_a_token_in_a_requested_url_is_masked_in_the_log_file(self):
+        """The access log names every URL, and the console's login URL carries
+        the admin token — so `--log-file`, which outlives the run and is not
+        created 0600, has to get the masked form. It does only because
+        uvicorn's records now reach the root logger's redacting file handler
+        instead of a handler of uvicorn's own."""
+        written = self._log_file_at(3, "/login?token=s3cr3t-abcdef")
+
+        self.assertIn('"GET /login?token=REDACTED HTTP/1.1" 200', written)
+        self.assertNotIn("s3cr3t-abcdef", written)
+
+
+class TransportFilterTest(_RestoresLogging):
     """The poll hold-back: a transport DEBUG record raised inside a
     `quiet_transport()` block is dropped at `-vv` and kept at `-vvv`."""
-
-    def setUp(self):
-        root = logging.getLogger()
-        handlers, level = root.handlers[:], root.level
-        saved = {
-            name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
-            for name in _TRANSPORT
-        }
-
-        def restore() -> None:
-            for handler in root.handlers[:]:
-                if handler not in handlers:
-                    handler.close()
-            root.handlers[:] = handlers
-            root.setLevel(level)
-            for name, (lvl, filters) in saved.items():
-                logger = logging.getLogger(name)
-                logger.setLevel(lvl)
-                logger.filters[:] = filters
-
-        self.addCleanup(restore)
 
     def _filtered(self, name: str) -> bool:
         return any(
