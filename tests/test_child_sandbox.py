@@ -57,7 +57,9 @@ def _wedge_on_path(name: str, says: str) -> str:
     launcher = os.path.join(directory, name)
     with open(launcher, "w", encoding="utf-8") as handle:
         handle.write(f"#!/bin/sh\necho {shlex.quote(says)} >&2\nexec sleep 300\n")
-    os.chmod(launcher, 0o755)
+    # Owner only: the test is the only thing that runs this, and 0o755 puts a
+    # world-executable file on a PATH the suite then prepends.
+    os.chmod(launcher, 0o700)
     return directory
 
 
