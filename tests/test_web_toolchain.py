@@ -56,6 +56,7 @@ wf = _load_lint_workflows()
 _PIN_FILE = ".node-version"
 _VERSION_SPEC = re.compile(r"\A\d+(\.\d+){0,2}\Z")
 _SETUP_NODE = "actions/setup-node@"
+_STATED_VERSION = "node-version"
 
 # The hooks npm fires on its own, with no `npm run` naming them. The second
 # group hangs off npm's built-in commands (`npm start`, `npm test`, `npm stop`,
@@ -116,27 +117,48 @@ def _scripts() -> dict[str, str]:
         return dict(json.load(handle).get("scripts", {}))
 
 
-def _steps(directory: str | None = None) -> list[tuple[str, str, dict[str, Any]]]:
-    """Every step in every workflow, as (file name, job id, the step mapping)."""
+def _workflows(directory: str | None = None) -> list[tuple[str, Any]]:
+    """Every workflow, as (file name, the parsed document)."""
     paths = wf.workflow_paths(directory)
     assert paths, "no workflow files found — this module is reading the wrong directory"
-    found = []
-    for path in paths:
-        for job_id, job in wf.jobs(wf.load(path)).items():
+    return [(os.path.basename(path), wf.load(path)) for path in paths]
+
+
+def _steps(directory: str | None = None) -> list[tuple[str, str, dict[str, Any]]]:
+    """Every step in every workflow, as (file name, job id, the step mapping)."""
+    found: list[tuple[str, str, dict[str, Any]]] = []
+    for name, document in _workflows(directory):
+        for job_id, job in wf.jobs(document).items():
             declared = job.get("steps") if isinstance(job, dict) else None
             for step in declared if isinstance(declared, list) else []:
                 if isinstance(step, dict):
-                    found.append((os.path.basename(path), job_id, step))
+                    found.append((name, job_id, step))
     return found
 
 
 def _setup_node_steps(directory: str | None = None) -> list[tuple[str, str, dict[str, Any]]]:
     """The steps that run `actions/setup-node`."""
     return [
-        entry
-        for entry in _steps(directory)
-        if str(entry[2].get("uses", "")).startswith(_SETUP_NODE)
+        (name, job_id, step)
+        for name, job_id, step in _steps(directory)
+        if str(step.get("uses", "")).startswith(_SETUP_NODE)
     ]
+
+
+def _stated_versions(document: Any) -> list[Any]:
+    """Every `node-version:` value anywhere in one workflow.
+
+    A step's `with:` is not the only place a version can be written. A
+    `strategy.matrix` entry states one, and a job that calls a reusable
+    workflow states one in a job-level `with:` — that job declares no
+    `steps:` at all, so a reader that walks steps never reaches it.
+    """
+    if isinstance(document, dict):
+        stated = [value for key, value in document.items() if key == _STATED_VERSION]
+        return stated + [found for value in document.values() for found in _stated_versions(value)]
+    if isinstance(document, list):
+        return [found for item in document for found in _stated_versions(item)]
+    return []
 
 
 def _inputs(step: dict[str, Any]) -> dict[str, Any]:
@@ -185,12 +207,12 @@ class NodeVersionPinTest(unittest.TestCase):
             "resolves per reader, which is the disagreement this file exists to remove",
         )
 
-    def test_no_step_states_a_node_version_of_its_own(self):
-        for name, job_id, step in _steps():
-            with self.subTest(workflow=name, job=job_id):
-                self.assertNotIn(
-                    "node-version",
-                    _inputs(step),
+    def test_no_workflow_states_a_node_version_of_its_own(self):
+        for name, document in _workflows():
+            with self.subTest(workflow=name):
+                self.assertEqual(
+                    [],
+                    _stated_versions(document),
                     f"a version written here can disagree with {_PIN_FILE}; "
                     "use `node-version-file` instead",
                 )
@@ -234,11 +256,15 @@ jobs:
   other:
     steps:
       - uses: actions/checkout@abc
+  called:
+    uses: ./.github/workflows/build.yml
+    with:
+      node-version: '22'
 """
 
 
-class SetupNodeStepReadingTest(unittest.TestCase):
-    """`_setup_node_steps` against the shapes a step can be written in."""
+class WorkflowReadingTest(unittest.TestCase):
+    """The reading helpers against the shapes a workflow can be written in."""
 
     def setUp(self):
         self.directory = tempfile.mkdtemp()
@@ -246,6 +272,7 @@ class SetupNodeStepReadingTest(unittest.TestCase):
             handle.write(_SHAPES)
         self.found = _setup_node_steps(self.directory)
         self.by_job = {job_id: step for _, job_id, step in self.found}
+        ((_, self.document),) = _workflows(self.directory)
 
     def test_both_step_shapes_are_seen_and_nothing_else_is(self):
         self.assertEqual(["named", "terse"], [job_id for _, job_id, _ in self.found])
@@ -255,3 +282,9 @@ class SetupNodeStepReadingTest(unittest.TestCase):
 
     def test_a_step_naming_no_version_file_reads_as_naming_none(self):
         self.assertIsNone(_inputs(self.by_job["terse"]).get("node-version-file"))
+
+    def test_a_version_stated_outside_any_step_is_still_seen(self):
+        self.assertIn("22", _stated_versions(self.document))
+
+    def test_a_version_file_is_not_read_as_a_stated_version(self):
+        self.assertEqual(["22"], _stated_versions(self.document))
