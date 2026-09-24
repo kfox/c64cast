@@ -27,23 +27,11 @@ its install script to put a binary in place installs clean under the switch
 and fails later, in `vite build`, naming neither the script nor the setting —
 so a new one has to be read before it is skipped.
 
-`build.target` in `web/vite.config.ts` is the console's browser floor, and it
-is guarded for the same reason the Node pin is: left unstated it is Vite's
-`baseline-widely-available` default, which resolves to a later set of browsers
-with each Vite version. The bundle diff CI runs cannot tell that move from an
-ordinary re-minification, and deleting the stated value does not move the
-bundle at all for as long as the default still matches it — so the rebuild is
-green either way, and this is the only reader that fails.
-
-The target is read out of the config as text, there being no TypeScript parser
-here to read it with. Three shapes make that reading narrower than a search for
-`target:`. The dev-server proxy entries each have a `target` of their own and
-an option nested under `build` may have one too, so the read is scoped to the
-`build` block's own keys. A commented-out line is still a line, so comments
-come out first. And a brace, a `//` or a `target:` inside a string literal is
-none of those, so strings are read in the same scan as the comments — either
-one taken first swallows the other's delimiter — and every key is looked for
-in the view with the literals blanked.
+`build.target` in `web/vite.config.ts` is the console's browser floor, pinned
+for the same reason the Node version is. Its guard lives in
+`web/vite.config.test.ts`, not here: whether the config *states* a target is a
+question about TypeScript, there is no parser for that at Python-test time, and
+Vite's own `loadConfigFromFile` answers it without one.
 
 The workflow half reads YAML through `scripts/lint_workflows.py`, the
 repository's one workflow reader, rather than matching the raw text: a step is
@@ -69,7 +57,6 @@ _PACKAGE_JSON = os.path.join(_REPO, "web", "package.json")
 _LOCKFILE = os.path.join(_REPO, "web", "package-lock.json")
 _NODE_VERSION = os.path.join(_REPO, ".node-version")
 _MISE = os.path.join(_REPO, "mise.toml")
-_VITE_CONFIG = os.path.join(_REPO, "web", "vite.config.ts")
 
 
 def _load_lint_workflows():
@@ -130,128 +117,6 @@ _TRUE = frozenset({"true", "1", "yes", "on"})
 # fsevents ships its prebuilt binding in the tarball, so the `node-gyp rebuild`
 # its `install` script runs is a fallback that never has to fire.
 _SKIPPABLE_INSTALL_SCRIPTS = frozenset({"node_modules/fsevents"})
-
-_BUILD_BLOCK = re.compile(r"\bbuild\s*:\s*\{")
-# The key alone, matched against the string-blanked view so a `target:` that
-# lives inside a string literal is not one of build's keys.
-_TARGET_KEY = re.compile(r"\btarget\s*:")
-# Either shape Vite accepts: a list of targets, or one target on its own. Built
-# from the key above rather than spelling it a second time: the search and the
-# read have to agree on what a key is, and a narrowing applied to one of two
-# copies is silent — the key is found and the value then refuses to match, so a
-# config that states a floor reads as stating none.
-_TARGET = re.compile(rf"""{_TARGET_KEY.pattern}\s*(?P<value>\[[^]]*]|["'`][^"'`]*["'`])""")
-_QUOTED = re.compile(r"""["'`]([^"'`]*)["'`]""")
-# A browser and the version it is supported from, as esbuild and Lightning CSS
-# name it: `chrome111`, `safari16.4`, `ios16.4`.
-_BROWSER_VERSION = re.compile(r"\A[a-z]+\d+(?:\.\d+)*\Z")
-
-
-def _text_and_code(source: str) -> tuple[str, str]:
-    """`source` with comments dropped, and that same text with strings blanked.
-
-    Both come out of one scan because neither can be found without the other:
-    an apostrophe in `// the console's floor` opens a string literal for a
-    reader that takes strings first, and the `//` inside
-    `"http://127.0.0.1:8123"` opens a comment for one that takes comments
-    first — each swallowing code up to the next delimiter, closing braces
-    included.
-
-    The two are equal in length, so an index into the blanked text indexes the
-    kept text: a brace or a `target:` found in the first is that character in
-    the second, and one that only appears inside a string is not found at all.
-    """
-    text: list[str] = []
-    code: list[str] = []
-    index = 0
-    quote = ""
-    while index < len(source):
-        char = source[index]
-        pair = source[index : index + 2]
-        if quote:
-            text.append(char)
-            code.append(" ")
-            if char == "\\" and index + 1 < len(source):
-                text.append(source[index + 1])
-                code.append(" ")
-                index += 2
-                continue
-            if char == quote:
-                quote = ""
-        elif pair == "//":
-            end = source.find("\n", index)
-            index = len(source) if end < 0 else end
-            continue
-        elif pair == "/*":
-            end = source.find("*/", index + 2)
-            index = len(source) if end < 0 else end + 2
-            continue
-        elif char in "\"'`":
-            quote = char
-            text.append(char)
-            code.append(" ")
-        else:
-            text.append(char)
-            code.append(char)
-        index += 1
-    return "".join(text), "".join(code)
-
-
-def _build_options(source: str) -> tuple[str, str]:
-    """A Vite config's `build: { … }` options, its nested objects dropped.
-
-    Both views `_text_and_code` yields, cut to the same span and so still
-    equal in length: the options as written, and the same text with its string
-    literals blanked. A key is looked for in the second and read out of the
-    first, because a `target:` written inside a string is not a key of
-    `build` — and a config whose only `target:` sits in a `banner` string
-    would otherwise read as stating a floor with `build.target` deleted.
-
-    Scoped to that block because every `server.proxy` entry states a `target`
-    of its own: a reader that took the first one in the file would read a proxy
-    URL as the browser floor and pass for a config that states no floor. And
-    scoped to the block's own keys, because a `target` nested under it — an
-    option of `rollupOptions`, say — is not the floor either, and a reader that
-    took the first one *inside* the block would pass for the same config with
-    `build.target` deleted from it.
-
-    A nested object's key is kept, only its body goes: what is dropped is
-    everything a `{` opens.
-    """
-    text, code = _text_and_code(source)
-    opened = _BUILD_BLOCK.search(code)
-    if opened is None:
-        return "", ""
-    depth = 0
-    own_text: list[str] = []
-    own_code: list[str] = []
-    for index in range(opened.end() - 1, len(code)):
-        char = code[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return "".join(own_text), "".join(own_code)
-        elif depth == 1:
-            own_text.append(text[index])
-            own_code.append(char)
-    return "", ""
-
-
-def _declared_target(source: str) -> list[str] | None:
-    """The `build.target` a Vite config states, or None if it states none."""
-    text, code = _build_options(source)
-    key = _TARGET_KEY.search(code)
-    if key is None:
-        return None
-    stated = _TARGET.match(text, key.start())
-    return None if stated is None else _QUOTED.findall(stated.group("value"))
-
-
-def _vite_config() -> str:
-    with open(_VITE_CONFIG, encoding="utf-8") as handle:
-        return handle.read()
 
 
 def _npmrc() -> dict[str, str]:
@@ -417,153 +282,6 @@ class NodeVersionPinTest(unittest.TestCase):
             f"without this mise ignores {_PIN_FILE}, so a local `make web` builds "
             "the committed bundle on a different Node than CI rebuilds it on",
         )
-
-
-class BrowserFloorTest(unittest.TestCase):
-    def test_the_floor_is_stated(self):
-        self.assertTrue(
-            _declared_target(_vite_config()),
-            "web/vite.config.ts states no build.target, so the console's browser "
-            "floor is Vite's default again and the next Vite bump moves it — as a "
-            "rebuilt bundle indistinguishable from a re-minified one",
-        )
-
-    def test_every_browser_in_the_floor_carries_a_version(self):
-        stated = _declared_target(_vite_config())
-        assert stated, "no build.target stated; a loop over nothing is not a pass"
-        for entry in stated:
-            with self.subTest(target=entry):
-                self.assertRegex(
-                    entry,
-                    _BROWSER_VERSION,
-                    "a target such as `baseline-widely-available` is Vite's moving "
-                    "default written out rather than a floor: it names a different "
-                    "set of browsers per Vite version",
-                )
-
-
-_VITE_SHAPES = """\
-export default defineConfig({
-  build: {
-    outDir: "../c64cast/web/dist",
-    // target: ["chrome1"],
-    target: ["chrome111", "safari16.4"],
-    rollupOptions: { output: { assetFileNames: "assets/app.[ext]" } },
-  },
-  server: {
-    proxy: {
-      "/api": { target: "http://127.0.0.1:8123", ws: true },
-    },
-  },
-});
-"""
-
-_VITE_NO_FLOOR = """\
-export default defineConfig({
-  build: { outDir: "../c64cast/web/dist" },
-  server: { proxy: { "/api": { target: "http://127.0.0.1:8123" } } },
-});
-"""
-
-_VITE_ONE_TARGET = 'export default defineConfig({ build: { target: "chrome111" } });\n'
-
-_VITE_PROXY_FIRST = """\
-export default defineConfig({
-  server: { proxy: { "/api": { target: "http://127.0.0.1:8123" } } },
-  build: { target: ["chrome111"] },
-});
-"""
-
-# `build.target` deleted, with an option nested under `build` that has a
-# `target` of its own left standing in front of where it was.
-_VITE_NESTED_TARGET = """\
-export default defineConfig({
-  build: {
-    rollupOptions: { output: { target: "chrome111" } },
-  },
-});
-"""
-
-# An apostrophe in a comment, and a brace inside a string — each of which ends
-# the `build` block early for a reader that takes strings and comments apart.
-_VITE_AWKWARD_LITERALS = """\
-export default defineConfig({
-  build: {
-    // The console's browser floor.
-    target: ["chrome111"],
-    rollupOptions: { output: { banner: "} //" } },
-  },
-});
-"""
-
-# `build.target` deleted, with a `target:` left inside a string among build's
-# own keys — text a rollup `banner` or `footer` can carry verbatim.
-_VITE_STRING_TARGET = """\
-export default defineConfig({
-  build: {
-    footer: "target: 'chrome111'",
-  },
-});
-"""
-
-# An escaped quote inside a string, which the scan consumes two characters at a
-# time — the one place the two views can come out of step without any fixture
-# above noticing, since reading the key out of one view and the value out of
-# the other is only sound while an index into either means the same character.
-_VITE_ESCAPED_LITERAL = """\
-export default defineConfig({
-  build: {
-    target: ["chrome111"],
-    rollupOptions: { output: { banner: "a \\" } and // still the string" } },
-  },
-});
-"""
-
-
-class ViteConfigReadingTest(unittest.TestCase):
-    """The config reader against the shapes a Vite config can be written in."""
-
-    def test_a_commented_out_target_is_not_read_as_the_stated_one(self):
-        self.assertEqual(["chrome111", "safari16.4"], _declared_target(_VITE_SHAPES))
-
-    def test_one_target_on_its_own_reads_as_one_entry(self):
-        self.assertEqual(["chrome111"], _declared_target(_VITE_ONE_TARGET))
-
-    def test_a_config_stating_no_floor_reads_as_stating_none(self):
-        self.assertIsNone(_declared_target(_VITE_NO_FLOOR))
-
-    def test_a_nested_object_does_not_end_the_build_block(self):
-        self.assertIn("rollupOptions", _build_options(_VITE_SHAPES)[0])
-
-    def test_a_target_nested_under_build_is_not_read_as_the_floor(self):
-        self.assertIsNone(_declared_target(_VITE_NESTED_TARGET))
-
-    def test_a_target_inside_a_string_is_not_read_as_the_floor(self):
-        self.assertIsNone(_declared_target(_VITE_STRING_TARGET))
-
-    def test_the_kept_and_blanked_views_index_the_same_characters(self):
-        text, code = _text_and_code(_VITE_ESCAPED_LITERAL)
-        self.assertEqual(
-            len(text),
-            len(code),
-            "the views are read at shared indices, so one shorter than the other "
-            "reads the value out of the wrong place — or off the end",
-        )
-        self.assertEqual(
-            [],
-            [index for index, char in enumerate(code) if char != " " and text[index] != char],
-            "a character kept in the blanked view is that character in the written "
-            "one, or a key found in the first is not the key read out of the second",
-        )
-        options, blanked = _build_options(_VITE_ESCAPED_LITERAL)
-        self.assertEqual(len(options), len(blanked))
-        self.assertEqual(["chrome111"], _declared_target(_VITE_ESCAPED_LITERAL))
-
-    def test_a_brace_or_comment_start_inside_a_string_is_neither(self):
-        self.assertEqual(["chrome111"], _declared_target(_VITE_AWKWARD_LITERALS))
-
-    def test_a_proxy_url_ahead_of_the_build_block_is_not_a_comment(self):
-        self.assertEqual(["chrome111"], _declared_target(_VITE_PROXY_FIRST))
 
 
 _SHAPES = """\

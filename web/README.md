@@ -60,8 +60,8 @@ with Vite, and the 7 to 8 bump raised the floor with no source change behind it.
 Both the JavaScript minifier and Lightning CSS emit for that value — it decides
 whether a breakpoint ships as `(width >= 40rem)` or as `(min-width: 40rem)` —
 so editing it moves the bundle, and the diff above is what makes the move
-visible. `tests/test_web_toolchain.py` fails if the value goes missing, which a
-rebuild cannot notice for as long as Vite's default still matches it.
+visible. `vite.config.test.ts` fails if the value goes missing, which a rebuild
+cannot notice for as long as Vite's default still matches it.
 
 Moving the floor is that edit plus a rebuild, in one commit. What the installed
 Vite would default to on its own, for choosing the value:
@@ -81,11 +81,13 @@ npx vitest         # watch mode
 ```
 
 Pure logic pulled out of a component — `*.test.ts` beside the module it tests,
-e.g. `src/lib/configListLogic.test.ts`. Plain `vitest`, no DOM: everything
-under test today is logic a component imports rather than a component itself,
-which is why there's no `@testing-library/svelte` here yet. `vitest.config.ts`
-is deliberately separate from `vite.config.ts` — the app build needs the Svelte
-and Tailwind plugins, and a logic-only test needs neither.
+e.g. `src/lib/configListLogic.test.ts`. Plain `vitest`, no DOM: nothing under
+test today is a component, which is why there's no `@testing-library/svelte`
+here yet. `vite.config.test.ts` is the one test whose subject is not logic a
+component imports: it holds `vite.config.ts` to stating a browser floor.
+`vitest.config.ts` is deliberately separate from `vite.config.ts` — the app
+build needs the Svelte and Tailwind plugins, and a logic-only test needs
+neither.
 
 ## Layout
 
