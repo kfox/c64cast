@@ -18,6 +18,7 @@ import logging
 import os
 import tempfile
 import time
+import unittest
 from collections.abc import Iterator
 from unittest import mock
 
@@ -25,6 +26,44 @@ from c64cast._wire_log import LogThrottle
 from c64cast.hw import vdc
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import actual_rate_for_latch, kernal_cia1_latch
+
+
+class RestoresLogging(unittest.TestCase):
+    """Base class for a test that calls `configure_logging`.
+
+    That function moves the root logger's handlers and level, and writes a
+    level and a poll filter onto every logger in
+    `cli_commands.HELD_BACK_LOGGERS` — all of which belong to the process and
+    outlive the test. The held-back names are read from the subject rather
+    than listed here, so a logger added to that table is restored without
+    anyone remembering to add it twice; a test module asserting *which*
+    loggers move still spells its own list out.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from c64cast.app import cli_commands
+
+        held_back = [name for names, _ in cli_commands.HELD_BACK_LOGGERS for name in names]
+        root = logging.getLogger()
+        handlers, level = root.handlers[:], root.level
+        saved = {
+            name: (logging.getLogger(name).level, logging.getLogger(name).filters[:])
+            for name in held_back
+        }
+
+        def restore() -> None:
+            for handler in root.handlers[:]:
+                if handler not in handlers:
+                    handler.close()
+            root.handlers[:] = handlers
+            root.setLevel(level)
+            for name, (lvl, filters) in saved.items():
+                logger = logging.getLogger(name)
+                logger.setLevel(lvl)
+                logger.filters[:] = filters
+
+        self.addCleanup(restore)
 
 
 @contextlib.contextmanager

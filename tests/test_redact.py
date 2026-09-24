@@ -6,11 +6,12 @@ printed there is the only entry point a phone gets, and has to be *gone* from
 `--log-file`, which outlives the run and is not created `0600`. The buffer half
 of the same split is in `test_serve.py`, next to the buffer.
 
-Nothing here reconfigures the root logger. `configure_logging` clears the root
-handlers and installs its own, and that outlives the test — the hazard
+`ConfigureLoggingWiringTest` is the only class here that reconfigures the root
+logger, and it undoes it: `configure_logging` clears the root handlers and
+installs its own, and that outlives the test — the hazard
 `_fakes.quiet_logging` exists for. So the end-to-end check drives a handler the
-test owns outright, and the wiring check inspects what `configure_logging`
-attached without emitting through it.
+test owns outright, and the wiring check calls `configure_logging` under
+`RestoresLogging` and inspects what it attached without emitting through it.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import logging
 import os
 import tempfile
 import unittest
+
+from _fakes import RestoresLogging
 
 from c64cast._redact import redact_secrets, redact_source_line
 from c64cast.app import cli_commands
@@ -336,23 +339,9 @@ class RedactingFormatterTest(unittest.TestCase):
         self.assertIn("token=REDACTED", written)
 
 
-class ConfigureLoggingWiringTest(unittest.TestCase):
-    """`configure_logging` reconfigures the root logger, so each test undoes it
-    — restoring the handler list rather than closing anything, since the
-    handlers it replaced belong to whoever installed them."""
-
-    def setUp(self):
-        root = logging.getLogger()
-        self.handlers, self.level = root.handlers[:], root.level
-
-        def restore() -> None:
-            for h in root.handlers[:]:
-                if h not in self.handlers:
-                    h.close()
-            root.handlers[:] = self.handlers
-            root.setLevel(self.level)
-
-        self.addCleanup(restore)
+class ConfigureLoggingWiringTest(RestoresLogging):
+    """`configure_logging` reconfigures the root logger and the held-back
+    library loggers, so each test undoes all of it."""
 
     def test_the_log_file_handler_is_redacting(self):
         path = os.path.join(tempfile.mkdtemp(), "run.log")

@@ -301,7 +301,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `listen` | [`generative` (2)](03-vocabulary.md#generative), [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [The Beat Grid (6)](07-inputs-and-outputs.md#the-beat-grid) |
 | `listen_sample_rate` | [`mic` and `listen` (4)](05-sound-and-music.md#mic-and-listen), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `location` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather) |
-| `--log-file` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
+| `--log-file` | [What a Scene Records About Itself (6)](07-inputs-and-outputs.md#what-a-scene-records-about-itself), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `log_file` | [Paths Inside a File (1)](02-config-rules.md#paths-inside-a-file), [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `logo` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`logo` (C)](22-appendix-c-overlays.md#logo), [The Matrix (D)](23-appendix-d-compatibility.md#the-matrix) |
 | `lon` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`weather` (C)](22-appendix-c-overlays.md#weather) |

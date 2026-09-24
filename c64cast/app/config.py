@@ -1702,7 +1702,11 @@ class DebugCfg:
     )
     log_file: str | None = field(
         default=None,
-        metadata={"help": "Also mirror log output to this file (useful for headless runs)."},
+        metadata={
+            "help": "Also mirror log output to this file (useful for headless runs). "
+            "The file rotates at 4 MiB, keeping 4 rotated backups beside it "
+            "(20 MiB for the set)."
+        },
     )
     profile: bool = field(
         default=False,
