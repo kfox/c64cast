@@ -268,7 +268,12 @@ remains and ask the user how to proceed before opening a PR.
 
 ## 5. Open the PR
 
+Have the pre-PR gate green first. Step 3's `make check` is the per-commit one;
+`preflight` is what CONTRIBUTING.md asks for before a PR, and it is what covers
+the `pre-commit`, `docs` and `web` jobs that `check` never reaches.
+
 ```bash
+make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv
 gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>"
 ```
 
@@ -286,9 +291,10 @@ Watch the checks and fix what breaks:
 gh pr checks --watch
 ```
 
-CI runs the tests across Python 3.11–3.14 and three operating systems, lint and
-formatting once in the `pre-commit` job, and the type checks once per target
-platform in the `types` job. GHAS code scanning
+CI runs the tests across Python 3.11–3.14 and three operating systems, the
+whole of `.pre-commit-config.yaml` in the `pre-commit` job, the type checks once
+per target platform in the `types` job, the book and site renders and the docs
+search test in `docs`, and the bundle rebuild in `web`. GHAS code scanning
 runs too, and its findings are frequently regex-flavored false positives on this
 codebase — read each one before changing code to satisfy it, and say so if you
 think it is wrong rather than contorting the code around it. That leeway ends

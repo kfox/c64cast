@@ -97,9 +97,9 @@ make preflight  # everything CI runs but coverage and the version matrix
 
 `preflight` is the one to have green before you open a PR. `check` runs none
 of the hygiene hooks CI's `pre-commit` job does, so a change to YAML, TOML or
-Markdown gets a green `check` that has looked at none of it. It needs Node,
-for the web bundle and the docs search test; without Node, run `check` and
-leave the rest to CI.
+Markdown gets a green `check` with no dependabot, schema, whitespace or
+line-ending check behind it. `preflight` needs Node, for the web bundle and
+the docs search test; without Node, run `check` and leave the rest to CI.
 
 Every target routes through `uv run`, so they hit the synced project env
 whether or not the current shell has `.venv` activated:
@@ -129,10 +129,11 @@ target platform on Python 3.14 in the `types` job, the same book and site
 renders and search test in `docs`, the same bundle rebuild in `web`, and the
 whole of [`.pre-commit-config.yaml`](.pre-commit-config.yaml) in the
 `pre-commit` job — not only lint and formatting but the dependabot, YAML and
-TOML schema checks, the whitespace and line-ending hooks and the comment lint,
-everything except `pyright` and `unittest`, which other jobs own. `make
-preflight` is that set run once on one platform; what it leaves to CI is the
-coverage job and the twelve `os` x `python-version` legs.
+TOML schema checks, the whitespace and line-ending hooks and the comment lint.
+What that job leaves out is `pyright` and `unittest`, which other jobs own, and
+`commit-message-shape`, a `commit-msg` hook that runs only where the message is
+written. `make preflight` is that set run once on one platform; what it leaves
+to CI is the coverage job and the twelve `os` x `python-version` legs.
 Type-checking is deliberately two-tiered: `pyright` in basic mode across the
 whole tree (including tests), matching Pylance's VS Code defaults so editor
 diagnostics align with CI, plus `mypy --strict` on the state-bearing modules
