@@ -17,10 +17,17 @@ CI job and named nothing at all.
 finite, so the join is bounded, `_communicate` raises `TimeoutExpired`, and
 `run`'s handler kills the child before re-raising — no orphan to inherit.
 
-:func:`run_bounded` is how this suite starts a child. `tests/test_child_process.py`
-sweeps every module under `tests/` and fails one that reaches `subprocess`
-without a `timeout`, which is why there is no second copy of this reasoning at
-a call site.
+:func:`run_bounded` is how a *test module* starts a child, and
+`tests/test_child_process.py` sweeps every module under `tests/` and fails one
+that reaches `subprocess` without a `timeout` — which is why there is no second
+copy of this reasoning at a call site.
+
+Not every child the suite starts, though, because the sweep reads `tests/`
+only. Production code under test starts its own: `doctor._probe_uv_lock` runs
+a real `uv lock --check` in 31 of `test_doctor`'s tests, bounded at 60 s — the
+same number as `_timeout_sandbox._CAP_S`, so a hung `uv` there still reports as
+the cap rather than as a stuck child. That bound is a production choice for a
+legitimately slow command and is not this module's to change.
 """
 
 from __future__ import annotations

@@ -190,7 +190,7 @@ test under a debugger. What it cannot reach is a test blocked in a call that
 never returns to the interpreter — the module docstring has that and the rest
 of the blind spots.
 
-**A test starts a child process only through `run_bounded`.** `subprocess.run`
+**A test module starts a child process only through `run_bounded`.** `subprocess.run`
 with no `timeout` waits forever; on Windows it waits in `Popen._communicate`,
 where `endtime` is None and the reader-thread join is `join(None)`. That is
 what PR #491's Windows job hit — a `node --check` that never returned, blocking

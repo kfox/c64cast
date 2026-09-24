@@ -188,7 +188,7 @@ test stood, so the run reports that one and carries on. Stepping through a test
 under a debugger wants `C64CAST_TEST_TIMEOUT_S=0`, which turns the watchdog off
 for that run.
 
-**A test starts a child process only through `run_bounded`.** `subprocess.run`
+**A test module starts a child process only through `run_bounded`.** `subprocess.run`
 with no `timeout` waits forever, and on Windows it waits inside
 `Popen._communicate`'s `stdout_thread.join(None)` — which is how a `node
 --check` that never returned blocked PR #491's Windows job until the cap above

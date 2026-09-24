@@ -1,4 +1,4 @@
-"""`run_bounded` — the bound every child process this suite starts runs under.
+"""`run_bounded` — the bound a child process started by a test module runs under.
 
 Two halves. The helper itself: what it returns, what it does when the bound
 expires, and that the bound it ships sits where `tests/_child_process.py` says
