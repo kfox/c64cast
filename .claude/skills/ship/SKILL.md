@@ -117,6 +117,17 @@ The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last. Tell it to review that
 commit's own diff, not `<sha>...HEAD` and not the branch.
 
+**Confirm the review read your tree.** The fork can resolve its working
+directory against the session's primary checkout rather than yours, and a fork
+that does reviews a different branch and reports it as this one — the findings
+read as ordinary findings about real code. `git branch -a --contains <fix-sha>`
+is the check that settles it: a fix commit can only land in the tree the
+reviewer wrote to, so a branch other than yours means the pass did not happen
+and does not count. Paths in the report are not the check — a fork that read
+the right tree still renders the odd finding's path in primary-checkout form.
+A report with no findings leaves no fix commit to check, so confirm its stated
+file list against `git show --stat <sha>` instead.
+
 Its prompt owes the three payloads step 4 lists — the gate summary, where this
 repo states its rules, and the pinned paths — for the reason step 4 gives: it
 cannot check a claim it was never shown. This is the net that reaches a one-line
@@ -192,6 +203,10 @@ Spawn **one subagent** with the Agent tool and have it review the whole branch:
 
 The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last.
+
+Step 3's tree check applies unchanged here — it is the same fork, so confirm
+the pass landed in your tree with `git branch -a --contains <fix-sha>` on its
+fix commits before counting it.
 
 **Its prompt has to tell it to fix what it finds** — that call is a report-only
 run, and nothing reaches the tree unless the subagent applies it. This is the
