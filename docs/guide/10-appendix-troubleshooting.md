@@ -183,17 +183,22 @@ run from the directory the material sits in. See Chapter 3.
 
 Informational logging is on by default; add `-v` for debug logging, which
 includes debug records from some of the libraries c64cast builds on. `-vv`
-adds one more: a line per request c64cast's HTTP client makes — the REST
+adds a line per request c64cast's HTTP client makes — the REST
 link to an Ultimate above all — held back at `-v` because it buries
 everything else. A TeensyROM link is serial or raw TCP, so on one of those
 `-vv` says nothing about the link itself, whatever else the run fetches
-over HTTP.
+over HTTP. `-vv` also brings in the web console's own server log, when
+`--serve` or a `[control]` section has one running: the port it bound, and
+its startup and shutdown.
 
-What `-vv` leaves out is the reading c64cast does on a timer: the
+What `-vv` leaves out is anything that arrives at a steady rate. The
 Commodore-key poll reads the machine ten times a second for the whole run,
 and its requests would otherwise be ten lines a second saying only that the
-poll is still running. Add a third `v` when *those* reads are the question —
-a C= hold that never resumes, a launcher scene that never goes idle. Add `--log-file run.log` to keep it. For a long-running
+poll is still running; the console's access log is a line per asset a
+browser fetches, and its WebSocket log a line per frame pushed to a
+connected phone. Add a third `v` when one of *those* is the question — a C=
+hold that never resumes, a launcher scene that never goes idle, a console
+that will not load or will not update. Add `--log-file run.log` to keep it. For a long-running
 installation, `--heartbeat` prints a periodic line of throughput
 statistics, which is the quickest way to tell a slow link from a slow
 computer.
