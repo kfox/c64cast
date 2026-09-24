@@ -26,10 +26,13 @@ import logging
 import pkgutil
 import re
 import sys
+import threading
 import types
 import typing
 import unittest
 from collections.abc import Callable
+
+from _fakes import logged_exception_type
 
 import c64cast
 from c64cast import _wire_log
@@ -145,7 +148,7 @@ class LogThrottleExceptionTest(unittest.TestCase):
         self.assertEqual(len(caught.records), 1)
         self.assertEqual(caught.records[0].levelname, "ERROR")
         self.assertEqual(caught.records[0].getMessage(), "dispatch failed for 'note_on'")
-        self.assertIsNotNone(caught.records[0].exc_info)
+        self.assertIs(logged_exception_type(caught.records[0]), RuntimeError)
 
     def test_a_flood_inside_the_window_costs_exactly_one_record(self):
         throttle = self._throttle()
@@ -163,7 +166,7 @@ class LogThrottleExceptionTest(unittest.TestCase):
                 self._report(throttle, "dispatch failed")
         self.assertEqual([r.levelname for r in caught.records], ["ERROR", "DEBUG"])
         self.assertIn("and 3 more since the previous report", caught.records[1].getMessage())
-        self.assertIsNotNone(caught.records[1].exc_info)
+        self.assertIs(logged_exception_type(caught.records[1]), RuntimeError)
 
     def test_warn_and_exception_share_one_site_budget(self):
         # One site, one budget: the two emitters are the same gate, so a site
@@ -173,6 +176,87 @@ class LogThrottleExceptionTest(unittest.TestCase):
             throttle.warn("first")
             self._report(throttle, "second")
         self.assertEqual([r.getMessage() for r in caught.records], ["first"])
+
+
+class LogThrottleLockTest(unittest.TestCase):
+    """`_admit` does its accounting under the lock.
+
+    `LogThrottle`'s docstring advertises "safe to share across threads: the
+    counter moves under a lock", and pays ~82 ns of the gate's ~206 ns for it.
+    Nothing held that: deleting `with self._lock:` and dedenting the body left
+    every other test in this module green. No throttle in the tree is shared
+    across threads today, so these two pin the advertised contract rather than
+    a live path — and the contract is what a second consumer will rely on.
+
+    What they do not reach is a lock that is *narrowed* rather than removed:
+    acquired around the increment and the clock read, released before the
+    reset. The injected clock is the only seam inside `_admit`, and it sits
+    inside that narrowed region. The obvious alternative — N threads through
+    the gate, asserting the counts sum to N — reaches no further: measured
+    against the lock-free body on CPython 3.14, 8 threads × 400 calls lost an
+    occurrence in 0 of 40 trials, because the GIL retires the whole
+    read-modify-write between switches. Which is why the second test forces
+    the interleaving instead of waiting for one.
+    """
+
+    def setUp(self) -> None:
+        self.log = logging.getLogger("c64cast.tests.wire_log")
+
+    def test_the_gate_reads_the_clock_with_the_lock_held(self):
+        # The clock read sits between the increment and the reset, so a read
+        # taken with the lock held is a read inside the critical section.
+        held: list[bool] = []
+
+        def probe() -> float:
+            held.append(throttle._lock.locked())
+            return 0.0
+
+        throttle = LogThrottle(self.log, monotonic=probe)
+        with self.assertLogs(self.log, "DEBUG"):
+            for _ in range(3):
+                throttle.warn("under the lock")
+        self.assertEqual(held, [True, True, True])
+
+    def test_a_second_thread_cannot_enter_the_gate_while_another_holds_it(self):
+        # Deterministic rather than racy: the injected clock parks the first
+        # thread inside the gate, and the second is released to call `warn`
+        # only once the first is in there.
+        inside = threading.Event()
+        release = threading.Event()
+        returned = threading.Event()
+        reads: list[None] = []
+
+        def probe() -> float:
+            reads.append(None)
+            if len(reads) == 1:
+                inside.set()
+                release.wait(timeout=5.0)
+            return 0.0
+
+        throttle = LogThrottle(self.log, monotonic=probe)
+
+        def report_once_the_gate_is_occupied() -> None:
+            inside.wait(timeout=5.0)
+            throttle.warn("second")
+            returned.set()
+
+        holder = threading.Thread(target=throttle.warn, args=("first",))
+        waiter = threading.Thread(target=report_once_the_gate_is_occupied)
+        with self.assertLogs(self.log, "DEBUG"):
+            holder.start()
+            waiter.start()
+            try:
+                got_through = returned.wait(timeout=0.25)
+            finally:
+                release.set()
+                holder.join(timeout=5.0)
+                waiter.join(timeout=5.0)
+        self.assertFalse(
+            got_through,
+            "a second thread completed `_admit` while another was inside it, so "
+            "the counter's read-modify-write is not atomic and a report's count "
+            "is whatever the interleaving leaves behind",
+        )
 
 
 class DocstringQuoteTest(unittest.TestCase):
@@ -309,6 +393,32 @@ def _annotated_target(
     with contextlib.suppress(Exception):
         dunder_call = inspect.getattr_static(type(target), "__call__", None)
     return dunder_call if inspect.isroutine(dunder_call) else target  # type: ignore[return-value]
+
+
+def _defined_as(factory: Callable[..., object]) -> str:
+    """The module and qualified name a factory is *defined* under.
+
+    Not the same thing as where discovery found it: a factory imported into a
+    second module is a global of both, and [ThrottleFactoryTest._factories]
+    yields it under whichever module the walk reaches first — alphabetical
+    order, which is not a fact about the code. `new_truncation_log` is already
+    both `c64cast.sid.asid_player`'s and `c64cast.sid.asid_scene`'s.
+    """
+    module = getattr(factory, "__module__", "")
+    qualname = getattr(factory, "__qualname__", "")
+    return f"{module}.{qualname}" if module and qualname else ""
+
+
+# The factories [ThrottleFactoryTest] must reach, by the name each is defined
+# under. Counting them cannot tell a factory that left discovery from one that
+# was never there. A factory added later is discovered and checked without
+# being listed here: this is the floor, not the census.
+_KNOWN_THROTTLE_FACTORIES = frozenset(
+    {
+        "c64cast.sid.asid.new_recipe_log",
+        "c64cast.sid.asid_player.new_truncation_log",
+    }
+)
 
 
 def _is_logger(hint: object) -> bool:
@@ -717,12 +827,15 @@ class ThrottleFactoryTest(unittest.TestCase):
 
     def test_every_throttle_factory_answers_with_a_new_one(self) -> None:
         factories = list(self._factories())
-        self.assertTrue(
-            factories,
-            "no `-> LogThrottle` factory was discovered, so this test proves "
-            "nothing — the discovery is what broke, not the rule",
+        self.assertEqual(
+            _KNOWN_THROTTLE_FACTORIES - {_defined_as(factory) for _, factory in factories},
+            set(),
+            "a `-> LogThrottle` factory this check is supposed to reach left "
+            "discovery, so it proves nothing about that one — the discovery is "
+            "what broke, unless the factory was renamed, in which case "
+            "_KNOWN_THROTTLE_FACTORIES has to say so",
         )
-        exercised = 0
+        exercised: set[str] = set()
         for where, factory in factories:
             with self.subTest(factory=where):
                 shapes = self._call_shapes(factory)
@@ -754,7 +867,7 @@ class ThrottleFactoryTest(unittest.TestCase):
                 first, second = built
                 if first is None and second is None:
                     self.skipTest(f"{where} answered None, so nothing was built to share")
-                exercised += 1
+                exercised.add(_defined_as(factory))
                 self.assertIsNot(
                     first,
                     second,
@@ -763,13 +876,15 @@ class ThrottleFactoryTest(unittest.TestCase):
                 )
         # The floor under every skip above. Each one is visible as an `s` and
         # each is a fact about this check rather than about the code — but a
-        # change that makes *every* factory refuse the call, a `LogThrottle`
-        # constructor signature among them, would otherwise turn the whole
-        # guard from red into a quiet pass.
-        self.assertTrue(
-            exercised,
-            f"all {len(factories)} discovered factories were skipped, so this test "
-            "proves nothing — read the skip reasons rather than the green",
+        # change that makes a known factory refuse the call, a `LogThrottle`
+        # constructor signature among them, would otherwise turn the guard
+        # from red into a quiet pass.
+        self.assertEqual(
+            _KNOWN_THROTTLE_FACTORIES - exercised,
+            set(),
+            "a `-> LogThrottle` factory this check is supposed to reach was "
+            "discovered and then skipped, so it proves nothing about that one "
+            "— read the skip reasons rather than the green",
         )
 
 

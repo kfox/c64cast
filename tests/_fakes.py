@@ -647,6 +647,20 @@ def bare_waveform_scene(**attrs):
     return scene
 
 
+def logged_exception_type(record: logging.LogRecord) -> type[BaseException] | None:
+    """The class of the exception `record` carries a traceback for, or None
+    when it carries none.
+
+    `assertIsNotNone(record.exc_info)` does not answer this question.
+    `Logger._log` gates on `if exc_info:` and otherwise stores the argument
+    verbatim, so an emitter that passes `exc_info=False` puts `False` on the
+    record — not `None` — and the record goes out with no traceback while the
+    `assertIsNotNone` stays green. Asserting the type the fixture raised is
+    what distinguishes the two.
+    """
+    return record.exc_info[0] if record.exc_info else None
+
+
 def frozen_throttle(logger: logging.Logger, **kwargs) -> LogThrottle:
     """A `LogThrottle` whose clock never advances, so its report window never
     closes and it emits exactly one record for the life of the test.
