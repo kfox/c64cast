@@ -52,6 +52,7 @@ from c64cast.app import config as cfgmod
 from c64cast.app import config_store, console_library, media_store, paths, serve, session
 from c64cast.app.serve import SessionState
 from c64cast.app.update_state import STALE_AFTER_DAYS, UpdateCheck, write_update_state
+from c64cast.control import screen as screen_mod
 from c64cast.control import web_api
 from c64cast.control.transport import LiveTuneTracker
 
@@ -1468,6 +1469,63 @@ class ScreenRouteTest(WebApiTestCase):
 
         asyncio.run(drive())
         self.assertEqual(inspect.getgeneratorstate(frames), "GEN_SUSPENDED")
+
+    def test_the_response_gives_the_stream_and_the_slot_back_when_it_ends(self):
+        """The other half of that: something *else* has to do the releasing,
+        and it is the response's `BackgroundTask`, which Starlette runs once
+        the body is done however it ended. Drop it and the watcher count never
+        falls — the machine goes on sending 2.6 MB/s to nobody — and the
+        watcher slot it claimed is gone for the life of the host.
+
+        TestClient buffers a whole response, so the endless real body can only
+        hang it; a stand-in that ends after one part is what a body reaching
+        its end looks like from the response's side. The linger and the sweep
+        period are shortened because the receiver being retired is the
+        observable that says the watch came back.
+        """
+        import time
+
+        def one_part(read, *, fps):
+            yield screen_mod.png_part(read())
+
+        real_slots = web_api.StreamSlots
+
+        def capture_slots(limit):
+            # The host never shuts this pool down — it lives as long as the
+            # process does — so a test that puts a worker in it has to.
+            slots = real_slots(limit)
+            self.addCleanup(slots.pool.shutdown)
+            return slots
+
+        with (
+            mock.patch.object(web_api, "MAX_SCREEN_WATCHERS", 1),
+            mock.patch.object(web_api, "StreamSlots", capture_slots),
+        ):
+            app = self.app()
+        with (
+            mock.patch.object(screen_mod, "LINGER_S", 0.05),
+            mock.patch.object(screen_mod, "_SWEEP_EVERY_S", 0.02),
+            mock.patch.object(web_api, "multipart_frames", one_part),
+            TestClient(app) as c,
+        ):
+            self._running(c)
+            first = c.get("/api/screen/stream", headers=AUTH)
+            self.assertEqual(first.status_code, 200)
+            self.assertIn(b"\x89PNG", first.content)
+
+            receiver = self._api().receiver
+            deadline = time.monotonic() + WAIT
+            while receiver.stopped == 0 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(
+                (receiver.started, receiver.stopped),
+                (1, 1),
+                "the machine kept streaming after the response ended",
+            )
+
+            # And the slot came back, so the next watcher is served rather
+            # than refused with the 503 a host at its limit answers.
+            self.assertEqual(c.get("/api/screen/stream", headers=AUTH).status_code, 200)
 
 
 class StreamSlotsTest(unittest.TestCase):
