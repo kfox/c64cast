@@ -68,6 +68,51 @@ cd web && node --input-type=module -e \
    console.log((await resolveConfig({}, 'build')).build.target)"
 ```
 
+## When Dependabot bumps a web dependency
+
+Because the bundle is committed and CI rebuilds it and fails on a diff, a
+Dependabot PR that edits only `web/package.json` and `web/package-lock.json`
+cannot go green whenever the bump changes what the build emits. Recreating it
+does not help — the rebuilt bundle has to ride in the same commit.
+
+Which bumps move it:
+
+- `svelte`, and its `esrap`: svelte ships both the runtime that gets bundled
+  and, through `esrap`, the printer that emits the compiled component code, so a
+  bump of either can rewrite `assets/app.js`. 5.57.0 → 5.57.1 did.
+- `vite`, `lightningcss`, `tailwindcss`: these can move the resolved
+  `build.target` above, and with it `assets/app.css`.
+- Dev-only packages — `@types/node`, `svelte-check`, `vitest`, `typescript` —
+  do not reach the bundle at all.
+
+[`scripts/rebuild_bundle_for_bump.sh`](../scripts/rebuild_bundle_for_bump.sh)
+does the mechanical part:
+
+```bash
+scripts/rebuild_bundle_for_bump.sh 497            # or: ... 497 some-branch-name
+```
+
+It refuses a PR touching anything beyond those two files, and one whose base has
+moved either of them since the PR forked — the files are taken whole, so that
+checkout would revert the other change; comment `@dependabot rebase` and rerun.
+It branches off the PR's own base, and **rebuilds once before applying the
+bump**, to confirm this
+machine reproduces the committed bundle byte for byte. That check is the reason
+to reach for the script rather than doing it by hand: without it a local
+toolchain difference — a Node that disagrees with CI's, a stale install — lands
+in the replacement branch attributed to the bump, and the commit then claims the
+bump did something it did not. It also rebuilds twice afterward, so a bundle
+that is not reproducible never reaches the index.
+
+Then it stages both halves and stops, printing the packages and the bundle files
+that moved for the commit message to draw on. It writes no commit, because that
+message carries claims whoever signs it should have checked. Exit 3 means the
+bundle did not move, so the Dependabot PR needs no replacement and can be merged
+as it is.
+
+Open the rebuilt branch as its own PR and close the Dependabot one as
+superseded: #461 did that by hand for #437, and #502 for #497.
+
 ## Testing
 
 ```bash
