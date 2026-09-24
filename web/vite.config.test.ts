@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadConfigFromFile } from "vite";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 // `build.target` is the console's browser floor (see README.md). Left unstated
 // it is Vite's `baseline-widely-available` default, which resolves to a later
@@ -29,8 +29,13 @@ const statedTarget = async (): Promise<string | string[] | false | undefined> =>
 };
 
 describe("the console's browser floor", () => {
-  it("is stated by vite.config.ts rather than left to Vite", async () => {
-    const stated = await statedTarget();
+  let stated: string | string[] | false | undefined;
+
+  beforeAll(async () => {
+    stated = await statedTarget();
+  });
+
+  it("is stated by vite.config.ts rather than left to Vite", () => {
     expect(
       stated,
       "vite.config.ts states no build.target, so the floor is Vite's default " +
@@ -39,8 +44,7 @@ describe("the console's browser floor", () => {
     ).toBeTruthy();
   });
 
-  it("names a version for every target in it", async () => {
-    const stated = await statedTarget();
+  it("names a version for every target in it", () => {
     const entries = typeof stated === "string" ? [stated] : stated || [];
     expect(entries.length, "a floor of no targets is not a floor").toBeGreaterThan(0);
     for (const entry of entries) {
