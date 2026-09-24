@@ -17,15 +17,16 @@ npm run dev        # http://localhost:5173, proxying /api to the daemon
 ```
 
 `.node-version` at the repo root is the Node this builds on. CI's
-`actions/setup-node` reads it, and so does mise — `mise.toml` enables the
-`node` idiomatic version file for that — as do nvm, fnm and asdf. Change it
-there and CI and a local rebuild move together.
+`actions/setup-node` reads it, as do nvm and fnm; mise reads it because
+`mise.toml` enables the `node` idiomatic version file, and asdf reads it only
+with `legacy_version_file = yes` in `~/.asdfrc`. Change it there and CI and a
+local rebuild move together.
 
 `web/.npmrc` sets `ignore-scripts=true`, so no dependency's `preinstall`,
-`install` or `postinstall` runs on an install here — npm 11, which is what Node
-24 ships and what CI builds with, runs them by default. The same setting makes
-`npm run X` skip `preX`/`postX`, which is why `package.json` declares no such
-hook and `tests/test_web_toolchain.py` fails if one appears.
+`install` or `postinstall` runs on an install here — the npm that the pinned
+Node ships, which is what CI builds with, runs them by default. The same
+setting makes `npm run X` skip `preX`/`postX`, which is why `package.json`
+declares no such hook and `tests/test_web_toolchain.py` fails if one appears.
 
 Run the daemon alongside it, on its default port:
 
