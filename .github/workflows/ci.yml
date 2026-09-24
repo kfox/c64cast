@@ -70,7 +70,7 @@ jobs:
       - name: Rebuild the console
         run: make web
       - name: The committed bundle is current
-        run: git diff --exit-code -- c64cast/web/dist
+        run: make web-check
 
   types:
     name: types (${{ matrix.name }})
