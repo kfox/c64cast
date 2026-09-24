@@ -14,29 +14,48 @@ just the same.
 npm applies that one switch to `npm run` as well — it runs the named script but
 silently skips its `pre`/`post` hook — so a hook added to `web/package.json`
 would stop running without a word. That is the failure this module makes noisy.
+
+The workflow half reads YAML through `scripts/lint_workflows.py`, the
+repository's one workflow reader, rather than matching the raw text: a step is
+a mapping there whether it leads with `uses:` or with `name:`, and a value is
+the value whatever quoting or trailing comment it was written with.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
+import sys
+import tempfile
 import tomllib
 import unittest
+from typing import Any
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _NPMRC = os.path.join(_REPO, "web", ".npmrc")
 _PACKAGE_JSON = os.path.join(_REPO, "web", "package.json")
 _NODE_VERSION = os.path.join(_REPO, ".node-version")
 _MISE = os.path.join(_REPO, "mise.toml")
-_WORKFLOWS = os.path.join(_REPO, ".github", "workflows")
+
+
+def _load_lint_workflows():
+    """Import scripts/lint_workflows.py by path; `scripts/` is not a package."""
+    path = os.path.join(_REPO, "scripts", "lint_workflows.py")
+    spec = importlib.util.spec_from_file_location("lint_workflows", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["lint_workflows"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+wf = _load_lint_workflows()
 
 _PIN_FILE = ".node-version"
 _VERSION_SPEC = re.compile(r"\A\d+(\.\d+){0,2}\Z")
-_STEP_START = re.compile(r"([ \t]*)-(?:[ \t]|$)")
-_SETUP_NODE = re.compile(r"^[ \t]*(?:-[ \t]+)?uses:[ \t]*actions/setup-node@", re.M)
-_STATES_A_VERSION = re.compile(r"^\s*node-version:\s*(\S.*?)\s*$", re.M)
-_READS_A_VERSION_FILE = re.compile(r"^[ \t]*node-version-file:[ \t]*(\S+)", re.M)
+_SETUP_NODE = "actions/setup-node@"
 
 # The hooks npm fires on its own, with no `npm run` naming them. The second
 # group hangs off npm's built-in commands (`npm start`, `npm test`, `npm stop`,
@@ -97,48 +116,32 @@ def _scripts() -> dict[str, str]:
         return dict(json.load(handle).get("scripts", {}))
 
 
-def _workflows() -> dict[str, str]:
-    """Every workflow file under `.github/workflows`, by name."""
-    names = [name for name in os.listdir(_WORKFLOWS) if name.endswith((".yml", ".yaml"))]
-    assert names, "no workflow files found — this module is reading the wrong directory"
-    sources = {}
-    for name in names:
-        with open(os.path.join(_WORKFLOWS, name), encoding="utf-8") as handle:
-            sources[name] = handle.read()
-    return sources
+def _steps(directory: str | None = None) -> list[tuple[str, str, dict[str, Any]]]:
+    """Every step in every workflow, as (file name, job id, the step mapping)."""
+    paths = wf.workflow_paths(directory)
+    assert paths, "no workflow files found — this module is reading the wrong directory"
+    found = []
+    for path in paths:
+        for job_id, job in wf.jobs(wf.load(path)).items():
+            declared = job.get("steps") if isinstance(job, dict) else None
+            for step in declared if isinstance(declared, list) else []:
+                if isinstance(step, dict):
+                    found.append((os.path.basename(path), job_id, step))
+    return found
 
 
-def _setup_node_steps(workflow: str) -> list[str]:
-    """Each `actions/setup-node` step, in either shape a step can be written in.
-
-    A step is sliced from its `-` line to the next line at or left of that
-    line's indent, then kept if `actions/setup-node` appears anywhere in it.
-    Matching the `uses:` line instead would miss the `- name:` form — `uses:`
-    then sits a line below the `-`, and a slice starting there would end at the
-    sibling `with:` that carries `node-version-file`.
-    """
-    lines = workflow.splitlines()
-    steps = []
-    for start, line in enumerate(lines):
-        match = _STEP_START.match(line)
-        if match is None:
-            continue
-        indent = len(match.group(1))
-        end = start + 1
-        while end < len(lines):
-            text = lines[end]
-            if text.strip() and len(text) - len(text.lstrip()) <= indent:
-                break
-            end += 1
-        step = "\n".join(lines[start:end])
-        if _SETUP_NODE.search(step):
-            steps.append(step)
-    return steps
+def _setup_node_steps(directory: str | None = None) -> list[tuple[str, str, dict[str, Any]]]:
+    """The steps that run `actions/setup-node`."""
+    return [
+        entry
+        for entry in _steps(directory)
+        if str(entry[2].get("uses", "")).startswith(_SETUP_NODE)
+    ]
 
 
-def _version_files(step: str) -> list[str]:
-    """The `node-version-file:` values in a step, unquoted."""
-    return [value.strip("\"'") for value in _READS_A_VERSION_FILE.findall(step)]
+def _inputs(step: dict[str, Any]) -> dict[str, Any]:
+    declared = step.get("with")
+    return declared if isinstance(declared, dict) else {}
 
 
 class InstallScriptsTest(unittest.TestCase):
@@ -182,26 +185,27 @@ class NodeVersionPinTest(unittest.TestCase):
             "resolves per reader, which is the disagreement this file exists to remove",
         )
 
-    def test_no_workflow_states_a_node_version_of_its_own(self):
-        for name, source in _workflows().items():
-            with self.subTest(workflow=name):
-                self.assertEqual(
-                    [],
-                    _STATES_A_VERSION.findall(source),
+    def test_no_step_states_a_node_version_of_its_own(self):
+        for name, job_id, step in _steps():
+            with self.subTest(workflow=name, job=job_id):
+                self.assertNotIn(
+                    "node-version",
+                    _inputs(step),
                     f"a version written here can disagree with {_PIN_FILE}; "
                     "use `node-version-file` instead",
                 )
 
     def test_every_setup_node_reads_the_pin_file(self):
-        for name, source in _workflows().items():
-            for step in _setup_node_steps(source):
-                with self.subTest(workflow=name, step=step.splitlines()[0].strip()):
-                    self.assertEqual(
-                        [_PIN_FILE],
-                        _version_files(step),
-                        "a setup-node step naming no version file installs whatever "
-                        "Node the runner image happens to ship",
-                    )
+        steps = _setup_node_steps()
+        assert steps, "no setup-node step found — a guard that checks nothing is not a pass"
+        for name, job_id, step in steps:
+            with self.subTest(workflow=name, job=job_id):
+                self.assertEqual(
+                    _PIN_FILE,
+                    _inputs(step).get("node-version-file"),
+                    "a setup-node step naming no version file installs whatever "
+                    "Node the runner image happens to ship",
+                )
 
     def test_mise_resolves_the_same_file(self):
         with open(_MISE, "rb") as handle:
@@ -214,65 +218,40 @@ class NodeVersionPinTest(unittest.TestCase):
         )
 
 
+_SHAPES = """\
+name: shapes
+jobs:
+  named:
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@abc
+        with:
+          node-version-file: '.node-version'   # quoted, with a comment
+      - run: node --test x.mjs
+  terse:
+    steps:
+      - uses: actions/setup-node@abc
+  other:
+    steps:
+      - uses: actions/checkout@abc
+"""
+
+
 class SetupNodeStepReadingTest(unittest.TestCase):
-    """`_setup_node_steps` against the step shapes a workflow can put it in."""
+    """`_setup_node_steps` against the shapes a step can be written in."""
 
-    def test_a_step_ends_at_the_next_step(self):
-        workflow = (
-            "      - uses: actions/setup-node@abc\n"
-            "        with:\n"
-            "          node-version-file: .node-version\n"
-            "      - uses: actions/cache@def\n"
-            "        with:\n"
-            "          node-version: '24'\n"
-        )
-        self.assertEqual([".node-version"], _version_files(_setup_node_steps(workflow)[0]))
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        with open(os.path.join(self.directory, "shapes.yml"), "w", encoding="utf-8") as handle:
+            handle.write(_SHAPES)
+        self.found = _setup_node_steps(self.directory)
+        self.by_job = {job_id: step for _, job_id, step in self.found}
 
-    def test_a_last_step_ends_at_the_next_dedented_key(self):
-        workflow = (
-            "  docs:\n"
-            "    steps:\n"
-            "      - uses: actions/setup-node@abc\n"
-            "  web:\n"
-            "    steps:\n"
-            "      - uses: actions/setup-node@abc\n"
-            "        with:\n"
-            "          node-version-file: .node-version\n"
-        )
-        first, second = _setup_node_steps(workflow)
-        self.assertEqual([], _version_files(first))
-        self.assertEqual([".node-version"], _version_files(second))
+    def test_both_step_shapes_are_seen_and_nothing_else_is(self):
+        self.assertEqual(["named", "terse"], [job_id for _, job_id, _ in self.found])
 
-    def test_a_blank_line_inside_a_step_does_not_end_it(self):
-        workflow = (
-            "      - uses: actions/setup-node@abc\n"
-            "\n"
-            "        with:\n"
-            "          node-version-file: .node-version\n"
-        )
-        self.assertEqual([".node-version"], _version_files(_setup_node_steps(workflow)[0]))
+    def test_a_quoted_commented_value_is_the_file_it_names(self):
+        self.assertEqual(_PIN_FILE, _inputs(self.by_job["named"]).get("node-version-file"))
 
-    def test_a_step_named_before_its_uses_line_is_still_a_step(self):
-        workflow = (
-            "      - name: Set up Node\n"
-            "        uses: actions/setup-node@abc\n"
-            "        with:\n"
-            "          node-version-file: .node-version\n"
-            "      - run: node --test x.mjs\n"
-        )
-        self.assertEqual([".node-version"], _version_files(_setup_node_steps(workflow)[0]))
-
-    def test_a_named_step_reading_no_version_file_is_still_seen(self):
-        workflow = "      - name: Set up Node\n        uses: actions/setup-node@abc\n"
-        self.assertEqual([[]], [_version_files(s) for s in _setup_node_steps(workflow)])
-
-    def test_a_quoted_version_file_is_the_file_it_names(self):
-        self.assertEqual([".node-version"], _version_files("  node-version-file: '.node-version'"))
-
-    def test_a_trailing_comment_is_not_part_of_the_version_file(self):
-        self.assertEqual(
-            [".node-version"], _version_files("  node-version-file: .node-version  # pinned")
-        )
-
-    def test_node_version_file_is_not_read_as_a_stated_version(self):
-        self.assertEqual([], _STATES_A_VERSION.findall("          node-version-file: x\n"))
+    def test_a_step_naming_no_version_file_reads_as_naming_none(self):
+        self.assertIsNone(_inputs(self.by_job["terse"]).get("node-version-file"))
