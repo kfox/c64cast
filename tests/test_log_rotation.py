@@ -204,20 +204,23 @@ class AstSweepTest(unittest.TestCase):
     the same defect under a different name, and it would not be found by a
     test that reads only `configure_logging`. Naming only `FileHandler` is
     not enough to hold that: `maxBytes` and `backupCount` both default to 0,
-    so `RotatingFileHandler(path)` never rotates and
-    `TimedRotatingFileHandler(path, when="D")` never deletes what it rotated
-    — each an unbounded destination wearing a bounded class's name.
+    so `RotatingFileHandler(path)` never rotates — an unbounded destination
+    wearing a bounded class's name. `TimedRotatingFileHandler` is out
+    whatever it is given: it rotates on the clock, so the bytes a peer can
+    raise inside one period have no ceiling and `backupCount` only caps how
+    many such periods are kept.
     """
 
     #: Every `logging` handler that writes a file, mapped to the arguments
     #: that have to be given and non-zero for the bytes it owns to have a
     #: ceiling, by keyword name and by the position each may also be passed
-    #: at. An empty mapping means the class has no bound to give it at all.
+    #: at. An empty mapping means the class has no byte bound to give it at
+    #: all, whatever its arguments say.
     BOUNDED_BY: dict[str, dict[str, int]] = {
         "FileHandler": {},
         "WatchedFileHandler": {},
+        "TimedRotatingFileHandler": {},
         "RotatingFileHandler": {"maxBytes": 2, "backupCount": 3},
-        "TimedRotatingFileHandler": {"backupCount": 3},
     }
 
     def _handler_name(self, node: ast.AST) -> str | None:
@@ -238,9 +241,26 @@ class AstSweepTest(unittest.TestCase):
                 given = node.args[position]
             if given is None:
                 faults.append(f"{keyword} is not given, so it defaults to 0")
-            elif isinstance(given, ast.Constant) and given.value == 0:
-                faults.append(f"{keyword}=0")
+            elif isinstance(given, ast.Constant) and not given.value:
+                # Falsiness rather than `== 0`, so `maxBytes=None` is caught
+                # too: it is not a ceiling, it is a `None > 0` TypeError
+                # raised out of `shouldRollover` once per record.
+                faults.append(f"{keyword}={given.value!r}")
         return faults
+
+    def _renames_a_file_handler(self, node: ast.ClassDef) -> list[str]:
+        """Why `node` puts a file handler beyond the sweep's reach.
+
+        A subclass gives the constructor a new name, so every call to it reads
+        as an ordinary function call and carries none of the arguments the
+        table looks for. Refusing the subclass outright is the fail-closed
+        answer, and cheaper than following a name across modules.
+        """
+        return [
+            f"{node.name} subclasses {self._handler_name(base)}, which the sweep cannot follow"
+            for base in node.bases
+            if self._handler_name(base) in self.BOUNDED_BY
+        ]
 
     def test_the_package_installs_no_unbounded_file_handler(self):
         root = pathlib.Path(c64cast.__file__).parent
@@ -248,14 +268,28 @@ class AstSweepTest(unittest.TestCase):
         for source in sorted(root.rglob("*.py")):
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
+                if isinstance(node, ast.ClassDef):
+                    faults = self._renames_a_file_handler(node)
+                elif isinstance(node, ast.Call):
+                    bounds = self.BOUNDED_BY.get(self._handler_name(node.func) or "")
+                    faults = [] if bounds is None else self._unbounded(node, bounds)
+                else:
                     continue
-                bounds = self.BOUNDED_BY.get(self._handler_name(node.func) or "")
-                if bounds is None:
-                    continue
-                for fault in self._unbounded(node, bounds):
+                for fault in faults:
                     offenders.append(f"{source.relative_to(root)}:{node.lineno}: {fault}")
         self.assertEqual(offenders, [])
+
+    def test_the_sweep_refuses_a_subclass_of_a_file_handler(self):
+        for source, refused in (
+            ("class Runs(logging.handlers.RotatingFileHandler): pass", True),
+            ("class Runs(FileHandler): pass", True),
+            ("class Runs(logging.Handler): pass", False),
+            ("class Runs: pass", False),
+        ):
+            with self.subTest(source=source):
+                node = ast.parse(source).body[0]
+                assert isinstance(node, ast.ClassDef)
+                self.assertEqual(bool(self._renames_a_file_handler(node)), refused)
 
     def test_the_sweep_recognizes_a_handler_that_names_no_bound(self):
         """Every shape that reaches an unbounded file, so that widening the
@@ -268,12 +302,13 @@ class AstSweepTest(unittest.TestCase):
             "logging.handlers.RotatingFileHandler(p, encoding='utf-8')",
             "RotatingFileHandler(p, maxBytes=MAX, backupCount=0)",
             "RotatingFileHandler(p, 'a', 0, 4)",
+            "RotatingFileHandler(p, maxBytes=None, backupCount=COUNT)",
             "handlers.TimedRotatingFileHandler(p, when='D')",
+            "handlers.TimedRotatingFileHandler(p, when='D', backupCount=COUNT)",
         ]
         bounded = [
             "RotatingFileHandler(p, maxBytes=MAX, backupCount=COUNT)",
             "RotatingFileHandler(p, 'a', MAX, COUNT)",
-            "handlers.TimedRotatingFileHandler(p, when='D', backupCount=COUNT)",
             "StreamHandler(sys.stderr)",
         ]
         for source in unbounded + bounded:

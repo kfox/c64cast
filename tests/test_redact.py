@@ -20,6 +20,8 @@ import os
 import tempfile
 import unittest
 
+from _fakes import RestoresLogging
+
 from c64cast._redact import redact_secrets, redact_source_line
 from c64cast.app import cli_commands
 
@@ -336,23 +338,9 @@ class RedactingFormatterTest(unittest.TestCase):
         self.assertIn("token=REDACTED", written)
 
 
-class ConfigureLoggingWiringTest(unittest.TestCase):
-    """`configure_logging` reconfigures the root logger, so each test undoes it
-    — restoring the handler list rather than closing anything, since the
-    handlers it replaced belong to whoever installed them."""
-
-    def setUp(self):
-        root = logging.getLogger()
-        self.handlers, self.level = root.handlers[:], root.level
-
-        def restore() -> None:
-            for h in root.handlers[:]:
-                if h not in self.handlers:
-                    h.close()
-            root.handlers[:] = self.handlers
-            root.setLevel(self.level)
-
-        self.addCleanup(restore)
+class ConfigureLoggingWiringTest(RestoresLogging):
+    """`configure_logging` reconfigures the root logger and the held-back
+    library loggers, so each test undoes all of it."""
 
     def test_the_log_file_handler_is_redacting(self):
         path = os.path.join(tempfile.mkdtemp(), "run.log")
