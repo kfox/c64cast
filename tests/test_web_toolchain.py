@@ -37,7 +37,11 @@ _SETUP_NODE = re.compile(r"(\s*)-\s+uses:\s*actions/setup-node@")
 _STATES_A_VERSION = re.compile(r"^\s*node-version:\s*(\S.*?)\s*$", re.M)
 _READS_A_VERSION_FILE = re.compile(r"^\s*node-version-file:\s*(\S.*?)\s*$", re.M)
 
-# The hooks npm fires on its own, with no `npm run` naming them.
+# The hooks npm fires on its own, with no `npm run` naming them. The second
+# group hangs off npm's built-in commands (`npm start`, `npm test`, `npm stop`,
+# `npm restart`, `npm version`, `npm publish`): npm still runs the command's own
+# script under `ignore-scripts`, but drops these, and it does so whether or not
+# `web/package.json` declares the script they wrap.
 _SELF_FIRING_HOOKS = frozenset(
     {
         "preinstall",
@@ -49,6 +53,19 @@ _SELF_FIRING_HOOKS = frozenset(
         "prepublish",
         "prepublishOnly",
         "dependencies",
+        "prestart",
+        "poststart",
+        "pretest",
+        "posttest",
+        "prestop",
+        "poststop",
+        "prerestart",
+        "postrestart",
+        "preversion",
+        "version",
+        "postversion",
+        "publish",
+        "postpublish",
     }
 )
 
@@ -56,7 +73,11 @@ _TRUE = frozenset({"true", "1", "yes", "on"})
 
 
 def _npmrc() -> dict[str, str]:
-    """`web/.npmrc` as a mapping, ignoring blank lines and comments."""
+    """`web/.npmrc` as a mapping, ignoring blank lines and comments.
+
+    A line with no `=` is a key on its own, which npm's ini reader takes as
+    `true` — read it the same way rather than calling the file malformed.
+    """
     settings: dict[str, str] = {}
     with open(_NPMRC, encoding="utf-8") as handle:
         for line in handle:
@@ -64,8 +85,7 @@ def _npmrc() -> dict[str, str]:
             if not line or line[0] in ";#":
                 continue
             key, sep, value = line.partition("=")
-            assert sep, f"{line!r} in web/.npmrc is not a `key=value` line"
-            settings[key.strip()] = value.strip()
+            settings[key.strip()] = value.strip() if sep else "true"
     return settings
 
 
