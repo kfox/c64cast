@@ -32,6 +32,13 @@ numbers came from. The companion `lint-comments` hook reports section banners,
 `TODO:` markers and commented-out code among the comment lines a commit *adds* —
 `git config prose.lintComments false` switches it off.
 
+A commit that touches `.github/workflows/` also runs `lint-workflows`
+([`scripts/lint_workflows.py`](scripts/lint_workflows.py)), which refuses a
+`needs:` naming no job in that workflow, a cycle in the `needs:` graph, and a
+`needs.<job>` expression the job never declared. GitHub resolves all three when
+it dispatches the run, which is after the push. The suite runs the same check
+over every workflow, so `make check` and CI's test matrix reach it too.
+
 Then either prefix one-off commands with `uv run`, or let
 [direnv](https://direnv.net/) activate `.venv` for you — `.envrc` is gitignored,
 so write your own with `layout uv` in it (plus `use mise` if you use mise, and
