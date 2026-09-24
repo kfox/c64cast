@@ -107,13 +107,12 @@ TITLE_ROW = 22
 META_ROW = 23
 
 # VIC register values _apply_vic_hires_bank passes to modes.engage_bitmap_mode,
-# as the hex strings the write_memory API takes.
+# as the hex strings the write_memory API takes. $D018 is not one of them: it
+# comes from the host scene's self._d018, which is c64.D018_HIRES_PAGE_A for
+# every scene and bank except waveform.py's bank-1 fallback, whose matrix
+# offset has to clear the SID payload (waveform.D018_BANK1).
 D011_HIRES_ON = "3b"  # bitmap mode + display enable, raster MSB clear
 D016_STANDARD = "08"  # 40-col, no multicolor
-# $D018 selects the screen matrix (bits 7-4 = offset/$0400 within the bank)
-# and the bitmap (bit 3 = bitmap at bank+$2000). $18 = matrix at bank+$0400
-# + bitmap at bank+$2000 — bank-relative.
-D018_HIRES_BITMAP = 0x18  # bank-relative: screen +$0400, bitmap +$2000
 
 COLOR_NIBBLE_MASK = 0x0F
 
@@ -130,6 +129,11 @@ DEFAULT_WAVEFORM_COLORS = {
 # waveform palettes so a static line of text isn't mistaken for a trace.
 TITLE_TEXT_COLOR = "white"
 METADATA_TEXT_COLOR = "light gray"
+
+# Idle voice strips are drawn in this color, so a released voice's flat trace
+# reads as "off"; a sounding voice repaints in its own color. Owned here beside
+# the rest of the strip palette, because MidiScene and AsidScene both paint it.
+IDLE_VOICE_COLOR = "gray"
 
 # Per-voice render modes. Named because they are written from two places and
 # dispatched from a third, and a typo degrades to the fast path in silence.

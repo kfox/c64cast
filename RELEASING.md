@@ -70,7 +70,7 @@ see [Editions](#editions).
 **3. Open a PR and verify.**
 
 ```bash
-make check
+make preflight
 make books
 python scripts/bump_version.py --check 0.2.0
 ```

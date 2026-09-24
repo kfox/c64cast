@@ -71,6 +71,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Changed
 
+- **`-vv` no longer shows the reads c64cast makes on a timer, and `-vvv` is
+  new.** The Commodore-key poll reads the machine ten times a second for the
+  whole run, so a five-minute session buried `-vv` under ~3,000 HTTP-transport
+  lines that said only that the poll was still polling — and `--log-file` grew
+  at that rate. Those reads, the launcher scene's idle detector and the
+  host-DMA audio servo's ring-pointer read are now held out of `-vv`, which
+  leaves it showing the requests an operator is actually asking about. A
+  warning raised during one of those reads is not held back: a retry says
+  something about the link, which is the whole question. `-vvv` puts the poll
+  traffic back, for the run where the poll itself is the suspect — a C= hold
+  that never resumes, a launcher scene that never goes idle.
+
 - **The web console's build toolchain moved to Vite 8.** Vite 8 bundles with
   Rolldown and minifies stylesheets with Lightning CSS, where Vite 7 used
   Rollup and esbuild, so the committed bundle is rebuilt here with no source
@@ -87,8 +99,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   meant exactly what `-v` means: DEBUG is reached at the first `-v`, and no
   code anywhere read a verbosity of 2. It now releases urllib3, whose record
   per HTTP request `-v` holds back at WARNING because it buries everything
-  else in the log. `configure_logging` holds back no other logger, so that
-  release is the whole of the difference. Reach for `-vv` when the question
+  else in the log. No other logger's level moves, so that release is the whole
+  of what the second `v` does to the levels. Reach for `-vv` when the question
   is about an Ultimate's REST link itself: a request that never returned, a
   status the application logged only the consequence of. A TeensyROM link
   is serial or raw TCP, so on one of those the second `v` says nothing about
@@ -138,6 +150,29 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **`--serve` could leave a background poller running after it shut down.** The
+  session supervisor started its `session-reap` poller outside the lock that
+  publishes the `running` transition, and `close()` stops that poller once and
+  never returns to it — so a build still in flight when `close()` gave up
+  waiting came up behind that stop, cleared the stop event and spawned a fresh
+  poller with nothing left to stop it, ticking against a closed supervisor for
+  the life of the process. The browser screen feed brought its
+  `screen-sweeper` thread up the same way, where a watcher that registered a
+  moment before `close()` could strand a sweeper of its own, or fail the
+  request outright with an `AttributeError` if the close landed between the two
+  statements. Both threads now start inside the lock that publishes the state
+  they depend on, and neither starts once its owner is closing.
+
+- **`[audio].dither` drew from a process-wide random sequence, so a dithered
+  capture could not be reproduced.** The realtime encoder fell back to numpy's
+  global RNG, which every other numpy caller in the process shares and no run
+  records — two takes of the same source produced different dither, and an A/B
+  against `scripts/diags/quant_noise_ab.py` had nothing to hold fixed. Each
+  `AudioStreamer` now owns one generator, seeded from system entropy and
+  logged once at INFO (`audio: TPDF dither seed=N`) whenever dither is on, so
+  a capture can be re-encoded from the seed its run wrote down. The dither
+  itself is unchanged: same TPDF shape, same ±1 LSB, same exact-zero skip.
+
 - **`--version` wrapped its install path to the terminal width.** argparse's
   stock version action renders through `HelpFormatter`, so the path — the half
   of that line that exists to be pasted into `uv tool upgrade` or read back to
@@ -157,12 +192,45 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   NMI-vector restore, which is what keeps a still-live NMI source from
   overwriting it.
 
+- **Four more cleanup blocks skipped the rest of their work after one step
+  failed**, and the class is now closed by a check rather than by another hand
+  search. Worst of them was the bitmap scenes' raster-IRQ teardown: six
+  independent writes under one swallow, where a single transient link error
+  left the C64's IRQ vector pointing into RAM the next scene overwrites, the
+  VIC on a non-default bank, and **CIA #1's timer masked — which stops the
+  keyboard scan, and with it pause/skip on the C= and CTRL keys, for the rest
+  of the session**. The others: the ASID player's kernal-IRQ restore, whose two
+  halves share a function precisely because each matters alone, and whose
+  second half is the one that keeps the jiffy clock from running 16x fast; DAC
+  calibration's teardown, where a failed CIA write skipped both the SID
+  silencing and the reset, ending a run with the machine still making noise;
+  and the oscilloscope's subtune-change pre-silence, where a failed vector
+  restore skipped the silencing it exists to do. Each write is now guarded on
+  its own and names itself when it fails — except the raster teardown's last
+  step, re-enabling the C64's keyboard timer, which stays deliberately tied to
+  the IRQ-vector restore above it: re-arming that timer while the vector still
+  points at the departing scene's handler hands every interrupt to RAM the next
+  scene overwrites, so a failed vector restore now leaves the timer masked and
+  says so. A test sweeps the tree for the shape and fails on a new one, since
+  the previous fix in this class recorded that it was the last instance and was
+  wrong four times over.
+
 - **A SID file could paint a system-mismatch arrow that was not there.** The
   oscilloscope's metadata row marks a clock mismatch with a `\x01` sentinel,
   swapped for a mirrored right-arrow glyph wherever it appears in the row, and
   the PSID/RSID copyright field reached that row as raw bytes. The three header
   text fields are now decoded as ISO-8859-1 with control characters replaced by
   spaces.
+
+- **Stopping a show left the C64 streaming its screen for 20 seconds.** With a
+  browser watching the picture, stopping the show from the web console left the
+  Ultimate sending its VIC output — ~2.6 MB/s of UDP — until the firmware's own
+  watchdog expired. The OFF command *was* attempted, and reached a link the
+  teardown had already closed, where the resulting error was swallowed with
+  nothing logged. The machine is now told while the link is still up, as the
+  last teardown step before it closes, and it is told whether or
+  not this host believes anyone is still watching. Sibling of the
+  host-shutdown case below, on a different path and not fixed by it.
 
 - **Shutting the web console down left the C64 streaming its screen.** Once a
   browser had watched the picture, the Ultimate went on sending its VIC output

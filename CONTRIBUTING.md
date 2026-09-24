@@ -32,6 +32,13 @@ numbers came from. The companion `lint-comments` hook reports section banners,
 `TODO:` markers and commented-out code among the comment lines a commit *adds* —
 `git config prose.lintComments false` switches it off.
 
+A commit that touches `.github/workflows/` also runs `lint-workflows`
+([`scripts/lint_workflows.py`](scripts/lint_workflows.py)), which refuses a
+`needs:` naming no job in that workflow, a cycle in the `needs:` graph, and a
+`needs.<job>` expression the job never declared. GitHub resolves all three when
+it dispatches the run, which is after the push. The suite runs the same check
+over every workflow, so `make check` and CI's test matrix reach it too.
+
 Then either prefix one-off commands with `uv run`, or let
 [direnv](https://direnv.net/) activate `.venv` for you — `.envrc` is gitignored,
 so write your own with `layout uv` in it (plus `use mise` if you use mise, and
@@ -91,14 +98,23 @@ scripts/c64cast.sh --doctor --skip-probe
 ## The pre-PR gate
 
 ```bash
-make check      # lint + typecheck + test — run this before opening a PR
+make check      # lint + typecheck + test — the quick one, for every commit
+make preflight  # everything CI runs but coverage and the version matrix
 ```
+
+`preflight` is the one to have green before you open a PR. `check` runs none
+of the hygiene hooks CI's `pre-commit` job does, so a change to YAML, TOML or
+Markdown gets a green `check` with no dependabot, schema, whitespace or
+line-ending check behind it. `preflight` needs Node, for the web bundle and
+the docs search test; without Node, run `check` and leave the rest to CI.
 
 Every target routes through `uv run`, so they hit the synced project env
 whether or not the current shell has `.venv` activated:
 
 | Target | What it does |
 |---|---|
+| `make check` | `lint` + `typecheck` + `test` |
+| `make preflight` | `lint` + `test`, the hygiene hooks, `pyright`/`mypy` once per target platform, the book and site renders, the docs search test, and the web bundle drift check |
 | `make sync` | `uv sync --all-extras` (refresh the project env) |
 | `make lint` | `ruff check` + `ruff format --check` |
 | `make fmt` | `ruff format` |
@@ -115,9 +131,16 @@ whether or not the current shell has `.venv` activated:
 
 CI runs on every pull request and on pushes to `main`
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): the same tests across
-Python 3.11–3.14 and three operating systems, the same lint and formatting once
-in the `pre-commit` job, and the same type checks once per target platform on
-Python 3.14 in the `types` job.
+Python 3.11–3.14 and three operating systems, the same type checks once per
+target platform on Python 3.14 in the `types` job, the same book and site
+renders and search test in `docs`, the same bundle rebuild in `web`, and the
+whole of [`.pre-commit-config.yaml`](.pre-commit-config.yaml) in the
+`pre-commit` job — not only lint and formatting but the dependabot, YAML and
+TOML schema checks, the whitespace and line-ending hooks and the comment lint.
+What that job leaves out is `pyright` and `unittest`, which other jobs own, and
+`commit-message-shape`, a `commit-msg` hook that runs only where the message is
+written. `make preflight` is that set run once on one platform; what it leaves
+to CI is the coverage job and the twelve `os` x `python-version` legs.
 Type-checking is deliberately two-tiered: `pyright` in basic mode across the
 whole tree (including tests), matching Pylance's VS Code defaults so editor
 diagnostics align with CI, plus `mypy --strict` on the state-bearing modules
@@ -169,6 +192,30 @@ that ends with a thread it started still alive, naming the thread. `PollThread`
 names every loop at its construction site, so the name identifies the owner;
 the fix is to call that object's teardown from `addCleanup`. A stray gets half
 a second to finish first, so a thread genuinely winding down is not a failure.
+
+**A test that stops making progress is interrupted, not waited out.**
+`unittest_parallel` exposes no timeout and the CI jobs bound only the whole
+job, so a hung test used to spend that budget and identify itself nowhere.
+[`tests/_timeout_sandbox.py`](tests/_timeout_sandbox.py), armed from the same
+startup hook, caps a test at 60 seconds — far above the slowest legitimate one
+here, which measures about a second. Past the cap it writes every thread's
+stack to stderr under the test's name and raises `TestTimedOut` in the thread
+running it, so the run reports that test and goes on to the next. Set
+`C64CAST_TEST_TIMEOUT_S=0` to turn the watchdog off while stepping through a
+test under a debugger. What it cannot reach is a test blocked in a call that
+never returns to the interpreter — the module docstring has that and the rest
+of the blind spots.
+
+**A test may not leave the process-wide RNG seeded.** `random` and numpy's
+legacy global generator both carry state across tests in a worker, and this
+program draws from both, so a `random.seed()` left behind decides what a later
+test's production code draws — and which tests share a worker changes per run.
+[`tests/_rng_sandbox.py`](tests/_rng_sandbox.py) reseeds both from the test's
+own id before every test. A test that wants a particular sequence still calls
+`random.seed()` itself, in the test or in `setUp`; a seed set in `setUpClass`
+or at module import is overwritten before the first test under it runs. Prefer
+a `random.Random()` instance or a `np.random.Generator`, which are nobody
+else's state.
 
 If a test trips the filesystem hook, the fix is almost always to point the code
 under test at a file the test writes under `tempfile.mkdtemp()`, or to run the
@@ -247,7 +294,8 @@ and reset when you are done.
   own commit.
 - **Work on a branch and open a PR** — `main` is protected by CI and every
   change lands through review.
-- `make check` must be green before you open the PR.
+- `make preflight` must be green before you open the PR — see
+  [The pre-PR gate](#the-pre-pr-gate).
 - Do not commit user media, personal configs, or machine-specific details (IP
   addresses, capture-device names, local paths). `assets/` tracks only its
   per-directory READMEs by design; everything else there is gitignored.

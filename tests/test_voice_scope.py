@@ -20,13 +20,12 @@ from typing import cast
 import numpy as np
 from _fakes import FakeAPI
 
-from c64cast.hw.c64 import VIC, RegionID
+from c64cast.hw.c64 import D018_HIRES_PAGE_A, VIC, RegionID
 from c64cast.scenes.bitmap_text import ascii_to_screen_code
 from c64cast.sid.sidemu import ACCUMULATOR_RANGE, WAVE_TRIANGLE, Voice
 from c64cast.sid.voice_scope import (
     BITMAP_H,
     BITMAP_W,
-    D018_HIRES_BITMAP,
     META_ROW,
     SCREEN_W_CHARS,
     TIME_BASE_AUTO,
@@ -449,7 +448,7 @@ class D018CharDefaultTest(unittest.TestCase):
     def test_is_not_the_scope_s_own_bitmap_layout(self):
         # The teardown these constants serve moves the matrix pointer off the
         # scope's layout, so equal values would make it a no-op.
-        self.assertNotEqual(VIC.D018_CHAR_DEFAULT, D018_HIRES_BITMAP)
+        self.assertNotEqual(VIC.D018_CHAR_DEFAULT, D018_HIRES_PAGE_A)
         # $D018 bit 3 selects the bitmap at bank+$2000; a char mode has it clear.
         self.assertEqual(VIC.D018_CHAR_DEFAULT & 0x08, 0)
 

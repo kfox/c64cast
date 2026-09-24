@@ -21,6 +21,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from c64cast._pollthread import PollThread
+from c64cast._transport_log import quiet_transport
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import KEYBUF, SCREEN
 
@@ -141,7 +142,8 @@ class CommodoreKeyPoller:
         We return None (rather than 0) so the caller can distinguish
         'no modifiers pressed' from 'unable to tell'. A failed read
         shouldn't accidentally trigger any state change."""
-        data = self.api.read_memory(ADDR_MODIFIERS, 1)
+        with quiet_transport():
+            data = self.api.read_memory(ADDR_MODIFIERS, 1)
         if data is None or len(data) < 1:
             return None
         return data[0]
@@ -156,14 +158,16 @@ class CommodoreKeyPoller:
         empty list on no keys OR any read failure (the None-on-failure guard
         means a dropped read never fabricates input). On a buffer read failure
         NDX is left intact so the keystrokes survive to the next tick."""
-        ndx = self.api.read_memory(ADDR_KB_BUFFER_LEN, 1)
+        with quiet_transport():
+            ndx = self.api.read_memory(ADDR_KB_BUFFER_LEN, 1)
         if ndx is None or len(ndx) < 1:
             return []
         count = ndx[0]
         if count == 0:
             return []
         count = min(count, _KB_BUFFER_MAX)
-        data = self.api.read_memory(ADDR_KB_BUFFER, count)
+        with quiet_transport():
+            data = self.api.read_memory(ADDR_KB_BUFFER, count)
         if data is None or len(data) < count:
             return []
         self.api.write_memory(_KB_BUFFER_LEN_HEX, "00")

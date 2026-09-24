@@ -31,11 +31,13 @@ from c64cast.sid.sid_host_emu import (
 )
 from c64cast.sid.sidemu import (
     ACCUMULATOR_RANGE,
+    ENV_SILENCE_EPS,
     WAVE_NOISE,
     WAVE_PULSE,
     WAVE_SAWTOOTH,
     WAVE_TRIANGLE,
     SIDEmulator,
+    Voice,
     primary_waveform,
 )
 from c64cast.sid.waveform import parse_sid_header
@@ -147,23 +149,21 @@ class DisplayLayoutTest(unittest.TestCase):
         return _choose_display_layout(lo, hi, fp)
 
     def test_default_bank0_when_clear(self):
-        from c64cast.hw.c64 import CIA2, VIC_BANK_0
-        from c64cast.sid.waveform import D018_HIRES_BITMAP
+        from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_0
 
         s, b, d, d018 = self._layout(0x1000, 0x1800)
         self.assertEqual(
             (s, b, d, d018),
-            (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
+            (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_PAGE_A),
         )
 
     def test_bank2_when_payload_overlaps_bank0_bitmap(self):
-        from c64cast.hw.c64 import CIA2, VIC_BANK_2
-        from c64cast.sid.waveform import D018_HIRES_BITMAP
+        from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC_BANK_2
 
         s, b, d, d018 = self._layout(0x1000, 0x2F00)  # crosses $2000
         self.assertEqual(
             (s, b, d, d018),
-            (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
+            (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_PAGE_A),
         )
 
     def test_bank2_when_footprint_dirties_bank0(self):
@@ -310,8 +310,6 @@ class EndOfTuneDetectionTest(unittest.TestCase):
 
     def _scene(self):
         return bare_waveform_scene(_ever_sounded=False, _silence_since=None, name="test")
-
-    EPS = 1e-3
 
     def test_never_ends_before_first_sound(self):
         s = self._scene()
@@ -496,6 +494,25 @@ class SidEmulatorTest(unittest.TestCase):
         s = emu.voice_samples(0, 64)
         self.assertTrue(np.all(s == 0.0), "a zero-frequency voice must draw the resting line")
 
+    def test_is_audible_holds_a_gated_voice_whatever_its_envelope(self):
+        # The scope scenes gray a voice's strip when this answers False, so a
+        # freshly gated voice whose attack has not started yet must still count
+        # as sounding — otherwise every note-on flickers gray for one frame.
+        self.assertTrue(Voice(control=0x41, envelope_level=0.0).is_audible())
+
+    def test_is_audible_follows_a_released_voice_down_through_the_epsilon(self):
+        # Gated off, the answer is the decay tail against one shared floor.
+        self.assertTrue(Voice(control=0x40, envelope_level=ENV_SILENCE_EPS * 2).is_audible())
+        self.assertFalse(Voice(control=0x40, envelope_level=ENV_SILENCE_EPS).is_audible())
+        self.assertFalse(Voice(control=0x40, envelope_level=0.0).is_audible())
+
+    def test_is_audible_takes_a_caller_supplied_floor(self):
+        # A caller wanting a different floor passes one rather than keeping a
+        # second copy of the default next to a comment claiming they match.
+        v = Voice(control=0x40, envelope_level=0.5)
+        self.assertTrue(v.is_audible())
+        self.assertFalse(v.is_audible(0.9))
+
     def test_system_string_is_normalized_case_insensitively(self):
         # [ultimate64].system is validated case-insensitively and documented as
         # accepting "ntsc", but a bare `system == "NTSC"` gave those spellings
@@ -629,7 +646,7 @@ class LayoutHelpersTest(unittest.TestCase):
         self.assertIn(" ", line)
 
     def test_lcr_centers_balanced(self):
-        from c64cast.sid.waveform import _layout_lcr
+        from c64cast.sid.voice_scope import _layout_lcr
 
         line = _layout_lcr("1985", "6581", "PAL")
         self.assertEqual(len(line), 40)
@@ -642,7 +659,7 @@ class LayoutHelpersTest(unittest.TestCase):
 
     def test_lcr_collision_avoidance(self):
         # Long left field must push the center right, not overlap.
-        from c64cast.sid.waveform import _layout_lcr
+        from c64cast.sid.voice_scope import _layout_lcr
 
         line = _layout_lcr("A" * 25, "MID", "END")
         self.assertEqual(len(line), 40)
@@ -1280,6 +1297,31 @@ class WaveformSceneTest(unittest.TestCase):
         self.assertIn("SILENCE", api.regs)
         self.assertEqual(api.memories.get("D018"), "14")
 
+    def test_a_failing_irq_restore_does_not_starve_the_cycle_pre_silence(self):
+        # _cycle_silence_current's two halves also shared one try: a failed
+        # vector restore skipped the silencing, which is the lingering audio
+        # through the (CPU-bound) candidate footprinting that the method exists
+        # to prevent.
+        from c64cast.sid.waveform import WaveformScene
+
+        def link_down(*args, **kwargs) -> None:
+            raise RuntimeError("DMA link down")
+
+        api = FakeAPI()
+        scene = WaveformScene(api, audio=None, file=self.sid_path)
+        scene.setup()
+        self.addCleanup(scene.teardown)  # setup() starts the register poll thread
+        healthy = api.restore_kernal_irq_vector
+        # Registered after the teardown cleanup, so LIFO undoes the break
+        # first: a teardown still running against `link_down` would log its
+        # own failure outside any assertLogs.
+        self.addCleanup(setattr, api, "restore_kernal_irq_vector", healthy)
+        api.restore_kernal_irq_vector = link_down  # type: ignore[method-assign]
+        api.regs.pop("SILENCE", None)
+        with self.assertLogs("c64cast.sid.waveform", level="ERROR"):
+            scene._cycle_silence_current()
+        self.assertIn("SILENCE", api.regs)
+
     def test_teardown_silences_extra_chips_before_config_restore(self):
         # A 2SID tune on the U2+ emulated-stereo-SID surface: teardown must zero
         # the chip at $D420 BEFORE the config restore re-points that side at its
@@ -1863,7 +1905,8 @@ class WaveformSceneTest(unittest.TestCase):
         # _setup_hires, re-writing the bitmap zero-fill and the per-voice color
         # strips on every SHIFT.
         from c64cast.hw.c64 import SCREEN
-        from c64cast.sid.waveform import BITMAP_STRIPS, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_STRIPS
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(api, audio=None, file=self.sid_path, song=1, duration_s=10.0)
@@ -2362,8 +2405,6 @@ class WaveformPoolPickTest(unittest.TestCase):
     candidate per setup() and skip SIDs that fail payload validation."""
 
     def setUp(self):
-        rng_state = random.getstate()
-        self.addCleanup(random.setstate, rng_state)
         # The synthetic SIDs here would not survive the real host emulator.
         patcher = patch("c64cast.sid.waveform.SidHostEmu")
         self.addCleanup(patcher.stop)
@@ -2796,7 +2837,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
 
     def test_auto_time_window_matches_freq(self):
         from c64cast.sid.sidemu import ACCUMULATOR_RANGE
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2822,7 +2864,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         a slice of the full-screen window proportional to n_cols/BITMAP_W.
         Without this scaling, a small scroll batch sampled `auto_cycles`
         full periods into a few pixels and the trace went random."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2842,7 +2885,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         self.assertAlmostEqual(partial, full * 4 / BITMAP_W, places=12)
 
     def test_auto_silent_voice_falls_back_to_wallclock(self):
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(),
@@ -2865,10 +2909,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         self.assertAlmostEqual(got_partial, (1.0 / 60.0) * 4 / BITMAP_W, places=10)
 
     def test_persistence_random_resolves_to_named_preset(self):
-        from c64cast.sid.waveform import (
-            _PERSISTENCE_RANDOM_CHOICES,
-            WaveformScene,
-        )
+        from c64cast.sid.voice_scope import _PERSISTENCE_RANDOM_CHOICES
+        from c64cast.sid.waveform import WaveformScene
 
         scene = WaveformScene(
             FakeAPI(), audio=None, file=self.sid_path, duration_s=10.0, persistence="random"
@@ -2929,7 +2971,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         """With scroll_columns=8, after one frame the strip's leftmost
         (BITMAP_W - 8) columns equal the previous frame's columns 8..end —
         a literal FIFO shift."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(
@@ -2962,7 +3005,8 @@ class WaveformVizKnobsTest(unittest.TestCase):
         scroll boundary had a single-pixel self-dot, fragmenting the
         trace into N-column chunks. _last_y captures the connection
         across frames; _span_mask uses it as the prev-y for column 0."""
-        from c64cast.sid.waveform import BITMAP_W, WaveformScene
+        from c64cast.sid.voice_scope import BITMAP_W
+        from c64cast.sid.waveform import WaveformScene
 
         api = FakeAPI()
         scene = WaveformScene(

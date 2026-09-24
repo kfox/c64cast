@@ -95,7 +95,17 @@ class FakeScene:
 
 
 class FakeApi:
-    """Playlist only uses .stats and .format_write_latency() (for the heartbeat)."""
+    """A Playlist's backend: the run loop reads `.stats` (for the heartbeat
+    and for the profiler's per-frame write counters) and calls
+    `.format_write_latency()` on the profiler's emit cadence, and the pause
+    path calls the four machine methods below, which record their own names
+    on `.calls`.
+
+    Those four are here rather than assigned onto an instance by the test that
+    needs them, because `_handle_pause` runs each inside `except Exception:
+    log.exception(...)` — so an attribute this fake is missing surfaces as an
+    ERROR record printed in the middle of the run, not as a failure.
+    """
 
     def __init__(self):
         self.stats = {
@@ -104,9 +114,22 @@ class FakeApi:
             "errors": 0,
             "bytes": 0,
         }
+        self.calls = []
 
     def format_write_latency(self):
         return None
+
+    def pause_idle(self):
+        self.calls.append("pause_idle")
+
+    def reset(self):
+        self.calls.append("reset")
+
+    def run_basic_clear_loop(self):
+        self.calls.append("run_basic_clear_loop")
+
+    def disable_case_switch(self):
+        self.calls.append("disable_case_switch")
 
 
 def _transition_factory():
@@ -419,7 +442,14 @@ class PlaylistTest(unittest.TestCase):
             f"expected advance-failure log, got: {cap.output!r}",
         )
 
-    def test_stop_event_halts_loop_promptly(self):
+    def test_stop_event_halts_the_loop_between_frames(self):
+        # What this has to assert is that the run loop re-reads stop_event
+        # between frames instead of running the scene to completion. It used
+        # to assert that pl.run() returned inside 1.0 s of wall clock, which
+        # measures how loaded the box is; the frame count says the same thing
+        # about the loop and nothing at all about the machine. Ten million
+        # frames from done, so a loop that only looked once would render them
+        # all rather than come back under a hundred.
         s = FakeScene("A", frames_until_done=10_000_000)
         stop = threading.Event()
         api = FakeApi()
@@ -432,11 +462,15 @@ class PlaylistTest(unittest.TestCase):
             stop_event=stop,
             interstitial_factory=factory,
         )
-        arm_deadline(self, 0.05, stop.set)
-        t0 = time.time()
+        driven = _drive(stop, lambda: s.frame_count >= 1)
         pl.run()
-        dt = time.time() - t0
-        self.assertLess(dt, 1.0, f"stop_event should interrupt within ~50ms, took {dt:.2f}s")
+        driven["thread"].join(timeout=10.0)
+        self.assertTrue(driven["ok"], "the scene never rendered a frame to stop it after")
+        self.assertLess(
+            s.frame_count,
+            100,
+            f"the loop ran on past the stop: {s.frame_count} frames rendered",
+        )
         self.assertGreater(s.teardown_count, 0, "current scene must be torn down")
 
     def test_keyboard_interrupt_triggers_clean_teardown(self):
@@ -1350,12 +1384,7 @@ class PauseResumeTest(unittest.TestCase):
         """Both waits in the pause path — the idle loop and the settle after
         resume — go through `stop_event.wait`, so a SIGTERM during either one
         returns instead of running its timeout down."""
-        called = []
         api = FakeApi()
-        api.pause_idle = lambda: called.append("pause_idle")
-        api.reset = lambda: called.append("reset")
-        api.run_basic_clear_loop = lambda: called.append("run_basic_clear_loop")
-        api.disable_case_switch = lambda: called.append("disable_case_switch")
         stop_event = ScriptedStopEvent()
         factory, _ = _transition_factory()
         pl = Playlist(
@@ -1377,7 +1406,7 @@ class PauseResumeTest(unittest.TestCase):
             "the idle poll and the post-resume settle must both wait on stop_event",
         )
         self.assertEqual(
-            called,
+            api.calls,
             ["pause_idle", "reset", "run_basic_clear_loop", "disable_case_switch"],
         )
 

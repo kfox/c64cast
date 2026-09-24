@@ -6,9 +6,14 @@ recorded write log."""
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from typing import cast
+from unittest import mock
+from unittest.mock import MagicMock
 
+import numpy as np
 from _fakes import FakeAPI, new_streamer, run_irq_handler
 
 from c64cast.audio.audio import AudioStreamer
@@ -43,6 +48,7 @@ from c64cast.audio.audio_handlers import (
     RING_BUFFER_SIZE,
     servo_period,
 )
+from c64cast.scenes.scenes import VideoScene
 
 # The matched pump latch at the fixture's rate, spelled out rather than
 # derived: at 12 kHz NTSC (the shipped [audio].sample_rate default) the NMI
@@ -902,3 +908,35 @@ class ReuAudioRegionBoundTest(unittest.TestCase):
         self.assertEqual(len(fitted), REU_AUDIO_MAX_BYTES - pad)
         self.assertLessEqual(len(fitted) + pad, REU_AUDIO_MAX_BYTES)
         self.assertTrue(any("truncating" in m for m in cm.output), cm.output)
+
+
+class ReuPreencodeDitherTest(unittest.TestCase):
+    """The whole-track pre-encode is the third DAC encode site, and it draws
+    its dither from the streamer's seed too — so the number a run logs
+    re-encodes a REU-staged capture, not only a realtime one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clip = os.path.join(self.tmp.name, "clip.mp4")
+        open(self.clip, "wb").close()
+        # A tone rather than silence: the encoder skips dither on exact-zero
+        # samples, so a silent track would compare equal under any seed.
+        self.pcm = (np.sin(np.arange(4096) / 8.0) * 12000).astype(np.int16)
+
+    def _staged(self, seed: int) -> bytes:
+        s = new_streamer(dither=True, dither_seed=seed)
+        scene = VideoScene(MagicMock(), s, MagicMock(), self.clip)
+        with (
+            mock.patch("c64cast.scenes.scenes.decode_audio_full", return_value=self.pcm),
+            self.assertLogs("c64cast.scenes.scenes", level="INFO") as cm,
+        ):
+            encoded = scene._preencode_audio_for_reu()
+        self.assertTrue(any("REU pre-encode" in m for m in cm.output), cm.output)
+        return encoded
+
+    def test_same_seed_reproduces_the_staged_encode(self):
+        self.assertEqual(self._staged(4242), self._staged(4242))
+
+    def test_different_seeds_differ(self):
+        self.assertNotEqual(self._staged(4242), self._staged(9001))

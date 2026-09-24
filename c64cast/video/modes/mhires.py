@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import CIA2, D018_HIRES_PAGE_A, VIC, VIC_BANK_0, VIC_BANK_2, RegionID
 from c64cast.scenes.text_surface import MHiresTextSurface
 from c64cast.video.dither import DITHER_METHODS, error_diffuse_cells
 from c64cast.video.flicker import (
@@ -400,7 +400,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         engage_bitmap_mode(
             api,
             d011="3b",
-            d018="18",
+            d018=f"{D018_HIRES_PAGE_A:02X}",
             d016="18",
             border=0x00,
             bg0=0x00,

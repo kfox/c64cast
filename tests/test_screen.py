@@ -13,6 +13,7 @@ Not covered here: the HTTP routes (tests/test_web_api.py) and the wire format
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from unittest import mock
@@ -163,6 +164,31 @@ class LifetimeTest(unittest.TestCase):
             with self.assertRaises(screen_mod.ScreenUnavailable):
                 self.feed.acquire("c64cast")
         self.assertEqual((self.api.starts, self.api.stops), (1, 1))
+        self.assertIsNone(self.feed._sweeper)
+
+    def test_a_watcher_that_lands_as_close_runs_does_not_start_a_sweeper(self):
+        # The sweeper was brought up outside the lock that publishes `_closed`,
+        # so a watcher that registered a moment before `close()` started one
+        # behind it: close() had already looked for a sweeper to stop and found
+        # none, and nothing was left that could reach this one.
+        entered, closed = threading.Event(), threading.Event()
+        real = self.feed._start_sweeper
+
+        def gated() -> None:
+            entered.set()
+            closed.wait(2.0)
+            real()
+
+        with mock.patch.object(self.feed, "_start_sweeper", gated):
+            watcher = threading.Thread(target=self.feed.acquire, args=("c64cast",))
+            watcher.start()
+            self.addCleanup(watcher.join, 2.0)
+            self.addCleanup(closed.set)
+            self.assertTrue(entered.wait(2.0))
+            self.feed.close()
+            closed.set()
+            watcher.join(2.0)
+        self.assertFalse(watcher.is_alive())
         self.assertIsNone(self.feed._sweeper)
 
     def test_the_stream_ends_on_its_own_with_nothing_else_ticking(self):

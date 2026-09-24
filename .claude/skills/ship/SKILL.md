@@ -117,6 +117,17 @@ The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last. Tell it to review that
 commit's own diff, not `<sha>...HEAD` and not the branch.
 
+**Confirm the review read your tree.** The fork can resolve its working
+directory against the session's primary checkout rather than yours, and a fork
+that does reviews a different branch and reports it as this one — the findings
+read as ordinary findings about real code. `git branch -a --contains <fix-sha>`
+is the check that settles it: a fix commit can only land in the tree the
+reviewer wrote to, so a branch other than yours means the pass did not happen
+and does not count. Paths in the report are not the check — a fork that read
+the right tree still renders the odd finding's path in primary-checkout form.
+A report with no findings leaves no fix commit to check, so confirm its stated
+file list against `git show --stat <sha>` instead.
+
 Its prompt owes the three payloads step 4 lists — the gate summary, where this
 repo states its rules, and the pinned paths — for the reason step 4 gives: it
 cannot check a claim it was never shown. This is the net that reaches a one-line
@@ -193,6 +204,10 @@ Spawn **one subagent** with the Agent tool and have it review the whole branch:
 The effort level goes **first** in `args`, or it is parsed as part of the target
 and the run silently reuses whatever level ran last.
 
+Step 3's tree check applies unchanged here — it is the same fork, so confirm
+the pass landed in your tree with `git branch -a --contains <fix-sha>` on its
+fix commits before counting it.
+
 **Its prompt has to tell it to fix what it finds** — that call is a report-only
 run, and nothing reaches the tree unless the subagent applies it. This is the
 reviewer with the whole-branch view, so the editorial calls step 3 sends back
@@ -268,8 +283,15 @@ remains and ask the user how to proceed before opening a PR.
 
 ## 5. Open the PR
 
+Have the pre-PR gate green first. Step 3's `make check` is the per-commit one;
+`preflight` is what CONTRIBUTING.md asks for before a PR, and it is what covers
+the `pre-commit`, `docs` and `web` jobs that `check` never reaches. It needs
+Node; without it, CONTRIBUTING.md says to run `check` and leave the rest to
+CI.
+
 ```bash
-gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>"
+make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
+  && gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>"
 ```
 
 The body should say what the change does, why, and anything a reviewer should
@@ -286,12 +308,15 @@ Watch the checks and fix what breaks:
 gh pr checks --watch
 ```
 
-CI runs the tests across Python 3.11–3.14 and three operating systems, lint and
-formatting once in the `pre-commit` job, and the type checks once per target
-platform in the `types` job. GHAS code scanning
-runs too, and its findings are frequently regex-flavored false positives on this
-codebase — read each one before changing code to satisfy it, and say so if you
-think it is wrong rather than contorting the code around it. That leeway ends
+CI runs the tests across Python 3.11–3.14 and three operating systems,
+`.pre-commit-config.yaml`'s hooks in the `pre-commit` job — bar `pyright`,
+`unittest` and `commit-message-shape`, which other gates own — the type checks
+once per target platform in the `types` job, the book and site renders and the
+docs search test in `docs`, and the bundle rebuild in `web`. GHAS code
+scanning runs too, and its findings are frequently regex-flavored false
+positives on this codebase — read each one before changing code to satisfy
+it, and say so if you think it is wrong rather than contorting the code
+around it. That leeway ends
 at the pinned paths from step 4: a GHAS finding on any of them, or on anything
 touching `dma_password` or the `[web]`/`[control]` tokens, must be fixed or
 explicitly escalated to Kelly — never self-dismissed as a false positive.

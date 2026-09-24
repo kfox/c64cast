@@ -1,5 +1,5 @@
-"""Arm the test suite's filesystem and background-thread sandboxes at
-interpreter startup.
+"""Arm the test suite's four startup sandboxes — filesystem, background
+thread, RNG state and per-test timeout — at interpreter startup.
 
 `site` imports a module named exactly `sitecustomize` if it can find one on
 `sys.path`, which is the only hook that runs early enough to catch a file
@@ -14,9 +14,16 @@ on its path, so it is not importable there at all.
 """
 
 import _fs_sandbox
+import _rng_sandbox
 import _thread_sandbox
+import _timeout_sandbox
 
 _fs_sandbox.redirect_local_state()
 _fs_sandbox.neutralize_local_chargen()
 _fs_sandbox.arm()
+_rng_sandbox.arm()
 _thread_sandbox.arm()
+# Last, so its wrapper is the outermost one and the cap covers the test's
+# cleanups — where `_thread_sandbox`'s stray check runs, and where a join that
+# never returns is as good a hang as one inside the test body.
+_timeout_sandbox.arm()

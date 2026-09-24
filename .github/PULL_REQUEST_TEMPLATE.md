@@ -11,11 +11,12 @@ in full.
 ## How it was verified
 
 <!--
-`make check` is the gate (lint + typecheck + tests). Say what else you ran —
-especially anything hardware-side, since CI cannot do that part.
+`make preflight` is the gate — CONTRIBUTING.md → "The pre-PR gate" says
+what it covers and what it needs. Say what else you ran, especially
+anything hardware-side, since CI cannot do that part.
 -->
 
-- [ ] `make check` is green
+- [ ] `make preflight` is green
 - [ ] Tests added or updated for the change
 - [ ] Verified on real hardware (say which machine, firmware, and connection
       scheme — or note that the change does not touch a hardware path)

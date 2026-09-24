@@ -41,7 +41,16 @@ from c64cast._teardown import run_teardown_steps
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import RING_BUFFER_ADDR, RING_BUFFER_END
 from c64cast.hw.backend import C64Backend
-from c64cast.hw.c64 import CIA2, CPU, SCREEN, SID, VIC_BANK_0, VIC_BANK_2, RegionID
+from c64cast.hw.c64 import (
+    CIA2,
+    CPU,
+    D018_HIRES_PAGE_A,
+    SCREEN,
+    SID,
+    VIC_BANK_0,
+    VIC_BANK_2,
+    RegionID,
+)
 from c64cast.scenes.modulation import MusicModulation
 from c64cast.scenes.scenes import Scene
 from c64cast.video.palette import C64_COLORS
@@ -82,30 +91,26 @@ from .sid_hw_config import (
 from .sid_panning import apply_panning, sources_for_addresses
 from .sid_resolved import host_chip_fit, log_resolved_audio
 from .sid_volume import apply_volume
-from .sidemu import ACCUMULATOR_RANGE, SID_REG_COUNT, SIDEmulator, primary_waveform
+from .sidemu import (
+    ACCUMULATOR_RANGE,
+    ENV_SILENCE_EPS,
+    SID_REG_COUNT,
+    SIDEmulator,
+    primary_waveform,
+)
 
 # The 3-voice oscilloscope renderer lives in voice_scope.py so MidiScene can
-# share it. The imported-unused names are re-exported because tests still reach
-# them through this module: tests/test_waveform.py imports BITMAP_STRIPS /
-# BITMAP_W / _layout_lcr / _PERSISTENCE_RANDOM_CHOICES, and
-# tests/test_introspect.py reads TIME_BASE_NAMES / PERSISTENCE_NAMES off it.
+# share it.
 from .voice_scope import (
-    _PERSISTENCE_RANDOM_CHOICES,  # noqa: F401  (re-exported)
-    BITMAP_STRIPS,  # noqa: F401  (re-exported)
-    BITMAP_W,  # noqa: F401  (re-exported)
     CELL_PX,
-    D018_HIRES_BITMAP,
     LEFT_ARROW_SCREEN_CODE,
     META_ROW,
     METADATA_TEXT_COLOR,
-    PERSISTENCE_NAMES,  # noqa: F401  (re-exported)
     RANDOM_PERSISTENCE,
-    TIME_BASE_NAMES,  # noqa: F401  (re-exported)
     TIME_BASE_WALLCLOCK,
     TITLE_ROW,
     TITLE_TEXT_COLOR,
     VoiceScopeRenderer,
-    _layout_lcr,  # noqa: F401  (re-exported; tests import from this module)
     _layout_lr,
     _mirror_glyph_h,
     restore_char_mode_display,
@@ -143,8 +148,8 @@ _LOW_RAM_CLEAR_HI = 0x0400  # exclusive
 # Bank 3 ($C000-$FFFF) overlaps I/O and the player/audio handlers, so it is
 # omitted.
 _DISPLAY_BANKS = (
-    (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_BITMAP),
-    (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_BITMAP),
+    (VIC_BANK_0.SCREEN, VIC_BANK_0.BITMAP, CIA2.PORT_A_BANK_0, D018_HIRES_PAGE_A),
+    (VIC_BANK_2.SCREEN, VIC_BANK_2.BITMAP, CIA2.PORT_A_BANK_2, D018_HIRES_PAGE_A),
     (_BANK1_SCREEN, _BANK1_BITMAP, CIA2.PORT_A_BANK_1, D018_BANK1),
 )
 
@@ -291,11 +296,10 @@ class WaveformScene(VoiceScopeRenderer, Scene):
     # when the user did not pin duration_s.
     MIN_CYCLE_SUBTUNE_S = 5.0
 
-    # All three voice envelopes below ENV_SILENCE_EPS for END_SILENCE_S, after
-    # the tune has sounded at least once, ends the scene. The window is generous
-    # so brief musical rests do not trip it.
+    # Every voice envelope, on every chip, below sidemu.ENV_SILENCE_EPS for
+    # END_SILENCE_S, after the tune has sounded at least once, ends the scene.
+    # The window is generous so brief musical rests do not trip it.
     END_SILENCE_S = 6.0
-    ENV_SILENCE_EPS = 1e-3
 
     FALLBACK_DURATION_S = 180.0
 
@@ -471,7 +475,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         self._screen_base: int = VIC_BANK_0.SCREEN
         self._bitmap_base: int = VIC_BANK_0.BITMAP
         self._dd00: int = CIA2.PORT_A_BANK_0
-        self._d018: int = D018_HIRES_BITMAP
+        self._d018: int = D018_HIRES_PAGE_A
         # One display bank free for the UNION of every subtune's PLAY footprint,
         # so SHIFT-cycling never relocates the display — a live bank move garbles
         # the matrix. None = no single bank fits all subtunes, so the per-subtune
@@ -1309,14 +1313,29 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         re-installs the vector and restarts PLAY for the new subtune. The
         host-emu poll thread keeps ticking until the _poll.stop() that follows
         the candidate walk — harmless, since the blocked main thread paints
-        nothing."""
-        try:
+        nothing.
+
+        Two independent promises, so two steps: under one `try` a failed vector
+        restore skipped the silencing, which is the half that stops the old
+        tune sounding through the footprint work — the exact lingering audio
+        the order above exists to prevent."""
+
+        def unhook_irq() -> None:
             self.api.restore_kernal_irq_vector()
             self.api.flush()
+
+        def silence() -> None:
             self.api.silence_sid()
             self.api.flush()
-        except Exception:
-            log.exception("waveform: cycle pre-silence failed")
+
+        run_teardown_steps(
+            log,
+            "waveform cycle pre-silence",
+            (
+                ("kernal IRQ vector", unhook_irq),
+                ("SID silence", silence),
+            ),
+        )
 
     def _cycle_pick_candidate(
         self, n: int, budget: HostEmuBudget
@@ -1929,7 +1948,7 @@ class WaveformScene(VoiceScopeRenderer, Scene):
         scene. Arms only after the first audible envelope (so a slow-to-start
         tune isn't killed), tracks the start of the current all-silent
         window, and fires after END_SILENCE_S of continuous silence."""
-        sounding = any(e >= self.ENV_SILENCE_EPS for e in env_levels)
+        sounding = any(e >= ENV_SILENCE_EPS for e in env_levels)
         if sounding:
             self._ever_sounded = True
             self._silence_since = None

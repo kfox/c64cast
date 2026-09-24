@@ -256,14 +256,17 @@ class ScreenFeed:
         never ticks for them and the machine keeps sending after the last tab
         closes. Costing nothing at idle is preserved by *lifetime* instead —
         the sweeper exists only while a receiver does, and ends itself when the
-        last one goes."""
+        last one goes. A closed feed never gets one: :meth:`close` is the last
+        word on this thread, and it has already run by the time `_closed` is
+        visible here."""
         with self._lock:
-            if self._sweeper is not None:
+            if self._closed or self._sweeper is not None:
                 return
-            self._sweeper = PollThread(
+            sweeper = PollThread(
                 self._sweep_forever, name="screen-sweeper", manual=True, join_timeout=2.0
             )
-        self._sweeper.start()
+            sweeper.start()
+            self._sweeper = sweeper
 
     def _sweep_forever(self, stop: threading.Event) -> None:
         while not stop.wait(_SWEEP_EVERY_S):
@@ -351,8 +354,11 @@ def encode_png(frame: VicFrame, palette: np.ndarray | None = None) -> bytes:
 def multipart_frames(read: Callable[[], VicFrame | None], *, fps: float) -> Generator[bytes]:
     """`multipart/x-mixed-replace` parts, one per frame, forever.
 
-    Ending is the caller's: it closes the generator, which unwinds whatever
-    `with` block is holding the machine's stream up. Nothing here polls for a
+    Ending is the caller's, and not by closing this: `_until_gone` abandons the
+    generator at a yield rather than closing it, so a `finally` here would run
+    when the collector reached it and not when the client left — nothing here
+    may hold a resource whose release has to be prompt. The machine's stream
+    belongs to the response's background task. Nothing here polls for a
     departed client, because a plain generator has no way to ask.
 
     Only *new* frames are encoded. The receiver keeps the latest and nothing

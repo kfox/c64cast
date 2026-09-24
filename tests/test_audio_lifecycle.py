@@ -1081,6 +1081,62 @@ class EncodeDacTest(unittest.TestCase):
         np.testing.assert_array_equal(a, b)
         self.assertEqual(a.dtype, np.uint8)
 
+    def test_dither_without_a_generator_is_refused(self):
+        # The fallback this replaces drew from numpy's process-wide RNG, which
+        # no caller owns and no run can reproduce. Refusing is the noisy half.
+        floats = np.linspace(-0.9, 0.9, 64, dtype=np.float32)
+        with self.assertRaises(ValueError):
+            encode_floats_to_dac(floats, dither=True)
+
+    def test_no_generator_is_fine_without_dither(self):
+        floats = np.linspace(-0.9, 0.9, 64, dtype=np.float32)
+        self.assertEqual(encode_floats_to_dac(floats, dither=False).dtype, np.uint8)
+
+
+class DitherSeedTest(unittest.TestCase):
+    """The realtime dither is a sequence the streamer owns: same seed, same
+    bytes; different seed, different bytes."""
+
+    def _chunks(self, seed: int) -> list[bytes]:
+        s = _make(dither=True, dither_seed=seed)
+        floats = np.linspace(-0.9, 0.9, 256, dtype=np.float32)
+        return [s._encode_dac(floats).tobytes() for _ in range(3)]
+
+    def test_same_seed_is_byte_identical(self):
+        self.assertEqual(self._chunks(4242), self._chunks(4242))
+
+    def test_different_seeds_differ(self):
+        self.assertNotEqual(self._chunks(4242), self._chunks(9001))
+
+    def test_successive_chunks_advance_the_sequence(self):
+        # Same input three times: identical output would mean the generator was
+        # being rebuilt (or reseeded) per chunk rather than drawn from.
+        a, b, c = self._chunks(4242)
+        self.assertNotEqual(a, b)
+        self.assertNotEqual(b, c)
+
+    def test_undithered_encoding_ignores_the_seed(self):
+        floats = np.linspace(-0.9, 0.9, 256, dtype=np.float32)
+        lo = _make(dither=False, dither_seed=1)._encode_dac(floats)
+        hi = _make(dither=False, dither_seed=2)._encode_dac(floats)
+        np.testing.assert_array_equal(lo, hi)
+
+    def test_seed_is_logged_when_dither_is_on(self):
+        # Logging it is what makes a dithered capture reproducible after the
+        # fact — the seed has to reach the run's log, not just the object.
+        with self.assertLogs("c64cast.audio.audio", "INFO") as cm:
+            s = _make(dither=True, dither_seed=777)
+        self.assertIn("777", "\n".join(cm.output))
+        self.assertEqual(s.dither_seed, 777)
+
+    def test_seed_is_not_logged_when_dither_is_off(self):
+        with self.assertNoLogs("c64cast.audio.audio", "INFO"):
+            _make(dither=False)
+
+    def test_unseeded_streamers_get_different_seeds(self):
+        seeds = {_make(dither=False).dither_seed for _ in range(8)}
+        self.assertEqual(len(seeds), 8)
+
 
 class SampleTapWrapTest(unittest.TestCase):
     def test_split_write_across_buffer_end(self):

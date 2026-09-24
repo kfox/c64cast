@@ -39,9 +39,11 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from c64cast._pollthread import PollThread
+from c64cast._teardown import run_teardown_steps
 from c64cast._wire_log import LogThrottle
 from c64cast.hw.c64 import (
     CIA1,
@@ -597,16 +599,31 @@ def restore_kernal_irq(api: C64Backend, system: str) -> None:
     asked for — a spec-legal 960 Hz ``0x31`` burns a third of the machine's
     cycles in ``$EA31`` and runs the jiffy clock 16× fast for every scene that
     follows, until a power cycle. Restoring only the latch leaves the kernal IRQ
-    vectored into a ring player nobody feeds."""
-    try:
-        api.write_regs(
-            f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
-        )
+    vectored into a ring player nobody feeds.
+
+    So each half is its own step. Under one `try` the shared guard undid the
+    reason they share a function: a failed vector write skipped the latch
+    restore, which is the half that runs the jiffy clock 16x fast until a power
+    cycle."""
+
+    def restore_latch() -> None:
+        # Resolved inside the step, not above it: `kernal_cia1_latch` raises
+        # ValueError on a system string it does not know, and this function
+        # promises never to raise.
         latch = kernal_cia1_latch(system)
         api.write_memory(f"{CIA1.TIMER_A_LO:04X}", f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}")
-        api.flush()
-    except Exception as e:  # best-effort; teardown must not raise
-        log.debug("asid_player: kernal IRQ restore failed: %s", e)
+
+    steps: tuple[tuple[str, Callable[[], object]], ...] = (
+        (
+            "kernal IRQ vector",
+            lambda: api.write_regs(
+                f"{VECTORS.IRQ:04X}", KERNAL.IRQ_HANDLER & 0xFF, (KERNAL.IRQ_HANDLER >> 8) & 0xFF
+            ),
+        ),
+        ("CIA1 kernal latch", restore_latch),
+        ("flush", api.flush),
+    )
+    run_teardown_steps(log, "asid_player", steps)
 
 
 class AsidRingPlayer:
