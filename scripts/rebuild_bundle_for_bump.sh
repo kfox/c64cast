@@ -9,8 +9,8 @@
 # writes no commit: the message carries claims whoever signs it should have
 # checked.
 #
-# Requires gh, npm and node. Exit 3 means the bundle did not move, so the PR
-# needs no replacement and can be merged as it is.
+# Requires gh, make, npm and node. Exit 3 means the bundle did not move, so the
+# PR needs no replacement and can be merged as it is.
 set -euo pipefail
 
 cd "$(dirname "$0")/.." > /dev/null
@@ -27,8 +27,19 @@ need() {
 }
 
 # git hash-object rather than sha256sum: that is shasum on macOS and sha256sum
-# on Linux, and git is already a hard requirement here.
-dist_hashes() { git hash-object "${ASSETS[@]}"; }
+# on Linux, and git is already a hard requirement here. Every file the build
+# emitted rather than the three named above, because a bump that makes rollup
+# split out a new chunk has to be held to the determinism check too.
+dist_hashes() {
+  find "$DIST" -type f | sort | while read -r file; do
+    printf '%s  %s\n' "$(git hash-object "$file")" "$file"
+  done
+}
+
+# git diff cannot see a file the build newly emitted, since an untracked path is
+# not a diff; status can, and a new chunk moves the bundle as much as an edit to
+# an existing one does.
+dist_moved() { [ -n "$(git status --porcelain -- "$DIST")" ]; }
 
 [ "$#" -ge 1 ] || die "Usage: $(basename "$0") PR [BRANCH]"
 
@@ -38,6 +49,7 @@ case $PR in
 esac
 
 need gh "Reading the PR"
+need make "Rebuilding the bundle"
 need npm "Building the web console"
 need node "Building the web console"
 
@@ -46,12 +58,17 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 echo "==> Reading PR #$PR"
-IFS=$'\t' read -r head_ref head_sha base_ref < <(
+# Read into a variable first: `read` from a process substitution that produced
+# nothing fails under set -e, which would take the script down before it could
+# say which step failed or why.
+fields=$(
   gh pr view "$PR" --json headRefName,headRefOid,baseRefName \
     --jq '[.headRefName, .headRefOid, .baseRefName] | @tsv'
-)
-[ -n "${head_sha:-}" ] || die "Could not read PR #$PR from gh."
-touched=$(gh pr view "$PR" --json files --jq '.files[].path' | sort)
+) || die "Could not read PR #$PR from gh."
+IFS=$'\t' read -r head_ref head_sha base_ref <<< "$fields"
+[ -n "$head_sha" ] || die "Could not read PR #$PR from gh."
+touched=$(gh pr view "$PR" --json files --jq '.files[].path' | sort) ||
+  die "Could not read PR #$PR's file list from gh."
 
 # A bump that also edits sources or config is not this script's shape: the
 # rebuild would carry those edits into the replacement branch unremarked.
@@ -71,14 +88,34 @@ echo "==> Fetching origin/$base_ref and $head_sha"
 git fetch -q origin "$base_ref"
 git fetch -q origin "$head_ref"
 
+# The two files are taken whole from the PR head onto a branch off the *current*
+# base, so if either moved on the base since the PR forked, that checkout reverts
+# it: a downgrade of an unrelated package, staged as part of this bump. Compared
+# at the fork point rather than by ancestry, because a Dependabot branch goes
+# stale against unrelated commits constantly and only these two files matter.
+fork_point=$(git merge-base "origin/$base_ref" "$head_sha")
+if ! git diff --quiet "$fork_point" "origin/$base_ref" -- "$MANIFEST" "$LOCK"; then
+  die "$MANIFEST or $LOCK moved on origin/$base_ref since PR #$PR forked, so taking
+the PR's copies would revert that. Rebase it first (comment '@dependabot rebase'
+on the PR), then rerun."
+fi
+
 starting_ref=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
 echo "==> Branching $BRANCH off origin/$base_ref"
 git checkout -q -b "$BRANCH" "origin/$base_ref"
 
 abandon() {
-  git checkout -q --force "$starting_ref"
-  git branch -q -D "$BRANCH"
+  git checkout -q --force "$starting_ref" || return 0
+  git branch -q -D "$BRANCH" || return 0
 }
+
+# Everything below here can fail - most plausibly `make web`, since the `npm
+# test` it ends with is one of the things a bump breaks - and every such failure
+# would otherwise strand the checkout on this throwaway branch with a rebuilt
+# bundle in it, so the next run refuses twice over: dirty tree, branch exists.
+# Unwind by default; `keep_branch` flips once there is a staged tree to hand on.
+keep_branch=no
+trap '[ "$keep_branch" = yes ] || abandon' EXIT
 
 # The baseline run is the point of this script. Without it a local toolchain
 # difference - a Node whose minifier disagrees with CI's, a stale install -
@@ -86,8 +123,7 @@ abandon() {
 # claims the bump did something it did not.
 echo "==> Baseline: rebuilding at origin/$base_ref, to check this machine reproduces the committed bundle"
 make web > /dev/null
-if ! git diff --quiet -- "$DIST"; then
-  abandon
+if dist_moved; then
   die "make web at origin/$base_ref does not reproduce the committed bundle on this machine,
 so any diff after the bump would be this machine's rather than the toolchain's.
 Compare node --version against .node-version before going further."
@@ -100,8 +136,7 @@ git checkout "$head_sha" -- "$MANIFEST" "$LOCK"
 echo "==> Rebuilding"
 make web > /dev/null
 
-if git diff --quiet -- "$DIST"; then
-  abandon
+if ! dist_moved; then
   echo
   echo "The bundle does not move, so PR #$PR needs no replacement and can be merged as it is."
   exit 3
@@ -111,9 +146,11 @@ first_build=$(dist_hashes)
 echo "==> Confirming the build is deterministic"
 make web > /dev/null
 [ "$first_build" = "$(dist_hashes)" ] ||
-  die "Two consecutive builds disagree, so this bundle is not reproducible. Do not commit it."
+  die "Two consecutive builds disagree, so this bundle is not reproducible. Nothing was
+committed and $BRANCH has been deleted; fix the toolchain before rerunning."
 echo "    two consecutive builds agree"
 
+keep_branch=yes
 git add "$MANIFEST" "$LOCK" "$DIST"
 moved=$(git diff --cached --name-only -- "$DIST")
 

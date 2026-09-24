@@ -92,8 +92,11 @@ does the mechanical part:
 scripts/rebuild_bundle_for_bump.sh 497            # or: ... 497 some-branch-name
 ```
 
-It refuses a PR touching anything beyond those two files, branches off the PR's
-own base, and **rebuilds once before applying the bump**, to confirm this
+It refuses a PR touching anything beyond those two files, and one whose base has
+moved either of them since the PR forked — the files are taken whole, so that
+checkout would revert the other change; comment `@dependabot rebase` and rerun.
+It branches off the PR's own base, and **rebuilds once before applying the
+bump**, to confirm this
 machine reproduces the committed bundle byte for byte. That check is the reason
 to reach for the script rather than doing it by hand: without it a local
 toolchain difference — a Node that disagrees with CI's, a stale install — lands
