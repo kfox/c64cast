@@ -103,12 +103,23 @@ echo "==> Fetching origin/$base_ref and $head_sha"
 git fetch -q origin "$base_ref"
 git fetch -q origin "$head_ref"
 
+# The fetch brings the branch *tip*, which is not necessarily the sha gh named a
+# moment earlier: Dependabot rebases by force-push, and the abandoned head then
+# reaches no ref for the fetch to carry. Say so here, rather than leaving
+# merge-base below to fail under set -e with nothing but git's own stderr.
+git cat-file -e "$head_sha^{commit}" 2> /dev/null ||
+  die "PR #$PR's head $head_sha is not among the objects origin/$head_ref reaches, so it
+was force-pushed between reading the PR and fetching it (Dependabot rebases that
+way). Rerun."
+
 # The two files are taken whole from the PR head onto a branch off the *current*
 # base, so if either moved on the base since the PR forked, that checkout reverts
 # it: a downgrade of an unrelated package, staged as part of this bump. Compared
 # at the fork point rather than by ancestry, because a Dependabot branch goes
 # stale against unrelated commits constantly and only these two files matter.
-fork_point=$(git merge-base "origin/$base_ref" "$head_sha")
+fork_point=$(git merge-base "origin/$base_ref" "$head_sha") ||
+  die "origin/$base_ref and PR #$PR's head $head_sha share no history, so there is no fork
+point to compare $MANIFEST and $LOCK at. Rebuild it by hand."
 if ! git diff --quiet "$fork_point" "origin/$base_ref" -- "$MANIFEST" "$LOCK"; then
   die "$MANIFEST or $LOCK moved on origin/$base_ref since PR #$PR forked, so taking
 the PR's copies would revert that. Rebase it first (comment '@dependabot rebase'
@@ -119,9 +130,28 @@ starting_ref=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
 echo "==> Branching $BRANCH off origin/$base_ref"
 git checkout -q -b "$BRANCH" "origin/$base_ref"
 
+# `return 0` on each half, so a failed unwind cannot overwrite the exit status
+# the EXIT trap was reached with - exit 3 in particular. That swallowed failure
+# leaves the checkout on the throwaway branch, which is the state the trap exists
+# to prevent and which a die message above has already reported as unwound, so
+# each half says so on the way past.
 abandon() {
-  git checkout -q --force "$starting_ref" || return 0
-  git branch -q -D "$BRANCH" || return 0
+  git checkout -q --force "$starting_ref" || {
+    printf '%s\n' "Could not return to $starting_ref: the checkout is still on $BRANCH." >&2
+    return 0
+  }
+  # `checkout --force` restores tracked paths and leaves untracked ones, so a
+  # bump that splits out a new chunk and then fails leaves that chunk behind -
+  # where `make web-check` counts it as an uncommitted build artifact and refuses
+  # the next preflight. Everything under $DIST is output `make web` re-emits.
+  git clean -qfd -- "$DIST" || {
+    printf '%s\n' "Could not clean $DIST: remove stray build output before rerunning." >&2
+    return 0
+  }
+  git branch -q -D "$BRANCH" || {
+    printf '%s\n' "Could not delete $BRANCH: delete it before rerunning." >&2
+    return 0
+  }
 }
 
 # Everything below here can fail - most plausibly `make web`, since the `npm
@@ -162,11 +192,11 @@ echo "==> Confirming the build is deterministic"
 make web > /dev/null
 [ "$first_build" = "$(dist_hashes)" ] ||
   die "Two consecutive builds disagree, so this bundle is not reproducible. Nothing was
-committed and $BRANCH has been deleted; fix the toolchain before rerunning."
+committed and $BRANCH is deleted on the way out; fix the toolchain before rerunning."
 echo "    two consecutive builds agree"
 
-keep_branch=yes
 git add "$MANIFEST" "$LOCK" "$DIST"
+keep_branch=yes
 moved=$(git diff --cached --name-only -- "$DIST")
 
 echo
