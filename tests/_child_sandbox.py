@@ -10,7 +10,7 @@ three of those in this tree are exactly `_timeout_sandbox._CAP_S`:
   31 of `test_doctor`'s tests (#496); an expiry becomes a `warn` diagnostic
   reading "could not check".
 * `scripts/lint_comments.py` runs `git diff --cached` and `git show` under
-  `_DIFF_TIMEOUT_S = 60`, in 17 of `test_prose_gate`'s; an expiry becomes an
+  `_DIFF_TIMEOUT_S = 60`, in 12 of `test_prose_gate`'s; an expiry becomes an
   empty diff the gate then passes, or an unknown comment map it judges the
   line without.
 * `scripts/check_venv_target.py` runs the project environment's interpreter
