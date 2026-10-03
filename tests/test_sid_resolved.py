@@ -88,7 +88,7 @@ class DescribeResolvedAudioTest(unittest.TestCase):
             ("6581",),
         )
         self.assertFalse(resolved.clean)
-        self.assertIn("INAUDIBLE", resolved.summary)
+        self.assertIn("INAUDIBLE (Vol Master OFF)", resolved.summary)
         self.assertNotIn("also audible", resolved.summary)
 
     def test_master_above_off_leaves_a_source_audible(self):
