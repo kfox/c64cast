@@ -880,6 +880,21 @@ class LostCommandReportTest(unittest.TestCase):
         c.flush()
         self.assertFalse(fake2.closed)
 
+    def test_the_loss_report_still_drains_the_new_connection(self):
+        # api.flush() only logs the raise, and its callers then poll
+        # registers over REST on the strength of it: the writes issued on
+        # the new connection must have drained before the report goes out.
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+                before = len(fake2.sent)
+                self._assert_flush_reports_a_loss(c)
+        self.assertEqual(bytes(fake2.sent[before:]), struct.pack("<HH", CMD_IDENTIFY, 0))
+        self.assertEqual(len(fake2._replies), 0)
+
     def test_a_new_connection_starts_with_nothing_unconfirmed(self):
         fake1, c = self._writing_client()
         fake1.peer_reset = True

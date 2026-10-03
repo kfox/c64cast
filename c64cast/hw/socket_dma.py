@@ -528,10 +528,10 @@ class SocketDMAClient:
         arrives only after every prior DMAWRITE has been executed.
 
         A connection redialed since the last ``flush()`` may have taken
-        commands with it (see ``_redial_locked``); then this raises
-        ``ConnectionError`` instead, once, without sending the IDENTIFY.
-        Any raise from here answers for the commands issued before it, so
-        the pending loss is cleared whichever way this call fails."""
+        commands with it (see ``_redial_locked``); then this still drains
+        the current connection and raises ``ConnectionError`` once after
+        it. Any raise from here answers for the commands issued before it,
+        so the pending loss is cleared whichever way this call fails."""
         with self._lock:
             try:
                 self._flush_locked()
@@ -540,11 +540,6 @@ class SocketDMAClient:
 
     def _flush_locked(self) -> None:
         self._ensure_live_locked()
-        if self._maybe_lost is not None:
-            raise ConnectionError(
-                f"socket dma: {self._maybe_lost}; commands sent before the "
-                "reconnect may not have reached the server"
-            )
         try:
             t0 = time.perf_counter()
             self._identify_roundtrip_locked()
@@ -559,6 +554,11 @@ class SocketDMAClient:
         self._latencies.append(time.perf_counter() - t0)
         self._last_send = time.monotonic()
         self._unconfirmed = False
+        if self._maybe_lost is not None:
+            raise ConnectionError(
+                f"socket dma: {self._maybe_lost}; commands sent before the "
+                "reconnect may not have reached the server"
+            )
 
     def latency_summary(self) -> tuple[float, float, float, float, int]:
         """``(avg, p50, p95, max, n)`` in seconds over the rolling window.
