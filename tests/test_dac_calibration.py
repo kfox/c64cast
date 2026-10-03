@@ -1479,5 +1479,35 @@ class RunCalibrateDacBackendLeakTest(unittest.TestCase):
         self.assertEqual(closed, [True], "be.close() must run even though resolve_system raised")
 
 
+class RunCalibrateDacConnectFailureTest(unittest.TestCase):
+    """A backend that cannot be built is a logged exit 4, not a traceback."""
+
+    def test_connect_failures_exit_4(self):
+        import argparse
+
+        from c64cast.app import cli_commands
+        from c64cast.hw.socket_dma import SocketDMAError
+        from c64cast.hw.teensyrom_dma import TRError
+
+        args = argparse.Namespace(audio_device=None)
+        for exc in (
+            ValueError("bad network password"),
+            SocketDMAError("authentication rejected"),
+            TRError("no serial port"),
+        ):
+            with (
+                self.subTest(exc=type(exc).__name__),
+                patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+                patch.object(cli_commands, "make_backend", side_effect=exc),
+                patch.object(cli_commands.dac_calibration, "run_calibration") as run,
+            ):
+                with self.assertLogs("c64cast", level="ERROR") as cm:
+                    rc = cli_commands.run_calibrate_dac(_u64_cfg(), args)
+                self.assertEqual(rc, 4)
+                self.assertIn(str(exc), cm.output[0])
+                self.assertIn("--calibrate-dac", cm.output[0])
+                run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
