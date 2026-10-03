@@ -8,10 +8,13 @@ Two transports, used for orthogonal sets of operations:
   * **REST** (`requests.Session`) on port 80 carries everything DMA can't:
     `read_memory` (GET), `reset` (PUT), `run_basic_clear_loop` and
     `run_sid_player` (POST /v1/runners:run_prg), and the startup `probe`
-    (GET /).
+    (GET / and GET /v1/version).
 
-The two transports run independently and don't share state. `flush()`
-synchronizes the DMA pipeline against subsequent REST calls (e.g. before
+The two transports run independently and share one thing: the device's
+network password, which the firmware checks on both. DMA presents it in
+AUTHENTICATE and REST in an ``X-Password`` header on every request.
+
+`flush()` synchronizes the DMA pipeline against subsequent REST calls (e.g. before
 `reset` or `run_sid_player`) by issuing a trailing DMA IDENTIFY round-trip;
 by the FIFO guarantee of the U64's per-connection command loop, the IDENTIFY
 reply lands only after every prior DMAWRITE has executed.
@@ -58,10 +61,16 @@ from .c64 import (
     kernal_cia1_latch,
 )
 from .menu_screen import MenuScreen, decode_menu_screen
-from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
+from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError, encode_password
 from .vic_stream import VicStreamReceiver
 
-__all__ = ["Ultimate64API", "SocketDMAError", "ParsedPsid", "parse_psid_for_player"]
+__all__ = [
+    "Ultimate64API",
+    "RestAuthError",
+    "SocketDMAError",
+    "ParsedPsid",
+    "parse_psid_for_player",
+]
 
 log = logging.getLogger(__name__)
 
@@ -1543,6 +1552,79 @@ class _StubRunnerBackend(BufferedWriteBackend):
         return data
 
 
+#: The request header the Ultimate firmware reads its network password from on
+#: every REST API route (``software/api/routes.h`` → ``find_api_call``).
+PASSWORD_HEADER = "X-Password"
+
+_PASSWORD_SOURCES = "C64CAST_DMA_PASSWORD or [ultimate64].dma_password"
+
+
+class RestAuthError(RuntimeError):
+    """The Ultimate's REST API answered 403: its network password is set and
+    the request carried none, or the wrong one. The message names where the
+    password comes from and never carries the password itself."""
+
+
+def password_header_value(password: str) -> bytes:
+    """The ``X-Password`` header value for `password`: its UTF-8 bytes, the same
+    bytes `SocketDMAClient` sends in AUTHENTICATE, so both links present one
+    password identically.
+
+    Raises ValueError, without echoing the password, when HTTP cannot carry it
+    as a header value: a control character, or a leading or trailing space or
+    tab (which header parsing strips), or when it is not valid UTF-8. Left to
+    `requests`, the first surfaces on the first REST call as an
+    ``InvalidHeader`` whose message quotes the value."""
+    if password != password.strip(" \t") or any(ord(c) < 0x20 or ord(c) == 0x7F for c in password):
+        raise ValueError(
+            f"the network password in {_PASSWORD_SOURCES} contains a control "
+            "character or leading/trailing whitespace, which the X-Password "
+            "header of a REST request cannot carry; change the password on the "
+            "Ultimate (F2 -> Network Settings -> Network Password) and here"
+        )
+    return encode_password(password)
+
+
+class _UltimateSession(requests.Session):
+    """A `requests.Session` that drops ``X-Password`` on a redirect to another
+    host, as `requests` already does for ``Authorization``. A session-level
+    header otherwise rides every hop of a redirect chain.
+
+    It also ignores the environment's proxy settings: a plain-HTTP request
+    through ``HTTP_PROXY`` hands the proxy every header, the password included,
+    and the Ultimate is a LAN device that no proxy has to reach."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trust_env = False
+
+    def rebuild_auth(
+        self, prepared_request: requests.PreparedRequest, response: requests.Response
+    ) -> None:
+        super().rebuild_auth(prepared_request, response)  # type: ignore[no-untyped-call]
+        old_url = response.request.url
+        new_url = prepared_request.url
+        if (
+            PASSWORD_HEADER in prepared_request.headers
+            and old_url is not None
+            and new_url is not None
+            and self.should_strip_auth(old_url, new_url)  # type: ignore[no-untyped-call]
+        ):
+            del prepared_request.headers[PASSWORD_HEADER]
+
+
+def make_rest_session(password: str | None) -> requests.Session:
+    """A `requests.Session` for an Ultimate's REST API, carrying `password` as
+    ``X-Password`` on every request when one is set. The firmware ignores the
+    header while no password is set on the device, so there is nothing to
+    probe first. Raises ValueError as `password_header_value` does."""
+    header = password_header_value(password) if password else None
+    session = _UltimateSession()
+    if header is not None:
+        session.headers[PASSWORD_HEADER] = header
+    return session
+
+
 def read_config_category_body(
     session: requests.Session, base_url: str, category: str, *, timeout: float = 3.0
 ) -> object | None:
@@ -1645,7 +1727,10 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # Per connection: a firmware update needs a reconnect anyway.
         self._route_answers: dict[str, RouteAnswer] = {}
 
-        self.session = requests.Session()
+        # The firmware has one network password, and it guards the REST API
+        # routes as well as the DMA socket.
+        self._password_configured = bool(dma_password)
+        self.session = make_rest_session(dma_password)
 
         # The DMA host is the REST host — the same physical box, so there is no
         # second config field.
@@ -2098,13 +2183,38 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """Verify the U64 REST endpoint is reachable. Returns a status string
         on success, or None on failure. Use to fail fast at startup with a
         clear message. (DMA connectivity is verified separately by the
-        SocketDMAClient.connect() in __init__.)"""
+        SocketDMAClient.connect() in __init__.)
+
+        The web root is not an API route, so the firmware does not check the
+        network password there; ``GET /v1/version`` is, and a 403 from it
+        raises `RestAuthError` rather than letting every later REST call fail
+        on its own. Any other answer from it leaves the result alone."""
         try:
             r = self.session.get(self.base_url + "/", timeout=timeout)
-            return f"HTTP {r.status_code}"
         except requests.RequestException as e:
             log.debug("probe failed: %s", e)
             return None
+        try:
+            version = self.session.get(self.base_url + U64_API.VERSION, timeout=timeout)
+        except requests.RequestException as e:
+            log.debug("REST API version probe failed: %s", e)
+        else:
+            if version.status_code == 403:
+                raise RestAuthError(self._rest_auth_message())
+        return f"HTTP {r.status_code}"
+
+    def _rest_auth_message(self) -> str:
+        if self._password_configured:
+            return (
+                "the Ultimate's REST API refused the configured network password "
+                f"(HTTP 403). Check {_PASSWORD_SOURCES} (the env var wins) against "
+                "F2 -> Network Settings -> Network Password."
+            )
+        return (
+            "the Ultimate's REST API refused c64cast (HTTP 403): a network "
+            "password is set on the device and none is configured. Supply it via "
+            f"{_PASSWORD_SOURCES}."
+        )
 
     def flush(self) -> None:
         """Block until every queued DMA write has been processed by the U64.

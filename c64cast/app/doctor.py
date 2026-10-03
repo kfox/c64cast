@@ -185,6 +185,10 @@ def validate_load_result(
     out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
+    if not probe_u64:
+        # The connectivity probe reports the same refusal when it builds the
+        # backend, so only the offline run needs it said here.
+        out.extend(_validate_network_password(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
         out.extend(_validate_ensemble_recording_paths(loaded))
@@ -1407,6 +1411,31 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
     return out
 
 
+def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
+    """An Ultimate network password the ``X-Password`` header cannot carry
+    stops every run at connect (exit 4), so the offline check reports it too.
+    The message is `password_header_value`'s own, which never quotes it."""
+    from c64cast.hw.api import password_header_value
+
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        password = cfg.ultimate64.dma_password
+        if cfg.hardware.backend != "ultimate" or not password:
+            continue
+        try:
+            password_header_value(password)
+        except ValueError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=str(e),
+                )
+            )
+    return out
+
+
 def _validate_ensemble_shared_dma_password(loaded: LoadResult) -> list[Diagnostic]:
     """Say when one `dma_password` is reaching several systems.
 
@@ -1528,6 +1557,11 @@ _HINT_DMA_SERVICE = (
     "If a password is set, supply it via "
     "C64CAST_DMA_PASSWORD or [ultimate64].dma_password."
 )
+_HINT_REST_PASSWORD = (
+    "The Ultimate checks one network password on the DMA socket and on every "
+    "REST API call, and c64cast sends C64CAST_DMA_PASSWORD (or "
+    "[ultimate64].dma_password) on both."
+)
 _HINT_TR_CONNECT = (
     "Check the USB data cable to the TR's micro-USB-B port "
     "(transport = serial) or 'Enable TCP Listener' + the "
@@ -1566,6 +1600,7 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     """Connect one system's backend, probe it, and run the per-service
     probes that apply. Connection failures come back as diagnostics, not
     exceptions, so one dead system doesn't hide the others' reports."""
+    from c64cast.hw.api import RestAuthError
     from c64cast.hw.backend import make_backend
     from c64cast.hw.socket_dma import SocketDMAError
     from c64cast.hw.teensyrom_dma import TRError
@@ -1573,6 +1608,15 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     url = cfg.ultimate64.url
     try:
         api = make_backend(cfg)
+    except ValueError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="connectivity",
+                subject=name,
+                message=f"cannot connect to {url}: {e}",
+            )
+        ]
     except SocketDMAError as e:
         return [
             Diagnostic(
@@ -1594,7 +1638,18 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
             )
         ]
     try:
-        status = api.probe()
+        try:
+            status = api.probe()
+        except RestAuthError as e:
+            return [
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=f"DMA reachable at {url} but {e}",
+                    hint=_HINT_REST_PASSWORD,
+                )
+            ]
         if cfg.hardware.backend == "teensyrom":
             return _probe_tr_reachability(name, cfg, api, status)
         if status is None:
@@ -2032,7 +2087,8 @@ def _probe_reu_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
             hint=(
                 "Set [ultimate64].auto_reu = true to enable it automatically, or "
                 "on the U64: F2 Menu -> C64 and Cartridge Settings -> "
-                "RAM Expansion Unit -> Enabled (size 16 MB). Save and reboot. "
+                "RAM Expansion Unit -> Enabled (size 16 MB). It takes effect without "
+                "a reboot; save it to keep it across a power cycle. "
                 "Alternatively, turn off the REU opt-in in your TOML."
             ),
         )
