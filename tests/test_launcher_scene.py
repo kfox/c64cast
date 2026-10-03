@@ -196,6 +196,40 @@ class JoystickInjectionTest(unittest.TestCase):
             self.assertTrue(self.posted.wait(2.0))
             self.assertEqual(api.send_input.call_args_list[0].args[0], [_joy(2, "press", "up")])
 
+    def test_a_sender_that_outlived_teardown_finishes_before_the_next_pass_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            in_post = threading.Event()
+            unblock = threading.Event()
+
+            def send(events):
+                if events == [machine_input.RELEASE_ALL]:
+                    return {}
+                if not in_post.is_set():
+                    in_post.set()
+                    unblock.wait(5.0)
+                    return None
+                self.posted.set()
+                return {}
+
+            api.send_input.side_effect = send
+            scene.inject_joystick(2, "fire", True)
+            self.assertTrue(in_post.wait(2.0))
+            scene._sender._join_timeout = 0.05
+            with self.assertLogs("c64cast._pollthread", level="WARNING"):
+                scene.teardown()
+            self.assertTrue(scene._sender.is_running())
+            scene._sender._join_timeout = 5.0
+            releaser = threading.Timer(0.2, unblock.set)
+            releaser.start()
+            self.addCleanup(releaser.join)
+            scene.setup()
+            self.assertFalse(scene._resync)
+            self.assertEqual(scene._pressed_at, {})
+            scene.inject_joystick(2, "up", True)
+            self.assertTrue(self.posted.wait(2.0))
+            self.assertEqual(api.send_input.call_args.args[0], [_joy(2, "press", "up")])
+
     def test_each_pass_of_the_scene_warns_once_about_dropped_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, _ = self._running_scene(tmp, supported=False)

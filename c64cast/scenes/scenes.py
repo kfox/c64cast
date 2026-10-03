@@ -1775,6 +1775,9 @@ class LauncherScene(MediaFileMixin, Scene):
         self._prepared = False
 
     def setup(self) -> None:
+        # A sender that outlived teardown's join is still posting the last
+        # pass's input: wait for it before forgetting what it holds.
+        self._sender.stop()
         self._discard_injected()
         self._injection_refused_logged = False
         if self._prepared:
