@@ -36,6 +36,14 @@ left over from something else will all produce exactly this symptom, and a
 restart clears every one of them in one go. It is a dull suggestion and it
 works more often than it has any right to.
 
+**Nothing changes on screen, or only the left part does, and the keyboard
+does nothing.** The Ultimate's own menu is open. It takes the keyboard. With
+User Interface Settings → Interface Type at "Freeze", the default, it also
+stops the C64 and fills the screen. At "Overlay on HDMI" it covers the right
+part of the picture. Press RUN/STOP or the menu button to close it. On
+firmware 3.15 or newer, `--doctor` reports an open menu, and so does the start
+of a run if the menu survives the startup reset, which an overlay menu does.
+
 **Pixels appear, but SID tunes and native programs do not start.** The Web
 Remote Control Service is off. Painting the screen and starting a program
 are different operations, and only the first goes over the fast path.

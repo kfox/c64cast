@@ -35,6 +35,8 @@ from .c64 import KERNAL, SCREEN, SID, VECTORS, VIC
 if TYPE_CHECKING:
     from c64cast.app.config import Config
 
+    from .menu_screen import MenuScreen
+
 log = logging.getLogger(__name__)
 
 # Callback signature for write listeners (preview / recording / framebuffer
@@ -108,6 +110,9 @@ class HardwareProfile:
     supports_video_stream: bool = False  # the machine's own VIC-out UDP stream
     #   (socket-DMA 0xFF20/0xFF30 — see hw/vic_stream.py). Ultimate 64 only;
     #   revoked by refine_capabilities alongside supports_system_mode.
+    supports_menu_screen: bool = False  # GET /v1/machine:menu_screen (firmware
+    #   3.15+): reads the Ultimate menu's own screen while it is open. Granted
+    #   by refine_capabilities' route probe, so False on an unprobed run.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -485,6 +490,11 @@ class C64Backend(ABC):
         can't say which machine produced it (nor even, for the Ultimate family,
         whether it was a U64 or a U2+)."""
         return ""
+
+    def read_menu_screen(self) -> MenuScreen | None:
+        """What the Ultimate menu is drawing, or None while it is closed.
+        Default raises; callers gate on ``profile.supports_menu_screen``."""
+        raise BackendCapabilityError("read_menu_screen")
 
     def refine_capabilities(self) -> None:
         """Downgrade optimistic profile capability flags against the connected

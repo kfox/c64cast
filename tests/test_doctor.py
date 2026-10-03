@@ -52,6 +52,7 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
     block in every connectivity test."""
     from c64cast.hw.api import Ultimate64API
     from c64cast.hw.backend import ULTIMATE_PROFILE
+    from c64cast.hw.c64 import U64_API
 
     with mock.patch.object(Ultimate64API, "__init__", return_value=None):
         api_instance = Ultimate64API.__new__(Ultimate64API)
@@ -62,6 +63,8 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
         # The real __init__ always sets a profile; refine_capabilities (run
         # by _probe_one_system after a successful probe) reads it.
         api_instance.profile = ULTIMATE_PROFILE
+        # Old firmware by default, so no route probe reaches `session`.
+        api_instance._route_answers = {U64_API.MENU_SCREEN: "absent"}
         with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
             yield api_instance
 
@@ -442,6 +445,38 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "warn")
         self.assertIn("REST probe failed", conn[0].message)
         self.assertNotIn("cannot start", conn[0].message)
+
+
+class MenuOpenProbeTest(unittest.TestCase):
+    """The menu-open warning: a warn row when firmware 3.15 says the menu is
+    open, and nothing at all when it is closed or the firmware has no route."""
+
+    def _connectivity(self, route: str, screen: object) -> list:
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+        """)
+        with _fake_ultimate_api() as api_instance:
+            from c64cast.hw.c64 import U64_API
+
+            api_instance._route_answers = {U64_API.MENU_SCREEN: route}
+            api_instance.read_menu_screen = mock.MagicMock(return_value=screen)
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.subject.endswith("(menu)")]
+
+    def test_open_menu_is_a_warning(self):
+        from c64cast.hw.menu_screen import decode_menu_screen
+
+        screen = decode_menu_screen(b" " * 2000)
+        (row,) = self._connectivity("present", screen)
+        self.assertEqual(row.level, "warn")
+        self.assertIn("menu is open", row.message)
+
+    def test_closed_menu_says_nothing(self):
+        self.assertEqual(self._connectivity("present", None), [])
+
+    def test_firmware_without_the_route_says_nothing(self):
+        self.assertEqual(self._connectivity("absent", object()), [])
 
 
 class DeviceIdentityProbeTest(unittest.TestCase):
