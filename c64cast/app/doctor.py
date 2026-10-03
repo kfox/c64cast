@@ -967,30 +967,35 @@ def _percell_checked_per_scene(s: SceneCfg) -> bool:
     return resolve_scene_display(s.display, s.type) == "mhires" and s.palette_mode == "percell"
 
 
-def _flicker_checked_per_scene(s: SceneCfg) -> bool:
-    return True  # `_validate_scenes` builds the display, which resolves it
+def _flicker_checked_per_scene(s: SceneCfg, cfg: Config) -> bool:
+    """Whether the scene's display build reports its flicker_tolerance, which it
+    names under [color]'s label. A build that forces host DMA never resolves it."""
+    return _scene_reports(s, cfg, flicker_tolerance_cfg_error("[color]", scene_color(cfg, s)))
 
 
 _OVERRIDE_COLOR_CHECKS: tuple[
-    tuple[Callable[[str, ColorCfg], str | None], Callable[[SceneCfg], bool]], ...
+    tuple[Callable[[str, ColorCfg], str | None], Callable[[SceneCfg, Config], bool]], ...
 ] = (
-    (dither_cfg_error, _dither_checked_per_scene),
-    (color_match_cfg_error, _color_match_checked_per_scene),
-    (cell_strategy_cfg_error, _percell_checked_per_scene),
-    (motion_smoothing_cfg_error, _percell_checked_per_scene),
+    (dither_cfg_error, lambda s, _cfg: _dither_checked_per_scene(s)),
+    (color_match_cfg_error, lambda s, _cfg: _color_match_checked_per_scene(s)),
+    (cell_strategy_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
+    (motion_smoothing_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
     (flicker_tolerance_cfg_error, _flicker_checked_per_scene),
 )
 
 
+def _scene_reports(s: SceneCfg, cfg: Config, message: str | None) -> bool:
+    """Whether `_validate_scenes` reports `message` against scene `s`."""
+    try:
+        validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+    except (OrchestratorError, ValueError) as e:
+        return str(e) == message
+    return False
+
+
 def _a_scene_reports(cfg: Config, message: str) -> bool:
     """Whether `_validate_scenes` reports `message` against one of `cfg`'s scenes."""
-    for s in cfg.scenes:
-        try:
-            validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
-        except (OrchestratorError, ValueError) as e:
-            if str(e) == message:
-                return True
-    return False
+    return any(_scene_reports(s, cfg, message) for s in cfg.scenes)
 
 
 def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
@@ -1024,10 +1029,10 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
                 continue
             is_scene = i < len(cfg.scenes)
             for check, checked_per_scene in _OVERRIDE_COLOR_CHECKS:
-                if is_scene and checked_per_scene(s):
-                    continue
                 err = check(f"{owner}.color", color)
-                if err and err != check(f"{owner}.color", cfg.color):
+                if not err or err == check(f"{owner}.color", cfg.color):
+                    continue
+                if not (is_scene and checked_per_scene(s, cfg)):
                     out.append(
                         Diagnostic(
                             level="error",

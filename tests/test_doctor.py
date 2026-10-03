@@ -1815,6 +1815,24 @@ class ClipColorDiagnosticTest(unittest.TestCase):
             [d.subject for d in diags if d.level == "error"], ["system/[[scenes]][0].color"]
         )
 
+    def test_a_flicker_override_on_a_scene_whose_build_skips_it_is_reported(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "generative"\naudio_source = "sid"\nfile = "z.sid"\n'
+            'display = "petscii"\n  [scenes.color]\n  flicker_tolerance = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual([d.subject for d in errors], ["system/[[scenes]][0].color"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_flicker_override_the_scene_build_reports_is_not_repeated(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  flicker_tolerance = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual([d.subject for d in diags if d.level == "error"], ["system/video#0"])
+
     def test_a_valid_clip_override_reports_nothing(self):
         self.assertEqual(self._clip_errors("dither", '"ordered"'), [])
 
