@@ -109,6 +109,41 @@ class DeriveHardwarePaletteTest(PaletteSwapTestCase):
         assert table is not None
         self.assertLessEqual(int(np.abs(table[free].astype(int) - nudged.astype(int)).max()), 3)
 
+    def test_a_black_frame_gets_the_machines_table(self):
+        """Black is the machine's own color 0 on both built-in tables."""
+        machine = np.asarray(palette.U64_PALETTE_BGR, dtype=np.uint8)
+        black = np.zeros((20, 20, 3), dtype=np.uint8)
+        table = palette.derive_hardware_palette([black], machine)
+        assert table is not None
+        np.testing.assert_array_equal(table, machine)
+
+    def test_a_frame_of_only_the_machines_grays_gets_the_machines_table(self):
+        img = np.repeat(MACHINE[PINNED][None, :, :], 8, axis=0).repeat(8, axis=1)
+        table = palette.derive_hardware_palette([img], MACHINE)
+        assert table is not None
+        np.testing.assert_array_equal(table, MACHINE)
+
+    def test_an_empty_frame_among_others_is_skipped(self):
+        empty = np.zeros((0, 0, 3), dtype=np.uint8)
+        a = palette.derive_hardware_palette([empty, _warm_image()], MACHINE)
+        b = palette.derive_hardware_palette([_warm_image()], MACHINE)
+        np.testing.assert_array_equal(a, b)
+        self.assertIsNone(palette.derive_hardware_palette([empty], MACHINE))
+
+    def test_only_the_sampled_pixels_are_converted(self):
+        convert = palette._bgr_to_lab
+        rows: list[int] = []
+
+        def counting(flat):
+            rows.append(flat.shape[0])
+            return convert(flat)
+
+        big = cv2.resize(_warm_image(), (500, 400))
+        with mock.patch.object(palette, "_bgr_to_lab", side_effect=counting):
+            samples = palette._sample_lab([big])
+        self.assertLessEqual(max(rows), palette._FORCE_PALETTE_SAMPLE_CAP)
+        self.assertLessEqual(samples.shape[0], palette._FORCE_PALETTE_SAMPLE_CAP)
+
 
 class PaletteGenerationTest(PaletteSwapTestCase):
     def test_moves_when_the_colors_change_and_only_then(self):
@@ -394,6 +429,42 @@ class ConfigRefusalTest(unittest.TestCase):
         with self.assertRaisesRegex(cfgmod.ConfigError, r"\[\[scenes\]\]\[0\].*flicker"):
             scene_factory.validate_hardware_palette_cfg(cfg)
 
+    def test_a_clip_override_alongside_force_palette_is_refused(self):
+        cfg = Config()
+        cfg.performance.clips = [
+            {
+                "slot": 1,
+                "type": "video",
+                "color": {"hardware_palette": "source", "force_palette": True},
+            }
+        ]
+        with self.assertRaisesRegex(
+            cfgmod.ConfigError, r"\[\[performance\.clips\]\]\[0\].*force_palette"
+        ):
+            scene_factory.validate_hardware_palette_cfg(cfg)
+
+    def test_a_clip_override_alongside_flicker_blending_is_refused(self):
+        cfg = Config()
+        cfg.performance.clips = [
+            {
+                "slot": 1,
+                "type": "video",
+                "color": {"hardware_palette": "source", "flicker_tolerance": "clean"},
+            }
+        ]
+        with self.assertRaisesRegex(
+            cfgmod.ConfigError, r"\[\[performance\.clips\]\]\[0\].*flicker"
+        ):
+            scene_factory.validate_hardware_palette_cfg(cfg)
+
+    def test_a_clip_whose_spec_does_not_build_is_left_to_build_time(self):
+        cfg = Config()
+        cfg.performance.clips = [{"slot": 1, "type": "video", "no_such_key": 1}]
+        with mock.patch.object(scene_factory, "clip_scene_cfg", side_effect=ValueError("bad clip")):
+            self.assertEqual(
+                [label for label, _ in scene_factory.effective_colors(cfg)], ["[color]"]
+            )
+
     def test_source_on_its_own_passes_and_is_run_by_the_session(self):
         scene_factory.validate_hardware_palette_cfg(_cfg(SceneCfg(type="video")))
         self.assertIn(
@@ -410,6 +481,7 @@ class SlideshowPushTest(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
         for name, color in (("a.png", (30, 95, 175)), ("b.png", (200, 60, 40))):
             img = np.zeros((40, 64, 3), dtype=np.uint8)
             img[:] = color
@@ -420,6 +492,7 @@ class SlideshowPushTest(unittest.TestCase):
         api.hardware_palette = self.control
         mode = mock.MagicMock()
         mode.quantizer_input.side_effect = lambda img: img
+        self.mode = mode
         self.scene = SlideshowScene(
             api, mode, tmp.name, color=ColorCfg(hardware_palette="source", auto_fit=False)
         )
@@ -443,6 +516,37 @@ class SlideshowPushTest(unittest.TestCase):
         self.scene.setup()
         self.scene.teardown()
         self.control.show_machine.assert_called_once()
+
+    def test_the_push_does_not_come_out_of_any_slides_time(self):
+        clock = [1000.0]
+
+        def push(*_args):
+            clock[0] += 0.5
+            return True
+
+        self.control.show.side_effect = push
+        fake_time = mock.Mock()
+        fake_time.time.side_effect = lambda: clock[0]
+        with mock.patch("c64cast.scenes.scenes.time", fake_time):
+            self.scene.setup()
+            self.assertEqual(self.scene._image_start, clock[0])
+            clock[0] += self.scene.image_duration_s
+            with mock.patch("c64cast.scenes.scenes._render_with_overlays"):
+                self.scene.process_frame(clock[0])
+        self.assertEqual(self.control.show.call_count, 2)
+        self.assertEqual(self.scene._image_start, clock[0])
+
+    def test_a_large_slide_is_fitted_from_a_downscaled_copy(self):
+        big = np.zeros((900, 1400, 3), dtype=np.uint8)
+        big[:] = (30, 95, 175)
+        path = os.path.join(self.tmp, "c.png")
+        cv2.imwrite(path, big)
+        self.scene._current_img = big
+        self.scene._hw_palette = self.control
+        self.scene._push_slide_palette()
+        widths = [c.args[0].shape[1] for c in self.mode.quantizer_input.call_args_list]
+        self.assertTrue(widths)
+        self.assertLessEqual(max(widths), palette._FORCE_PALETTE_SCAN_WIDTH)
 
     def test_off_never_touches_the_pusher(self):
         self.scene._color.hardware_palette = "off"
@@ -508,6 +612,18 @@ class VideoPushTest(unittest.TestCase):
         self.scene.setup()
         self.scene.teardown()
         self.control.show_machine.assert_called_once()
+
+    def test_a_black_pre_scan_pushes_the_machines_table(self):
+        def black_prescan(path, **kw):
+            black = np.zeros((90, 160, 3), dtype=np.uint8)
+            black[:] = MACHINE[0]
+            kw["frames"].add(black)
+            return None, None
+
+        self.prescan.side_effect = black_prescan
+        self.scene.setup()
+        self.control.show.assert_called_once()
+        np.testing.assert_array_equal(self.control.show.call_args.args[0], MACHINE)
 
 
 class ResetListenerTest(unittest.TestCase):

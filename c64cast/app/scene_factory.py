@@ -107,6 +107,7 @@ from .config import (
     MidiControlCfg,
     SceneCfg,
     _is_valid_param_holder,
+    clip_scene_cfg,
     scene_color,
 )
 from .orchestrator import resolve_orchestrator
@@ -1413,8 +1414,9 @@ def resolve_dither_method(dither_setting: str, scene_type: str) -> str:
 
 def effective_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
     """Every distinct effective [color] section `cfg` resolves to: the global
-    section, plus one per scene whose ``[scenes.color]`` overrides it — each
-    labeled for use in a ConfigError/report message.
+    section, plus one per scene or performance clip whose ``color`` overrides
+    it — each labeled for use in a ConfigError/report message. A clip whose
+    scene spec does not build is left to build time, which reports it.
 
     The four ``validate_*_cfg`` guards below (and doctor's per-aspect probes)
     loop this instead of reading ``cfg.color`` directly, so a bad value inside
@@ -1430,6 +1432,17 @@ def effective_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
             label = f"[[scenes]][{i}].color"
             try:
                 out.append((label, scene_color(cfg, s)))
+            except ValueError as e:
+                raise ConfigError(f"{label}: {e}") from e
+    for i, clip in enumerate(cfg.performance.clips):
+        try:
+            clip_scene = clip_scene_cfg(clip)
+        except ValueError:
+            continue
+        if clip_scene.color:
+            label = f"[[performance.clips]][{i}].color"
+            try:
+                out.append((label, scene_color(cfg, clip_scene)))
             except ValueError as e:
                 raise ConfigError(f"{label}: {e}") from e
     return out

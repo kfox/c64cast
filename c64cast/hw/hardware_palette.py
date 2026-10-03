@@ -37,7 +37,7 @@ def _table_name(table_bgr: np.ndarray) -> str:
 class HardwarePalette:
     """Which 16 colors the machine shows, for one run.
 
-    `machine` is the palette the Ultimate was showing before the run, read back
+    `machine` is the palette the Ultimate shows after the run's startup reset, read back
     over UCI; it is what every restore pushes, because the firmware's own
     RESET_PALETTE restores its built-in table rather than a loaded .vpl. The
     quantizer's palette moves with every push (`set_host_palette`), so the
@@ -66,7 +66,7 @@ class HardwarePalette:
 
     @property
     def machine_palette(self) -> np.ndarray:
-        """The machine's own 16 colors (BGR uint8), read before the run."""
+        """The machine's own 16 colors (BGR uint8), read after the startup reset."""
         return self._machine.copy()
 
     def show(self, table_bgr: np.ndarray, scene: str) -> bool:

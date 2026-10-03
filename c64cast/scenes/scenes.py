@@ -479,7 +479,10 @@ def _push_source_palette(scene: Scene, control: HardwarePalette, frames: list[np
     quantize them, and push the result. Any fit or forced map the mode needs
     must already be installed, since the shaping reads them."""
     assert scene.display_mode is not None
-    shaped = [scene.display_mode.quantizer_input(f) for f in frames]
+    sampler = FrameSampler()
+    for f in frames:
+        sampler.add(f)
+    shaped = [scene.display_mode.quantizer_input(f) for f in sampler.frames]
     table = derive_hardware_palette(shaped, control.machine_palette)
     if table is None:
         control.show_machine()
@@ -1107,12 +1110,12 @@ class SlideshowScene(MediaFileMixin, Scene):
         # while the "UP NEXT" card is on screen.
         self._hw_palette = _scene_hardware_palette(self.api, self._color, self.display_mode)
         self._push_slide_palette()
-        # The push can take most of a second.
-        self._image_start = time.time()
 
     def _push_slide_palette(self) -> None:
         if self._hw_palette is not None and self._current_img is not None:
             _push_source_palette(self, self._hw_palette, [self._current_img])
+            # The push can take most of a second, which is not the slide's.
+            self._image_start = time.time()
 
     def teardown(self) -> None:
         control, self._hw_palette = self._hw_palette, None

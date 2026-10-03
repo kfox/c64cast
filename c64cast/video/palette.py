@@ -1325,9 +1325,13 @@ def _sample_lab(frames: Sequence[np.ndarray]) -> np.ndarray:
     per_frame = max(1, _FORCE_PALETTE_SAMPLE_CAP // len(frames))
     blocks = []
     for frame in frames:
-        lab = _bgr_to_lab(np.asarray(frame, dtype=np.float32).reshape(-1, 3))
-        stride = max(1, lab.shape[0] // per_frame)
-        blocks.append(lab[::stride])
+        flat = np.asarray(frame, dtype=np.float32).reshape(-1, 3)
+        if flat.shape[0] == 0:
+            continue
+        stride = max(1, -(-flat.shape[0] // per_frame))
+        blocks.append(_bgr_to_lab(flat[::stride]))
+    if not blocks:
+        return np.zeros((0, 3), dtype=np.float32)
     return np.concatenate(blocks)
 
 
@@ -1359,6 +1363,8 @@ def derive_hardware_palette(
     base_lab = _bgr_to_lab(base)
     pinned = base_lab[list(HARDWARE_PALETTE_PINNED)]
     free = _seed_free_centers(samples, pinned, len(_HARDWARE_PALETTE_FREE))
+    if free.shape[0] == 0:
+        return base.astype(np.uint8)
     for _ in range(_HARDWARE_PALETTE_ITERATIONS):
         centers = np.concatenate([pinned, free])
         nearest = _nearest_center(samples, centers) - len(pinned)

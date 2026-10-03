@@ -187,6 +187,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A performance clip's `color` override is now checked at load, the same as a
+  scene's.** The `dither`, `motion_smoothing`, `color_match`, `cell_strategy`
+  and `flicker_tolerance` checks read `[color]` and every `[[scenes]]` override
+  but no `[[performance.clips]]` one, so a bad value in a clip was not caught
+  at load. Such a config is now refused at load, naming the clip.
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that
   publishes the `running` transition, and `close()` stops that poller once and
