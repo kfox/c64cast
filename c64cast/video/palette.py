@@ -1321,8 +1321,10 @@ class FrameSampler:
         """The pixels `derive_hardware_palette` would sample from `frames`, as
         one (N, 1, 3) image of at most _FORCE_PALETTE_SAMPLE_CAP pixels.
 
-        The display modes' shaping is per pixel, so fitting to this image gives
-        the palette fitting to `frames` would, for a fraction of the memory."""
+        Unshaped, fitting to this image gives the palette fitting to `frames`
+        would. Shaped, it need not: OpenCV's HSV conversions round a pixel up to
+        3 levels differently in a one-pixel-wide column than in a full frame,
+        and the k-means can settle elsewhere on that difference."""
         if not self.frames:
             return np.zeros((0, 1, 3), dtype=np.uint8)
         per_frame = max(1, _FORCE_PALETTE_SAMPLE_CAP // len(self.frames))
