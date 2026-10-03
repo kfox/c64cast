@@ -47,6 +47,7 @@ from .scene_factory import (
     cell_strategy_cfg_error,
     color_match_cfg_error,
     dither_cfg_error,
+    flicker_tolerance_cfg_error,
     hardware_palette_cfg_error,
     motion_smoothing_cfg_error,
     resolve_cell_strategy,
@@ -185,6 +186,7 @@ def validate_load_result(
     out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_motion_smoothing(loaded))
     out.extend(_validate_hardware_palette(loaded))
+    out.extend(_validate_clip_colors(loaded))
     out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
@@ -948,6 +950,45 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
                     hint="Measure with scripts/diags/mhires_tempo_clock_ab.py, or set to 1.0 (off).",
                 )
             )
+    return out
+
+
+_CLIP_COLOR_CHECKS = (
+    dither_cfg_error,
+    color_match_cfg_error,
+    cell_strategy_cfg_error,
+    motion_smoothing_cfg_error,
+    flicker_tolerance_cfg_error,
+)
+
+
+def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a bad value in a `[[performance.clips]]` color override, which a
+    run refuses at startup (scene_factory's per-system validators read every
+    clip through `effective_colors`) but the per-scene color checks above never
+    reach. A clip override that does not resolve is reported by
+    `_validate_hardware_palette`."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        for owner, s in scene_and_clip_cfgs(cfg)[len(cfg.scenes) :]:
+            if not s.color:
+                continue
+            try:
+                color = scene_color(cfg, s)
+            except ValueError:
+                continue
+            for check in _CLIP_COLOR_CHECKS:
+                err = check(f"{owner}.color", color)
+                if err:
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=f"{name}/{owner}.color",
+                            message=err,
+                            hint="See --describe section:color.",
+                        )
+                    )
     return out
 
 

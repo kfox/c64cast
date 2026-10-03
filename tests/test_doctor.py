@@ -18,7 +18,7 @@ from _fakes import FakeAPI, MachineSettingsIsolation, tmp_cwd
 import c64cast
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
-from c64cast.app import doctor, paths
+from c64cast.app import doctor, paths, scene_factory
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import max_safe_sample_rate
@@ -1714,6 +1714,54 @@ class HardwarePaletteDiagnosticTest(unittest.TestCase):
             ("scene", "system/video#0"),
             [(d.category, d.subject) for d in diags if d.level == "error"],
         )
+
+
+class ClipColorDiagnosticTest(unittest.TestCase):
+    """A clip's color override that a run refuses at startup must not pass
+    `--doctor --skip-probe`."""
+
+    _CLIP = (
+        '[[scenes]]\ntype = "blank"\n\n'
+        '[[performance.clips]]\nslot = 1\ntype = "video"\nfile = "z.mp4"\n'
+        "  [performance.clips.color]\n  {key} = {value}\n"
+    )
+
+    def _clip_errors(self, key: str, value: str) -> list[doctor.Diagnostic]:
+        loaded = _load(self._CLIP.format(key=key, value=value))
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [d for d in diags if d.level == "error"]
+
+    def test_each_value_a_run_refuses_is_reported_against_the_clip(self):
+        bad = {
+            "dither": '"bogus"',
+            "color_match": '"bogus"',
+            "cell_strategy": '"bogus"',
+            "motion_smoothing": "5.0",
+            "flicker_tolerance": '"bogus"',
+        }
+        for key, value in bad.items():
+            with self.subTest(key=key):
+                loaded = _load(self._CLIP.format(key=key, value=value))
+                with self.assertRaises(cfgmod.ConfigError):
+                    for validate in scene_factory.PER_SYSTEM_VALIDATORS:
+                        validate(loaded.cfgs[0])
+                errors = self._clip_errors(key, value)
+                self.assertEqual(
+                    [d.subject for d in errors], ["system/[[performance.clips]][0].color"]
+                )
+                self.assertIn(key, errors[0].message)
+
+    def test_a_scenes_bad_value_is_left_to_the_per_scene_check(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n  [scenes.color]\n  dither = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        subjects = [d.subject for d in diags if d.level == "error"]
+        self.assertEqual(len(subjects), 1)
+        self.assertTrue(subjects[0].endswith("/dither"))
+
+    def test_a_valid_clip_override_reports_nothing(self):
+        self.assertEqual(self._clip_errors("dither", '"ordered"'), [])
 
 
 @contextlib.contextmanager
