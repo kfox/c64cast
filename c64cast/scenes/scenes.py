@@ -1644,6 +1644,9 @@ class VideoScene(MediaFileMixin, Scene):
 # How long the launcher's input sender waits before re-sending the held
 # joystick state after that post failed too.
 _INJECT_RESYNC_RETRY_S = 0.25
+# The shortest time an injected press stays down: the firmware's own tap
+# hold, so a program that reads the port once a frame sees a quick pad hit.
+_INJECT_MIN_HOLD_S = 0.06
 # How long teardown waits for the sender's post in flight, so the release and
 # the reset that follow it reach the machine after that post. A sender request
 # changes each input at most once, so it is one body: one connect and one read.
@@ -1757,6 +1760,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # means the machine must be told that again.
         self._carry: machine_input.Event | None = None
         self._held: set[tuple[int, str]] = set()
+        self._pressed_at: dict[tuple[int, str], float] = {}
         self._resync = False
         self._injection_refused_logged = False
         self._prepared = False
@@ -1831,9 +1835,26 @@ class LauncherScene(MediaFileMixin, Scene):
                 continue
             batch = self._next_batch()
             # The dequeue can outlast a stop; teardown releases what is held.
-            if batch and not stop.is_set():
+            if batch and not stop.wait(self._hold_remaining(batch)):
                 self._injected_any = True
                 self._post(batch)
+                now = time.monotonic()
+                for event in batch:
+                    if event["transition"] == "press":
+                        self._pressed_at.update(dict.fromkeys(_joystick_inputs(event), now))
+
+    def _hold_remaining(self, batch: list[machine_input.Event]) -> float:
+        """How long `batch` must wait so that no input it releases comes up
+        sooner than `_INJECT_MIN_HOLD_S` after its press was answered."""
+        now = time.monotonic()
+        wait = 0.0
+        for event in batch:
+            if event["transition"] == "release":
+                for key in _joystick_inputs(event):
+                    pressed = self._pressed_at.get(key)
+                    if pressed is not None:
+                        wait = max(wait, pressed + _INJECT_MIN_HOLD_S - now)
+        return wait
 
     def _next_batch(self) -> list[machine_input.Event]:
         """The next request's events, in order. A request changes each input
@@ -1893,6 +1914,7 @@ class LauncherScene(MediaFileMixin, Scene):
                 break
         self._carry = None
         self._held.clear()
+        self._pressed_at.clear()
         self._resync = False
         if self._injected_any:
             self._injected_any = False

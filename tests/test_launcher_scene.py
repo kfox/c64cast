@@ -6,11 +6,14 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 from c64cast.hw import machine_input
 from c64cast.hw.c64 import CIA1
+from c64cast.scenes import scenes
 from c64cast.scenes.scenes import LauncherScene
 
 
@@ -287,6 +290,45 @@ class JoystickSenderTest(unittest.TestCase):
                     [_joy(2, "release", "up")],
                 ],
             )
+
+    def test_a_quick_tap_stays_down_for_the_minimum_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            done = threading.Event()
+            posted_at = []
+
+            def send(events):
+                posted_at.append(time.monotonic())
+                if len(posted_at) == 2:
+                    done.set()
+                return {}
+
+            api.send_input.side_effect = send
+            scene._injected.put(_joy(2, "press", "fire"))
+            scene._injected.put(_joy(2, "release", "fire"))
+            scene._sender.start()
+            self.addCleanup(scene._sender.stop)
+            self.assertTrue(done.wait(2.0))
+            scene._sender.stop()
+            self.assertGreaterEqual(posted_at[1] - posted_at[0], scenes._INJECT_MIN_HOLD_S)
+
+    def test_stop_during_the_hold_ends_the_wait_and_posts_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            scene._held.add((2, "fire"))
+            scene._pressed_at[(2, "fire")] = time.monotonic()
+            scene._injected.put(_joy(2, "release", "fire"))
+            stop = threading.Event()
+            loop = threading.Thread(target=scene._send_loop, args=(stop,))
+            with mock.patch.object(scenes, "_INJECT_MIN_HOLD_S", 30.0):
+                loop.start()
+                self.addCleanup(loop.join, 5.0)
+                self.addCleanup(stop.set)
+                time.sleep(0.1)
+                stop.set()
+                loop.join(2.0)
+            self.assertFalse(loop.is_alive())
+            api.send_input.assert_not_called()
 
     def test_batch_dequeued_after_stop_is_not_posted(self):
         with tempfile.TemporaryDirectory() as tmp:
