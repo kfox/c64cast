@@ -804,5 +804,144 @@ class LivenessCheckTest(unittest.TestCase):
         self.assertIn("reconnects=1", line)
 
 
+class LostCommandReportTest(unittest.TestCase):
+    """A redial that may have dropped commands already sent must not let
+    the next flush() report them drained: callers such as
+    ``Ultimate64API._flush_or_raise`` refuse a launch on a failed flush."""
+
+    def _writing_client(self) -> tuple[FakeSocket, SocketDMAClient]:
+        fake = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake)
+        c.dmawrite(0xD020, b"\x0e")
+        return fake, c
+
+    def _assert_flush_reports_a_loss(self, c: SocketDMAClient) -> None:
+        # The new connection would answer the flush's IDENTIFY, so only the
+        # loss report can make it raise.
+        with self.assertRaisesRegex(ConnectionError, "may not have reached the server"):
+            c.flush()
+
+    def _flush_after_redial(self, c: SocketDMAClient) -> FakeSocket:
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                self._assert_flush_reports_a_loss(c)
+        return fake2
+
+    def test_a_reset_after_a_write_fails_the_next_flush_once(self):
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        fake2 = self._flush_after_redial(c)
+        c.flush()
+        self.assertFalse(fake2.closed)
+
+    def test_a_new_connection_starts_with_nothing_unconfirmed(self):
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        fake2 = self._flush_after_redial(c)
+        fake2.peer_reset = True
+        fake3 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake3):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.flush()
+        self.assertEqual(c.reconnect_count, 2)
+
+    def test_an_early_fin_after_a_write_fails_the_next_flush(self):
+        fake1, c = self._writing_client()
+        fake1.peer_closed = True
+        self._flush_after_redial(c)
+
+    def test_a_stray_byte_after_a_write_fails_the_next_flush(self):
+        fake1, c = self._writing_client()
+        fake1.unsolicited = b"\x16"
+        self._flush_after_redial(c)
+
+    def test_an_unanswered_idle_identify_after_a_write_fails_the_next_flush(self):
+        _, c = self._writing_client()
+        c._last_send -= c.idle_verify_after_s
+        self._flush_after_redial(c)
+
+    def test_a_failed_send_after_a_write_fails_the_next_flush(self):
+        fake1, c = self._writing_client()
+        fake1.fail_sendalls_remaining = 1
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+                self._assert_flush_reports_a_loss(c)
+
+    def test_an_answered_identify_on_the_new_connection_does_not_clear_it(self):
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+                c._last_send -= c.idle_verify_after_s
+                c.dmawrite(0xD021, b"\x01")  # idle IDENTIFY, answered
+                self._assert_flush_reports_a_loss(c)
+        self.assertEqual(c.reconnect_count, 1)
+
+    def test_a_flush_that_fails_otherwise_consumes_the_report(self):
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        with patch(
+            "c64cast.hw.socket_dma.socket.create_connection",
+            side_effect=ConnectionRefusedError("scripted"),
+        ):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                with self.assertRaises(SocketDMAError):
+                    c.flush()
+        fake3 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake3):
+            with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
+                c.flush()
+
+    def test_the_idle_close_fin_keeps_flush_quiet(self):
+        fake1, c = self._writing_client()
+        fake1.peer_closed = True
+        c._last_send -= c.idle_verify_after_s
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.flush()
+        self.assertEqual(c.reconnect_count, 1)
+
+    def test_an_answered_idle_identify_confirms_the_writes_before_it(self):
+        # The idle IDENTIFY is answered, then the write after it fails to
+        # send: the write is retried on the new connection, and the one
+        # before the IDENTIFY was confirmed, so nothing is owed a report.
+        class FailThirdSendSocket(FakeSocket):
+            sends = 0
+
+            def sendall(self, data: bytes) -> None:
+                self.sends += 1
+                if self.sends == 4:  # connect IDENTIFY, write, idle IDENTIFY, write
+                    raise BrokenPipeError("scripted failure")
+                super().sendall(data)
+
+        fake1 = FailThirdSendSocket([_IDENT_REPLY, _IDENT_REPLY])
+        c = _client_with(fake1)
+        c.dmawrite(0xD020, b"\x0e")
+        c._last_send -= c.idle_verify_after_s
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.dmawrite(0xD021, b"\x00")
+                c.flush()
+        self.assertEqual(c.reconnect_count, 1)
+
+    def test_a_redial_with_nothing_unconfirmed_keeps_flush_quiet(self):
+        fake1, c = self._writing_client()
+        fake1._replies.append(_IDENT_REPLY)
+        c.flush()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+                c.flush()
+        self.assertEqual(c.reconnect_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
