@@ -21,7 +21,7 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
-- **`host_palette = "auto"` now asks an Ultimate which 16 colors it is actually
+- **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running
   a custom `.vpl` palette was being quantized against the wrong 16 — a wrong

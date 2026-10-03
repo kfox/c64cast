@@ -102,8 +102,9 @@ host_palette = "auto"               # the 16 colors the C64 being driven really
                                     # machine where it can (an Ultimate 64 on
                                     # firmware 3.15a or newer reports the colors
                                     # it is really driving, a custom .vpl
-                                    # included) and otherwise assumes a real
-                                    # VIC-II. "u64" is the
+                                    # included; one that cannot answer is
+                                    # assumed to show its built-in table) and
+                                    # anything else a real VIC-II. "u64" is the
                                     # Ultimate 64's own built-in table; "pepto"
                                     # is the classic VIC-II rendering — right for
                                     # a real C64, so for an Ultimate II+ and for
