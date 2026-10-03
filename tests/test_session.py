@@ -328,6 +328,32 @@ class BuildStackCameraTest(unittest.TestCase):
         self._camera_opens_for(cfg).assert_not_called()
 
 
+class OpenBackendIdentityTest(unittest.TestCase):
+    """The connect line asks for the firmware build only at -v, where the
+    root logger is at DEBUG."""
+
+    def _detailed_at(self, level: str) -> bool:
+        cfg = cfgmod.Config()
+        api = mock.MagicMock()
+        api.probe.return_value = "HTTP 200"
+        api.describe_device.return_value = "Ultimate 64-II"
+        with (
+            mock.patch.object(session, "make_backend", return_value=api),
+            mock.patch.object(session.hw_provision, "resolve_system"),
+            mock.patch.object(session.hw_provision, "resolve_palette"),
+            self.assertLogs("c64cast", level=level) as logs,
+        ):
+            session._open_backend(cfg, "system")
+        self.assertIn("connected device: Ultimate 64-II", "\n".join(logs.output))
+        return api.describe_device.call_args.kwargs["detailed"]
+
+    def test_default_verbosity_leaves_the_build_out(self):
+        self.assertFalse(self._detailed_at("INFO"))
+
+    def test_debug_asks_for_the_build(self):
+        self.assertTrue(self._detailed_at("DEBUG"))
+
+
 class BuildPreviewAndRecordingTest(unittest.TestCase):
     def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
         # The write listener costs a shadow-memory update on every DMA write for the

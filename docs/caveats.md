@@ -128,7 +128,9 @@ substitutes for it:
 **F2 → Cartridge and ROM Settings → Bus Operation Mode = `Writes`**
 
 The choices are `Quiet` (the firmware default), `Writes`, `Dynamic` and
-`Dyn. & Writes`; the last also serves, since it includes writes. Back out with
+`Dyn. & Writes`; the last also serves, since it includes writes. Ultimate 64
+firmware 3.15 adds a fifth, `Compatibility`, which the firmware also sets up
+with writes enabled; `Writes` remains the tested setting. Back out with
 <kbd>RUN/STOP</kbd> and save when asked — this one has to persist in the
 machine's own settings, because c64cast cannot provision it live the way it does
 the REU and the sampler: on this rig the connection is `tr://` to the
@@ -678,8 +680,13 @@ specific file; leave it unset to use whatever c64cast resolved.
 
 ## Ultimate 64 firmware version
 
-This project is developed against U64 firmware 3.x (3.14d/3.14e on the
-test hardware). Two transports are in play:
+This project is developed against U64 firmware 3.x. The test Ultimate 64-II
+runs 3.15a (`GET /v1/info` → `firmware_version 3.15a`, `fpga_version 125`,
+`core_version 1.50`), after 3.14d and 3.14e. The Programmer's Reference's
+["What Each Firmware Can Do"](reference/06-under-the-hood.md#what-each-firmware-can-do)
+has the features c64cast probes the firmware for at runtime, and what it does
+on a machine that does not answer.
+Two transports are in play:
 
 * **Socket DMA (TCP port 64)** carries every memory write — opcode
   `0xFF06 DMAWRITE`. Needs two toggles, in two different menus: F2 →

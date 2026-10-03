@@ -455,7 +455,13 @@ class _FakeProfile:
 
 class _FakeRestApi:
     """Category-aware fake: read_sampler_config GETs two config sections, so
-    session.get must return the right one per URL."""
+    session.get must return the right one per URL.
+
+    ``absent_answer`` is how the firmware answers a GET for a category it does
+    not register: ``"200"`` (before 3.15, and C64 Ultimate 1.1.0) is HTTP 200
+    with only the errors array; ``"404"`` (3.15 on) is HTTP 404 with a JSON
+    error naming the category. ``mixer_category=None`` registers no mixer
+    category at all."""
 
     def __init__(
         self,
@@ -464,7 +470,8 @@ class _FakeRestApi:
         map_status: str = "Enabled",
         vol_l: str = " 0 dB",
         vol_r: str = " 0 dB",
-        mixer_category: str = "Audio Mixer",
+        mixer_category: str | None = "Audio Mixer",
+        absent_answer: str = "200",
         supports_sampler: bool = True,
         put_error: Exception | None = None,
         get_error: Exception | None = None,
@@ -480,10 +487,9 @@ class _FakeRestApi:
             cart["Map Ultimate Audio $DF20-DFFF"] = map_status
             mixer["Vol Sampler L"] = vol_l
             mixer["Vol Sampler R"] = vol_r
-        self._sections = {
-            "C64 and Cartridge Settings": cart,
-            mixer_category: mixer,
-        }
+        self._sections = {"C64 and Cartridge Settings": cart}
+        if mixer_category is not None:
+            self._sections[mixer_category] = mixer
         self.session = mock.MagicMock()
 
         def _get(url, timeout=3.0):
@@ -495,13 +501,16 @@ class _FakeRestApi:
             if error_categories and cat in error_categories:
                 raise requests.Timeout(f"read timeout on {cat}")
             resp = mock.MagicMock()
-            # A category the device doesn't have answers HTTP 200 with only
-            # the errors array — no category key — like the real firmware.
+            resp.status_code = 200
+            resp.raise_for_status = mock.MagicMock()
             body: dict[str, object] = {"errors": []}
             if cat in self._sections:
                 body[cat] = self._sections[cat]
+            elif absent_answer == "404":
+                resp.status_code = 404
+                body["errors"] = [f"No configuration category matches '{cat}'."]
+                resp.raise_for_status.side_effect = requests.HTTPError("404 Client Error")
             resp.json.return_value = body
-            resp.raise_for_status = mock.MagicMock()
             return resp
 
         self.session.get.side_effect = _get
@@ -546,7 +555,7 @@ class SamplerAvailabilityTest(unittest.TestCase):
         self.assertIsNone(hw_provision.sampler_is_available(api))
 
 
-def _u2plus_fake(**kwargs) -> _FakeRestApi:
+def _u2plus_fake(**kwargs: Any) -> _FakeRestApi:
     """A U2+-shaped config store: the Sampler mixer channels live in
     "Audio Output Settings" and there is no "Audio Mixer" category at all."""
     return _FakeRestApi(mixer_category="Audio Output Settings", **kwargs)
@@ -556,30 +565,46 @@ class SamplerMixerCategoryTest(unittest.TestCase):
     """The category carrying "Vol Sampler L/R" differs across the Ultimate
     family (U64 "Audio Mixer" vs U2+ "Audio Output Settings");
     read_sampler_config must resolve the one this device actually carries and
-    every mixer PUT + restore key must follow it."""
+    every mixer PUT + restore key must follow it. Runs once per way the
+    firmware answers for the category a device does not have."""
+
+    ABSENT_ANSWER = "200"
+
+    def _fake(self, **kwargs: Any) -> _FakeRestApi:
+        return _FakeRestApi(absent_answer=self.ABSENT_ANSWER, **kwargs)
+
+    def _u2plus(self, **kwargs: Any) -> _FakeRestApi:
+        return _u2plus_fake(absent_answer=self.ABSENT_ANSWER, **kwargs)
 
     def test_u64_resolves_audio_mixer(self):
-        state = hw_provision.read_sampler_config(_FakeRestApi())
+        state = hw_provision.read_sampler_config(self._fake())
         self.assertIs(state.present, True)
         self.assertEqual(state.mixer_category, "Audio Mixer")
 
     def test_u2plus_resolves_audio_output_settings(self):
-        state = hw_provision.read_sampler_config(_u2plus_fake())
+        state = hw_provision.read_sampler_config(self._u2plus())
         self.assertIs(state.present, True)
         self.assertIs(state.map_enabled, True)
         self.assertEqual(state.mixer_category, "Audio Output Settings")
         self.assertEqual(state.volumes, {"Vol Sampler L": " 0 dB", "Vol Sampler R": " 0 dB"})
 
     def test_u2plus_available(self):
-        self.assertIs(hw_provision.sampler_is_available(_u2plus_fake()), True)
+        self.assertIs(hw_provision.sampler_is_available(self._u2plus()), True)
 
     def test_absent_everywhere_is_false_not_none(self):
-        state = hw_provision.read_sampler_config(_FakeRestApi(present=False))
+        state = hw_provision.read_sampler_config(self._fake(present=False))
+        self.assertIs(state.present, False)
+        self.assertIsNone(state.mixer_category)
+
+    def test_no_mixer_category_at_all_is_false_not_none(self):
+        # A plain U2: neither candidate mixer category is registered, so both
+        # reads answer "absent" and the sampler is absent, not unreadable.
+        state = hw_provision.read_sampler_config(self._fake(present=False, mixer_category=None))
         self.assertIs(state.present, False)
         self.assertIsNone(state.mixer_category)
 
     def test_first_category_error_still_resolves_second(self):
-        api = _u2plus_fake(error_categories={"Audio Mixer"})
+        api = self._u2plus(error_categories={"Audio Mixer"})
         state = hw_provision.read_sampler_config(api)
         self.assertIs(state.present, True)
         self.assertEqual(state.mixer_category, "Audio Output Settings")
@@ -588,11 +613,11 @@ class SamplerMixerCategoryTest(unittest.TestCase):
         # A U64-shaped store whose mixer read fails: the fields were never seen
         # AND a query failed, so "absent" cannot be told from "unreadable" — that
         # must stay None, not False.
-        api = _FakeRestApi(error_categories={"Audio Mixer"})
+        api = self._fake(error_categories={"Audio Mixer"})
         self.assertIsNone(hw_provision.read_sampler_config(api).present)
 
     def test_u2plus_provision_unmutes_into_resolved_category(self):
-        api = _u2plus_fake(vol_l="OFF", vol_r="OFF")
+        api = self._u2plus(vol_l="OFF", vol_r="OFF")
         restore = hw_provision.provision_sampler(api, _video_cfg())
         assert restore is not None
         unmutes = [c for c in api.put_calls if c[0] == "Audio Output Settings"]
@@ -600,7 +625,7 @@ class SamplerMixerCategoryTest(unittest.TestCase):
         self.assertEqual([c for c in api.put_calls if c[0] == "Audio Mixer"], [])
 
     def test_u2plus_restore_targets_resolved_category(self):
-        api = _u2plus_fake(map_status="Disabled", vol_l="OFF")
+        api = self._u2plus(map_status="Disabled", vol_l="OFF")
         restore = hw_provision.provision_sampler(api, _video_cfg())
         api.put_calls.clear()
         hw_provision.restore_sampler(api, restore)
@@ -609,6 +634,13 @@ class SamplerMixerCategoryTest(unittest.TestCase):
             api.put_calls,
         )
         self.assertIn(("Audio Output Settings", "Vol Sampler L", "OFF"), api.put_calls)
+
+
+class SamplerMixerCategory404Test(SamplerMixerCategoryTest):
+    """The same cases against firmware 3.15, which answers 404 with a JSON
+    error for a category the device does not register."""
+
+    ABSENT_ANSWER = "404"
 
 
 class WantsSamplerTest(unittest.TestCase):

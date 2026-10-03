@@ -68,7 +68,9 @@ A TeensyROM+ has no sampler and is therefore always on this path. In the
 cartridge port of a C64U or an Ultimate 64 it also needs that machine's own
 **F2 → Cartridge and ROM Settings → Bus Operation Mode** set to `Writes` (or
 `Dyn. & Writes`) rather than its `Quiet` default, saved in the Ultimate's
-settings; on `Quiet` the stream can carry a constant hiss that no shaping in the
+settings. Ultimate 64 firmware 3.15 adds `Compatibility`, which includes
+writes; `Writes` remains the tested setting. On `Quiet` the stream can carry a
+constant hiss that no shaping in the
 next section touches. c64cast cannot set it during a run, because the run's
 connection is to the TeensyROM+ and not to the Ultimate.
 

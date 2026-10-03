@@ -37,6 +37,10 @@ provides much of the same functionality, and most of this guide applies to it
 unchanged, but it is **not** 100% compatible with every feature. Where a
 difference matters, the text says so.
 
+Newer Ultimate firmware unlocks a few extras; the *Programmer's Reference*
+lists which, in
+["What Each Firmware Can Do"](../reference/06-under-the-hood.md#what-each-firmware-can-do).
+
 ### The Other Path
 
 The **TeensyROM+** connects over USB or over your network. It works well and
@@ -91,10 +95,11 @@ pixels will work without it. Scenes that start something running on the
 Commodore will not.
 
 > [!NOTE]
-> On older Ultimate 64 and Ultimate II+ firmware the third service has no
-> switch of its own and is served alongside the web interface, so it is
-> already on. The separate **Web Remote Control Service** toggle appears on
-> the Commodore 64 Ultimate.
+> On Ultimate 64 and Ultimate II+ firmware before 3.12 there is no
+> **Network Settings** menu: the DMA Service and the Web Remote Control
+> Service have no switches of their own and are already on, so only the
+> Command Interface needs enabling. Both switches appear from firmware 3.12,
+> and on the Commodore 64 Ultimate.
 
 If a firewall sits between your computer and the Commodore, allow outbound
 TCP to port 64 and port 80 on the Commodore's address.
@@ -143,7 +148,9 @@ to back out, and say yes when it offers to save.
 
 The setting governs how much of what the machine does reaches the cartridge
 port. Its default, **Quiet**, keeps that port quiet; **Writes** — or **Dyn. &
-Writes**, which includes it — is what the TeensyROM+ needs. This one is worth
+Writes**, which includes it — is what the TeensyROM+ needs. Ultimate 64
+firmware 3.15 adds a fifth choice, **Compatibility**, which also includes
+writes; **Writes** remains the tested setting. This one is worth
 doing before you go looking for an audio option, because there isn't one: no
 amount of shaping in c64cast will clear a hiss that comes from the bus.
 
@@ -412,6 +419,12 @@ configuration file makes sense, and that the Commodore answers.
 
 ![Figure 1-1. Doctor reporting on the environment, the configuration and the hardware.](img/fig-1-1-doctor.png)
 
+When an Ultimate answers, a line in the CONNECTIVITY section names the
+machine and its firmware, such as
+`Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)`.
+The `build` part appears from Ultimate firmware 3.15a onward; older firmware
+and the C64 Ultimate leave it out, and the rest of the line reads the same.
+
 Add `--skip-probe` to run every check except the ones that touch the
 Commodore. This is the fast, offline version, and it is the one to reach for
 when you are editing a configuration file and want to know whether it is
@@ -424,7 +437,8 @@ c64cast --doctor --config my-playlist.toml --skip-probe
 > [!TIP]
 > Doctor is the right first move for almost any problem, and it is much
 > faster than guessing. If you are about to ask someone else why c64cast is
-> not working, run doctor first and bring its output with you.
+> not working, run doctor first and bring its output with you. The line
+> naming your machine and firmware is the one a bug report needs most.
 
 With the services on, c64cast installed and doctor reporting a clean bill of
 health, you have everything you need. The next chapter puts it to work.
