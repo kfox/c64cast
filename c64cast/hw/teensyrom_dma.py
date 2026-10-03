@@ -8,7 +8,11 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
 0x9B7F`). c64cast uses this subset:
 
   * **WriteC64Mem `0x64FB`** — sequential DMA write into C64 address space.
-    The hot path; carries all rendering + audio programming.
+    The hot path on firmware without WriteC64Spans.
+  * **WriteC64Spans `0x64FC`** — up to 64 spans in one command, DMA'd in
+    slices of at most `slice_bytes` with the 6510 running for `gap_us` between
+    them, so no single halt outlasts what an NMI or raster IRQ can absorb.
+    TR+ firmware v0.9+; `probe_spans` detects it at connect.
   * **ReadC64Mem `0x64FD`** — sequential DMA read back (addr + len -> ack ->
     `len` data bytes). Backs `read_memory`. Added in the same cycle-clean
     firmware that made WriteC64Mem safe over a running interpreter (TR+ fw
@@ -43,6 +47,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Sequence
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -52,6 +57,7 @@ DEFAULT_BAUD = 2_000_000  # 2 Mbaud 8N1, per the firmware author
 
 # Protocol tokens (Common_Defs.h).
 TOK_WRITE_C64_MEM = 0x64FB
+TOK_WRITE_C64_SPANS = 0x64FC
 TOK_READ_C64_MEM = 0x64FD
 TOK_RESET_C64 = 0x64EE
 TOK_LAUNCH_FILE = 0x6444
@@ -76,6 +82,35 @@ DRIVE_SD = 1
 # every write/read command also needs.
 _DRAIN_MAX_S = 5.0
 _DRAIN_MAX_BYTES = 65536
+
+# WriteC64Spans limits (C64Spans.h). The header carries slice bytes and gap as
+# one byte each. $DE00-$DFFF is the cartridge's own IO1/IO2, which the firmware
+# refuses as a span target.
+SPANS_MAX = 64
+SPANS_MAX_SLICES = 1024
+SPANS_MAX_TOTAL = 0x10000
+SPANS_FIELD_MAX = 0xFF
+# A sliced 4 KiB command holds the link ~15 ms, and the audio worker's ring
+# writes queue behind it (a fifth of slots late on bitmap video); 1 KiB keeps
+# every slot on time for ~0.4 ms more per extra command.
+SPANS_SEGMENT_BYTES = 1024
+SPANS_IO_START = 0xDE00
+SPANS_IO_END = 0xE000
+
+# After a WriteC64Spans fails part way, the firmware waits up to 500 ms for each
+# byte it is still owed (SerialTimoutMillis), then discards input until a second
+# passes with nothing arriving; anything sent before both run out is thrown away
+# or misread. Quiet this long from the sender's last byte covers both.
+_SPANS_RECOVER_QUIET_S = 1.6
+# The firmware's refusal of a zero-span header (SerUSBIO.ino), which only
+# firmware carrying WriteC64Spans can produce.
+_SPANS_COUNT_REFUSAL = "Want 1 to 64 spans"
+
+
+def span_touches_cart_io(addr: int, length: int) -> bool:
+    """True when [addr, addr+length) overlaps $DE00-$DFFF, which WriteC64Spans
+    refuses and WriteC64Mem has to carry instead."""
+    return addr < SPANS_IO_END and addr + length > SPANS_IO_START
 
 
 def _sanitize_device_text(text: str) -> str:
@@ -114,6 +149,13 @@ class TRBusyError(TRError):
     running, or the menu handler isn't active (the firmware replies "Busy!").
     A distinct subclass so callers can tell "try again from the menu / stop the
     running program" apart from a hard failure."""
+
+
+class TRSpansRefused(TRError):
+    """WriteC64Spans was refused before anything was sent beyond its token,
+    because another DMA user holds the bus (REU emulation running, or the C64
+    paused). Nothing was written and the firmware is ready for its next
+    command, so the caller can carry the same write with WriteC64Mem."""
 
 
 class TRTransport(ABC):
@@ -555,6 +597,101 @@ class TRClient:
             self.transport.send_all(frame)
             self._expect_ack(f"WriteC64Mem ${addr:04X}")
             self._latencies.append(time.perf_counter() - t0)
+
+    def write_spans(
+        self, spans: Sequence[tuple[int, bytes]], slice_bytes: int, gap_us: int
+    ) -> None:
+        """One WriteC64Spans command. Three replies gate it, and each is
+        awaited before anything more is sent: the token's (firmware without
+        the command answers with text, never an ack, and would parse a header
+        sent blind as commands of its own), the span list's, and the landing.
+
+        `slice_bytes` 0 DMAs each span whole. Raises TRError on a refusal, a
+        failed slice, or a reply that never came; in every case the firmware
+        is back at its command dispatcher before this returns (see
+        `_recover_spans`), so the next command is not read as part of this
+        one."""
+        if not 1 <= len(spans) <= SPANS_MAX:
+            raise ValueError(f"WriteC64Spans takes 1-{SPANS_MAX} spans, got {len(spans)}")
+        if not (0 <= slice_bytes <= SPANS_FIELD_MAX and 0 <= gap_us <= SPANS_FIELD_MAX):
+            raise ValueError(f"slice_bytes/gap_us must be 0-{SPANS_FIELD_MAX}")
+        header = bytes([0, slice_bytes, gap_us, len(spans)])
+        span_list = b"".join(
+            self._u16(addr & 0xFFFF) + self._u16(len(data)) for addr, data in spans
+        )
+        payload = b"".join(data for _, data in spans)
+        first = spans[0][0]
+        with self._lock:
+            t0 = time.perf_counter()
+            self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
+            try:
+                tok = self._read_token()
+            except TRError:
+                self._recover_spans(header_sent=False)
+                raise
+            if tok == TOK_FAIL:
+                detail = self.transport.drain_text(0.15).strip()
+                raise TRSpansRefused(f"WriteC64Spans ${first:04X}: bus held — {detail}")
+            if tok != TOK_ACK:
+                self._recover_spans(header_sent=False)
+                raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
+            self.transport.send_all(header + span_list)
+            try:
+                self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
+                self.transport.send_all(payload)
+                self._expect_ack(f"WriteC64Spans ${first:04X}")
+            except TRError:
+                self._recover_spans(header_sent=True)
+                raise
+            self._latencies.append(time.perf_counter() - t0)
+
+    def _recover_spans(self, *, header_sent: bool) -> None:
+        """Put the firmware back at its command dispatcher after a
+        WriteC64Spans that went wrong part way, under the caller's lock.
+
+        Unlike WriteC64Mem, whose frame goes out whole, this command is sent
+        in stages, and a stage whose reply did not come leaves the firmware
+        part way through it — it may yet act on the token (a reply lost to a
+        reset's reboot chatter, say) and take whatever is sent next as its
+        header. If the header has not gone out, four zero bytes follow: a
+        zero-span header is refused with nothing owed, and firmware that has
+        already dropped the command reads them as two unknown 0x0000 tokens.
+        Then this waits for quiet long enough to cover the firmware giving up
+        on a silent sender and its own discard after that."""
+        if not header_sent:
+            with contextlib.suppress(OSError, TRError):
+                self.transport.send_all(bytes(4))
+        with contextlib.suppress(OSError, TRError):
+            self.transport.drain_text(_SPANS_RECOVER_QUIET_S)
+
+    def probe_spans(self) -> bool:
+        """Does the connected firmware carry WriteC64Spans? Sends the token,
+        then a header announcing zero spans, which the firmware refuses before
+        anything is owed — so the probe writes no C64 memory and leaves no
+        discard window behind.
+
+        The header goes out whatever the token's reply was. Boot chatter after
+        a reset can arrive where the reply should be, and the firmware may
+        then act on the token *after* the probe has given up on it, waiting on
+        a header that would otherwise be the next command's bytes. Four zero
+        bytes are safe on every firmware: refused as a header, and read by
+        firmware without the command as two unknown 0x0000 tokens.
+
+        Support is an ack to the token, a FailToken to it (the command exists
+        but REU emulation or a pause holds the bus), or — when chatter hid the
+        reply — the refusal's own text."""
+        with self._lock:
+            self._drain_stale()
+            self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
+            try:
+                tok: int | None = self._read_token()
+            except TRError:
+                tok = None
+            self.transport.send_all(bytes(4))
+            text = self.transport.drain_text(0.3)
+            if tok in (TOK_ACK, TOK_FAIL):
+                return True
+            return _SPANS_COUNT_REFUSAL in text
 
     def read_segment(self, addr: int, length: int) -> bytes:
         """One ReadC64Mem command: token + addr(BE) + len(BE), verify the ack,

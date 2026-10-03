@@ -39,6 +39,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   firmware **3.15** or newer. On older firmware, including C64 Ultimate
   1.1.0, the check is skipped with one log line saying so.
 
+- **A TeensyROM+ on firmware v0.9 or later now slices large DMA writes while
+  DAC audio plays**, letting the 6510 run between 32-byte slices instead of
+  halting for the whole write. The `$D418` sample player loses about 3.9×
+  fewer interrupts per byte written, so bitmap video with DAC audio drains
+  much closer to real time and its audio wobbles 2–4× less. Writes stay
+  unsliced when no sample player is running, because slicing costs bulk
+  throughput, and on a regular TeensyROM or older firmware nothing changes.
+  `[teensyrom].dma_slicing` (`auto`, the default; `on`; `off`) controls it,
+  with `dma_slice_bytes` and `dma_slice_gap_us` for the slice shape.
+
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running
@@ -96,6 +106,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   log line carries the same build hash at `-v`. Every run's connect line now
   shows the core version too. Older firmware and the C64 Ultimate leave out
   what they do not report.
+
+- **`[audio].dac_bitmap_tempo_hires` and `dac_bitmap_tempo_mhires` now default
+  to the value measured for the connected hardware** rather than a fixed 0.89 /
+  0.88. Those are still what an Ultimate 64 and a TeensyROM writing unsliced
+  get; a TeensyROM+ slicing its writes gets 0.97, since its sample player
+  loses far fewer interrupts and would otherwise play bitmap video ~9% fast. A
+  value you set yourself still wins.
+
 - **`-vv` no longer shows the reads c64cast makes on a timer, and `-vvv` is
   new.** The Commodore-key poll reads the machine ten times a second for the
   whole run, so a five-minute session buried `-vv` under ~3,000 HTTP-transport

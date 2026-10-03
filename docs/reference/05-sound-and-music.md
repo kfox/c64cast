@@ -236,11 +236,12 @@ Video, slaved to the audio clock, follows it down.
 
 The fix is to pre-compress the content by the inverse factor so the system's own
 stretch nets back to real time. `[audio].dac_bitmap_tempo_mhires` and
-`dac_bitmap_tempo_hires` hold the observed speed fractions, defaulting to the
-values measured on an NTSC U64-II (0.88 and 0.89). They apply only to the DAC
-backend under a bitmap mode; the sampler, the character modes and a muted scene
-all pass through untouched. Other platforms differ — measure yours and set the
-field.
+`dac_bitmap_tempo_hires` hold the observed speed fractions. Left unset, they
+take the values measured for the connected hardware: 0.88 and 0.89 on an NTSC
+Ultimate 64-II and on a TeensyROM writing unsliced, 0.97 on a TeensyROM+ whose
+firmware slices its DMA writes. They apply only to the DAC backend under a
+bitmap mode; the sampler, the character modes and a muted scene all pass through
+untouched. Other platforms differ — measure yours and set the field.
 
 ### The Pitch Knobs That Default Off
 

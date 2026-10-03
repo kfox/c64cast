@@ -340,6 +340,20 @@ class C64Backend(ABC):
         Default 0: a backend that cannot tell never asks for a resend."""
         return 0
 
+    def dac_bitmap_tempo(self, multicolor: bool) -> float:
+        """The clock/wall speed a $D418-DAC video drains at over a bitmap mode
+        on this link, for an unset [audio].dac_bitmap_tempo_*. Measured on an
+        Ultimate 64-II NTSC; a TeensyROM writing with WriteC64Mem lands within
+        1% of the same figures."""
+        return 0.88 if multicolor else 0.89
+
+    def note_nmi_consumer(self, active: bool) -> None:
+        """A sample player driven by the CIA2 NMI has started (or stopped)
+        consuming on the C64. Every DMA halt longer than one NMI period costs
+        it ticks, so a backend that can shape its writes to spare it does so
+        only while it runs; the rest ignore this."""
+        return None
+
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 
@@ -959,7 +973,14 @@ def make_backend(cfg: Config) -> C64Backend:
             host_sid_chips=host_chips,
             host_sid_tune_match=cfg.hardware.host_sid_tune_match,
         )
-        return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
+        return TeensyROMBackend(
+            transport,
+            profile=profile,
+            storage=tr.storage,
+            dma_slicing=tr.dma_slicing,
+            dma_slice_bytes=tr.dma_slice_bytes,
+            dma_slice_gap_us=tr.dma_slice_gap_us,
+        )
 
     raise BackendSetupError(
         f"unknown [hardware].backend {backend!r} — known backends: {', '.join(BACKENDS)}"

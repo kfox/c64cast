@@ -106,15 +106,17 @@ wobbly — all confirmed by ear).
 
 Fix: because the stretch is pitch-preserving, **pre-compress the content in the
 time domain by the inverse factor** so it nets to real time. `[audio].
-dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` (defaults **0.89 hires /
-0.88 mhires**, the measured U64-II NTSC speed fractions `s`) drive it: for the gated bitmap+DAC path,
+dac_bitmap_tempo_hires` / `dac_bitmap_tempo_mhires` drive it. Unset (the
+default), each resolves to the speed fraction `s` measured for the connected
+hardware: **0.89 hires / 0.88 mhires** on a U64-II NTSC and on a TeensyROM
+writing unsliced, **0.97** on a TeensyROM+ with sliced DMA writes: for the gated bitmap+DAC path,
 `AVFileSource` time-compresses the audio pitch-preserving by `1/s` via an
 `atempo` filter graph and multiplies each video PTS by `s`. The existing
 drain-clock A/V sync (which reads ≈`s`) then lands both content streams at real
 time, in sync, pitch intact. `clock/wall` telemetry still reads ≈`s` **by design**
 (it gauges the drain rate; the compensation makes *content* real-time, not the
 drain clock). Set the field to `1.0` to disable. Other platforms (U64+PAL, U2P,
-TR+ PAL/NTSC) have different `s` — measure per platform with
+PAL generally) have different `s` — measure per platform with
 `scripts/diags/mhires_tempo_clock_ab.py`. This is orthogonal to the
 `[audio].pitch_mult_*` NMI-rate knobs (which correct *pitch*, not tempo). See the
 `video.py` tempo-compensation note in [architecture.md](architecture.md).

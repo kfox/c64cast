@@ -223,6 +223,7 @@ class FakeAPI:
         # the per-surface attributes below are last-write-wins.
         self.ops: list[tuple] = []
         self.cache_invalidations = 0
+        self.nmi_consumer_notes: list[bool] = []
         self.region_invalidations: list[int] = []
         self.sid_played: tuple[bytes, int] | None = None
         self.cue_song_reinits: list[int] = []
@@ -300,6 +301,12 @@ class FakeAPI:
 
     def invalidate_cache(self):
         self.cache_invalidations += 1
+
+    def dac_bitmap_tempo(self, multicolor):
+        return 0.88 if multicolor else 0.89
+
+    def note_nmi_consumer(self, active):
+        self.nmi_consumer_notes.append(active)
 
     def invalidate_region(self, region_id):
         self.region_invalidations.append(region_id)
