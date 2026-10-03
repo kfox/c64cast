@@ -997,6 +997,17 @@ class ReadSideTest(unittest.TestCase):
         self.get.side_effect = requests.ConnectionError("down")
         self.assertIsNone(self.api.probe())
 
+    def test_probe_ignores_a_failed_version_request(self):
+        import requests
+
+        self.get.side_effect = [MagicMock(status_code=200), requests.ConnectionError("down")]
+        with self.assertLogs("c64cast.hw.api", "DEBUG"):
+            self.assertEqual(self.api.probe(), "HTTP 200")
+
+    def test_probe_ignores_an_unrouted_version_request(self):
+        self.get.side_effect = [MagicMock(status_code=200), MagicMock(status_code=404)]
+        self.assertEqual(self.api.probe(), "HTTP 200")
+
     def test_get_config_category_unwraps_and_coerces_to_str(self):
         # The firmware's emit_store wraps the items under the category name
         # and mixes ints (value items) with strings (enum labels).
@@ -1580,7 +1591,9 @@ class RestPasswordTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
         self.server = _RecordingServer(_SECRET)
-        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         thread.start()
         self.addCleanup(thread.join)
         self.addCleanup(self.server.server_close)
@@ -1636,7 +1649,9 @@ class RestPasswordTest(unittest.TestCase):
 
     def test_an_environment_proxy_never_sees_the_password(self):
         proxy = _RecordingServer("")
-        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread = threading.Thread(
+            target=proxy.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         thread.start()
         self.addCleanup(thread.join)
         self.addCleanup(proxy.server_close)
