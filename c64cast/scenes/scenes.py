@@ -1914,9 +1914,12 @@ class LauncherScene(MediaFileMixin, Scene):
     def _collapse_stale(self) -> None:
         """When the oldest waiting event has waited `_INJECT_MAX_LAG_S`, take
         everything queued and leave, in `_collapsed`, at most two events per
-        input in their original order: its first change from what is held, and
-        a change back when that is where it ends. A tap survives the collapse
-        and still gets the minimum hold; the repeats in between are dropped."""
+        input in their original order: its latest change, and the change
+        before it when the latest one returns it to what is held. A tap
+        survives the collapse and still gets the minimum hold; the earlier
+        changes are dropped, so an input the sender had released is pressed
+        only where it was pressed in the queue, never alongside an input that
+        was pressed after it came up."""
         oldest = self._carry or (self._collapsed[0] if self._collapsed else None)
         if oldest is None:
             try:
@@ -1935,24 +1938,20 @@ class LauncherScene(MediaFileMixin, Scene):
             except queue.Empty:
                 break
         state: dict[tuple[int, str], bool] = {}
-        first: dict[tuple[int, str], int] = {}
-        last: dict[tuple[int, str], int] = {}
+        changes: dict[tuple[int, str], list[int]] = {}
         for index, (_queued, event) in enumerate(waiting):
             pressing = event["transition"] == "press"
             for key in _joystick_inputs(event):
                 if state.get(key, key in self._held) != pressing:
                     state[key] = pressing
-                    first.setdefault(key, index)
-                    last[key] = index
+                    changes[key] = [*changes.get(key, [])[-1:], index]
         kept: list[tuple[int, machine_input.Event]] = []
-        for key, index in first.items():
+        for key, indices in changes.items():
             port, name = key
-            transition = waiting[index][1]["transition"]
-            pressing = transition == "press"
-            kept.append((index, machine_input.joystick_event(port, transition, [name])))
-            if state[key] != pressing:
-                transition = waiting[last[key]][1]["transition"]
-                kept.append((last[key], machine_input.joystick_event(port, transition, [name])))
+            ends_where_held = state[key] == (key in self._held)
+            for index in indices if ends_where_held else indices[-1:]:
+                transition = waiting[index][1]["transition"]
+                kept.append((index, machine_input.joystick_event(port, transition, [name])))
         now = time.monotonic()
         self._collapsed.extend((now, event) for _index, event in sorted(kept, key=lambda k: k[0]))
 

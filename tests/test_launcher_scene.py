@@ -180,11 +180,13 @@ class JoystickInjectionTest(unittest.TestCase):
             scene._sender.stop()
             scene._enqueue(_joy(2, "press", "up"))
             scene._carry = (time.monotonic(), _joy(2, "release", "fire"))
+            scene._collapsed.append((time.monotonic(), _joy(2, "press", "left")))
             api.send_input.reset_mock()
             scene.teardown()
             api.send_input.assert_called_once_with([machine_input.RELEASE_ALL])
             self.assertTrue(scene._injected.empty())
             self.assertIsNone(scene._carry)
+            self.assertFalse(scene._collapsed)
             self.assertEqual(scene._held, set())
 
 
@@ -276,7 +278,7 @@ class JoystickSenderTest(unittest.TestCase):
             self.assertEqual(
                 self._drain(scene),
                 [
-                    [_joy(2, "press", "up"), _joy(2, "release", "fire"), _joy(2, "press", "left")],
+                    [_joy(2, "release", "fire"), _joy(2, "press", "up"), _joy(2, "press", "left")],
                     [_joy(2, "release", "left")],
                 ],
             )
@@ -291,6 +293,28 @@ class JoystickSenderTest(unittest.TestCase):
             self.assertEqual(
                 self._drain(scene),
                 [[_joy(2, "press", "fire")], [_joy(2, "release", "fire")]],
+            )
+
+    def test_a_collapse_never_holds_an_input_over_one_pressed_after_it_came_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            for event in (
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+                _joy(2, "press", "up"),
+                _joy(2, "release", "up"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+            ):
+                scene._injected.put((queued_at, event))
+            self.assertEqual(
+                self._drain(scene),
+                [
+                    [_joy(2, "press", "up")],
+                    [_joy(2, "release", "up"), _joy(2, "press", "fire")],
+                    [_joy(2, "release", "fire")],
+                ],
             )
 
     def test_a_collapsed_backlog_keeps_the_order_it_was_queued_in(self):
