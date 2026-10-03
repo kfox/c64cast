@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -559,6 +560,7 @@ class BufferedWriteBackend(C64Backend):
         }
         self._listeners: list[WriteListener] = []
         self._consecutive_errors = 0
+        self._failure_lock = threading.Lock()
         self._consecutive_listener_errors = 0
 
     # Labels for the shared _emit failure-log ladder. Subclasses override so
@@ -603,22 +605,27 @@ class BufferedWriteBackend(C64Backend):
         the user eventually sees a sustained outage even without -v. Never
         raises — a transient blip shouldn't crash the playlist; the next
         write retries the reconnect."""
-        self._stats["errors"] += 1
-        self._consecutive_errors += 1
-        if self._consecutive_errors == 1:
+        # The audio and render threads both emit. An unlocked += can write a
+        # stale count back, and delivery_epoch returning to a value the cache
+        # recorded would hide a failed write.
+        with self._failure_lock:
+            self._stats["errors"] += 1
+            self._consecutive_errors += 1
+            streak = self._consecutive_errors
+        if streak == 1:
             log.debug("%s $%04X failed: %s", self._EMIT_WRITE_LABEL, addr, e)
-        elif self._consecutive_errors in (10, 50):
+        elif streak in (10, 50):
             log.warning(
                 "%s failures: %d consecutive (last: %s)",
                 self._EMIT_WRITE_LABEL,
-                self._consecutive_errors,
+                streak,
                 e,
             )
-        elif self._consecutive_errors == 200:
+        elif streak == 200:
             log.error(
                 "%s unreachable? %d consecutive write failures",
                 self._EMIT_DEVICE_LABEL,
-                self._consecutive_errors,
+                streak,
             )
 
     def add_write_listener(self, callback: WriteListener) -> None:

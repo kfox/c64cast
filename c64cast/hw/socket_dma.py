@@ -71,6 +71,20 @@ IDLE_VERIFY_AFTER_S = 0.5
 #: IDENTIFY round trip, so by this point that reset would already be here.
 FIN_SETTLE_S = 0.1
 
+#: After an implicit redial fails, the next one waits this long, doubling with
+#: each further failure up to ``REDIAL_BACKOFF_MAX_S``; until then a command
+#: fails at once with no network I/O. Without it every write of an outage
+#: dials, and a dial to a machine that is switched off holds the connection
+#: lock for the whole ``connect_timeout`` (5 s), starving the audio thread and
+#: stalling each frame once per region. A redial to a reachable 3.15a costs
+#: about 7 ms, so the first wait is what a short blip costs on recovery.
+REDIAL_BACKOFF_MIN_S = 0.5
+
+#: The longest wait between redials: a dial that times out then holds the
+#: lock for at most 5 s of every 13, and the link is retried within 8 s of
+#: coming back.
+REDIAL_BACKOFF_MAX_S = 8.0
+
 #: `_send_cmd_locked`'s wire header packs the payload length into a uint16;
 #: a longer payload would raise a bare `struct.error` instead of the
 #: `SocketDMAError` every caller of this module is documented to expect.
@@ -140,7 +154,11 @@ class SocketDMAClient:
     that fails with commands unconfirmed, since construction; a caller that
     remembers what it sent (``write_region``'s dirty cache) reads it through
     ``check_for_loss()`` to know when that memory may no longer match the
-    machine."""
+    machine.
+
+    An implicit redial that fails refuses the ones after it, with no network
+    I/O, for a doubling backoff (``REDIAL_BACKOFF_MIN_S`` to
+    ``REDIAL_BACKOFF_MAX_S``), so an outage does not dial on every write."""
 
     def __init__(
         self,
@@ -182,6 +200,10 @@ class SocketDMAClient:
         self._maybe_lost: str | None = None
         self.reconnect_count = 0
         self.possible_loss_count = 0
+        # Implicit redials are refused until monotonic() reaches this; see
+        # REDIAL_BACKOFF_MIN_S. Cleared by a successful dial or connect().
+        self._redial_not_before = 0.0
+        self._redial_backoff_s = 0.0
 
     def connect(self) -> None:
         """Open the TCP socket and complete the handshake.
@@ -196,6 +218,8 @@ class SocketDMAClient:
         with self._lock:
             self._closed = False
             self._auth_rejected = False
+            self._redial_not_before = 0.0
+            self._redial_backoff_s = 0.0
             self._connect_locked()
 
     def _reconnect_locked(self, *, quiet: bool = False) -> None:
@@ -204,7 +228,11 @@ class SocketDMAClient:
         class docstring. Used by every implicit reconnect, and counts each
         one that succeeds in ``reconnect_count``; ``connect()`` calls
         ``_connect_locked()`` directly since it's the one place these
-        states are meant to be cleared."""
+        states are meant to be cleared.
+
+        A failed dial also refuses the redials after it, without network
+        I/O, for a backoff that starts at ``REDIAL_BACKOFF_MIN_S`` and
+        doubles to ``REDIAL_BACKOFF_MAX_S``."""
         if self._closed:
             raise SocketDMAError("socket dma: client was closed; call connect() to reopen")
         if self._auth_rejected:
@@ -214,7 +242,22 @@ class SocketDMAClient:
                 "dma_password / C64CAST_DMA_PASSWORD and call connect() "
                 "explicitly"
             )
-        self._connect_locked(quiet=quiet)
+        wait = self._redial_not_before - time.monotonic()
+        if wait > 0:
+            raise SocketDMAError(
+                f"socket dma: {self.host}:{self.port} did not answer the last "
+                f"redial; next attempt in {wait:.1f}s"
+            )
+        try:
+            self._connect_locked(quiet=quiet)
+        except Exception:
+            self._redial_backoff_s = min(
+                max(self._redial_backoff_s * 2, REDIAL_BACKOFF_MIN_S), REDIAL_BACKOFF_MAX_S
+            )
+            self._redial_not_before = time.monotonic() + self._redial_backoff_s
+            raise
+        self._redial_backoff_s = 0.0
+        self._redial_not_before = 0.0
         self.reconnect_count += 1
 
     def _connect_locked(self, *, quiet: bool = False) -> None:

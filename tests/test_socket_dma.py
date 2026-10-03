@@ -500,6 +500,7 @@ class ReconnectTest(unittest.TestCase):
             self.assertIsNone(c._sock)
             self.assertTrue(fake2.closed)
 
+            _expire_redial_backoff(c)
             c.dmawrite(0xD020, b"\x0e")
         self.assertIn(b"\x06\xff\x03\x00\x20\xd0\x0e", bytes(fake3.sent))
         self.assertEqual(c.reconnect_count, 1)  # the failed handshake is not counted
@@ -598,6 +599,12 @@ def _read_exact_or_none(conn: socket.socket, n: int, stop: threading.Event) -> b
             return None
         buf.extend(chunk)
     return bytes(buf)
+
+
+def _expire_redial_backoff(c: SocketDMAClient) -> None:
+    """Let the next implicit redial dial, as if the backoff after a failed
+    one had run out; see RedialBackoffTest."""
+    c._redial_not_before = 0.0
 
 
 class _LoopbackDMAServer:
@@ -971,6 +978,7 @@ class LostCommandReportTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
                 with self.assertRaises(SocketDMAError):
                     c.flush()
+        _expire_redial_backoff(c)
         fake3 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake3):
             with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
@@ -1167,6 +1175,82 @@ class DirtyCacheAfterALossTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.api", level="WARNING"):
                 api.flush()
         self.assertEqual(server.writes, [(a, d) for a, d, _ in frame[:2] + frame])
+
+
+class RedialBackoffTest(unittest.TestCase):
+    """#542: during an outage every write used to dial, and a dial to a
+    switched-off machine holds the connection lock for connect_timeout."""
+
+    def _client_after_a_failed_redial(self) -> tuple[SocketDMAClient, list[int]]:
+        fake1 = FakeSocket([_IDENT_REPLY])
+        c = _client_with(fake1)
+        fake1.peer_reset = True
+        dials: list[int] = []
+
+        def refuse(*_a, **_k):
+            dials.append(1)
+            raise ConnectionRefusedError("scripted")
+
+        refusing = patch("c64cast.hw.socket_dma.socket.create_connection", side_effect=refuse)
+        refusing.start()
+        self.addCleanup(refusing.stop)
+        with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+            with self.assertRaises(SocketDMAError):
+                c.dmawrite(0xD020, b"\x0e")
+        self.assertEqual(len(dials), 1)
+        return c, dials
+
+    def test_writes_inside_the_backoff_fail_without_dialing(self):
+        c, dials = self._client_after_a_failed_redial()
+        for _ in range(5):
+            with self.assertRaisesRegex(SocketDMAError, "next attempt in"):
+                c.dmawrite(0xD020, b"\x0e")
+        with self.assertRaisesRegex(SocketDMAError, "next attempt in"):
+            c.flush()
+        self.assertEqual(len(dials), 1)
+
+    def test_the_backoff_doubles_up_to_its_cap(self):
+        c, dials = self._client_after_a_failed_redial()
+        waits = [c._redial_backoff_s]
+        for _ in range(8):
+            _expire_redial_backoff(c)
+            with self.assertRaises(SocketDMAError):
+                c.dmawrite(0xD020, b"\x0e")
+            waits.append(c._redial_backoff_s)
+        self.assertEqual(waits, [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0, 8.0])
+        self.assertEqual(len(dials), 9)
+
+    def test_a_successful_redial_clears_the_backoff(self):
+        c, _ = self._client_after_a_failed_redial()
+        _expire_redial_backoff(c)
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
+                c.dmawrite(0xD020, b"\x0e")
+        self.assertEqual((c._redial_backoff_s, c._redial_not_before), (0.0, 0.0))
+
+    def test_an_explicit_connect_ignores_the_backoff(self):
+        c, _ = self._client_after_a_failed_redial()
+        fake2 = FakeSocket([_IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="INFO"):
+                c.connect()
+                c.dmawrite(0xD020, b"\x0e")
+        self.assertIn(b"\x06\xff\x03\x00\x20\xd0\x0e", bytes(fake2.sent))
+        # A later drop redials at once rather than inside the stale window.
+        self.assertEqual((c._redial_backoff_s, c._redial_not_before), (0.0, 0.0))
+
+    def test_a_failed_write_inside_the_backoff_still_moves_the_delivery_epoch(self):
+        from c64cast.hw.api import Ultimate64API
+
+        with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True):
+            api = Ultimate64API("http://example.invalid")
+        self.addCleanup(api.session.close)
+        api.socket_dma._redial_not_before = time.monotonic() + 60.0
+        before = api.delivery_epoch
+        with self.assertLogs("c64cast.hw.backend", level="DEBUG"):
+            api.write_region(0x0400, bytes(40), region_id=1)
+        self.assertGreater(api.delivery_epoch, before)
 
 
 if __name__ == "__main__":
