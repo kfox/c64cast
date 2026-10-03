@@ -315,6 +315,15 @@ class C64Backend(ABC):
         samples have been recorded yet."""
         ...
 
+    @property
+    def delivery_epoch(self) -> int:
+        """A number that changes whenever a write this backend accepted may
+        not have reached the machine. A caller that skips sending what it
+        believes is already there (a paused frame, a row painted only when
+        its text changes) compares it and sends again when it moves.
+        Default 0: a backend that cannot tell never asks for a resend."""
+        return 0
+
     def read_memory(self, address: int, length: int, timeout: float = 1.0) -> bytes | None:
         raise BackendCapabilityError("read_memory")
 

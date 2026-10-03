@@ -119,3 +119,5 @@ class PETSCIIDisplayMode(CharDisplayMode):
         else:
             api.write_region(SCREEN.RAM, screen_bytes, region_id=RegionID.SCREEN)
         api.write_region(SCREEN.COLOR_RAM, buffers["color"].tobytes(), region_id=RegionID.COLOR)
+        regs = bytes([self._style.border & 0xFF, self._style.background & 0xFF])
+        api.write_region(VIC.D020_BORDER, regs, region_id=RegionID.VIC_D020)

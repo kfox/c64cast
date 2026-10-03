@@ -262,7 +262,7 @@ class BitmapAbsoluteCaseTest(unittest.TestCase):
         _render(mode, api, black)
         self.assertEqual(api.regions[BITMAP_ADDR], bytes(8000))  # no edges set
         self.assertEqual(api.regions[SCREEN_ADDR], bytes([0x10] * 1000))  # (1<<4)|0
-        self.assertEqual(api.regs.get("D020"), (0, 0))
+        self.assertEqual(api.regions[0xD020], bytes([0, 0]))  # border, bg0
 
 
 class PercellFillerSafetyTest(unittest.TestCase):

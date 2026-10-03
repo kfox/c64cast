@@ -34,6 +34,13 @@ from c64cast.hw.backend import (
     resolve_host_sid_chips,
     resolve_host_sid_model,
 )
+from c64cast.video.modes import (
+    BlankDisplayMode,
+    HiresDisplayMode,
+    MCMDisplayMode,
+    MultiHiresDisplayMode,
+    PETSCIIDisplayMode,
+)
 
 
 class _RecordingBackend(BufferedWriteBackend):
@@ -671,6 +678,41 @@ class MakeBackendTeensyromValidationTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             make_backend(cfg)
         self.assertIn("transport", str(ctx.exception))
+
+
+class DisplayModeColorRegistersTest(unittest.TestCase):
+    """A display mode's $D020/$D021 writes share the frame's fate after a
+    lost write (c64cast#531): skipped while nothing changes, resent with the
+    rest of the frame when delivery_epoch moves."""
+
+    def _check(self, mode, reg_addr: int) -> None:
+        b = _RecordingBackend()
+        mode.setup(b)
+        frame = np.full((200, 320, 3), 90, dtype=np.uint8)
+        frame[:, :160] = (200, 40, 40)
+        buffers = mode.compose(frame)
+        mode.push(b, buffers)
+        b.emits.clear()
+        mode.push(b, buffers)
+        self.assertNotIn(reg_addr, [a for a, _ in b.emits], "an unchanged frame resent it")
+        b.losses += 1
+        mode.push(b, buffers)
+        self.assertIn(reg_addr, [a for a, _ in b.emits], "a lost write left it stale")
+
+    def test_mcm(self):
+        self._check(MCMDisplayMode(), 0xD020)
+
+    def test_hires(self):
+        self._check(HiresDisplayMode(), 0xD020)
+
+    def test_mhires(self):
+        self._check(MultiHiresDisplayMode(), 0xD021)
+
+    def test_petscii(self):
+        self._check(PETSCIIDisplayMode(), 0xD020)
+
+    def test_blank(self):
+        self._check(BlankDisplayMode(border=2, background=6), 0xD020)
 
 
 if __name__ == "__main__":

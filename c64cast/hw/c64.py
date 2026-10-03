@@ -583,3 +583,9 @@ class RegionID:
     # fully dirty on both.
     SCREEN_ALT: Final = 6002  # $0C00 (1000 bytes), VIC bank 0
     SCREEN_ALT_BANK2: Final = 6003  # $8C00 (1000 bytes), VIC bank 2
+
+    # VIC color registers a display mode pushes every frame (video/modes/).
+    # Through write_region rather than a mode-side "last value" check, so a
+    # write the connection may have lost is resent with the rest of the frame.
+    VIC_D020: Final = 7000  # $D020: border, then bg0 (hires/petscii/blank) or bg0-bg2 (mcm)
+    VIC_D021: Final = 7001  # $D021: bg0 (mhires)

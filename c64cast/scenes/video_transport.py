@@ -249,10 +249,10 @@ class VideoTransportControls:
     def set_record_border(self, active: bool) -> None:
         """Red border while a loop is armed.
 
-        The bitmap/char display modes VideoScene uses engage with a hardcoded
-        black ($00) border and never rewrite $D020 per frame afterward (see
-        modes.engage_bitmap_mode's docstring), so 0 is always the correct value
-        to restore to."""
+        A poke, not part of the frame: a display mode that pushes $D020
+        (hires, mcm, petscii, blank) replaces it while the loop is still
+        armed, whenever that push sends — on a change of its own value, or
+        after a lost write."""
         if active == self.record_border_active:
             return
         self.record_border_active = active

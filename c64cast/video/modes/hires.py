@@ -156,7 +156,6 @@ class HiresDisplayMode(BitmapDisplayMode):
             self._perceptual = True
         self._dither_method = dither_method
         self._dither_strength = dither_strength
-        self._last_bg: int | None = None
         self.use_reu_staged = use_reu_staged
         # Mutually exclusive with use_reu_staged; resolve_double_buffer
         # guarantees it.
@@ -268,9 +267,6 @@ class HiresDisplayMode(BitmapDisplayMode):
             bg0=0x00,
             clear=single_buffer,
         )
-        # None, not 0, so the first push() re-asserts the border/bg0 pair even
-        # when the first frame's bg is black.
-        self._last_bg = None
         self._last_fg = None
         self._last_bg_index = None
         if self._blend_table is not None:
@@ -329,7 +325,6 @@ class HiresDisplayMode(BitmapDisplayMode):
         idx = HIRES_STYLES.index(self.style)
         new_style = HIRES_STYLES[(idx + 1) % len(HIRES_STYLES)]
         self.style = new_style
-        self._last_bg = None
         api.invalidate_cache()
         return f"style={new_style}"
 
@@ -437,9 +432,7 @@ class HiresDisplayMode(BitmapDisplayMode):
         bg = buffers["bg"]
         # $D020 is a single global register the REU bank-swap IRQ does not
         # manage, so the host writes it on both paths.
-        if bg != self._last_bg:
-            api.write_regs("d020", bg, bg)
-            self._last_bg = bg
+        api.write_region(0xD020, bytes([bg & 0xFF, bg & 0xFF]), region_id=RegionID.VIC_D020)
         bitmap_bytes = buffers["bitmap"].tobytes()
         screen_bytes = buffers["screen"].tobytes()
         if self._blend_table is not None:
