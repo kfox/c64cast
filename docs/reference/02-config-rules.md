@@ -268,11 +268,15 @@ separate switches with three unrelated failure modes:
 
 The first two are what the startup error names, in that order, when the DMA
 socket cannot be opened; the third is the answer to a run that paints happily
-and never starts a tune. Changing any of them needs a save, and a reboot of
-the machine.
+and never starts a tune. Changing any of them needs a save, so that the change
+survives a power cycle. None of them needs a reboot to switch on: a network
+service switched on starts within about two seconds. Switching one of the two
+network services *off* is where firmware differs. Before Ultimate firmware 3.15,
+and on C64 Ultimate firmware 1.1.0, it keeps running until the machine reboots;
+from 3.15 it stops without one.
 
-On older Ultimate 64 and Ultimate II+ firmware the third has no switch of its
-own and is served alongside the web interface, so it is already on.
+On Ultimate 64 and Ultimate II+ firmware before 3.12 the third has no switch of
+its own and is served alongside the web interface, so it is already on.
 
 The *User's Guide* walks the menus keypress by keypress, and is the better
 page to have open while you are in front of the machine.

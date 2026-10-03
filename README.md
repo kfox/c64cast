@@ -56,8 +56,9 @@ never have to remember which. `c64cast --check-for-updates` just asks. See
 [Upgrading](https://github.com/kfox/c64cast/blob/main/docs/guide/04-setting-up.md#upgrading).
 
 You need a reachable [Ultimate 64 or TeensyROM+](#hardware-needed) — there is
-no emulator path for the streaming side. An Ultimate ships with the three
-firmware services c64cast needs switched off; [Hardware
+no emulator path for the streaming side. A C64 Ultimate's firmware defaults
+all three services c64cast needs to off, and an Ultimate 64's defaults one of
+them, the Command Interface, to off; [Hardware
 needed](#hardware-needed) lists the switches, and it is worth following
 [Quick Start](https://github.com/kfox/c64cast/blob/main/docs/guide/01-quick-start.md)
 through the menus the first time — miss one and c64cast connects and then
@@ -284,7 +285,7 @@ One of the following:
 * An [Ultimate 64](https://ultimate64.com/) — confirmed with Elite I, Elite II,
   Ultimate II+ cartridge, or Commodore 64 Ultimate. Best results will be
   obtained from using the Elite II or the Commodore 64 Ultimate.
-  Three firmware switches, in two menus under **F2**, then save and reboot:
+  Three firmware switches, in two menus under **F2**, then save:
   * **Ultimate DMA Service** (*Network Settings*) — the socket on TCP port 64
     that carries every memory write. Without it nothing works at all.
   * **Command Interface** (*Memory Configuration* — a different menu, and the
@@ -294,8 +295,8 @@ One of the following:
     carrying the operations that have no DMA equivalent: reset, launching a
     program or a SID, and every memory *read*, including the keyboard poll and
     the character-ROM dump. Without it pixels still paint, but nothing starts.
-    On older Ultimate 64 and Ultimate II+ firmware it has no switch of its own
-    and is already on.
+    On Ultimate 64 and Ultimate II+ firmware before 3.12 it has no switch of
+    its own and is already on.
 
   Nothing else needs enabling by hand: c64cast turns on the REU and maps the
   Ultimate Audio sampler itself when a run needs them, and puts both back at
