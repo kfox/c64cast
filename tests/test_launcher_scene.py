@@ -312,6 +312,29 @@ class JoystickSenderTest(unittest.TestCase):
             scene._sender.stop()
             self.assertGreaterEqual(posted_at[1] - posted_at[0], scenes._INJECT_MIN_HOLD_S)
 
+    def test_a_press_landed_by_a_resync_stays_down_for_the_minimum_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            done = threading.Event()
+            posts = []
+
+            def send(events):
+                posts.append(time.monotonic())
+                # The press and the first resync fail; the second resync lands.
+                if len(posts) == 4:
+                    done.set()
+                return {} if len(posts) >= 3 else None
+
+            api.send_input.side_effect = send
+            scene._injected.put(_joy(2, "press", "fire"))
+            scene._injected.put(_joy(2, "release", "fire"))
+            scene._sender.start()
+            self.addCleanup(scene._sender.stop)
+            self.assertTrue(done.wait(3.0))
+            scene._sender.stop()
+            # One tick of a coarse monotonic clock (Windows before 3.13).
+            self.assertGreaterEqual(posts[3] - posts[2], scenes._INJECT_MIN_HOLD_S - 0.016)
+
     def test_stop_during_the_hold_ends_the_wait_and_posts_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = self._scene(tmp)

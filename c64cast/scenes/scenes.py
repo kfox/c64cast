@@ -1830,6 +1830,8 @@ class LauncherScene(MediaFileMixin, Scene):
             if self._resync:
                 self._resync = False
                 self._post(self._held_state())
+                # Stamped even when the post failed: it may have been applied.
+                self._mark_pressed(self._held)
                 if self._resync:
                     stop.wait(_INJECT_RESYNC_RETRY_S)
                 continue
@@ -1838,10 +1840,15 @@ class LauncherScene(MediaFileMixin, Scene):
             if batch and not stop.wait(self._hold_remaining(batch)):
                 self._injected_any = True
                 self._post(batch)
-                now = time.monotonic()
-                for event in batch:
-                    if event["transition"] == "press":
-                        self._pressed_at.update(dict.fromkeys(_joystick_inputs(event), now))
+                self._mark_pressed(
+                    set().union(*(_joystick_inputs(e) for e in batch if e["transition"] == "press"))
+                )
+
+    def _mark_pressed(self, keys: set[tuple[int, str]]) -> None:
+        """Record that a post just answered pressed `keys`, the moment
+        `_hold_remaining` measures their hold from."""
+        now = time.monotonic()
+        self._pressed_at.update(dict.fromkeys(keys, now))
 
     def _hold_remaining(self, batch: list[machine_input.Event]) -> float:
         """How long `batch` must wait so that no input it releases comes up
