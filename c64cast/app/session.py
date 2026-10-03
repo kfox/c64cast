@@ -616,6 +616,14 @@ def _acquire_stack(
     release_on_failure(
         "sampler restore", lambda: hw_provision.restore_sampler(api, sampler_restore)
     )
+    # Firmware 3.15's Vol Master multiplies every source, so OFF silences the
+    # run whatever the per-source levels say. Before `_resolve_sampler_available`,
+    # which counts a muted master as "not audible".
+    master_volume_restore = hw_provision.provision_master_volume(api, cfg)
+    release_on_failure(
+        "master volume restore",
+        lambda: hw_provision.restore_master_volume(api, master_volume_restore),
+    )
     # Once per run, because every switch changes the HDMI output mode and costs
     # the capture device a re-lock. Here, and not later, because the C64 reset
     # that follows re-runs the KERNAL's PAL/NTSC autodetect against the new
@@ -744,6 +752,7 @@ def _acquire_stack(
         reu_restore=reu_restore,
         sampler_available=sampler_available,
         sampler_restore=sampler_restore,
+        master_volume_restore=master_volume_restore,
         video_output_restore=video_output_restore,
         framebuffer=framebuffer,
         preview_window=preview_window,
@@ -778,6 +787,10 @@ def teardown_stack(stack: SystemStack) -> None:
         ("REU restore", lambda: hw_provision.restore_reu(stack.api, stack.reu_restore)),
         # Same for the Ultimate Audio sampler map/mixer auto-provisioning.
         ("sampler restore", lambda: hw_provision.restore_sampler(stack.api, stack.sampler_restore)),
+        (
+            "master volume restore",
+            lambda: hw_provision.restore_master_volume(stack.api, stack.master_volume_restore),
+        ),
         # Before the reset below, so the KERNAL re-autodetects against the
         # restored timing.
         (

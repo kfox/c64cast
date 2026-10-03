@@ -443,6 +443,8 @@ Two things have to happen *after* each routing change, not once at bring-up, and
 
 Both failures present identically — a capture at the noise floor, which reads as a broken capture rig rather than as the routing problem it is. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
 
+Firmware 3.15's `Vol Master` scales every source, so a run under a master at `OFF` measures the noise floor on *every* path, including the single-SID one that never reaches `_isolate_mixer`. `_raise_master` therefore forces it to unity once for the whole `run_calibration`, in whichever mixer category carries it (U64 `Audio Mixer`, U2+ `Audio Output Settings`, both tried: `--calibrate-dac` never runs `refine_capabilities`, so an unprobed U2+ still claims the U64 surface and `mixer_category_for` would answer `Audio Mixer`), and puts the original back after `_silence_and_reset`. Firmware without the item gets no write.
+
 #### Which of those entries applies at playback
 
 Every socket is measured *at* `$D400` — that is what isolation does — so the entry keys alone cannot say which chip a machine reaches there when it is running normally. `_select_sid_entry` answers that per run, and the three cases are genuinely different:
@@ -696,7 +698,9 @@ Since `VideoScene` dedups, re-pushing only on a genuinely new source frame, the 
 
 Because the ring lives in REU SDRAM, `wants_sampler` also pulls the REU into `wants_reu`, so `provision_reu` enables the REU at 16 MB for a sampler run. A useful side effect: that makes `"auto"` video resolve to the tear-free REU bank-swap path. The sampler installs no `$0314` IRQ, so REU-staged video and the sampler coexist with no IRQ contention.
 
-`hw_provision.sampler_is_available(api)` — map enabled and a channel audible — feeds `session._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
+**Levels are master-multiplied on firmware 3.15+.** GideonZ/1541ultimate#693 added `Vol Master` to the same mixer category (U64 `Audio Mixer`, U2+ `Audio Output Settings`), and the firmware's `combine_mixer_gain()` multiplies it into every source's gain before the FPGA sees it — `OFF` on either side is silence. So "a Sampler channel is not OFF" stopped meaning audible: `read_sampler_config` reads `master` from the same section it already fetched, and `sampler_audible` requires it not `OFF`. Raising it is not `provision_sampler`'s job but `provision_master_volume`'s, because the DAC and the SID paths need it just as much ([hardware-io.md](hardware-io.md#hw_provisionpy--live-reu--sampler-auto-provisioning)); it runs before `_resolve_sampler_available`, so a master this run raised reads audible. Without the item (3.14e, C64 Ultimate 1.1.0) `master` is None, which is unity.
+
+`hw_provision.sampler_is_available(api)` — map enabled and `sampler_audible` — feeds `session._resolve_sampler_available`, and `_probe_sampler_status` reports the state in `--doctor`.
 
 ## `dsp.py` — host-side audio DSP for the 4-bit DAC path
 

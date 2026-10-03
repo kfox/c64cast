@@ -222,6 +222,7 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
 
     reu_restore = hw_provision.provision_reu(api, cfg)
     samp_restore = hw_provision.provision_sampler(api, cfg)
+    master_restore = hw_provision.provision_master_volume(api, cfg)
     wav = d.stamped(f"samp_align_ref{ref_hz}", "wav")
     try:
         sampler = UltimateAudioSampler(api, sample_rate=44100, bits=16, ref_clock_hz=ref_hz)
@@ -281,6 +282,7 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
         sampler.stop()
     finally:
         hw_provision.restore_sampler(api, samp_restore)
+        hw_provision.restore_master_volume(api, master_restore)
         del reu_restore
         if not no_reset:
             d.rest_reset(rest_url)

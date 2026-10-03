@@ -122,6 +122,7 @@ def play_tone(url: str, seconds: float, freq: float, ref_hz: int, no_reset: bool
     api = make_backend(cfg)
     reu_restore = hw_provision.provision_reu(api, cfg)  # noqa: F841 (kept on the unit for the run)
     samp_restore = hw_provision.provision_sampler(api, cfg)
+    master_restore = hw_provision.provision_master_volume(api, cfg)
     try:
         sampler = UltimateAudioSampler(api, sample_rate=44100, bits=16, ref_clock_hz=ref_hz)
         rate = sampler.sample_rate
@@ -143,6 +144,7 @@ def play_tone(url: str, seconds: float, freq: float, ref_hz: int, no_reset: bool
         sampler.stop()
     finally:
         hw_provision.restore_sampler(api, samp_restore)
+        hw_provision.restore_master_volume(api, master_restore)
         if not no_reset:
             d.rest_reset(url if url.startswith("http") else d.U64_URL)
 

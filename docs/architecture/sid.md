@@ -417,6 +417,8 @@ A configured list is truncated to the source count and padded with *auto*, not w
 
 The ladder is also **not** a uniform 1 dB fan — `OFF`, `-42`, `-36`, `-30`, `-27`, `-24`, then every dB from `-18` to `+6` — so an int with no representation (`-20`) is rejected at config load rather than snapped to a neighbor.
 
+**Every level is relative to `Vol Master`** on firmware 3.15+, which the firmware multiplies into each source. `apply_volume` never writes it: a run that wants audio has `hw_provision.provision_master_volume` lift it from `OFF` before any scene starts, and a master `apply_volume` still finds at `OFF` (a `--skip-probe` run) is logged as a warning, since every level it sets is then inaudible. Firmware without the item reads as unity.
+
 Applied at the same three call sites as panning, folding into the same restore snapshot: `WaveformScene._apply_sid_volume`, `AsidScene._apply_sid_mixer` (setup and every remap), and `SidFileAudioSource._apply_sid_mixer`.
 
 `tests/test_sid_volume.py` covers the conversions, the policy, the pure planner and the diff-only apply.
@@ -618,7 +620,7 @@ sid hardware: $D400 → ultisid1 (8580 Lo) @ 0 dB Center; also audible: socket2 
 
 **It is a read-back, not a summary of the plans.** The planners are the thing it exists to catch, so it re-reads `SID Addressing`, `SID Sockets Configuration`, `UltiSID Configuration` and `Audio Mixer` and reports what they say. `SidHardwareState` holds that snapshot; `describe_resolved_audio` is a pure renderer over it, so the whole verdict matrix is unit-testable without hardware.
 
-**The verdict drives the log level.** A chip that is unmapped, muted, or on a model the tune didn't ask for makes the line a WARNING; otherwise INFO. Model matching compares by prefix, so a core's `"8580 Lo"` satisfies a header asking for `"8580"`. Two deliberate non-verdicts: a level the mixer didn't report counts as *audible* (claiming silence we never measured sends someone hunting a mixer problem that isn't there), and an empty `required_models` — an ASID stream, which carries no PSID header — reports routing and audibility only.
+**The verdict drives the log level.** A chip that is unmapped, muted, or on a model the tune didn't ask for makes the line a WARNING; otherwise INFO. Firmware 3.15's `Vol Master` (read from the same mixer category) at `OFF` makes every source inaudible whatever its own level, and the fragment says so (`— INAUDIBLE (Vol Master OFF)`), since the source's own `@ 0 dB` would otherwise point at nothing. Model matching compares by prefix, so a core's `"8580 Lo"` satisfies a header asking for `"8580"`. Two deliberate non-verdicts: a level the mixer didn't report counts as *audible* (claiming silence we never measured sends someone hunting a mixer problem that isn't there), and an empty `required_models` — an ASID stream, which carries no PSID header — reports routing and audibility only.
 
 **Bystanders** — sources the tune doesn't play on that are still audible — are drawn from the address map rather than the mixer, so a source that is merely unmuted but answers no address (a disabled socket the user never turned down) isn't reported as something they can hear.
 

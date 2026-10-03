@@ -30,6 +30,7 @@ import numpy as np
 from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
 from c64cast.hw.c64 import CIA2, SCREEN
+from c64cast.hw.hw_provision import MASTER_VOL_FIELD, master_volume
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -44,7 +45,8 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets
+from c64cast.sid.emusid_mixer import CAT_EMUSID
+from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets, restore_sid_config
 from c64cast.sid.sid_panning import CAT_MIXER
 from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
@@ -283,6 +285,36 @@ def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
         log.debug("calib: mixer read failed", exc_info=True)
         return {}
     return {(CAT_MIXER, item): mixer[item] for item in VOL_ITEM.values() if item in mixer}
+
+
+def _raise_master(be: C64Backend) -> dict[tuple[str, str], str]:
+    """Force firmware 3.15's ``Vol Master`` to unity for the whole run, and
+    return its original in ``restore_sid_config`` form (empty when nothing
+    was written).
+
+    The firmware multiplies the master into every source, so at ``OFF`` any
+    capture is the noise floor. This sits at run level rather than in
+    :func:`_isolate_mixer` because the single-SID path (a bare-UltiSID U64, a
+    U2+) never isolates a source. The master lives in the backend's own mixer
+    category (``Audio Mixer`` on a U64, ``Audio Output Settings`` on a U2+);
+    firmware without the item (before 3.15, C64 Ultimate 1.1.0) is unity and
+    gets no write. A failed PUT raises, like :func:`_isolate_mixer`'s."""
+    if not getattr(be.profile, "supports_config", False):
+        return {}
+    for category in (CAT_MIXER, CAT_EMUSID):
+        try:
+            mixer = be.get_config_category(category)
+        except Exception:  # noqa: BLE001 — best-effort; no master to raise
+            log.debug("calib: %s read for %s failed", category, MASTER_VOL_FIELD, exc_info=True)
+            continue
+        level = master_volume(mixer)
+        if level is None:
+            continue
+        if level == VOL_UNITY:
+            return {}
+        be.put_config_item(category, MASTER_VOL_FIELD, VOL_UNITY)
+        return {(category, MASTER_VOL_FIELD): level}
+    return {}
 
 
 def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> None:
@@ -656,7 +688,9 @@ def run_calibration(
     supports_sid_config = bool(getattr(be.profile, "supports_sid_config", False))
     device_info = _device_provenance(cfg, be, log_fn)
     normal_d400: int | None = None
+    master_restore: dict[tuple[str, str], str] = {}
     try:
+        master_restore = _raise_master(be)
         st = _bring_up_dac_env(be, cfg, log_fn)
         _paint_status_line(be, _TITLE_ROW, _TITLE_TEXT)
         dev, fmt = _open_capture(device, log_fn)
@@ -677,7 +711,10 @@ def run_calibration(
             sidtable, metrics, raw = _measure_one(ctx, "SID")
             entries = {"default": CalibrationResult(sidtable, metrics, None, raw)}
     finally:
-        _silence_and_reset(be)
+        try:
+            _silence_and_reset(be)
+        finally:
+            restore_sid_config(be, master_restore)
 
     path = save_calibration(
         cfg,
