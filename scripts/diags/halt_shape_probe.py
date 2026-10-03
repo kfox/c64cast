@@ -259,6 +259,7 @@ def main() -> int:
         "many seconds and measure nothing, leaving the machine untouched otherwise, so "
         "the other backend can be running a real playback at the same time",
     )
+    d.add_tr_slicing_args(ap)
     args = ap.parse_args()
 
     eff = effective_rate(args.nmi_rate, args.system)
@@ -272,7 +273,9 @@ def main() -> int:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
+    d.apply_tr_slicing(cfg, args)
     be = make_backend(cfg)
+    print(f"[setup] writes: {d.describe_tr_writes(be)}")
 
     if args.load_only > 0:
         return load_only(

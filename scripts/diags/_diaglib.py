@@ -396,6 +396,37 @@ def rest_set_config(
     return errs == []
 
 
+def add_tr_slicing_args(ap) -> None:
+    """``--tr-slicing`` / ``--slice-bytes`` / ``--slice-gap``: the
+    ``[teensyrom].dma_slicing`` knobs, so one tool can measure the same
+    condition with WriteC64Mem and with sliced WriteC64Spans. Unset, each takes
+    the config default. No effect on an Ultimate URL."""
+    ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
+    ap.add_argument("--slice-bytes", type=int, default=None, help="[teensyrom].dma_slice_bytes")
+    ap.add_argument("--slice-gap", type=int, default=None, help="[teensyrom].dma_slice_gap_us")
+
+
+def apply_tr_slicing(cfg, args) -> None:
+    """Write the ``add_tr_slicing_args`` flags that were given into ``cfg``."""
+    tr = cfg.teensyrom
+    if args.tr_slicing is not None:
+        tr.dma_slicing = args.tr_slicing
+    if args.slice_bytes is not None:
+        tr.dma_slice_bytes = args.slice_bytes
+    if args.slice_gap is not None:
+        tr.dma_slice_gap_us = args.slice_gap
+
+
+def describe_tr_writes(be) -> str:
+    """How a TeensyROM backend is writing, for a tool's setup banner — the
+    resolved mode, not the requested one, since 'auto' and 'on' both fall
+    back to WriteC64Mem on firmware without WriteC64Spans."""
+    spans = getattr(be, "_spans", None)
+    if spans is None:
+        return "WriteC64Mem"
+    return f"WriteC64Spans slice={spans[0] or 'whole'} gap={spans[1]}us"
+
+
 def __getattr__(name: str) -> object:
     """Resolve ``CAMLINK_AVF_AUDIO`` on first access (PEP 562).
 

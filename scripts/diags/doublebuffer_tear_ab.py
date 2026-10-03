@@ -27,7 +27,18 @@ coexistence is already HW-proven on the TeensyROM, which ships that exact pair).
     scripts/diags/doublebuffer_tear_ab.py            # full A/B + reset
     scripts/diags/doublebuffer_tear_ab.py --seconds 8
 
-Outputs land under scripts/diags/out/dbtear/. Resets the U64 on exit.
+``--axis tr-slicing`` reuses the same harness for a different question: with
+the double-buffer on in both phases, does slicing a TeensyROM+'s writes
+(``[teensyrom].dma_slicing``) stop the page flip from tearing? The flip is a
+raster IRQ at vblank, and an unsliced 4 KiB write halts the 6510 for ~70
+raster lines — long enough to hold that IRQ into the visible frame. The two
+phases are ``mem`` (WriteC64Mem) and ``spans`` (sliced WriteC64Spans), and
+each phase's achieved frame rate is read from its log, since slicing is
+expected to cost some.
+
+    scripts/diags/doublebuffer_tear_ab.py --url tr:// --axis tr-slicing
+
+Outputs land under scripts/diags/out/dbtear/. Resets the machine on exit.
 """
 
 from __future__ import annotations
@@ -76,13 +87,16 @@ def build_test_video(path: Path, *, fps: int = 30, seconds: int = 12, hold: int 
     vw.release()
 
 
-def write_config(cfg_path: Path, video_path: Path, double_buffer: bool | str) -> None:
+def write_config(
+    cfg_path: Path, video_path: Path, double_buffer: bool | str, tr_slicing: str | None = None
+) -> None:
     db = "true" if double_buffer is True else ("false" if double_buffer is False else '"auto"')
+    tr = f'\n[teensyrom]\ndma_slicing = "{tr_slicing}"\n' if tr_slicing else ""
     cfg_path.write_text(
         f"""
 [audio]
 enabled = false
-
+{tr}
 [video]
 double_buffer = {db}
 
@@ -132,13 +146,25 @@ def _region_colors(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return top, bot
 
 
-def analyze(single: list[np.ndarray], double: list[np.ndarray], out: Path) -> tuple[float, float]:
-    """Learn the two clean states (A,B) for top and bottom regions from the
-    tear-free double-buffer run, then score both runs: a frame is 'torn' when
-    its top and bottom don't agree on the same state (A or B), or match neither.
-    Returns (single_torn_pct, double_torn_pct)."""
-    dtop = np.array([_region_colors(f)[0] for f in double])
-    dbot = np.array([_region_colors(f)[1] for f in double])
+def analyze(
+    single: list[np.ndarray],
+    double: list[np.ndarray],
+    out: Path,
+    *,
+    learn_from_both: bool = False,
+) -> tuple[float, float]:
+    """Learn the two clean states (A,B) for top and bottom regions, then score
+    both runs: a frame is 'torn' when its top and bottom don't agree on the
+    same state (A or B), or match neither. Returns (single_torn_pct,
+    double_torn_pct).
+
+    The states come from the double-buffer run, which is tear-free by
+    construction — unless neither phase can be assumed clean (the
+    tr-slicing axis), where they come from both phases together: tears are a
+    minority of frames, so the median split still lands on the clean states."""
+    learn = double + single if learn_from_both else double
+    dtop = np.array([_region_colors(f)[0] for f in learn])
+    dbot = np.array([_region_colors(f)[1] for f in learn])
 
     def two_states(samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         # 2-means via the brightest-channel split — A and B differ strongly in
@@ -183,18 +209,49 @@ def analyze(single: list[np.ndarray], double: list[np.ndarray], out: Path) -> tu
     return s_pct, d_pct
 
 
+_READY_TIMEOUT_S = 90.0
+_SETTLE_S = 8.0
+
+
+def _armed(log_text: str) -> bool:
+    """The log line wraps at the console width, so match across whitespace."""
+    return "double-buffer armed" in " ".join(log_text.split())
+
+
 def run_phase(label: str, cfg: Path, url: str, seconds: float, cv2_index: int) -> list[np.ndarray]:
     log = d.out_dir() / "dbtear" / f"{label}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    # The previous phase's exit reset reboots a TeensyROM into its menu, and a
+    # c64cast connecting into that reboot's chatter misreads its probes and
+    # comes up on a different idle path than the phase before it did.
+    time.sleep(_SETTLE_S)
     print(f"[{label}] launching c64cast …")
     with open(log, "w") as lf:
         proc = subprocess.Popen(
-            [d.python_exe(), "-m", "c64cast", "--config", str(cfg), "--url", url, "-v"],
+            [
+                d.python_exe(),
+                "-m",
+                "c64cast",
+                "--config",
+                str(cfg),
+                "--url",
+                url,
+                "-v",
+                "--profile",
+            ],
             stdout=lf,
             stderr=subprocess.STDOUT,
         )
         try:
-            time.sleep(7.0)  # boot + first rendered frames
+            # The scene is on screen once its mode has armed; a fixed sleep
+            # guessed short on a TeensyROM, whose reset + bring-up runs far
+            # longer than an Ultimate's, and captured the cartridge menu.
+            deadline = time.monotonic() + _READY_TIMEOUT_S
+            while time.monotonic() < deadline and not _armed(log.read_text()):
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.5)
+            time.sleep(3.0)  # first rendered frames
             frames = burst_capture(label, seconds, cv2_index)
         finally:
             proc.terminate()
@@ -202,8 +259,12 @@ def run_phase(label: str, cfg: Path, url: str, seconds: float, cv2_index: int) -
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
-    armed = "double-buffer armed" in log.read_text()
+    text = log.read_text()
+    armed = _armed(text)
     print(f"[{label}] host-DMA double-buffer armed in log: {armed}")
+    for line in text.splitlines():
+        if "TR writes:" in line or "fps" in line.lower() and "scene" in line.lower():
+            print(f"[{label}] log: {line.strip()[-160:]}")
     return frames
 
 
@@ -213,6 +274,12 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=8.0, help="capture window per phase")
     ap.add_argument("--cv2-index", type=int, default=d.CAMLINK_CV2_INDEX)
     ap.add_argument("--no-reset", action="store_true")
+    ap.add_argument(
+        "--axis",
+        choices=["double-buffer", "tr-slicing"],
+        default="double-buffer",
+        help="what the two phases differ in (see the module docstring)",
+    )
     args = ap.parse_args()
 
     out = d.out_dir() / "dbtear"
@@ -221,26 +288,33 @@ def main() -> int:
     print(f"[build] test video → {video}")
     build_test_video(video)
 
-    cfg_single = out / "single.toml"
-    cfg_double = out / "double.toml"
-    write_config(cfg_single, video, double_buffer=False)
-    write_config(cfg_double, video, double_buffer="auto")
+    slicing = args.axis == "tr-slicing"
+    names = ("mem", "spans") if slicing else ("single", "double")
+    cfg_a = out / f"{names[0]}.toml"
+    cfg_b = out / f"{names[1]}.toml"
+    if slicing:
+        write_config(cfg_a, video, double_buffer="auto", tr_slicing="off")
+        write_config(cfg_b, video, double_buffer="auto", tr_slicing="on")
+    else:
+        write_config(cfg_a, video, double_buffer=False)
+        write_config(cfg_b, video, double_buffer="auto")
 
     try:
-        single = run_phase("single", cfg_single, args.url, args.seconds, args.cv2_index)
-        double = run_phase("double", cfg_double, args.url, args.seconds, args.cv2_index)
+        single = run_phase(names[0], cfg_a, args.url, args.seconds, args.cv2_index)
+        double = run_phase(names[1], cfg_b, args.url, args.seconds, args.cv2_index)
     finally:
         if not args.no_reset:
-            code = d.rest_reset(args.url)
-            print(f"[reset] {args.url}: {'HTTP ' + str(code) if code else 'FAILED'}")
+            ok = d.machine_reset(args.url)
+            print(f"[reset] {args.url}: {'OK' if ok else 'FAILED'}")
 
     if not single or not double:
-        print("[error] no frames captured in one phase — check Cam Link index")
+        print("[error] no frames captured in one phase — check the capture index")
         return 1
-    s_pct, db_pct = analyze(single, double, out)
+    s_pct, db_pct = analyze(single, double, out, learn_from_both=slicing)
+    labels = ("WriteC64Mem", "WriteC64Spans") if slicing else ("single-buffer", "double-buffer")
     print("\n=== tear rate (frames with a top/bottom state mismatch) ===")
-    print(f"  single-buffer  : {s_pct:5.1f}%  ({len(single)} frames)")
-    print(f"  double-buffer  : {db_pct:5.1f}%  ({len(double)} frames)")
+    print(f"  {labels[0]:<15}: {s_pct:5.1f}%  ({len(single)} frames)")
+    print(f"  {labels[1]:<15}: {db_pct:5.1f}%  ({len(double)} frames)")
     print(f"  sample frames  : {out}")
     return 0
 
