@@ -1816,7 +1816,10 @@ class LauncherScene(MediaFileMixin, Scene):
         `machine_input.JOYSTICK_INPUTS`) on `port` of the running program.
         Returns at once; the sender thread posts it. Counts as player input
         for the idle timeout. Dropped, with one WARNING per scene, on a machine
-        without the input API or while the program is not running."""
+        without the input API or while the program is not running. Raises
+        ValueError for a port or direction the firmware would refuse."""
+        event = machine_input.joystick_event(port, "press" if pressed else "release", [direction])
+        machine_input.validate_event(event)
         if not (self.api.profile.supports_rest_input and self._sender.is_running()):
             if not self._injection_refused_logged:
                 self._injection_refused_logged = True
@@ -1827,8 +1830,7 @@ class LauncherScene(MediaFileMixin, Scene):
                     else "this machine has no input API (an Ultimate 64 on firmware 3.15+)",
                 )
             return
-        transition = "press" if pressed else "release"
-        self._enqueue(machine_input.joystick_event(port, transition, [direction]))
+        self._enqueue(event)
         with self._input_lock:
             self._last_input_t = time.time()
 
