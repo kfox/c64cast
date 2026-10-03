@@ -1802,14 +1802,14 @@ class PasswordHeaderValueTest(unittest.TestCase):
     def test_rejects_what_a_header_cannot_carry_without_echoing_it(self):
         for password in ("pw\r\nX-Evil: 1", "pw\x00", " pw", "pw ", "pw\t"):
             with self.subTest(password=password):
-                with self.assertRaises(ValueError) as caught:
+                with self.assertRaises(api.InvalidPasswordError) as caught:
                     api.password_header_value(password)
                 self.assertNotIn("pw", str(caught.exception).replace("password", ""))
 
     def test_rejects_a_password_that_is_not_utf8_without_echoing_it(self):
         # A non-UTF-8 byte in C64CAST_DMA_PASSWORD reaches os.environ as a
         # lone surrogate (surrogateescape on POSIX).
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(api.InvalidPasswordError) as caught:
             api.password_header_value("h\udce4nter2")
         message = str(caught.exception)
         self.assertNotIsInstance(caught.exception, UnicodeError)
@@ -1820,6 +1820,6 @@ class PasswordHeaderValueTest(unittest.TestCase):
 
     def test_construction_fails_before_opening_the_dma_socket(self):
         with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True) as connect:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(api.InvalidPasswordError):
                 Ultimate64API("http://example.invalid", dma_password="pw\n")
         connect.assert_not_called()

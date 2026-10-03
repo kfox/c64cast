@@ -32,8 +32,8 @@ from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
 from c64cast.control.transport import atomic_write_text
 from c64cast.hw import char_rom, hw_provision
-from c64cast.hw.backend import C64Backend, make_backend
-from c64cast.hw.socket_dma import SocketDMAError
+from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
+from c64cast.hw.socket_dma import InvalidPasswordError, SocketDMAError
 from c64cast.hw.teensyrom_dma import TRError
 
 from . import config as cfgmod
@@ -529,7 +529,7 @@ def _connect_backend(cfg: cfgmod.Config, flag: str) -> C64Backend | None:
     """`make_backend(cfg)`, or None after logging why it could not connect."""
     try:
         return make_backend(cfg)
-    except (ValueError, SocketDMAError, TRError) as e:
+    except (InvalidPasswordError, BackendSetupError, SocketDMAError, TRError) as e:
         log.error("%s: could not connect to the C64 hardware: %s", flag, e)
         return None
 

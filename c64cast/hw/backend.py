@@ -61,6 +61,13 @@ class BackendCapabilityError(RuntimeError):
         super().__init__(f"this hardware backend does not support {capability!r}")
 
 
+class BackendSetupError(ValueError):
+    """`make_backend` cannot build a backend from this configuration: an unknown
+    backend or transport, a required host or serial port missing, or a URL
+    with no host. Callers report it as a connect failure; any other ValueError
+    out of backend construction is a defect and propagates."""
+
+
 @dataclass(frozen=True)
 class HardwareProfile:
     """What a hardware backend can do and the limits it operates under.
@@ -797,7 +804,9 @@ def make_backend(cfg: Config) -> C64Backend:
     service being disabled) propagate from the concrete backend's
     constructor — the caller surfaces a user-actionable message.
 
-    Raises ``ValueError`` for an unknown backend token.
+    Raises `BackendSetupError` for a configuration it cannot build a backend
+    from, and the Ultimate backend raises `InvalidPasswordError` for a network
+    password it cannot send.
     """
     backend = cfg.hardware.backend
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
@@ -860,7 +869,7 @@ def make_backend(cfg: Config) -> C64Backend:
                     # the generic "tr-serial-auto" calibration file.
                     tr.serial_port = port
             if not port:
-                raise ValueError(
+                raise BackendSetupError(
                     "[teensyrom].serial_port is required when transport = "
                     '"serial" — auto-detection found no attached TeensyROM. '
                     "Set it explicitly (e.g. /dev/cu.usbmodem* or COM3) over a "
@@ -870,14 +879,16 @@ def make_backend(cfg: Config) -> C64Backend:
             transport_kind = "tr_serial"
         elif tr.transport == "tcp":
             if not tr.host:
-                raise ValueError(
+                raise BackendSetupError(
                     '[teensyrom].host is required when transport = "tcp" '
                     '(the TR\'s IP; find it via CCGMS "ATC" or RTC sync)'
                 )
             transport = TcpTransport(tr.host, tr.tcp_port or DEFAULT_TCP_PORT)
             transport_kind = "tr_tcp"
         else:
-            raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
+            raise BackendSetupError(
+                f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)"
+            )
         profile = replace(
             TEENSYROM_PROFILE,
             system=system,
@@ -890,6 +901,6 @@ def make_backend(cfg: Config) -> C64Backend:
         )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
-    raise ValueError(
+    raise BackendSetupError(
         f"unknown [hardware].backend {backend!r} — known backends: {', '.join(BACKENDS)}"
     )

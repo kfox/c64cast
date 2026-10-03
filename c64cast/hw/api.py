@@ -44,6 +44,7 @@ from .backend import (
     SYSTEM_MODE_CATEGORY,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
+    BackendSetupError,
     BufferedWriteBackend,
     HardwareProfile,
 )
@@ -59,12 +60,19 @@ from .c64 import (
     frame_rate,
     kernal_cia1_latch,
 )
-from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError, encode_password
+from .socket_dma import (
+    DEFAULT_PORT,
+    InvalidPasswordError,
+    SocketDMAClient,
+    SocketDMAError,
+    encode_password,
+)
 from .vic_stream import VicStreamReceiver
 
 __all__ = [
     "Ultimate64API",
     "RestAuthError",
+    "InvalidPasswordError",
     "SocketDMAError",
     "ParsedPsid",
     "parse_psid_for_player",
@@ -1568,13 +1576,13 @@ def password_header_value(password: str) -> bytes:
     bytes `SocketDMAClient` sends in AUTHENTICATE, so both links present one
     password identically.
 
-    Raises ValueError, without echoing the password, when HTTP cannot carry it
+    Raises InvalidPasswordError, without echoing the password, when HTTP cannot carry it
     as a header value: a control character, or a leading or trailing space or
     tab (which header parsing strips), or when it is not valid UTF-8. Left to
     `requests`, the first surfaces on the first REST call as an
     ``InvalidHeader`` whose message quotes the value."""
     if password != password.strip(" \t") or any(ord(c) < 0x20 or ord(c) == 0x7F for c in password):
-        raise ValueError(
+        raise InvalidPasswordError(
             f"the network password in {_PASSWORD_SOURCES} contains a control "
             "character or leading/trailing whitespace, which the X-Password "
             "header of a REST request cannot carry; change the password on the "
@@ -1615,7 +1623,7 @@ def make_rest_session(password: str | None) -> requests.Session:
     """A `requests.Session` for an Ultimate's REST API, carrying `password` as
     ``X-Password`` on every request when one is set. The firmware ignores the
     header while no password is set on the device, so there is nothing to
-    probe first. Raises ValueError as `password_header_value` does."""
+    probe first. Raises InvalidPasswordError as `password_header_value` does."""
     header = password_header_value(password) if password else None
     session = _UltimateSession()
     if header is not None:
@@ -1691,7 +1699,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # second config field.
         host = urlparse(self.base_url).hostname
         if not host:
-            raise ValueError(f"could not extract hostname from {base_url!r}")
+            raise BackendSetupError(f"could not extract hostname from {base_url!r}")
         self.socket_dma = SocketDMAClient(host=host, port=dma_port, password=dma_password)
         # connect() raises SocketDMAError on refused/auth-rejected; the CLI
         # renders that into a user-actionable message.

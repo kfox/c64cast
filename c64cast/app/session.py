@@ -35,8 +35,8 @@ from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.control.keyboard import CommodoreKeyPoller
 from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
 from c64cast.hw import char_rom, hw_provision
-from c64cast.hw.api import RestAuthError, SocketDMAError
-from c64cast.hw.backend import C64Backend, make_backend
+from c64cast.hw.api import InvalidPasswordError, RestAuthError, SocketDMAError
+from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
 from c64cast.scenes.scenes import Scene
@@ -326,7 +326,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     except SocketDMAError as e:
         _log_dma_setup_error(cfg, e, role="render")
         raise StackBuildError(4) from e
-    except ValueError as e:
+    except (InvalidPasswordError, BackendSetupError) as e:
         log.error("Could not connect to the C64 hardware (%s): %s", name, e)
         raise StackBuildError(4) from e
     except TRError as e:
