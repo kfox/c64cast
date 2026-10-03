@@ -64,7 +64,7 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
         # by _probe_one_system after a successful probe) reads it.
         api_instance.profile = ULTIMATE_PROFILE
         # Old firmware by default, so no route probe reaches `session`.
-        api_instance._route_answers = {U64_API.MENU_SCREEN: "absent"}
+        api_instance._route_answers = {U64_API.MENU_SCREEN: "absent", U64_API.INPUT: "absent"}
         with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
             yield api_instance
 
@@ -459,7 +459,7 @@ class MenuOpenProbeTest(unittest.TestCase):
         with _fake_ultimate_api() as api_instance:
             from c64cast.hw.c64 import U64_API
 
-            api_instance._route_answers = {U64_API.MENU_SCREEN: route}
+            api_instance._route_answers = {U64_API.MENU_SCREEN: route, U64_API.INPUT: "absent"}
             api_instance.read_menu_screen = mock.MagicMock(return_value=screen)
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         return [d for d in diags if d.subject.endswith("(menu)")]

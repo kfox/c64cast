@@ -8,9 +8,11 @@ from __future__ import annotations
 import logging
 import math
 import os
+import queue
 import random
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
@@ -31,6 +33,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import make_loop_preset_store, timecode
+from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
@@ -1739,6 +1742,28 @@ class VideoScene(MediaFileMixin, Scene):
         )
 
 
+# How long the launcher's input sender waits before re-sending the held
+# joystick state after that post failed too.
+_INJECT_RESYNC_RETRY_S = 0.25
+# The shortest time an injected press stays down, about three frames, so a
+# program that reads the port once a frame sees a quick pad hit. It is the
+# firmware's keyboard tap hold; its own joystick tap is a single 20 ms tick.
+_INJECT_MIN_HOLD_S = 0.06
+# How long an injected event may wait for the sender before the backlog is
+# collapsed to at most three events per input. The hold caps one
+# input at about fifteen taps a second, and past that the queue would otherwise
+# grow for the rest of the scene, with every other input waiting behind it.
+_INJECT_MAX_LAG_S = 0.25
+# How long teardown waits for the sender's post in flight, so the release and
+# the reset that follow it reach the machine after that post. A sender request
+# changes each input at most once, so it is one body: one connect and one read.
+_INJECT_SENDER_JOIN_S = 2 * machine_input.POST_TIMEOUT_S + 0.5
+
+
+def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
+    return {(event["port"], name) for name in event["inputs"]}
+
+
 class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
@@ -1772,6 +1797,12 @@ class LauncherScene(MediaFileMixin, Scene):
     Audio: the program drives the real SID directly, so this scene carries no
     AudioStreamer (built with audio=None) but still WANTS_AUDIO_LOCK so it
     coordinates the ensemble slot like the SID/MIDI scenes.
+
+    Joystick input can also be driven *into* the program: `inject_joystick`
+    is what a `[midi_control]` `joystick` mapping calls. It needs a machine
+    with ``POST /v1/machine:input`` (an Ultimate 64 on firmware 3.15+); a
+    sender thread posts the queued events, so the caller never waits on REST,
+    and teardown releases whatever is still held before the reset.
     """
 
     WANTS_AUDIO_LOCK = True
@@ -1823,9 +1854,32 @@ class LauncherScene(MediaFileMixin, Scene):
         self._input_lock = threading.Lock()
         self._baseline: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
+        # Each event with the monotonic time it was queued.
+        self._injected: queue.SimpleQueue[tuple[float, machine_input.Event]] = queue.SimpleQueue()
+        self._sender = PollThread(
+            self._send_loop,
+            name="launcher-input-send",
+            manual=True,
+            join_timeout=_INJECT_SENDER_JOIN_S,
+        )
+        self._injected_any = False
+        # The sender thread's own state: an event held back for the next
+        # request, what its posts have left pressed, and whether a failed post
+        # means the machine must be told that again.
+        self._carry: tuple[float, machine_input.Event] | None = None
+        self._collapsed: deque[tuple[float, machine_input.Event]] = deque()
+        self._held: set[tuple[int, str]] = set()
+        self._pressed_at: dict[tuple[int, str], float] = {}
+        self._resync = False
+        self._injection_refused_logged = False
         self._prepared = False
 
     def setup(self) -> None:
+        # A sender that outlived teardown's join is still posting the last
+        # pass's input: wait for it before forgetting what it holds.
+        self._sender.stop()
+        self._discard_injected()
+        self._injection_refused_logged = False
         if self._prepared:
             self._prepared = False
         elif not self._pick_filepath():
@@ -1857,6 +1911,195 @@ class LauncherScene(MediaFileMixin, Scene):
             return
         if self.input_source != "none":
             self._poll.start()
+        if self.api.profile.supports_rest_input:
+            self._sender.start()
+
+    def inject_joystick(self, port: int, direction: str, pressed: bool) -> None:
+        """Press or release one joystick `direction` (see
+        `machine_input.JOYSTICK_INPUTS`) on `port` of the running program.
+        Returns at once; the sender thread posts it. Counts as player input
+        for the idle timeout. Dropped, with one WARNING per scene, on a machine
+        without the input API or while the program is not running. Raises
+        ValueError for a port or direction the firmware would refuse."""
+        event = machine_input.joystick_event(port, "press" if pressed else "release", [direction])
+        machine_input.validate_event(event)
+        if not (self.api.profile.supports_rest_input and self._sender.is_running()):
+            if not self._injection_refused_logged:
+                self._injection_refused_logged = True
+                log.warning(
+                    "launcher: joystick input dropped — %s",
+                    "the program is not running"
+                    if self.api.profile.supports_rest_input
+                    else "this machine has no input API (an Ultimate 64 on firmware 3.15+)",
+                )
+            return
+        self._enqueue(event)
+        with self._input_lock:
+            self._last_input_t = time.time()
+
+    def _enqueue(self, event: machine_input.Event) -> None:
+        self._injected.put((time.monotonic(), event))
+
+    def _send_loop(self, stop: threading.Event) -> None:
+        """Post queued injections in the requests `_next_batch` groups them
+        into. Stops for good once the machine has refused the input API."""
+        while not stop.is_set():
+            if not self.api.profile.supports_rest_input:
+                return
+            if self._resync:
+                self._resync = False
+                self._post(self._held_state())
+                # Stamped even when the post failed: it may have been applied.
+                self._mark_pressed(self._held)
+                if self._resync:
+                    stop.wait(_INJECT_RESYNC_RETRY_S)
+                continue
+            batch = self._next_batch()
+            # The dequeue can outlast a stop; teardown releases what is held.
+            if batch and not stop.wait(self._hold_remaining(batch)):
+                self._injected_any = True
+                self._post(batch)
+                self._mark_pressed(
+                    set().union(*(_joystick_inputs(e) for e in batch if e["transition"] == "press"))
+                )
+
+    def _mark_pressed(self, keys: set[tuple[int, str]]) -> None:
+        """Record that a post just answered pressed `keys`, the moment
+        `_hold_remaining` measures their hold from."""
+        now = time.monotonic()
+        self._pressed_at.update(dict.fromkeys(keys, now))
+
+    def _hold_remaining(self, batch: list[machine_input.Event]) -> float:
+        """How long `batch` must wait so that no input it releases comes up
+        sooner than `_INJECT_MIN_HOLD_S` after its press was answered."""
+        now = time.monotonic()
+        wait = 0.0
+        for event in batch:
+            if event["transition"] == "release":
+                for key in _joystick_inputs(event):
+                    pressed = self._pressed_at.get(key)
+                    if pressed is not None:
+                        wait = max(wait, pressed + _INJECT_MIN_HOLD_S - now)
+        return wait
+
+    def _next_batch(self) -> list[machine_input.Event]:
+        """The next request's events, in order. A request changes each input
+        at most once: the firmware applies a body's events back to back, so a
+        press and its release in one body never reach the port. The event that
+        would repeat an input waits in `_carry` for the next request. An event
+        that changes nothing already held or released is dropped, so a cc knob
+        swept past its threshold costs no request per value."""
+        self._collapse_stale()
+        batch: list[machine_input.Event] = []
+        touched: set[tuple[int, str]] = set()
+        while len(batch) < machine_input.MAX_EVENTS:
+            stamped = self._carry
+            self._carry = None
+            if stamped is None and self._collapsed:
+                stamped = self._collapsed.popleft()
+            if stamped is None:
+                try:
+                    stamped = self._injected.get(block=not batch, timeout=0.05)
+                except queue.Empty:
+                    break
+            event = stamped[1]
+            inputs = _joystick_inputs(event)
+            pressing = event["transition"] == "press"
+            if not (inputs - self._held if pressing else inputs & self._held):
+                continue
+            if inputs & touched:
+                self._carry = stamped
+                break
+            batch.append(event)
+            touched |= inputs
+            if pressing:
+                self._held |= inputs
+            else:
+                self._held -= inputs
+        return batch
+
+    def _collapse_stale(self) -> None:
+        """When the oldest waiting event has waited `_INJECT_MAX_LAG_S`, take
+        everything queued and leave, in `_collapsed`, at most three events per
+        input in their original order: its first release when it is held, then
+        its latest press, and the release after it when it ends released. A
+        tap survives the collapse and still gets the minimum hold; the changes
+        in between are dropped, so an input is pressed only where it was
+        pressed in the queue, never alongside an input that was pressed after
+        it came up."""
+        oldest = self._carry or (self._collapsed[0] if self._collapsed else None)
+        if oldest is None:
+            try:
+                self._carry = oldest = self._injected.get_nowait()
+            except queue.Empty:
+                return
+        if time.monotonic() - oldest[0] < _INJECT_MAX_LAG_S:
+            return
+        waiting = [self._carry] if self._carry is not None else []
+        self._carry = None
+        waiting.extend(self._collapsed)
+        self._collapsed.clear()
+        while True:
+            try:
+                waiting.append(self._injected.get_nowait())
+            except queue.Empty:
+                break
+        state: dict[tuple[int, str], bool] = {}
+        changes: dict[tuple[int, str], list[int]] = {}
+        for index, (_queued, event) in enumerate(waiting):
+            pressing = event["transition"] == "press"
+            for key in _joystick_inputs(event):
+                if state.get(key, key in self._held) != pressing:
+                    state[key] = pressing
+                    changes.setdefault(key, []).append(index)
+        kept: list[tuple[int, machine_input.Event]] = []
+        for key, indices in changes.items():
+            port, name = key
+            first_release = indices[:1] if key in self._held else []
+            after = indices[len(first_release) :]
+            for index in first_release + (after[-1:] if state[key] else after[-2:]):
+                transition = waiting[index][1]["transition"]
+                kept.append((index, machine_input.joystick_event(port, transition, [name])))
+        now = time.monotonic()
+        self._collapsed.extend((now, event) for _index, event in sorted(kept, key=lambda k: k[0]))
+
+    def _held_state(self) -> list[machine_input.Event]:
+        """`release_all`, then a press of everything still held, per port."""
+        events = [machine_input.RELEASE_ALL]
+        for port in machine_input.JOYSTICK_PORTS:
+            inputs = [name for name in machine_input.JOYSTICK_INPUTS if (port, name) in self._held]
+            if inputs:
+                events.append(machine_input.joystick_event(port, "press", inputs))
+        return events
+
+    def _post(self, events: list[machine_input.Event]) -> None:
+        """Send `events`; when that fails on a machine that still has the input
+        API, mark the held state to be sent again, since what failed may have
+        been a release."""
+        if self.api.send_input(events) is None and self.api.profile.supports_rest_input:
+            self._resync = True
+
+    def _discard_injected(self) -> None:
+        """Forget every queued event and the sender's view of the machine,
+        without telling the machine."""
+        while True:
+            try:
+                self._injected.get_nowait()
+            except queue.Empty:
+                break
+        self._carry = None
+        self._collapsed.clear()
+        self._held.clear()
+        self._pressed_at.clear()
+        self._resync = False
+
+    def _release_injected(self) -> None:
+        """Let go of anything injected input still holds. The reset that
+        follows would too, but it is a separate step that can fail."""
+        self._discard_injected()
+        if self._injected_any:
+            self._injected_any = False
+            self.api.send_input([machine_input.RELEASE_ALL])
 
     def process_frame(self, current_time: float) -> bool:
         if (current_time - self.start_time) >= self.max_duration_s:
@@ -1877,6 +2120,8 @@ class LauncherScene(MediaFileMixin, Scene):
             type(self).__name__,
             [
                 ("input poll stop", self._poll.stop),
+                ("input sender stop", self._sender.stop),
+                ("injected input release", self._release_injected),
                 ("base teardown", super().teardown),
                 ("program reset", self.api.reset),
             ],

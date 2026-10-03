@@ -303,6 +303,67 @@ class DispatchActionTests(_MidiControlTestCase):
         self.assertFalse(pl.skip_event.is_set())
 
 
+class JoystickDispatchTests(_MidiControlTestCase):
+    """The joystick action holds a direction while the note is down, on the
+    current scene's inject_joystick, and is refused when malformed."""
+
+    def _listener(self, entry) -> tuple[MidiControlListener, Any]:
+        pl = _fake_playlist("system")
+        return MidiControlListener({"system": pl}, [entry]), pl
+
+    def test_note_on_presses_and_note_off_releases(self):
+        listener, pl = self._listener(
+            {"type": "note", "number": 50, "action": "joystick", "input": "fire"}
+        )
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        listener._dispatch(mido.Message("note_off", note=50))
+        self.assertEqual(
+            pl.current.inject_joystick.call_args_list,
+            [mock.call(2, "fire", True), mock.call(2, "fire", False)],
+        )
+
+    def test_port_is_passed_through(self):
+        listener, pl = self._listener(
+            {"type": "note", "number": 50, "action": "joystick", "input": "up", "port": 1}
+        )
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))
+        pl.current.inject_joystick.assert_called_once_with(1, "up", True)
+
+    def test_scene_without_injection_is_a_noop(self):
+        listener, pl = self._listener(
+            {"type": "note", "number": 50, "action": "joystick", "input": "up"}
+        )
+        pl.current = object()
+        listener._dispatch(mido.Message("note_on", note=50, velocity=100))  # must not raise
+
+    def test_cc_presses_at_64_and_up_and_releases_below(self):
+        listener, pl = self._listener(
+            {"type": "cc", "number": 20, "action": "joystick", "input": "fire"}
+        )
+        for value in (127, 0, 64, 63):
+            listener._dispatch(mido.Message("control_change", control=20, value=value))
+        self.assertEqual(
+            pl.current.inject_joystick.call_args_list,
+            [
+                mock.call(2, "fire", True),
+                mock.call(2, "fire", False),
+                mock.call(2, "fire", True),
+                mock.call(2, "fire", False),
+            ],
+        )
+
+    def test_malformed_entries_are_refused(self):
+        for entry in (
+            {"type": "note", "number": 50, "action": "joystick"},
+            {"type": "note", "number": 50, "action": "joystick", "input": "up", "port": 0},
+            {"type": "note", "number": 50, "action": "joystick", "input": "up", "port": True},
+            {"type": "pc", "number": 50, "action": "joystick", "input": "up"},
+            {"type": "mmc", "number": 2, "action": "joystick", "input": "up"},
+        ):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                _parse_cc_map([entry])
+
+
 class TransportDispatchTests(_MidiControlTestCase):
     """transport.* actions enqueue a TransportEvent on pl.transport instead
     of mutating scene state directly on the MIDI reader thread — see

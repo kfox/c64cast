@@ -8,7 +8,7 @@ For end-user configuration see [the Programmer’s Reference Guide](reference/RE
 
 ## Topic areas
 
-* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`, `hw/uci.py`, `hw/menu_screen.py`
+* **[Hardware I/O & transports](architecture/hardware-io.md)** — `hw/backend.py`, `hw/api.py`, `hw/teensyrom_api.py`, `hw/teensyrom_dma.py`, `hw/vic_stream.py`, Startup: BASIC clear-and-loop program, `hw/char_rom.py`, `hw/uci.py`, `hw/menu_screen.py`, `hw/machine_input.py`
 * **[Audio output](architecture/audio.md)** — `audio/audio.py`, `audio/audio_handlers.py`, `audio/sampler.py`, `audio/dsp.py`, `audio/audio_features.py`
 * **[Video input & the color pipeline](architecture/video-color.md)** — `video/video.py`, `video/modes/`, `video/modes_irq.py`, `video/flicker.py`, `video/rolling_palette.py`, `video/palette.py`, `hw/hardware_palette.py`, Framerate pacing & frame-dropping, `video/framebuffer.py`, `video/preview.py`
 * **[Scenes, sources & overlays](architecture/scenes.md)** — `scenes/scenes.py`, Composable scenes, `scenes/overlays/`, `scenes/interstitial.py`, `scenes/backgrounds.py`
@@ -82,6 +82,7 @@ the two lists account for every module in the tree.
 | `app/introspect.py` | [Config, CLI & ensemble](architecture/config.md#introspectpy--the-model-and-the-terminal-renderers) |
 | `control/keyboard.py` | [Control surfaces & live performance](architecture/control.md#keyboardpy--commodore-key-pauseresume-ctrl-key-skip-shift-key-style-cycle) |
 | `control/live_tune.py` | [Control surfaces & live performance](architecture/control.md#live_tunepy--the-one-live-tune-seam-live-djvj-phase-7) |
+| `hw/machine_input.py` | [Hardware I/O & transports](architecture/hardware-io.md#machine_inputpy--keyboard-and-joystick-injection) |
 | `hw/menu_screen.py` | [Hardware I/O & transports](architecture/hardware-io.md#menu_screenpy--the-ultimate-menus-own-screen) |
 | `control/midi_control.py` | [Control surfaces & live performance](architecture/control.md#midi_controlpy--process-wide-midi-control-surface-optional-live-performance) |
 | `sid/midi_scene.py` | [SID playback & the oscilloscope](architecture/sid.md#midi_scenepy--midiscene-live-midi--sid--oscilloscope) |

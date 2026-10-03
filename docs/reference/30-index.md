@@ -332,7 +332,7 @@ Every name c64cast answers to — 459 of them — and the pages that discuss eac
 | `midi` | [Frame Rate (2)](03-vocabulary.md#frame-rate), [`midi` (2)](03-vocabulary.md#midi), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `--midi-setup` | [The Performance Console (6)](07-inputs-and-outputs.md#the-performance-console), [The Console (6)](07-inputs-and-outputs.md#the-console), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `midi_adsr` | [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `[midi_control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [MIDI In and Out (6)](07-inputs-and-outputs.md#midi-in-and-out), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
+| `[midi_control]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`launcher` (2)](03-vocabulary.md#launcher), [`midi_control` (A)](20-appendix-a-configuration.md#midi_control) |
 | `midi_feedback` | [MIDI Out — Lighting the Pads (6)](07-inputs-and-outputs.md#midi-out--lighting-the-pads), [`performance` (A)](20-appendix-a-configuration.md#performance) |
 | `midi_filter_cutoff` | [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `midi_filter_mode` | [`midi` (B)](21-appendix-b-scene-types.md#midi) |
@@ -543,7 +543,7 @@ Every name c64cast answers to — 459 of them — and the pages that discuss eac
 | `trails` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow), [`video` (B)](21-appendix-b-scene-types.md#video) |
 | `transport` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [Driving a Video (6)](07-inputs-and-outputs.md#driving-a-video), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `tunnel` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
-| `type` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [The Console (6)](07-inputs-and-outputs.md#the-console) |
+| `type` | [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Driving the Machine's Joystick (6)](07-inputs-and-outputs.md#driving-the-machines-joystick) |
 
 ## U
 
