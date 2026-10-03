@@ -21,6 +21,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`[color].hardware_palette = "source"` re-chooses an Ultimate 64's own 16
+  colors for each video and slideshow scene.** The palette is fitted to the
+  scene's content (black, white and the three grays stay the machine's),
+  pushed over the Command Interface before the scene paints, and the whole
+  color pipeline aims at it; per-pixel color error over the bundled pictures
+  falls to about a third. The machine's palette, a custom `.vpl` included, is
+  put back when the scene ends and at exit, and pushed again after every reset
+  c64cast issues. Needs Ultimate firmware 3.15 or newer; a C64 Ultimate on
+  1.1.0, older firmware and other machines skip it with a warning. Off by
+  default, and refused alongside `force_palette` or `flicker_tolerance`.
 - **`host_palette = "auto"` now asks an Ultimate which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running

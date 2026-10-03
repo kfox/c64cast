@@ -21,6 +21,9 @@ from c64cast.video.palette import (
     ColorFit,
     ColorMap,
     HueCorrection,
+    apply_color_fit,
+    apply_hue_corrections,
+    boost_saturation,
     color_name,
     make_gray_penalty,
     parse_channel_boost,
@@ -28,6 +31,23 @@ from c64cast.video.palette import (
 )
 
 ORDERED_DITHER_OFFSET_FNS = {"ordered": bayer_offset, "blue_noise": blue_noise_offset}
+
+
+def shape_for_quantize(
+    img: np.ndarray,
+    fit: ColorFit | None,
+    sat_factor: float,
+    hue_corrections: tuple[HueCorrection, ...],
+    channel_boost: np.ndarray,
+) -> np.ndarray:
+    """The `[color]` shaping chain in front of the quantizer: auto-fit,
+    saturation, hue corrections, then the per-channel boost. Takes a BGR uint8
+    image and returns it as float32 BGR, clipped to 0..255."""
+    if fit is not None:
+        img = apply_color_fit(img, fit)
+    img = boost_saturation(img, sat_factor)
+    img = apply_hue_corrections(img, hue_corrections)
+    return np.clip(img.astype(np.float32) * channel_boost, 0, 255)
 
 
 class ComposeBuffers(TypedDict):
@@ -448,6 +468,12 @@ class DisplayMode:
         scenes that pre-scan their source; passing None clears a stale fit
         from a previous file."""
         self._color_fit = fit
+
+    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+        """`img` (BGR uint8) as this mode's quantizer will see it, before any
+        dither — what `[color].hardware_palette` fits the machine's 16 colors
+        to. Base: unchanged, for a mode with no color shaping of its own."""
+        return img
 
     def set_color_map(self, cmap: ColorMap | None) -> None:
         """Install (or clear) the per-source forced-palette remap. Called by

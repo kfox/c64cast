@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 log = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ STATUS_OK = b"00,"
 
 TARGET_CONTROL = 0x04
 CMD_GET_PALETTE = 0x51
+CMD_SET_PALETTE = 0x52
 
 PALETTE_COLORS = 16
 PALETTE_BYTES = PALETTE_COLORS * 3
@@ -114,11 +115,11 @@ def _write_control(bus: MemoryBus, value: int) -> None:
     bus.flush()
 
 
-def _push_command(bus: MemoryBus, target: int, command: int) -> None:
+def _push_command(bus: MemoryBus, target: int, command: int, payload: bytes) -> None:
     # $DF1D is a FIFO port, so each byte needs its own single-byte write — a
-    # two-byte block write would land the second byte on $DF1E instead.
-    _write_byte(bus, UCI_COMMAND, target)
-    _write_byte(bus, UCI_COMMAND, command)
+    # block write would land the second byte on $DF1E instead.
+    for value in (target, command, *payload):
+        _write_byte(bus, UCI_COMMAND, value)
     _write_control(bus, CONTROL_PUSH_CMD)
 
 
@@ -189,7 +190,7 @@ def _finish(bus: MemoryBus, accepted: bool, *, confirm: bool) -> None:
 
 
 def _transact(
-    bus: MemoryBus, target: int, command: int, reply_bytes: int
+    bus: MemoryBus, target: int, command: int, reply_bytes: int, payload: bytes = b""
 ) -> tuple[bytes, bytes] | None:
     """Run one command to completion and return its (reply, status).
 
@@ -204,7 +205,7 @@ def _transact(
         return None
     _clear_stale_error(bus)
 
-    _push_command(bus, target, command)
+    _push_command(bus, target, command, payload)
     took_command = _took_command(bus)
     answer = None
     try:
@@ -256,3 +257,29 @@ def read_palette_rgb(bus: MemoryBus) -> tuple[tuple[int, int, int], ...] | None:
         log.debug("UCI: palette reply was %d bytes, wanted %d", len(payload), PALETTE_BYTES)
         return None
     return _as_rgb_triples(payload)
+
+
+def set_palette_rgb(bus: MemoryBus, colors: Sequence[Sequence[int]]) -> bool:
+    """Make `colors` (16 RGB triples) the 16 colors the Ultimate drives.
+
+    The change is RAM-only and lasts until the next C64 reset, which re-applies
+    the machine's configured palette. Returns False whenever the machine did
+    not confirm it: firmware without the command answers "21,UNKNOWN COMMAND",
+    and every other failure is a debug log and a False, as for
+    `read_palette_rgb`.
+    """
+    if len(colors) != PALETTE_COLORS or any(len(c) != 3 for c in colors):
+        raise ValueError(f"a palette is {PALETTE_COLORS} RGB triples")
+    payload = bytes(int(v) & 0xFF for color in colors for v in color)
+    try:
+        answer = _transact(bus, TARGET_CONTROL, CMD_SET_PALETTE, 0, payload)
+    except Exception:
+        log.debug("UCI: set-palette failed", exc_info=True)
+        return False
+    if answer is None:
+        return False
+    status = answer[1]
+    if not status.startswith(STATUS_OK):
+        log.debug("UCI: set-palette answered %r", bytes(status[:40]))
+        return False
+    return True

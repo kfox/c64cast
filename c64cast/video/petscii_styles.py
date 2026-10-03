@@ -22,6 +22,7 @@ from .palette import (
     HueCorrection,
     apply_hue_corrections,
     boost_saturation,
+    on_palette_change,
     quantize_distances_for,
     quantize_flat_for,
 )
@@ -285,6 +286,9 @@ class InversePopStyle(PetsciiStyle):
         slot = lut[pix_idx]  # 0..3
         color = self.POP_PALETTE_INDICES[slot]
         return screen, color
+
+
+on_palette_change(InversePopStyle._LUT_CACHE.clear)
 
 
 class HatchStyle(PetsciiStyle):

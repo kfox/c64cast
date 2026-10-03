@@ -273,6 +273,10 @@ and the built-in table is assumed instead, or a display whose own processing
 you have already characterized. For the first, point a path at a local copy of
 that `.vpl`.
 
+An Ultimate 64 on 3.15 or newer can also be told to show sixteen *different*
+colors for a scene, and the quantizer then aims at those instead:
+["Choosing the Sixteen"](#choosing-the-sixteen--hardware_palette).
+
 Note that this is a `[hardware]` setting rather than a `[color]` one, and
 deliberately: it says what the *machine* emits, not what the show should look
 like. It belongs with the other machine declarations, and a show file carried to
@@ -365,6 +369,40 @@ entries that best represent it, ranked, ready to paste into
 `force_palette_colors`. Note it optimizes for *faithfulness* — the colors
 nearest what is there — where `force_palette` itself spreads to distinct
 colors, so the two answer slightly different questions.
+
+## Choosing the Sixteen — `hardware_palette`
+
+`force_palette` and everything before it choose *among* the machine's sixteen
+colors. An Ultimate 64 on firmware 3.15 or newer lets c64cast change the
+sixteen themselves, for the length of a scene:
+
+```toml
+[color]
+hardware_palette = "source"     # "off" (default) | "source"
+```
+
+With `"source"`, a `video` or `slideshow` scene fits the palette to its own
+content before it paints, pushes it to the Ultimate, and points the whole
+pipeline at it — the nearest-color search, `dither`, `color_match` and the
+fades all aim at exactly what the machine now emits. Black, white and the three
+grays stay the machine's own, since fades end on black and cards and overlays
+draw in black and white; the other eleven are chosen from the source, each
+landing on the palette entry it is nearest, so "red" is still the reddest of
+them. The fit sees the source after the scene's own `[color]` shaping
+(`auto_fit`, the hue corrections, the channel boost), which is what the
+quantizer sees too. Measured over the bundled pictures, the per-pixel color
+error falls to about a third of what the Ultimate's own table gives.
+
+| | |
+|---|---|
+| **Scenes** | `video` (from the pre-scan, so a video with it on always pre-scans) and `slideshow` (per image). Other scenes show the machine's palette |
+| **When it is pushed** | At scene start, and at each slideshow image. About half a second per push, so it is per scene, never per frame |
+| **Restored** | When the scene ends, and at exit, to the palette the machine was showing when the run started — a custom `.vpl` included. A C64 reset during a scene reverts the machine to its configured palette, so c64cast pushes the scene's palette again after every reset it issues |
+| **Not with** | `force_palette`, which also re-chooses a scene's colors, or a `flicker_tolerance` other than `"off"`, whose blends are measured against the machine's fixed palette. The configuration is refused |
+| **Needs** | An Ultimate 64 on firmware 3.15 or newer, and the Command Interface on. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why |
+
+Set it per scene in a `[scenes.color]` sub-table to use it on one video and not
+the next.
 
 ## Motion Smoothing and Fades
 

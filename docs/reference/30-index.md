@@ -4,7 +4,7 @@ generated: true
 
 # Index
 
-Every name c64cast answers to — 458 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
+Every name c64cast answers to — 459 of them — and the pages that discuss each one. A configuration key appears bare, and again under its section where two sections share the name; a parameter that belongs to a generator, an effect or a display mode is filed under its own name, with the holder in parentheses. A few entries are ordinary words rather than anything the program prints, for the reader who does not yet know what it calls the thing.
 
 ## A
 
@@ -32,7 +32,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `[audio_features]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [`audio_features` (A)](20-appendix-a-configuration.md#audio_features) |
 | `audio_source` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [What Ends a Scene (2)](03-vocabulary.md#what-ends-a-scene), [`generative` (2)](03-vocabulary.md#generative) |
 | `auto_cycles` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
-| `auto_fit` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `auto_fit` | [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` | [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `auto_fit_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `auto_reu` | [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
@@ -89,7 +89,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `[color]` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Machine Settings (1)](02-config-rules.md#machine-settings), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `color` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [Scenes and Playlists (1)](02-config-rules.md#scenes-and-playlists), [Quantizing a Cell (3)](04-display-pipeline.md#quantizing-a-cell) |
 | color RAM | [The Picture (5)](06-under-the-hood.md#the-picture), [Regions and the Dirty Model (5)](06-under-the-hood.md#regions-and-the-dirty-model), [The Write Budget (5)](06-under-the-hood.md#the-write-budget) |
-| `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed) |
+| `color_match` | [How Near — `color_match` (3)](04-display-pipeline.md#how-near--color_match), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance) |
 | `color_match` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | `color_mode` | [`waveform` (2)](03-vocabulary.md#waveform), [`asid` (B)](21-appendix-b-scene-types.md#asid), [`midi` (B)](21-appendix-b-scene-types.md#midi) |
 | `colored_bursts` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
@@ -198,9 +198,9 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `fireworks` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `flicker_max_luma_delta` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `flicker_score_pairs` | [`color` (A)](20-appendix-a-configuration.md#color) |
-| `flicker_tolerance` | [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `flicker_tolerance` | [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `follower_only` | [The Shape of a Scene (2)](03-vocabulary.md#the-shape-of-a-scene), [Span and Mirror (6)](07-inputs-and-outputs.md#span-and-mirror), [Keys Every Scene Takes (B)](21-appendix-b-scene-types.md#keys-every-scene-takes) |
-| `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [`color` (A)](20-appendix-a-configuration.md#color) |
+| `force_palette` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `force_palette_colors` | [Forced and Rolling Palettes (3)](04-display-pipeline.md#forced-and-rolling-palettes), [The Console (6)](07-inputs-and-outputs.md#the-console), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `format` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`clock` (C)](22-appendix-c-overlays.md#clock), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
 | `fourcc` | [Recording (6)](07-inputs-and-outputs.md#recording), [`recording` (A)](20-appendix-a-configuration.md#recording) |
@@ -232,6 +232,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 |---|---|
 | `halo` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `[hardware]` | [The Extra Layer (1)](02-config-rules.md#the-extra-layer), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `hardware_palette` | [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [`color` (A)](20-appendix-a-configuration.md#color) |
 | `hdmi_scan_resolution` | [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `--heartbeat` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `heartbeat` | [`debug` (A)](20-appendix-a-configuration.md#debug), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
@@ -499,13 +500,13 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `sink_height` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_width` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_wled_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
-| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
+| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette) |
 | `skip_probe` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `slideshow` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `soap` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
 | `song` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [`waveform` (B)](21-appendix-b-scene-types.md#waveform) |
 | `songlengths_file` | [Duration and Subtunes (4)](05-sound-and-music.md#duration-and-subtunes), [`playlist` (A)](20-appendix-a-configuration.md#playlist) |
-| `source` | [`generative` (2)](03-vocabulary.md#generative), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary), [`source` (F)](25-appendix-f-live-targets.md#source) |
+| `source` | [`generative` (2)](03-vocabulary.md#generative), [Choosing the Sixteen — `hardware_palette` (3)](04-display-pipeline.md#choosing-the-sixteen--hardware_palette), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `source_alignment_marker` | [`audio` (A)](20-appendix-a-configuration.md#audio) |
 | `spectrum_bitmap` | [The Overlays (2)](03-vocabulary.md#the-overlays), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [`spectrum_bitmap` (C)](22-appendix-c-overlays.md#spectrum_bitmap) |
 | `spectrum_petscii` | [The Overlays (2)](03-vocabulary.md#the-overlays), [Choosing a Display Mode for an Overlay (2)](03-vocabulary.md#choosing-a-display-mode-for-an-overlay), [`spectrum_petscii` (C)](22-appendix-c-overlays.md#spectrum_petscii) |

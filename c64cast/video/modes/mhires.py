@@ -40,10 +40,8 @@ from c64cast.video.palette import (
     COLOR_MATCH_MODES,
     PALETTE_LUMA,
     PERCEPTUAL_DIST_SCALE,
-    apply_color_fit,
-    apply_hue_corrections,
-    boost_saturation,
     build_fade_lut,
+    palette_generation,
     pick_diverse_top_n,
     quantize_distances,
     quantize_distances_for,
@@ -62,6 +60,7 @@ from .base import (
     palette_mode_settings,
     pick_cell_colors,
     resolve_color_shaping,
+    shape_for_quantize,
     validate_cell_strategy,
     validate_palette_mode,
 )
@@ -257,9 +256,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # No penalty: the "snap unused indices to their nearest winner" remap is
         # a pure neighbor query. Matches the active metric so it agrees with the
         # per-pixel picks.
-        self._pal_pairwise = quantize_distances_for(
-            C64_PALETTE_BGR, perceptual=self._perceptual
-        )  # (16, 16)
+        self._rebuild_pal_pairwise()
         self._last_bg: int | None = None
         self._fixed_slots: tuple[int, ...] | None = None
         self._fixed_lut: np.ndarray | None = None
@@ -286,6 +283,12 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self.double_buffer = double_buffer
         self.audio_reu_pump_active = audio_reu_pump_active
         self._displayed_bank = 0
+
+    def _rebuild_pal_pairwise(self) -> None:
+        """The (16, 16) palette-to-palette distances in the active metric, and
+        the palette generation they were measured against."""
+        self._pal_pairwise = quantize_distances_for(C64_PALETTE_BGR, perceptual=self._perceptual)
+        self._pal_generation = palette_generation()
 
     def _apply_grayscale_fixed_slots(self) -> None:
         """Recompute the fixed 4-of-5 gray-axis slot assignment + LUT for
@@ -386,7 +389,8 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._penalty_scale = PERCEPTUAL_DIST_SCALE if self._perceptual else 1.0
         # Re-derive the hysteresis at the new penalty scale.
         self.motion_smoothing = self._motion_smoothing
-        self._pal_pairwise = quantize_distances_for(C64_PALETTE_BGR, perceptual=self._perceptual)
+        self._rebuild_pal_pairwise()
+        self._apply_grayscale_fixed_slots()
         return f"color_match={value}"
 
     def setup(self, api):
@@ -494,8 +498,21 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         palette_mode swap moves both together."""
         return self._gray_penalty[table.pairs].mean(axis=1).astype(np.float32)
 
+    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+        return shape_for_quantize(
+            img,
+            self._fit_for_apply(),
+            self._sat_factor,
+            self._hue_corrections,
+            self._channel_boost,
+        )
+
     def compose(self, frame) -> MHiresComposeBuffers:
         assert self.frame_target_size is not None
+        if self._pal_generation != palette_generation():
+            # A scene pushed new colors to the machine ([color].hardware_palette).
+            self._rebuild_pal_pairwise()
+            self._apply_grayscale_fixed_slots()
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
         forced = self._force_palette and self._color_map is not None
         # Blending needs the per-cell slot pick: the global-4 modes choose one
@@ -511,12 +528,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             d = quantize_distances(flat)
         else:
-            fit = self._fit_for_apply()
-            if fit is not None:
-                img = apply_color_fit(img, fit)
-            img = boost_saturation(img, self._sat_factor)
-            img = apply_hue_corrections(img, self._hue_corrections)
-            flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
+            flat = self.quantizer_input(img).reshape(-1, 3)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
             if offset_fn is not None:
                 w, h = self.frame_target_size

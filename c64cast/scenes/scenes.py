@@ -34,7 +34,12 @@ from c64cast.control.transport import make_loop_preset_store, timecode
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
-from c64cast.video.palette import ColorFitAccumulator, ColorMapAccumulator
+from c64cast.video.palette import (
+    ColorFitAccumulator,
+    ColorMapAccumulator,
+    FrameSampler,
+    derive_hardware_palette,
+)
 from c64cast.video.rolling_palette import RollingForcePalette
 from c64cast.video.video import (
     AVFileSource,
@@ -55,6 +60,7 @@ if TYPE_CHECKING:
     from c64cast.app.quickcast import ResolvedMedia
     from c64cast.app.scene_factory import DisplayWiring
     from c64cast.audio.audio_source import AudioSource
+    from c64cast.hw.hardware_palette import HardwarePalette
 
     from .effects import FrameEffect
     from .frame_source import FrameSource
@@ -456,6 +462,29 @@ def _maybe_start_rolling_palette(
     fp.start()
     log.info("%s: live rolling force_palette (adapts to the source over ~30s)", scene.name)
     return fp
+
+
+def _scene_hardware_palette(
+    api: C64Backend, color: ColorCfg, display_mode: DisplayMode | None
+) -> HardwarePalette | None:
+    """The run's palette pusher, when this scene's `[color].hardware_palette`
+    asks for one and the run could provision it."""
+    if color.hardware_palette != "source" or display_mode is None:
+        return None
+    return getattr(api, "hardware_palette", None)
+
+
+def _push_source_palette(scene: Scene, control: HardwarePalette, frames: list[np.ndarray]) -> None:
+    """Fit the machine's colors to `frames` as the scene's display mode will
+    quantize them, and push the result. Any fit or forced map the mode needs
+    must already be installed, since the shaping reads them."""
+    assert scene.display_mode is not None
+    shaped = [scene.display_mode.quantizer_input(f) for f in frames]
+    table = derive_hardware_palette(shaped, control.machine_palette)
+    if table is None:
+        control.show_machine()
+    else:
+        control.show(table, scene.name)
 
 
 def _apply_rolling_palette(
@@ -944,6 +973,7 @@ class SlideshowScene(MediaFileMixin, Scene):
         self._image_start: float = 0.0
         self.start_time: float = 0.0
         self._prepared = False
+        self._hw_palette: HardwarePalette | None = None
 
     def _maybe_rebuild_display_mode(self) -> None:
         """When display_spec is "random", pick a fresh concrete mode and
@@ -1073,6 +1103,23 @@ class SlideshowScene(MediaFileMixin, Scene):
         # re-assert it.
         if self._current_img is None:
             self.is_done = True
+        # Here rather than in _advance_image, which prepare_next also runs
+        # while the "UP NEXT" card is on screen.
+        self._hw_palette = _scene_hardware_palette(self.api, self._color, self.display_mode)
+        self._push_slide_palette()
+        # The push can take most of a second.
+        self._image_start = time.time()
+
+    def _push_slide_palette(self) -> None:
+        if self._hw_palette is not None and self._current_img is not None:
+            _push_source_palette(self, self._hw_palette, [self._current_img])
+
+    def teardown(self) -> None:
+        control, self._hw_palette = self._hw_palette, None
+        steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
+        if control is not None:
+            steps.append(("machine palette", control.show_machine))
+        run_teardown_steps(log, type(self).__name__, steps)
 
     def process_frame(self, current_time: float) -> bool:
         if (current_time - self.start_time) >= self.duration_s:
@@ -1083,6 +1130,7 @@ class SlideshowScene(MediaFileMixin, Scene):
             self._advance_image()
             if self.is_done or self._current_img is None:
                 return False
+            self._push_slide_palette()
         img = self._current_img
         if self.show_frame_numbers:
             label = (
@@ -1179,6 +1227,7 @@ class VideoScene(MediaFileMixin, Scene):
         from c64cast.app.config import ColorCfg
 
         self._color = color if color is not None else ColorCfg()
+        self._hw_palette: HardwarePalette | None = None
         # Lifetime is video-driven; math.inf disables the base-class duration
         # timer, and the config layer rejects a user-supplied `duration_s`.
         self.duration_s = math.inf
@@ -1278,13 +1327,18 @@ class VideoScene(MediaFileMixin, Scene):
         self._av_lag_count = 0
         self._av_buf_min = math.inf
         self._av_last_log_t = 0.0
+        self._hw_palette = _scene_hardware_palette(self.api, c, self.display_mode)
         if self.display_mode is not None:
-            if c.force_palette:
+            if c.force_palette or self._hw_palette is not None:
                 from c64cast.app.config import resolved_force_palette
 
-                # One pre-scan pass derives the map, and the fit too since it
-                # is already decoding.
-                map_colors, map_indices = resolved_force_palette(c)
+                # One pre-scan pass derives the map or the hardware palette (the
+                # config refuses both at once), and the fit too since it is
+                # already decoding.
+                map_colors, map_indices = (
+                    resolved_force_palette(c) if c.force_palette else (None, None)
+                )
+                frames = FrameSampler() if self._hw_palette is not None else None
                 fit, cmap = prescan_source_color(
                     self.filepath,
                     # Full strength: the mode lerps it by
@@ -1292,12 +1346,15 @@ class VideoScene(MediaFileMixin, Scene):
                     fit_strength=1.0 if c.auto_fit else None,
                     map_colors=map_colors,
                     map_indices=map_indices,
+                    frames=frames,
                     decode_target_size=decode_target,
                     on_progress=progress.reporter("prescan"),
                 )
                 progress.complete("prescan")
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
+                if self._hw_palette is not None and frames is not None:
+                    _push_source_palette(self, self._hw_palette, frames.frames)
                 if fit is not None:
                     log.info("video: auto-fit %s", fit)
                 if cmap is not None:
@@ -1614,6 +1671,9 @@ class VideoScene(MediaFileMixin, Scene):
         if src is not None:
             steps.append(("source close", src.close))
         steps.append(("identity-skip cache reset", self._reset_identity_skip_cache))
+        control, self._hw_palette = self._hw_palette, None
+        if control is not None:
+            steps.append(("machine palette", control.show_machine))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _reset_identity_skip_cache(self) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import cv2
+import numpy as np
 
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import SCREEN, VIC, RegionID
@@ -17,7 +18,7 @@ from c64cast.video.petscii_styles import (
     validate_style,
 )
 
-from .base import ComposeBuffers, resolve_color_shaping
+from .base import ComposeBuffers, resolve_color_shaping, shape_for_quantize
 from .char import CharDisplayMode, clear_char_screen
 
 
@@ -100,6 +101,13 @@ class PETSCIIDisplayMode(CharDisplayMode):
         styles read `_perceptual` at compose time, so no other state re-derives."""
         self._perceptual = value == "perceptual"
         return f"color_match={value}"
+
+    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+        """The shaping every style shares; a style's own extra saturation is
+        left out, so this is the common ground the styles quantize from."""
+        return shape_for_quantize(
+            img, self._fit_for_apply(), 1.0, self._hue_corrections, self._channel_boost
+        )
 
     def compose(self, frame) -> ComposeBuffers:
         assert self.frame_target_size is not None

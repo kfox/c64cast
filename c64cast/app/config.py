@@ -36,6 +36,7 @@ from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
+    HARDWARE_PALETTE_CHOICES,
     HIRES_CELL_PICKS,
     resolve_color,
 )
@@ -1854,6 +1855,21 @@ class ColorCfg:
             'case-insensitive, e.g. "light blue", "lgrn", "blk") or an '
             "index 0..15. A list's length sets the color count.",
             "vocabulary": "c64color",
+        },
+    )
+    hardware_palette: str = field(
+        default="off",
+        metadata={
+            "help": "Re-choose the machine's own 16 colors for each scene. "
+            "'source' fits 11 of them to the scene's content (the black, "
+            "white and three grays stay the machine's) and pushes them to the "
+            "Ultimate before the scene paints; quantization, dither and fades "
+            "then aim at exactly those colors, and the machine's palette is "
+            "put back when the scene ends. Video and slideshow scenes only, "
+            "since they can see their content first. Needs an Ultimate 64 on "
+            "firmware 3.15 or newer; elsewhere it is skipped with a warning. "
+            "Cannot be combined with force_palette or flicker_tolerance.",
+            "choices": HARDWARE_PALETTE_CHOICES,
         },
     )
     dither: str = field(

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from c64cast.control.keyboard import CommodoreKeyPoller
     from c64cast.control.vision import VisionController
     from c64cast.hw.backend import C64Backend
+    from c64cast.hw.hardware_palette import HardwarePalette
     from c64cast.video.framebuffer import Framebuffer
     from c64cast.video.preview import PreviewWindow, StreamRecorder
     from c64cast.video.video import WebcamSource
@@ -75,6 +76,9 @@ class SystemStack:
     # Resolution): field name -> the original label to restore at teardown, None
     # when nothing changed. Volatile, so a missed restore clears on power-cycle.
     video_output_restore: dict[str, str] | None = None
+    # hardware_palette.provision_hardware_palette: the run's palette pusher,
+    # None when no scene pushes one. Teardown puts the machine's palette back.
+    hardware_palette: HardwarePalette | None = None
     framebuffer: Framebuffer | None = None
     preview_window: PreviewWindow | None = None
     recorder: StreamRecorder | None = None

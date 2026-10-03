@@ -75,7 +75,12 @@ from c64cast.video.modes import (
     MultiHiresDisplayMode,
     PETSCIIDisplayMode,
 )
-from c64cast.video.palette import CELL_STRATEGIES, COLOR_MATCH_MODES, resolve_color
+from c64cast.video.palette import (
+    CELL_STRATEGIES,
+    COLOR_MATCH_MODES,
+    HARDWARE_PALETTE_CHOICES,
+    resolve_color,
+)
 from c64cast.video.video import WebcamSource, ensure_pyav
 from c64cast.wled.wled_sink import WLEDSource
 
@@ -1589,6 +1594,43 @@ def validate_flicker_cfg(cfg: Config) -> None:
             raise ConfigError(err)
 
 
+def hardware_palette_cfg_error(label: str, color: ColorCfg) -> str | None:
+    """Check one resolved [color] section's hardware_palette; returns the
+    ConfigError message, or None if `color` is fine.
+
+    The two refusals are the two stages that already decide a scene's colors
+    against the machine's fixed 16: force_palette maps the source onto them,
+    and flicker_tolerance's fusion pairs are a table of which of them blend
+    without visible flicker. Neither means anything once the 16 move."""
+    if color.hardware_palette not in HARDWARE_PALETTE_CHOICES:
+        return (
+            f"{label}.hardware_palette must be one of "
+            f"{', '.join(HARDWARE_PALETTE_CHOICES)}, got {color.hardware_palette!r}"
+        )
+    if color.hardware_palette == "off":
+        return None
+    if color.force_palette:
+        return (
+            f"{label}.hardware_palette = {color.hardware_palette!r} cannot be "
+            "combined with force_palette: both re-choose the scene's colors"
+        )
+    if color.flicker_tolerance != "off":
+        return (
+            f"{label}.hardware_palette = {color.hardware_palette!r} cannot be "
+            "combined with flicker_tolerance: its blend pairs are measured "
+            "against the machine's fixed palette"
+        )
+    return None
+
+
+def validate_hardware_palette_cfg(cfg: Config) -> None:
+    """Guard hardware_palette on [color] and every scene override."""
+    for label, color in effective_colors(cfg):
+        err = hardware_palette_cfg_error(label, color)
+        if err:
+            raise ConfigError(err)
+
+
 def validate_control_cfg(control_cfg: ControlPlaneCfg) -> None:
     """Guard [control]: refuse an unauthenticated plane on a network address.
 
@@ -1834,6 +1876,7 @@ PER_SYSTEM_VALIDATORS: tuple[Callable[[Config], None], ...] = (
     validate_cell_strategy_cfg,
     validate_motion_smoothing_cfg,
     validate_flicker_cfg,
+    validate_hardware_palette_cfg,
     validate_wled_cfg,
 )
 
