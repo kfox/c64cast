@@ -1571,7 +1571,7 @@ def classify_route_answer(status: int, body: bytes) -> RouteAnswer:
 def _body_names_an_error(body: bytes) -> bool:
     try:
         parsed = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
         return False
     errors = parsed.get("errors") if isinstance(parsed, dict) else None
     return isinstance(errors, list) and bool(errors)

@@ -1208,6 +1208,10 @@ class RouteProbeTest(unittest.TestCase):
             with self.subTest(status=status, body=body):
                 self.assertEqual(api.classify_route_answer(status, body), expected)
 
+    def test_body_too_deep_to_parse_is_unknown(self):
+        with patch.object(api.json, "loads", side_effect=RecursionError):
+            self.assertEqual(api.classify_route_answer(404, b"[[[[]]]]"), "unknown")
+
     def test_present_route_is_asked_once(self):
         self._answer(200)
         self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
