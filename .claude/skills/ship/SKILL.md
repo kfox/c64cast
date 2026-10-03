@@ -3,8 +3,8 @@ name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
   to merge: branch, implement, commit, review each changeset as it lands, run a
-  branch-wide review at high effort, open the PR, and watch CI and GHAS until
-  green. Stops before merging — the merge is always the user's. Use when asked
+  branch-wide review at high effort, open the PR as a draft, watch CI and GHAS
+  until green, then mark it ready for review. Stops before merging — the merge is always the user's. Use when asked
   to implement a non-trivial change, or when asked to take a change through
   the full branch-review-PR workflow ("ship", "land", "take this to a PR").
 ---
@@ -16,7 +16,7 @@ mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
 branch → (implement → commit → review that changeset)* → branch-wide review
-       at high effort → PR → CI/GHAS green → STOP
+       at high effort → draft PR → CI/GHAS green → ready for review → STOP
 ```
 
 **Never merge.** The user merges. Do not run `gh pr merge`, do not enable
@@ -292,7 +292,7 @@ CI.
 
 ```bash
 make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
-  && gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>"
+  && gh pr create --draft --title "<type>: <what changed>" --body "<why, and what to look at>"
 ```
 
 The body should say what the change does, why, and anything a reviewer should
@@ -325,11 +325,21 @@ explicitly escalated to Kelly — never self-dismissed as a false positive.
 A CI failure that is a real defect gets its fix reviewed the way step 3 does, at
 the effort its size warrants, rather than quietly patched.
 
+Once every check is green and nothing is left to commit — no unrouted finding,
+no verification still to run — mark the PR ready:
+
+```bash
+gh pr ready
+```
+
+Ready for review tells Kelly the next step is the merge. If more work turns up
+after that, `gh pr ready --undo` puts it back to a draft until it is done.
+
 ## 7. Stop
 
 Report to the user:
 
-- The PR URL and its check status.
+- The PR URL, its check status, and that it is marked ready for review.
 - What the review found, fixed, and declined — with reasons for the declines.
 - Anything a review handed back rather than applied, and where it was routed —
   the commit that fixed it here, or the issue it became.
