@@ -351,8 +351,11 @@ def rest_get_config(category: str, url: str = U64_URL, timeout: float = 8.0) -> 
     try:
         r = rest_request("GET", f"{url}/v1/configs/{quote(category)}", timeout=timeout)
         r.raise_for_status()
+    except requests.RequestException:
+        return None
+    try:
         body = r.json()
-    except (requests.RequestException, ValueError):
+    except ValueError:
         return None
     inner = body.get(category)
     return inner if isinstance(inner, dict) else body
@@ -384,8 +387,11 @@ def rest_set_config(
             timeout=timeout,
         )
         r.raise_for_status()
+    except requests.RequestException:
+        return False
+    try:
         errs = r.json().get("errors", ["<no errors key>"])
-    except (requests.RequestException, ValueError):
+    except ValueError:
         return False
     return errs == []
 
