@@ -98,7 +98,9 @@ network connection, a lower frame rate, or a character display mode.
 
 **A steady hiss under everything, on a TeensyROM+.** If the TeensyROM+ is in a
 C64U or an Ultimate 64, check the Ultimate's **Bus Operation Mode**, which
-defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps.
+defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps. On
+Ultimate 64 firmware 3.15 there is also **Compatibility**, which includes
+writes, but **Writes** remains the tested setting.
 
 **No audio at all.** Check that `[audio] enabled` is true and that you did
 not pass `--no-audio`. For microphone input, check that the `mic` feature is
@@ -220,3 +222,8 @@ and considerably more detailed.
 [`docs/caveats.md`](https://github.com/kfox/c64cast/blob/main/docs/caveats.md)
 collects the hardware behaviors that surprise people, several of which look
 exactly like bugs and are not.
+
+If you report a problem, paste the output of `c64cast --doctor` with it. On an
+Ultimate, its CONNECTIVITY section names the machine, its firmware version
+and, from firmware 3.15a, the exact firmware build, which is what tells a
+problem in a pre-release firmware from one in c64cast.

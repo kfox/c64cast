@@ -372,6 +372,40 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "error")
         self.assertIn("launcher", conn[0].message)
 
+    def test_rest_password_refusal_is_a_password_error(self):
+        from c64cast.hw.api import RestAuthError
+
+        loaded = _load('[ultimate64]\nurl = "http://fake"\n')
+        with _fake_ultimate_api() as api_instance:
+            api_instance.probe.side_effect = RestAuthError("REST API refused c64cast")
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("REST API refused c64cast", conn[0].message)
+        assert conn[0].hint is not None
+        self.assertIn("C64CAST_DMA_PASSWORD", conn[0].hint)
+        api_instance.close.assert_called_once()
+
+    def test_unsendable_password_is_a_connectivity_error(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw\\n"\n')
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect") as connect:
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        connect.assert_not_called()
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("X-Password", conn[0].message)
+
+    def test_unsendable_password_is_an_offline_error_too(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw "\n')
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("X-Password", conn[0].message)
+        self.assertNotIn("pw ", conn[0].message.replace("password", ""))
+
     def test_rest_probe_failure_is_warn_for_dma_only_scene(self):
         """Video / slideshow / webcam / blank scenes paint entirely over DMA,
         so a dead REST link only degrades (keyboard/reset/launch) — a warning."""
@@ -386,6 +420,55 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "warn")
         self.assertIn("REST probe failed", conn[0].message)
         self.assertNotIn("cannot start", conn[0].message)
+
+
+class DeviceIdentityProbeTest(unittest.TestCase):
+    """Doctor names the unit and its firmware build, so a pasted report says
+    which machine and which build it came from."""
+
+    def _identity(self, info_response: Any) -> list:
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+        """)
+        with _fake_ultimate_api() as api_instance:
+            api_instance.session.get.side_effect = info_response
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.subject == "system (device)"]
+
+    def test_identity_line_carries_the_build_hash(self):
+        def get(url, **_kwargs):
+            r = mock.MagicMock()
+            r.json.return_value = (
+                {
+                    "product": "Ultimate 64-II",
+                    "firmware_version": "3.15a",
+                    "git_commit_hash": "dddd29b2",
+                    "fpga_version": "125",
+                    "core_version": "1.50",
+                    "unique_id": "B95B01",
+                    "wifi_mac": "48:CA:43:5A:73:78",
+                }
+                if url.endswith("/v1/info")
+                else {}
+            )
+            return r
+
+        ident = self._identity(get)
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertEqual(
+            ident[0].message,
+            "Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)",
+        )
+
+    def test_unanswered_info_is_reported_not_fatal(self):
+        import requests
+
+        ident = self._identity(requests.ConnectionError("down"))
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertIn("not reported", ident[0].message)
 
 
 class ReuStatusProbeTest(unittest.TestCase):

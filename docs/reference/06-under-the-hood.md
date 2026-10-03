@@ -82,6 +82,30 @@ ASID ring player; those settings are forced off on such a backend, and
 matching, panning and mixer levels are all no-ops — a multi-SID tune still draws
 every chip's scope, but only the first is audible.
 
+### What Each Firmware Can Do
+
+Some features depend on what an Ultimate's firmware answers rather than on
+which backend it is. c64cast asks for each of them at runtime and never reads a
+version number to decide, so a machine whose firmware picks a feature up later
+gets it then without a c64cast change. Ultimate 64 firmware 3.15a is the
+first to answer the ones below, and C64 Ultimate firmware 1.1.0 answers none
+of them.
+
+| Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.1.0 | Without it |
+|---|---|---|---|---|
+| Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
+| `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | — | — | Nothing to read or raise; every source plays at its own level |
+
+The palette read goes over the Command Interface, and is asked of an Ultimate
+64 only: an Ultimate II+ drives a real VIC-II, so `auto` assumes that rendering
+without asking. [Chapter 3](04-display-pipeline.md) has the rest, under
+"Near To What — `[hardware].host_palette`".
+
+`Vol Master` is also in an Ultimate II+'s Audio Output Settings from firmware
+3.15. On both machines c64cast looks for the setting itself, and
+[Chapter 4](05-sound-and-music.md) explains what it does with it, under "The
+Ultimate Audio Sampler".
+
 ## What Lands in Memory
 
 c64cast writes into a real Commodore's 64 KB, alongside a running BASIC program

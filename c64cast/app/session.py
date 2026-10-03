@@ -35,7 +35,7 @@ from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.control.keyboard import CommodoreKeyPoller
 from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
 from c64cast.hw import char_rom, hw_provision
-from c64cast.hw.api import SocketDMAError
+from c64cast.hw.api import RestAuthError, SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
@@ -143,7 +143,10 @@ def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) ->
         "  3. If a network password is set on the U64, supply it via the "
         "C64CAST_DMA_PASSWORD env var or [ultimate64] dma_password."
     )
-    log.error("Save and reboot the U64 after changing either toggle.")
+    log.error(
+        "Save after changing either toggle; a service switched on starts "
+        "within a few seconds, without a reboot."
+    )
 
 
 def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
@@ -323,6 +326,9 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     except SocketDMAError as e:
         _log_dma_setup_error(cfg, e, role="render")
         raise StackBuildError(4) from e
+    except ValueError as e:
+        log.error("Could not connect to the C64 hardware (%s): %s", name, e)
+        raise StackBuildError(4) from e
     except TRError as e:
         log.error(
             "TeensyROM connect failed (%s): %s. Check the cable / "
@@ -334,7 +340,12 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
         raise StackBuildError(4) from e
 
     if not cfg.debug.skip_probe:
-        status = api.probe()
+        try:
+            status = api.probe()
+        except RestAuthError as e:
+            log.error("Could not use the C64 hardware (%s): %s", name, e)
+            api.close()
+            raise StackBuildError(4) from e
         if status is None:
             log.error(
                 "Could not reach the C64 hardware (%s backend) — check "
@@ -345,7 +356,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
             api.close()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
-        if identity := api.describe_device():
+        if identity := api.describe_device(detailed=log.isEnabledFor(logging.DEBUG)):
             log.info("connected device: %s", identity)
         # One cheap REST call downgrades capability flags the family profile
         # claims optimistically (a U2+ has no multi-SID config surface). Under

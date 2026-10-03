@@ -291,6 +291,36 @@ class BuildSessionTest(unittest.TestCase):
         self.assertEqual([c.args[2] for c in bs.call_args_list], [stacks[0].api, stacks[1].api])
 
 
+class OpenBackendPasswordTest(unittest.TestCase):
+    """A network-password problem stops the stack with exit 4, the code a
+    rejected DMA password already gets, and logs the reason."""
+
+    def test_a_rest_password_refusal_is_exit_4(self):
+        from c64cast.hw.api import RestAuthError
+
+        backend = mock.MagicMock(name="backend")
+        backend.probe.side_effect = RestAuthError("REST API refused c64cast")
+        with (
+            mock.patch.object(session, "make_backend", return_value=backend),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        self.assertIn("(system): REST API refused c64cast", "\n".join(logs.output))
+        backend.close.assert_called_once()
+
+    def test_an_unsendable_password_is_exit_4(self):
+        with (
+            mock.patch.object(session, "make_backend", side_effect=ValueError("bad header")),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        self.assertIn("bad header", "\n".join(logs.output))
+
+
 class BuildStackCameraTest(unittest.TestCase):
     """build_stack opens the camera only when something needs it — and a
     [[performance.clips]] table counts: `type` defaults to "webcam" there, so
@@ -326,6 +356,32 @@ class BuildStackCameraTest(unittest.TestCase):
         cfg.scenes = []
         cfg.performance.clips = [{"pad": 1, "type": "blank"}]
         self._camera_opens_for(cfg).assert_not_called()
+
+
+class OpenBackendIdentityTest(unittest.TestCase):
+    """The connect line asks for the firmware build only at -v, where the
+    root logger is at DEBUG."""
+
+    def _detailed_at(self, level: str) -> bool:
+        cfg = cfgmod.Config()
+        api = mock.MagicMock()
+        api.probe.return_value = "HTTP 200"
+        api.describe_device.return_value = "Ultimate 64-II"
+        with (
+            mock.patch.object(session, "make_backend", return_value=api),
+            mock.patch.object(session.hw_provision, "resolve_system"),
+            mock.patch.object(session.hw_provision, "resolve_palette"),
+            self.assertLogs("c64cast", level=level) as logs,
+        ):
+            session._open_backend(cfg, "system")
+        self.assertIn("connected device: Ultimate 64-II", "\n".join(logs.output))
+        return api.describe_device.call_args.kwargs["detailed"]
+
+    def test_default_verbosity_leaves_the_build_out(self):
+        self.assertFalse(self._detailed_at("INFO"))
+
+    def test_debug_asks_for_the_build(self):
+        self.assertTrue(self._detailed_at("DEBUG"))
 
 
 class BuildPreviewAndRecordingTest(unittest.TestCase):

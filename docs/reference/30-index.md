@@ -141,7 +141,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `dither_strength` | [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
 | `dither_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | dithering | [What Is In Here](01-introduction.md#what-is-in-here), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither) |
-| `dma_password` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `dma_password` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [`--doctor` (1)](02-config-rules.md#--doctor) |
@@ -249,7 +249,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `host` (teensyrom) | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `host` (web) | [`web` (A)](20-appendix-a-configuration.md#web) |
 | `host_dma_servo` | [The Pitch Knobs That Default Off (4)](05-sound-and-music.md#the-pitch-knobs-that-default-off), [`audio` (A)](20-appendix-a-configuration.md#audio) |
-| `host_palette` | [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
+| `host_palette` | [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette), [Blending Colors the VIC Cannot Draw — `flicker_tolerance` (3)](04-display-pipeline.md#blending-colors-the-vic-cannot-draw--flicker_tolerance), [What Each Firmware Can Do (5)](06-under-the-hood.md#what-each-firmware-can-do) |
 | `host_sid_chips` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play) |
 | `host_sid_model` | [Declaring the Host Chip (4)](05-sound-and-music.md#declaring-the-host-chip), [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [When a Tune Wants More Chips Than the Machine Has (4)](05-sound-and-music.md#when-a-tune-wants-more-chips-than-the-machine-has) |
 | `host_sid_tune_match` | [Machines With More Than One Internal SID (4)](05-sound-and-music.md#machines-with-more-than-one-internal-sid), [Picking Tunes the Machine Can Play (4)](05-sound-and-music.md#picking-tunes-the-machine-can-play), [`hardware` (A)](20-appendix-a-configuration.md#hardware) |
@@ -499,7 +499,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `sink_height` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_width` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_wled_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
-| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
+| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette) |
 | `skip_probe` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `slideshow` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `soap` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |

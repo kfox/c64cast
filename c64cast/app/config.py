@@ -307,9 +307,11 @@ class HardwareCfg:
         metadata={
             "help": "The 16 colors the C64 being driven actually emits, which "
             "the quantizer aims at. 'auto' (default) reads it from the machine "
-            "where it can — an Ultimate on firmware 3.15 or newer reports the "
-            "colors it is really driving, a custom .vpl included — and "
-            "otherwise assumes a real VIC-II. 'u64' is the "
+            "where it can — an Ultimate 64 on firmware 3.15a or newer reports the "
+            "colors it is really driving, a custom .vpl included; an Ultimate 64 "
+            "that cannot answer is assumed to show its built-in table, and "
+            "anything else a real VIC-II, as is every machine under "
+            "`--skip-probe`. 'u64' is the "
             "Ultimate 64's own built-in table; 'pepto' is the classic VIC-II "
             "rendering, right for a real C64 (so for an Ultimate II+, and for a "
             "TeensyROM+ in a breadbin). Can also be the path to a VICE .vpl "
@@ -446,8 +448,10 @@ class Ultimate64Cfg:
     dma_password: str | None = field(
         default=None,
         metadata={
-            "help": "U64 network password, if set. Prefer the C64CAST_DMA_PASSWORD "
-            "env var over committing it here."
+            "help": "The Ultimate's network password, if one is set. It is sent "
+            "on the DMA socket and in the X-Password header of every REST call, "
+            "because the firmware checks the same password on both. Prefer the "
+            "C64CAST_DMA_PASSWORD env var over committing it here."
         },
     )
     # Auto-provision the U64's REU for runs that hard-require it ([audio].use_reu_pump
