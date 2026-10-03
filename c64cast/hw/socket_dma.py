@@ -172,8 +172,8 @@ class SocketDMAClient:
     def _reconnect_locked(self) -> None:
         """``_connect_locked()``, but refuses instead of redialing when the
         client was closed or a previous AUTHENTICATE was rejected — see the
-        class docstring. Used by the implicit-reconnect paths (dmawrite /
-        flush finding ``self._sock is None``); ``connect()`` calls
+        class docstring. Used by every implicit reconnect, and counts each
+        one that succeeds in ``reconnect_count``; ``connect()`` calls
         ``_connect_locked()`` directly since it's the one place these
         states are meant to be cleared."""
         if self._closed:
@@ -186,6 +186,7 @@ class SocketDMAClient:
                 "explicitly"
             )
         self._connect_locked()
+        self.reconnect_count += 1
 
     def _connect_locked(self) -> None:
         # Caller must hold self._lock.
@@ -237,12 +238,16 @@ class SocketDMAClient:
                 "or the C64CAST_DMA_PASSWORD env var."
             )
 
+    def _identify_roundtrip_locked(self) -> bytes:
+        """Send IDENTIFY and return the reply's payload."""
+        self._send_cmd_locked(CMD_IDENTIFY, b"")
+        length = self._recv_exact_locked(1)[0]
+        return self._recv_exact_locked(length)
+
     def _identify_locked(self) -> str:
         assert self._sock is not None
         try:
-            self._send_cmd_locked(CMD_IDENTIFY, b"")
-            length = self._recv_exact_locked(1)[0]
-            payload = self._recv_exact_locked(length)
+            payload = self._identify_roundtrip_locked()
         except TimeoutError as e:
             # A TCP accept with no IDENTIFY reply is usually the U64's
             # "Command Interface" toggle being OFF: it gates the DMA command
@@ -318,7 +323,7 @@ class SocketDMAClient:
         return bytes(buf)
 
     def _redial_locked(self, reason: str, *, benign: bool = False) -> None:
-        """Close the current socket and open a fresh one, counting it.
+        """Close the current socket and open a fresh one.
 
         Unless ``benign``, commands sent on the old connection since its
         last answered IDENTIFY may never have run, and the next ``flush()``
@@ -329,7 +334,6 @@ class SocketDMAClient:
             self._maybe_lost = reason
         self._close_locked()
         self._reconnect_locked()
-        self.reconnect_count += 1
 
     def _peer_gone_locked(self) -> tuple[str, bool] | None:
         """``(why, benign)`` when the server can no longer be reached on
@@ -371,9 +375,7 @@ class SocketDMAClient:
         proves the connection is open and restarts the server's idle timer,
         so the command that follows has the whole timeout to arrive."""
         try:
-            self._send_cmd_locked(CMD_IDENTIFY, b"")
-            length = self._recv_exact_locked(1)[0]
-            self._recv_exact_locked(length)
+            self._identify_roundtrip_locked()
         except OSError as e:
             return f"idle connection did not answer IDENTIFY ({e})"
         self._last_send = time.monotonic()
@@ -386,7 +388,6 @@ class SocketDMAClient:
         if self._sock is None:
             # A previous reconnect attempt failed mid-handshake.
             self._reconnect_locked()
-            self.reconnect_count += 1
             return
         gone = self._peer_gone_locked()
         if gone is None and time.monotonic() - self._last_send >= self.idle_verify_after_s:
@@ -541,9 +542,7 @@ class SocketDMAClient:
             )
         try:
             t0 = time.perf_counter()
-            self._send_cmd_locked(CMD_IDENTIFY, b"")
-            length = self._recv_exact_locked(1)[0]
-            self._recv_exact_locked(length)
+            self._identify_roundtrip_locked()
         except OSError:
             # No transparent retry: callers use flush() as a sync barrier
             # before a REST runner and own the log message. Close, though —
