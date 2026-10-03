@@ -59,7 +59,7 @@ from .c64 import (
     frame_rate,
     kernal_cia1_latch,
 )
-from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
+from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError, encode_password
 from .vic_stream import VicStreamReceiver
 
 __all__ = [
@@ -1569,24 +1569,18 @@ def password_header_value(password: str) -> bytes:
     password identically.
 
     Raises ValueError, without echoing the password, when HTTP cannot carry it
-    as a header value: a control character, or leading or trailing whitespace
-    (which header parsing strips). Left to `requests`, that surfaces on the
-    first REST call as an ``InvalidHeader`` whose message quotes the value."""
-    if password != password.strip() or any(ord(c) < 0x20 or ord(c) == 0x7F for c in password):
+    as a header value: a control character, or a leading or trailing space or
+    tab (which header parsing strips), or when it is not valid UTF-8. Left to
+    `requests`, the first surfaces on the first REST call as an
+    ``InvalidHeader`` whose message quotes the value."""
+    if password != password.strip(" \t") or any(ord(c) < 0x20 or ord(c) == 0x7F for c in password):
         raise ValueError(
             f"the network password in {_PASSWORD_SOURCES} contains a control "
             "character or leading/trailing whitespace, which the X-Password "
             "header of a REST request cannot carry; change the password on the "
             "Ultimate (F2 -> Network Settings -> Network Password) and here"
         )
-    try:
-        return password.encode("utf-8")
-    except UnicodeEncodeError:
-        # The codec's message quotes the offending character and its index.
-        raise ValueError(
-            f"the network password in {_PASSWORD_SOURCES} is not valid UTF-8; "
-            "set it from a UTF-8 shell or in the config file"
-        ) from None
+    return encode_password(password)
 
 
 class _UltimateSession(requests.Session):
@@ -1617,6 +1611,18 @@ class _UltimateSession(requests.Session):
             del prepared_request.headers[PASSWORD_HEADER]
 
 
+def make_rest_session(password: str | None) -> requests.Session:
+    """A `requests.Session` for an Ultimate's REST API, carrying `password` as
+    ``X-Password`` on every request when one is set. The firmware ignores the
+    header while no password is set on the device, so there is nothing to
+    probe first. Raises ValueError as `password_header_value` does."""
+    header = password_header_value(password) if password else None
+    session = _UltimateSession()
+    if header is not None:
+        session.headers[PASSWORD_HEADER] = header
+    return session
+
+
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def __init__(
         self,
@@ -1640,13 +1646,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         self._last_flush_failed = False
 
         # The firmware has one network password, and it guards the REST API
-        # routes as well as the DMA socket. The header is ignored while no
-        # password is set on the device, so there is nothing to probe first.
-        header = password_header_value(dma_password) if dma_password else None
-        self._password_configured = header is not None
-        self.session = _UltimateSession()
-        if header is not None:
-            self.session.headers[PASSWORD_HEADER] = header
+        # routes as well as the DMA socket.
+        self._password_configured = bool(dma_password)
+        self.session = make_rest_session(dma_password)
 
         # The DMA host is the REST host — the same physical box, so there is no
         # second config field.

@@ -187,8 +187,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `[ultimate64].dma_password` now reach both links, so nothing in your setup
   changes. Startup and `--doctor` also now say so when the REST API refuses
   the password, instead of failing piecemeal later, and a password containing
-  a control character or leading/trailing whitespace, which an HTTP header
-  cannot carry, is refused at startup without being echoed.
+  a control character or a leading or trailing space or tab, which an HTTP
+  header cannot carry, is refused at startup (and by `--doctor --skip-probe`)
+  without being echoed. `--dump-char-rom` and `--calibrate-dac` now exit 4
+  with that message, or a refused DMA password or TeensyROM link error,
+  instead of a traceback.
 
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that

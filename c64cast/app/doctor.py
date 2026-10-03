@@ -185,6 +185,10 @@ def validate_load_result(
     out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
+    if not probe_u64:
+        # The connectivity probe reports the same refusal when it builds the
+        # backend, so only the offline run needs it said here.
+        out.extend(_validate_network_password(loaded))
     if loaded.is_ensemble:
         out.extend(_validate_cross_system_orchestration(loaded))
         out.extend(_validate_ensemble_recording_paths(loaded))
@@ -1404,6 +1408,31 @@ def _validate_cross_system_orchestration(loaded: LoadResult) -> list[Diagnostic]
                         ),
                     )
                 )
+    return out
+
+
+def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
+    """An Ultimate network password the ``X-Password`` header cannot carry
+    stops every run at connect (exit 4), so the offline check reports it too.
+    The message is `password_header_value`'s own, which never quotes it."""
+    from c64cast.hw.api import password_header_value
+
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        password = cfg.ultimate64.dma_password
+        if cfg.hardware.backend != "ultimate" or not password:
+            continue
+        try:
+            password_header_value(password)
+        except ValueError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=str(e),
+                )
+            )
     return out
 
 

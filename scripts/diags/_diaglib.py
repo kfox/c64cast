@@ -180,12 +180,23 @@ def python_exe() -> str:
     return sys.executable
 
 
+def rest_request(method: str, url: str, **kwargs):
+    """One REST request sent the way c64cast sends it: ``C64CAST_DMA_PASSWORD``
+    as ``X-Password`` when set, and no environment proxy handed that header.
+    A fresh session per call, like the bare ``requests.get`` it replaces, so
+    concurrent pollers share nothing."""
+    from c64cast.hw.api import make_rest_session
+
+    with make_rest_session(os.environ.get("C64CAST_DMA_PASSWORD")) as session:
+        return session.request(method, url, **kwargs)
+
+
 def rest_ping(url: str = U64_URL, timeout: float = 3.0) -> int | None:
     """GET / and return the HTTP status code, or None if unreachable."""
     import requests
 
     try:
-        return requests.get(url + "/", timeout=timeout).status_code
+        return rest_request("GET", url + "/", timeout=timeout).status_code
     except requests.RequestException:
         return None
 
@@ -221,7 +232,8 @@ def rest_readmem(
     import requests
 
     try:
-        r = requests.get(
+        r = rest_request(
+            "GET",
             url + "/v1/machine:readmem",
             params={"address": f"{address:04X}", "length": str(length)},
             timeout=timeout,
@@ -246,7 +258,7 @@ def rest_reset(url: str = U64_URL, timeout: float = 5.0) -> int | None:
     import requests
 
     try:
-        return requests.put(url + "/v1/machine:reset", timeout=timeout).status_code
+        return rest_request("PUT", url + "/v1/machine:reset", timeout=timeout).status_code
     except requests.RequestException:
         return None
 
@@ -294,7 +306,8 @@ def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float 
     import requests
 
     try:
-        r = requests.post(
+        r = rest_request(
+            "POST",
             url + "/v1/machine:writemem",
             params={"address": f"{address:04X}", "data": data.hex()},
             timeout=timeout,
@@ -322,7 +335,7 @@ def rest_reboot(url: str = U64_URL, timeout: float = 5.0) -> int | None:
     import requests
 
     try:
-        return requests.put(url + "/v1/machine:reboot", timeout=timeout).status_code
+        return rest_request("PUT", url + "/v1/machine:reboot", timeout=timeout).status_code
     except requests.RequestException:
         return None
 
@@ -336,7 +349,7 @@ def rest_get_config(category: str, url: str = U64_URL, timeout: float = 8.0) -> 
     import requests
 
     try:
-        r = requests.get(f"{url}/v1/configs/{quote(category)}", timeout=timeout)
+        r = rest_request("GET", f"{url}/v1/configs/{quote(category)}", timeout=timeout)
         r.raise_for_status()
         body = r.json()
     except (requests.RequestException, ValueError):
@@ -364,7 +377,8 @@ def rest_set_config(
     import requests
 
     try:
-        r = requests.put(
+        r = rest_request(
+            "PUT",
             f"{url}/v1/configs/{quote(category)}/{quote(setting)}",
             params={"value": value},
             timeout=timeout,

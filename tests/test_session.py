@@ -307,7 +307,7 @@ class OpenBackendPasswordTest(unittest.TestCase):
         ):
             session._open_backend(cfgmod.Config(), "system")
         self.assertEqual(caught.exception.exit_code, 4)
-        self.assertIn("REST API refused c64cast", "\n".join(logs.output))
+        self.assertIn("(system): REST API refused c64cast", "\n".join(logs.output))
         backend.close.assert_called_once()
 
     def test_an_unsendable_password_is_exit_4(self):

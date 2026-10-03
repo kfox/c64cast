@@ -397,6 +397,15 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "error")
         self.assertIn("X-Password", conn[0].message)
 
+    def test_unsendable_password_is_an_offline_error_too(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw "\n')
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("X-Password", conn[0].message)
+        self.assertNotIn("pw ", conn[0].message.replace("password", ""))
+
     def test_rest_probe_failure_is_warn_for_dma_only_scene(self):
         """Video / slideshow / webcam / blank scenes paint entirely over DMA,
         so a dead REST link only degrades (keyboard/reset/launch) — a warning."""

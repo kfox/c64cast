@@ -1679,6 +1679,13 @@ class PasswordHeaderValueTest(unittest.TestCase):
     def test_encodes_as_utf8_like_the_dma_authenticate(self):
         self.assertEqual(api.password_header_value("pässword"), "pässword".encode())
 
+    def test_accepts_non_ascii_whitespace_at_the_edges(self):
+        # HTTP strips only spaces and tabs from a field value; a no-break space
+        # is an ordinary octet sequence there, and the DMA socket carries it too.
+        for password in (" pw", "pw　"):
+            with self.subTest(password=password):
+                self.assertEqual(api.password_header_value(password), password.encode())
+
     def test_rejects_what_a_header_cannot_carry_without_echoing_it(self):
         for password in ("pw\r\nX-Evil: 1", "pw\x00", " pw", "pw ", "pw\t"):
             with self.subTest(password=password):

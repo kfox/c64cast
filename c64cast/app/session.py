@@ -340,7 +340,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
         try:
             status = api.probe()
         except RestAuthError as e:
-            log.error("%s", e)
+            log.error("Could not use the C64 hardware (%s): %s", name, e)
             api.close()
             raise StackBuildError(4) from e
         if status is None:
