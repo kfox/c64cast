@@ -200,6 +200,13 @@ class JoystickSenderTest(unittest.TestCase):
     """The sender's batching, resync after a failed post, and stop on a
     revoked API, driven without its thread."""
 
+    def setUp(self):
+        # Only a test that backdates its events collapses a backlog, however
+        # long a loaded runner takes between queuing an event and sending it.
+        lag = mock.patch.object(scenes, "_INJECT_MAX_LAG_S", 30.0)
+        lag.start()
+        self.addCleanup(lag.stop)
+
     def _scene(self, tmp):
         scene, api = _make_scene(tmp, input_source="none")
         api.profile.supports_rest_input = True
@@ -254,6 +261,8 @@ class JoystickSenderTest(unittest.TestCase):
             scene._held.add((2, "fire"))
             queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
             for event in (
+                _joy(2, "press", "up"),
+                _joy(2, "release", "up"),
                 _joy(2, "release", "fire"),
                 _joy(2, "press", "fire"),
                 _joy(2, "release", "fire"),
@@ -269,6 +278,20 @@ class JoystickSenderTest(unittest.TestCase):
                 [[_joy(2, "release", "fire"), _joy(2, "press", "up")]],
             )
             self.assertEqual(scene._held, {(2, "up")})
+
+    def test_a_collapse_starts_from_the_carried_event_and_uses_it_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene._held.add((2, "fire"))
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            scene._carry = (queued_at, _joy(2, "release", "fire"))
+            scene._injected.put((queued_at, _joy(2, "press", "up")))
+            self.assertEqual(
+                self._drain(scene),
+                [[_joy(2, "release", "fire"), _joy(2, "press", "up")]],
+            )
+            scene._enqueue(_joy(2, "press", "fire"))
+            self.assertEqual(self._drain(scene), [[_joy(2, "press", "fire")]])
 
     def test_failed_post_resends_the_held_state(self):
         with tempfile.TemporaryDirectory() as tmp:
