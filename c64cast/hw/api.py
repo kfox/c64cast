@@ -1793,15 +1793,18 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
 
         ``GET /v1/machine:menu_screen`` answers 200 with the 2000-byte screen
         only while the menu is open, and a 404 with a JSON error otherwise.
-        A transport failure is also None, logged at DEBUG; a payload of the
-        wrong size logs a WARNING, since that means the format changed.
-        Callers gate on ``profile.supports_menu_screen``."""
+        A transport failure is also None, logged at DEBUG; any other answer —
+        a payload of the wrong size, or a status that is not one of those
+        two — logs a WARNING, since the menu's state is then unknown rather
+        than closed. Callers gate on ``profile.supports_menu_screen``."""
         try:
             r = self.session.get(f"{self.base_url}{U64_API.MENU_SCREEN}", timeout=timeout)
         except requests.RequestException as e:
             log.debug("menu screen read failed: %s", e)
             return None
         if r.status_code != 200:
+            if classify_route_answer(r.status_code, r.content) != "present":
+                log.warning("menu screen read answered HTTP %d, check skipped", r.status_code)
             return None
         try:
             return decode_menu_screen(r.content)

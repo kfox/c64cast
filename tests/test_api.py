@@ -1180,10 +1180,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.reset()  # shutdown path — must not raise
 
 
-class RouteProbeTest(unittest.TestCase):
-    """The shared probe for firmware routes 3.15 added: which answers mean
-    the route is there, that each path is asked once per connection, and
-    that whatever cannot be classified fails closed and is not cached."""
+class _RestAnswerTestCase(unittest.TestCase):
+    """An Ultimate64API whose every REST GET answers what `_answer` sets."""
 
     def setUp(self):
         patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
@@ -1196,6 +1194,12 @@ class RouteProbeTest(unittest.TestCase):
     def _answer(self, status: int, body: bytes = b"") -> None:
         self.get.return_value.status_code = status
         self.get.return_value.content = body
+
+
+class RouteProbeTest(_RestAnswerTestCase):
+    """The shared probe for firmware routes 3.15 added: which answers mean
+    the route is there, that each path is asked once per connection, and
+    that whatever cannot be classified fails closed and is not cached."""
 
     def test_classification(self):
         cases = [
@@ -1259,22 +1263,10 @@ class RouteProbeTest(unittest.TestCase):
         self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
 
 
-class MenuScreenTest(unittest.TestCase):
+class MenuScreenTest(_RestAnswerTestCase):
     """read_menu_screen: decoded while the menu is open, None while it is
     closed or unreadable, and refine_capabilities grants the flag only when
     the route answers."""
-
-    def setUp(self):
-        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
-        self.addCleanup(patcher.stop)
-        patcher.start()
-        self.api = Ultimate64API("http://example.invalid")
-        self.get = patch.object(self.api.session, "get").start()
-        self.addCleanup(patch.stopall)
-
-    def _answer(self, status: int, body: bytes) -> None:
-        self.get.return_value.status_code = status
-        self.get.return_value.content = body
 
     def test_open_menu_is_decoded(self):
         self._answer(200, b"A" + b" " * 999 + b"\x01" * 1000)
@@ -1285,7 +1277,16 @@ class MenuScreenTest(unittest.TestCase):
 
     def test_closed_menu_is_none(self):
         self._answer(404, b'{ "errors" : [ "Menu screen unavailable." ] }')
-        self.assertIsNone(self.api.read_menu_screen())
+        with self.assertNoLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.read_menu_screen())
+
+    def test_unexpected_status_warns_and_is_none(self):
+        for status, body in ((500, b""), (404, b""), (403, b"<html>no</html>")):
+            with self.subTest(status=status, body=body):
+                self._answer(status, body)
+                with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+                    self.assertIsNone(self.api.read_menu_screen())
+                self.assertIn(f"HTTP {status}", cm.output[0])
 
     def test_wrong_size_payload_warns_and_is_none(self):
         self._answer(200, b"short")
