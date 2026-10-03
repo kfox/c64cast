@@ -21,6 +21,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **c64cast tells you when the Ultimate menu is open.** An open menu takes the
+  keyboard and hides some or all of what c64cast draws, with nothing on the
+  host side to say why. `--doctor` now reports it as a warning (`-v` logs the
+  text the menu is showing), and a run warns once at startup if the menu is
+  still open after its reset. The reset closes the menu in the default
+  "Freeze" interface but not in "Overlay on HDMI". This needs Ultimate
+  firmware **3.15** or newer. On older firmware, including C64 Ultimate
+  1.1.0, the check is skipped with one log line saying so.
+
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running
@@ -183,6 +192,22 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   visibly less.
 
 ### Fixed
+
+- **An Ultimate with a network password now accepts c64cast's REST calls as
+  well as its DMA writes.** The firmware checks the same password on its REST
+  API, in an `X-Password` header, and c64cast only ever sent it on the DMA
+  socket. So with a password set the screen painted, but every REST call was
+  refused with 403: machine reset, program and SID player launch, keyboard
+  reads, and every config read and write (REU and sampler provisioning, SID
+  routing, `--doctor`'s checks). `C64CAST_DMA_PASSWORD` and
+  `[ultimate64].dma_password` now reach both links, so nothing in your setup
+  changes. Startup and `--doctor` also now say so when the REST API refuses
+  the password, instead of failing piecemeal later, and a password containing
+  a control character or a leading or trailing space or tab, which an HTTP
+  header cannot carry, is refused at startup (and by `--doctor --skip-probe`)
+  without being echoed. `--dump-char-rom` and `--calibrate-dac` now exit 4
+  with that message, or a refused DMA password or TeensyROM link error,
+  instead of a traceback.
 
 - **`--doctor` no longer warns "REST query for SID status failed" on an
   Ultimate 64 running firmware 3.15.** Firmware 3.15 answers a read of a

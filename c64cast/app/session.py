@@ -35,7 +35,7 @@ from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.control.keyboard import CommodoreKeyPoller
 from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
 from c64cast.hw import char_rom, hw_provision
-from c64cast.hw.api import SocketDMAError
+from c64cast.hw.api import RestAuthError, SocketDMAError
 from c64cast.hw.backend import C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
 from c64cast.scenes.interstitial import default_factory as interstitial_factory
@@ -326,6 +326,9 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     except SocketDMAError as e:
         _log_dma_setup_error(cfg, e, role="render")
         raise StackBuildError(4) from e
+    except ValueError as e:
+        log.error("Could not connect to the C64 hardware (%s): %s", name, e)
+        raise StackBuildError(4) from e
     except TRError as e:
         log.error(
             "TeensyROM connect failed (%s): %s. Check the cable / "
@@ -337,7 +340,12 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
         raise StackBuildError(4) from e
 
     if not cfg.debug.skip_probe:
-        status = api.probe()
+        try:
+            status = api.probe()
+        except RestAuthError as e:
+            log.error("Could not use the C64 hardware (%s): %s", name, e)
+            api.close()
+            raise StackBuildError(4) from e
         if status is None:
             log.error(
                 "Could not reach the C64 hardware (%s backend) — check "
@@ -358,6 +366,17 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     # Before anything renders: every color decision is a distance against these 16.
     hw_provision.resolve_palette(cfg, api)
     return api
+
+
+def _warn_if_menu_open(api: C64Backend) -> None:
+    """Warn once, after the bring-up reset, when the Ultimate menu is still
+    open. That reset closes a Freeze-style menu but not an HDMI overlay, which
+    takes the keyboard and covers part of the picture."""
+    if api.profile.supports_menu_screen and api.read_menu_screen() is not None:
+        log.warning(
+            "the Ultimate menu is open on the machine: it takes the keyboard and "
+            "covers part of the picture until you close it (RUN/STOP or the menu button)"
+        )
 
 
 def _build_audio(cfg: cfgmod.Config, api: C64Backend) -> AudioStreamer | None:
@@ -639,6 +658,7 @@ def _acquire_stack(
     api.reset()
     time.sleep(1)
     api.run_basic_clear_loop()
+    _warn_if_menu_open(api)
 
     # Here because the machine is idle and nothing has painted: the Ultimate's
     # dump soft-resets and puts the clear loop back itself. Best-effort and never

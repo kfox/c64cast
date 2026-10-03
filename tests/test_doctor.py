@@ -52,6 +52,7 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
     block in every connectivity test."""
     from c64cast.hw.api import Ultimate64API
     from c64cast.hw.backend import ULTIMATE_PROFILE
+    from c64cast.hw.c64 import U64_API
 
     with mock.patch.object(Ultimate64API, "__init__", return_value=None):
         api_instance = Ultimate64API.__new__(Ultimate64API)
@@ -62,6 +63,8 @@ def _fake_ultimate_api(*, base_url: str = "http://fake") -> Iterator[Any]:
         # The real __init__ always sets a profile; refine_capabilities (run
         # by _probe_one_system after a successful probe) reads it.
         api_instance.profile = ULTIMATE_PROFILE
+        # Old firmware by default, so no route probe reaches `session`.
+        api_instance._route_answers = {U64_API.MENU_SCREEN: "absent"}
         with mock.patch("c64cast.hw.api.Ultimate64API", return_value=api_instance):
             yield api_instance
 
@@ -372,6 +375,40 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "error")
         self.assertIn("launcher", conn[0].message)
 
+    def test_rest_password_refusal_is_a_password_error(self):
+        from c64cast.hw.api import RestAuthError
+
+        loaded = _load('[ultimate64]\nurl = "http://fake"\n')
+        with _fake_ultimate_api() as api_instance:
+            api_instance.probe.side_effect = RestAuthError("REST API refused c64cast")
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("REST API refused c64cast", conn[0].message)
+        assert conn[0].hint is not None
+        self.assertIn("C64CAST_DMA_PASSWORD", conn[0].hint)
+        api_instance.close.assert_called_once()
+
+    def test_unsendable_password_is_a_connectivity_error(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw\\n"\n')
+        with mock.patch("c64cast.hw.socket_dma.SocketDMAClient.connect") as connect:
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        connect.assert_not_called()
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("X-Password", conn[0].message)
+
+    def test_unsendable_password_is_an_offline_error_too(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw "\n')
+        diags = doctor.validate_load_result(loaded, probe_u64=False)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0].level, "error")
+        self.assertIn("X-Password", conn[0].message)
+        self.assertNotIn("pw ", conn[0].message.replace("password", ""))
+
     def test_rest_probe_failure_is_warn_for_dma_only_scene(self):
         """Video / slideshow / webcam / blank scenes paint entirely over DMA,
         so a dead REST link only degrades (keyboard/reset/launch) — a warning."""
@@ -386,6 +423,38 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "warn")
         self.assertIn("REST probe failed", conn[0].message)
         self.assertNotIn("cannot start", conn[0].message)
+
+
+class MenuOpenProbeTest(unittest.TestCase):
+    """The menu-open warning: a warn row when firmware 3.15 says the menu is
+    open, and nothing at all when it is closed or the firmware has no route."""
+
+    def _connectivity(self, route: str, screen: object) -> list:
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+        """)
+        with _fake_ultimate_api() as api_instance:
+            from c64cast.hw.c64 import U64_API
+
+            api_instance._route_answers = {U64_API.MENU_SCREEN: route}
+            api_instance.read_menu_screen = mock.MagicMock(return_value=screen)
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.subject.endswith("(menu)")]
+
+    def test_open_menu_is_a_warning(self):
+        from c64cast.hw.menu_screen import decode_menu_screen
+
+        screen = decode_menu_screen(b" " * 2000)
+        (row,) = self._connectivity("present", screen)
+        self.assertEqual(row.level, "warn")
+        self.assertIn("menu is open", row.message)
+
+    def test_closed_menu_says_nothing(self):
+        self.assertEqual(self._connectivity("present", None), [])
+
+    def test_firmware_without_the_route_says_nothing(self):
+        self.assertEqual(self._connectivity("absent", object()), [])
 
 
 class DeviceIdentityProbeTest(unittest.TestCase):
