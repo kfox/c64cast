@@ -1680,7 +1680,8 @@ def _probe_u64_services(
             category="connectivity",
             subject=name,
             message=f"DMA + REST reachable at {url} ({status})",
-        )
+        ),
+        _device_identity_diagnostic(name, api),
     ]
     out.extend(_probe_system_mode(name, cfg, api))
     out.extend(_probe_reu_status(name, cfg, api))
@@ -1689,6 +1690,20 @@ def _probe_u64_services(
     out.extend(_probe_dac_calibration_status(name, cfg, api))
     out.extend(_probe_sid_autoconfig_status(name, cfg, api))
     return out
+
+
+def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
+    """Which unit answered and what firmware build it runs, build hash
+    included when the firmware reports one (3.15a and later) — the line a bug
+    report against a pre-release build needs. A device whose ``GET /v1/info``
+    fails is still usable, so that is an ``ok`` saying so, not a warning."""
+    identity = api.describe_device(detailed=True)  # type: ignore[attr-defined]
+    return Diagnostic(
+        level="ok",
+        category="connectivity",
+        subject=f"{name} (device)",
+        message=identity or "identity not reported (GET /v1/info failed)",
+    )
 
 
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:

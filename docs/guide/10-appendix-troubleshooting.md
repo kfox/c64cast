@@ -217,3 +217,8 @@ and considerably more detailed.
 [`docs/caveats.md`](https://github.com/kfox/c64cast/blob/main/docs/caveats.md)
 collects the hardware behaviors that surprise people, several of which look
 exactly like bugs and are not.
+
+If you report a problem, paste the output of `c64cast --doctor` with it. On an
+Ultimate, its CONNECTIVITY section names the machine, its firmware version
+and, from firmware 3.15a, the exact firmware build, which is what tells a
+problem in a pre-release firmware from one in c64cast.

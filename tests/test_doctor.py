@@ -388,6 +388,55 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertNotIn("cannot start", conn[0].message)
 
 
+class DeviceIdentityProbeTest(unittest.TestCase):
+    """Doctor names the unit and its firmware build, so a pasted report says
+    which machine and which build it came from."""
+
+    def _identity(self, info_response: Any) -> list:
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+        """)
+        with _fake_ultimate_api() as api_instance:
+            api_instance.session.get.side_effect = info_response
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.subject == "system (device)"]
+
+    def test_identity_line_carries_the_build_hash(self):
+        def get(url, **_kwargs):
+            r = mock.MagicMock()
+            r.json.return_value = (
+                {
+                    "product": "Ultimate 64-II",
+                    "firmware_version": "3.15a",
+                    "git_commit_hash": "dddd29b2",
+                    "fpga_version": "125",
+                    "core_version": "1.50",
+                    "unique_id": "B95B01",
+                    "wifi_mac": "48:CA:43:5A:73:78",
+                }
+                if url.endswith("/v1/info")
+                else {}
+            )
+            return r
+
+        ident = self._identity(get)
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertEqual(
+            ident[0].message,
+            "Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)",
+        )
+
+    def test_unanswered_info_is_reported_not_fatal(self):
+        import requests
+
+        ident = self._identity(requests.ConnectionError("down"))
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertIn("not reported", ident[0].message)
+
+
 class ReuStatusProbeTest(unittest.TestCase):
     """REU enable check fires only when the config opts into a REU path.
     Catches the silent-failure mode where REU is off at the U64 — staged

@@ -1704,14 +1704,26 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         body = r.json()
         return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
 
-    def describe_device(self) -> str:
+    def describe_device(self, *, detailed: bool = False) -> str:
         """This unit's identity for the connect-time log, from ``GET /v1/info``:
-        ``"Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"``. Empty when the
-        device won't answer (older firmware without ``/v1/info``).
+        ``"Ultimate 64-II B95B01 (firmware 3.15a, FPGA 125, core 1.50)"``, and
+        with ``detailed`` the firmware build too — ``"firmware 3.15a build
+        dddd29b2"``. Empty when the device won't answer (older firmware without
+        ``/v1/info``).
 
         ``product`` is the only thing that distinguishes a U64 from a U2+ over
         this API, and the two differ in which config categories they expose — so
-        without this line a config-surface failure reads as a bare 404."""
+        without this line a config-surface failure reads as a bare 404.
+
+        Every field is optional and only a field the device reported is shown:
+        ``git_commit_hash`` first appears in 3.15a, ``core_version`` only on
+        U64-family hardware (never a U2/U2+), and ``unique_id`` only while the unit's ``Unique ID`` network
+        setting is non-empty. ``fpga_version`` is ``"1"`` plus two *hex*
+        digits (``"124"`` is FPGA 0x24), so it is shown verbatim, never
+        compared as a number. The ``ethernet_mac``/``wifi_mac`` fields 3.15a
+        added are not shown: this line goes into logs and bug reports, and a
+        MAC adds a second per-unit identifier while naming nothing a reader
+        needs."""
         try:
             info = self.get_device_info()
         except requests.RequestException:
@@ -1720,10 +1732,17 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         parts = [info.get("product") or "Ultimate"]
         if unique_id := info.get("unique_id"):
             parts.append(unique_id)
+        firmware = info.get("firmware_version")
+        if firmware and detailed and (build := info.get("git_commit_hash")):
+            firmware = f"{firmware} build {build}"
         versions = [
-            f"{label} {info[key]}"
-            for label, key in (("firmware", "firmware_version"), ("FPGA", "fpga_version"))
-            if info.get(key)
+            f"{label} {value}"
+            for label, value in (
+                ("firmware", firmware),
+                ("FPGA", info.get("fpga_version")),
+                ("core", info.get("core_version")),
+            )
+            if value
         ]
         if versions:
             parts.append(f"({', '.join(versions)})")

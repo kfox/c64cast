@@ -648,7 +648,10 @@ describing this install), **SCENE**
 resolved to), **RECORDING**, **CONTROL**, **MIDI_CONTROL**, **WLED**,
 **ORCHESTRATOR** for an ensemble, **EXTRAS** (which optional features are
 installed, with the command to install a missing one), and **CONNECTIVITY**
-unless you skipped the probe.
+unless you skipped the probe. On an Ultimate, CONNECTIVITY includes a
+row named after each machine with `(device)` appended, read from
+`GET /v1/info`: product, unit ID, firmware,
+FPGA and core versions, and the firmware build hash on 3.15a and later.
 
 Each row is `ok`, `warn` or `error`. The exit code is 0 when every row is `ok`
 or `warn`, and 1 when any row is an `error` — which makes it safe to gate a

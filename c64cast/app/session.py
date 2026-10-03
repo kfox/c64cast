@@ -348,7 +348,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
             api.close()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
-        if identity := api.describe_device():
+        if identity := api.describe_device(detailed=log.isEnabledFor(logging.DEBUG)):
             log.info("connected device: %s", identity)
         # One cheap REST call downgrades capability flags the family profile
         # claims optimistically (a U2+ has no multi-SID config surface). Under
