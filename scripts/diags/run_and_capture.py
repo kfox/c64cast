@@ -61,6 +61,10 @@ def _flash_loop(
             d.flash_border(url, 0)  # back to black (the run owns the border as a marker)
         except requests.RequestException as e:
             print(f"[flash] border write failed, no further markers: {e}")
+            try:
+                d.flash_border(url, 0)
+            except requests.RequestException as e2:
+                print(f"[flash] border may be left at color {color}: {e2}")
             return
 
 
