@@ -471,6 +471,17 @@ class SlicingBackendTest(unittest.TestCase):
             self._backend("on", supported=False)
         self.assertTrue(any("lacks WriteC64Spans" in m for m in cm.output))
 
+    def test_connect_log_names_the_command_the_writes_go_on(self):
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            self._backend()
+        self.assertTrue(any("WriteC64Spans, 32-byte slices" in m for m in cm.output))
+        with self.assertLogs("c64cast.hw.teensyrom_api", level="INFO") as cm:
+            self._backend(slice_bytes=0)
+        writes = [m for m in cm.output if "TR writes:" in m]
+        self.assertEqual(len(writes), 1)
+        self.assertIn("WriteC64Mem in 1024-byte halts", writes[0])
+        self.assertNotIn("WriteC64Spans", writes[0])
+
     def test_bitmap_tempo_follows_the_write_path(self):
         sliced, _ = self._backend()
         self.assertEqual(sliced.dac_bitmap_tempo(True), 0.97)

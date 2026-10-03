@@ -159,6 +159,8 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         self._nmi_consumer = False
         if dma_slicing != "off":
             self._spans = self._resolve_spans(dma_slicing, dma_slice_bytes, dma_slice_gap_us)
+            if self._spans is not None:
+                log.info("TR writes: %s", self.describe_writes())
 
     def _probe_read(self) -> bool:
         """Confirm the connected firmware answers ReadC64Mem. Reads 2 bytes of
@@ -185,14 +187,6 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 self.tr._drain_stale(0.2)
             supported = False
         if supported:
-            if slice_bytes == 0:
-                log.info(
-                    "TR writes: WriteC64Mem in %d-byte halts while DAC audio plays "
-                    "(dma_slice_bytes = 0)",
-                    SPANS_SEGMENT_BYTES,
-                )
-            else:
-                log.info("TR writes: WriteC64Spans, %d-byte slices, %d us gap", slice_bytes, gap_us)
             return slice_bytes, gap_us
         if mode == "on":
             log.warning(
@@ -200,6 +194,22 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 "(TR+ v0.9+) — writing with WriteC64Mem"
             )
         return None
+
+    def describe_writes(self) -> str:
+        """The write path `_resolve_spans` settled on, for the connect log and
+        the diag tools' banners. At slice 0 no WriteC64Spans is ever sent."""
+        if self._spans is None:
+            return "WriteC64Mem"
+        slice_bytes, gap_us = self._spans
+        if slice_bytes == 0:
+            return (
+                f"WriteC64Mem in {SPANS_SEGMENT_BYTES}-byte halts while an NMI consumer "
+                "runs (dma_slice_bytes = 0)"
+            )
+        return (
+            f"WriteC64Spans, {slice_bytes}-byte slices, {gap_us} us gap, while an NMI "
+            "consumer runs, for writes longer than one slice"
+        )
 
     def dac_bitmap_tempo(self, multicolor: bool) -> float:
         # Sliced writes lose ~3.5x fewer NMI ticks, so the ring drains nearer
