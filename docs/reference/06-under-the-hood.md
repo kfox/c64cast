@@ -100,6 +100,7 @@ of them.
 | Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.1.0 | Without it |
 |---|---|---|---|---|
 | Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
+| Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
 
 The palette read goes over the Command Interface, and is asked of an Ultimate
 64 only: an Ultimate II+ drives a real VIC-II, so `auto` assumes that rendering
