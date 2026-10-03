@@ -645,6 +645,12 @@ resolved to), **RECORDING**, **CONTROL**, **MIDI_CONTROL**, **WLED**,
 installed, with the command to install a missing one), and **CONNECTIVITY**
 unless you skipped the probe.
 
+On Ultimate firmware 3.15 or newer, **CONNECTIVITY** also warns when the
+Ultimate menu is open on the machine, and `-v` logs the text the menu is
+showing. Doctor only reads the menu and never opens or closes it. Older
+firmware, including C64 Ultimate 1.1.0, cannot report the menu, so the row is
+left out.
+
 Each row is `ok`, `warn` or `error`. The exit code is 0 when every row is `ok`
 or `warn`, and 1 when any row is an `error` — which makes it safe to gate a
 script on.

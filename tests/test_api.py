@@ -1076,6 +1076,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.api = Ultimate64API("http://example.invalid")
         self.get = patch.object(self.api.session, "get").start()
         self.get.return_value.raise_for_status.return_value = None
+        # Every GET answers 200, so the route probes find their routes quietly.
+        self.get.return_value.status_code = 200
         self.addCleanup(patch.stopall)
 
     def _refine_with(self, categories: object) -> None:
@@ -1119,7 +1121,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         import requests
 
         self.get.side_effect = requests.ConnectionError("down")
-        self.api.refine_capabilities()
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.refine_capabilities()
         self.assertTrue(self.api.profile.supports_sid_config)
 
     def test_unrecognized_shape_keeps_optimism(self):
@@ -1138,7 +1141,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         import requests
 
         self.get.side_effect = requests.ConnectionError("down")
-        self.api.refine_capabilities()
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.refine_capabilities()
         self.assertFalse(self.api.profile.supports_emusid_mixer)
 
     def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
@@ -1253,6 +1257,58 @@ class RouteProbeTest(unittest.TestCase):
         self.get.side_effect = None
         self._answer(200)
         self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+
+
+class MenuScreenTest(unittest.TestCase):
+    """read_menu_screen: decoded while the menu is open, None while it is
+    closed or unreadable, and refine_capabilities grants the flag only when
+    the route answers."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.addCleanup(patch.stopall)
+
+    def _answer(self, status: int, body: bytes) -> None:
+        self.get.return_value.status_code = status
+        self.get.return_value.content = body
+
+    def test_open_menu_is_decoded(self):
+        self._answer(200, b"A" + b" " * 999 + b"\x01" * 1000)
+        screen = self.api.read_menu_screen()
+        assert screen is not None
+        self.assertEqual(screen.lines[0][0], "A")
+        self.assertTrue(self.get.call_args.args[0].endswith("/v1/machine:menu_screen"))
+
+    def test_closed_menu_is_none(self):
+        self._answer(404, b'{ "errors" : [ "Menu screen unavailable." ] }')
+        self.assertIsNone(self.api.read_menu_screen())
+
+    def test_wrong_size_payload_warns_and_is_none(self):
+        self._answer(200, b"short")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.read_menu_screen())
+
+    def test_transport_failure_is_none(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.read_menu_screen())
+
+    def test_refine_grants_the_flag_on_firmware_with_the_route(self):
+        self._answer(404, b'{"errors": ["Menu screen unavailable."]}')
+        self.api._refine_route_capabilities()
+        self.assertTrue(self.api.profile.supports_menu_screen)
+
+    def test_refine_leaves_the_flag_off_without_the_route(self):
+        self._answer(404, b"")
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.api._refine_route_capabilities()
+        self.assertFalse(self.api.profile.supports_menu_screen)
+        self.assertIn("menu-open check skipped", cm.output[0])
 
 
 class DumpCharRomTest(unittest.TestCase):

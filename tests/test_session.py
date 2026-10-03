@@ -328,6 +328,34 @@ class BuildStackCameraTest(unittest.TestCase):
         self._camera_opens_for(cfg).assert_not_called()
 
 
+class WarnIfMenuOpenTest(unittest.TestCase):
+    """The post-bring-up menu check: one WARNING when the menu is open, and
+    no read at all on firmware without the route."""
+
+    def _api(self, *, supported: bool, screen: object) -> mock.MagicMock:
+        api = mock.MagicMock(name="api")
+        api.profile.supports_menu_screen = supported
+        api.read_menu_screen.return_value = screen
+        return api
+
+    def test_open_menu_warns(self):
+        api = self._api(supported=True, screen=object())
+        with self.assertLogs("c64cast", level="WARNING") as cm:
+            session._warn_if_menu_open(api)
+        self.assertIn("menu is open", cm.output[0])
+
+    def test_closed_menu_is_quiet(self):
+        api = self._api(supported=True, screen=None)
+        with self.assertNoLogs("c64cast", level="WARNING"):
+            session._warn_if_menu_open(api)
+        api.read_menu_screen.assert_called_once()
+
+    def test_firmware_without_the_route_is_not_asked(self):
+        api = self._api(supported=False, screen=object())
+        session._warn_if_menu_open(api)
+        api.read_menu_screen.assert_not_called()
+
+
 class BuildPreviewAndRecordingTest(unittest.TestCase):
     def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
         # The write listener costs a shadow-memory update on every DMA write for the

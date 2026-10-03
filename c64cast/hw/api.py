@@ -57,6 +57,7 @@ from .c64 import (
     frame_rate,
     kernal_cia1_latch,
 )
+from .menu_screen import MenuScreen, decode_menu_screen
 from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
 from .vic_stream import VicStreamReceiver
 
@@ -1787,8 +1788,35 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
                 log.info("this hardware cannot serve GET %s (HTTP 501) — %s skipped", path, feature)
         return answer == "present"
 
+    def read_menu_screen(self, *, timeout: float = 2.0) -> MenuScreen | None:
+        """What the Ultimate menu is drawing, or None while it is closed.
+
+        ``GET /v1/machine:menu_screen`` answers 200 with the 2000-byte screen
+        only while the menu is open, and a 404 with a JSON error otherwise.
+        A transport failure is also None, logged at DEBUG; a payload of the
+        wrong size logs a WARNING, since that means the format changed.
+        Callers gate on ``profile.supports_menu_screen``."""
+        try:
+            r = self.session.get(f"{self.base_url}{U64_API.MENU_SCREEN}", timeout=timeout)
+        except requests.RequestException as e:
+            log.debug("menu screen read failed: %s", e)
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            return decode_menu_screen(r.content)
+        except ValueError as e:
+            log.warning("menu screen unreadable, check skipped: %s", e)
+            return None
+
+    def _refine_route_capabilities(self) -> None:
+        has_menu_screen = self.probe_route(U64_API.MENU_SCREEN, "menu-open check")
+        if has_menu_screen != self.profile.supports_menu_screen:
+            self.profile = replace(self.profile, supports_menu_screen=has_menu_screen)
+
     def refine_capabilities(self) -> None:
-        """One cheap REST call resolving which config surfaces this device
+        """Probe the REST routes firmware 3.15 added (`probe_route`), then one
+        cheap REST call resolving which config surfaces this device
         actually carries: revoke the U64 multi-SID surface the family profile
         claims optimistically when its categories are absent (Ultimate II+),
         and grant the U2+ emulated-stereo-SID surface and the U64 System Mode
@@ -1803,6 +1831,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         over a transient read error. The emusid flag stays conservative-False
         on such a run — an unprobed run behaves exactly as before the flag
         existed."""
+        self._refine_route_capabilities()
         try:
             categories = set(self.get_config_categories())
         except (requests.RequestException, ValueError) as e:

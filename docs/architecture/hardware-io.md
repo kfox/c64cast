@@ -15,6 +15,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`c64.py` — the hardware constant register](#c64py--the-hardware-constant-register)
 * [`hw_provision.py` — live REU + sampler auto-provisioning](#hw_provisionpy--live-reu--sampler-auto-provisioning)
 * [`uci.py` — the Ultimate Command Interface at `$DF1C-$DF1F`](#ucipy--the-ultimate-command-interface-at-df1c-df1f)
+* [`menu_screen.py` — the Ultimate menu's own screen](#menu_screenpy--the-ultimate-menus-own-screen)
 
 ---
 
@@ -254,3 +255,18 @@ The sampler half mirrors the REU half, with four quirks of its own: the sampler'
 Every failure — firmware without the command, a timeout, a short reply, a bad status, registers that are not the interface, a backend that cannot read memory at all — is a debug log and a `None`; the caller picks the fallback. Verified against a U64-II on 3.15a: an unimplemented command answers `21,UNKNOWN COMMAND` with a zero-length reply, the status check rejects it, the interface is left idle, and the next real command works — which is the path a machine without runtime palette control takes. `read_palette_rgb` catches `Exception` around the whole transaction, so that contract does not depend on which backend it was handed.
 
 `read_palette_rgb` is the one command wired up so far (`CTRL_CMD_GET_PALETTE`, `0x51` on target `4`). Firmware 3.15 added runtime palette control to the Command Interface; older firmware answers `21,UNKNOWN COMMAND`, which this path handles quietly. What the answer is for, and why it is named the way it is, is [palette resolution](video-color.md#palettepy--which-16-colors-the-machine-emits-hardwarehost_palette).
+
+## `menu_screen.py` — the Ultimate menu's own screen
+
+Firmware 3.15 added `GET /v1/machine:menu_screen`, which returns what the Ultimate menu is drawing, and only while it is open: closed, it answers a 404 carrying `{"errors": ["Menu screen unavailable."]}`. That is why the [route probe](#apipy--ultimate64api--socket_dmapy--socketdmaclient) counts a 404 with a JSON error as *present* — on 3.15 the probe usually sees exactly that, and on firmware without the route (3.14, C64 Ultimate 1.1.0) it sees a 404 with an empty body and `supports_menu_screen` stays `False`.
+
+The payload is 2000 bytes: 1000 character bytes for a 40×25 screen in reading order, then 1000 color bytes, `fg | (bg << 4)`. The characters are **not C64 screen codes**: the menu draws in its own font, the firmware stores the menu's byte with bit 7 set for reverse video (`Screen_MemMappedCharMatrix::output_raw`), and the printable range is ASCII. Codes below `0x20` are the font's line-drawing glyphs, named in the firmware's `screen.h`; the decoder maps them to box-drawing characters and anything else to `?`. A capture from a U64-II on 3.15a is the test fixture, checked against the HDMI frame taken at the same moment. A UI of any other size (Telnet, an 80-column overlay) is not served by the route at all.
+
+What c64cast uses it for is the one bit "the menu is open", because that is a silent way for a run to show nothing. It depends on **User Interface Settings → Interface Type**, measured on the U64-II:
+
+| Interface Type | The C64 | The picture | A REST reset |
+|---|---|---|---|
+| Freeze (the default) | stops — the jiffy clock does not advance | the menu replaces it | closes the menu |
+| Overlay on HDMI | keeps running; DMA writes show | the menu covers the right-hand part | leaves the menu open |
+
+Either way the menu takes the keyboard, and since 3.15 REST memory access no longer closes it. `--doctor` warns when it finds the menu open and logs the decoded screen at DEBUG for a bug report; it never presses the menu button, because doctor does not change machine state. A run checks once, after the bring-up reset and clear loop, so only a menu that survived the reset (an overlay) is reported. The check is one `GET`, gated on the probe, and absent from older firmware with the probe's INFO line saying so.
