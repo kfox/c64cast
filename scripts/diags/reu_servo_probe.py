@@ -82,10 +82,11 @@ def _set_latch(url: str, latch: int) -> None:
 
 
 def d_requests_put(url: str, addr: int, data_hex: str) -> None:
-    import requests
-
-    requests.put(
-        url + "/v1/machine:writemem", params={"address": f"{addr:04X}", "data": data_hex}, timeout=3
+    d.rest_request(
+        "PUT",
+        url + "/v1/machine:writemem",
+        params={"address": f"{addr:04X}", "data": data_hex},
+        timeout=3,
     )
 
 

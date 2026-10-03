@@ -6,8 +6,10 @@ test_socket_dma.py."""
 
 from __future__ import annotations
 
+import threading
 import unittest
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 from _fakes import FakeTime, SleepDrivenClock, make_psid
@@ -1021,6 +1023,17 @@ class ReadSideTest(unittest.TestCase):
         self.get.side_effect = requests.ConnectionError("down")
         self.assertIsNone(self.api.probe())
 
+    def test_probe_ignores_a_failed_version_request(self):
+        import requests
+
+        self.get.side_effect = [MagicMock(status_code=200), requests.ConnectionError("down")]
+        with self.assertLogs("c64cast.hw.api", "DEBUG"):
+            self.assertEqual(self.api.probe(), "HTTP 200")
+
+    def test_probe_ignores_an_unrouted_version_request(self):
+        self.get.side_effect = [MagicMock(status_code=200), MagicMock(status_code=404)]
+        self.assertEqual(self.api.probe(), "HTTP 200")
+
     def test_get_config_category_unwraps_and_coerces_to_str(self):
         # The firmware's emit_store wraps the items under the category name
         # and mixes ints (value items) with strings (enum labels).
@@ -1637,3 +1650,176 @@ class SidPlayRateTest(unittest.TestCase):
 def _latch_hex(latch: int) -> str:
     """The write_memory payload for a CIA #1 Timer A latch (lo byte, hi byte)."""
     return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
+
+
+_SECRET = "s3cret-pw"
+
+
+class _RecordingHandler(BaseHTTPRequestHandler):
+    """Answers like the firmware's password check: an API route (`/v1/...`)
+    is 403 unless ``X-Password`` matches the server's password, and the web
+    root is never checked. `/hop` redirects to whatever `redirect_to` holds."""
+
+    server: _RecordingServer
+
+    def do_GET(self) -> None:
+        self.server.seen.append((self.path, self.headers.get("X-Password")))
+        if self.path == "/hop":
+            self.send_response(302)
+            self.send_header("Location", self.server.redirect_to)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        guarded = self.path.startswith("/v1/")
+        wanted = self.server.password
+        if guarded and wanted and self.headers.get("X-Password") != wanted:
+            body = b'{"errors":["Forbidden."]}'
+            self.send_response(403)
+        else:
+            body = b'{"version":"0.1","errors":[]}'
+            self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+class _RecordingServer(ThreadingHTTPServer):
+    def __init__(self, password: str) -> None:
+        super().__init__(("127.0.0.1", 0), _RecordingHandler)
+        self.password = password
+        self.redirect_to = ""
+        self.seen: list[tuple[str, str | None]] = []
+
+
+class RestPasswordTest(unittest.TestCase):
+    """The network password reaches every REST call as ``X-Password``, the
+    probe turns the firmware's 403 into a password diagnostic, and the
+    password never appears in a log record or an exception message."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.server = _RecordingServer(_SECRET)
+        thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        host, port = self.server.server_address[:2]
+        self.url = f"http://{host}:{port}"
+
+    def _api(self, password: str | None) -> Ultimate64API:
+        u64 = Ultimate64API(self.url, dma_password=password)
+        self.addCleanup(u64.session.close)
+        return u64
+
+    def test_every_rest_call_carries_the_configured_password(self):
+        u64 = self._api(_SECRET)
+        with self.assertLogs(level="DEBUG") as logs:
+            self.assertEqual(u64.probe(), "HTTP 200")
+            u64.read_memory(0x0400, 1)
+        self.assertEqual([header for _, header in self.server.seen], [_SECRET, _SECRET, _SECRET])
+        # urllib3 logs each request at DEBUG; none of it may carry the secret.
+        self.assertTrue(any("urllib3" in r.name for r in logs.records))
+        for record in logs.records:
+            self.assertNotIn(_SECRET, record.getMessage())
+
+    def test_no_header_without_a_configured_password(self):
+        self.server.password = ""
+        u64 = self._api(None)
+        self.assertEqual(u64.probe(), "HTTP 200")
+        self.assertNotIn(api.PASSWORD_HEADER, u64.session.headers)
+        self.assertEqual([header for _, header in self.server.seen], [None, None])
+
+    def test_probe_names_the_missing_password(self):
+        u64 = self._api(None)
+        with self.assertRaises(api.RestAuthError) as caught:
+            u64.probe()
+        self.assertIn("none is configured", str(caught.exception))
+        self.assertIn("C64CAST_DMA_PASSWORD", str(caught.exception))
+
+    def test_probe_names_the_wrong_password_without_echoing_it(self):
+        wrong = "not-the-pw"
+        u64 = self._api(wrong)
+        with self.assertRaises(api.RestAuthError) as caught:
+            u64.probe()
+        self.assertIn("refused the configured network password", str(caught.exception))
+        self.assertNotIn(wrong, str(caught.exception))
+
+    def test_cross_host_redirect_drops_the_password(self):
+        # 127.0.0.1 and localhost are one server but two hosts to `requests`.
+        port = self.server.server_address[1]
+        self.server.redirect_to = f"http://localhost:{port}/v1/version"
+        u64 = self._api(_SECRET)
+        u64.session.get(f"{self.url}/hop", timeout=2.0)
+        self.assertEqual(self.server.seen, [("/hop", _SECRET), ("/v1/version", None)])
+
+    def test_an_environment_proxy_never_sees_the_password(self):
+        proxy = _RecordingServer("")
+        thread = threading.Thread(
+            target=proxy.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(proxy.server_close)
+        self.addCleanup(proxy.shutdown)
+        proxy_host, proxy_port = proxy.server_address[:2]
+        proxy_url = f"http://{proxy_host}:{proxy_port}"
+        env = {"HTTP_PROXY": proxy_url, "http_proxy": proxy_url, "NO_PROXY": "", "no_proxy": ""}
+        with patch.dict("os.environ", env):
+            u64 = self._api(_SECRET)
+            self.assertEqual(
+                u64.session.get(f"{self.url}/v1/version", timeout=2.0).status_code, 200
+            )
+        self.assertEqual(proxy.seen, [])
+        self.assertEqual(self.server.seen, [("/v1/version", _SECRET)])
+
+    def test_same_host_redirect_keeps_the_password(self):
+        self.server.redirect_to = f"{self.url}/v1/version"
+        u64 = self._api(_SECRET)
+        r = u64.session.get(f"{self.url}/hop", timeout=2.0)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.server.seen, [("/hop", _SECRET), ("/v1/version", _SECRET)])
+
+
+class PasswordHeaderValueTest(unittest.TestCase):
+    def test_encodes_as_utf8_like_the_dma_authenticate(self):
+        self.assertEqual(api.password_header_value("pässword"), "pässword".encode())
+
+    def test_accepts_non_ascii_whitespace_at_the_edges(self):
+        # HTTP strips only spaces and tabs from a field value; a no-break space
+        # is an ordinary octet sequence there, and the DMA socket carries it too.
+        for password in (" pw", "pw　"):
+            with self.subTest(password=password):
+                self.assertEqual(api.password_header_value(password), password.encode())
+
+    def test_rejects_what_a_header_cannot_carry_without_echoing_it(self):
+        for password in ("pw\r\nX-Evil: 1", "pw\x00", " pw", "pw ", "pw\t"):
+            with self.subTest(password=password):
+                with self.assertRaises(ValueError) as caught:
+                    api.password_header_value(password)
+                self.assertNotIn("pw", str(caught.exception).replace("password", ""))
+
+    def test_rejects_a_password_that_is_not_utf8_without_echoing_it(self):
+        # A non-UTF-8 byte in C64CAST_DMA_PASSWORD reaches os.environ as a
+        # lone surrogate (surrogateescape on POSIX).
+        with self.assertRaises(ValueError) as caught:
+            api.password_header_value("h\udce4nter2")
+        message = str(caught.exception)
+        self.assertNotIsInstance(caught.exception, UnicodeError)
+        self.assertNotIn("\udce4", message)
+        self.assertNotIn("position", message)
+        self.assertNotIn("nter2", message)
+        self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_construction_fails_before_opening_the_dma_socket(self):
+        with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True) as connect:
+            with self.assertRaises(ValueError):
+                Ultimate64API("http://example.invalid", dma_password="pw\n")
+        connect.assert_not_called()
