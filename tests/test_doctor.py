@@ -1760,6 +1760,42 @@ class ClipColorDiagnosticTest(unittest.TestCase):
         self.assertEqual(len(subjects), 1)
         self.assertTrue(subjects[0].endswith("/dither"))
 
+    def test_a_bad_global_flicker_tolerance_is_reported_once_against_color(self):
+        loaded = _load(
+            '[color]\nflicker_tolerance = "bogus"\n\n'
+            + self._CLIP.format(key="dither_strength", value="1.0")
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/flicker_tolerance"]
+        )
+
+    def test_a_scene_override_its_per_scene_check_skips_is_reported(self):
+        bad = {
+            "cell_strategy": '"bogus"',
+            "motion_smoothing": "5.0",
+        }
+        for key, value in bad.items():
+            with self.subTest(key=key):
+                loaded = _load(
+                    '[[scenes]]\ntype = "video"\nfile = "z.mp4"\ndisplay = "hires"\n'
+                    f"  [scenes.color]\n  {key} = {value}\n"
+                )
+                diags = doctor.validate_load_result(
+                    loaded, probe_u64=False, probe_environment=False
+                )
+                errors = [d for d in diags if d.level == "error"]
+                self.assertEqual([d.subject for d in errors], ["system/[[scenes]][0].color"])
+                self.assertIn(key, errors[0].message)
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\ndisplay = "hires_edges"\n'
+            '  [scenes.color]\n  color_match = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/[[scenes]][0].color"]
+        )
+
     def test_a_valid_clip_override_reports_nothing(self):
         self.assertEqual(self._clip_errors("dither", '"ordered"'), [])
 

@@ -229,6 +229,11 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   at load. Such a config is now refused at load, naming the clip, and
   `--doctor` reports it.
 
+- **`--doctor` passed some color values that a run refuses at startup.** A bad
+  `[color].flicker_tolerance`, and a `[[scenes]]` override's `color_match`,
+  `cell_strategy` or `motion_smoothing` on a display that setting does not
+  affect, passed `--doctor --skip-probe`. `--doctor` now reports them.
+
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that
   publishes the `running` transition, and `close()` stops that poller once and
