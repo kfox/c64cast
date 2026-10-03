@@ -519,8 +519,9 @@ def prescan_source_color(
     ``decode_target_size`` downscales sampled frames during decode (see
     scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
     failed stage is None, so callers can unconditionally pass the results to
-    set_color_fit / set_color_map. See palette.ColorFitAccumulator /
-    palette.ColorMapAccumulator.
+    set_color_fit / set_color_map. A failed scan also empties ``frames``, so
+    nothing is fitted to, or kept from, a partial pass. See
+    palette.ColorFitAccumulator / palette.ColorMapAccumulator.
     """
     fit_acc = ColorFitAccumulator(strength=fit_strength) if fit_strength is not None else None
     map_acc = (
@@ -532,6 +533,8 @@ def prescan_source_color(
     if not scan_video_samples(
         path, accs, decode_target_size=decode_target_size, on_progress=on_progress
     ):
+        if frames is not None:
+            frames.frames.clear()
         return None, None
     return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 

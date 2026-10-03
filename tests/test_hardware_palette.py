@@ -678,6 +678,23 @@ class VideoPushTest(unittest.TestCase):
         self.scene.setup()
         self.assertEqual(self.prescan.call_count, 2)
 
+    def test_a_failed_pre_scan_is_neither_pushed_from_nor_kept(self):
+        from c64cast.video.video import prescan_source_color as real_prescan
+
+        def partial_scan(path, accs, **kw):
+            for acc in accs:
+                acc.add(_warm_image())
+            return False
+
+        self.prescan.side_effect = real_prescan
+        with mock.patch("c64cast.video.video.scan_video_samples", side_effect=partial_scan):
+            self.scene.setup()
+            self.scene.teardown()
+            self.scene.setup()
+        self.assertEqual(self.prescan.call_count, 2)
+        self.control.show.assert_not_called()
+        self.assertEqual(self.control.show_machine.call_count, 2)
+
     def test_a_black_pre_scan_pushes_the_machines_table(self):
         def black_prescan(path, **kw):
             black = np.zeros((90, 160, 3), dtype=np.uint8)
