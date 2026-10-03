@@ -1541,6 +1541,43 @@ class _StubRunnerBackend(BufferedWriteBackend):
         return data
 
 
+def read_config_category_body(
+    session: requests.Session, base_url: str, category: str, *, timeout: float = 3.0
+) -> object | None:
+    """``GET /v1/configs/<category>`` and return the decoded JSON body, or
+    ``None`` when this device registers no category of that name.
+
+    The firmware says "no such category" two ways, and both come back as
+    ``None``:
+
+    * 3.15 and later (GideonZ/1541ultimate#805): HTTP 404 with a JSON body
+      whose ``errors`` list names the category.
+    * Earlier firmware, including C64 Ultimate 1.1.0: HTTP 200 with a body
+      that holds only the ``errors`` list and no category key.
+
+    A 404 without that JSON error body is the route itself missing (firmware
+    without ``/v1/configs``) and raises like any other HTTP failure. Raises
+    ``requests.RequestException`` on transport/HTTP failure and ``ValueError``
+    when a 200 body is not JSON."""
+    r = session.get(f"{base_url}/v1/configs/{quote(category)}", timeout=timeout)
+    if r.status_code == 404 and _names_an_error(r):
+        return None
+    r.raise_for_status()
+    body: object = r.json()
+    if isinstance(body, dict) and category not in body and set(body) <= {"errors"}:
+        return None
+    return body
+
+
+def _names_an_error(response: requests.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    errors = body.get("errors") if isinstance(body, dict) else None
+    return isinstance(errors, list) and bool(errors)
+
+
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def __init__(
         self,
@@ -1637,17 +1674,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         ``{item: value}`` map with every value coerced to ``str`` (enum items
         come back as their label string, value items as integers). Used by
         AsidScene to read `SID Detected Socket 1/2` (prefer-physical policy) and
-        to snapshot the `SID Addressing` map so teardown can restore it. Raises
-        ``requests.RequestException`` on transport/HTTP failure; callers treat
-        the read as best-effort.
+        to snapshot the `SID Addressing` map so teardown can restore it.
+        Returns ``{}`` for a category this device does not register (see
+        `read_config_category_body`). Raises ``requests.RequestException`` on
+        transport/HTTP failure; callers treat the read as best-effort.
 
         Not to be confused with `get_config_categories` (plural) — that
         returns the *names* of every category this firmware exposes, not
         one category's items."""
-        url = f"{self.base_url}/v1/configs/{quote(category)}"
-        r = self.session.get(url, timeout=timeout)
-        r.raise_for_status()
-        body = r.json()
+        body = read_config_category_body(self.session, self.base_url, category, timeout=timeout)
         inner = body.get(category, {}) if isinstance(body, dict) else {}
         return {k: str(v) for k, v in inner.items()} if isinstance(inner, dict) else {}
 

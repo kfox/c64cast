@@ -1008,6 +1008,56 @@ class ReadSideTest(unittest.TestCase):
         self.get.return_value.json.return_value = ["not", "a", "dict"]
         self.assertEqual(self.api.get_config_category("Audio Mixer"), {})
 
+    def test_get_config_category_absent_reads_empty_on_both_firmware_answers(self):
+        # 3.15 answers 404 + a JSON error naming the category; earlier firmware
+        # (and C64 Ultimate 1.1.0) answers 200 with only the errors array.
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.return_value = {
+            "errors": ["No configuration category matches 'Audio Output Settings'."]
+        }
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        self.assertEqual(self.api.get_config_category("Audio Output Settings"), {})
+
+        self.get.return_value.status_code = 200
+        self.get.return_value.json.return_value = {"errors": []}
+        self.get.return_value.raise_for_status.side_effect = None
+        self.assertEqual(self.api.get_config_category("Audio Output Settings"), {})
+
+    def test_get_config_category_404_without_json_error_raises(self):
+        # No JSON error body: the route itself is missing, which is a failure.
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.side_effect = ValueError("not JSON")
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_get_config_category_404_with_empty_errors_raises(self):
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.return_value = {"errors": []}
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_read_config_category_body_tells_absent_from_present(self):
+        from c64cast.hw.api import read_config_category_body
+
+        self.get.return_value.status_code = 200
+        self.get.return_value.json.return_value = {"Audio Mixer": {}, "errors": []}
+        self.assertEqual(
+            read_config_category_body(self.api.session, self.api.base_url, "Audio Mixer"),
+            {"Audio Mixer": {}, "errors": []},
+        )
+        self.get.return_value.json.return_value = {"errors": []}
+        self.assertIsNone(
+            read_config_category_body(self.api.session, self.api.base_url, "Audio Mixer")
+        )
+
     def test_get_config_category_propagates_http_error(self):
         # AsidScene decides its socket policy on the answer, so it must see failure.
         import requests
