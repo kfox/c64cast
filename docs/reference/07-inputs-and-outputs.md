@@ -500,8 +500,9 @@ configuration that will not run is refused with `422` **before** anything
 touches the machine, so a typo costs a response, not a show.
 
 After one show ends the next start waits out `settle_s` seconds. This is not
-politeness: the Ultimate's DMA service refuses new connections for a few seconds
-after one closes, and a camera will not reopen instantly either.
+politeness: on firmware before 3.15 the Ultimate's DMA service refuses new
+connections for a few seconds after one closes, and a camera will not reopen
+instantly either.
 
 ### The Console
 

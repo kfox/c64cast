@@ -772,8 +772,9 @@ class SessionManager:
     def _await_hardware(self) -> None:
         """Block until the settle window after the last teardown has passed.
 
-        Two separate reasons, one timer: the U64's DMA service refuses new
-        connections for a few seconds after one closes (docs/caveats.md), and
+        Two separate reasons, one timer: on firmware before 3.15 the U64's DMA
+        service refuses new connections for a few seconds after one closes
+        (docs/caveats.md), and
         macOS AVFoundation will not reopen a camera straight after
         ``WebcamSource.release()``."""
         while True:

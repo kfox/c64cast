@@ -2384,8 +2384,9 @@ class WebCfg:
         default=3.0,
         metadata={
             "help": "Seconds to leave the hardware alone between tearing one session "
-            "down and building the next: the U64's DMA service refuses new connections "
-            "for a few seconds after one closes, and a camera will not reopen instantly."
+            "down and building the next: on firmware before 3.15 the U64's DMA service "
+            "refuses new connections for a few seconds after one closes, and a camera "
+            "will not reopen instantly."
         },
     )
     # A list rather than one directory because show configs and the packaged examples

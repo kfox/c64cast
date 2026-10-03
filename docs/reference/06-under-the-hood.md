@@ -43,8 +43,14 @@ eight TCP setups to do it. The persistent socket is the whole difference.
 
 The DMA service accepts **one connection at a time**. That is why the audio
 path and the render path share a single client rather than opening a socket
-each: a second connection is accepted but never answered, and it blocks the
-first for several seconds after it closes. The shared client serializes commands
+each: a second connection is accepted but not answered while the first is
+open. On firmware before 3.15 the first one was also seen to hold new
+connections off for several seconds after it closed; 3.15 serves the next one
+at once. From 3.15 the machine also drops a connection that has been idle for a
+second. c64cast checks for that before every write and reopens the connection
+first, about 7 ms, so a pause in a slideshow costs a reconnect rather than a
+write. The `--profile` latency line counts those as `reconnects=`. The shared
+client serializes commands
 with a mutex, and the combined rate — audio about eight writes a second, render
 thirty to sixty — sits well under the ceiling.
 
@@ -94,6 +100,7 @@ all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
 |---|---|---|---|---|
 | Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
 | `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | — | Nothing to read or raise; every source plays at its own level |
+| Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
 | Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
 
 The palette read goes over the Command Interface, and is asked of an Ultimate
@@ -315,6 +322,7 @@ profile[webcam:mcm] n=58 |
     writes/frame avg=24 p95=27 |
     bytes/frame avg=8192 p95=8192
 u64 dma latency: n=256 avg=5.1 p50=4.9 p95=7.8 max=18.4 ms
+    reconnects=0
 ```
 
 `frame` is wall-clock per frame and should sit near `1 / target_fps` at steady
