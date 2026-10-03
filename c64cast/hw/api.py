@@ -1565,7 +1565,10 @@ def read_config_category_body(
     if r.status_code == 404 and _names_an_error(r):
         return None
     r.raise_for_status()
-    body: object = r.json()
+    try:
+        body: object = r.json()
+    except RecursionError as e:
+        raise ValueError(f"/v1/configs/{category} answered JSON nested too deeply to read") from e
     if isinstance(body, dict) and category not in body and set(body) <= {"errors"}:
         return None
     return body
