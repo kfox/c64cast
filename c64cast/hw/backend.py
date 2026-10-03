@@ -133,7 +133,7 @@ class HardwareProfile:
     # scripts/diags/link_cost_model.py; the defaults are the Ultimate's, so an
     # unmeasured backend inherits the conservative (count-bound) shape.
     write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
-    write_cost_intercept_s: float = 0.8e-3
+    write_cost_intercept_s: float = 1.3e-3
     write_cost_per_byte_s: float = 1.85e-6
 
     def write_cost_s(self, nbytes: int) -> float:
