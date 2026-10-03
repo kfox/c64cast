@@ -54,6 +54,7 @@ profile, then your own `cc_map`.
 | Video | `transport.play_pause`, `transport.stop`, `transport.loop_toggle`, `transport.rw`, `transport.ff`, `transport.jog`, `transport.record`, `loop_slot` |
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
+| Machine joystick | `joystick` |
 
 A `cc_map` entry is a `type` (`note`, `cc`, `pc` or `mmc`), a `number`, an
 `action`, and for `param` a `target`.

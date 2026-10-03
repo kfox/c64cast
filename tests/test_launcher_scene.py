@@ -157,6 +157,33 @@ class JoystickInjectionTest(unittest.TestCase):
             scene.teardown()
             api.send_input.assert_not_called()
 
+    def test_supported_machine_without_a_running_program_drops_with_one_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            scene.teardown()
+            self.assertFalse(scene._sender.is_running())
+            with self.assertLogs("c64cast.scenes.scenes", level="WARNING") as cm:
+                scene.inject_joystick(2, "up", True)
+                scene.inject_joystick(2, "up", False)
+            self.assertEqual(len(cm.records), 1)
+            self.assertIn("program is not running", cm.output[0])
+            self.assertTrue(scene._injected.empty())
+
+    def test_events_still_queued_at_teardown_are_discarded_not_posted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            scene.inject_joystick(2, "fire", True)
+            self.assertTrue(self.posted.wait(2.0))
+            scene._sender.stop()
+            scene._injected.put(_joy(2, "press", "up"))
+            scene._carry = _joy(2, "release", "fire")
+            api.send_input.reset_mock()
+            scene.teardown()
+            api.send_input.assert_called_once_with([machine_input.RELEASE_ALL])
+            self.assertTrue(scene._injected.empty())
+            self.assertIsNone(scene._carry)
+            self.assertEqual(scene._held, set())
+
 
 def _joy(port, transition, *inputs):
     return machine_input.joystick_event(port, transition, list(inputs))

@@ -1457,7 +1457,8 @@ class MenuScreenTest(_RestAnswerTestCase):
 
 class SendInputTest(unittest.TestCase):
     """send_input: validated and split before anything is sent, posted as
-    JSON, and every failure is a None and a WARNING rather than a raise."""
+    JSON, and a refusal or transport failure is a None and a WARNING rather
+    than a raise."""
 
     def setUp(self):
         patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
@@ -1528,6 +1529,57 @@ class SendInputTest(unittest.TestCase):
         get.return_value.status_code = 200
         self.api._refine_route_capabilities()
         self.assertTrue(self.api.profile.supports_rest_input)
+
+    def test_refine_revokes_the_flag_when_the_route_is_absent_or_unsupported(self):
+        for status in (404, 501):
+            with self.subTest(status=status):
+                api = Ultimate64API("http://example.invalid")
+                api.profile = replace(api.profile, supports_rest_input=True)
+                with patch.object(api.session, "get") as get:
+                    get.return_value.status_code = status
+                    get.return_value.content = b""
+                    with self.assertLogs("c64cast.hw.api", level="INFO"):
+                        api._refine_route_capabilities()
+                self.assertFalse(api.profile.supports_rest_input)
+
+    def test_200_with_an_unreadable_body_is_an_empty_state(self):
+        from c64cast.hw import machine_input as mi
+
+        self.post.return_value.json.side_effect = ValueError("not json")
+        self.assertEqual(self.api.send_input([mi.RELEASE_ALL]), {})
+
+    def test_later_body_failing_leaves_the_earlier_one_sent(self):
+        from c64cast.hw import machine_input as mi
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {}
+        bad = MagicMock(status_code=400, text="nope")
+        self.post.side_effect = [ok, bad]
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.send_input(mi.text_to_events("A" * 65)))
+        self.assertEqual(self.post.call_count, 2)
+
+    def test_input_state_returns_the_reported_state(self):
+        get = patch.object(self.api.session, "get").start()
+        get.return_value.status_code = 200
+        get.return_value.json.return_value = {"keyboard": {"inputs": ["a"]}}
+        self.assertEqual(self.api.input_state(), {"keyboard": {"inputs": ["a"]}})
+        self.assertTrue(get.call_args.args[0].endswith("/v1/machine:input"))
+
+    def test_input_state_is_none_when_unreadable(self):
+        import requests
+
+        get = patch.object(self.api.session, "get").start()
+        get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.input_state())
+        get.side_effect = None
+        get.return_value.raise_for_status.side_effect = requests.HTTPError("501")
+        self.assertIsNone(self.api.input_state())
+        get.return_value.raise_for_status.side_effect = None
+        get.return_value.json.return_value = ["not", "a", "dict"]
+        self.assertIsNone(self.api.input_state())
+        get.return_value.json.side_effect = ValueError("not json")
+        self.assertIsNone(self.api.input_state())
 
 
 class DumpCharRomTest(unittest.TestCase):

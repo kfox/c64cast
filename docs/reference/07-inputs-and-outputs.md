@@ -178,7 +178,7 @@ virtual ports, or enabling MIDI Thru at the operating system.
 
 A `[[midi_control.cc_map]]` entry maps a message to an action. The message is a
 `note`, a `cc`, a `pc` (program change) or an `mmc` (a transport
-system-exclusive frame). The actions fall into five groups:
+system-exclusive frame). The actions fall into six groups:
 
 | Group | Actions |
 |---|---|

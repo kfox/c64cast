@@ -1982,10 +1982,12 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         by `machine_input.encode_batches`, which raises ValueError for an
         invalid event before anything is sent. Each body is applied whole or
         not at all, but a later body failing leaves the earlier ones applied.
-        Never raises otherwise: a refusal, a transport failure or an
-        unexpected answer logs a throttled WARNING and returns None, and a 404
-        or 501 also revokes ``supports_rest_input`` for the rest of the
-        connection. Callers gate on ``profile.supports_rest_input``."""
+        Never raises otherwise: a refusal or a transport failure logs a
+        throttled WARNING and returns None, and a 404 or 501 also revokes
+        ``supports_rest_input`` for the rest of the connection. A 200 whose
+        body is not a JSON object returns ``{}``: the input was applied, only
+        the state is unreadable. Callers gate on
+        ``profile.supports_rest_input``."""
         url = f"{self.base_url}{U64_API.INPUT}"
         state: dict[str, Any] | None = None
         for body in machine_input.encode_batches(events):
