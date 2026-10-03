@@ -43,9 +43,11 @@ def fetch_config_section(
     """GET /v1/configs/<category> from the Ultimate and normalize the reply
     to its settings dict. Returns (section, raw_data, None) on success —
     `section` is {} when the response shape is unrecognized, which each caller
-    treats on its own (SID stays quiet, REU warns). Returns ({}, None, exc)
-    when the REST query itself failed, so the caller can build a probe-
-    specific warning.
+    treats on its own (SID stays quiet, REU warns). Returns ({}, None, None)
+    when the device registers no such category, which both firmware
+    generations report differently (see `api.read_config_category_body`).
+    Returns ({}, None, exc) when the REST query itself failed, so the caller
+    can build a probe-specific warning.
 
     Firmware 3.x returns
         {category: {<setting>: <value>, ...}, "errors": []};
@@ -55,20 +57,21 @@ def fetch_config_section(
     — single-sourced here so a response-shape change is a one-place fix (it
     previously lived, identically, in both probes).
     """
-    from urllib.parse import quote
-
     import requests
+
+    from .api import read_config_category_body
 
     try:
         # `api` is a real Ultimate64API; reuse its REST session + base URL.
-        base_url = api.base_url  # type: ignore[attr-defined]
-        session = api.session  # type: ignore[attr-defined]
-        url = f"{base_url}/v1/configs/{quote(category)}"
-        r = session.get(url, timeout=3.0)
-        r.raise_for_status()
-        data = r.json()
+        data = read_config_category_body(
+            api.session,  # type: ignore[attr-defined]
+            api.base_url,  # type: ignore[attr-defined]
+            category,
+        )
     except (requests.RequestException, ValueError) as e:
         return {}, None, e
+    if data is None:
+        return {}, None, None
 
     section: dict[str, object] = {}
     if isinstance(data, dict):
@@ -270,9 +273,9 @@ _SAMPLER_MAP_FIELD = "Map Ultimate Audio $DF20-DFFF"
 # The category carrying the "Vol Sampler L/R" channels differs across the
 # Ultimate family: the U64 has a dedicated "Audio Mixer"; the Ultimate II+
 # (firmware 3.x) folds the same fields into "Audio Output Settings". Probed in
-# order because the firmware answers a GET for a category it doesn't have with
-# HTTP 200 and an empty body, so a fixed name reads "sampler absent" on the
-# other device.
+# order because a category the device doesn't have reads as an empty section
+# (200-empty before firmware 3.15, 404 with a JSON error from 3.15), so a fixed
+# name reads "sampler absent" on the other device.
 _SAMPLER_MIXER_CATEGORIES = ("Audio Mixer", "Audio Output Settings")
 _SAMPLER_VOL_FIELDS = ("Vol Sampler L", "Vol Sampler R")
 # The mixer volume enum's audible "0 dB" label. The firmware's volumes[] table
