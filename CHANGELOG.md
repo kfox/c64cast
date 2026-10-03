@@ -28,8 +28,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   color pipeline aims at it; per-pixel color error over the bundled pictures
   falls to about a third. The machine's palette, a custom `.vpl` included, is
   put back before the next scene that does not use the setting and at exit, and
-  pushed again after every reset c64cast issues. Needs Ultimate firmware 3.15
-  or newer; a C64 Ultimate on 1.1.0, older firmware and other machines skip it
+  pushed again after every reset c64cast issues. Needs Ultimate 64 firmware
+  3.15a or newer; a C64 Ultimate on 1.1.0, older firmware and other machines skip it
   with a warning. Off by default, and refused alongside `force_palette` or
   `flicker_tolerance`.
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually

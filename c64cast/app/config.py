@@ -1870,7 +1870,7 @@ class ColorCfg:
             "put back before the next scene that does not use it, and at exit. "
             "Video and slideshow scenes only, "
             "since they can see their content first. Needs an Ultimate 64 on "
-            "firmware 3.15 or newer; elsewhere it is skipped with a warning. "
+            "firmware 3.15a or newer; elsewhere it is skipped with a warning. "
             "Cannot be combined with force_palette or flicker_tolerance.",
             "choices": HARDWARE_PALETTE_CHOICES,
         },

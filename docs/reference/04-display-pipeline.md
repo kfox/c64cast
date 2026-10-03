@@ -273,7 +273,7 @@ and the built-in table is assumed instead, or a display whose own processing
 you have already characterized. For the first, point a path at a local copy of
 that `.vpl`.
 
-An Ultimate 64 on 3.15 or newer can also be told to show sixteen *different*
+An Ultimate 64 on 3.15a or newer can also be told to show sixteen *different*
 colors for a scene, and the quantizer then aims at those instead:
 ["Choosing the Sixteen"](#choosing-the-sixteen--hardware_palette).
 
@@ -373,7 +373,7 @@ colors, so the two answer slightly different questions.
 ## Choosing the Sixteen — `hardware_palette`
 
 `force_palette` and everything before it choose *among* the machine's sixteen
-colors. An Ultimate 64 on firmware 3.15 or newer lets c64cast change the
+colors. An Ultimate 64 on firmware 3.15a or newer lets c64cast change the
 sixteen themselves, for the length of a scene:
 
 ```toml
@@ -399,7 +399,7 @@ error falls to about a third of what the Ultimate's own table gives.
 | **When it is pushed** | At scene start, and at each slideshow image. About half a second per push, so it is per scene, never per frame |
 | **Restored** | Before the next scene that does not push colors of its own sets up, and at exit, to the palette the machine shows after c64cast's startup reset — its configured palette, a custom `.vpl` included. A C64 reset during a scene reverts the machine to its configured palette, so c64cast pushes the scene's palette again after every reset it issues |
 | **Not with** | `force_palette`, which also re-chooses a scene's colors, or a `flicker_tolerance` other than `"off"`, whose blends are measured against the machine's fixed palette. The configuration is refused, in a performance clip's `color` too |
-| **Needs** | An Ultimate 64 on firmware 3.15 or newer, and the Command Interface on. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why |
+| **Needs** | An Ultimate 64 on firmware 3.15a or newer, and the Command Interface on. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why |
 
 Set it per scene in a `[scenes.color]` sub-table to use it on one video and not
 the next.

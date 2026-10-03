@@ -909,7 +909,7 @@ force_palette_colors = 16
 # white and the three grays stay the machine's own) and pushes them to the
 # Ultimate before the scene paints, then puts the machine's palette back
 # before the next scene that does not use it, and at exit. Needs an Ultimate 64
-# on firmware 3.15+; anything else is skipped with a warning. Not with
+# on firmware 3.15a+; anything else is skipped with a warning. Not with
 # force_palette or flicker_tolerance.
 hardware_palette = "off"
 #

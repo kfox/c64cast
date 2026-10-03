@@ -434,7 +434,7 @@ class ProvisionTest(unittest.TestCase):
         np.testing.assert_array_equal(control.machine_palette, MACHINE)
 
     def test_firmware_without_the_command_falls_back_with_a_warning(self):
-        """C64U 1.1.0 and pre-3.15 firmware answer 21,UNKNOWN COMMAND, which
+        """C64U 1.1.0 and pre-3.15a firmware answer 21,UNKNOWN COMMAND, which
         the read reports as None."""
         self.read.return_value = None
         api = _u64()

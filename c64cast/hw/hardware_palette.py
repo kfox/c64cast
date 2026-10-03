@@ -225,7 +225,7 @@ def provision_hardware_palette(
     """Set the run up to push palettes, when any scene asks for it.
 
     Reading the machine's palette is both the capability probe and the
-    restore snapshot: firmware without the UCI palette commands (before 3.15,
+    restore snapshot: firmware without the UCI palette commands (before 3.15a,
     and the C64 Ultimate as of 1.1.0) answers "21,UNKNOWN COMMAND", and the run
     then renders exactly as it would without the setting, after one warning.
     Returns the controller, also installed as `api.hardware_palette` for the
@@ -256,7 +256,7 @@ def provision_hardware_palette(
     if machine is None:
         log.warning(
             "hardware_palette = source: this Ultimate did not answer the UCI "
-            "palette read (firmware before 3.15, a C64 Ultimate on 1.1.0, or "
+            "palette read (firmware before 3.15a, a C64 Ultimate on 1.1.0, or "
             "the Command Interface turned off) — not pushing palettes; colors "
             "are matched against [hardware].host_palette as before."
         )
