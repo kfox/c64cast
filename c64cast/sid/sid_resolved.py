@@ -103,7 +103,12 @@ class SidHardwareState:
     def audible(self, source: str) -> bool:
         """Whether `source` is at a level a listener can hear. An unreported
         level counts as audible — claiming silence we didn't measure would send
-        someone hunting a mixer problem that isn't there."""
+        someone hunting a mixer problem that isn't there. Firmware 3.15's
+        ``Vol Master`` multiplies every source, so at OFF nothing is."""
+        from c64cast.hw.hw_provision import master_mutes, master_volume
+
+        if master_mutes(master_volume(self.mixer)):
+            return False
         return self.level_of(source) != VOL_OFF
 
 
