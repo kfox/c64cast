@@ -54,6 +54,15 @@ STREAM_TICK_S = 1.0 / 200.0
 #: the wire does.
 _KEYB_MAX_BYTES = 10
 
+#: How long the connection may sit idle before the next command first proves
+#: it is still open with an IDENTIFY round trip. From firmware 3.15 the
+#: Ultimate closes a DMA connection that has sent it nothing for one second
+#: (`socket_dma_set_timeouts` sets SO_RCVTIMEO, and a timed-out `recv` ends
+#: the connection loop), and a command that crosses that close on the wire is
+#: lost without an error. Half the timeout leaves the round trip, at about
+#: 2.5 ms, a margin wider than any scheduling hiccup between check and send.
+IDLE_VERIFY_AFTER_S = 0.5
+
 #: `_send_cmd_locked`'s wire header packs the payload length into a uint16;
 #: a longer payload would raise a bare `struct.error` instead of the
 #: `SocketDMAError` every caller of this module is documented to expect.
@@ -83,7 +92,15 @@ class SocketDMAClient:
     cleartext credential to whatever now answers ``host:port``) until
     ``connect()`` is called again explicitly. ``close()`` is terminal the
     same way — a write after ``close()`` raises rather than silently
-    opening a fresh connection nobody owns."""
+    opening a fresh connection nobody owns.
+
+    Before each command the client checks that the server has not closed
+    the connection: a non-blocking peek for a FIN or a reset on every
+    command, and an IDENTIFY round trip when nothing has been sent for
+    ``idle_verify_after_s``. Either finding redials before the command
+    goes out, so a server that drops an idle connection (firmware 3.15+)
+    costs a reconnect rather than the command. ``reconnect_count`` counts
+    every implicit redial since construction."""
 
     def __init__(
         self,
@@ -92,12 +109,14 @@ class SocketDMAClient:
         password: str | None = None,
         connect_timeout: float = 5.0,
         io_timeout: float = 2.0,
+        idle_verify_after_s: float = IDLE_VERIFY_AFTER_S,
     ):
         self.host = host
         self.port = port
         self.password = password or None
         self.connect_timeout = connect_timeout
         self.io_timeout = io_timeout
+        self.idle_verify_after_s = idle_verify_after_s
 
         self._sock: socket.socket | None = None
         self._lock = threading.Lock()
@@ -112,6 +131,10 @@ class SocketDMAClient:
         # docstring. Cleared only by an explicit connect().
         self._auth_rejected = False
         self._closed = False
+        # monotonic() of the last command the server is known to have
+        # received or will receive before going idle; see _ensure_live_locked.
+        self._last_send = 0.0
+        self.reconnect_count = 0
 
     def connect(self) -> None:
         """Open the TCP socket and complete the handshake.
@@ -173,6 +196,7 @@ class SocketDMAClient:
         except Exception:
             self._close_locked()
             raise
+        self._last_send = time.monotonic()
         log.info("socket dma: connected to %s:%d (%s)", self.host, self.port, self.product)
 
     def _authenticate_locked(self) -> None:
@@ -274,29 +298,87 @@ class SocketDMAClient:
             self._sock.settimeout(self.io_timeout)
         return bytes(buf)
 
+    def _redial_locked(self, reason: str) -> None:
+        """Close the current socket and open a fresh one, counting it."""
+        log.debug("socket dma: %s — reconnecting", reason)
+        self._close_locked()
+        self._reconnect_locked()
+        self.reconnect_count += 1
+
+    def _peer_gone_locked(self) -> str | None:
+        """Why the server can no longer be reached on this socket, or
+        ``None`` if the kernel has seen nothing from it.
+
+        A zero-timeout ``MSG_PEEK``: a pending FIN reads as ``b""`` and a
+        reset raises, and both mean the next command would be lost or
+        refused. The server sends nothing unprompted, so a pending byte
+        means a reply this client never read; the stream is out of step
+        and is redialed too."""
+        assert self._sock is not None
+        self._sock.settimeout(0.0)
+        try:
+            pending = self._sock.recv(1, socket.MSG_PEEK)
+        except BlockingIOError:
+            return None
+        except OSError as e:
+            return f"connection reset while idle ({e})"
+        finally:
+            self._sock.settimeout(self.io_timeout)
+        if not pending:
+            return "server closed the connection"
+        log.warning("socket dma: unsolicited byte %r from the server — redialing", pending)
+        return "unsolicited data on the connection"
+
+    def _idle_check_locked(self) -> str | None:
+        """An IDENTIFY round trip; ``None`` if it was answered.
+
+        Sent only after ``idle_verify_after_s`` of silence, where the server
+        may close the connection while a command is in flight. A reply
+        proves the connection is open and restarts the server's idle timer,
+        so the command that follows has the whole timeout to arrive."""
+        try:
+            self._send_cmd_locked(CMD_IDENTIFY, b"")
+            length = self._recv_exact_locked(1)[0]
+            self._recv_exact_locked(length)
+        except OSError as e:
+            return f"idle connection did not answer IDENTIFY ({e})"
+        self._last_send = time.monotonic()
+        return None
+
+    def _ensure_live_locked(self) -> None:
+        """Leave ``self._sock`` on a connection the next command will reach,
+        redialing when it is missing or the server has closed it."""
+        if self._sock is None:
+            # A previous reconnect attempt failed mid-handshake.
+            self._reconnect_locked()
+            self.reconnect_count += 1
+            return
+        reason = self._peer_gone_locked()
+        if reason is None and time.monotonic() - self._last_send >= self.idle_verify_after_s:
+            reason = self._idle_check_locked()
+        if reason is not None:
+            self._redial_locked(reason)
+
     def _send_with_reconnect(self, opcode: int, payload: bytes) -> None:
         """sendall + one transparent reconnect-and-retry on OSError. Used
         by the public command methods so a transient network blip or a
         U64 reboot doesn't crash the pipeline.
 
-        If a previous reconnect attempt failed mid-handshake (auth or
-        IDENTIFY), self._sock will be None — try to reconnect first
-        before attempting the send. The first failure logs at debug: it
+        ``_ensure_live_locked`` runs first, so a connection the server
+        has already closed is redialed before the command rather than
+        losing it. The first failure logs at debug: it
         self-heals here and never reaches the escalating failure ladder in
         backend.py's `_note_emit_failure`, so logging it at warning would be
         the *only* place that event is visible, at the wrong level. A
         failure that survives the retry is the one worth a warning, since
         by then the caller is about to see the exception anyway."""
         with self._lock:
-            if self._sock is None:
-                self._reconnect_locked()
+            self._ensure_live_locked()
             try:
                 t0 = time.perf_counter()
                 self._send_cmd_locked(opcode, payload)
             except OSError as e:
-                log.debug("socket dma: send failed (%s) — reconnecting", e)
-                self._close_locked()
-                self._reconnect_locked()
+                self._redial_locked(f"send failed ({e})")
                 try:
                     t0 = time.perf_counter()
                     self._send_cmd_locked(opcode, payload)
@@ -309,6 +391,7 @@ class SocketDMAClient:
                     )
                     raise
             self._latencies.append(time.perf_counter() - t0)
+            self._last_send = time.monotonic()
 
     def dmawrite(self, addr: int, data: bytes) -> None:
         """Write ``data`` to C64 address ``addr`` via hardware DMA.
@@ -400,10 +483,7 @@ class SocketDMAClient:
         (see socket_dma.cc inner ``while(1)``), the IDENTIFY reply
         arrives only after every prior DMAWRITE has been executed."""
         with self._lock:
-            if self._sock is None:
-                # A previous reconnect attempt failed mid-handshake; the
-                # socket is gone. Re-establish it before sending IDENTIFY.
-                self._reconnect_locked()
+            self._ensure_live_locked()
             try:
                 t0 = time.perf_counter()
                 self._send_cmd_locked(CMD_IDENTIFY, b"")
@@ -418,6 +498,7 @@ class SocketDMAClient:
                 self._close_locked()
                 raise
             self._latencies.append(time.perf_counter() - t0)
+            self._last_send = time.monotonic()
 
     def latency_summary(self) -> tuple[float, float, float, float, int]:
         """``(avg, p50, p95, max, n)`` in seconds over the rolling window.
@@ -437,13 +518,14 @@ class SocketDMAClient:
         return avg, p50, p95, snap[-1], n
 
     def format_latency(self) -> str | None:
-        """One-line summary for the profile-emit log line. Returns
-        ``None`` when no samples have been recorded yet."""
+        """One-line summary for the profile-emit log line, with the
+        cumulative ``reconnect_count``. Returns ``None`` when no samples
+        have been recorded yet."""
         avg, p50, p95, mx, n = self.latency_summary()
         if n == 0:
             return None
         return (
             f"u64 dma latency: n={n} avg={avg * 1000:.1f} "
             f"p50={p50 * 1000:.1f} p95={p95 * 1000:.1f} "
-            f"max={mx * 1000:.1f} ms"
+            f"max={mx * 1000:.1f} ms reconnects={self.reconnect_count}"
         )

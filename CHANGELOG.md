@@ -177,6 +177,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **On Ultimate firmware 3.15, the first write after a pause of a second or
+  more no longer goes missing.** Firmware 3.15 closes a DMA connection that has
+  sent it nothing for one second, and the next write went into the closed
+  connection without an error: a slideshow or a still picture with audio off
+  could come up with a strip missing, and the cache that skips unchanged bytes
+  then never sent it again. Before each command c64cast now checks whether the
+  Ultimate has closed the connection, and after a pause it confirms the
+  connection with one round trip; a closed one is reopened first, which costs
+  about 7 ms. Firmware without the timeout (3.14 and earlier, C64 Ultimate
+  1.1.0) keeps its connection and pays only that round trip after a pause. The
+  `--profile` latency line now ends with a `reconnects=` count.
+
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that
   publishes the `running` transition, and `close()` stops that poller once and

@@ -419,8 +419,8 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `--print-example` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema` | [What Is In Here](01-introduction.md#what-is-in-here), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `--print-schema-path` | [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
-| `--profile` | [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
-| `profile` | [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [`debug` (A)](20-appendix-a-configuration.md#debug), [Audio (G)](26-appendix-g-cli-flags.md#audio) |
+| `--profile` | [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [Debug (G)](26-appendix-g-cli-flags.md#debug) |
+| `profile` | [Getting Bytes In (5)](06-under-the-hood.md#getting-bytes-in), [The Write Budget (5)](06-under-the-hood.md#the-write-budget), [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `--profile-interval` | [Debug (G)](26-appendix-g-cli-flags.md#debug) |
 | `profile_interval` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `prompt_to_save` | [The On-C64 Menu (6)](07-inputs-and-outputs.md#the-on-c64-menu), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [`menu` (A)](20-appendix-a-configuration.md#menu) |

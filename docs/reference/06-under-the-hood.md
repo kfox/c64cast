@@ -43,8 +43,14 @@ eight TCP setups to do it. The persistent socket is the whole difference.
 
 The DMA service accepts **one connection at a time**. That is why the audio
 path and the render path share a single client rather than opening a socket
-each: a second connection is accepted but never answered, and it blocks the
-first for several seconds after it closes. The shared client serializes commands
+each: a second connection is accepted but not answered while the first is
+open. On firmware before 3.15 the first one was also seen to hold new
+connections off for several seconds after it closed; 3.15 serves the next one
+at once. From 3.15 the machine also drops a connection that has been idle for a
+second. c64cast checks for that before every write and reopens the connection
+first, about 7 ms, so a pause in a slideshow costs a reconnect rather than a
+write. The `--profile` latency line counts those as `reconnects=`. The shared
+client serializes commands
 with a mutex, and the combined rate — audio about eight writes a second, render
 thirty to sixty — sits well under the ceiling.
 
