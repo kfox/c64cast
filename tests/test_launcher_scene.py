@@ -115,7 +115,12 @@ class JoystickInjectionTest(unittest.TestCase):
         scene, api = _make_scene(tmp, input_source="none", reset_before_launch=False)
         api.profile.supports_rest_input = supported
         self.posted = threading.Event()
-        api.send_input.side_effect = lambda events: self.posted.set()
+
+        def send(events):
+            self.posted.set()
+            return {}
+
+        api.send_input.side_effect = send
         scene.setup()
         self.addCleanup(scene._sender.stop)
         return scene, api
@@ -151,6 +156,116 @@ class JoystickInjectionTest(unittest.TestCase):
             self.assertIn("no input API", cm.output[0])
             scene.teardown()
             api.send_input.assert_not_called()
+
+
+def _joy(port, transition, *inputs):
+    return machine_input.joystick_event(port, transition, list(inputs))
+
+
+class JoystickSenderTest(unittest.TestCase):
+    """The sender's batching, resync after a failed post, and stop on a
+    revoked API, driven without its thread."""
+
+    def _scene(self, tmp):
+        scene, api = _make_scene(tmp, input_source="none")
+        api.profile.supports_rest_input = True
+        return scene, api
+
+    def _drain(self, scene):
+        batches = []
+        while batch := scene._next_batch():
+            batches.append(batch)
+        return batches
+
+    def test_press_and_release_of_one_input_go_in_separate_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            for event in (
+                _joy(2, "press", "fire"),
+                _joy(2, "press", "up"),
+                _joy(2, "release", "fire"),
+                _joy(1, "press", "fire"),
+                _joy(2, "press", "fire"),
+            ):
+                scene._injected.put(event)
+            self.assertEqual(
+                self._drain(scene),
+                [
+                    [_joy(2, "press", "fire"), _joy(2, "press", "up")],
+                    [_joy(2, "release", "fire"), _joy(1, "press", "fire")],
+                    [_joy(2, "press", "fire")],
+                ],
+            )
+
+    def test_failed_post_resends_the_held_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            for event in (
+                _joy(2, "press", "up"),
+                _joy(1, "press", "fire"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+            ):
+                scene._injected.put(event)
+            api.send_input.return_value = None
+            for batch in self._drain(scene):
+                scene._post(batch)
+            self.assertTrue(scene._resync)
+            self.assertEqual(
+                scene._held_state(),
+                [machine_input.RELEASE_ALL, _joy(1, "press", "fire"), _joy(2, "press", "up")],
+            )
+
+    def test_sender_resyncs_then_carries_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            done = threading.Event()
+            answers = iter([None, {}, {}])
+
+            def send(events):
+                answer = next(answers)
+                if api.send_input.call_count == 3:
+                    done.set()
+                return answer
+
+            api.send_input.side_effect = send
+            scene._injected.put(_joy(2, "press", "up"))
+            scene._injected.put(_joy(2, "release", "up"))
+            scene._sender.start()
+            self.addCleanup(scene._sender.stop)
+            self.assertTrue(done.wait(2.0))
+            scene._sender.stop()
+            self.assertEqual(
+                [c.args[0] for c in api.send_input.call_args_list],
+                [
+                    [_joy(2, "press", "up")],
+                    [machine_input.RELEASE_ALL, _joy(2, "press", "up")],
+                    [_joy(2, "release", "up")],
+                ],
+            )
+
+    def test_revoked_api_stops_the_sender_and_drops_with_the_no_api_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+
+            def send(events):
+                api.profile.supports_rest_input = False
+                return None
+
+            api.send_input.side_effect = send
+            scene._sender.start()
+            self.addCleanup(scene._sender.stop)
+            scene.inject_joystick(2, "up", True)
+            for _ in range(200):
+                if not scene._sender.is_running():
+                    break
+                threading.Event().wait(0.01)
+            self.assertFalse(scene._sender.is_running())
+            self.assertFalse(scene._resync)
+            with self.assertLogs("c64cast.scenes.scenes", level="WARNING") as cm:
+                scene.inject_joystick(2, "up", False)
+            self.assertIn("no input API", cm.output[0])
+            api.send_input.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -1641,6 +1641,15 @@ class VideoScene(MediaFileMixin, Scene):
         )
 
 
+# How long the launcher's input sender waits before re-sending the held
+# joystick state after that post failed too.
+_INJECT_RESYNC_RETRY_S = 0.25
+
+
+def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
+    return {(event["port"], name) for name in event["inputs"]}
+
+
 class LauncherScene(MediaFileMixin, Scene):
     """Launch a native C64 program and hand the machine over to it.
 
@@ -1734,6 +1743,12 @@ class LauncherScene(MediaFileMixin, Scene):
         self._injected: queue.SimpleQueue[machine_input.Event] = queue.SimpleQueue()
         self._sender = PollThread(self._send_loop, name="launcher-input-send", manual=True)
         self._injected_any = False
+        # The sender thread's own state: an event held back for the next
+        # request, what its posts have left pressed, and whether a failed post
+        # means the machine must be told that again.
+        self._carry: machine_input.Event | None = None
+        self._held: set[tuple[int, str]] = set()
+        self._resync = False
         self._injection_refused_logged = False
         self._prepared = False
 
@@ -1778,7 +1793,7 @@ class LauncherScene(MediaFileMixin, Scene):
         Returns at once; the sender thread posts it. Counts as player input
         for the idle timeout. Dropped, with one WARNING per scene, on a machine
         without the input API or while the program is not running."""
-        if not self._sender.is_running():
+        if not (self.api.profile.supports_rest_input and self._sender.is_running()):
             if not self._injection_refused_logged:
                 self._injection_refused_logged = True
                 log.warning(
@@ -1794,19 +1809,69 @@ class LauncherScene(MediaFileMixin, Scene):
             self._last_input_t = time.time()
 
     def _send_loop(self, stop: threading.Event) -> None:
-        """Post queued injections, each burst as one request."""
+        """Post queued injections, each burst as one request. Stops for good
+        once the machine has refused the input API."""
         while not stop.is_set():
-            try:
-                batch = [self._injected.get(timeout=0.05)]
-            except queue.Empty:
+            if not self.api.profile.supports_rest_input:
+                return
+            if self._resync:
+                self._resync = False
+                self._post(self._held_state())
+                if self._resync:
+                    stop.wait(_INJECT_RESYNC_RETRY_S)
                 continue
-            while len(batch) < machine_input.MAX_EVENTS:
-                try:
-                    batch.append(self._injected.get_nowait())
-                except queue.Empty:
-                    break
-            self._injected_any = True
-            self.api.send_input(batch)
+            batch = self._next_batch()
+            if batch:
+                self._injected_any = True
+                self._post(batch)
+
+    def _next_batch(self) -> list[machine_input.Event]:
+        """The next request's events, in order. A request changes each input
+        at most once: the firmware applies a body's events back to back, so a
+        press and its release in one body never reach the port. The event that
+        would repeat an input waits in `_carry` for the next request."""
+        first = self._carry
+        self._carry = None
+        if first is None:
+            try:
+                first = self._injected.get(timeout=0.05)
+            except queue.Empty:
+                return []
+        batch = [first]
+        touched = _joystick_inputs(first)
+        while len(batch) < machine_input.MAX_EVENTS:
+            try:
+                event = self._injected.get_nowait()
+            except queue.Empty:
+                break
+            inputs = _joystick_inputs(event)
+            if inputs & touched:
+                self._carry = event
+                break
+            batch.append(event)
+            touched |= inputs
+        for event in batch:
+            if event["transition"] == "press":
+                self._held |= _joystick_inputs(event)
+            else:
+                self._held -= _joystick_inputs(event)
+        return batch
+
+    def _held_state(self) -> list[machine_input.Event]:
+        """`release_all`, then a press of everything still held, per port."""
+        events = [machine_input.RELEASE_ALL]
+        for port in machine_input.JOYSTICK_PORTS:
+            inputs = [name for name in machine_input.JOYSTICK_INPUTS if (port, name) in self._held]
+            if inputs:
+                events.append(machine_input.joystick_event(port, "press", inputs))
+        return events
+
+    def _post(self, events: list[machine_input.Event]) -> None:
+        """Send `events`; when that fails on a machine that still has the input
+        API, mark the held state to be sent again, since what failed may have
+        been a release."""
+        if self.api.send_input(events) is None and self.api.profile.supports_rest_input:
+            self._resync = True
 
     def _release_injected(self) -> None:
         """Let go of anything injected input still holds. The reset that
@@ -1816,6 +1881,9 @@ class LauncherScene(MediaFileMixin, Scene):
                 self._injected.get_nowait()
             except queue.Empty:
                 break
+        self._carry = None
+        self._held.clear()
+        self._resync = False
         if self._injected_any:
             self._injected_any = False
             self.api.send_input([machine_input.RELEASE_ALL])

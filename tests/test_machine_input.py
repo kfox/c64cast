@@ -40,6 +40,7 @@ class ValidateEventTest(unittest.TestCase):
             mi.keyboard_event("tap", [*"abcdefghi"]),
             mi.keyboard_event("press", ["restore"]),
             mi.joystick_event(3, "tap", ["up"]),
+            mi.joystick_event(True, "tap", ["up"]),
             mi.joystick_event(2, "tap", ["jump"]),
         ):
             with self.subTest(event=event), self.assertRaises(ValueError):

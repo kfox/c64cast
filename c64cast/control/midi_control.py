@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any
 from c64cast._midi import MIDI_AVAILABLE, mido, open_input_port
 from c64cast._pollthread import PollThread
 from c64cast._wire_log import LogThrottle
-from c64cast.hw.machine_input import JOYSTICK_INPUTS, JOYSTICK_PORTS
+from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
 
 from . import live_tune
 from .transport import TransportEvent
@@ -193,7 +193,11 @@ def _parse_cc_map(raw: list[dict[str, Any]]) -> dict[tuple[str, int], _CCMapping
         port = entry.get("port")
         joystick_input = entry.get("input")
         if action == "joystick":
-            if port is not None and port not in JOYSTICK_PORTS:
+            if kind not in ("note", "cc"):
+                raise ValueError(
+                    f"cc_map[{i}] action 'joystick' needs type 'note' or 'cc', got {kind!r}"
+                )
+            if port is not None and not is_joystick_port(port):
                 raise ValueError(f"cc_map[{i}] action 'joystick' port must be 1 or 2, got {port!r}")
             if joystick_input not in JOYSTICK_INPUTS:
                 raise ValueError(
@@ -950,6 +954,10 @@ class MidiControlListener:
             # Only a launcher scene has a program to drive. It queues the
             # event for its own sender thread, so no REST runs here.
             inject = getattr(pl.current, "inject_joystick", None)
+            # A momentary CC button sends a high value down and 0 up; only a
+            # note's release reaches here as pressed=False.
+            if mapping.kind == "cc":
+                pressed = value >= 64
             if inject is not None and mapping.input is not None:
                 inject(mapping.port or 2, mapping.input, pressed)
         elif action == "loop_slot":

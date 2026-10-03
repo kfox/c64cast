@@ -336,10 +336,29 @@ class JoystickDispatchTests(_MidiControlTestCase):
         pl.current = object()
         listener._dispatch(mido.Message("note_on", note=50, velocity=100))  # must not raise
 
+    def test_cc_presses_at_64_and_up_and_releases_below(self):
+        listener, pl = self._listener(
+            {"type": "cc", "number": 20, "action": "joystick", "input": "fire"}
+        )
+        for value in (127, 0, 64, 63):
+            listener._dispatch(mido.Message("control_change", control=20, value=value))
+        self.assertEqual(
+            pl.current.inject_joystick.call_args_list,
+            [
+                mock.call(2, "fire", True),
+                mock.call(2, "fire", False),
+                mock.call(2, "fire", True),
+                mock.call(2, "fire", False),
+            ],
+        )
+
     def test_malformed_entries_are_refused(self):
         for entry in (
             {"type": "note", "number": 50, "action": "joystick"},
             {"type": "note", "number": 50, "action": "joystick", "input": "up", "port": 0},
+            {"type": "note", "number": 50, "action": "joystick", "input": "up", "port": True},
+            {"type": "pc", "number": 50, "action": "joystick", "input": "up"},
+            {"type": "mmc", "number": 2, "action": "joystick", "input": "up"},
         ):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 _parse_cc_map([entry])

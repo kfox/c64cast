@@ -578,12 +578,16 @@ class MidiControlJoystickTest(unittest.TestCase):
     def test_valid_entries_pass(self):
         self._check({"type": "note", "number": 36, "action": "joystick", "input": "fire"})
         self._check({"type": "note", "number": 37, "action": "joystick", "input": "up", "port": 1})
+        self._check({"type": "cc", "number": 20, "action": "joystick", "input": "fire"})
 
     def test_bad_entries_raise(self):
         for entry in (
             {"type": "note", "number": 36, "action": "joystick"},
             {"type": "note", "number": 36, "action": "joystick", "input": "jump"},
             {"type": "note", "number": 36, "action": "joystick", "input": "up", "port": 3},
+            {"type": "note", "number": 36, "action": "joystick", "input": "up", "port": True},
+            {"type": "pc", "number": 36, "action": "joystick", "input": "up"},
+            {"type": "mmc", "number": 2, "action": "joystick", "input": "up"},
         ):
             with self.subTest(entry=entry), self.assertRaises(cfgmod.ConfigError):
                 self._check(entry)

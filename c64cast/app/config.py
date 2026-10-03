@@ -2609,7 +2609,8 @@ class MidiControlCfg:
             "state on save and re-fires it on recall. 'joystick' holds one joystick "
             "'input' (up/down/left/right/fire/fire2/fire3) on 'port' 1 or 2 "
             "(default 2) of a program a launcher scene is running, for as long "
-            "as the note or pad is held; it needs an Ultimate 64 on firmware "
+            "as the note or pad is held (type 'note' or 'cc' only; a cc counts "
+            "as held at a value of 64 or more); it needs an Ultimate 64 on firmware "
             "3.15 or newer and does nothing in any other scene."
         },
     )

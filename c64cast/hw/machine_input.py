@@ -72,6 +72,13 @@ Event = dict[str, Any]
 RELEASE_ALL: Final[Event] = {"kind": "release_all"}
 
 
+def is_joystick_port(port: object) -> bool:
+    """Whether `port` is a port the firmware takes: the integer 1 or 2. A bool
+    compares equal to 1 but goes out as JSON ``true``, which the firmware
+    refuses."""
+    return isinstance(port, int) and not isinstance(port, bool) and port in JOYSTICK_PORTS
+
+
 def keyboard_event(transition: str, inputs: Sequence[str]) -> Event:
     return {"kind": "keyboard", "transition": transition, "inputs": list(inputs)}
 
@@ -109,7 +116,7 @@ def validate_event(event: Event) -> None:
         if RESTORE in inputs and transition != "tap":
             raise ValueError(f"restore can only be tapped: {event!r}")
         return
-    if event["port"] not in JOYSTICK_PORTS:
+    if not is_joystick_port(event["port"]):
         raise ValueError(f"joystick port must be 1 or 2: {event!r}")
     unknown = [name for name in inputs if name not in JOYSTICK_INPUTS]
     if unknown:

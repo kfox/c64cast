@@ -221,8 +221,10 @@ the clip grid below is for, and it hides that cost behind a count-in.
 ### Driving the Machine's Joystick
 
 A `joystick` entry holds one joystick input for as long as its note or pad is
-down. It acts on the program a `launcher` scene is running, and in any other
-scene it does nothing.
+down. Its `type` is `note` or `cc` — a `cc` button counts as held while it
+sends 64 or more — because a `pc` or `mmc` message has no release. It acts
+on the program a `launcher` scene is running, and in any other scene it does
+nothing.
 
 ```toml
 [[midi_control.cc_map]]
