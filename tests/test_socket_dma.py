@@ -8,6 +8,7 @@ AUTHENTICATE)."""
 
 from __future__ import annotations
 
+import errno
 import socket
 import struct
 import threading
@@ -41,7 +42,8 @@ class FakeSocket:
     A non-blocking ``MSG_PEEK`` (the client's per-command liveness check)
     reports only what the test sets: ``peer_closed`` reads as a FIN,
     ``peer_reset`` raises, ``unsolicited`` is a pending byte, and otherwise
-    nothing is pending. Scripted replies stay invisible to it, since the
+    nothing is pending. ``so_error`` is what ``SO_ERROR`` reads, so a FIN
+    with it set is a reset that arrived after the FIN, as Linux reports it. Scripted replies stay invisible to it, since the
     fake has no notion of a reply arriving only after its request."""
 
     def __init__(self, replies: list[bytes] | None = None):
@@ -55,6 +57,7 @@ class FakeSocket:
         self.sockopts: list[tuple] = []
         self.peer_closed = False
         self.peer_reset = False
+        self.so_error = 0
         self.unsolicited = b""
 
     def settimeout(self, t):
@@ -62,6 +65,10 @@ class FakeSocket:
 
     def setsockopt(self, level, opt, val):
         self.sockopts.append((level, opt, val))
+
+    def getsockopt(self, level, opt):
+        assert (level, opt) == (socket.SOL_SOCKET, socket.SO_ERROR)
+        return self.so_error
 
     def sendall(self, data: bytes) -> None:
         if self.fail_sendalls_remaining > 0:
@@ -944,6 +951,15 @@ class LostCommandReportTest(unittest.TestCase):
             with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
                 c.flush()
         self.assertEqual(c.reconnect_count, 1)
+
+    def test_a_reset_after_the_idle_close_fin_fails_the_next_flush(self):
+        # A write that crossed the idle close draws a reset after the FIN;
+        # Linux then peeks b"" and leaves the reset in SO_ERROR.
+        fake1, c = self._writing_client()
+        fake1.peer_closed = True
+        fake1.so_error = errno.EPIPE
+        c._last_send -= c.idle_verify_after_s
+        self._flush_after_redial(c)
 
     def test_an_answered_idle_identify_confirms_the_writes_before_it(self):
         # The idle IDENTIFY is answered, then the write after it fails to

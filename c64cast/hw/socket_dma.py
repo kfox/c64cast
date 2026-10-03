@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import os
 import socket
 import struct
 import threading
@@ -350,7 +351,8 @@ class SocketDMAClient:
         as the firmware 3.15 idle close does, and any reset a lost command
         drew would have arrived by then. A reset means the server discarded
         bytes this client sent; an earlier FIN may still be followed by
-        one."""
+        one. A reset that follows a FIN peeks as ``b""`` on Linux, which
+        checks for the FIN before the error, so ``SO_ERROR`` is read too."""
         assert self._sock is not None
         self._sock.settimeout(0.0)
         try:
@@ -362,6 +364,9 @@ class SocketDMAClient:
         finally:
             self._sock.settimeout(self.io_timeout)
         if not pending:
+            err = self._sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            if err:
+                return f"connection reset after the server closed it ({os.strerror(err)})", False
             quiet_for = time.monotonic() - self._last_send
             return "server closed the connection", quiet_for >= FIN_SETTLE_S
         log.warning("socket dma: unsolicited byte %r from the server — redialing", pending)
