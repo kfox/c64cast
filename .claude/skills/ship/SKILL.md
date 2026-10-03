@@ -116,7 +116,8 @@ subagent with the Agent tool and have it run:
 to `high` for a significant one — a large diff, or any diff touching a pinned
 path from step 4. The effort level goes **first** in `args`, or it is parsed as
 part of the target and the run silently reuses whatever level ran last. Tell it to review that
-commit's own diff, not `<sha>...HEAD` and not the branch.
+commit's own diff, not `<sha>...HEAD` and not the branch. Set the Agent
+`description` to the short SHA alone (`a1b2c3d`) — the agent list truncates it.
 
 **Confirm the review read your tree.** The fork can resolve its working
 directory against the session's primary checkout rather than yours, and a fork
@@ -203,7 +204,9 @@ Spawn **one subagent** with the Agent tool and have it review the whole branch:
     Skill(skill="code-review", args="high origin/main...HEAD")
 
 The effort level goes **first** in `args`, or it is parsed as part of the target
-and the run silently reuses whatever level ran last.
+and the run silently reuses whatever level ran last. Its Agent `description` is
+the branch name, cut to what identifies it (`audio-redial`) — the PR does not
+exist yet, so there is no number to use.
 
 Step 3's tree check applies unchanged here — it is the same fork, so confirm
 the pass landed in your tree with `git branch -a --contains <fix-sha>` on its
