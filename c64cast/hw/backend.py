@@ -470,10 +470,12 @@ class C64Backend(ABC):
         address."""
         raise BackendCapabilityError("get_device_info")
 
-    def describe_device(self) -> str:
+    def describe_device(self, *, detailed: bool = False) -> str:
         """A human-readable identity for the connected unit — model, per-unit
         serial, firmware — for the connect-time log, or ``""`` when the backend
-        can't tell. Best-effort: never raises.
+        can't tell. Best-effort: never raises. ``detailed`` asks for the extra
+        detail a bug report wants and a normal connect line does not (the
+        Ultimate's firmware build hash); a backend with none ignores it.
 
         Logged instead of relying on the connection target alone, because an IP
         or serial-port path names an *endpoint*, not a unit: two devices can

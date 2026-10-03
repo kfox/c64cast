@@ -423,6 +423,55 @@ class MenuOpenProbeTest(unittest.TestCase):
         self.assertEqual(self._connectivity("absent", object()), [])
 
 
+class DeviceIdentityProbeTest(unittest.TestCase):
+    """Doctor names the unit and its firmware build, so a pasted report says
+    which machine and which build it came from."""
+
+    def _identity(self, info_response: Any) -> list:
+        loaded = _load("""
+            [ultimate64]
+            url = "http://fake"
+        """)
+        with _fake_ultimate_api() as api_instance:
+            api_instance.session.get.side_effect = info_response
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        return [d for d in diags if d.subject == "system (device)"]
+
+    def test_identity_line_carries_the_build_hash(self):
+        def get(url, **_kwargs):
+            r = mock.MagicMock()
+            r.json.return_value = (
+                {
+                    "product": "Ultimate 64-II",
+                    "firmware_version": "3.15a",
+                    "git_commit_hash": "dddd29b2",
+                    "fpga_version": "125",
+                    "core_version": "1.50",
+                    "unique_id": "B95B01",
+                    "wifi_mac": "48:CA:43:5A:73:78",
+                }
+                if url.endswith("/v1/info")
+                else {}
+            )
+            return r
+
+        ident = self._identity(get)
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertEqual(
+            ident[0].message,
+            "Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)",
+        )
+
+    def test_unanswered_info_is_reported_not_fatal(self):
+        import requests
+
+        ident = self._identity(requests.ConnectionError("down"))
+        self.assertEqual(len(ident), 1)
+        self.assertEqual(ident[0].level, "ok")
+        self.assertIn("not reported", ident[0].message)
+
+
 class ReuStatusProbeTest(unittest.TestCase):
     """REU enable check fires only when the config opts into a REU path.
     Catches the silent-failure mode where REU is off at the U64 — staged
@@ -611,6 +660,51 @@ class ReuStatusProbeTest(unittest.TestCase):
         self.assertEqual(reu, [])
 
 
+def _config_rest(
+    sections: dict[str, dict[str, str]],
+    *,
+    absent_answer: str = "200",
+    listed: list[str] | None = None,
+) -> Any:
+    """A `session.get` side effect serving the Ultimate config API from
+    `sections`: `GET /v1/configs` lists `listed` (default: the section names),
+    and a GET for a category not in `sections` answers the way the firmware
+    does — `"200"` (before 3.15, C64 Ultimate 1.1.0) with only the errors
+    array, `"404"` (3.15 on) with a JSON error naming the category. Any other
+    URL answers an empty 200."""
+    from urllib.parse import unquote
+
+    import requests
+
+    def _get(url, timeout=3.0, **_kwargs):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = mock.MagicMock()
+        if url.endswith("/v1/configs"):
+            resp.json.return_value = {
+                "categories": list(sections) if listed is None else listed,
+                "errors": [],
+            }
+            return resp
+        if "/v1/configs/" not in url:
+            resp.json.return_value = {}
+            return resp
+        cat = unquote(url.split("/v1/configs/")[-1])
+        body: dict[str, object] = {"errors": []}
+        if cat in sections:
+            body[cat] = sections[cat]
+        elif absent_answer == "404":
+            resp.status_code = 404
+            body["errors"] = [f"No configuration category matches '{cat}'."]
+            resp.raise_for_status.side_effect = requests.HTTPError(
+                f"404 Client Error: Not Found for url: {url}"
+            )
+        resp.json.return_value = body
+        return resp
+
+    return _get
+
+
 class SidStatusProbeTest(unittest.TestCase):
     """Emulated-SID enable check fires only when the config drives the SID
     (audio streaming, or a waveform/midi scene). Catches the U2+ case where
@@ -618,22 +712,18 @@ class SidStatusProbeTest(unittest.TestCase):
     the host-emulated oscilloscope keep working."""
 
     def _patch_connectivity_to_sid_status(self, loaded, left: str, right: str):
-        """Drive _probe_connectivity end-to-end with mocks. `left`/`right`
-        are the values the REST endpoint returns for "SID Left"/"SID Right".
-        Wire shape matches Ultimate firmware 3.x."""
-        fake_response = mock.MagicMock()
-        fake_response.json.return_value = {
+        """Drive _probe_connectivity end-to-end with mocks against a U2+
+        whose "SID Left"/"SID Right" read `left`/`right`. Wire shape matches
+        Ultimate firmware 3.x."""
+        sections = {
             "Audio Output Settings": {
                 "SID Left": left,
                 "SID Left Base": "Snoop $D400",
                 "SID Right": right,
             },
-            "errors": [],
         }
-        fake_response.raise_for_status = mock.MagicMock()
-
         with _fake_ultimate_api() as api_instance:
-            api_instance.session.get.return_value = fake_response
+            api_instance.session.get.side_effect = _config_rest(sections)
             return doctor.validate_load_result(loaded, probe_u64=True)
 
     def test_no_sid_request_skips_sid_probe(self):
@@ -718,8 +808,16 @@ class SidStatusProbeTest(unittest.TestCase):
             type = "webcam"
             display = "petscii"
         """)
+        # The category list answers (a U2+), then every category read times out.
+        serve = _config_rest({"Audio Output Settings": {}})
+
+        def _get(url, timeout=3.0, **kwargs):
+            if url.endswith("/v1/configs"):
+                return serve(url, timeout, **kwargs)
+            raise requests.Timeout("read timeout")
+
         with _fake_ultimate_api() as api_instance:
-            api_instance.session.get.side_effect = requests.Timeout("read timeout")
+            api_instance.session.get.side_effect = _get
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(len(sid), 1)
@@ -738,14 +836,53 @@ class SidStatusProbeTest(unittest.TestCase):
             type = "webcam"
             display = "petscii"
         """)
-        fake_response = mock.MagicMock()
-        fake_response.json.return_value = {"Audio Output Settings": {}, "errors": []}
-        fake_response.raise_for_status = mock.MagicMock()
         with _fake_ultimate_api() as api_instance:
-            api_instance.session.get.return_value = fake_response
+            api_instance.session.get.side_effect = _config_rest({"Audio Output Settings": {}})
             diags = doctor.validate_load_result(loaded, probe_u64=True)
         sid = [d for d in diags if d.subject.endswith("(SID)")]
         self.assertEqual(sid, [])
+
+
+class SidStatusOnUltimate64Test(unittest.TestCase):
+    """An Ultimate 64 registers no "Audio Output Settings" category, so the
+    emulated-SID enable check has nothing to say there — on either firmware
+    answer for an absent category (#519: 3.15 answers 404 and the probe
+    warned "REST query for SID status failed" on every U64 with audio)."""
+
+    _AUDIO_ON = """
+        [ultimate64]
+        url = "http://fake"
+        [audio]
+        enabled = true
+        [[scenes]]
+        type = "webcam"
+        display = "petscii"
+    """
+
+    def _sid_diags(self, sections, **rest_kwargs):
+        with _fake_ultimate_api() as api_instance:
+            api_instance.session.get.side_effect = _config_rest(sections, **rest_kwargs)
+            diags = doctor.validate_load_result(_load(self._AUDIO_ON), probe_u64=True)
+        return [d for d in diags if d.subject.endswith("(SID)")]
+
+    def test_u64_on_firmware_315_is_quiet(self):
+        self.assertEqual(self._sid_diags({"Audio Mixer": {}}, absent_answer="404"), [])
+
+    def test_u64_on_earlier_firmware_is_quiet(self):
+        self.assertEqual(self._sid_diags({"Audio Mixer": {}}, absent_answer="200"), [])
+
+    def test_skipped_without_the_emusid_capability(self):
+        # The category answers "both SIDs disabled", but the device's category
+        # list does not carry it: the capability gate alone keeps the probe off.
+        sections = {"Audio Output Settings": {"SID Left": "Disabled", "SID Right": "Disabled"}}
+        self.assertEqual(self._sid_diags(sections, listed=["Audio Mixer"]), [])
+
+    def test_absent_category_reads_as_absent_not_failed(self):
+        # The capability says yes but the GET says no such category: the 404
+        # is the "absent" answer, which stays quiet, not a REST failure.
+        self.assertEqual(
+            self._sid_diags({}, absent_answer="404", listed=["Audio Output Settings"]), []
+        )
 
 
 class PrintReportTest(unittest.TestCase):

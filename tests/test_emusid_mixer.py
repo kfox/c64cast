@@ -160,8 +160,9 @@ class ApplyRoutingTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [])
 
     def test_empty_category_is_a_no_op(self):
-        # The firmware answers a GET for a missing category with an empty
-        # body; a surface that can't be read back is never written.
+        # get_config_category reads a category the device does not register
+        # as {} (200-empty before firmware 3.15, 404 from 3.15); a surface that
+        # can't be read back is never written.
         api = FakeAPI.u2plus()
         self.assertEqual(apply_emusid_routing(api, (0xD400,)), {})
         self.assertEqual(api.config_puts, [])

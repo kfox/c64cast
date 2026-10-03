@@ -950,6 +950,32 @@ class PutConfigItemTest(unittest.TestCase):
             self.api.put_config_item("C64 and Cartridge Settings", "REU Size", "16 MB")
 
 
+# GET /v1/info bodies. 3.15a is a live capture from a U64-II; 3.14e has the
+# same shape minus the fields 3.15a added (git_commit_hash, ethernet_mac,
+# wifi_mac), per software/api/routes.cc at that tag.
+_INFO_3_15A = {
+    "product": "Ultimate 64-II",
+    "firmware_version": "3.15a",
+    "git_commit_hash": "dddd29b2",
+    "fpga_version": "125",
+    "core_version": "1.50",
+    "hostname": "Ultimate-64-II-73F767",
+    "unique_id": "B95B01",
+    "ethernet_mac": "02:15:41:73:F7:67",
+    "wifi_mac": "48:CA:43:5A:73:78",
+    "errors": [],
+}
+_INFO_3_14E = {
+    "product": "Ultimate 64",
+    "firmware_version": "3.14e",
+    "fpga_version": "124",
+    "core_version": "1.47",
+    "hostname": "Ultimate-64-5D327C",
+    "unique_id": "5D327C",
+    "errors": [],
+}
+
+
 class ReadSideTest(unittest.TestCase):
     """The REST read surface (read_memory / probe / get_config_category /
     get_device_info / run_basic_clear_loop / reset): URL + params shape,
@@ -1008,6 +1034,56 @@ class ReadSideTest(unittest.TestCase):
         self.get.return_value.json.return_value = ["not", "a", "dict"]
         self.assertEqual(self.api.get_config_category("Audio Mixer"), {})
 
+    def test_get_config_category_absent_reads_empty_on_both_firmware_answers(self):
+        # 3.15 answers 404 + a JSON error naming the category; earlier firmware
+        # (and C64 Ultimate 1.1.0) answers 200 with only the errors array.
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.return_value = {
+            "errors": ["No configuration category matches 'Audio Output Settings'."]
+        }
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        self.assertEqual(self.api.get_config_category("Audio Output Settings"), {})
+
+        self.get.return_value.status_code = 200
+        self.get.return_value.json.return_value = {"errors": []}
+        self.get.return_value.raise_for_status.side_effect = None
+        self.assertEqual(self.api.get_config_category("Audio Output Settings"), {})
+
+    def test_get_config_category_404_without_json_error_raises(self):
+        # No JSON error body: the route itself is missing, which is a failure.
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.side_effect = ValueError("not JSON")
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_get_config_category_404_with_empty_errors_raises(self):
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.return_value = {"errors": []}
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_read_config_category_body_tells_absent_from_present(self):
+        from c64cast.hw.api import read_config_category_body
+
+        self.get.return_value.status_code = 200
+        self.get.return_value.json.return_value = {"Audio Mixer": {}, "errors": []}
+        self.assertEqual(
+            read_config_category_body(self.api.session, self.api.base_url, "Audio Mixer"),
+            {"Audio Mixer": {}, "errors": []},
+        )
+        self.get.return_value.json.return_value = {"errors": []}
+        self.assertIsNone(
+            read_config_category_body(self.api.session, self.api.base_url, "Audio Mixer")
+        )
+
     def test_get_config_category_propagates_http_error(self):
         # AsidScene decides its socket policy on the answer, so it must see failure.
         import requests
@@ -1033,6 +1109,43 @@ class ReadSideTest(unittest.TestCase):
         }
         self.assertEqual(
             self.api.describe_device(), "Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"
+        )
+
+    def test_describe_device_reads_a_3_14e_unit_without_a_build_hash(self):
+        # 3.14e reports core_version but has no git_commit_hash or MACs; asking
+        # for the detailed line must not invent a build.
+        self.get.return_value.json.return_value = _INFO_3_14E
+        self.assertEqual(
+            self.api.describe_device(detailed=True),
+            "Ultimate 64 5D327C (firmware 3.14e, FPGA 124, core 1.47)",
+        )
+
+    def test_describe_device_shows_the_3_15a_build_only_when_detailed(self):
+        self.get.return_value.json.return_value = _INFO_3_15A
+        self.assertEqual(
+            self.api.describe_device(),
+            "Ultimate 64-II B95B01 (firmware 3.15a, FPGA 125, core 1.50)",
+        )
+        self.assertEqual(
+            self.api.describe_device(detailed=True),
+            "Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)",
+        )
+
+    def test_describe_device_never_names_a_mac(self):
+        self.get.return_value.json.return_value = _INFO_3_15A
+        for detailed in (False, True):
+            line = self.api.describe_device(detailed=detailed)
+            self.assertNotIn(_INFO_3_15A["ethernet_mac"], line)
+            self.assertNotIn(_INFO_3_15A["wifi_mac"], line)
+
+    def test_describe_device_without_a_unique_id(self):
+        # `unique_id` is reported only while the unit's Unique ID setting is
+        # non-empty.
+        info = {k: v for k, v in _INFO_3_15A.items() if k != "unique_id"}
+        self.get.return_value.json.return_value = info
+        self.assertEqual(
+            self.api.describe_device(),
+            "Ultimate 64-II (firmware 3.15a, FPGA 125, core 1.50)",
         )
 
     def test_describe_device_omits_fields_the_device_did_not_report(self):

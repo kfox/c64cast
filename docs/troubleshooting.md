@@ -143,7 +143,9 @@ See [caveats.md → "Audio is intentionally lo-fi"](caveats.md#audio-is-intentio
 If the TeensyROM+ is in the cartridge port of a C64U / Ultimate 64, check the
 **Ultimate's** setting before any c64cast one: **F2 → Cartridge and ROM Settings
 → Bus Operation Mode**, which defaults to `Quiet`. Set it to `Writes` (or
-`Dyn. & Writes`), back out with <kbd>RUN/STOP</kbd> and save. Nothing under
+`Dyn. & Writes`), back out with <kbd>RUN/STOP</kbd> and save. Ultimate 64
+firmware 3.15 also offers `Compatibility`, which includes writes; `Writes`
+remains the tested setting. Nothing under
 `[audio]` or `[dsp]` clears it, and c64cast can't set it for you — the run's
 connection is to the TeensyROM+, not to the Ultimate.
 
