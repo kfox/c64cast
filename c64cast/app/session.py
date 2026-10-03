@@ -143,7 +143,10 @@ def _log_dma_setup_error(cfg: cfgmod.Config, e: SocketDMAError, *, role: str) ->
         "  3. If a network password is set on the U64, supply it via the "
         "C64CAST_DMA_PASSWORD env var or [ultimate64] dma_password."
     )
-    log.error("Save and reboot the U64 after changing either toggle.")
+    log.error(
+        "Save after changing either toggle; a service switched on starts "
+        "within a few seconds, without a reboot."
+    )
 
 
 def _resolve_reu_available(cfg: cfgmod.Config, api: C64Backend) -> bool:
@@ -345,7 +348,7 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
             api.close()
             raise StackBuildError(2)
         log.info("%s reachable: %s", cfg.hardware.backend, status)
-        if identity := api.describe_device():
+        if identity := api.describe_device(detailed=log.isEnabledFor(logging.DEBUG)):
             log.info("connected device: %s", identity)
         # One cheap REST call downgrades capability flags the family profile
         # claims optimistically (a U2+ has no multi-SID config surface). Under

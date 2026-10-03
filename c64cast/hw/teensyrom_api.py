@@ -222,7 +222,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             log.debug("TR ping failed: %s", e)
             return None
 
-    def describe_device(self) -> str:
+    def describe_device(self, *, detailed: bool = False) -> str:
         """This board's identity for the connect-time log: ``"TeensyROM+
         12345678 (full firmware, serial /dev/cu.usbmodem12345678@2000000)"``.
         The USB serial number is the only per-unit identifier the TR exposes and

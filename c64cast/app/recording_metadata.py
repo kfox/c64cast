@@ -13,7 +13,9 @@ end up in a public video description:
 
 - Machine-identifying connection info (`[ultimate64].url`/`dma_password`,
   `[teensyrom].host`/`serial_port`). Only the backend kind + NTSC/PAL +
-  sid_model are surfaced from that area.
+  sid_model are surfaced from that area. The device's own identity from
+  ``GET /v1/info`` (`unique_id`, `hostname`, and the `ethernet_mac`/`wifi_mac`
+  that firmware 3.15a added) is per-unit too and never appears.
 - Any live hardware read. Everything here comes from the already-resolved
   `Config`/`SceneCfg`/scene instance state — no extra U64 traffic, which
   matters mid-recording.

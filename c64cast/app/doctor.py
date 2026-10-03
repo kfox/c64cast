@@ -1680,7 +1680,8 @@ def _probe_u64_services(
             category="connectivity",
             subject=name,
             message=f"DMA + REST reachable at {url} ({status})",
-        )
+        ),
+        _device_identity_diagnostic(name, api),
     ]
     out.extend(_probe_system_mode(name, cfg, api))
     out.extend(_probe_reu_status(name, cfg, api))
@@ -1689,6 +1690,20 @@ def _probe_u64_services(
     out.extend(_probe_dac_calibration_status(name, cfg, api))
     out.extend(_probe_sid_autoconfig_status(name, cfg, api))
     return out
+
+
+def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
+    """Which unit answered and what firmware build it runs, build hash
+    included when the firmware reports one (3.15a and later) — the line a bug
+    report against a pre-release build needs. A device whose ``GET /v1/info``
+    fails is still usable, so that is an ``ok`` saying so, not a warning."""
+    identity = api.describe_device(detailed=True)  # type: ignore[attr-defined]
+    return Diagnostic(
+        level="ok",
+        category="connectivity",
+        subject=f"{name} (device)",
+        message=identity or "identity not reported (GET /v1/info failed)",
+    )
 
 
 def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnostic]:
@@ -1711,9 +1726,9 @@ def _probe_reu_unavailable(name: str, cfg: Config, api: object) -> list[Diagnost
 
 
 # The emulated-SID enable state. Only U2/U2+/U2+L firmware registers the
-# category — a U64's internal SID lives elsewhere and is normally on — and the
-# probe below stays quiet when the fields are absent, which is what a U64
-# answers. `c64cast/sid/emusid_mixer.py` owns the canonical names.
+# category — a U64's internal SID lives elsewhere and is normally on — so the
+# probe below runs only where `refine_capabilities` found it.
+# `c64cast/sid/emusid_mixer.py` owns the canonical names.
 _AUDIO_CONFIG_CATEGORY = emusid_mixer.CAT_EMUSID
 _SID_LEFT_FIELD = emusid_mixer.ITEM_ENABLE["emusid1"]
 _SID_RIGHT_FIELD = emusid_mixer.ITEM_ENABLE["emusid2"]
@@ -1768,8 +1783,9 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     U2+ the emulated SID that snoops $D400 ships *disabled*, which makes
     every tune silent — and because video (DMA) and the host-emulated
     oscilloscope both keep working, the failure is easy to misread as a
-    c64cast bug. Returns an empty list when no SID audio is requested.
-    Emits:
+    c64cast bug. Returns an empty list when no SID audio is requested, or
+    when `refine_capabilities` did not find the emulated-SID category (a U64,
+    or a device whose category list could not be read). Emits:
       * ok   — at least one SID (Left/Right) enabled
       * warn — both disabled while the config drives the SID
       * warn — REST query failed / unexpected shape
@@ -1778,6 +1794,12 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     """
     wants, reasons = _wants_sid_audio(cfg)
     if not wants:
+        return []
+    if not getattr(getattr(api, "profile", None), "supports_emusid_mixer", False):
+        log.debug(
+            "doctor: SID enable check skipped — no %r category found on this device",
+            _AUDIO_CONFIG_CATEGORY,
+        )
         return []
 
     subject = f"{name} (SID)"
@@ -1980,7 +2002,8 @@ def _probe_reu_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
             hint=(
                 "Set [ultimate64].auto_reu = true to enable it automatically, or "
                 "on the U64: F2 Menu -> C64 and Cartridge Settings -> "
-                "RAM Expansion Unit -> Enabled (size 16 MB). Save and reboot. "
+                "RAM Expansion Unit -> Enabled (size 16 MB). It takes effect without "
+                "a reboot; save it to keep it across a power cycle. "
                 "Alternatively, turn off the REU opt-in in your TOML."
             ),
         )

@@ -1545,6 +1545,43 @@ class _StubRunnerBackend(BufferedWriteBackend):
         return data
 
 
+def read_config_category_body(
+    session: requests.Session, base_url: str, category: str, *, timeout: float = 3.0
+) -> object | None:
+    """``GET /v1/configs/<category>`` and return the decoded JSON body, or
+    ``None`` when this device registers no category of that name.
+
+    The firmware says "no such category" two ways, and both come back as
+    ``None``:
+
+    * 3.15 and later (GideonZ/1541ultimate#805): HTTP 404 with a JSON body
+      whose ``errors`` list names the category.
+    * Earlier firmware, including C64 Ultimate 1.1.0: HTTP 200 with a body
+      that holds only the ``errors`` list and no category key.
+
+    A 404 without that JSON error body is the route itself missing (firmware
+    without ``/v1/configs``) and raises like any other HTTP failure. Raises
+    ``requests.RequestException`` on transport/HTTP failure and ``ValueError``
+    when a 200 body is not JSON."""
+    r = session.get(f"{base_url}/v1/configs/{quote(category)}", timeout=timeout)
+    if r.status_code == 404 and _names_an_error(r):
+        return None
+    r.raise_for_status()
+    body: object = r.json()
+    if isinstance(body, dict) and category not in body and set(body) <= {"errors"}:
+        return None
+    return body
+
+
+def _names_an_error(response: requests.Response) -> bool:
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    errors = body.get("errors") if isinstance(body, dict) else None
+    return isinstance(errors, list) and bool(errors)
+
+
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     # Set by `hardware_palette.provision_hardware_palette` for a run that pushes
     # palettes; the scenes that push read it from here.
@@ -1667,17 +1704,15 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         ``{item: value}`` map with every value coerced to ``str`` (enum items
         come back as their label string, value items as integers). Used by
         AsidScene to read `SID Detected Socket 1/2` (prefer-physical policy) and
-        to snapshot the `SID Addressing` map so teardown can restore it. Raises
-        ``requests.RequestException`` on transport/HTTP failure; callers treat
-        the read as best-effort.
+        to snapshot the `SID Addressing` map so teardown can restore it.
+        Returns ``{}`` for a category this device does not register (see
+        `read_config_category_body`). Raises ``requests.RequestException`` on
+        transport/HTTP failure; callers treat the read as best-effort.
 
         Not to be confused with `get_config_categories` (plural) — that
         returns the *names* of every category this firmware exposes, not
         one category's items."""
-        url = f"{self.base_url}/v1/configs/{quote(category)}"
-        r = self.session.get(url, timeout=timeout)
-        r.raise_for_status()
-        body = r.json()
+        body = read_config_category_body(self.session, self.base_url, category, timeout=timeout)
         inner = body.get(category, {}) if isinstance(body, dict) else {}
         return {k: str(v) for k, v in inner.items()} if isinstance(inner, dict) else {}
 
@@ -1699,14 +1734,26 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         body = r.json()
         return {k: str(v) for k, v in body.items()} if isinstance(body, dict) else {}
 
-    def describe_device(self) -> str:
+    def describe_device(self, *, detailed: bool = False) -> str:
         """This unit's identity for the connect-time log, from ``GET /v1/info``:
-        ``"Ultimate II+ 5D327C (firmware 3.14d, FPGA 122)"``. Empty when the
-        device won't answer (older firmware without ``/v1/info``).
+        ``"Ultimate 64-II B95B01 (firmware 3.15a, FPGA 125, core 1.50)"``, and
+        with ``detailed`` the firmware build too — ``"firmware 3.15a build
+        dddd29b2"``. Empty when the device won't answer (older firmware without
+        ``/v1/info``).
 
         ``product`` is the only thing that distinguishes a U64 from a U2+ over
         this API, and the two differ in which config categories they expose — so
-        without this line a config-surface failure reads as a bare 404."""
+        without this line a config-surface failure reads as a bare 404.
+
+        Every field is optional and only a field the device reported is shown:
+        ``git_commit_hash`` first appears in 3.15a, ``core_version`` only on
+        U64-family hardware (never a U2/U2+), and ``unique_id`` only while the unit's ``Unique ID`` network
+        setting is non-empty. ``fpga_version`` is ``"1"`` plus two *hex*
+        digits (``"124"`` is FPGA 0x24), so it is shown verbatim, never
+        compared as a number. The ``ethernet_mac``/``wifi_mac`` fields 3.15a
+        added are not shown: this line goes into logs and bug reports, and a
+        MAC adds a second per-unit identifier while naming nothing a reader
+        needs."""
         try:
             info = self.get_device_info()
         except requests.RequestException:
@@ -1715,10 +1762,17 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         parts = [info.get("product") or "Ultimate"]
         if unique_id := info.get("unique_id"):
             parts.append(unique_id)
+        firmware = info.get("firmware_version")
+        if firmware and detailed and (build := info.get("git_commit_hash")):
+            firmware = f"{firmware} build {build}"
         versions = [
-            f"{label} {info[key]}"
-            for label, key in (("firmware", "firmware_version"), ("FPGA", "fpga_version"))
-            if info.get(key)
+            f"{label} {value}"
+            for label, value in (
+                ("firmware", firmware),
+                ("FPGA", info.get("fpga_version")),
+                ("core", info.get("core_version")),
+            )
+            if value
         ]
         if versions:
             parts.append(f"({', '.join(versions)})")
