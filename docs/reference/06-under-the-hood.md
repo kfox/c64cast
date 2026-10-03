@@ -87,11 +87,11 @@ every chip's scope, but only the first is audible.
 Some features depend on what an Ultimate's firmware answers rather than on
 which backend it is. c64cast asks for each of them at runtime and never reads a
 version number to decide, so a machine whose firmware picks a feature up later
-gets it then without a c64cast change. Ultimate 64 and Ultimate II+ firmware
-3.15 is the first to answer the ones below, and C64 Ultimate firmware 1.1.0
-answers none of them.
+gets it then without a c64cast change. Ultimate 64 firmware 3.15a is the
+first to answer the ones below, and C64 Ultimate firmware 1.1.0 answers none
+of them.
 
-| Feature | Ultimate firmware 3.15 and later | Ultimate firmware before 3.15 | C64 Ultimate firmware 1.1.0 | Without it |
+| Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.1.0 | Without it |
 |---|---|---|---|---|
 | Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
 
