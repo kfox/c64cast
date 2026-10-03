@@ -15,6 +15,7 @@ import numpy as np
 from _fakes import FrozenClock
 
 from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.hw.c64 import RegionID
 from c64cast.scenes import scenes, video_transport
 from c64cast.scenes.scenes import VideoScene
 from c64cast.video.video import (
@@ -1016,6 +1017,8 @@ class VideoSceneLoopToggleTest(unittest.TestCase):
             scene.transport_loop_toggle()
         self.assertFalse(scene.transport.record_border_active)
         scene.api.write_regs.assert_called_with("d020", 0)  # type: ignore[attr-defined]
+        # So a petscii/blank border that is not black comes back on the next push.
+        scene.api.invalidate_region.assert_called_with(RegionID.VIC_D020)  # type: ignore[attr-defined]
 
 
 class VideoSceneRecordStopTest(unittest.TestCase):
