@@ -39,6 +39,7 @@ from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.hw.backend import make_backend
 from c64cast.hw.teensyrom_api import TeensyROMBackend
+from c64cast.hw.teensyrom_dma import SPANS_FIELD_MAX, SPANS_MAX, SPANS_MAX_SLICES, TRClient
 
 SCRATCH = 0x6000
 BATCH_SPAN_BYTES = 64
@@ -75,6 +76,16 @@ def main() -> int:
     slices = [int(x) for x in args.slices.split(",")]
     gaps = [int(x) for x in args.gaps.split(",")]
     batches = [int(x) for x in args.batch.split(",") if x]
+    # Out of range, write_spans/write_segment raise only after the reset and
+    # clear loop, mid-grid — check here instead.
+    if args.reps < 1:
+        ap.error("--reps must be at least 1")
+    if not all(1 <= n <= TRClient.MAX_SEGMENT_BYTES for n in payloads):
+        ap.error(f"--payloads must each be 1-{TRClient.MAX_SEGMENT_BYTES}")
+    if not all(0 <= v <= SPANS_FIELD_MAX for v in slices + gaps):
+        ap.error(f"--slices and --gaps must each be 0-{SPANS_FIELD_MAX}")
+    if not all(1 <= k <= SPANS_MAX for k in batches):
+        ap.error(f"--batch counts must each be 1-{SPANS_MAX}")
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
@@ -82,6 +93,7 @@ def main() -> int:
     be = make_backend(cfg)
     if not isinstance(be, TeensyROMBackend):
         print("[abort] not a TeensyROM URL")
+        be.close()
         return 1
     tr = be.tr
     rows: list[dict] = []
@@ -109,7 +121,7 @@ def main() -> int:
             report("mem", n, _time(lambda data=data: tr.write_segment(SCRATCH, data), args.reps))
             for g in gaps:
                 for s in slices:
-                    if s and (n + s - 1) // s > 1024:
+                    if s and (n + s - 1) // s > SPANS_MAX_SLICES:
                         continue
                     m = _time(
                         lambda data=data, s=s, g=g: tr.write_spans([(SCRATCH, data)], s, g),
@@ -135,10 +147,14 @@ def main() -> int:
         be.silence_sid()
         be.reset()
         be.close()
-
-    path = d.stamped("tr_spans_cost", "json")
-    path.write_text(json.dumps({"url": args.url, "reps": args.reps, "rows": rows}, indent=2))
-    print(f"\nwrote {path}")
+        # Whatever was measured before a failure part way through the grid
+        # (a held bus, a link timeout) is kept.
+        if rows:
+            path = d.stamped("tr_spans_cost", "json")
+            path.write_text(
+                json.dumps({"url": args.url, "reps": args.reps, "rows": rows}, indent=2)
+            )
+            print(f"\nwrote {path}")
     return 0
 
 

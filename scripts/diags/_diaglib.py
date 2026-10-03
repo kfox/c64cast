@@ -19,6 +19,7 @@ working values, confirmed as of 2026-06-10. Point the env vars at yours.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import datetime
@@ -401,9 +402,23 @@ def add_tr_slicing_args(ap) -> None:
     ``[teensyrom].dma_slicing`` knobs, so one tool can measure the same
     condition with WriteC64Mem and with sliced WriteC64Spans. Unset, each takes
     the config default. No effect on an Ultimate URL."""
+    from c64cast.hw.teensyrom_dma import SPANS_FIELD_MAX
+
+    def header_byte(text: str) -> int:
+        # Both ride WriteC64Spans' header as one byte; past it, write_spans
+        # raises ValueError, which the backend's _emit does not absorb.
+        value = int(text)
+        if not 0 <= value <= SPANS_FIELD_MAX:
+            raise argparse.ArgumentTypeError(f"{value} is not 0-{SPANS_FIELD_MAX}")
+        return value
+
     ap.add_argument("--tr-slicing", choices=["auto", "on", "off"], default=None)
-    ap.add_argument("--slice-bytes", type=int, default=None, help="[teensyrom].dma_slice_bytes")
-    ap.add_argument("--slice-gap", type=int, default=None, help="[teensyrom].dma_slice_gap_us")
+    ap.add_argument(
+        "--slice-bytes", type=header_byte, default=None, help="[teensyrom].dma_slice_bytes"
+    )
+    ap.add_argument(
+        "--slice-gap", type=header_byte, default=None, help="[teensyrom].dma_slice_gap_us"
+    )
 
 
 def apply_tr_slicing(cfg, args) -> None:
@@ -420,11 +435,20 @@ def apply_tr_slicing(cfg, args) -> None:
 def describe_tr_writes(be) -> str:
     """How a TeensyROM backend is writing, for a tool's setup banner — the
     resolved mode, not the requested one, since 'auto' and 'on' both fall
-    back to WriteC64Mem on firmware without WriteC64Spans."""
-    spans = getattr(be, "_spans", None)
+    back to WriteC64Mem on firmware without WriteC64Spans. Even resolved to
+    spans, the backend slices only while an NMI consumer is noted and only a
+    write longer than one slice, so the banner says so."""
+    if not hasattr(be, "_spans"):
+        return "not a TeensyROM (slicing flags ignored)"
+    spans = be._spans
     if spans is None:
         return "WriteC64Mem"
-    return f"WriteC64Spans slice={spans[0] or 'whole'} gap={spans[1]}us"
+    if spans[0] == 0:
+        return "WriteC64Mem (slice 0: every segment is one halt, so none is sent as spans)"
+    return (
+        f"WriteC64Spans slice={spans[0]} gap={spans[1]}us "
+        "(while an NMI consumer is noted, for writes longer than one slice)"
+    )
 
 
 def __getattr__(name: str) -> object:

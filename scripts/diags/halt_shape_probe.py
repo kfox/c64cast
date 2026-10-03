@@ -189,6 +189,9 @@ def load_only(be, secs: float, *, payload: int, write_rate: float, addr: int) ->
     consumer here, and reading it would add this link's own DMA to the very
     thing under test.
     """
+    # The consumer is the other link's, but it is real, and a TeensyROM backend
+    # slices only while one is noted — without this, --tr-slicing is ignored.
+    be.note_nmi_consumer(True)
     data = bytes([0x5A]) * payload
     tag = f"{addr:04X}"
     period = 1.0 / write_rate
