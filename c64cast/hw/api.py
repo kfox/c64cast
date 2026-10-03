@@ -25,12 +25,13 @@ See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketd
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, replace
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 import requests
@@ -1541,6 +1542,41 @@ class _StubRunnerBackend(BufferedWriteBackend):
         return data
 
 
+RouteAnswer = Literal["present", "unsupported", "absent", "unknown"]
+
+
+def classify_route_answer(status: int, body: bytes) -> RouteAnswer:
+    """What one ``GET`` says about whether this firmware has the route.
+
+    * ``present`` — 200, or a 404 whose JSON body names an error: the route
+      ran and refused for a reason of its own (``menu_screen`` with the menu
+      closed).
+    * ``unsupported`` — 501: the firmware registers the route and says this
+      hardware cannot do it (``machine:input`` on an Ultimate II+).
+    * ``absent`` — a 404 with an empty body, which is what the firmware's
+      router answers for a path nothing registered (3.14 and C64 Ultimate
+      1.1.0 for the 3.15 routes).
+    * ``unknown`` — anything else. Callers treat it as not present."""
+    if status == 200:
+        return "present"
+    if status == 501:
+        return "unsupported"
+    if status != 404:
+        return "unknown"
+    if not body.strip():
+        return "absent"
+    return "present" if _body_names_an_error(body) else "unknown"
+
+
+def _body_names_an_error(body: bytes) -> bool:
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return False
+    errors = parsed.get("errors") if isinstance(parsed, dict) else None
+    return isinstance(errors, list) and bool(errors)
+
+
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     def __init__(
         self,
@@ -1562,6 +1598,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # Set by flush() so _flush_or_raise can tell a swallowed failure from a
         # clean round-trip without changing flush()'s own -> None contract.
         self._last_flush_failed = False
+        # Per connection: a firmware update needs a reconnect anyway.
+        self._route_answers: dict[str, RouteAnswer] = {}
 
         self.session = requests.Session()
 
@@ -1710,6 +1748,44 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         if not isinstance(categories, list):
             return []
         return [category for category in categories if isinstance(category, str)]
+
+    def probe_route(self, path: str, feature: str, *, timeout: float = 3.0) -> bool:
+        """Whether this firmware has ``GET <path>``, which `feature` needs.
+
+        One ``GET`` per path per connection, classified by
+        `classify_route_answer`; only ``present`` counts as yes. A route that
+        is absent or unsupported logs one INFO line naming `feature` as
+        skipped, and an answer that fits neither (a transport failure, an
+        unexpected status) logs a WARNING and is not cached, so a later call
+        asks again. Only ever a ``GET``: a probe must not change machine
+        state."""
+        answer = self._route_answers.get(path)
+        if answer is None:
+            try:
+                r = self.session.get(f"{self.base_url}{path}", timeout=timeout)
+            except requests.RequestException as e:
+                log.warning(
+                    "could not tell whether the firmware has GET %s (%s) — %s skipped",
+                    path,
+                    e,
+                    feature,
+                )
+                return False
+            answer = classify_route_answer(r.status_code, r.content)
+            if answer == "unknown":
+                log.warning(
+                    "could not tell whether the firmware has GET %s (HTTP %d) — %s skipped",
+                    path,
+                    r.status_code,
+                    feature,
+                )
+                return False
+            self._route_answers[path] = answer
+            if answer == "absent":
+                log.info("this firmware has no GET %s — %s skipped", path, feature)
+            elif answer == "unsupported":
+                log.info("this hardware cannot serve GET %s (HTTP 501) — %s skipped", path, feature)
+        return answer == "present"
 
     def refine_capabilities(self) -> None:
         """One cheap REST call resolving which config surfaces this device

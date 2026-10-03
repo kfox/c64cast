@@ -1176,6 +1176,81 @@ class RefineCapabilitiesTest(unittest.TestCase):
             self.api.reset()  # shutdown path — must not raise
 
 
+class RouteProbeTest(unittest.TestCase):
+    """The shared probe for firmware routes 3.15 added: which answers mean
+    the route is there, that each path is asked once per connection, and
+    that whatever cannot be classified fails closed and is not cached."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.addCleanup(patch.stopall)
+
+    def _answer(self, status: int, body: bytes = b"") -> None:
+        self.get.return_value.status_code = status
+        self.get.return_value.content = body
+
+    def test_classification(self):
+        cases = [
+            (200, b"\x00" * 2000, "present"),
+            (404, b'{ "errors" : [ "Menu screen unavailable." ] }', "present"),
+            (501, b'{"errors": ["needs Ultimate 64-class hardware"]}', "unsupported"),
+            (404, b"", "absent"),
+            (404, b"  \n", "absent"),
+            (404, b'{"errors": []}', "unknown"),
+            (404, b"<html>not found</html>", "unknown"),
+            (500, b"", "unknown"),
+        ]
+        for status, body, expected in cases:
+            with self.subTest(status=status, body=body):
+                self.assertEqual(api.classify_route_answer(status, body), expected)
+
+    def test_present_route_is_asked_once(self):
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.get.assert_called_once()
+        self.assertEqual(self.get.call_args.args[0], "http://example.invalid/v1/machine:input")
+
+    def test_absent_route_says_what_was_skipped_once(self):
+        self._answer(404)
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:menu_screen", "menu check"))
+            self.assertFalse(self.api.probe_route("/v1/machine:menu_screen", "menu check"))
+        self.assertEqual(len(cm.records), 1)
+        self.assertEqual(cm.records[0].levelname, "INFO")
+        self.assertIn("menu check skipped", cm.records[0].getMessage())
+        self.get.assert_called_once()
+
+    def test_unsupported_route_is_not_present(self):
+        self._answer(501, b'{"errors": ["no"]}')
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertIn("HTTP 501", cm.records[0].getMessage())
+
+    def test_unclassifiable_answer_warns_and_is_asked_again(self):
+        self._answer(500)
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertEqual(self.get.call_count, 2)
+
+    def test_transport_failure_warns_and_is_asked_again(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertIn("input skipped", cm.records[0].getMessage())
+        self.get.side_effect = None
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+
+
 class DumpCharRomTest(unittest.TestCase):
     """The shared dump orchestration on the Ultimate: upload the stub, SYS it
     via run_prg, wait for the completion flag, read the landing zone back.
