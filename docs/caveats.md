@@ -82,7 +82,8 @@ two coexist with no contention.
 Prerequisites on the U64 (auto-provisioned live + restored at teardown when
 missing, or set them yourself in F2): **C64 and Cartridge Settings → Map Ultimate
 Audio $DF20-DFFF = Enabled**, and **Audio Mixer → Vol Sampler L / Vol Sampler R**
-audible (0 dB, not OFF). `c64cast --doctor` reports the sampler's state.
+audible (0 dB, not OFF) — plus, on firmware 3.15+, **Audio Mixer → Vol Master**
+not OFF, since it scales every source. `c64cast --doctor` reports the sampler's state.
 
 ## Forced-DAC bitmap video plays ≈12% slow (tempo compensation)
 

@@ -483,6 +483,22 @@ class IsolateMixerTest(unittest.TestCase):
         dc._isolate_mixer(api, "socket1", self._present(api))
         self.assertEqual(api.config_puts, [])
 
+    def test_master_off_is_forced_to_unity_and_snapshotted(self):
+        # Firmware 3.15's Vol Master scales every source: at OFF the capture
+        # would be the noise floor.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = {**self.U64_MIXER, "Vol Master": "OFF"}
+        self.assertEqual(dict(dc._snapshot_mixer(api))[(CAT_MIXER, "Vol Master")], "OFF")
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        self.assertIn((CAT_MIXER, "Vol Master", VOL_UNITY), api.config_puts)
+
+    def test_master_absent_is_never_put(self):
+        # Before 3.15 and on C64 Ultimate 1.1.0 there is no such item.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_MIXER] = dict(self.U64_MIXER)
+        dc._isolate_mixer(api, "socket1", self._present(api))
+        self.assertNotIn("Vol Master", {item for _, item, _ in api.config_puts})
+
 
 class ResolveCurveTest(DataDirIsolated):
     def test_auto_ultimate_no_cal_uses_baked_mahoney(self):

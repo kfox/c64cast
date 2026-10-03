@@ -102,7 +102,12 @@ defaults to **Quiet**. Set it to **Writes**; Chapter 1 has the steps.
 
 **No audio at all.** Check that `[audio] enabled` is true and that you did
 not pass `--no-audio`. For microphone input, check that the `mic` feature is
-installed and that `-D` names the right device.
+installed and that `-D` names the right device. On Ultimate firmware 3.15 or
+newer, also check **Vol Master** under F2 → Audio Mixer (Audio Output Settings
+on an Ultimate II+): it scales every source at once. c64cast raises it from
+OFF for the run and puts it back afterward, but `--skip-probe` turns that off,
+and a master turned far down is left as it is. `c64cast --doctor` shows its
+level.
 
 **SID tunes play too fast.** Most tunes were written for PAL machines, which
 run at about 50 frames a second, but the interrupt the player uses ticks at 60

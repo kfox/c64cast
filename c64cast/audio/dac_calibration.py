@@ -30,6 +30,7 @@ import numpy as np
 from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
 from c64cast.hw.c64 import CIA2, SCREEN
+from c64cast.hw.hw_provision import MASTER_VOL_FIELD
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -272,7 +273,8 @@ def _save_unusable_capture(
 
 
 def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
-    """The Audio Mixer's per-SID-source levels, in ``restore_sid_config`` form.
+    """The Audio Mixer's per-SID-source levels, plus ``Vol Master`` where the
+    firmware has one (3.15+), in ``restore_sid_config`` form.
 
     A sibling of ``snapshot_sid_config`` rather than part of it: that snapshot
     is the address/socket set multi-SID *planning* round-trips, and widening it
@@ -282,7 +284,8 @@ def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
     except Exception:  # noqa: BLE001 — best-effort; no mixer to restore
         log.debug("calib: mixer read failed", exc_info=True)
         return {}
-    return {(CAT_MIXER, item): mixer[item] for item in VOL_ITEM.values() if item in mixer}
+    items = (*VOL_ITEM.values(), MASTER_VOL_FIELD)
+    return {(CAT_MIXER, item): mixer[item] for item in items if item in mixer}
 
 
 def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> None:
@@ -294,7 +297,10 @@ def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> Non
     chips ships its UltiSID cores at ``OFF``. Measuring through a muted source
     captures the noise floor, which reads as a bring-up or wiring failure rather
     than the routing one it is. Forcing unity rather than preserving a
-    deliberate trim is what keeps two sources' ladders comparable.
+    deliberate trim is what keeps two sources' ladders comparable. The same
+    goes for firmware 3.15's ``Vol Master``, which scales every source: at OFF
+    it mutes the capture, so where `present` carries it, it is forced to unity
+    too.
 
     `present` is the set of level items this firmware's mixer actually carries
     (from the pre-loop :func:`_snapshot_mixer` read): ``VOL_ITEM`` spans both
@@ -307,6 +313,8 @@ def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> Non
         if item not in present:
             continue
         be.put_config_item(CAT_MIXER, item, VOL_UNITY if name == source else VOL_OFF)
+    if MASTER_VOL_FIELD in present:
+        be.put_config_item(CAT_MIXER, MASTER_VOL_FIELD, VOL_UNITY)
 
 
 def _isolate_socket(be: C64Backend, socket: int) -> None:

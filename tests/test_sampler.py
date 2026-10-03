@@ -449,8 +449,9 @@ class ValidateSamplerCfgTest(unittest.TestCase):
 
 
 class _FakeProfile:
-    def __init__(self, supports_sampler: bool = True) -> None:
+    def __init__(self, supports_sampler: bool = True, supports_config: bool = True) -> None:
         self.supports_sampler = supports_sampler
+        self.supports_config = supports_config
 
 
 class _FakeRestApi:
@@ -461,7 +462,9 @@ class _FakeRestApi:
     not register: ``"200"`` (before 3.15, and C64 Ultimate 1.1.0) is HTTP 200
     with only the errors array; ``"404"`` (3.15 on) is HTTP 404 with a JSON
     error naming the category. ``mixer_category=None`` registers no mixer
-    category at all."""
+    category at all. ``master`` is the mixer category's ``Vol Master`` label
+    (firmware 3.15+); None leaves the item out, as 3.14e and C64 Ultimate
+    1.1.0 do."""
 
     def __init__(
         self,
@@ -473,12 +476,14 @@ class _FakeRestApi:
         mixer_category: str | None = "Audio Mixer",
         absent_answer: str = "200",
         supports_sampler: bool = True,
+        supports_config: bool = True,
+        master: str | None = None,
         put_error: Exception | None = None,
         get_error: Exception | None = None,
         error_categories: set[str] | None = None,
     ) -> None:
         self.base_url = "http://fake"
-        self.profile = _FakeProfile(supports_sampler)
+        self.profile = _FakeProfile(supports_sampler, supports_config)
         self.put_calls: list[tuple[str, str, str]] = []
         self._put_error = put_error
         cart: dict[str, str] = {}
@@ -487,6 +492,8 @@ class _FakeRestApi:
             cart["Map Ultimate Audio $DF20-DFFF"] = map_status
             mixer["Vol Sampler L"] = vol_l
             mixer["Vol Sampler R"] = vol_r
+        if master is not None:
+            mixer["Vol Master"] = master
         self._sections = {"C64 and Cartridge Settings": cart}
         if mixer_category is not None:
             self._sections[mixer_category] = mixer
@@ -624,6 +631,14 @@ class SamplerMixerCategoryTest(unittest.TestCase):
         self.assertEqual(len(unmutes), 2)
         self.assertEqual([c for c in api.put_calls if c[0] == "Audio Mixer"], [])
 
+    def test_u2plus_master_resolves_audio_output_settings(self):
+        master = hw_provision.read_master_volume(self._u2plus(master="OFF"))
+        self.assertEqual(master, hw_provision.MasterVolume("OFF", "Audio Output Settings", False))
+
+    def test_master_absent_everywhere_is_not_a_failure(self):
+        master = hw_provision.read_master_volume(self._fake())
+        self.assertEqual(master, hw_provision.MasterVolume(None, None, False))
+
     def test_u2plus_restore_targets_resolved_category(self):
         api = self._u2plus(map_status="Disabled", vol_l="OFF")
         restore = hw_provision.provision_sampler(api, _video_cfg())
@@ -722,6 +737,117 @@ class ProvisionSamplerTest(unittest.TestCase):
         api = _FakeRestApi()
         hw_provision.restore_sampler(api, None)  # must not raise
         self.assertEqual(api.put_calls, [])
+
+
+class MasterVolumeAudibilityTest(unittest.TestCase):
+    """Firmware 3.15's Vol Master multiplies every source, so the sampler is
+    audible only when the master is not OFF; without the item (3.14e, C64
+    Ultimate 1.1.0) the master is unity and the verdict is the channels'."""
+
+    def test_master_absent_reads_none_and_stays_available(self):
+        api = _FakeRestApi()
+        self.assertIsNone(hw_provision.read_sampler_config(api).master)
+        self.assertIs(hw_provision.sampler_is_available(api), True)
+
+    def test_master_at_unity_is_available(self):
+        api = _FakeRestApi(master=" 0 dB")
+        self.assertEqual(hw_provision.read_sampler_config(api).master, " 0 dB")
+        self.assertIs(hw_provision.sampler_is_available(api), True)
+
+    def test_master_trimmed_is_available(self):
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi(master="-42 dB")), True)
+
+    def test_master_off_is_unavailable(self):
+        self.assertIs(hw_provision.sampler_is_available(_FakeRestApi(master="OFF")), False)
+
+    def test_master_off_on_u2plus_is_unavailable(self):
+        self.assertIs(hw_provision.sampler_is_available(_u2plus_fake(master="OFF")), False)
+
+
+def _waveform_cfg(*, enabled: bool = False) -> cfgmod.Config:
+    cfg = cfgmod.Config()
+    cfg.audio.enabled = enabled
+    cfg.scenes = [cfgmod.SceneCfg(type="waveform", file="t.sid")]
+    return cfg
+
+
+class WantsAudioTest(unittest.TestCase):
+    def test_audio_enabled_wants_it(self):
+        wants, reasons = hw_provision.wants_audio(_video_cfg())
+        self.assertTrue(wants)
+        self.assertIn("[audio].enabled = true", reasons)
+
+    def test_sid_scene_wants_it_with_audio_disabled(self):
+        for stype in ("waveform", "midi", "asid"):
+            cfg = cfgmod.Config()
+            cfg.audio.enabled = False
+            cfg.scenes = [cfgmod.SceneCfg(type=stype)]
+            with self.subTest(stype=stype):
+                self.assertEqual(hw_provision.wants_audio(cfg), (True, [f"{stype} scene(s)"]))
+
+    def test_generative_sid_wants_it_with_audio_disabled(self):
+        cfg = cfgmod.Config()
+        cfg.audio.enabled = False
+        cfg.scenes = [cfgmod.SceneCfg(type="generative", audio_source="sid")]
+        self.assertTrue(hw_provision.wants_audio(cfg)[0])
+
+    def test_muted_video_run_does_not(self):
+        self.assertEqual(hw_provision.wants_audio(_video_cfg(enabled=False)), (False, []))
+
+
+class ProvisionMasterVolumeTest(unittest.TestCase):
+    def test_raises_off_to_unity_and_restores_off(self):
+        api = _FakeRestApi(master="OFF")
+        restore = hw_provision.provision_master_volume(api, _video_cfg())
+        self.assertEqual(api.put_calls, [("Audio Mixer", "Vol Master", " 0 dB")])
+        api.put_calls.clear()
+        hw_provision.restore_master_volume(api, restore)
+        self.assertEqual(api.put_calls, [("Audio Mixer", "Vol Master", "OFF")])
+
+    def test_raises_on_u2plus_into_its_category(self):
+        api = _u2plus_fake(master="OFF", absent_answer="404")
+        hw_provision.provision_master_volume(api, _waveform_cfg())
+        self.assertEqual(api.put_calls, [("Audio Output Settings", "Vol Master", " 0 dB")])
+
+    def test_leaves_a_trimmed_master_alone(self):
+        for level in (" 0 dB", "-12 dB", "-42 dB", "+6 dB"):
+            api = _FakeRestApi(master=level)
+            with self.subTest(level=level):
+                self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg()))
+                self.assertEqual(api.put_calls, [])
+
+    def test_absent_master_writes_nothing(self):
+        api = _FakeRestApi()
+        self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg()))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_without_audio(self):
+        api = _FakeRestApi(master="OFF")
+        self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg(enabled=False)))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_under_skip_probe(self):
+        api = _FakeRestApi(master="OFF")
+        self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg(skip_probe=True)))
+        self.assertEqual(api.put_calls, [])
+
+    def test_skipped_without_config_api(self):
+        api = _FakeRestApi(master="OFF", supports_config=False)
+        self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg()))
+        self.assertEqual(api.put_calls, [])
+
+    def test_unreadable_mixer_warns_and_writes_nothing(self):
+        api = _FakeRestApi(master="OFF", get_error=requests.Timeout("read timeout"))
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as cm:
+            self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg()))
+        self.assertIn("Vol Master", cm.output[0])
+        self.assertEqual(api.put_calls, [])
+
+    def test_failed_put_warns_and_leaves_nothing_to_restore(self):
+        api = _FakeRestApi(master="OFF", put_error=requests.ConnectionError("down"))
+        with self.assertLogs("c64cast.hw.hw_provision", level="WARNING") as cm:
+            self.assertIsNone(hw_provision.provision_master_volume(api, _video_cfg()))
+        self.assertIn("could not raise Vol Master", cm.output[0])
 
 
 class WantsReuCouplingTest(unittest.TestCase):

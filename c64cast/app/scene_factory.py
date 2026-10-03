@@ -287,7 +287,8 @@ def resolve_audio_backend(
             "[audio].backend = 'sampler' but the Ultimate Audio sampler is "
             "unavailable on this system (%s) — falling back to the 4-bit DAC. "
             "Enable 'Map Ultimate Audio $DF20-DFFF' (F2 -> C64 and Cartridge "
-            "Settings) and set Vol Sampler L/R audible (F2 -> Audio Mixer), or "
+            "Settings) and set Vol Sampler L/R (and Vol Master on firmware "
+            "3.15+) audible (F2 -> Audio Mixer), or "
             "set [audio].backend = 'dac' to silence this warning.",
             "no sampler support" if not supports_sampler else "feature not enabled",
         )

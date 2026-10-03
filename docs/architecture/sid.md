@@ -417,6 +417,8 @@ A configured list is truncated to the source count and padded with *auto*, not w
 
 The ladder is also **not** a uniform 1 dB fan — `OFF`, `-42`, `-36`, `-30`, `-27`, `-24`, then every dB from `-18` to `+6` — so an int with no representation (`-20`) is rejected at config load rather than snapped to a neighbor.
 
+**Every level is relative to `Vol Master`** on firmware 3.15+, which the firmware multiplies into each source. `apply_volume` never writes it: a run that wants audio has `hw_provision.provision_master_volume` lift it from `OFF` before any scene starts, and a master `apply_volume` still finds at `OFF` (a `--skip-probe` run) is logged as a warning, since every level it sets is then inaudible. Firmware without the item reads as unity.
+
 Applied at the same three call sites as panning, folding into the same restore snapshot: `WaveformScene._apply_sid_volume`, `AsidScene._apply_sid_mixer` (setup and every remap), and `SidFileAudioSource._apply_sid_mixer`.
 
 `tests/test_sid_volume.py` covers the conversions, the policy, the pure planner and the diff-only apply.

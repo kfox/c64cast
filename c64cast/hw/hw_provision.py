@@ -1,14 +1,14 @@
 """Live U64 hardware auto-provisioning over the Ultimate REST config API.
 
-`session.build_stack` calls `provision_reu`/`provision_sampler` on every run: when
-the config needs a feature the firmware has switched off, they enable it LIVE
-+ VOLATILE (never saved to flash, so even a missed restore reverts on
-power-cycle) and hand back the originals for `restore_reu`/`restore_sampler`
-at teardown. The read-side helpers resolve the "auto" settings
-(`reu_is_enabled` for [video].use_reu_staged, `sampler_is_available` for
-[audio].backend), and `wants_reu`/`wants_sampler` are the single statement of
-which config shapes need each feature — doctor's REU/sampler probes import
-them, so the `--doctor` report and the provisioner can never disagree about
+`session.build_stack` calls `provision_reu`/`provision_sampler`/
+`provision_master_volume` on every run: when the config needs a feature the
+firmware has switched off, they enable it LIVE + VOLATILE (never saved to
+flash, so even a missed restore reverts on power-cycle) and hand back the
+originals for the matching `restore_*` at teardown. The read-side helpers
+resolve the "auto" settings (`reu_is_enabled` for [video].use_reu_staged,
+`sampler_is_available` for [audio].backend), and `wants_reu`/`wants_sampler`/
+`wants_audio` are the single statement of which config shapes need each
+feature — doctor's probes import them, so the `--doctor` report and the provisioner can never disagree about
 what a run requires.
 
 Everything is Ultimate-only and best-effort. Gates on `profile.supports_*`
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from c64cast.app.config import Config
@@ -281,8 +281,15 @@ _SAMPLER_VOL_FIELDS = ("Vol Sampler L", "Vol Sampler R")
 # The mixer volume enum's audible "0 dB" label. The firmware's volumes[] table
 # (u64_config.cc) stores it with a LEADING SPACE (" 0 dB", index 24); the REST
 # GET returns it verbatim and the PUT expects the same label.
-_SAMPLER_VOL_AUDIBLE = " 0 dB"
-SAMPLER_VOL_OFF = "OFF"
+MIXER_VOL_UNITY = " 0 dB"
+MIXER_VOL_OFF = "OFF"
+_SAMPLER_VOL_AUDIBLE = MIXER_VOL_UNITY
+SAMPLER_VOL_OFF = MIXER_VOL_OFF
+# Firmware 3.15 (GideonZ/1541ultimate#693) adds a master level to the same mixer
+# categories, which the firmware multiplies into every source's gain (OFF on
+# either side is silence). Earlier firmware and C64 Ultimate 1.1.0 have no such
+# item, which reads as unity.
+MASTER_VOL_FIELD = "Vol Master"
 # Composite restore-key separator: provision_sampler spans two config
 # categories (map vs mixer), so the restore dict keys are "category\x1ffield".
 _RESTORE_SEP = "\x1f"
@@ -295,11 +302,35 @@ class SamplerConfig(NamedTuple):
     map_enabled: bool | None
     volumes: dict[str, str]
     mixer_category: str | None
+    master: str | None = None
 
 
-def _read_sampler_mixer(api: object) -> tuple[str | None, dict[str, str], bool]:
-    """The (category, volumes) of the first candidate mixer category carrying
-    the Sampler channels, or ``(None, {}, any_read_failed)`` when none does."""
+def master_volume(section: Mapping[str, object]) -> str | None:
+    """The ``Vol Master`` label in a mixer category's settings, or None when
+    the firmware has no such item (before 3.15, and C64 Ultimate 1.1.0)."""
+    level = section.get(MASTER_VOL_FIELD)
+    return level if isinstance(level, str) else None
+
+
+def master_mutes(level: str | None) -> bool:
+    """Whether a ``Vol Master`` label silences every source. None (no such
+    item) is unity."""
+    return level == MIXER_VOL_OFF
+
+
+def sampler_audible(state: SamplerConfig) -> bool:
+    """Whether the sampler's mixer levels let it be heard: at least one
+    Sampler channel above OFF, and the master not OFF."""
+    channel_up = any(v != SAMPLER_VOL_OFF for v in state.volumes.values())
+    return channel_up and not master_mutes(state.master)
+
+
+def _read_sampler_mixer(
+    api: object,
+) -> tuple[str | None, dict[str, str], str | None, bool]:
+    """The (category, volumes, master) of the first candidate mixer category
+    carrying the Sampler channels, or ``(None, {}, None, any_read_failed)``
+    when none does."""
     any_read_failed = False
     for category in _SAMPLER_MIXER_CATEGORIES:
         mixer, _data, err = fetch_config_section(api, category, field_hint=_SAMPLER_VOL_FIELDS[0])
@@ -308,8 +339,8 @@ def _read_sampler_mixer(api: object) -> tuple[str | None, dict[str, str], bool]:
             continue
         if all(f in mixer for f in _SAMPLER_VOL_FIELDS):
             volumes = {f: v for f in _SAMPLER_VOL_FIELDS if isinstance(v := mixer.get(f), str)}
-            return category, volumes, False
-    return None, {}, any_read_failed
+            return category, volumes, master_volume(mixer), False
+    return None, {}, None, any_read_failed
 
 
 def read_sampler_config(api: object) -> SamplerConfig:
@@ -323,24 +354,26 @@ def read_sampler_config(api: object) -> SamplerConfig:
       response-shape variants identically to the REU/SID probes.
     * ``mixer_category`` — the category carrying those channels on this
       device (see ``_SAMPLER_MIXER_CATEGORIES``); the target every mixer PUT
-      and composite restore key must use."""
+      and composite restore key must use.
+    * ``master`` — that category's ``Vol Master`` label, None where the
+      firmware has no master level."""
     cart, _d1, err1 = fetch_config_section(
         api, _SAMPLER_MAP_CATEGORY, field_hint=_SAMPLER_MAP_FIELD
     )
-    mixer_category, volumes, mixer_read_failed = _read_sampler_mixer(api)
+    mixer_category, volumes, master, mixer_read_failed = _read_sampler_mixer(api)
     if err1 is not None or (mixer_category is None and mixer_read_failed):
         return SamplerConfig(None, None, {}, None)
     map_raw = cart.get(_SAMPLER_MAP_FIELD)
     if map_raw is None or mixer_category is None:
         return SamplerConfig(False, None, {}, None)
-    return SamplerConfig(True, map_raw == "Enabled", volumes, mixer_category)
+    return SamplerConfig(True, map_raw == "Enabled", volumes, mixer_category, master)
 
 
 def sampler_is_available(api: object) -> bool | None:
     """True iff the firmware exposes the Ultimate Audio sampler AND it is
-    currently usable (the $DF20 I/O map is enabled and at least one Sampler
-    mixer channel is not OFF). None when the REST query failed; False when the
-    feature is absent / mapped-off / muted.
+    currently usable (the $DF20 I/O map is enabled and `sampler_audible`).
+    None when the REST query failed; False when the feature is absent /
+    mapped-off / muted.
 
     Used by `session._resolve_sampler_available` to resolve [audio].backend — None
     or False degrades to the 4-bit DAC. Run AFTER `provision_sampler` so a box
@@ -350,8 +383,7 @@ def sampler_is_available(api: object) -> bool | None:
         return None
     if not state.present:
         return False
-    audible = any(v != SAMPLER_VOL_OFF for v in state.volumes.values())
-    return bool(state.map_enabled) and audible
+    return bool(state.map_enabled) and sampler_audible(state)
 
 
 def wants_sampler(cfg: Config) -> tuple[bool, list[str]]:
@@ -440,6 +472,11 @@ def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
     """Put the sampler config fields changed by `provision_sampler` back to
     their originals at teardown. No-op when nothing was provisioned. Best-effort
     — a failed restore just logs (the change was volatile anyway)."""
+    _restore_composite(api, restore, "sampler")
+
+
+def _restore_composite(api: object, restore: dict[str, str] | None, what: str) -> None:
+    """PUT each ``"category\x1ffield" -> original`` back, logging under `what`."""
     if not restore:
         return
 
@@ -450,9 +487,108 @@ def restore_sampler(api: object, restore: dict[str, str] | None) -> None:
         try:
             api.put_config_item(category, fieldname, value)  # type: ignore[attr-defined]
         except requests.RequestException as e:
-            log.warning("sampler: could not restore %s = %s: %s", fieldname, value, e)
+            log.warning("%s: could not restore %s = %s: %s", what, fieldname, value, e)
         else:
-            log.info("sampler: restored %s = %s", fieldname, value)
+            log.info("%s: restored %s = %s", what, fieldname, value)
+
+
+_SID_DRIVING_SCENE_TYPES = ("waveform", "midi", "asid")
+
+
+def wants_audio(cfg: Config) -> tuple[bool, list[str]]:
+    """Return (wants_audio, reasons): whether the run will try to make the
+    machine produce sound at all — [audio].enabled (video audio, the DAC, a
+    launched program), or a scene that drives the SID even with audio
+    disabled. `provision_master_volume` and doctor's SID and master-volume
+    probes share it."""
+    reasons: list[str] = []
+    if cfg.audio.enabled:
+        reasons.append("[audio].enabled = true")
+    types = {s.type for s in cfg.scenes}
+    reasons.extend(f"{t} scene(s)" for t in _SID_DRIVING_SCENE_TYPES if t in types)
+    if any(s.type == "generative" and s.audio_source == "sid" for s in cfg.scenes):
+        reasons.append('generative audio_source="sid" scene(s)')
+    return bool(reasons), reasons
+
+
+class MasterVolume(NamedTuple):
+    """The machine's ``Vol Master`` (see :func:`read_master_volume`)."""
+
+    level: str | None
+    category: str | None
+    read_failed: bool
+
+
+def read_master_volume(api: object) -> MasterVolume:
+    """Find ``Vol Master`` in the candidate mixer categories (U64 ``Audio
+    Mixer``, U2+ ``Audio Output Settings``). ``level`` and ``category`` are
+    None when no readable category carries it — firmware before 3.15 and C64
+    Ultimate 1.1.0 — and ``read_failed`` then says whether a REST query
+    failed on the way, which makes "absent" a guess."""
+    any_read_failed = False
+    for category in _SAMPLER_MIXER_CATEGORIES:
+        section, _data, err = fetch_config_section(api, category, field_hint=MASTER_VOL_FIELD)
+        if err is not None:
+            any_read_failed = True
+            continue
+        level = master_volume(section)
+        if level is not None:
+            return MasterVolume(level, category, False)
+    return MasterVolume(None, None, any_read_failed)
+
+
+def provision_master_volume(api: object, cfg: Config) -> dict[str, str] | None:
+    """Raise ``Vol Master`` from OFF to ``" 0 dB"`` for a run that wants
+    audio — LIVE + VOLATILE, like `provision_sampler`. Any level other than
+    OFF is left alone: a master trimmed down is a deliberate choice, and the
+    per-source levels c64cast sets are relative to it. Returns the composite
+    restore dict for `restore_master_volume`, or None when nothing changed.
+
+    Gated on ``profile.supports_config`` + not ``--skip-probe`` + `wants_audio`.
+    Where the firmware has no master item nothing is written; the skip is
+    logged at debug, since unity is what that firmware does anyway."""
+    profile = getattr(api, "profile", None)
+    if profile is None or not getattr(profile, "supports_config", False):
+        return None
+    if cfg.debug.skip_probe:
+        return None
+    wants, reasons = wants_audio(cfg)
+    if not wants:
+        return None
+
+    import requests
+
+    master = read_master_volume(api)
+    if master.category is None:
+        if master.read_failed:
+            log.warning(
+                "master volume: could not read %s — leaving it unchanged; if the run "
+                "is silent, check it in the F2 menu's audio mixer.",
+                MASTER_VOL_FIELD,
+            )
+        else:
+            log.debug("master volume: firmware has no %s — unity", MASTER_VOL_FIELD)
+        return None
+    if not master_mutes(master.level):
+        return None
+    try:
+        api.put_config_item(master.category, MASTER_VOL_FIELD, MIXER_VOL_UNITY)  # type: ignore[attr-defined]
+    except requests.RequestException as e:
+        log.warning("master volume: could not raise %s from OFF: %s", MASTER_VOL_FIELD, e)
+        return None
+    log.info(
+        "master volume: %s was OFF, which silences every source — raised to 0 dB "
+        "for this run (%s); live, volatile, restored at teardown.",
+        MASTER_VOL_FIELD,
+        ", ".join(reasons),
+    )
+    return {f"{master.category}{_RESTORE_SEP}{MASTER_VOL_FIELD}": MIXER_VOL_OFF}
+
+
+def restore_master_volume(api: object, restore: dict[str, str] | None) -> None:
+    """Put back what `provision_master_volume` changed. Best-effort, like
+    `restore_sampler`."""
+    _restore_composite(api, restore, "master volume")
 
 
 # The Ultimate's "System Mode" labels do not select a video standard: the
