@@ -607,7 +607,8 @@ class TRClient:
         sent blind as commands of its own), the span list's, and the landing.
 
         `slice_bytes` 0 DMAs each span whole. Raises TRError on a refusal, a
-        failed slice, or a reply that never came; in every case the firmware
+        failed slice, or a reply that never came, and OSError on a send or
+        read the transport could not finish; in every case the firmware
         is back at its command dispatcher before this returns (see
         `_recover_spans`), so the next command is not read as part of this
         one."""
@@ -626,7 +627,7 @@ class TRClient:
             self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
             try:
                 tok = self._read_token()
-            except TRError:
+            except (OSError, TRError):
                 self._recover_spans(header_sent=False)
                 raise
             if tok == TOK_FAIL:
@@ -635,12 +636,12 @@ class TRClient:
             if tok != TOK_ACK:
                 self._recover_spans(header_sent=False)
                 raise TRError(f"WriteC64Spans ${first:04X}: unexpected reply 0x{tok:04X}")
-            self.transport.send_all(header + span_list)
             try:
+                self.transport.send_all(header + span_list)
                 self._expect_ack(f"WriteC64Spans ${first:04X} (spans)")
                 self.transport.send_all(payload)
                 self._expect_ack(f"WriteC64Spans ${first:04X}")
-            except TRError:
+            except (OSError, TRError):
                 self._recover_spans(header_sent=True)
                 raise
             self._latencies.append(time.perf_counter() - t0)

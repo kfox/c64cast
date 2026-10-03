@@ -201,7 +201,9 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
     def dac_bitmap_tempo(self, multicolor: bool) -> float:
         # Sliced writes lose ~3.5x fewer NMI ticks, so the ring drains nearer
         # real time (measured NTSC: 0.972 MultiHires, 0.974 Hires).
-        if self._spans is not None:
+        # At slice 0 each command is one 1 KiB halt, which costs the NMI player
+        # ticks like WriteC64Mem's halts do.
+        if self._spans is not None and self._spans[0] != 0:
             return 0.97
         return super().dac_bitmap_tempo(multicolor)
 
@@ -220,9 +222,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         are absorbed (logged on the shared escalating ladder) rather than
         raised — a blip shouldn't crash the playlist."""
         spans = self._spans
+        # A write no longer than one halt (one slice, or one command at slice
+        # 0) halts as long on WriteC64Mem, which spares two round trips.
+        one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0
         if spans is not None and (
             not self._nmi_consumer
-            or len(payload) <= spans[0]  # one slice or less: the same halt, plus two round trips
+            or len(payload) <= one_halt
             or span_touches_cart_io(addr, len(payload))
         ):
             spans = None
@@ -231,13 +236,16 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
             while off < n:
                 step = self.tr.MAX_SEGMENT_BYTES if spans is None else SPANS_SEGMENT_BYTES
                 chunk = payload[off : off + step]
-                if spans is None:
+                if spans is None or len(chunk) <= one_halt:
                     self.tr.write_segment(addr + off, chunk)
                 else:
                     try:
                         self.tr.write_spans([(addr + off, chunk)], *spans)
                     except TRSpansRefused as e:
-                        log.debug("%s; carrying it with WriteC64Mem", e)
+                        # Re-asking per segment would pay the refusal's drain
+                        # each time the bus is still held.
+                        log.debug("%s; carrying the rest with WriteC64Mem", e)
+                        spans = None
                         self.tr.write_segment(addr + off, chunk)
                 self._stats["writes"] += 1
                 off += len(chunk)

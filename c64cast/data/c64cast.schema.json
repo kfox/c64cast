@@ -116,7 +116,7 @@
         },
         "dma_slice_bytes": {
           "type": "integer",
-          "description": "Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = each write as one halt, still batched). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower.",
+          "description": "Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = no slicing, writes split into 1 KiB halts). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower.",
           "default": 32
         },
         "dma_slice_gap_us": {

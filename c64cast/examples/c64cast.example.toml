@@ -145,7 +145,7 @@ dma_slicing = "auto"                # "auto" | "on" | "off" — WriteC64Spans
                                     #   keeps its timing. Sliced only while
                                     #   DAC audio plays; "auto" uses it when
                                     #   the firmware has it, "off" never
-dma_slice_bytes = 32                # largest single DMA halt (0-255; 0 = whole)
+dma_slice_bytes = 32                # largest single DMA halt (0-255; 0 = 1 KiB)
 dma_slice_gap_us = 40               # 6510 run time between slices (0-255 us)
 
 [ultimate64]

@@ -45,6 +45,7 @@ class _FakeVideoScene:
         self.overlays = []
         self.source_info = source_info
         self.source = source  # a fake AVFileSource, for local container-tag tests
+        self.tempo_scale = 1.0
 
 
 class _FakeWaveformScene:
@@ -145,6 +146,15 @@ class VideoSourceTest(unittest.TestCase):
         self.assertIsNone(source["url"])
         self.assertEqual(source["local_file"], "clip.mp4")
         self.assertEqual(source["copyright"], _UNKNOWN_COPYRIGHT)
+
+    def test_video_scene_records_the_tempo_the_backend_resolved(self):
+        # The config fields stay unset by default, so only the scene knows
+        # which compensation the connected hardware chose.
+        scene = _FakeVideoScene("clip.mp4", "assets/videos/clip.mp4", "assets/videos/clip.mp4")
+        scene.tempo_scale = 0.97
+        payload = build_scene_recording_metadata(scene, Config(), "system")
+        self.assertIsNone(payload["audio"]["dac_bitmap_tempo_mhires"])
+        self.assertEqual(payload["scene"]["tempo_scale"], 0.97)
 
     def test_local_video_scene_reports_container_copyright_tag(self):
         scene = _FakeVideoScene(

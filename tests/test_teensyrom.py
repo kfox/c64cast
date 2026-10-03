@@ -279,6 +279,20 @@ class SpansFramingTest(unittest.TestCase):
         self.assertTrue(bytes(self.t.sent).endswith(b"\x01\x02"))
         self.assertEqual(self.t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
 
+    def test_a_send_the_transport_could_not_finish_still_recovers(self):
+        class _Fails(_SpansLoopback):
+            def send_all(self, data: bytes) -> None:
+                if data == b"\x01\x02":
+                    raise TimeoutError("sendall timed out")
+                super().send_all(data)
+
+        t = _Fails()
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)
+        with self.assertRaises(OSError):
+            TRClient(t).write_spans([(0x4000, b"\x01\x02")], 32, 40)
+        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
     def test_span_count_and_header_fields_are_bounded_before_the_wire(self):
         for spans, slice_bytes, gap in (
             ([], 32, 40),
@@ -317,7 +331,7 @@ class SpansFramingTest(unittest.TestCase):
 
 
 class SlicingBackendTest(unittest.TestCase):
-    def _backend(self, mode: str = "auto", *, supported: bool = True):
+    def _backend(self, mode: str = "auto", *, supported: bool = True, slice_bytes: int = 32):
         t = _SpansLoopback(on_header=b"" if supported else b"Unk cmd: 0000")
         t.queue_token(TOK_FW_FULL)
         t.queue_token(TOK_ACK)
@@ -332,7 +346,7 @@ class SlicingBackendTest(unittest.TestCase):
             profile=replace(TEENSYROM_PROFILE),
             storage="sd",
             dma_slicing=mode,
-            dma_slice_bytes=32,
+            dma_slice_bytes=slice_bytes,
             dma_slice_gap_us=40,
         )
         t.sent.clear()
@@ -377,10 +391,31 @@ class SlicingBackendTest(unittest.TestCase):
     def test_sliced_commands_are_capped_at_the_segment_size(self):
         b, t = self._backend()
         b.note_nmi_consumer(True)
-        size = tr_dma.SPANS_SEGMENT_BYTES * 2 + 5
+        size = tr_dma.SPANS_SEGMENT_BYTES * 2 + 33
         sent = self._write(b, t, "4000", size, 9)
         self.assertEqual(sent.count(_SPANS_TOK + bytes([0, 32, 40, 1])), 3)
         self.assertEqual(b.stats["writes"], 3)
+
+    def test_a_tail_of_one_slice_or_less_goes_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        size = tr_dma.SPANS_SEGMENT_BYTES + 5
+        sent = self._write(b, t, "4000", size, 4)
+        self.assertEqual(sent.count(_SPANS_TOK), 1)
+        self.assertTrue(sent.endswith(_MEM_TOK + bytes([0x44, 0x00, 0x00, 0x05]) + bytes(5)))
+        self.assertEqual(b.stats["errors"], 0)
+
+    def test_slice_zero_halts_per_segment_on_writec64mem(self):
+        # A whole-span command halts as long as a WriteC64Mem of the same
+        # segment, so only the segment cap is left to apply.
+        b, t = self._backend(slice_bytes=0)
+        b.note_nmi_consumer(True)
+        self.assertNotIn(_SPANS_TOK, self._write(b, t, "4000", 2, 1))
+        t.sent.clear()
+        sent = self._write(b, t, "6000", tr_dma.SPANS_SEGMENT_BYTES * 2, 2)
+        self.assertNotIn(_SPANS_TOK, sent)
+        self.assertEqual(sent.count(_MEM_TOK), 2)
+        self.assertIn(_MEM_TOK + bytes([0x64, 0x00, 0x04, 0x00]), sent)
 
     def test_a_refused_segment_is_carried_by_writec64mem(self):
         b, t = self._backend()
@@ -393,6 +428,20 @@ class SlicingBackendTest(unittest.TestCase):
         self.assertEqual(sent[4:6], bytes([0x40, 0x00]))
         self.assertEqual(b.stats["errors"], 0)
         self.assertEqual(b.stats["writes"], 1)
+
+    def test_a_refusal_carries_the_rest_of_the_write_on_writec64mem(self):
+        b, t = self._backend()
+        b.note_nmi_consumer(True)
+        t.queue_token(TOK_FAIL)
+        t.queue_token(TOK_ACK)
+        t.queue_token(TOK_ACK)
+        t.quiet_waits.clear()
+        b.write_memory_file("4000", bytes(tr_dma.SPANS_SEGMENT_BYTES * 3))
+        sent = bytes(t.sent)
+        self.assertEqual(sent.count(_SPANS_TOK), 1)
+        self.assertEqual(sent.count(_MEM_TOK + bytes([0x44, 0x00])), 1)
+        self.assertEqual(t.quiet_waits.count(0.15), 1)
+        self.assertEqual(b.stats["errors"], 0)
 
     def test_off_never_probes(self):
         b, t = self._backend("off")
@@ -416,6 +465,13 @@ class SlicingBackendTest(unittest.TestCase):
         plain, _ = self._backend("off")
         self.assertEqual(plain.dac_bitmap_tempo(True), 0.88)
         self.assertEqual(plain.dac_bitmap_tempo(False), 0.89)
+
+    def test_bitmap_tempo_at_slice_zero_is_the_unsliced_figure(self):
+        # Each command is then one 1 KiB halt, as costly to the NMI player
+        # per byte as WriteC64Mem's.
+        whole, _ = self._backend(slice_bytes=0)
+        self.assertEqual(whole.dac_bitmap_tempo(True), 0.88)
+        self.assertEqual(whole.dac_bitmap_tempo(False), 0.89)
 
 
 class SlicingConfigTest(unittest.TestCase):

@@ -387,7 +387,7 @@ class TeensyromCfg:
         default=32,
         metadata={
             "help": "Largest single DMA halt, in bytes, when dma_slicing is in "
-            "use (1-255; 0 = each write as one halt, still batched). Each slice "
+            "use (1-255; 0 = no slicing, writes split into 1 KiB halts). Each slice "
             "also costs ~75 cycles of handshake, so smaller is gentler on "
             "audio and raster IRQs but slower."
         },

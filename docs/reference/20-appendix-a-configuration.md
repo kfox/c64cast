@@ -374,7 +374,7 @@ storage = "sd"        # sd | usb
 | **`tcp_port`**<br>*Type:* `int`<br>*Default:* `2112` | TR TCP listener port (firmware default 2112). |
 | **`storage`**<br>*Type:* `str`<br>*Default:* `'sd'` | Where helper PRGs are uploaded + launched from. Choices: `sd`, `usb`. |
 | **`dma_slicing`**<br>*Type:* `str`<br>*Default:* `'auto'` | Write C64 memory with WriteC64Spans, which DMAs in slices and lets the 6510 run between them, so a large write no longer halts the CPU across many NMI/IRQ periods. 'auto' uses it when the firmware has it (TR+ v0.9+); 'on' warns if it does not; 'off' always uses the single-halt WriteC64Mem. Choices: `auto`, `on`, `off`. |
-| **`dma_slice_bytes`**<br>*Type:* `int`<br>*Default:* `32` | Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = each write as one halt, still batched). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower. |
+| **`dma_slice_bytes`**<br>*Type:* `int`<br>*Default:* `32` | Largest single DMA halt, in bytes, when dma_slicing is in use (1-255; 0 = no slicing, writes split into 1 KiB halts). Each slice also costs ~75 cycles of handshake, so smaller is gentler on audio and raster IRQs but slower. |
 | **`dma_slice_gap_us`**<br>*Type:* `int`<br>*Default:* `40` | Microseconds the 6510 runs between slices (0-255) — the time an NMI or IRQ that fired during a slice has to finish. Below ~20 us the next slice starts before the handler does. |
 
 ## `[ultimate64]`
