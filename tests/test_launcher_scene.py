@@ -201,6 +201,7 @@ class JoystickInjectionTest(unittest.TestCase):
             scene, api = self._running_scene(tmp, supported=True)
             in_post = threading.Event()
             unblock = threading.Event()
+            self.addCleanup(unblock.set)
 
             def send(events):
                 if events == [machine_input.RELEASE_ALL]:
