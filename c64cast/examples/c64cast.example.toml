@@ -204,7 +204,9 @@ hdmi_scan_resolution = "auto"       # the U64's HDMI upscaler. "auto" | "keep" |
 dma_port = 64                       # TCP port for the Ultimate DMA Service
                                     # (enable on the U64 via F2 → Network
                                     # Settings → Ultimate DMA Service)
-# dma_password = ""                 # optional. Prefer the C64CAST_DMA_PASSWORD
+# dma_password = ""                 # optional: the Ultimate's network password,
+                                    # sent on the DMA socket and on every REST
+                                    # call. Prefer the C64CAST_DMA_PASSWORD
                                     # env var — secrets in a checked-in TOML
                                     # leak. Env var overrides this field.
 auto_reu = true                     # auto-enable + size (16 MB) the U64 REU,

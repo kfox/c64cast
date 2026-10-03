@@ -47,7 +47,7 @@ That is a lock on the door, not a reason to expose the port.
 | WLED bridge Mode 1 (`[wled].listen`) | off; binds `0.0.0.0:8080` when enabled | Presents a virtual WLED device on the LAN, deliberately reachable so the WLED app and Home Assistant can discover it via mDNS. The WLED JSON API has no authentication concept, so anything on the LAN can change scenes and live parameters. |
 | WLED audio-sync broadcast (`[wled]` Mode 3) | off | Plaintext UDP to multicast `239.0.0.1:11988`. Carries audio-feature data, not audio. |
 | WLED pixel sink (`wled` scene) | off | Accepts an unauthenticated realtime pixel stream (DDP / WLED UDP) from LedFx or xLights. |
-| Ultimate 64 / TeensyROM+ link | required | Outbound only. Writes go over the Ultimate DMA Service (TCP 64) and REST; the C64 side has no meaningful access control, so anything that can reach your U64 can already drive it with or without c64cast. |
+| Ultimate 64 / TeensyROM+ link | required | Outbound only. Writes go over the Ultimate DMA Service (TCP 64) and REST. The only access control on the C64 side is the Ultimate's optional network password, which c64cast sends to both services in the clear; without one, anything that can reach your U64 can already drive it with or without c64cast. |
 
 The control-plane token is a shared secret sent over plain HTTP, so it is
 readable by anything that can watch the traffic on your network. It stops a
@@ -125,10 +125,12 @@ that `yt-dlp` will fetch. Confining the editor is worth doing — it is why
 `config_roots` defaults to one directory rather than the whole filesystem — but
 it is a blast-radius limit on the editing, not a sandbox around the run.
 
-The Ultimate's optional DMA password is supplied through the
+The Ultimate's optional network password is supplied through the
 `C64CAST_DMA_PASSWORD` environment variable or the `[ultimate64].dma_password`
-config key, and deliberately has **no CLI flag** so it cannot land in shell
-history or in `ps` output. `--save-settings` and the config serializer refuse to
+config key. c64cast sends it in the DMA socket's AUTHENTICATE command and in
+the `X-Password` header of every REST call, both unencrypted, and drops the
+header from a redirect to another host. It deliberately has **no CLI flag** so
+it cannot land in shell history or in `ps` output. `--save-settings` and the config serializer refuse to
 write it to disk. Treat it as a weak gate against accidents rather than a
 security boundary.
 

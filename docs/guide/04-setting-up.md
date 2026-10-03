@@ -117,8 +117,10 @@ reboot.
 
 ### If Your C64U Has a Password
 
-A C64U can be configured to require a password for network access. c64cast
-reads it from an environment variable:
+A C64U can be configured to require a password for network access (F2 →
+Network Settings → Network Password). The one password guards both of the
+services c64cast uses, the DMA socket and the web remote control, and c64cast
+sends it to both. It reads it from an environment variable:
 
 ```bash
 export C64CAST_DMA_PASSWORD='your-password'

@@ -177,6 +177,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **An Ultimate with a network password now accepts c64cast's REST calls as
+  well as its DMA writes.** The firmware checks the same password on its REST
+  API, in an `X-Password` header, and c64cast only ever sent it on the DMA
+  socket. So with a password set the screen painted, but every REST call was
+  refused with 403: machine reset, program and SID player launch, keyboard
+  reads, and every config read and write (REU and sampler provisioning, SID
+  routing, `--doctor`'s checks). `C64CAST_DMA_PASSWORD` and
+  `[ultimate64].dma_password` now reach both links, so nothing in your setup
+  changes. Startup and `--doctor` also now say so when the REST API refuses
+  the password, instead of failing piecemeal later, and a password containing
+  a control character or leading/trailing whitespace, which an HTTP header
+  cannot carry, is refused at startup without being echoed.
+
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that
   publishes the `running` transition, and `close()` stops that poller once and

@@ -160,10 +160,15 @@ The scheme picks the backend; the rest is that backend's endpoint.
 
 `http` is not a guess. The C64U is the only backend that speaks HTTP at all,
 so the scheme names it as definitely as `u64://` does. Plain HTTP is also all
-it speaks: its REST service is unencrypted and on the ordinary port, and it
-has no access control of its own — the DMA password guards the DMA socket,
-not this. Anything that can reach the machine can drive it. `SECURITY.md` in
-the repository lists every surface this applies to.
+it speaks: its REST service is unencrypted and on the ordinary port. Its only
+access control is the machine's network password, the same one the DMA socket
+checks. The firmware reads it from an `X-Password` header on every REST API
+call and answers 403 without it, and c64cast sends `[ultimate64].dma_password`
+there as well as to the DMA socket. The header crosses the network in the
+clear, so the password keeps out other clients on the network, not anyone
+watching the traffic. Without a password, anything that can reach the machine
+can drive it. `SECURITY.md` in the repository lists every surface this applies
+to.
 
 The serial-versus-TCP split for `tr://` falls out of the shape of the URL: no
 host means serial, a host means TCP, and a `COM<n>` host means a Windows
@@ -363,7 +368,8 @@ given, so an explicit flag always wins; it is otherwise exactly a flag.
 value of its own.
 
 **The environment** proper is one variable. `C64CAST_DMA_PASSWORD` overrides
-`[ultimate64].dma_password` from the file, and it is an environment variable
+`[ultimate64].dma_password` from the file (the name predates the REST use: the
+value is the machine's one network password, sent on both links), and it is an environment variable
 precisely because it is a secret: there is deliberately no command-line flag
 for it, so it cannot reach shell history or a process listing.
 

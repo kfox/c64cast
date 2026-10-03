@@ -1528,6 +1528,11 @@ _HINT_DMA_SERVICE = (
     "If a password is set, supply it via "
     "C64CAST_DMA_PASSWORD or [ultimate64].dma_password."
 )
+_HINT_REST_PASSWORD = (
+    "The Ultimate checks one network password on the DMA socket and on every "
+    "REST API call, and c64cast sends C64CAST_DMA_PASSWORD (or "
+    "[ultimate64].dma_password) on both."
+)
 _HINT_TR_CONNECT = (
     "Check the USB data cable to the TR's micro-USB-B port "
     "(transport = serial) or 'Enable TCP Listener' + the "
@@ -1566,6 +1571,7 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     """Connect one system's backend, probe it, and run the per-service
     probes that apply. Connection failures come back as diagnostics, not
     exceptions, so one dead system doesn't hide the others' reports."""
+    from c64cast.hw.api import RestAuthError
     from c64cast.hw.backend import make_backend
     from c64cast.hw.socket_dma import SocketDMAError
     from c64cast.hw.teensyrom_dma import TRError
@@ -1573,6 +1579,15 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     url = cfg.ultimate64.url
     try:
         api = make_backend(cfg)
+    except ValueError as e:
+        return [
+            Diagnostic(
+                level="error",
+                category="connectivity",
+                subject=name,
+                message=f"cannot connect to {url}: {e}",
+            )
+        ]
     except SocketDMAError as e:
         return [
             Diagnostic(
@@ -1594,7 +1609,18 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
             )
         ]
     try:
-        status = api.probe()
+        try:
+            status = api.probe()
+        except RestAuthError as e:
+            return [
+                Diagnostic(
+                    level="error",
+                    category="connectivity",
+                    subject=name,
+                    message=f"DMA reachable at {url} but {e}",
+                    hint=_HINT_REST_PASSWORD,
+                )
+            ]
         if cfg.hardware.backend == "teensyrom":
             return _probe_tr_reachability(name, cfg, api, status)
         if status is None:
