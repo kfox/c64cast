@@ -230,8 +230,16 @@ def run_phase(
                 if proc.poll() is not None:
                     break
                 time.sleep(0.5)
-            time.sleep(3.0)  # first rendered frames
-            frames = burst_capture(label, seconds, cv2_index)
+            if _logged(log.read_text(), ready):
+                time.sleep(3.0)  # first rendered frames
+                frames = burst_capture(label, seconds, cv2_index)
+            else:
+                # Capturing anyway would score whatever is on screen instead.
+                print(
+                    f"[{label}] {ready!r} never logged (c64cast exited, or "
+                    f"{_READY_TIMEOUT_S:.0f}s passed) — not capturing; see {log}"
+                )
+                frames = []
         finally:
             proc.terminate()
             try:
@@ -279,7 +287,7 @@ def main() -> int:
             print(f"[reset] {args.url}: {'OK' if ok else 'FAILED'}")
 
     if not single or not double:
-        print("[error] no frames captured in one phase — check the capture index")
+        print("[error] no frames captured in one phase — see its output above")
         return 1
     s_pct, db_pct = analyze(single, double, out)
     print("\n=== tear rate (frames with a top/bottom state mismatch) ===")

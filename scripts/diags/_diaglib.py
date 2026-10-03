@@ -284,6 +284,9 @@ def machine_reset(url: str) -> bool:
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(url))
+    # Two writes need no write path, and the WriteC64Spans probe would put one
+    # more half-sent command between a just-killed run and the safety reset.
+    cfg.teensyrom.dma_slicing = "off"
     api = None
     try:
         api = make_backend(cfg)
