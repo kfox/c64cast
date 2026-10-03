@@ -503,6 +503,21 @@ class RaiseMasterTest(unittest.TestCase):
         self.assertEqual(api.config_puts, [(CAT_EMUSID, "Vol Master", VOL_UNITY)])
         self.assertEqual(restore, {(CAT_EMUSID, "Vol Master"): "OFF"})
 
+    def test_unprobed_u2plus_master_is_still_found(self):
+        # --calibrate-dac never runs refine_capabilities, so a U2+ there still
+        # carries the Ultimate family's optimistic profile.
+        api = FakeAPI.ultimate()
+        api.config_store[CAT_EMUSID] = {"Vol EmuSid1": " 0 dB", "Vol Master": "OFF"}
+        restore = dc._raise_master(api)
+        self.assertEqual(api.config_puts, [(CAT_EMUSID, "Vol Master", VOL_UNITY)])
+        self.assertEqual(restore, {(CAT_EMUSID, "Vol Master"): "OFF"})
+
+    def test_no_config_api_is_never_read(self):
+        api = FakeAPI.ultimate(supports_config=False)
+        api.config_store[CAT_MIXER] = {"Vol Master": "OFF"}
+        self.assertEqual(dc._raise_master(api), {})
+        self.assertEqual(api.config_puts, [])
+
     def test_master_absent_or_already_unity_is_never_put(self):
         # Before 3.15 and on C64 Ultimate 1.1.0 there is no such item.
         for mixer in ({"Vol Socket 1": " 0 dB"}, {"Vol Master": VOL_UNITY}):

@@ -45,8 +45,9 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
+from c64cast.sid.emusid_mixer import CAT_EMUSID
 from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets, restore_sid_config
-from c64cast.sid.sid_panning import CAT_MIXER, mixer_category_for
+from c64cast.sid.sid_panning import CAT_MIXER
 from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 from .audio_handlers import (
@@ -298,19 +299,22 @@ def _raise_master(be: C64Backend) -> dict[tuple[str, str], str]:
     category (``Audio Mixer`` on a U64, ``Audio Output Settings`` on a U2+);
     firmware without the item (before 3.15, C64 Ultimate 1.1.0) is unity and
     gets no write. A failed PUT raises, like :func:`_isolate_mixer`'s."""
-    category = mixer_category_for(be)
-    if category is None:
+    if not getattr(be.profile, "supports_config", False):
         return {}
-    try:
-        mixer = be.get_config_category(category)
-    except Exception:  # noqa: BLE001 — best-effort; no master to raise
-        log.debug("calib: mixer read for %s failed", MASTER_VOL_FIELD, exc_info=True)
-        return {}
-    level = master_volume(mixer)
-    if level is None or level == VOL_UNITY:
-        return {}
-    be.put_config_item(category, MASTER_VOL_FIELD, VOL_UNITY)
-    return {(category, MASTER_VOL_FIELD): level}
+    for category in (CAT_MIXER, CAT_EMUSID):
+        try:
+            mixer = be.get_config_category(category)
+        except Exception:  # noqa: BLE001 — best-effort; no master to raise
+            log.debug("calib: %s read for %s failed", category, MASTER_VOL_FIELD, exc_info=True)
+            continue
+        level = master_volume(mixer)
+        if level is None:
+            continue
+        if level == VOL_UNITY:
+            return {}
+        be.put_config_item(category, MASTER_VOL_FIELD, VOL_UNITY)
+        return {(category, MASTER_VOL_FIELD): level}
+    return {}
 
 
 def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> None:

@@ -443,7 +443,7 @@ Two things have to happen *after* each routing change, not once at bring-up, and
 
 Both failures present identically — a capture at the noise floor, which reads as a broken capture rig rather than as the routing problem it is. This is purely config-driven, no U64-vs-U2+ model check: a U2+ with one socket + one UltiSID core measures just that socket; a bare-UltiSID board or a backend with no config API (TeensyROM) falls back to one unlabeled measurement of whatever SID currently answers `$D400`.
 
-Firmware 3.15's `Vol Master` scales every source, so a run under a master at `OFF` measures the noise floor on *every* path, including the single-SID one that never reaches `_isolate_mixer`. `_raise_master` therefore forces it to unity once for the whole `run_calibration`, in the backend's own mixer category (`mixer_category_for`: U64 `Audio Mixer`, U2+ `Audio Output Settings`), and puts the original back after `_silence_and_reset`. Firmware without the item gets no write.
+Firmware 3.15's `Vol Master` scales every source, so a run under a master at `OFF` measures the noise floor on *every* path, including the single-SID one that never reaches `_isolate_mixer`. `_raise_master` therefore forces it to unity once for the whole `run_calibration`, in whichever mixer category carries it (U64 `Audio Mixer`, U2+ `Audio Output Settings`, both tried: `--calibrate-dac` never runs `refine_capabilities`, so an unprobed U2+ still claims the U64 surface and `mixer_category_for` would answer `Audio Mixer`), and puts the original back after `_silence_and_reset`. Firmware without the item gets no write.
 
 #### Which of those entries applies at playback
 
