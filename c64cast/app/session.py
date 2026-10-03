@@ -368,6 +368,17 @@ def _open_backend(cfg: cfgmod.Config, name: str) -> C64Backend:
     return api
 
 
+def _warn_if_menu_open(api: C64Backend) -> None:
+    """Warn once, after the bring-up reset, when the Ultimate menu is still
+    open. That reset closes a Freeze-style menu but not an HDMI overlay, which
+    takes the keyboard and covers part of the picture."""
+    if api.profile.supports_menu_screen and api.read_menu_screen() is not None:
+        log.warning(
+            "the Ultimate menu is open on the machine: it takes the keyboard and "
+            "covers part of the picture until you close it (RUN/STOP or the menu button)"
+        )
+
+
 def _build_audio(cfg: cfgmod.Config, api: C64Backend) -> AudioStreamer | None:
     """The shared $D418 DAC streamer, or None with audio disabled. Resolves
     the system-aware [audio].dac_curve ("auto"/"calibrated") to a concrete
@@ -647,6 +658,7 @@ def _acquire_stack(
     api.reset()
     time.sleep(1)
     api.run_basic_clear_loop()
+    _warn_if_menu_open(api)
 
     # Here because the machine is idle and nothing has painted: the Ultimate's
     # dump soft-resets and puts the clear loop back itself. Best-effort and never

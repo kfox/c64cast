@@ -1744,7 +1744,37 @@ def _probe_u64_services(
     out.extend(_probe_sampler_status(name, cfg, api))
     out.extend(_probe_dac_calibration_status(name, cfg, api))
     out.extend(_probe_sid_autoconfig_status(name, cfg, api))
+    out.extend(_probe_menu_open(name, api))
     return out
+
+
+def _probe_menu_open(name: str, api: object) -> list[Diagnostic]:
+    """Warn when the Ultimate menu is open on the machine. It takes the
+    keyboard, and it either freezes the machine and replaces the picture
+    (Interface Type "Freeze") or covers part of it ("Overlay on HDMI"). A run's
+    bring-up reset closes a Freeze menu but not an overlay one. Quiet when the
+    menu is closed or the firmware cannot say (no ``menu_screen`` route, which
+    refine_capabilities has already logged). Never presses the menu button:
+    doctor does not change machine state. The decoded screen goes to the
+    DEBUG log, for a bug report."""
+    profile = getattr(api, "profile", None)
+    if profile is None or not profile.supports_menu_screen:
+        return []
+    screen = api.read_menu_screen()  # type: ignore[attr-defined]
+    if screen is None:
+        return []
+    log.debug("the Ultimate menu shows:\n%s", screen.text())
+    return [
+        Diagnostic(
+            level="warn",
+            category="connectivity",
+            subject=f"{name} (menu)",
+            message="the Ultimate menu is open on the machine",
+            hint="While it is open it takes the keyboard and hides all or part "
+            "of what c64cast draws. Close it with RUN/STOP or the menu button. "
+            "Run with -v to log what it shows.",
+        )
+    ]
 
 
 def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
