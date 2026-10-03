@@ -185,14 +185,19 @@ def analyze(single: list[np.ndarray], double: list[np.ndarray], out: Path) -> tu
 
 _READY_TIMEOUT_S = 90.0
 _SETTLE_S = 8.0
+_ARMED = "double-buffer armed"
+# Logged at every scene activation; the single-buffer phase never logs _ARMED.
+_SCENE_ACTIVE = "SCENE_CONFIG_JSON"
 
 
-def _armed(log_text: str) -> bool:
-    """The log line wraps at the console width, so match across whitespace."""
-    return "double-buffer armed" in " ".join(log_text.split())
+def _logged(log_text: str, marker: str) -> bool:
+    """Log lines wrap at the console width, so match across whitespace."""
+    return marker in " ".join(log_text.split())
 
 
-def run_phase(label: str, cfg: Path, url: str, seconds: float, cv2_index: int) -> list[np.ndarray]:
+def run_phase(
+    label: str, cfg: Path, url: str, seconds: float, cv2_index: int, *, ready: str
+) -> list[np.ndarray]:
     log = d.out_dir() / "dbtear" / f"{label}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     # The previous phase's exit reset reboots a TeensyROM into its menu, and a
@@ -217,11 +222,11 @@ def run_phase(label: str, cfg: Path, url: str, seconds: float, cv2_index: int) -
             stderr=subprocess.STDOUT,
         )
         try:
-            # The scene is on screen once its mode has armed; a fixed sleep
-            # guessed short on a TeensyROM, whose reset + bring-up runs far
-            # longer than an Ultimate's, and captured the cartridge menu.
+            # Wait for the phase's own on-screen marker: a fixed sleep guessed
+            # short on a TeensyROM, whose reset + bring-up runs far longer than
+            # an Ultimate's, and captured the cartridge menu.
             deadline = time.monotonic() + _READY_TIMEOUT_S
-            while time.monotonic() < deadline and not _armed(log.read_text()):
+            while time.monotonic() < deadline and not _logged(log.read_text(), ready):
                 if proc.poll() is not None:
                     break
                 time.sleep(0.5)
@@ -234,7 +239,7 @@ def run_phase(label: str, cfg: Path, url: str, seconds: float, cv2_index: int) -
             except subprocess.TimeoutExpired:
                 proc.kill()
     text = log.read_text()
-    armed = _armed(text)
+    armed = _logged(text, _ARMED)
     print(f"[{label}] host-DMA double-buffer armed in log: {armed}")
     for line in text.splitlines():
         if "fps" in line.lower() and "scene" in line.lower():
@@ -262,8 +267,12 @@ def main() -> int:
     write_config(cfg_double, video, double_buffer="auto")
 
     try:
-        single = run_phase("single", cfg_single, args.url, args.seconds, args.cv2_index)
-        double = run_phase("double", cfg_double, args.url, args.seconds, args.cv2_index)
+        single = run_phase(
+            "single", cfg_single, args.url, args.seconds, args.cv2_index, ready=_SCENE_ACTIVE
+        )
+        double = run_phase(
+            "double", cfg_double, args.url, args.seconds, args.cv2_index, ready=_ARMED
+        )
     finally:
         if not args.no_reset:
             ok = d.machine_reset(args.url)
