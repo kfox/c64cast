@@ -144,17 +144,20 @@ def main() -> int:
                     m = _time(lambda spans=spans, s=s, g=g: tr.write_spans(spans, s, g), args.reps)
                     report(f"batch {k} spans {s or 'whole'}/{g}", nbytes, m)
     finally:
-        be.silence_sid()
-        be.reset()
-        be.close()
         # Whatever was measured before a failure part way through the grid
-        # (a held bus, a link timeout) is kept.
-        if rows:
-            path = d.stamped("tr_spans_cost", "json")
-            path.write_text(
-                json.dumps({"url": args.url, "reps": args.reps, "rows": rows}, indent=2)
-            )
-            print(f"\nwrote {path}")
+        # (a held bus, a link timeout) is kept — written before the teardown,
+        # so an interrupt or error there cannot lose it.
+        try:
+            if rows:
+                path = d.stamped("tr_spans_cost", "json")
+                path.write_text(
+                    json.dumps({"url": args.url, "reps": args.reps, "rows": rows}, indent=2)
+                )
+                print(f"\nwrote {path}")
+        finally:
+            be.silence_sid()
+            be.reset()
+            be.close()
     return 0
 
 

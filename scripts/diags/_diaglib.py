@@ -438,13 +438,19 @@ def describe_tr_writes(be) -> str:
     back to WriteC64Mem on firmware without WriteC64Spans. Even resolved to
     spans, the backend slices only while an NMI consumer is noted and only a
     write longer than one slice, so the banner says so."""
-    if not hasattr(be, "_spans"):
+    from c64cast.hw.teensyrom_api import TeensyROMBackend
+    from c64cast.hw.teensyrom_dma import SPANS_SEGMENT_BYTES
+
+    if not isinstance(be, TeensyROMBackend):
         return "not a TeensyROM (slicing flags ignored)"
     spans = be._spans
     if spans is None:
         return "WriteC64Mem"
     if spans[0] == 0:
-        return "WriteC64Mem (slice 0: every segment is one halt, so none is sent as spans)"
+        return (
+            f"WriteC64Mem, in {SPANS_SEGMENT_BYTES}-byte halts while an NMI consumer "
+            "is noted (slice 0)"
+        )
     return (
         f"WriteC64Spans slice={spans[0]} gap={spans[1]}us "
         "(while an NMI consumer is noted, for writes longer than one slice)"
