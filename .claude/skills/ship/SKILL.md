@@ -3,8 +3,8 @@ name: ship
 description: >
   Take a change in this repository all the way to a pull request that is ready
   to merge: branch, implement, commit, review each changeset as it lands, run a
-  branch-wide review at high effort, open the PR, and watch CI and GHAS until
-  green. Stops before merging — the merge is always the user's. Use when asked
+  branch-wide review at high effort, open the PR as a draft, watch CI and GHAS
+  until green, then mark it ready for review. Stops before merging — the merge is always the user's. Use when asked
   to implement a non-trivial change, or when asked to take a change through
   the full branch-review-PR workflow ("ship", "land", "take this to a PR").
 ---
@@ -16,7 +16,7 @@ mandatory unless the user says otherwise, and the last one is a hard stop.
 
 ```
 branch → (implement → commit → review that changeset)* → branch-wide review
-       at high effort → PR → CI/GHAS green → STOP
+       at high effort → draft PR → CI/GHAS green → ready for review → STOP
 ```
 
 **Never merge.** The user merges. Do not run `gh pr merge`, do not enable
@@ -116,7 +116,8 @@ subagent with the Agent tool and have it run:
 to `high` for a significant one — a large diff, or any diff touching a pinned
 path from step 4. The effort level goes **first** in `args`, or it is parsed as
 part of the target and the run silently reuses whatever level ran last. Tell it to review that
-commit's own diff, not `<sha>...HEAD` and not the branch.
+commit's own diff, not `<sha>...HEAD` and not the branch. Set the Agent
+`description` to the short SHA alone (`a1b2c3d`) — the agent list truncates it.
 
 **Confirm the review read your tree.** The fork can resolve its working
 directory against the session's primary checkout rather than yours, and a fork
@@ -203,7 +204,9 @@ Spawn **one subagent** with the Agent tool and have it review the whole branch:
     Skill(skill="code-review", args="high origin/main...HEAD")
 
 The effort level goes **first** in `args`, or it is parsed as part of the target
-and the run silently reuses whatever level ran last.
+and the run silently reuses whatever level ran last. Its Agent `description` is
+the branch name, cut to what identifies it (`audio-redial`) — the PR does not
+exist yet, so there is no number to use.
 
 Step 3's tree check applies unchanged here — it is the same fork, so confirm
 the pass landed in your tree with `git branch -a --contains <fix-sha>` on its
@@ -292,7 +295,7 @@ CI.
 
 ```bash
 make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
-  && gh pr create --title "<type>: <what changed>" --body "<why, and what to look at>"
+  && gh pr create --draft --title "<type>: <what changed>" --body "<why, and what to look at>"
 ```
 
 The body should say what the change does, why, and anything a reviewer should
@@ -325,11 +328,21 @@ explicitly escalated to Kelly — never self-dismissed as a false positive.
 A CI failure that is a real defect gets its fix reviewed the way step 3 does, at
 the effort its size warrants, rather than quietly patched.
 
+Once every check is green and nothing is left to commit — no unrouted finding,
+no verification still to run — mark the PR ready:
+
+```bash
+gh pr ready
+```
+
+Ready for review tells Kelly the next step is the merge. If more work turns up
+after that, `gh pr ready --undo` puts it back to a draft until it is done.
+
 ## 7. Stop
 
 Report to the user:
 
-- The PR URL and its check status.
+- The PR URL, its check status, and that it is marked ready for review.
 - What the review found, fixed, and declined — with reasons for the declines.
 - Anything a review handed back rather than applied, and where it was routed —
   the commit that fixed it here, or the issue it became.

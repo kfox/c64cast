@@ -626,5 +626,42 @@ class DumpCharRomCliTest(_CharRomTestCase):
         self.assertTrue(any("could not close" in r for r in cm.output))
 
 
+class DumpCharRomConnectFailureTest(_CharRomTestCase):
+    """A backend that cannot be built is a logged exit 4, not a traceback."""
+
+    def test_connect_failures_exit_4(self):
+        from c64cast.app import config as cfgmod
+        from c64cast.hw.backend import BackendSetupError
+        from c64cast.hw.socket_dma import InvalidPasswordError, SocketDMAError
+        from c64cast.hw.teensyrom_dma import TRError
+
+        for exc in (
+            InvalidPasswordError("bad network password"),
+            BackendSetupError("no attached TeensyROM"),
+            SocketDMAError("authentication rejected"),
+            TRError("no serial port"),
+        ):
+            with (
+                self.subTest(exc=type(exc).__name__),
+                mock.patch("c64cast.app.cli_commands.make_backend", side_effect=exc),
+            ):
+                with self.assertLogs("c64cast", level="ERROR") as cm:
+                    rc = cli_commands.run_dump_char_rom(cfgmod.Config())
+                self.assertEqual(rc, 4)
+                self.assertIn(str(exc), cm.output[0])
+                self.assertIn("--dump-char-rom", cm.output[0])
+                self.assertFalse(char_rom.installed_path().exists())
+
+    def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
+        from c64cast.app import config as cfgmod
+
+        with (
+            mock.patch("c64cast.app.cli_commands.make_backend", side_effect=ValueError("a defect")),
+            self.assertNoLogs("c64cast", level="ERROR"),
+            self.assertRaisesRegex(ValueError, "a defect"),
+        ):
+            cli_commands.run_dump_char_rom(cfgmod.Config())
+
+
 if __name__ == "__main__":
     unittest.main()

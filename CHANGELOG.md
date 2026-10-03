@@ -21,6 +21,15 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **c64cast tells you when the Ultimate menu is open.** An open menu takes the
+  keyboard and hides some or all of what c64cast draws, with nothing on the
+  host side to say why. `--doctor` now reports it as a warning (`-v` logs the
+  text the menu is showing), and a run warns once at startup if the menu is
+  still open after its reset. The reset closes the menu in the default
+  "Freeze" interface but not in "Overlay on HDMI". This needs Ultimate
+  firmware **3.15** or newer. On older firmware, including C64 Ultimate
+  1.1.0, the check is skipped with one log line saying so.
+
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running
@@ -192,6 +201,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   them as sent. It now forgets everything it sent after such a loss, and the
   next frame redraws the whole picture.
 
+- **A run on an Ultimate whose `Vol Master` is OFF is no longer silent.**
+  Firmware 3.15 adds a master level to the audio mixer (F2 → Audio Mixer on an
+  Ultimate 64, Audio Output Settings on an Ultimate II+) and multiplies it into
+  every source, so at OFF nothing is heard whatever the per-source rows say —
+  while c64cast reported the sampler audible and set the SID levels as if it
+  were. A run that wants audio now raises `Vol Master` from OFF to 0 dB, live
+  and never saved to flash, and puts it back at teardown; any other level is
+  left as you set it, and `sid_volume` levels are relative to it. `--doctor`
+  reports the master level and names it when it is OFF, and DAC calibration
+  measures at master unity. Firmware without the setting (3.14 and earlier,
+  the C64 Ultimate's 1.1.0) behaves as before.
+
 - **On Ultimate firmware 3.15, the first write after a pause of a second or
   more no longer goes missing.** Firmware 3.15 closes a DMA connection that has
   sent it nothing for one second, and the next write went into the closed
@@ -204,6 +225,22 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   about 7 ms. Firmware without the timeout (3.14 and earlier, C64 Ultimate
   1.1.0) keeps its connection and pays only that round trip after a pause. The
   `--profile` latency line now ends with a `reconnects=` count.
+
+- **An Ultimate with a network password now accepts c64cast's REST calls as
+  well as its DMA writes.** The firmware checks the same password on its REST
+  API, in an `X-Password` header, and c64cast only ever sent it on the DMA
+  socket. So with a password set the screen painted, but every REST call was
+  refused with 403: machine reset, program and SID player launch, keyboard
+  reads, and every config read and write (REU and sampler provisioning, SID
+  routing, `--doctor`'s checks). `C64CAST_DMA_PASSWORD` and
+  `[ultimate64].dma_password` now reach both links, so nothing in your setup
+  changes. Startup and `--doctor` also now say so when the REST API refuses
+  the password, instead of failing piecemeal later, and a password containing
+  a control character or a leading or trailing space or tab, which an HTTP
+  header cannot carry, is refused at startup (and by `--doctor --skip-probe`)
+  without being echoed. `--dump-char-rom` and `--calibrate-dac` now exit 4
+  with that message, or a refused DMA password or TeensyROM link error,
+  instead of a traceback.
 
 - **`--doctor` no longer warns "REST query for SID status failed" on an
   Ultimate 64 running firmware 3.15.** Firmware 3.15 answers a read of a

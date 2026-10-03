@@ -141,7 +141,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `dither_strength` | [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither), [Saving What a Run Changed (6)](07-inputs-and-outputs.md#saving-what-a-run-changed), [The Vocabulary (6)](07-inputs-and-outputs.md#the-vocabulary) |
 | `dither_strength` (mode) | [`color` (A)](20-appendix-a-configuration.md#color), [`mode` (F)](25-appendix-f-live-targets.md#mode) |
 | dithering | [What Is In Here](01-introduction.md#what-is-in-here), [From Frame to Screen (3)](04-display-pipeline.md#from-frame-to-screen), [Which Pixel Takes Which — `dither` (3)](04-display-pipeline.md#which-pixel-takes-which--dither) |
-| `dma_password` | [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
+| `dma_password` | [Naming the Hardware (1)](02-config-rules.md#naming-the-hardware), [The Precedence Ladder (1)](02-config-rules.md#the-precedence-ladder), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [`--doctor` (1)](02-config-rules.md#--doctor) |

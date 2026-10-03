@@ -8,10 +8,13 @@ Two transports, used for orthogonal sets of operations:
   * **REST** (`requests.Session`) on port 80 carries everything DMA can't:
     `read_memory` (GET), `reset` (PUT), `run_basic_clear_loop` and
     `run_sid_player` (POST /v1/runners:run_prg), and the startup `probe`
-    (GET /).
+    (GET / and GET /v1/version).
 
-The two transports run independently and don't share state. `flush()`
-synchronizes the DMA pipeline against subsequent REST calls (e.g. before
+The two transports run independently and share one thing: the device's
+network password, which the firmware checks on both. DMA presents it in
+AUTHENTICATE and REST in an ``X-Password`` header on every request.
+
+`flush()` synchronizes the DMA pipeline against subsequent REST calls (e.g. before
 `reset` or `run_sid_player`) by issuing a trailing DMA IDENTIFY round-trip;
 by the FIFO guarantee of the U64's per-connection command loop, the IDENTIFY
 reply lands only after every prior DMAWRITE has executed.
@@ -25,12 +28,13 @@ See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketd
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from abc import abstractmethod
 from dataclasses import dataclass, replace
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 import requests
@@ -41,6 +45,7 @@ from .backend import (
     SYSTEM_MODE_CATEGORY,
     ULTIMATE_PROFILE,
     BackendCapabilityError,
+    BackendSetupError,
     BufferedWriteBackend,
     HardwareProfile,
 )
@@ -56,10 +61,24 @@ from .c64 import (
     frame_rate,
     kernal_cia1_latch,
 )
-from .socket_dma import DEFAULT_PORT, SocketDMAClient, SocketDMAError
+from .menu_screen import MenuScreen, decode_menu_screen
+from .socket_dma import (
+    DEFAULT_PORT,
+    InvalidPasswordError,
+    SocketDMAClient,
+    SocketDMAError,
+    encode_password,
+)
 from .vic_stream import VicStreamReceiver
 
-__all__ = ["Ultimate64API", "SocketDMAError", "ParsedPsid", "parse_psid_for_player"]
+__all__ = [
+    "Ultimate64API",
+    "RestAuthError",
+    "InvalidPasswordError",
+    "SocketDMAError",
+    "ParsedPsid",
+    "parse_psid_for_player",
+]
 
 log = logging.getLogger(__name__)
 
@@ -1541,6 +1560,79 @@ class _StubRunnerBackend(BufferedWriteBackend):
         return data
 
 
+#: The request header the Ultimate firmware reads its network password from on
+#: every REST API route (``software/api/routes.h`` → ``find_api_call``).
+PASSWORD_HEADER = "X-Password"
+
+_PASSWORD_SOURCES = "C64CAST_DMA_PASSWORD or [ultimate64].dma_password"
+
+
+class RestAuthError(RuntimeError):
+    """The Ultimate's REST API answered 403: its network password is set and
+    the request carried none, or the wrong one. The message names where the
+    password comes from and never carries the password itself."""
+
+
+def password_header_value(password: str) -> bytes:
+    """The ``X-Password`` header value for `password`: its UTF-8 bytes, the same
+    bytes `SocketDMAClient` sends in AUTHENTICATE, so both links present one
+    password identically.
+
+    Raises InvalidPasswordError, without echoing the password, when HTTP cannot carry it
+    as a header value: a control character, or a leading or trailing space or
+    tab (which header parsing strips), or when it is not valid UTF-8. Left to
+    `requests`, the first surfaces on the first REST call as an
+    ``InvalidHeader`` whose message quotes the value."""
+    if password != password.strip(" \t") or any(ord(c) < 0x20 or ord(c) == 0x7F for c in password):
+        raise InvalidPasswordError(
+            f"the network password in {_PASSWORD_SOURCES} contains a control "
+            "character or leading/trailing whitespace, which the X-Password "
+            "header of a REST request cannot carry; change the password on the "
+            "Ultimate (F2 -> Network Settings -> Network Password) and here"
+        )
+    return encode_password(password)
+
+
+class _UltimateSession(requests.Session):
+    """A `requests.Session` that drops ``X-Password`` on a redirect to another
+    host, as `requests` already does for ``Authorization``. A session-level
+    header otherwise rides every hop of a redirect chain.
+
+    It also ignores the environment's proxy settings: a plain-HTTP request
+    through ``HTTP_PROXY`` hands the proxy every header, the password included,
+    and the Ultimate is a LAN device that no proxy has to reach."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trust_env = False
+
+    def rebuild_auth(
+        self, prepared_request: requests.PreparedRequest, response: requests.Response
+    ) -> None:
+        super().rebuild_auth(prepared_request, response)  # type: ignore[no-untyped-call]
+        old_url = response.request.url
+        new_url = prepared_request.url
+        if (
+            PASSWORD_HEADER in prepared_request.headers
+            and old_url is not None
+            and new_url is not None
+            and self.should_strip_auth(old_url, new_url)  # type: ignore[no-untyped-call]
+        ):
+            del prepared_request.headers[PASSWORD_HEADER]
+
+
+def make_rest_session(password: str | None) -> requests.Session:
+    """A `requests.Session` for an Ultimate's REST API, carrying `password` as
+    ``X-Password`` on every request when one is set. The firmware ignores the
+    header while no password is set on the device, so there is nothing to
+    probe first. Raises InvalidPasswordError as `password_header_value` does."""
+    header = password_header_value(password) if password else None
+    session = _UltimateSession()
+    if header is not None:
+        session.headers[PASSWORD_HEADER] = header
+    return session
+
+
 def read_config_category_body(
     session: requests.Session, base_url: str, category: str, *, timeout: float = 3.0
 ) -> object | None:
@@ -1563,18 +1655,59 @@ def read_config_category_body(
     if r.status_code == 404 and _names_an_error(r):
         return None
     r.raise_for_status()
-    body: object = r.json()
+    try:
+        body: object = r.json()
+    except RecursionError as e:
+        raise ValueError(f"/v1/configs/{category} answered JSON nested too deeply to read") from e
     if isinstance(body, dict) and category not in body and set(body) <= {"errors"}:
         return None
     return body
 
 
+RouteAnswer = Literal["present", "unsupported", "absent", "unknown"]
+
+
+def classify_route_answer(status: int, body: bytes) -> RouteAnswer:
+    """What one ``GET`` says about whether this firmware has the route.
+
+    * ``present`` — 200, or a 404 whose JSON body names an error: the route
+      ran and refused for a reason of its own (``menu_screen`` with the menu
+      closed).
+    * ``unsupported`` — 501: the firmware registers the route and says this
+      hardware cannot do it (``machine:input`` on an Ultimate II+).
+    * ``absent`` — a 404 with an empty body, which is what the firmware's
+      router answers for a path nothing registered (3.14 and C64 Ultimate
+      1.1.0 for the 3.15 routes).
+    * ``unknown`` — anything else. Callers treat it as not present."""
+    if status == 200:
+        return "present"
+    if status == 501:
+        return "unsupported"
+    if status != 404:
+        return "unknown"
+    if not body.strip():
+        return "absent"
+    return "present" if _body_names_an_error(body) else "unknown"
+
+
 def _names_an_error(response: requests.Response) -> bool:
     try:
-        body = response.json()
-    except ValueError:
+        parsed = response.json()
+    except (ValueError, RecursionError):
         return False
-    errors = body.get("errors") if isinstance(body, dict) else None
+    return _lists_errors(parsed)
+
+
+def _body_names_an_error(body: bytes) -> bool:
+    try:
+        parsed = json.loads(body)
+    except (ValueError, RecursionError):
+        return False
+    return _lists_errors(parsed)
+
+
+def _lists_errors(parsed: object) -> bool:
+    errors = parsed.get("errors") if isinstance(parsed, dict) else None
     return isinstance(errors, list) and bool(errors)
 
 
@@ -1599,14 +1732,19 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # Set by flush() so _flush_or_raise can tell a swallowed failure from a
         # clean round-trip without changing flush()'s own -> None contract.
         self._last_flush_failed = False
+        # Per connection: a firmware update needs a reconnect anyway.
+        self._route_answers: dict[str, RouteAnswer] = {}
 
-        self.session = requests.Session()
+        # The firmware has one network password, and it guards the REST API
+        # routes as well as the DMA socket.
+        self._password_configured = bool(dma_password)
+        self.session = make_rest_session(dma_password)
 
         # The DMA host is the REST host — the same physical box, so there is no
         # second config field.
         host = urlparse(self.base_url).hostname
         if not host:
-            raise ValueError(f"could not extract hostname from {base_url!r}")
+            raise BackendSetupError(f"could not extract hostname from {base_url!r}")
         self.socket_dma = SocketDMAClient(host=host, port=dma_port, password=dma_password)
         # connect() raises SocketDMAError on refused/auth-rejected; the CLI
         # renders that into a user-actionable message.
@@ -1768,8 +1906,76 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             return []
         return [category for category in categories if isinstance(category, str)]
 
+    def probe_route(self, path: str, feature: str, *, timeout: float = 3.0) -> bool:
+        """Whether this firmware has ``GET <path>``, which `feature` needs.
+
+        One ``GET`` per path per connection, classified by
+        `classify_route_answer`; only ``present`` counts as yes. A route that
+        is absent or unsupported logs one INFO line naming `feature` as
+        skipped, and an answer that fits neither (a transport failure, an
+        unexpected status) logs a WARNING and is not cached, so a later call
+        asks again. Only ever a ``GET``: a probe must not change machine
+        state."""
+        answer = self._route_answers.get(path)
+        if answer is None:
+            try:
+                r = self.session.get(f"{self.base_url}{path}", timeout=timeout)
+            except requests.RequestException as e:
+                log.warning(
+                    "could not tell whether the firmware has GET %s (%s) — %s skipped",
+                    path,
+                    e,
+                    feature,
+                )
+                return False
+            answer = classify_route_answer(r.status_code, r.content)
+            if answer == "unknown":
+                log.warning(
+                    "could not tell whether the firmware has GET %s (HTTP %d) — %s skipped",
+                    path,
+                    r.status_code,
+                    feature,
+                )
+                return False
+            self._route_answers[path] = answer
+            if answer == "absent":
+                log.info("this firmware has no GET %s — %s skipped", path, feature)
+            elif answer == "unsupported":
+                log.info("this hardware cannot serve GET %s (HTTP 501) — %s skipped", path, feature)
+        return answer == "present"
+
+    def read_menu_screen(self, *, timeout: float = 2.0) -> MenuScreen | None:
+        """What the Ultimate menu is drawing, or None while it is closed.
+
+        ``GET /v1/machine:menu_screen`` answers 200 with the 2000-byte screen
+        only while the menu is open, and a 404 with a JSON error otherwise.
+        A transport failure is also None, logged at DEBUG; any other answer —
+        a payload of the wrong size, or a status that is not one of those
+        two — logs a WARNING, since the menu's state is then unknown rather
+        than closed. Callers gate on ``profile.supports_menu_screen``."""
+        try:
+            r = self.session.get(f"{self.base_url}{U64_API.MENU_SCREEN}", timeout=timeout)
+        except requests.RequestException as e:
+            log.debug("menu screen read failed: %s", e)
+            return None
+        if r.status_code != 200:
+            if classify_route_answer(r.status_code, r.content) != "present":
+                log.warning("menu screen read answered HTTP %d, check skipped", r.status_code)
+            return None
+        try:
+            return decode_menu_screen(r.content)
+        except ValueError as e:
+            log.warning("menu screen unreadable, check skipped: %s", e)
+            return None
+
+    def _refine_route_capabilities(self) -> None:
+        has_menu_screen = self.probe_route(U64_API.MENU_SCREEN, "menu-open check")
+        if has_menu_screen != self.profile.supports_menu_screen:
+            self.profile = replace(self.profile, supports_menu_screen=has_menu_screen)
+
     def refine_capabilities(self) -> None:
-        """One cheap REST call resolving which config surfaces this device
+        """Probe the REST routes firmware 3.15 added (`probe_route`), then one
+        cheap REST call resolving which config surfaces this device
         actually carries: revoke the U64 multi-SID surface the family profile
         claims optimistically when its categories are absent (Ultimate II+),
         and grant the U2+ emulated-stereo-SID surface and the U64 System Mode
@@ -1784,6 +1990,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         over a transient read error. The emusid flag stays conservative-False
         on such a run — an unprobed run behaves exactly as before the flag
         existed."""
+        self._refine_route_capabilities()
         try:
             categories = set(self.get_config_categories())
         except (requests.RequestException, ValueError) as e:
@@ -1987,13 +2194,38 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         """Verify the U64 REST endpoint is reachable. Returns a status string
         on success, or None on failure. Use to fail fast at startup with a
         clear message. (DMA connectivity is verified separately by the
-        SocketDMAClient.connect() in __init__.)"""
+        SocketDMAClient.connect() in __init__.)
+
+        The web root is not an API route, so the firmware does not check the
+        network password there; ``GET /v1/version`` is, and a 403 from it
+        raises `RestAuthError` rather than letting every later REST call fail
+        on its own. Any other answer from it leaves the result alone."""
         try:
             r = self.session.get(self.base_url + "/", timeout=timeout)
-            return f"HTTP {r.status_code}"
         except requests.RequestException as e:
             log.debug("probe failed: %s", e)
             return None
+        try:
+            version = self.session.get(self.base_url + U64_API.VERSION, timeout=timeout)
+        except requests.RequestException as e:
+            log.debug("REST API version probe failed: %s", e)
+        else:
+            if version.status_code == 403:
+                raise RestAuthError(self._rest_auth_message())
+        return f"HTTP {r.status_code}"
+
+    def _rest_auth_message(self) -> str:
+        if self._password_configured:
+            return (
+                "the Ultimate's REST API refused the configured network password "
+                f"(HTTP 403). Check {_PASSWORD_SOURCES} (the env var wins) against "
+                "F2 -> Network Settings -> Network Password."
+            )
+        return (
+            "the Ultimate's REST API refused c64cast (HTTP 403): a network "
+            "password is set on the device and none is configured. Supply it via "
+            f"{_PASSWORD_SOURCES}."
+        )
 
     def flush(self) -> None:
         """Block until every queued DMA write has been processed by the U64.

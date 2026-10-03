@@ -35,6 +35,8 @@ from .c64 import KERNAL, SCREEN, SID, VECTORS, VIC
 if TYPE_CHECKING:
     from c64cast.app.config import Config
 
+    from .menu_screen import MenuScreen
+
 log = logging.getLogger(__name__)
 
 # Callback signature for write listeners (preview / recording / framebuffer
@@ -59,6 +61,13 @@ class BackendCapabilityError(RuntimeError):
     def __init__(self, capability: str):
         self.capability = capability
         super().__init__(f"this hardware backend does not support {capability!r}")
+
+
+class BackendSetupError(ValueError):
+    """`make_backend` cannot build a backend from this configuration: an unknown
+    backend or transport, a required host or serial port missing, or a URL
+    with no host. Callers report it as a connect failure; any other ValueError
+    out of backend construction is a defect and propagates."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +110,9 @@ class HardwareProfile:
     supports_video_stream: bool = False  # the machine's own VIC-out UDP stream
     #   (socket-DMA 0xFF20/0xFF30 — see hw/vic_stream.py). Ultimate 64 only;
     #   revoked by refine_capabilities alongside supports_system_mode.
+    supports_menu_screen: bool = False  # GET /v1/machine:menu_screen (firmware
+    #   3.15+): reads the Ultimate menu's own screen while it is open. Granted
+    #   by refine_capabilities' route probe, so False on an unprobed run.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -488,6 +500,11 @@ class C64Backend(ABC):
         whether it was a U64 or a U2+)."""
         return ""
 
+    def read_menu_screen(self) -> MenuScreen | None:
+        """What the Ultimate menu is drawing, or None while it is closed.
+        Default raises; callers gate on ``profile.supports_menu_screen``."""
+        raise BackendCapabilityError("read_menu_screen")
+
     def refine_capabilities(self) -> None:
         """Downgrade optimistic profile capability flags against the connected
         device — the same probe-and-downgrade `TeensyROMBackend` applies to
@@ -831,7 +848,9 @@ def make_backend(cfg: Config) -> C64Backend:
     service being disabled) propagate from the concrete backend's
     constructor — the caller surfaces a user-actionable message.
 
-    Raises ``ValueError`` for an unknown backend token.
+    Raises `BackendSetupError` for a configuration it cannot build a backend
+    from, and the Ultimate backend raises `InvalidPasswordError` for a network
+    password it cannot send.
     """
     backend = cfg.hardware.backend
     # `system = "auto"` can't be settled yet (it needs a live REST read, and
@@ -894,7 +913,7 @@ def make_backend(cfg: Config) -> C64Backend:
                     # the generic "tr-serial-auto" calibration file.
                     tr.serial_port = port
             if not port:
-                raise ValueError(
+                raise BackendSetupError(
                     "[teensyrom].serial_port is required when transport = "
                     '"serial" — auto-detection found no attached TeensyROM. '
                     "Set it explicitly (e.g. /dev/cu.usbmodem* or COM3) over a "
@@ -904,14 +923,16 @@ def make_backend(cfg: Config) -> C64Backend:
             transport_kind = "tr_serial"
         elif tr.transport == "tcp":
             if not tr.host:
-                raise ValueError(
+                raise BackendSetupError(
                     '[teensyrom].host is required when transport = "tcp" '
                     '(the TR\'s IP; find it via CCGMS "ATC" or RTC sync)'
                 )
             transport = TcpTransport(tr.host, tr.tcp_port or DEFAULT_TCP_PORT)
             transport_kind = "tr_tcp"
         else:
-            raise ValueError(f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)")
+            raise BackendSetupError(
+                f"unknown [teensyrom].transport {tr.transport!r} (want: serial, tcp)"
+            )
         profile = replace(
             TEENSYROM_PROFILE,
             system=system,
@@ -924,6 +945,6 @@ def make_backend(cfg: Config) -> C64Backend:
         )
         return TeensyROMBackend(transport, profile=profile, storage=tr.storage)
 
-    raise ValueError(
+    raise BackendSetupError(
         f"unknown [hardware].backend {backend!r} — known backends: {', '.join(BACKENDS)}"
     )

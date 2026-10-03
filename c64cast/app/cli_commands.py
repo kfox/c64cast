@@ -32,7 +32,9 @@ from c64cast.audio.dac_capture_device import CaptureUnavailableError
 from c64cast.audio.dac_slot_ring import MeasurementError
 from c64cast.control.transport import atomic_write_text
 from c64cast.hw import char_rom, hw_provision
-from c64cast.hw.backend import make_backend
+from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
+from c64cast.hw.socket_dma import InvalidPasswordError, SocketDMAError
+from c64cast.hw.teensyrom_dma import TRError
 
 from . import config as cfgmod
 from . import paths
@@ -523,6 +525,15 @@ def run_install_char_rom(path: str) -> int:
     return 0
 
 
+def _connect_backend(cfg: cfgmod.Config, flag: str) -> C64Backend | None:
+    """`make_backend(cfg)`, or None after logging why it could not connect."""
+    try:
+        return make_backend(cfg)
+    except (InvalidPasswordError, BackendSetupError, SocketDMAError, TRError) as e:
+        log.error("%s: could not connect to the C64 hardware: %s", flag, e)
+        return None
+
+
 def run_dump_char_rom(cfg: cfgmod.Config) -> int:
     """Read the character ROM off the connected C64 and cache it, then exit.
 
@@ -532,7 +543,9 @@ def run_dump_char_rom(cfg: cfgmod.Config) -> int:
     isn't left parked wherever the dump stub ran."""
     from c64cast.hw.backend import BackendCapabilityError
 
-    be = make_backend(cfg)
+    be = _connect_backend(cfg, "--dump-char-rom")
+    if be is None:
+        return 4
     try:
         be.reset()
         time.sleep(1)
@@ -588,7 +601,9 @@ def run_calibrate_dac(cfg: cfgmod.Config, args: argparse.Namespace) -> int:
     if args.audio_device is not None:
         idx = resolve_audio_input_device(args.audio_device)
         dev = idx if idx >= 0 else None
-    be = make_backend(cfg)
+    be = _connect_backend(cfg, "--calibrate-dac")
+    if be is None:
+        return 4
     try:
         # A calibration is keyed per system, so an unresolved `system = "auto"`
         # would file a PAL machine's curve under NTSC. Inside the try so an

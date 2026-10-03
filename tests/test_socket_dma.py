@@ -151,6 +151,22 @@ class ConnectAndIdentifyTest(unittest.TestCase):
                 c.connect()
         self.assertIn("authentication rejected", str(ctx.exception))
 
+    def test_password_that_is_not_utf8_raises_without_echoing_it(self):
+        # A non-UTF-8 byte in C64CAST_DMA_PASSWORD reaches os.environ as a
+        # lone surrogate (surrogateescape on POSIX).
+        fake = FakeSocket([b"\x01", _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake):
+            c = SocketDMAClient("test-host", port=64, password="h\udce4nter2")
+            with self.assertRaises(SocketDMAError) as ctx:
+                c.connect()
+        message = str(ctx.exception)
+        self.assertNotIn("\udce4", message)
+        self.assertNotIn("position", message)
+        self.assertNotIn("nter2", message)
+        self.assertTrue(ctx.exception.__suppress_context__)
+        self.assertEqual(bytes(fake.sent), b"")
+        self.assertTrue(fake.closed)
+
     def test_empty_password_treated_as_none(self):
         # password="" should NOT trigger AUTHENTICATE — same as None.
         fake = FakeSocket([_IDENT_REPLY])

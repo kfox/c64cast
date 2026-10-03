@@ -103,8 +103,19 @@ class SidHardwareState:
     def audible(self, source: str) -> bool:
         """Whether `source` is at a level a listener can hear. An unreported
         level counts as audible — claiming silence we didn't measure would send
-        someone hunting a mixer problem that isn't there."""
+        someone hunting a mixer problem that isn't there. Firmware 3.15's
+        ``Vol Master`` multiplies every source, so at OFF nothing is."""
+        if self.master_off:
+            return False
         return self.level_of(source) != VOL_OFF
+
+    @property
+    def master_off(self) -> bool:
+        """Whether firmware 3.15's ``Vol Master`` is at OFF, silencing every
+        source whatever its own level."""
+        from c64cast.hw.hw_provision import master_mutes, master_volume
+
+        return master_mutes(master_volume(self.mixer))
 
 
 @dataclass(frozen=True)
@@ -129,7 +140,8 @@ def _describe_chip(address: int, required: str | None, state: SidHardwareState) 
         fragment = f"{fragment} {pan}"
 
     if not state.audible(source):
-        return f"{fragment} — INAUDIBLE", False
+        cause = " (Vol Master OFF)" if state.master_off else ""
+        return f"{fragment} — INAUDIBLE{cause}", False
     if required not in NO_MODEL_REQUIREMENT and not model.startswith(required or ""):
         return f"{fragment} — tune wants {required}", False
     return fragment, True

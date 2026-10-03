@@ -291,6 +291,49 @@ class BuildSessionTest(unittest.TestCase):
         self.assertEqual([c.args[2] for c in bs.call_args_list], [stacks[0].api, stacks[1].api])
 
 
+class OpenBackendPasswordTest(unittest.TestCase):
+    """A network-password problem stops the stack with exit 4, the code a
+    rejected DMA password already gets, and logs the reason."""
+
+    def test_a_rest_password_refusal_is_exit_4(self):
+        from c64cast.hw.api import RestAuthError
+
+        backend = mock.MagicMock(name="backend")
+        backend.probe.side_effect = RestAuthError("REST API refused c64cast")
+        with (
+            mock.patch.object(session, "make_backend", return_value=backend),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        self.assertIn("(system): REST API refused c64cast", "\n".join(logs.output))
+        backend.close.assert_called_once()
+
+    def test_an_unsendable_password_or_unbuildable_backend_is_exit_4(self):
+        from c64cast.hw.api import InvalidPasswordError
+        from c64cast.hw.backend import BackendSetupError
+
+        for exc in (InvalidPasswordError("bad header"), BackendSetupError("no serial port")):
+            with (
+                self.subTest(exc=type(exc).__name__),
+                mock.patch.object(session, "make_backend", side_effect=exc),
+                self.assertLogs("c64cast", "ERROR") as logs,
+                self.assertRaises(session.StackBuildError) as caught,
+            ):
+                session._open_backend(cfgmod.Config(), "system")
+            self.assertEqual(caught.exception.exit_code, 4)
+            self.assertIn(str(exc), "\n".join(logs.output))
+
+    def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
+        with (
+            mock.patch.object(session, "make_backend", side_effect=ValueError("a defect")),
+            self.assertNoLogs("c64cast", "ERROR"),
+            self.assertRaisesRegex(ValueError, "a defect"),
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+
+
 class BuildStackCameraTest(unittest.TestCase):
     """build_stack opens the camera only when something needs it — and a
     [[performance.clips]] table counts: `type` defaults to "webcam" there, so
@@ -326,6 +369,34 @@ class BuildStackCameraTest(unittest.TestCase):
         cfg.scenes = []
         cfg.performance.clips = [{"pad": 1, "type": "blank"}]
         self._camera_opens_for(cfg).assert_not_called()
+
+
+class WarnIfMenuOpenTest(unittest.TestCase):
+    """The post-bring-up menu check: one WARNING when the menu is open, and
+    no read at all on firmware without the route."""
+
+    def _api(self, *, supported: bool, screen: object) -> mock.MagicMock:
+        api = mock.MagicMock(name="api")
+        api.profile.supports_menu_screen = supported
+        api.read_menu_screen.return_value = screen
+        return api
+
+    def test_open_menu_warns(self):
+        api = self._api(supported=True, screen=object())
+        with self.assertLogs("c64cast", level="WARNING") as cm:
+            session._warn_if_menu_open(api)
+        self.assertIn("menu is open", cm.output[0])
+
+    def test_closed_menu_is_quiet(self):
+        api = self._api(supported=True, screen=None)
+        with self.assertNoLogs("c64cast", level="WARNING"):
+            session._warn_if_menu_open(api)
+        api.read_menu_screen.assert_called_once()
+
+    def test_firmware_without_the_route_is_not_asked(self):
+        api = self._api(supported=False, screen=object())
+        session._warn_if_menu_open(api)
+        api.read_menu_screen.assert_not_called()
 
 
 class OpenBackendIdentityTest(unittest.TestCase):

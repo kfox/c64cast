@@ -205,7 +205,10 @@ def apply_volume(
 
     Reads the mixer once and writes only the sources whose level actually
     differs, so a rig already configured the way the tune wants does no writes
-    and leaves nothing to put back at teardown."""
+    and leaves nothing to put back at teardown. Every level is relative to the
+    firmware 3.15+ ``Vol Master``, which this never writes:
+    `hw_provision.provision_master_volume` owns it, and a master still OFF here
+    is logged as a warning."""
     category = mixer_category_for(api)
     if category is None:
         return {}
@@ -221,6 +224,15 @@ def apply_volume(
         log.debug("sid volume: mixer read failed — skipping", exc_info=True)
         return {}
 
+    from c64cast.hw.hw_provision import MASTER_VOL_FIELD, master_mutes, master_volume
+
+    if master_mutes(master_volume(mixer)):
+        log.warning(
+            "sid volume: %s is OFF, so every source is silent whatever level is "
+            "set here — the run raises it only when it may provision the machine "
+            "(not under --skip-probe).",
+            MASTER_VOL_FIELD,
+        )
     desired = plan_sid_volume(sources, resolve_volumes(configured, len(claimed)), mixer, category)
     changes = {key: label for key, label in desired.items() if mixer.get(key[1]) != label}
     if not changes:

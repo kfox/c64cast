@@ -83,6 +83,28 @@ class SocketDMAError(Exception):
     (typically the CLI) is expected to surface a user-actionable message."""
 
 
+class InvalidPasswordError(ValueError):
+    """The configured network password cannot be sent to the Ultimate. The
+    message names where the password comes from and never quotes it."""
+
+
+def encode_password(password: str) -> bytes:
+    """The UTF-8 bytes the Ultimate is sent for its network password, on the
+    DMA socket and in REST's ``X-Password`` header alike.
+
+    Raises InvalidPasswordError without echoing the password when it cannot be
+    encoded: a non-UTF-8 byte in the env var arrives as a lone surrogate, and
+    the codec's own message quotes the character and its index."""
+    try:
+        return password.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidPasswordError(
+            "the network password in C64CAST_DMA_PASSWORD or "
+            "[ultimate64].dma_password is not valid UTF-8; set it from a UTF-8 "
+            "shell or in the config file"
+        ) from None
+
+
 class SocketDMAClient:
     """One-connection client. Not multi-process safe — each process should
     open its own. Within a process, ``dmawrite()`` and ``flush()`` are
@@ -234,7 +256,10 @@ class SocketDMAClient:
     def _authenticate_locked(self) -> None:
         assert self._sock is not None
         assert self.password is not None
-        payload = self.password.encode("utf-8")
+        try:
+            payload = encode_password(self.password)
+        except InvalidPasswordError as e:
+            raise SocketDMAError(str(e)) from None
         try:
             self._send_cmd_locked(CMD_AUTHENTICATE, payload)
             reply = self._recv_exact_locked(1)

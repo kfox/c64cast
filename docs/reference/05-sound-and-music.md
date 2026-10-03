@@ -96,6 +96,13 @@ The sampler needs the REU enabled and the FPGA sampler mapped. c64cast turns
 both on for the run and puts them back at teardown; the changes are live and
 never written to the machine's flash, so a power cycle undoes them regardless.
 
+Its two mixer channels, `Vol Sampler L` and `R`, are relative to the
+machine's `Vol Master` on Ultimate firmware 3.15 and newer, which scales every
+source at once. A run that wants audio lifts `Vol Master` from `OFF` to 0 dB
+the same way and puts it back afterward; any other master level is left as
+it is. Firmware without the setting (3.14 and earlier, and the C64
+Ultimate's 1.1.0) behaves as if it were at 0 dB.
+
 ### What Each Costs in Frame Rate
 
 Audio on the DAC competes with the picture for the same link and the same
@@ -637,6 +644,11 @@ So the mixer is set deliberately, one source at a time:
 Muting the unused sources is the other half of the fix: a core still mapped at
 an address the tune is using, with its level up, doubles the chip that is
 really there.
+
+These levels are relative to the machine's `Vol Master` (Ultimate firmware
+3.15 and newer), which `sid_volume` never sets. A run that wants audio lifts
+the master from `OFF` to 0 dB for its duration, as described under the
+sampler above.
 
 Values are a dB integer, or a label. The hardware's ladder is not a uniform
 fan — `OFF`, then −42, −36, −30, −27, −24, then every step from −18 to +6 — so
