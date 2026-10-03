@@ -412,6 +412,12 @@ configuration file makes sense, and that the Commodore answers.
 
 ![Figure 1-1. Doctor reporting on the environment, the configuration and the hardware.](img/fig-1-1-doctor.png)
 
+When the Commodore answers, a line in the hardware section names the machine
+and its firmware, such as
+`Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)`.
+The `build` part appears from Ultimate firmware 3.15a onward; older firmware
+and the C64 Ultimate leave it out, and the rest of the line reads the same.
+
 Add `--skip-probe` to run every check except the ones that touch the
 Commodore. This is the fast, offline version, and it is the one to reach for
 when you are editing a configuration file and want to know whether it is
@@ -424,7 +430,8 @@ c64cast --doctor --config my-playlist.toml --skip-probe
 > [!TIP]
 > Doctor is the right first move for almost any problem, and it is much
 > faster than guessing. If you are about to ask someone else why c64cast is
-> not working, run doctor first and bring its output with you.
+> not working, run doctor first and bring its output with you. The line
+> naming your machine and firmware is the one a bug report needs most.
 
 With the services on, c64cast installed and doctor reporting a clean bill of
 health, you have everything you need. The next chapter puts it to work.
