@@ -1650,7 +1650,7 @@ _INJECT_RESYNC_RETRY_S = 0.25
 # firmware's keyboard tap hold; its own joystick tap is a single 20 ms tick.
 _INJECT_MIN_HOLD_S = 0.06
 # How long an injected event may wait for the sender before the backlog is
-# collapsed to at most a change and a change back per input. The hold caps one
+# collapsed to at most three events per input. The hold caps one
 # input at about fifteen taps a second, and past that the queue would otherwise
 # grow for the rest of the scene, with every other input waiting behind it.
 _INJECT_MAX_LAG_S = 0.25
@@ -1913,13 +1913,13 @@ class LauncherScene(MediaFileMixin, Scene):
 
     def _collapse_stale(self) -> None:
         """When the oldest waiting event has waited `_INJECT_MAX_LAG_S`, take
-        everything queued and leave, in `_collapsed`, at most two events per
-        input in their original order: its latest change, and the change
-        before it when the latest one returns it to what is held. A tap
-        survives the collapse and still gets the minimum hold; the earlier
-        changes are dropped, so an input the sender had released is pressed
-        only where it was pressed in the queue, never alongside an input that
-        was pressed after it came up."""
+        everything queued and leave, in `_collapsed`, at most three events per
+        input in their original order: its first release when it is held, then
+        its latest press, and the release after it when it ends released. A
+        tap survives the collapse and still gets the minimum hold; the changes
+        in between are dropped, so an input is pressed only where it was
+        pressed in the queue, never alongside an input that was pressed after
+        it came up."""
         oldest = self._carry or (self._collapsed[0] if self._collapsed else None)
         if oldest is None:
             try:
@@ -1944,12 +1944,13 @@ class LauncherScene(MediaFileMixin, Scene):
             for key in _joystick_inputs(event):
                 if state.get(key, key in self._held) != pressing:
                     state[key] = pressing
-                    changes[key] = [*changes.get(key, [])[-1:], index]
+                    changes.setdefault(key, []).append(index)
         kept: list[tuple[int, machine_input.Event]] = []
         for key, indices in changes.items():
             port, name = key
-            ends_where_held = state[key] == (key in self._held)
-            for index in indices if ends_where_held else indices[-1:]:
+            first_release = indices[:1] if key in self._held else []
+            after = indices[len(first_release) :]
+            for index in first_release + (after[-1:] if state[key] else after[-2:]):
                 transition = waiting[index][1]["transition"]
                 kept.append((index, machine_input.joystick_event(port, transition, [name])))
         now = time.monotonic()

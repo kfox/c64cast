@@ -278,6 +278,8 @@ class JoystickSenderTest(unittest.TestCase):
             self.assertEqual(
                 self._drain(scene),
                 [
+                    [_joy(2, "release", "fire")],
+                    [_joy(2, "press", "fire")],
                     [_joy(2, "release", "fire"), _joy(2, "press", "up"), _joy(2, "press", "left")],
                     [_joy(2, "release", "left")],
                 ],
@@ -312,6 +314,28 @@ class JoystickSenderTest(unittest.TestCase):
                 self._drain(scene),
                 [
                     [_joy(2, "press", "up")],
+                    [_joy(2, "release", "up"), _joy(2, "press", "fire")],
+                    [_joy(2, "release", "fire")],
+                ],
+            )
+
+    def test_a_collapse_never_holds_a_held_input_over_one_pressed_after_its_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene._held.add((2, "fire"))
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            for event in (
+                _joy(2, "release", "fire"),
+                _joy(2, "press", "up"),
+                _joy(2, "release", "up"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+            ):
+                scene._injected.put((queued_at, event))
+            self.assertEqual(
+                self._drain(scene),
+                [
+                    [_joy(2, "release", "fire"), _joy(2, "press", "up")],
                     [_joy(2, "release", "up"), _joy(2, "press", "fire")],
                     [_joy(2, "release", "fire")],
                 ],
