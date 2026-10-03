@@ -2002,7 +2002,8 @@ def _probe_reu_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
             hint=(
                 "Set [ultimate64].auto_reu = true to enable it automatically, or "
                 "on the U64: F2 Menu -> C64 and Cartridge Settings -> "
-                "RAM Expansion Unit -> Enabled (size 16 MB). Save and reboot. "
+                "RAM Expansion Unit -> Enabled (size 16 MB). It takes effect without "
+                "a reboot; save it to keep it across a power cycle. "
                 "Alternatively, turn off the REU opt-in in your TOML."
             ),
         )
