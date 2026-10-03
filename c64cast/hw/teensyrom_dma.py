@@ -624,8 +624,8 @@ class TRClient:
         first = spans[0][0]
         with self._lock:
             t0 = time.perf_counter()
-            self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
             try:
+                self.transport.send_all(self._u16(TOK_WRITE_C64_SPANS))
                 tok = self._read_token()
             except (OSError, TRError):
                 self._recover_spans(header_sent=False)

@@ -293,6 +293,19 @@ class SpansFramingTest(unittest.TestCase):
             TRClient(t).write_spans([(0x4000, b"\x01\x02")], 32, 40)
         self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
 
+    def test_a_token_the_transport_could_not_send_closes_the_command(self):
+        class _Fails(_SpansLoopback):
+            def send_all(self, data: bytes) -> None:
+                if data == _SPANS_TOK:
+                    raise TimeoutError("sendall timed out")
+                super().send_all(data)
+
+        t = _Fails()
+        with self.assertRaises(OSError):
+            TRClient(t).write_spans([(0x4000, b"\x01")], 32, 40)
+        self.assertEqual(bytes(t.sent), bytes(4))
+        self.assertEqual(t.quiet_waits[-1], tr_dma._SPANS_RECOVER_QUIET_S)
+
     def test_span_count_and_header_fields_are_bounded_before_the_wire(self):
         for spans, slice_bytes, gap in (
             ([], 32, 40),

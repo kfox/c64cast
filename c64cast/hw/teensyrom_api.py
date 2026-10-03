@@ -185,11 +185,14 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
                 self.tr._drain_stale(0.2)
             supported = False
         if supported:
-            log.info(
-                "TR writes: WriteC64Spans, %s-byte slices, %d us gap",
-                slice_bytes or "whole",
-                gap_us,
-            )
+            if slice_bytes == 0:
+                log.info(
+                    "TR writes: WriteC64Mem in %d-byte halts while DAC audio plays "
+                    "(dma_slice_bytes = 0)",
+                    SPANS_SEGMENT_BYTES,
+                )
+            else:
+                log.info("TR writes: WriteC64Spans, %d-byte slices, %d us gap", slice_bytes, gap_us)
             return slice_bytes, gap_us
         if mode == "on":
             log.warning(
@@ -226,9 +229,7 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
         # 0) halts as long on WriteC64Mem, which spares two round trips.
         one_halt = (spans[0] or SPANS_SEGMENT_BYTES) if spans is not None else 0
         if spans is not None and (
-            not self._nmi_consumer
-            or len(payload) <= one_halt
-            or span_touches_cart_io(addr, len(payload))
+            not self._nmi_consumer or span_touches_cart_io(addr, len(payload))
         ):
             spans = None
         try:
