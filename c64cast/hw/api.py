@@ -1972,7 +1972,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             return None
 
     def send_input(
-        self, events: Sequence[dict[str, Any]], *, timeout: float = 2.0
+        self, events: Sequence[dict[str, Any]], *, timeout: float = machine_input.POST_TIMEOUT_S
     ) -> dict[str, Any] | None:
         """Inject keyboard and joystick events with ``POST /v1/machine:input``
         and return the state the machine reports afterwards: what the API and

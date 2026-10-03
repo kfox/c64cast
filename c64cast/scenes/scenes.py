@@ -1644,6 +1644,10 @@ class VideoScene(MediaFileMixin, Scene):
 # How long the launcher's input sender waits before re-sending the held
 # joystick state after that post failed too.
 _INJECT_RESYNC_RETRY_S = 0.25
+# How long teardown waits for the sender's post in flight, so the release and
+# the reset that follow it reach the machine after that post. A sender request
+# changes each input at most once, so it is one body: one connect and one read.
+_INJECT_SENDER_JOIN_S = 2 * machine_input.POST_TIMEOUT_S + 0.5
 
 
 def _joystick_inputs(event: machine_input.Event) -> set[tuple[int, str]]:
@@ -1741,7 +1745,12 @@ class LauncherScene(MediaFileMixin, Scene):
         self._baseline: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
         self._injected: queue.SimpleQueue[machine_input.Event] = queue.SimpleQueue()
-        self._sender = PollThread(self._send_loop, name="launcher-input-send", manual=True)
+        self._sender = PollThread(
+            self._send_loop,
+            name="launcher-input-send",
+            manual=True,
+            join_timeout=_INJECT_SENDER_JOIN_S,
+        )
         self._injected_any = False
         # The sender thread's own state: an event held back for the next
         # request, what its posts have left pressed, and whether a failed post
@@ -1821,7 +1830,8 @@ class LauncherScene(MediaFileMixin, Scene):
                     stop.wait(_INJECT_RESYNC_RETRY_S)
                 continue
             batch = self._next_batch()
-            if batch:
+            # The dequeue can outlast a stop; teardown releases what is held.
+            if batch and not stop.is_set():
                 self._injected_any = True
                 self._post(batch)
 

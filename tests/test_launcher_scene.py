@@ -244,6 +244,60 @@ class JoystickSenderTest(unittest.TestCase):
                 ],
             )
 
+    def test_batch_dequeued_after_stop_is_not_posted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            stop = threading.Event()
+            scene._carry = _joy(2, "press", "up")
+            scene._injected.put(_joy(2, "press", "fire"))
+            real_next_batch = scene._next_batch
+
+            def next_batch_then_stop():
+                batch = real_next_batch()
+                stop.set()
+                return batch
+
+            scene._next_batch = next_batch_then_stop
+            scene._send_loop(stop)
+            api.send_input.assert_not_called()
+
+    def test_teardown_releases_after_a_slow_post_in_flight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._scene(tmp)
+            api.launch_program.return_value = None
+            scene.input_source = "none"
+            scene.reset_before_launch = False
+            in_flight = threading.Event()
+            order = []
+
+            def send(events):
+                order.append(("start", events))
+                if events != [machine_input.RELEASE_ALL]:
+                    in_flight.set()
+                    threading.Event().wait(0.8)
+                order.append(("end", events))
+                return {}
+
+            api.send_input.side_effect = send
+            api.reset.side_effect = lambda: order.append(("reset", None))
+            scene.setup()
+            self.addCleanup(scene._sender.stop)
+            scene.inject_joystick(2, "up", True)
+            self.assertTrue(in_flight.wait(2.0))
+            scene.teardown()
+            self.assertFalse(scene._sender.is_running())
+            press = [_joy(2, "press", "up")]
+            self.assertEqual(
+                order,
+                [
+                    ("start", press),
+                    ("end", press),
+                    ("start", [machine_input.RELEASE_ALL]),
+                    ("end", [machine_input.RELEASE_ALL]),
+                    ("reset", None),
+                ],
+            )
+
     def test_revoked_api_stops_the_sender_and_drops_with_the_no_api_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = self._scene(tmp)

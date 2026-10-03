@@ -25,6 +25,9 @@ MAX_EVENTS: Final = 64
 MAX_KEYBOARD_INPUTS: Final = 8
 # The firmware refuses a body of 4096 bytes or more.
 MAX_BODY_BYTES: Final = 4095
+# `Ultimate64API.send_input`'s default per-request timeout. requests applies it
+# to the connect and to the read separately, so one request can take twice this.
+POST_TIMEOUT_S: Final = 2.0
 
 TRANSITIONS: Final = ("press", "release", "tap")
 JOYSTICK_PORTS: Final = (1, 2)
