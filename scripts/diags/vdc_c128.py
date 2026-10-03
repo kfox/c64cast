@@ -534,6 +534,13 @@ def stage_blank_gain(client: TRClient, port: vdc.VdcPorthole, payload: bytes) ->
     live_r1 = vdc.BITMAP_640x200_REGS[vdc.R.H_DISPLAYED]
     print(f"\n[5b] display-fetch contention (R1 = 0 against R1 = {live_r1})")
 
+    # Stage 5 leaves its own frame in the buffer, and the verify below scores
+    # the blit against `payload`, so the buffer has to hold `payload` again.
+    client.write_segment(vdc_rom.FRAMEBUF_ADDR, payload)
+    if client.read_segment(vdc_rom.FRAMEBUF_ADDR, nbytes) != payload:
+        print("    staging did not stick; skipped (fix DMA first)")
+        return
+
     def timed_blit(label: str) -> tuple[float, int]:
         before = issue(
             client, vdc_rom.CMD_BLIT, dst=vdc.BITMAP_BASE, count=nbytes, src=vdc_rom.FRAMEBUF_ADDR
