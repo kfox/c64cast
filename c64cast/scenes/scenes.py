@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import cv2
 import numpy as np
@@ -472,6 +472,14 @@ def _scene_hardware_palette(
     if color.hardware_palette != "source" or display_mode is None:
         return None
     return getattr(api, "hardware_palette", None)
+
+
+class _HardwarePrescan(NamedTuple):
+    """A video's pre-scan, kept for the next setup of the same source."""
+
+    key: tuple[object, ...]
+    fit: Any
+    frames: list[np.ndarray]
 
 
 def _push_source_palette(scene: Scene, control: HardwarePalette, frames: list[np.ndarray]) -> None:
@@ -1117,11 +1125,16 @@ class SlideshowScene(MediaFileMixin, Scene):
             # The push can take most of a second, which is not the slide's.
             self._image_start = time.time()
 
+    @property
+    def pushes_hardware_palette(self) -> bool:
+        """Whether setting this scene up pushes colors of its own."""
+        return _scene_hardware_palette(self.api, self._color, self.display_mode) is not None
+
     def teardown(self) -> None:
         control, self._hw_palette = self._hw_palette, None
         steps: list[tuple[str, Callable[[], object]]] = [("base teardown", super().teardown)]
         if control is not None:
-            steps.append(("machine palette", control.show_machine))
+            steps.append(("hardware palette release", control.release))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def process_frame(self, current_time: float) -> bool:
@@ -1231,6 +1244,10 @@ class VideoScene(MediaFileMixin, Scene):
 
         self._color = color if color is not None else ColorCfg()
         self._hw_palette: HardwarePalette | None = None
+        # The last hardware-palette pre-scan, so setting the same video up
+        # again (a looping clip, a playlist lap) neither decodes it again nor
+        # pushes colors the machine is already showing.
+        self._hw_prescan: _HardwarePrescan | None = None
         # Lifetime is video-driven; math.inf disables the base-class duration
         # timer, and the config layer rejects a user-supplied `duration_s`.
         self.duration_s = math.inf
@@ -1341,23 +1358,36 @@ class VideoScene(MediaFileMixin, Scene):
                 map_colors, map_indices = (
                     resolved_force_palette(c) if c.force_palette else (None, None)
                 )
-                frames = FrameSampler() if self._hw_palette is not None else None
-                fit, cmap = prescan_source_color(
-                    self.filepath,
-                    # Full strength: the mode lerps it by
-                    # [color].auto_fit_strength at apply time.
-                    fit_strength=1.0 if c.auto_fit else None,
-                    map_colors=map_colors,
-                    map_indices=map_indices,
-                    frames=frames,
-                    decode_target_size=decode_target,
-                    on_progress=progress.reporter("prescan"),
-                )
+                prescan_key = (self.filepath, decode_target, c.auto_fit)
+                cached = self._hw_prescan
+                if (
+                    self._hw_palette is not None
+                    and cached is not None
+                    and cached.key == prescan_key
+                ):
+                    fit, cmap, sampled = cached.fit, None, cached.frames
+                else:
+                    frames = FrameSampler() if self._hw_palette is not None else None
+                    fit, cmap = prescan_source_color(
+                        self.filepath,
+                        # Full strength: the mode lerps it by
+                        # [color].auto_fit_strength at apply time.
+                        fit_strength=1.0 if c.auto_fit else None,
+                        map_colors=map_colors,
+                        map_indices=map_indices,
+                        frames=frames,
+                        decode_target_size=decode_target,
+                        on_progress=progress.reporter("prescan"),
+                    )
+                    sampled = frames.frames if frames is not None else []
+                    self._hw_prescan = (
+                        _HardwarePrescan(prescan_key, fit, sampled) if sampled else None
+                    )
                 progress.complete("prescan")
                 self.display_mode.set_color_fit(fit)
                 self.display_mode.set_color_map(cmap)
-                if self._hw_palette is not None and frames is not None:
-                    _push_source_palette(self, self._hw_palette, frames.frames)
+                if self._hw_palette is not None:
+                    _push_source_palette(self, self._hw_palette, sampled)
                 if fit is not None:
                     log.info("video: auto-fit %s", fit)
                 if cmap is not None:
@@ -1656,6 +1686,11 @@ class VideoScene(MediaFileMixin, Scene):
                 self._av_lag_count,
             )
 
+    @property
+    def pushes_hardware_palette(self) -> bool:
+        """Whether setting this scene up pushes colors of its own."""
+        return _scene_hardware_palette(self.api, self._color, self.display_mode) is not None
+
     def teardown(self) -> None:
         src, self.source = self.source, None
         steps: list[tuple[str, Callable[[], object]]] = [
@@ -1676,7 +1711,7 @@ class VideoScene(MediaFileMixin, Scene):
         steps.append(("identity-skip cache reset", self._reset_identity_skip_cache))
         control, self._hw_palette = self._hw_palette, None
         if control is not None:
-            steps.append(("machine palette", control.show_machine))
+            steps.append(("hardware palette release", control.release))
         run_teardown_steps(log, type(self).__name__, steps)
 
     def _reset_identity_skip_cache(self) -> None:

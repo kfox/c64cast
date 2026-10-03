@@ -397,7 +397,7 @@ error falls to about a third of what the Ultimate's own table gives.
 |---|---|
 | **Scenes** | `video` (from the pre-scan, so a video with it on always pre-scans) and `slideshow` (per image). Other scenes show the machine's palette |
 | **When it is pushed** | At scene start, and at each slideshow image. About half a second per push, so it is per scene, never per frame |
-| **Restored** | When the scene ends, and at exit, to the palette the machine shows after c64cast's startup reset — its configured palette, a custom `.vpl` included. A C64 reset during a scene reverts the machine to its configured palette, so c64cast pushes the scene's palette again after every reset it issues |
+| **Restored** | Before the next scene that does not push colors of its own sets up, and at exit, to the palette the machine shows after c64cast's startup reset — its configured palette, a custom `.vpl` included. A C64 reset during a scene reverts the machine to its configured palette, so c64cast pushes the scene's palette again after every reset it issues |
 | **Not with** | `force_palette`, which also re-chooses a scene's colors, or a `flicker_tolerance` other than `"off"`, whose blends are measured against the machine's fixed palette. The configuration is refused, in a performance clip's `color` too |
 | **Needs** | An Ultimate 64 on firmware 3.15 or newer, and the Command Interface on. A C64 Ultimate on 1.1.0, older firmware, any other machine, an ensemble, and `--skip-probe` all render exactly as without it, after one warning saying why |
 

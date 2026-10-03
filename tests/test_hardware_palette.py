@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 import cv2
@@ -244,6 +244,49 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self._show()
         self.api.listeners[0]()
         self.assertEqual(self.pushes, [_rgb(self.scene_table)] * 2)
+
+    def test_release_points_the_quantizer_back_and_pushes_nothing(self):
+        self._show()
+        self.control.release()
+        self.assertEqual(len(self.pushes), 1)
+        self.assertEqual(palette.active_host_palette_name(), "pepto")
+
+    def test_the_same_table_after_a_release_does_not_push(self):
+        """A looping clip or a playlist lap sets the same scene up again."""
+        self._show()
+        self.control.release()
+        self.assertTrue(self.control.show(self.scene_table, "scene"))
+        self.assertEqual(len(self.pushes), 1)
+        np.testing.assert_array_equal(palette.C64_PALETTE_BGR, self.scene_table)
+
+    def test_show_machine_after_a_release_pushes_the_snapshot(self):
+        self._show()
+        self.control.release()
+        self.control.show_machine()
+        self.assertEqual(self.pushes[-1], _rgb(MACHINE))
+
+    def test_a_reset_after_a_release_leaves_the_machine_on_its_own(self):
+        self._show()
+        self.control.release()
+        self.api.listeners[0]()
+        self.control.show_machine()
+        self.control.restore()
+        self.assertEqual(len(self.pushes), 1)
+
+    def test_after_a_reset_the_same_table_is_pushed_again(self):
+        self._show()
+        self.control.release()
+        self.api.listeners[0]()
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            self.assertTrue(self.control.show(self.scene_table, "scene"))
+        self.assertEqual(self.pushes, [_rgb(self.scene_table)] * 2)
+
+    def test_restore_after_a_release_pushes_the_snapshot(self):
+        self._show()
+        self.control.release()
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            self.control.restore()
+        self.assertEqual(self.pushes[-1], _rgb(MACHINE))
 
     def test_a_reset_with_nothing_shown_does_not_push(self):
         self.api.listeners[0]()
@@ -502,6 +545,7 @@ class SlideshowPushTest(unittest.TestCase):
         self.control.show.assert_not_called()
 
     def test_setup_pushes_and_each_new_image_pushes_again(self):
+        self.assertTrue(self.scene.pushes_hardware_palette)
         self.scene.prepare_next()
         self.scene.setup()
         self.assertEqual(self.control.show.call_count, 1)
@@ -512,10 +556,11 @@ class SlideshowPushTest(unittest.TestCase):
         first, second = (c.args[0] for c in self.control.show.call_args_list)
         self.assertFalse(np.array_equal(first, second))
 
-    def test_teardown_puts_the_machines_palette_back(self):
+    def test_teardown_releases_the_palette_without_pushing(self):
         self.scene.setup()
         self.scene.teardown()
-        self.control.show_machine.assert_called_once()
+        self.control.release.assert_called_once()
+        self.control.show_machine.assert_not_called()
 
     def test_the_push_does_not_come_out_of_any_slides_time(self):
         clock = [1000.0]
@@ -553,7 +598,8 @@ class SlideshowPushTest(unittest.TestCase):
         self.scene.setup()
         self.scene.teardown()
         self.control.show.assert_not_called()
-        self.control.show_machine.assert_not_called()
+        self.control.release.assert_not_called()
+        self.assertFalse(self.scene.pushes_hardware_palette)
 
 
 class VideoPushTest(unittest.TestCase):
@@ -608,10 +654,29 @@ class VideoPushTest(unittest.TestCase):
         table = self.control.show.call_args.args[0]
         np.testing.assert_array_equal(table[PINNED], MACHINE[PINNED])
 
-    def test_teardown_puts_the_machines_palette_back(self):
+    def test_teardown_releases_the_palette_without_pushing(self):
         self.scene.setup()
         self.scene.teardown()
-        self.control.show_machine.assert_called_once()
+        self.control.release.assert_called_once()
+        self.control.show_machine.assert_not_called()
+
+    def test_setting_the_same_video_up_again_does_not_pre_scan_again(self):
+        self.assertTrue(self.scene.pushes_hardware_palette)
+        self.scene.setup()
+        self.scene.teardown()
+        self.scene.setup()
+        self.assertEqual(self.prescan.call_count, 1)
+        self.assertEqual(self.control.show.call_count, 2)
+        first, second = (c.args[0] for c in self.control.show.call_args_list)
+        np.testing.assert_array_equal(first, second)
+        self.assertIs(self.mode.set_color_fit.call_args.args[0], self.fit)
+
+    def test_a_different_source_pre_scans_again(self):
+        self.scene.setup()
+        self.scene.teardown()
+        self.scene.file_spec = "https://stub.invalid/other.mp4"
+        self.scene.setup()
+        self.assertEqual(self.prescan.call_count, 2)
 
     def test_a_black_pre_scan_pushes_the_machines_table(self):
         def black_prescan(path, **kw):
@@ -624,6 +689,50 @@ class VideoPushTest(unittest.TestCase):
         self.scene.setup()
         self.control.show.assert_called_once()
         np.testing.assert_array_equal(self.control.show.call_args.args[0], MACHINE)
+
+
+class SettleForTest(unittest.TestCase):
+    """Before each scene sets up, the machine's own palette goes back unless
+    that scene pushes its own."""
+
+    def setUp(self):
+        self.control = mock.Mock(spec=hp.HardwarePalette)
+        self.api = mock.Mock()
+        self.api.hardware_palette = self.control
+
+    def test_a_scene_without_its_own_colors_gets_the_machines(self):
+        hp.settle_for(self.api, mock.Mock(spec=["setup"]))
+        self.control.show_machine.assert_called_once()
+
+    def test_a_scene_with_its_own_colors_is_left_to_push_them(self):
+        hp.settle_for(self.api, mock.Mock(pushes_hardware_palette=True))
+        self.control.show_machine.assert_not_called()
+
+    def test_a_run_without_a_pusher_does_nothing(self):
+        self.api.hardware_palette = None
+        hp.settle_for(self.api, mock.Mock(spec=["setup"]))
+
+    def test_the_playlist_settles_before_every_setup(self):
+        from test_playlist import FakeApi, FakeScene, _transition_factory
+
+        from c64cast.app.playlist import Playlist
+
+        order: list[str] = []
+        scene: Any = FakeScene("A", frames_until_done=3)
+        scene.setup = lambda: order.append("setup")
+        pl = Playlist(
+            [scene],
+            cast(Any, FakeApi()),
+            target_fps=10000.0,
+            heartbeat_interval=0.0,
+            interstitial_factory=cast(Any, _transition_factory()[0]),
+        )
+        with mock.patch.object(
+            hp, "settle_for", side_effect=lambda api, s: order.append("settle")
+        ) as settle:
+            pl.safe_setup(scene)
+        self.assertEqual(order, ["settle", "setup"])
+        self.assertIs(settle.call_args.args[1], scene)
 
 
 class ResetListenerTest(unittest.TestCase):

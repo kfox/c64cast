@@ -137,7 +137,7 @@ hardware_palette = "source"
 
 A sunset can spend its eleven free colors on oranges and reds instead of
 making do with one orange and a brown. The machine's own palette comes back
-when the scene ends and when c64cast exits. On any other machine, or older firmware, the setting is skipped with a
+before any scene that does not use the setting, and when c64cast exits. On any other machine, or older firmware, the setting is skipped with a
 warning and the show looks as it always has. It cannot be combined with
 `force_palette` or `flicker_tolerance`.
 [The Programmer's Reference Guide](https://github.com/kfox/c64cast/blob/main/docs/reference/04-display-pipeline.md#choosing-the-sixteen--hardware_palette)
