@@ -1579,13 +1579,28 @@ def password_header_value(password: str) -> bytes:
             "header of a REST request cannot carry; change the password on the "
             "Ultimate (F2 -> Network Settings -> Network Password) and here"
         )
-    return password.encode("utf-8")
+    try:
+        return password.encode("utf-8")
+    except UnicodeEncodeError:
+        # The codec's message quotes the offending character and its index.
+        raise ValueError(
+            f"the network password in {_PASSWORD_SOURCES} is not valid UTF-8; "
+            "set it from a UTF-8 shell or in the config file"
+        ) from None
 
 
 class _UltimateSession(requests.Session):
     """A `requests.Session` that drops ``X-Password`` on a redirect to another
     host, as `requests` already does for ``Authorization``. A session-level
-    header otherwise rides every hop of a redirect chain."""
+    header otherwise rides every hop of a redirect chain.
+
+    It also ignores the environment's proxy settings: a plain-HTTP request
+    through ``HTTP_PROXY`` hands the proxy every header, the password included,
+    and the Ultimate is a LAN device that no proxy has to reach."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trust_env = False
 
     def rebuild_auth(
         self, prepared_request: requests.PreparedRequest, response: requests.Response

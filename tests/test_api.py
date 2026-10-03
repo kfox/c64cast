@@ -1634,6 +1634,24 @@ class RestPasswordTest(unittest.TestCase):
         u64.session.get(f"{self.url}/hop", timeout=2.0)
         self.assertEqual(self.server.seen, [("/hop", _SECRET), ("/v1/version", None)])
 
+    def test_an_environment_proxy_never_sees_the_password(self):
+        proxy = _RecordingServer("")
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(proxy.server_close)
+        self.addCleanup(proxy.shutdown)
+        proxy_host, proxy_port = proxy.server_address[:2]
+        proxy_url = f"http://{proxy_host}:{proxy_port}"
+        env = {"HTTP_PROXY": proxy_url, "http_proxy": proxy_url, "NO_PROXY": "", "no_proxy": ""}
+        with patch.dict("os.environ", env):
+            u64 = self._api(_SECRET)
+            self.assertEqual(
+                u64.session.get(f"{self.url}/v1/version", timeout=2.0).status_code, 200
+            )
+        self.assertEqual(proxy.seen, [])
+        self.assertEqual(self.server.seen, [("/v1/version", _SECRET)])
+
     def test_same_host_redirect_keeps_the_password(self):
         self.server.redirect_to = f"{self.url}/v1/version"
         u64 = self._api(_SECRET)
@@ -1652,6 +1670,18 @@ class PasswordHeaderValueTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     api.password_header_value(password)
                 self.assertNotIn("pw", str(caught.exception).replace("password", ""))
+
+    def test_rejects_a_password_that_is_not_utf8_without_echoing_it(self):
+        # A non-UTF-8 byte in C64CAST_DMA_PASSWORD reaches os.environ as a
+        # lone surrogate (surrogateescape on POSIX).
+        with self.assertRaises(ValueError) as caught:
+            api.password_header_value("h\udce4nter2")
+        message = str(caught.exception)
+        self.assertNotIsInstance(caught.exception, UnicodeError)
+        self.assertNotIn("\udce4", message)
+        self.assertNotIn("position", message)
+        self.assertNotIn("nter2", message)
+        self.assertTrue(caught.exception.__suppress_context__)
 
     def test_construction_fails_before_opening_the_dma_socket(self):
         with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True) as connect:

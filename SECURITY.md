@@ -129,7 +129,8 @@ The Ultimate's optional network password is supplied through the
 `C64CAST_DMA_PASSWORD` environment variable or the `[ultimate64].dma_password`
 config key. c64cast sends it in the DMA socket's AUTHENTICATE command and in
 the `X-Password` header of every REST call, both unencrypted, and drops the
-header from a redirect to another host. It deliberately has **no CLI flag** so
+header from a redirect to another host and ignores `HTTP_PROXY`, so no
+proxy is handed it. It deliberately has **no CLI flag** so
 it cannot land in shell history or in `ps` output. `--save-settings` and the config serializer refuse to
 write it to disk. Treat it as a weak gate against accidents rather than a
 security boundary.

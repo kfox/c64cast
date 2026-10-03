@@ -178,7 +178,13 @@ class SocketDMAClient:
     def _authenticate_locked(self) -> None:
         assert self._sock is not None
         assert self.password is not None
-        payload = self.password.encode("utf-8")
+        try:
+            payload = self.password.encode("utf-8")
+        except UnicodeEncodeError:
+            raise SocketDMAError(
+                "the network password is not valid UTF-8. Check [ultimate64] "
+                "dma_password or the C64CAST_DMA_PASSWORD env var."
+            ) from None
         try:
             self._send_cmd_locked(CMD_AUTHENTICATE, payload)
             reply = self._recv_exact_locked(1)
