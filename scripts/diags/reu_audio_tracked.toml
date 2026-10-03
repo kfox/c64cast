@@ -18,6 +18,7 @@ url = "http://192.168.2.64"
 [audio]
 enabled = true
 use_reu_pump = true
+backend = "dac"           # auto picks the U64 sampler, which has no pump
 
 [video]
 use_reu_staged = true     # bank-swap double-buffer → tracked pump, $C200 mirror
