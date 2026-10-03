@@ -5,9 +5,8 @@ description: >
   to merge: branch, implement, commit, review each changeset as it lands, run a
   branch-wide review at high effort, open the PR, and watch CI and GHAS until
   green. Stops before merging — the merge is always the user's. Use when asked
-  to implement a non-trivial change, or when asked to "ship", "land", or "take
-  this to a PR". Trigger phrases include "ship this", "take it to a PR",
-  "full workflow", "branch and review".
+  to implement a non-trivial change, or when asked to take a change through
+  the full branch-review-PR workflow ("ship", "land", "take this to a PR").
 ---
 
 # Ship a change
@@ -111,10 +110,12 @@ make site-check   # only if you touched docs/
 **Then review the commit you just made, scoped to that commit alone.** Spawn a
 subagent with the Agent tool and have it run:
 
-    Skill(skill="code-review", args="high <sha> --fix")
+    Skill(skill="code-review", args="medium <sha> --fix")
 
-The effort level goes **first** in `args`, or it is parsed as part of the target
-and the run silently reuses whatever level ran last. Tell it to review that
+`medium` is the default. Drop to `low` for a small, contained commit, and raise
+to `high` for a significant one — a large diff, or any diff touching a pinned
+path from step 4. The effort level goes **first** in `args`, or it is parsed as
+part of the target and the run silently reuses whatever level ran last. Tell it to review that
 commit's own diff, not `<sha>...HEAD` and not the branch.
 
 **Confirm the review read your tree.** The fork can resolve its working
@@ -222,7 +223,7 @@ terms.
 A clean pass here does not mean the branch is clean — it means nothing survived
 *both* nets. Read a wide pass that finds nothing as weak evidence.
 
-Three more things its prompt has to carry, because it cannot work them out for
+Its prompt also has to carry these, because it cannot work them out for
 itself:
 
 - **That prose is not review surface**, in the words step 3 uses. The wide pass
@@ -267,11 +268,11 @@ Then, once it has reported:
   committed in a worktree of its own, and review each of those commits the way
   step 3 does, as you make it. Batching them to the end is the batching step 3
   forbids, done at the point where the branch is closest to shipping.
-- **Write down what was declined and why**, where step 3 puts it: the message of
-  a fix commit from the same pass, or the report to the user when the pass made
-  none. A declined finding with a reason is a legitimate outcome; one that was
-  only said out loud is re-litigated by the next reader. Not the PR body, which
-  is for the change and not for the history of reviewing it.
+- **Write down what was declined and why**, where step 3 puts it: the report to
+  the user. A declined finding with a reason is a legitimate outcome; one that
+  was only said out loud is re-litigated by the next reader. Not a commit
+  message and not the PR body, which are for the change and not for the history
+  of reviewing it.
 - **Route everything it handed back before step 5.** Fix it on this branch when
   a commit here introduced it or the fix fits the spirit of the change, as its
   own commit under the rule above; otherwise open a labeled GitHub issue. A
@@ -296,9 +297,9 @@ make preflight UV_PROJECT_ENVIRONMENT=<worktree>/.venv \
 
 The body should say what the change does, why, and anything a reviewer should
 look at closely — and nothing else. Not the findings the review declined, not
-which review passes ran, not what this branch left for later: the commit
-messages hold the declines, and whatever was left for later is a labeled issue
-by now, which the body links rather than recounts.
+which review passes ran, not what this branch left for later: the declines
+went to the user in the review reports, and whatever was left for later is a
+labeled issue by now, which the body links rather than recounts.
 
 ## 6. Watch until green
 
@@ -321,8 +322,8 @@ at the pinned paths from step 4: a GHAS finding on any of them, or on anything
 touching `dma_password` or the `[web]`/`[control]` tokens, must be fixed or
 explicitly escalated to Kelly — never self-dismissed as a false positive.
 
-A CI failure that is a real defect goes back through step 4: review the fix at
-high effort rather than quietly patching it.
+A CI failure that is a real defect gets its fix reviewed the way step 3 does, at
+the effort its size warrants, rather than quietly patched.
 
 ## 7. Stop
 

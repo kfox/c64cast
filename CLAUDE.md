@@ -180,7 +180,7 @@ half a second to wind down before it counts.
 
 **A test that stops making progress is interrupted rather than left to run.**
 `unittest_parallel` has no timeout of its own and CI bounds only the whole job,
-so a hang used to spend the job and name nothing — no dot, no test id, no
+so a hang would spend the job and name nothing — no dot, no test id, no
 stack. [tests/_timeout_sandbox.py](tests/_timeout_sandbox.py), armed from the
 same startup hook, gives every test 60 seconds: past that, every thread's stack
 goes to stderr under the test's name and `TestTimedOut` is raised where the
@@ -190,16 +190,15 @@ for that run.
 
 **A test module starts a child process only through `run_bounded`.** `subprocess.run`
 with no `timeout` waits forever, and on Windows it waits inside
-`Popen._communicate`'s `stdout_thread.join(None)` — which is how a `node
---check` that never returned blocked PR #491's Windows job until the cap above
-reported it as "no progress", naming the test but not the cause.
+`Popen._communicate`'s `stdout_thread.join(None)`, where only the cap above
+catches it — as "no progress", naming the test but not the cause.
 `run_bounded()` in [tests/_child_process.py](tests/_child_process.py) is
 `subprocess.run` under a 20-second bound; a child that outlives it is killed
 and the test fails naming the command and whatever the child had written. The
 AST sweep in [tests/test_child_process.py](tests/test_child_process.py) fails
 any module under `tests/` that reaches `subprocess` without a `timeout` —
-`timeout=None` counts as none — so the bound cannot be omitted the way all
-twelve call sites before it omitted it. `scripts/` is out of scope: the scripts that run under a gate already
+`timeout=None` counts as none — so the bound cannot be omitted. `scripts/` is
+out of scope: the scripts that run under a gate already
 bound their own calls, and `scripts/diags/` drives real hardware from a
 terminal, where a child running for minutes is the measurement.
 
@@ -207,9 +206,9 @@ terminal, where a child running for minutes is the measurement.
 guard.** That sweep reads `tests/` only, so a timeout a module chose for a user
 at a terminal ends up governing the suite as well — and several of them are the
 per-test cap exactly, `doctor._probe_uv_lock`'s 60 seconds for `uv lock
---check` among them. A wedged command there cost 60 seconds and came back
-either as the cap's "no progress" or as the site's own swallowed answer, never
-as the command. [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from
+--check` among them. A wedged command there would spend the whole cap and
+surface either as the cap's "no progress" or as the site's own swallowed
+answer, never as the command. [tests/_child_sandbox.py](tests/_child_sandbox.py), armed from
 the same startup hook, shortens any wait past the 20-second bound for the
 length of the test process and raises `ChildProcessHung` naming the command and
 what it had written. It derives from `BaseException` because every one of those
