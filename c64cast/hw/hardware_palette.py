@@ -20,8 +20,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# A transaction that starts on a DMA socket the firmware has just closed loses
-# its first byte, and the command fails once and then works.
+# The DMA client redials a connection the firmware dropped, but cannot resend
+# the commands that connection may have discarded, so a push that went out
+# on it fails once.
 _PUSH_ATTEMPTS = 2
 
 
