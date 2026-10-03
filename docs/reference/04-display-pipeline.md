@@ -255,7 +255,7 @@ the browns and orange.
 
 | `host_palette` | Means |
 |---|---|
-| `auto` | The default, and needs no configuration. Ask the machine: an Ultimate 64 reports the sixteen colors it is driving, or is assumed to show its built-in table when its firmware cannot answer, and anything else is driving a real C64, so assume a VIC-II |
+| `auto` | The default, and needs no configuration. Ask the machine: an Ultimate 64 reports the sixteen colors it is driving, or is assumed to show its built-in table when its firmware cannot answer, and anything else is driving a real C64, so assume a VIC-II. Under `--skip-probe` nothing is asked, and a VIC-II is assumed for every machine |
 | `u64` | The Ultimate 64's own table, stated outright |
 | `pepto` | The classic VIC-II rendering — right for a real C64, so for an Ultimate II+ and for a TeensyROM+ in a breadbin |
 | *a path* | A VICE `.vpl` file, which is how to describe a machine running a custom palette |

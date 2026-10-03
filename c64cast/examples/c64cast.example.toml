@@ -104,7 +104,8 @@ host_palette = "auto"               # the 16 colors the C64 being driven really
                                     # it is really driving, a custom .vpl
                                     # included; one that cannot answer is
                                     # assumed to show its built-in table) and
-                                    # anything else a real VIC-II. "u64" is the
+                                    # anything else a real VIC-II, as is every
+                                    # machine under --skip-probe. "u64" is the
                                     # Ultimate 64's own built-in table; "pepto"
                                     # is the classic VIC-II rendering — right for
                                     # a real C64, so for an Ultimate II+ and for

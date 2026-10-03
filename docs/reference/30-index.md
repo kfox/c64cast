@@ -499,7 +499,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `sink_height` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_width` | [`wled` (2)](03-vocabulary.md#wled), [`wled` (B)](21-appendix-b-scene-types.md#wled) |
 | `sink_wled_port` | [`wled` (B)](21-appendix-b-scene-types.md#wled) |
-| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Why Cuts Do Not Tear (5)](06-under-the-hood.md#why-cuts-do-not-tear) |
+| `--skip-probe` | [Seeing Which Layer Answered (1)](02-config-rules.md#seeing-which-layer-answered), [`--doctor` (1)](02-config-rules.md#--doctor), [Near To What — `hardware.host_palette` (3)](04-display-pipeline.md#near-to-what--hardwarehost_palette) |
 | `skip_probe` | [`debug` (A)](20-appendix-a-configuration.md#debug) |
 | `slideshow` | [Media on the Command Line (1)](02-config-rules.md#media-on-the-command-line), [`slideshow` (2)](03-vocabulary.md#slideshow), [`slideshow` (B)](21-appendix-b-scene-types.md#slideshow) |
 | `soap` | [Generators (3)](04-display-pipeline.md#generators), [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators) |
