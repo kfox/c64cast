@@ -66,6 +66,7 @@ from c64cast.hw.api import (
 from c64cast.hw.backend import BackendCapabilityError
 from c64cast.hw.c64 import (
     CPU,
+    U64_API,
     VECTORS,
     VIC,
     cia1_latch_for_rate,
@@ -1083,6 +1084,22 @@ class ReadSideTest(unittest.TestCase):
         with self.assertRaises(requests.HTTPError):
             self.api.get_config_category("Audio Mixer")
 
+    def test_get_config_category_404_too_deep_to_parse_raises_http_error(self):
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.side_effect = RecursionError
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_get_config_category_200_too_deep_to_parse_raises_value_error(self):
+        self.get.return_value.status_code = 200
+        self.get.return_value.json.side_effect = RecursionError
+        self.get.return_value.raise_for_status.side_effect = None
+        with self.assertRaises(ValueError):
+            self.api.get_config_category("Audio Mixer")
+
     def test_read_config_category_body_tells_absent_from_present(self):
         from c64cast.hw.api import read_config_category_body
 
@@ -1202,6 +1219,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         self.api = Ultimate64API("http://example.invalid")
         self.get = patch.object(self.api.session, "get").start()
         self.get.return_value.raise_for_status.return_value = None
+        # Every GET answers 200, so the route probes find their routes quietly.
+        self.get.return_value.status_code = 200
         self.addCleanup(patch.stopall)
 
     def _refine_with(self, categories: object) -> None:
@@ -1245,7 +1264,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         import requests
 
         self.get.side_effect = requests.ConnectionError("down")
-        self.api.refine_capabilities()
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.refine_capabilities()
         self.assertTrue(self.api.profile.supports_sid_config)
 
     def test_unrecognized_shape_keeps_optimism(self):
@@ -1264,7 +1284,8 @@ class RefineCapabilitiesTest(unittest.TestCase):
         import requests
 
         self.get.side_effect = requests.ConnectionError("down")
-        self.api.refine_capabilities()
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.api.refine_capabilities()
         self.assertFalse(self.api.profile.supports_emusid_mixer)
 
     def test_run_basic_clear_loop_posts_prg_and_swallows_failure(self):
@@ -1300,6 +1321,138 @@ class RefineCapabilitiesTest(unittest.TestCase):
         put.side_effect = requests.ConnectionError("down")
         with self.assertLogs("c64cast.hw.api", level="WARNING"):
             self.api.reset()  # shutdown path — must not raise
+
+
+class _RestAnswerTestCase(unittest.TestCase):
+    """An Ultimate64API whose every REST GET answers what `_answer` sets."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(self.api.session, "get").start()
+        self.addCleanup(patch.stopall)
+
+    def _answer(self, status: int, body: bytes = b"") -> None:
+        self.get.return_value.status_code = status
+        self.get.return_value.content = body
+
+
+class RouteProbeTest(_RestAnswerTestCase):
+    """The shared probe for firmware routes 3.15 added: which answers mean
+    the route is there, that each path is asked once per connection, and
+    that whatever cannot be classified fails closed and is not cached."""
+
+    def test_classification(self):
+        cases = [
+            (200, b"\x00" * 2000, "present"),
+            (404, b'{ "errors" : [ "Menu screen unavailable." ] }', "present"),
+            (501, b'{"errors": ["needs Ultimate 64-class hardware"]}', "unsupported"),
+            (404, b"", "absent"),
+            (404, b"  \n", "absent"),
+            (404, b'{"errors": []}', "unknown"),
+            (404, b"<html>not found</html>", "unknown"),
+            (500, b"", "unknown"),
+        ]
+        for status, body, expected in cases:
+            with self.subTest(status=status, body=body):
+                self.assertEqual(api.classify_route_answer(status, body), expected)
+
+    def test_body_too_deep_to_parse_is_unknown(self):
+        with patch.object(api.json, "loads", side_effect=RecursionError):
+            self.assertEqual(api.classify_route_answer(404, b"[[[[]]]]"), "unknown")
+
+    def test_present_route_is_asked_once(self):
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.get.assert_called_once()
+        self.assertEqual(self.get.call_args.args[0], "http://example.invalid/v1/machine:input")
+
+    def test_absent_route_says_what_was_skipped_once(self):
+        self._answer(404)
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:menu_screen", "menu check"))
+            self.assertFalse(self.api.probe_route("/v1/machine:menu_screen", "menu check"))
+        self.assertEqual(len(cm.records), 1)
+        self.assertEqual(cm.records[0].levelname, "INFO")
+        self.assertIn("menu check skipped", cm.records[0].getMessage())
+        self.get.assert_called_once()
+
+    def test_unsupported_route_is_not_present(self):
+        self._answer(501, b'{"errors": ["no"]}')
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertIn("HTTP 501", cm.records[0].getMessage())
+
+    def test_unclassifiable_answer_warns_and_is_asked_again(self):
+        self._answer(500)
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertEqual(self.get.call_count, 2)
+
+    def test_transport_failure_warns_and_is_asked_again(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+            self.assertFalse(self.api.probe_route("/v1/machine:input", "input"))
+        self.assertIn("input skipped", cm.records[0].getMessage())
+        self.get.side_effect = None
+        self._answer(200)
+        self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+
+
+class MenuScreenTest(_RestAnswerTestCase):
+    """read_menu_screen: decoded while the menu is open, None while it is
+    closed or unreadable, and refine_capabilities grants the flag only when
+    the route answers."""
+
+    def test_open_menu_is_decoded(self):
+        self._answer(200, b"A" + b" " * 999 + b"\x01" * 1000)
+        screen = self.api.read_menu_screen()
+        assert screen is not None
+        self.assertEqual(screen.lines[0][0], "A")
+        self.assertTrue(self.get.call_args.args[0].endswith("/v1/machine:menu_screen"))
+
+    def test_closed_menu_is_none(self):
+        self._answer(404, b'{ "errors" : [ "Menu screen unavailable." ] }')
+        with self.assertNoLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.read_menu_screen())
+
+    def test_unexpected_status_warns_and_is_none(self):
+        for status, body in ((500, b""), (404, b""), (403, b"<html>no</html>")):
+            with self.subTest(status=status, body=body):
+                self._answer(status, body)
+                with self.assertLogs("c64cast.hw.api", level="WARNING") as cm:
+                    self.assertIsNone(self.api.read_menu_screen())
+                self.assertIn(f"HTTP {status}", cm.output[0])
+
+    def test_wrong_size_payload_warns_and_is_none(self):
+        self._answer(200, b"short")
+        with self.assertLogs("c64cast.hw.api", level="WARNING"):
+            self.assertIsNone(self.api.read_menu_screen())
+
+    def test_transport_failure_is_none(self):
+        import requests
+
+        self.get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.api.read_menu_screen())
+
+    def test_refine_grants_the_flag_on_firmware_with_the_route(self):
+        self._answer(404, b'{"errors": ["Menu screen unavailable."]}')
+        self.api._refine_route_capabilities()
+        self.assertTrue(self.api.profile.supports_menu_screen)
+
+    def test_refine_leaves_the_flag_off_without_the_route(self):
+        self._answer(404, b"")
+        with self.assertLogs("c64cast.hw.api", level="INFO") as cm:
+            self.api._refine_route_capabilities()
+        self.assertFalse(self.api.profile.supports_menu_screen)
+        self.assertIn("menu-open check skipped", cm.output[0])
 
 
 class DumpCharRomTest(unittest.TestCase):
@@ -1730,6 +1883,11 @@ class RestPasswordTest(unittest.TestCase):
         for record in logs.records:
             self.assertNotIn(_SECRET, record.getMessage())
 
+    def test_route_probe_carries_the_configured_password(self):
+        u64 = self._api(_SECRET)
+        self.assertTrue(u64.probe_route(U64_API.MENU_SCREEN, "menu-open check"))
+        self.assertEqual(self.server.seen, [(U64_API.MENU_SCREEN, _SECRET)])
+
     def test_no_header_without_a_configured_password(self):
         self.server.password = ""
         u64 = self._api(None)
@@ -1802,14 +1960,14 @@ class PasswordHeaderValueTest(unittest.TestCase):
     def test_rejects_what_a_header_cannot_carry_without_echoing_it(self):
         for password in ("pw\r\nX-Evil: 1", "pw\x00", " pw", "pw ", "pw\t"):
             with self.subTest(password=password):
-                with self.assertRaises(ValueError) as caught:
+                with self.assertRaises(api.InvalidPasswordError) as caught:
                     api.password_header_value(password)
                 self.assertNotIn("pw", str(caught.exception).replace("password", ""))
 
     def test_rejects_a_password_that_is_not_utf8_without_echoing_it(self):
         # A non-UTF-8 byte in C64CAST_DMA_PASSWORD reaches os.environ as a
         # lone surrogate (surrogateescape on POSIX).
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(api.InvalidPasswordError) as caught:
             api.password_header_value("h\udce4nter2")
         message = str(caught.exception)
         self.assertNotIsInstance(caught.exception, UnicodeError)
@@ -1820,6 +1978,6 @@ class PasswordHeaderValueTest(unittest.TestCase):
 
     def test_construction_fails_before_opening_the_dma_socket(self):
         with patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True) as connect:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(api.InvalidPasswordError):
                 Ultimate64API("http://example.invalid", dma_password="pw\n")
         connect.assert_not_called()

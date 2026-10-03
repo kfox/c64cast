@@ -32,6 +32,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   3.15a or newer; a C64 Ultimate on 1.1.0, older firmware and other machines skip it
   with a warning. Off by default, and refused alongside `force_palette` or
   `flicker_tolerance`.
+
+- **c64cast tells you when the Ultimate menu is open.** An open menu takes the
+  keyboard and hides some or all of what c64cast draws, with nothing on the
+  host side to say why. `--doctor` now reports it as a warning (`-v` logs the
+  text the menu is showing), and a run warns once at startup if the menu is
+  still open after its reset. The reset closes the menu in the default
+  "Freeze" interface but not in "Overlay on HDMI". This needs Ultimate
+  firmware **3.15** or newer. On older firmware, including C64 Ultimate
+  1.1.0, the check is skipped with one log line saying so.
+
 - **`host_palette = "auto"` now asks an Ultimate 64 which 16 colors it is actually
   driving**, instead of assuming the built-in table. Every color decision in
   the pipeline is a distance measured against that table, so a machine running
@@ -194,6 +204,31 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   visibly less.
 
 ### Fixed
+
+- **A run on an Ultimate whose `Vol Master` is OFF is no longer silent.**
+  Firmware 3.15 adds a master level to the audio mixer (F2 → Audio Mixer on an
+  Ultimate 64, Audio Output Settings on an Ultimate II+) and multiplies it into
+  every source, so at OFF nothing is heard whatever the per-source rows say —
+  while c64cast reported the sampler audible and set the SID levels as if it
+  were. A run that wants audio now raises `Vol Master` from OFF to 0 dB, live
+  and never saved to flash, and puts it back at teardown; any other level is
+  left as you set it, and `sid_volume` levels are relative to it. `--doctor`
+  reports the master level and names it when it is OFF, and DAC calibration
+  measures at master unity. Firmware without the setting (3.14 and earlier,
+  the C64 Ultimate's 1.1.0) behaves as before.
+
+- **On Ultimate firmware 3.15, the first write after a pause of a second or
+  more no longer goes missing.** Firmware 3.15 closes a DMA connection that has
+  sent it nothing for one second, and the next write went into the closed
+  connection without an error, so a still picture with audio off, or the
+  first write of a scene after start-up, could lose a write that the cache
+  of unchanged bytes then never sent again; a flush after such a pause
+  failed with "socket closed mid-read". Before each command c64cast now checks whether the
+  Ultimate has closed the connection, and after a pause it confirms the
+  connection with one round trip; a closed one is reopened first, which costs
+  about 7 ms. Firmware without the timeout (3.14 and earlier, C64 Ultimate
+  1.1.0) keeps its connection and pays only that round trip after a pause. The
+  `--profile` latency line now ends with a `reconnects=` count.
 
 - **An Ultimate with a network password now accepts c64cast's REST calls as
   well as its DMA writes.** The firmware checks the same password on its REST

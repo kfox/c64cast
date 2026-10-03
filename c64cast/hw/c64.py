@@ -365,6 +365,8 @@ class U64_API:
     RUN_PRG: Final = "/v1/runners:run_prg"
     RUN_CRT: Final = "/v1/runners:run_crt"
     VERSION: Final = "/v1/version"
+    # Firmware 3.15+; probed per connection (Ultimate64API.probe_route).
+    MENU_SCREEN: Final = "/v1/machine:menu_screen"
 
 
 # System clocks in Hz.

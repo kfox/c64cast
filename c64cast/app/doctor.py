@@ -1553,7 +1553,7 @@ def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
     """An Ultimate network password the ``X-Password`` header cannot carry
     stops every run at connect (exit 4), so the offline check reports it too.
     The message is `password_header_value`'s own, which never quotes it."""
-    from c64cast.hw.api import password_header_value
+    from c64cast.hw.api import InvalidPasswordError, password_header_value
 
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
@@ -1562,7 +1562,7 @@ def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
             continue
         try:
             password_header_value(password)
-        except ValueError as e:
+        except InvalidPasswordError as e:
             out.append(
                 Diagnostic(
                     level="error",
@@ -1738,15 +1738,15 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     """Connect one system's backend, probe it, and run the per-service
     probes that apply. Connection failures come back as diagnostics, not
     exceptions, so one dead system doesn't hide the others' reports."""
-    from c64cast.hw.api import RestAuthError
-    from c64cast.hw.backend import make_backend
+    from c64cast.hw.api import InvalidPasswordError, RestAuthError
+    from c64cast.hw.backend import BackendSetupError, make_backend
     from c64cast.hw.socket_dma import SocketDMAError
     from c64cast.hw.teensyrom_dma import TRError
 
     url = cfg.ultimate64.url
     try:
         api = make_backend(cfg)
-    except ValueError as e:
+    except (InvalidPasswordError, BackendSetupError) as e:
         return [
             Diagnostic(
                 level="error",
@@ -1880,9 +1880,40 @@ def _probe_u64_services(
     out.extend(_probe_reu_status(name, cfg, api))
     out.extend(_probe_sid_status(name, cfg, api))
     out.extend(_probe_sampler_status(name, cfg, api))
+    out.extend(_probe_master_volume(name, cfg, api))
     out.extend(_probe_dac_calibration_status(name, cfg, api))
     out.extend(_probe_sid_autoconfig_status(name, cfg, api))
+    out.extend(_probe_menu_open(name, api))
     return out
+
+
+def _probe_menu_open(name: str, api: object) -> list[Diagnostic]:
+    """Warn when the Ultimate menu is open on the machine. It takes the
+    keyboard, and it either freezes the machine and replaces the picture
+    (Interface Type "Freeze") or covers part of it ("Overlay on HDMI"). A run's
+    bring-up reset closes a Freeze menu but not an overlay one. Quiet when the
+    menu is closed or the firmware cannot say (no ``menu_screen`` route, which
+    refine_capabilities has already logged). Never presses the menu button:
+    doctor does not change machine state. The decoded screen goes to the
+    DEBUG log, for a bug report."""
+    profile = getattr(api, "profile", None)
+    if profile is None or not profile.supports_menu_screen:
+        return []
+    screen = api.read_menu_screen()  # type: ignore[attr-defined]
+    if screen is None:
+        return []
+    log.debug("the Ultimate menu shows:\n%s", screen.text())
+    return [
+        Diagnostic(
+            level="warn",
+            category="connectivity",
+            subject=f"{name} (menu)",
+            message="the Ultimate menu is open on the machine",
+            hint="While it is open it takes the keyboard and hides all or part "
+            "of what c64cast draws. Close it with RUN/STOP or the menu button. "
+            "Run with -v to log what it shows.",
+        )
+    ]
 
 
 def _device_identity_diagnostic(name: str, api: object) -> Diagnostic:
@@ -1927,22 +1958,6 @@ _SID_LEFT_FIELD = emusid_mixer.ITEM_ENABLE["emusid1"]
 _SID_RIGHT_FIELD = emusid_mixer.ITEM_ENABLE["emusid2"]
 
 
-def _wants_sid_audio(cfg: Config) -> tuple[bool, list[str]]:
-    """Return (wants_sid, reasons). Any of these means c64cast will try to
-    produce sound through the C64 SID ($D4xx): global audio streaming (the
-    4-bit DAC / video audio), or any waveform/midi scene (which DMA a
-    SID player and drive the chip even when [audio].enabled is false)."""
-    reasons: list[str] = []
-    if cfg.audio.enabled:
-        reasons.append("[audio].enabled = true")
-    types = {s.type for s in cfg.scenes}
-    if "waveform" in types:
-        reasons.append("waveform (SID oscilloscope) scene(s)")
-    if "midi" in types:
-        reasons.append("midi scene(s)")
-    return bool(reasons), reasons
-
-
 def _wants_rest_runner(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants, reasons). True when the config has a scene that STARTS
     via the Ultimate's REST `run_prg`/`run_crt` endpoint — SID playback
@@ -1985,7 +2000,7 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
     A warn (not error) because a physical SID chip can still produce sound
     with the emulated SIDs off.
     """
-    wants, reasons = _wants_sid_audio(cfg)
+    wants, reasons = hw_provision.wants_audio(cfg)
     if not wants:
         return []
     if not getattr(getattr(api, "profile", None), "supports_emusid_mixer", False):
@@ -2047,7 +2062,7 @@ def _probe_sid_status(name: str, cfg: Config, api: object) -> list[Diagnostic]:
             hint=(
                 "On the Ultimate: F2 Menu -> Audio Output Settings -> "
                 "SID Left -> Enabled (keep 'SID Left Base = Snoop $D400', "
-                "Vol EmuSid1 above OFF). A U64's internal SID is on by default; "
+                "Vol EmuSid1 and, on firmware 3.15+, Vol Master above OFF). A U64's internal SID is on by default; "
                 "a U2+ ships its emulated SID disabled. A working physical SID "
                 "chip can sound without this."
             ),
@@ -2248,8 +2263,9 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
                 message="REST query for the Ultimate Audio sampler state failed.",
                 hint=f"Config will use the sampler ({reason_str}). If video audio is "
                 "silent, check F2 -> C64 and Cartridge Settings -> Map Ultimate "
-                "Audio $DF20-DFFF, and Vol Sampler L/R under F2 -> Audio Mixer "
-                "(U64) / Audio Output Settings (U2+).",
+                "Audio $DF20-DFFF, and Vol Sampler L/R (plus Vol Master on "
+                "firmware 3.15+) under F2 -> Audio Mixer (U64) / Audio Output "
+                "Settings (U2+).",
             )
         ]
     if not state.present:
@@ -2275,7 +2291,7 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
             )
         ]
 
-    audible = any(v != hw_provision.SAMPLER_VOL_OFF for v in state.volumes.values())
+    audible = hw_provision.sampler_audible(state)
     if state.map_enabled and audible:
         return [
             Diagnostic(
@@ -2289,8 +2305,10 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
     off_bits = []
     if not state.map_enabled:
         off_bits.append("$DF20 I/O map disabled")
-    if not audible:
+    if not any(v != hw_provision.SAMPLER_VOL_OFF for v in state.volumes.values()):
         off_bits.append("Sampler mixer channels OFF")
+    if hw_provision.master_mutes(state.master):
+        off_bits.append(f"{hw_provision.MASTER_VOL_FIELD} OFF")
     return [
         Diagnostic(
             level="ok",
@@ -2299,6 +2317,60 @@ def _probe_sampler_status(name: str, cfg: Config, api: object) -> list[Diagnosti
             message=f"{' + '.join(off_bits)}; will be enabled live for this run ({reason_str}).",
             hint="Auto-enable is volatile (reverts on power-cycle) and restored at "
             "teardown. Set [audio].backend = 'dac' to use the 4-bit DAC instead.",
+        )
+    ]
+
+
+def _probe_master_volume(name: str, cfg: Config, api: object) -> list[Diagnostic]:
+    """Report the Ultimate's ``Vol Master`` (firmware 3.15+) when the run
+    wants audio. The firmware multiplies it into every source, so at OFF the
+    machine is silent whatever the per-source levels say. Returns an empty
+    list when audio isn't wanted, on a backend without the config API, or
+    where the firmware has no master item (before 3.15, C64 Ultimate 1.1.0).
+    Emits:
+      * ok   — master above OFF, or OFF and the run will raise it live
+      * warn — no candidate mixer category could be read
+    """
+    wants, reasons = hw_provision.wants_audio(cfg)
+    if not wants or not getattr(getattr(api, "profile", None), "supports_config", False):
+        return []
+    master = hw_provision.read_master_volume(api)
+    subject = f"{name} (master volume)"
+    reason_str = ", ".join(reasons)
+    if master.category is None:
+        if not master.read_failed:
+            return []
+        return [
+            Diagnostic(
+                level="warn",
+                category="connectivity",
+                subject=subject,
+                message=f"REST query for {hw_provision.MASTER_VOL_FIELD} failed.",
+                hint=f"Config wants audio ({reason_str}). If the run is silent, check "
+                f"{hw_provision.MASTER_VOL_FIELD} under F2 -> Audio Mixer (U64) / "
+                "Audio Output Settings (U2+) on firmware 3.15+.",
+            )
+        ]
+    if hw_provision.master_mutes(master.level):
+        return [
+            Diagnostic(
+                level="ok",
+                category="connectivity",
+                subject=subject,
+                message=f"{hw_provision.MASTER_VOL_FIELD} is OFF, which silences every "
+                f"source; it will be raised to 0 dB live for this run ({reason_str}).",
+                hint="Volatile (reverts on power-cycle) and restored at teardown. "
+                f"It lives under F2 -> {master.category} -> "
+                f"{hw_provision.MASTER_VOL_FIELD}.",
+            )
+        ]
+    return [
+        Diagnostic(
+            level="ok",
+            category="connectivity",
+            subject=subject,
+            message=f"{hw_provision.MASTER_VOL_FIELD} at {(master.level or '').strip()}; "
+            "every source level is relative to it.",
         )
     ]
 

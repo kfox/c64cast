@@ -202,6 +202,27 @@ class ApplyVolumeTest(unittest.TestCase):
         self.assertEqual(sv.apply_volume(api, (None, None), None), {})
         self.assertEqual(api.config_puts, [])
 
+    def test_master_off_warns_and_is_never_written(self):
+        # Vol Master (firmware 3.15+) is hw_provision's to raise; apply_volume
+        # only says that a muted master silences what it sets.
+        api = _ultimate_fake(mixer={**CORES_OFF, "Vol Master": "OFF"})
+
+        with self.assertLogs("c64cast.sid.sid_volume", level="WARNING") as cm:
+            sv.apply_volume(api, ("ultisid1",), None)
+
+        self.assertIn("Vol Master is OFF", cm.output[0])
+        self.assertEqual(api.config_store[CAT]["Vol Master"], "OFF")
+        self.assertNotIn("Vol Master", {item for _cat, item, _v in api.config_puts})
+
+    def test_master_up_or_absent_does_not_warn(self):
+        for mixer in (CORES_OFF, {**CORES_OFF, "Vol Master": "-12 dB"}):
+            api = _ultimate_fake(mixer=mixer)
+            with (
+                self.subTest(master=mixer.get("Vol Master")),
+                self.assertNoLogs("c64cast.sid.sid_volume", level="WARNING"),
+            ):
+                sv.apply_volume(api, ("ultisid1",), None)
+
     def test_mixer_read_failure_is_survivable(self):
         api = _ultimate_fake()
 

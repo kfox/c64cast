@@ -72,6 +72,9 @@ class SystemStack:
     # hw_provision.provision_sampler: composite-keyed "category\x1ffield" ->
     # original, restored at teardown, None when nothing changed.
     sampler_restore: dict[str, str] | None = None
+    # hw_provision.provision_master_volume: the same composite-keyed shape,
+    # holding Vol Master's OFF when this run raised it.
+    master_volume_restore: dict[str, str] | None = None
     # hw_provision.provision_video_output (System Mode and/or HDMI Scan
     # Resolution): field name -> the original label to restore at teardown, None
     # when nothing changed. Volatile, so a missed restore clears on power-cycle.

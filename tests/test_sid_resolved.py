@@ -80,6 +80,22 @@ class DescribeResolvedAudioTest(unittest.TestCase):
         self.assertFalse(resolved.clean)
         self.assertIn("INAUDIBLE", resolved.summary)
 
+    def test_master_off_flags_an_unmuted_source_inaudible(self):
+        mixer = {"Vol Socket 1": " 0 dB", "Vol UltiSid 1": " 0 dB", "Vol Master": "OFF"}
+        resolved = sr.describe_resolved_audio(
+            _state(addr_map={0xD400: "socket1", 0xD500: "ultisid1"}, mixer=mixer),
+            (0xD400,),
+            ("6581",),
+        )
+        self.assertFalse(resolved.clean)
+        self.assertIn("INAUDIBLE (Vol Master OFF)", resolved.summary)
+        self.assertNotIn("also audible", resolved.summary)
+
+    def test_master_above_off_leaves_a_source_audible(self):
+        mixer = {"Vol Socket 1": " 0 dB", "Vol Master": "-6 dB"}
+        resolved = sr.describe_resolved_audio(_state(mixer=mixer), (0xD400,), ("6581",))
+        self.assertTrue(resolved.clean)
+
     def test_unmapped_address_is_flagged(self):
         resolved = sr.describe_resolved_audio(_state(addr_map={}), (0xD400,), ("6581",))
         self.assertFalse(resolved.clean)

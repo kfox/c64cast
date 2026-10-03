@@ -36,6 +36,14 @@ left over from something else will all produce exactly this symptom, and a
 restart clears every one of them in one go. It is a dull suggestion and it
 works more often than it has any right to.
 
+**Nothing changes on screen, or only the left part does, and the keyboard
+does nothing.** The Ultimate's own menu is open. It takes the keyboard. With
+User Interface Settings → Interface Type at "Freeze", the default, it also
+stops the C64 and fills the screen. At "Overlay on HDMI" it covers the right
+part of the picture. Press RUN/STOP or the menu button to close it. On
+firmware 3.15 or newer, `--doctor` reports an open menu, and so does the start
+of a run if the menu survives the startup reset, which an overlay menu does.
+
 **Pixels appear, but SID tunes and native programs do not start.** The Web
 Remote Control Service is off. Painting the screen and starting a program
 are different operations, and only the first goes over the fast path.
@@ -104,7 +112,12 @@ writes, but **Writes** remains the tested setting.
 
 **No audio at all.** Check that `[audio] enabled` is true and that you did
 not pass `--no-audio`. For microphone input, check that the `mic` feature is
-installed and that `-D` names the right device.
+installed and that `-D` names the right device. On Ultimate firmware 3.15 or
+newer, also check **Vol Master** under F2 → Audio Mixer (Audio Output Settings
+on an Ultimate II+): it scales every source at once. c64cast raises it from
+OFF for the run and puts it back afterward, but `--skip-probe` turns that off,
+and a master turned far down is left as it is. `c64cast --doctor` shows its
+level.
 
 **SID tunes play too fast.** Most tunes were written for PAL machines, which
 run at about 50 frames a second, but the interrupt the player uses ticks at 60
