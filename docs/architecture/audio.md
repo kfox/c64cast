@@ -583,6 +583,8 @@ Everything the DAC path uploads to C64 RAM, split out of `audio.py` (2026-08) so
 
 Where the caller patches a per-scene chunk size into each REU handler variant is stated here too, beside the assembly that defines it (`REU_IRQ_HANDLER_CHUNK_OFFSETS` and its tracked/governor siblings, applied by `patch_chunk_size`), because a wrong offset writes a length into some other instruction's operand and DMAs from or to a garbage address. Those were literals at the call site in `audio.py`, where they could not follow a re-assembly here — and the in-caller note about the byte layout had already gone 16 bytes stale. A module-level assert checks every offset still holds a chunk-size byte, which catches the same-length re-arrangement the length asserts cannot see.
 
+**REU pump margin on firmware 3.15a.** The 3.15 bitfile starts an REU transfer without its initial delay on U64/U64E2 (`59594060`), which is the pump's timing, so `scripts/diags/reu_margin_probe.py` was re-run on a U64-II with firmware 3.15a (FPGA `125`, core `1.50`) on 2026-10-03, 30 s per run against petscii and mhires video. The governed plain path (`REU_IRQ_HANDLER_GOVERNOR`, `--w reg`) held the W−R phase at a median of 3958–3967 B, with a minimum of 2988–3049 B, and logged no near-lap events in three runs. The tracked path that bitmap REU-staged video selects (`REU_IRQ_HANDLER_TRACKED`, `--w tracker`) has no governor. In three runs it drifted +546 to +711 B/s and lapped the reader every 11.5–15 s, logging 43–75 near-lap samples per run, which is the echo the governor exists to prevent.
+
 Everything in the module is pure data or a pure function — no hardware access, no state — which is what keeps the handler byte layouts and the control math unit-testable without a C64 (`tests/test_audio.py`, `tests/test_reu_audio.py`, `tests/test_reu_mic.py`). Byte-level layout commentary lives with each array in the module itself; the ring-placement (`$4000`) rationale is under "Why the ring lives at `$4000`" above, and why-not-PWM under "`audio.py` — AudioStreamer". The sections above describe how `AudioStreamer` *uses* these pieces; nothing above changed in the split. `modes_irq.py` imports `REU_PUMP_BODY_SUBROUTINE_ADDR` from here rather than from `audio.py`, so the display-mode layer no longer has an import edge into the streamer.
 
 ## `sampler.py` — UltimateAudioSampler (U64 "Ultimate Audio" FPGA PCM)
@@ -653,6 +655,8 @@ Results on a U64-II:
 * Nominal-driven run: ratio 0.9852 → 1.48 % slow → 6.157 MHz, r²≈0.9999 over 36 markers.
 * Confirmation runs driven at the candidate converged to ≈6.16 MHz.
 * A run at 6,160,000 showed residual drift of only **−1.3 ms per 5 s** — 17× better than nominal. Verdict `ALIGNED`.
+
+Re-confirmed on firmware 3.15a (FPGA `125`, core `1.50`, U64-II, 2026-10-03), whose bitfile reworked Ultimate Audio's USB tag handling. Three nominal-driven runs measured 6,161,296 – 6,164,366 Hz, and two runs driven at 6,160,000 left a residual of −1.45 and −1.21 ms per 5 s, both `ALIGNED`. The July captures, re-analyzed with the same tool, give 6,157,487 – 6,162,069 Hz from their full-length runs and −1.33 ms at 6,160,000. The shipped value holds on 3.15a, so it did not move.
 
 Re-measure and bump `SAMPLER_REF_CLOCK_DEFAULT` after any firmware release that changes sampler timing; the diag prints the new value. Hardware or firmware that clocks the sampler correctly can set `[audio].sampler_clock_hz` back to 6.25 MHz.
 

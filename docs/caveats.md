@@ -933,6 +933,18 @@ bank-2 region, and the host can only avoid it by lowering the write rate. A
 C64 powering itself off from legal memory writes is a U64 firmware/FPGA
 fault, not something the host causes through valid DMA.
 
+**Firmware 3.15a does not fix it.** Its release notes list DMA and badline
+timing fixes, so the repro was run again on 2026-10-03 on a U64-II with
+firmware 3.15a (FPGA `125`, core `1.50`). Times_of_Lore song 1 ran at 60 fps
+with its display on bank 2, at ≈170-176 writes/s. The machine powered off
+≈67 s in, stopped answering ping and REST, and stayed off until it was
+power-cycled by hand.
+
+Since then the waveform scene picks one display bank for all of a tune's
+subtunes, so Times_of_Lore now lands on bank 1 (`$6000`). On that bank the
+same tune at 60 fps, ≈155 writes/s, played its full 7:40 on 3.15a. Other
+tunes still land on bank 2: Galway's `Rastan` is one.
+
 Mitigation (shipped): `WaveformScene.target_fps` defaults to **half** the
 system video rate (**30 NTSC / 25 PAL**) instead of the full rate. An
 oscilloscope reads fine at half-rate, a half-integer divisor keeps the

@@ -222,7 +222,8 @@ ULTIMATE_PROFILE = HardwareProfile(
     max_fps=None,  # no extra cap beyond the system rate
     max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
     # HW-measured 2026-08-12, scripts/diags/link_cost_model.py: flat at 5.22 ms
-    # from 8 B to ~2.4 KB, then 1.85 us/byte — write-count-bound.
+    # from 8 B to ~2.4 KB, then 1.85 us/byte — write-count-bound. Re-confirmed
+    # on firmware 3.15a / FPGA 125 (2026-10-03, five runs); see hardware-io.md.
     write_cost_floor_s=5.222e-3,
     write_cost_intercept_s=0.784e-3,
     write_cost_per_byte_s=1.8454e-6,

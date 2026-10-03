@@ -224,7 +224,9 @@ So the real figure is measured once and shipped as the default,
 `[audio].sampler_clock_hz = 6160000`. It is a property of the firmware's clock
 derivation rather than of an individual unit, so every U64 on the same firmware
 wants the same value, and at that setting a five-second interval drifts by
-1.3 ms. Hardware that clocks the sampler correctly can set 6250000.
+1.3 ms. Ultimate 64 firmware 3.15a (FPGA 125, core 1.50) re-measured at the
+same value, with a drift of 1.2 to 1.5 ms per five seconds. Hardware that
+clocks the sampler correctly can set 6250000.
 
 ### The Bitmap-and-DAC Time Stretch
 
