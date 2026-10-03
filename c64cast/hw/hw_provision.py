@@ -492,14 +492,14 @@ def _restore_composite(api: object, restore: dict[str, str] | None, what: str) -
             log.info("%s: restored %s = %s", what, fieldname, value)
 
 
-_SID_DRIVING_SCENE_TYPES = ("waveform", "midi", "asid")
+_SID_DRIVING_SCENE_TYPES = ("waveform", "midi", "asid", "launcher")
 
 
 def wants_audio(cfg: Config) -> tuple[bool, list[str]]:
     """Return (wants_audio, reasons): whether the run will try to make the
-    machine produce sound at all — [audio].enabled (video audio, the DAC, a
-    launched program), or a scene that drives the SID even with audio
-    disabled. `provision_master_volume` and doctor's SID and master-volume
+    machine produce sound at all — [audio].enabled (video audio, the DAC),
+    or a scene that drives the SID even with audio disabled (a SID player, an
+    ASID stream, a launched program). `provision_master_volume` and doctor's SID and master-volume
     probes share it."""
     reasons: list[str] = []
     if cfg.audio.enabled:

@@ -778,7 +778,7 @@ class WantsAudioTest(unittest.TestCase):
         self.assertIn("[audio].enabled = true", reasons)
 
     def test_sid_scene_wants_it_with_audio_disabled(self):
-        for stype in ("waveform", "midi", "asid"):
+        for stype in ("waveform", "midi", "asid", "launcher"):
             cfg = cfgmod.Config()
             cfg.audio.enabled = False
             cfg.scenes = [cfgmod.SceneCfg(type=stype)]
