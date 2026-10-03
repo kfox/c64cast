@@ -519,7 +519,7 @@ Every name c64cast answers to — 458 of them — and the pages that discuss eac
 | `--suggest-palette` | [`color` (A)](20-appendix-a-configuration.md#color), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
 | `swipe_velocity` | [`vision` (A)](20-appendix-a-configuration.md#vision) |
 | `--system` | [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Connection (G)](26-appendix-g-cli-flags.md#connection), [Introspection (G)](26-appendix-g-cli-flags.md#introspection) |
-| `system` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [`--doctor` (1)](02-config-rules.md#--doctor) |
+| `system` | [NTSC or PAL (1)](02-config-rules.md#ntsc-or-pal), [Writing It With `--save-settings` (1)](02-config-rules.md#writing-it-with---save-settings), [Tempo, Pitch, and the Machine's Standard (4)](05-sound-and-music.md#tempo-pitch-and-the-machines-standard) |
 
 ## T
 
