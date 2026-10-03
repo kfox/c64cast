@@ -30,7 +30,7 @@ import numpy as np
 from c64cast._teardown import run_teardown_steps
 from c64cast.app import paths
 from c64cast.hw.c64 import CIA2, SCREEN
-from c64cast.hw.hw_provision import MASTER_VOL_FIELD
+from c64cast.hw.hw_provision import MASTER_VOL_FIELD, master_volume
 from c64cast.sid.asid_sidmap import (
     ADDR_UNMAPPED,
     CAT_ADDRESSING,
@@ -45,8 +45,8 @@ from c64cast.sid.asid_sidmap import (
     ITEM_ULTISID1_ADDR,
     ITEM_ULTISID2_ADDR,
 )
-from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets
-from c64cast.sid.sid_panning import CAT_MIXER
+from c64cast.sid.sid_hw_config import SidHwSession, detect_sockets, restore_sid_config
+from c64cast.sid.sid_panning import CAT_MIXER, mixer_category_for
 from c64cast.sid.sid_volume import VOL_ITEM, VOL_OFF, VOL_UNITY
 
 from .audio_handlers import (
@@ -273,8 +273,7 @@ def _save_unusable_capture(
 
 
 def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
-    """The Audio Mixer's per-SID-source levels, plus ``Vol Master`` where the
-    firmware has one (3.15+), in ``restore_sid_config`` form.
+    """The Audio Mixer's per-SID-source levels, in ``restore_sid_config`` form.
 
     A sibling of ``snapshot_sid_config`` rather than part of it: that snapshot
     is the address/socket set multi-SID *planning* round-trips, and widening it
@@ -284,8 +283,34 @@ def _snapshot_mixer(be: C64Backend) -> dict[tuple[str, str], str]:
     except Exception:  # noqa: BLE001 — best-effort; no mixer to restore
         log.debug("calib: mixer read failed", exc_info=True)
         return {}
-    items = (*VOL_ITEM.values(), MASTER_VOL_FIELD)
-    return {(CAT_MIXER, item): mixer[item] for item in items if item in mixer}
+    return {(CAT_MIXER, item): mixer[item] for item in VOL_ITEM.values() if item in mixer}
+
+
+def _raise_master(be: C64Backend) -> dict[tuple[str, str], str]:
+    """Force firmware 3.15's ``Vol Master`` to unity for the whole run, and
+    return its original in ``restore_sid_config`` form (empty when nothing
+    was written).
+
+    The firmware multiplies the master into every source, so at ``OFF`` any
+    capture is the noise floor. This sits at run level rather than in
+    :func:`_isolate_mixer` because the single-SID path (a bare-UltiSID U64, a
+    U2+) never isolates a source. The master lives in the backend's own mixer
+    category (``Audio Mixer`` on a U64, ``Audio Output Settings`` on a U2+);
+    firmware without the item (before 3.15, C64 Ultimate 1.1.0) is unity and
+    gets no write. A failed PUT raises, like :func:`_isolate_mixer`'s."""
+    category = mixer_category_for(be)
+    if category is None:
+        return {}
+    try:
+        mixer = be.get_config_category(category)
+    except Exception:  # noqa: BLE001 — best-effort; no master to raise
+        log.debug("calib: mixer read for %s failed", MASTER_VOL_FIELD, exc_info=True)
+        return {}
+    level = master_volume(mixer)
+    if level is None or level == VOL_UNITY:
+        return {}
+    be.put_config_item(category, MASTER_VOL_FIELD, VOL_UNITY)
+    return {(category, MASTER_VOL_FIELD): level}
 
 
 def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> None:
@@ -297,10 +322,7 @@ def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> Non
     chips ships its UltiSID cores at ``OFF``. Measuring through a muted source
     captures the noise floor, which reads as a bring-up or wiring failure rather
     than the routing one it is. Forcing unity rather than preserving a
-    deliberate trim is what keeps two sources' ladders comparable. The same
-    goes for firmware 3.15's ``Vol Master``, which scales every source: at OFF
-    it mutes the capture, so where `present` carries it, it is forced to unity
-    too.
+    deliberate trim is what keeps two sources' ladders comparable.
 
     `present` is the set of level items this firmware's mixer actually carries
     (from the pre-loop :func:`_snapshot_mixer` read): ``VOL_ITEM`` spans both
@@ -313,8 +335,6 @@ def _isolate_mixer(be: C64Backend, source: str, present: Collection[str]) -> Non
         if item not in present:
             continue
         be.put_config_item(CAT_MIXER, item, VOL_UNITY if name == source else VOL_OFF)
-    if MASTER_VOL_FIELD in present:
-        be.put_config_item(CAT_MIXER, MASTER_VOL_FIELD, VOL_UNITY)
 
 
 def _isolate_socket(be: C64Backend, socket: int) -> None:
@@ -664,7 +684,9 @@ def run_calibration(
     supports_sid_config = bool(getattr(be.profile, "supports_sid_config", False))
     device_info = _device_provenance(cfg, be, log_fn)
     normal_d400: int | None = None
+    master_restore: dict[tuple[str, str], str] = {}
     try:
+        master_restore = _raise_master(be)
         st = _bring_up_dac_env(be, cfg, log_fn)
         _paint_status_line(be, _TITLE_ROW, _TITLE_TEXT)
         dev, fmt = _open_capture(device, log_fn)
@@ -685,7 +707,10 @@ def run_calibration(
             sidtable, metrics, raw = _measure_one(ctx, "SID")
             entries = {"default": CalibrationResult(sidtable, metrics, None, raw)}
     finally:
-        _silence_and_reset(be)
+        try:
+            _silence_and_reset(be)
+        finally:
+            restore_sid_config(be, master_restore)
 
     path = save_calibration(
         cfg,
