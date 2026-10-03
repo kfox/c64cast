@@ -129,14 +129,16 @@ def widen_io_timeout(be, secs: float) -> None:
     The default is 2 s, sized for the app, which never queues more than a
     frame. This tool deliberately queues whole bursts: 320 writes at ~5 ms is
     1.7 s of drain that the trailing IDENTIFY must wait out, so the barrier
-    times out on its way to a perfectly good answer. Closing after the
-    assignment forces the next send to reconnect and apply it.
+    times out on its way to a perfectly good answer. The open socket keeps
+    the timeout it was dialed with, so redial to apply the new one: ``close()``
+    alone leaves the client refusing every later send until ``connect()``.
     """
     client = getattr(be, "socket_dma", None)
     if client is None:
         return
     client.io_timeout = secs
     client.close()
+    client.connect()
 
 
 def fit_piecewise(xs: list[float], ys: list[float]) -> tuple[float, float, float, float, float]:
