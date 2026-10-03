@@ -1838,8 +1838,8 @@ class LauncherScene(MediaFileMixin, Scene):
         self._injected.put((time.monotonic(), event))
 
     def _send_loop(self, stop: threading.Event) -> None:
-        """Post queued injections, each burst as one request. Stops for good
-        once the machine has refused the input API."""
+        """Post queued injections in the requests `_next_batch` groups them
+        into. Stops for good once the machine has refused the input API."""
         while not stop.is_set():
             if not self.api.profile.supports_rest_input:
                 return

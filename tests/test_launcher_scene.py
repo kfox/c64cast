@@ -292,7 +292,7 @@ class JoystickSenderTest(unittest.TestCase):
                 [[_joy(2, "press", "up")], [_joy(2, "release", "up")]],
             )
 
-    def test_a_stale_backlog_collapses_to_a_change_and_a_change_back(self):
+    def test_a_stale_backlog_collapses_to_at_most_three_changes_per_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, _ = self._scene(tmp)
             scene._held.add((2, "fire"))
