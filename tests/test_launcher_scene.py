@@ -255,7 +255,7 @@ class JoystickSenderTest(unittest.TestCase):
                 [[_joy(2, "press", "up")], [_joy(2, "release", "up")]],
             )
 
-    def test_a_stale_backlog_collapses_to_each_inputs_latest_transition(self):
+    def test_a_stale_backlog_collapses_to_a_change_and_a_change_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, _ = self._scene(tmp)
             scene._held.add((2, "fire"))
@@ -275,9 +275,41 @@ class JoystickSenderTest(unittest.TestCase):
                 scene._injected.put((queued_at, event))
             self.assertEqual(
                 self._drain(scene),
-                [[_joy(2, "release", "fire"), _joy(2, "press", "up")]],
+                [
+                    [_joy(2, "press", "up"), _joy(2, "release", "fire"), _joy(2, "press", "left")],
+                    [_joy(2, "release", "left")],
+                ],
             )
             self.assertEqual(scene._held, {(2, "up")})
+
+    def test_a_tap_in_a_stale_backlog_still_reaches_the_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            for event in (_joy(2, "press", "fire"), _joy(2, "release", "fire")):
+                scene._injected.put((queued_at, event))
+            self.assertEqual(
+                self._drain(scene),
+                [[_joy(2, "press", "fire")], [_joy(2, "release", "fire")]],
+            )
+
+    def test_a_collapsed_backlog_keeps_the_order_it_was_queued_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            for event in (
+                _joy(2, "press", "left"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "left"),
+            ):
+                scene._injected.put((queued_at, event))
+            self.assertEqual(
+                self._drain(scene),
+                [
+                    [_joy(2, "press", "left"), _joy(2, "press", "fire")],
+                    [_joy(2, "release", "left")],
+                ],
+            )
 
     def test_a_collapse_starts_from_the_carried_event_and_uses_it_up(self):
         with tempfile.TemporaryDirectory() as tmp:
