@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from c64cast.app.config import Config, clip_scene_cfg, scene_color
+from c64cast.app.config import Config, scene_and_clip_cfgs, scene_color
 from c64cast.hw import uci
 
 if TYPE_CHECKING:
@@ -83,6 +83,9 @@ class HardwarePalette:
             if not self._machine_shows(table):
                 self._on_machine = None
                 if not self._push(table):
+                    # The machine may still show an earlier scene's table, since
+                    # a scene's teardown leaves it there.
+                    self._put_machine_back()
                     self._give_up(f"{scene}: the palette push failed")
                     return False
                 self._on_machine = table.copy()
@@ -105,12 +108,7 @@ class HardwarePalette:
         quantizer."""
         with self._lock:
             self._reset_host()
-            if not self._enabled or self._machine_shows(self._machine):
-                return
-            self._on_machine = None
-            if self._push(self._machine):
-                self._on_machine = self._machine.copy()
-            else:
+            if self._enabled and not self._put_machine_back():
                 self._give_up("putting the machine's own palette back failed")
 
     def after_reset(self) -> None:
@@ -139,8 +137,7 @@ class HardwarePalette:
             self._reset_host()
             if self._machine_shows(self._machine):
                 return
-            if self._push(self._machine):
-                self._on_machine = self._machine.copy()
+            if self._put_machine_back():
                 log.info("hardware_palette: restored the Ultimate's own palette")
             else:
                 log.warning(
@@ -150,6 +147,17 @@ class HardwarePalette:
 
     def _machine_shows(self, table: np.ndarray) -> bool:
         return self._on_machine is not None and np.array_equal(table, self._on_machine)
+
+    def _put_machine_back(self) -> bool:
+        """Push the machine's own palette unless it is known to be showing.
+        False when the push failed, leaving what the machine shows unknown."""
+        if self._machine_shows(self._machine):
+            return True
+        self._on_machine = None
+        if not self._push(self._machine):
+            return False
+        self._on_machine = self._machine.copy()
+        return True
 
     def _reset_host(self) -> None:
         if self._shown is not None:
@@ -193,14 +201,8 @@ def wanting_scene_types(cfg: Config) -> list[str]:
     an info line."""
     from c64cast.video.palette import HARDWARE_PALETTE_SCENE_TYPES
 
-    candidates = list(cfg.scenes)
-    for clip in cfg.performance.clips:
-        try:
-            candidates.append(clip_scene_cfg(clip))
-        except ValueError:
-            continue
     out = []
-    for s in candidates:
+    for _, s in scene_and_clip_cfgs(cfg):
         try:
             wants = scene_color(cfg, s).hardware_palette == "source"
         except ValueError:

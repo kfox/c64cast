@@ -107,7 +107,7 @@ from .config import (
     MidiControlCfg,
     SceneCfg,
     _is_valid_param_holder,
-    clip_scene_cfg,
+    scene_and_clip_cfgs,
     scene_color,
 )
 from .orchestrator import resolve_orchestrator
@@ -1427,22 +1427,11 @@ def effective_colors(cfg: Config) -> list[tuple[str, ColorCfg]]:
     session/doctor callers that only catch `ConfigError` around these guards
     don't see an unhandled exception."""
     out: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
-    for i, s in enumerate(cfg.scenes):
+    for owner, s in scene_and_clip_cfgs(cfg):
         if s.color:
-            label = f"[[scenes]][{i}].color"
+            label = f"{owner}.color"
             try:
                 out.append((label, scene_color(cfg, s)))
-            except ValueError as e:
-                raise ConfigError(f"{label}: {e}") from e
-    for i, clip in enumerate(cfg.performance.clips):
-        try:
-            clip_scene = clip_scene_cfg(clip)
-        except ValueError:
-            continue
-        if clip_scene.color:
-            label = f"[[performance.clips]][{i}].color"
-            try:
-                out.append((label, scene_color(cfg, clip_scene)))
             except ValueError as e:
                 raise ConfigError(f"{label}: {e}") from e
     return out

@@ -683,7 +683,7 @@
         },
         "hardware_palette": {
           "type": "string",
-          "description": "Re-choose the machine's own 16 colors for each scene. 'source' fits 11 of them to the scene's content (the black, white and three grays stay the machine's) and pushes them to the Ultimate before the scene paints; quantization, dither and fades then aim at exactly those colors, and the machine's palette is put back when the scene ends. Video and slideshow scenes only, since they can see their content first. Needs an Ultimate 64 on firmware 3.15 or newer; elsewhere it is skipped with a warning. Cannot be combined with force_palette or flicker_tolerance.",
+          "description": "Re-choose the machine's own 16 colors for each scene. 'source' fits 11 of them to the scene's content (the black, white and three grays stay the machine's) and pushes them to the Ultimate before the scene paints; quantization, dither and fades then aim at exactly those colors, and the machine's palette is put back before the next scene that does not use it, and at exit. Video and slideshow scenes only, since they can see their content first. Needs an Ultimate 64 on firmware 3.15 or newer; elsewhere it is skipped with a warning. Cannot be combined with force_palette or flicker_tolerance.",
           "enum": [
             "off",
             "source"
@@ -2385,7 +2385,7 @@
               },
               "hardware_palette": {
                 "type": "string",
-                "description": "Re-choose the machine's own 16 colors for each scene. 'source' fits 11 of them to the scene's content (the black, white and three grays stay the machine's) and pushes them to the Ultimate before the scene paints; quantization, dither and fades then aim at exactly those colors, and the machine's palette is put back when the scene ends. Video and slideshow scenes only, since they can see their content first. Needs an Ultimate 64 on firmware 3.15 or newer; elsewhere it is skipped with a warning. Cannot be combined with force_palette or flicker_tolerance.",
+                "description": "Re-choose the machine's own 16 colors for each scene. 'source' fits 11 of them to the scene's content (the black, white and three grays stay the machine's) and pushes them to the Ultimate before the scene paints; quantization, dither and fades then aim at exactly those colors, and the machine's palette is put back before the next scene that does not use it, and at exit. Video and slideshow scenes only, since they can see their content first. Needs an Ultimate 64 on firmware 3.15 or newer; elsewhere it is skipped with a warning. Cannot be combined with force_palette or flicker_tolerance.",
                 "enum": [
                   "off",
                   "source"

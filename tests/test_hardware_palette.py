@@ -333,16 +333,34 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self.assertEqual(palette.active_host_palette_name(), "pepto")
         self.assertFalse(self.control.show(self.scene_table, "scene"))
         self.api.listeners[0]()
-        self.assertEqual(len(self.pushes), 2)
+        self.assertEqual(self.pushes, [_rgb(self.scene_table)] * 2 + [_rgb(MACHINE)])
+
+    def test_a_failed_push_puts_back_the_table_an_earlier_scene_left(self):
+        """A scene's teardown leaves its table on the machine, so a failed push
+        by the next scene would otherwise strand it there for the rest of the
+        run while the quantizer aims at the base palette."""
+        self._show()
+        self.control.release()
+        other = self.scene_table.copy()
+        other[2] = (10, 10, 200)
+        self.answers = [False, False]
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
+            self.assertFalse(self.control.show(other, "next"))
+        self.assertEqual(self.pushes[-1], _rgb(MACHINE))
+        self.control.show_machine()
+        self.control.restore()
+        self.assertEqual(len(self.pushes), 4)
 
     def test_restore_still_tries_after_a_failed_push(self):
         """The machine's answer to the failed push was lost, not necessarily
         the push itself."""
-        self.answers = [False, False]
+        # The scene's push and the put-back after it both fail.
+        self.answers = [False] * 4
         with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING"):
             self.control.show(self.scene_table, "scene")
         with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
             self.control.restore()
+        self.assertEqual(len(self.pushes), 5)
         self.assertEqual(self.pushes[-1], _rgb(MACHINE))
 
     def test_a_restore_that_fails_says_so(self):
@@ -503,7 +521,7 @@ class ConfigRefusalTest(unittest.TestCase):
     def test_a_clip_whose_spec_does_not_build_is_left_to_build_time(self):
         cfg = Config()
         cfg.performance.clips = [{"slot": 1, "type": "video", "no_such_key": 1}]
-        with mock.patch.object(scene_factory, "clip_scene_cfg", side_effect=ValueError("bad clip")):
+        with mock.patch.object(cfgmod, "clip_scene_cfg", side_effect=ValueError("bad clip")):
             self.assertEqual(
                 [label for label, _ in scene_factory.effective_colors(cfg)], ["[color]"]
             )
