@@ -1701,6 +1701,20 @@ class HardwarePaletteDiagnosticTest(unittest.TestCase):
         self.assertEqual(errors[0].subject, "system/[[performance.clips]][0].color")
         self.assertIn("force_palette_colors", errors[0].message)
 
+    def test_an_unresolvable_scene_override_is_left_to_validate_scenes(self):
+        diags = self._diags(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  force_palette_colors = ["black"]\n'
+        )
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error" and d.subject.endswith(".color")],
+            [],
+        )
+        self.assertIn(
+            ("scene", "system/video#0"),
+            [(d.category, d.subject) for d in diags if d.level == "error"],
+        )
+
 
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
