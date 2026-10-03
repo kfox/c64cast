@@ -364,6 +364,7 @@ class U64_API:
     RESET: Final = "/v1/machine:reset"
     RUN_PRG: Final = "/v1/runners:run_prg"
     RUN_CRT: Final = "/v1/runners:run_crt"
+    VERSION: Final = "/v1/version"
 
 
 # System clocks in Hz.
