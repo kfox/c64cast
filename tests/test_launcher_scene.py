@@ -178,8 +178,8 @@ class JoystickInjectionTest(unittest.TestCase):
             scene.inject_joystick(2, "fire", True)
             self.assertTrue(self.posted.wait(2.0))
             scene._sender.stop()
-            scene._injected.put(_joy(2, "press", "up"))
-            scene._carry = _joy(2, "release", "fire")
+            scene._enqueue(_joy(2, "press", "up"))
+            scene._carry = (time.monotonic(), _joy(2, "release", "fire"))
             api.send_input.reset_mock()
             scene.teardown()
             api.send_input.assert_called_once_with([machine_input.RELEASE_ALL])
@@ -217,7 +217,7 @@ class JoystickSenderTest(unittest.TestCase):
                 _joy(1, "press", "fire"),
                 _joy(2, "press", "fire"),
             ):
-                scene._injected.put(event)
+                scene._enqueue(event)
             self.assertEqual(
                 self._drain(scene),
                 [
@@ -238,11 +238,33 @@ class JoystickSenderTest(unittest.TestCase):
                 _joy(2, "release", "up"),
                 _joy(2, "release", "up"),
             ):
-                scene._injected.put(event)
+                scene._enqueue(event)
             self.assertEqual(
                 self._drain(scene),
                 [[_joy(2, "press", "up")], [_joy(2, "release", "up")]],
             )
+
+    def test_a_stale_backlog_collapses_to_each_inputs_latest_transition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            scene._held.add((2, "fire"))
+            queued_at = time.monotonic() - scenes._INJECT_MAX_LAG_S - 1.0
+            for event in (
+                _joy(2, "release", "fire"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+                _joy(2, "press", "fire"),
+                _joy(2, "release", "fire"),
+                _joy(2, "press", "up"),
+                _joy(2, "press", "left"),
+                _joy(2, "release", "left"),
+            ):
+                scene._injected.put((queued_at, event))
+            self.assertEqual(
+                self._drain(scene),
+                [[_joy(2, "release", "fire"), _joy(2, "press", "up")]],
+            )
+            self.assertEqual(scene._held, {(2, "up")})
 
     def test_failed_post_resends_the_held_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,7 +275,7 @@ class JoystickSenderTest(unittest.TestCase):
                 _joy(2, "press", "fire"),
                 _joy(2, "release", "fire"),
             ):
-                scene._injected.put(event)
+                scene._enqueue(event)
             api.send_input.return_value = None
             for batch in self._drain(scene):
                 scene._post(batch)
@@ -276,8 +298,8 @@ class JoystickSenderTest(unittest.TestCase):
                 return answer
 
             api.send_input.side_effect = send
-            scene._injected.put(_joy(2, "press", "up"))
-            scene._injected.put(_joy(2, "release", "up"))
+            scene._enqueue(_joy(2, "press", "up"))
+            scene._enqueue(_joy(2, "release", "up"))
             scene._sender.start()
             self.addCleanup(scene._sender.stop)
             self.assertTrue(done.wait(2.0))
@@ -304,8 +326,8 @@ class JoystickSenderTest(unittest.TestCase):
                 return {}
 
             api.send_input.side_effect = send
-            scene._injected.put(_joy(2, "press", "fire"))
-            scene._injected.put(_joy(2, "release", "fire"))
+            scene._enqueue(_joy(2, "press", "fire"))
+            scene._enqueue(_joy(2, "release", "fire"))
             scene._sender.start()
             self.addCleanup(scene._sender.stop)
             self.assertTrue(done.wait(2.0))
@@ -326,8 +348,8 @@ class JoystickSenderTest(unittest.TestCase):
                 return {} if len(posts) >= 3 else None
 
             api.send_input.side_effect = send
-            scene._injected.put(_joy(2, "press", "fire"))
-            scene._injected.put(_joy(2, "release", "fire"))
+            scene._enqueue(_joy(2, "press", "fire"))
+            scene._enqueue(_joy(2, "release", "fire"))
             scene._sender.start()
             self.addCleanup(scene._sender.stop)
             self.assertTrue(done.wait(3.0))
@@ -340,7 +362,7 @@ class JoystickSenderTest(unittest.TestCase):
             scene, api = self._scene(tmp)
             scene._held.add((2, "fire"))
             scene._pressed_at[(2, "fire")] = time.monotonic()
-            scene._injected.put(_joy(2, "release", "fire"))
+            scene._enqueue(_joy(2, "release", "fire"))
             stop = threading.Event()
             loop = threading.Thread(target=scene._send_loop, args=(stop,))
             with mock.patch.object(scenes, "_INJECT_MIN_HOLD_S", 30.0):
@@ -357,8 +379,8 @@ class JoystickSenderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = self._scene(tmp)
             stop = threading.Event()
-            scene._carry = _joy(2, "press", "up")
-            scene._injected.put(_joy(2, "press", "fire"))
+            scene._carry = (time.monotonic(), _joy(2, "press", "up"))
+            scene._enqueue(_joy(2, "press", "fire"))
             real_next_batch = scene._next_batch
 
             def next_batch_then_stop():

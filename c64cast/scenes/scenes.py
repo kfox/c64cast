@@ -1647,6 +1647,11 @@ _INJECT_RESYNC_RETRY_S = 0.25
 # The shortest time an injected press stays down: the firmware's own tap
 # hold, so a program that reads the port once a frame sees a quick pad hit.
 _INJECT_MIN_HOLD_S = 0.06
+# How long an injected event may wait for the sender before the backlog is
+# collapsed to each input's latest transition. The hold caps one input at about
+# fifteen taps a second, and past that the queue would otherwise grow for the
+# rest of the scene, with every other input waiting behind it.
+_INJECT_MAX_LAG_S = 0.25
 # How long teardown waits for the sender's post in flight, so the release and
 # the reset that follow it reach the machine after that post. A sender request
 # changes each input at most once, so it is one body: one connect and one read.
@@ -1747,7 +1752,8 @@ class LauncherScene(MediaFileMixin, Scene):
         self._input_lock = threading.Lock()
         self._baseline: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
-        self._injected: queue.SimpleQueue[machine_input.Event] = queue.SimpleQueue()
+        # Each event with the monotonic time it was queued.
+        self._injected: queue.SimpleQueue[tuple[float, machine_input.Event]] = queue.SimpleQueue()
         self._sender = PollThread(
             self._send_loop,
             name="launcher-input-send",
@@ -1758,7 +1764,7 @@ class LauncherScene(MediaFileMixin, Scene):
         # The sender thread's own state: an event held back for the next
         # request, what its posts have left pressed, and whether a failed post
         # means the machine must be told that again.
-        self._carry: machine_input.Event | None = None
+        self._carry: tuple[float, machine_input.Event] | None = None
         self._held: set[tuple[int, str]] = set()
         self._pressed_at: dict[tuple[int, str], float] = {}
         self._resync = False
@@ -1817,9 +1823,12 @@ class LauncherScene(MediaFileMixin, Scene):
                 )
             return
         transition = "press" if pressed else "release"
-        self._injected.put(machine_input.joystick_event(port, transition, [direction]))
+        self._enqueue(machine_input.joystick_event(port, transition, [direction]))
         with self._input_lock:
             self._last_input_t = time.time()
+
+    def _enqueue(self, event: machine_input.Event) -> None:
+        self._injected.put((time.monotonic(), event))
 
     def _send_loop(self, stop: threading.Event) -> None:
         """Post queued injections, each burst as one request. Stops for good
@@ -1870,22 +1879,26 @@ class LauncherScene(MediaFileMixin, Scene):
         would repeat an input waits in `_carry` for the next request. An event
         that changes nothing already held or released is dropped, so a cc knob
         swept past its threshold costs no request per value."""
+        stale = self._collapse_stale()
+        if stale is not None:
+            return stale
         batch: list[machine_input.Event] = []
         touched: set[tuple[int, str]] = set()
         while len(batch) < machine_input.MAX_EVENTS:
-            event = self._carry
+            stamped = self._carry
             self._carry = None
-            if event is None:
+            if stamped is None:
                 try:
-                    event = self._injected.get(block=not batch, timeout=0.05)
+                    stamped = self._injected.get(block=not batch, timeout=0.05)
                 except queue.Empty:
                     break
+            event = stamped[1]
             inputs = _joystick_inputs(event)
             pressing = event["transition"] == "press"
             if not (inputs - self._held if pressing else inputs & self._held):
                 continue
             if inputs & touched:
-                self._carry = event
+                self._carry = stamped
                 break
             batch.append(event)
             touched |= inputs
@@ -1893,6 +1906,40 @@ class LauncherScene(MediaFileMixin, Scene):
                 self._held |= inputs
             else:
                 self._held -= inputs
+        return batch
+
+    def _collapse_stale(self) -> list[machine_input.Event] | None:
+        """When the oldest waiting event has waited `_INJECT_MAX_LAG_S`, take
+        everything queued and return one request that moves each input to its
+        latest transition, dropping the taps in between. Otherwise None, and
+        nothing is taken but the oldest event, which waits in `_carry`."""
+        if self._carry is None:
+            try:
+                self._carry = self._injected.get_nowait()
+            except queue.Empty:
+                return None
+        if time.monotonic() - self._carry[0] < _INJECT_MAX_LAG_S:
+            return None
+        latest: dict[tuple[int, str], str] = {}
+        stamped: tuple[float, machine_input.Event] | None = self._carry
+        self._carry = None
+        while stamped is not None:
+            event = stamped[1]
+            for key in _joystick_inputs(event):
+                latest.pop(key, None)
+                latest[key] = event["transition"]
+            try:
+                stamped = self._injected.get_nowait()
+            except queue.Empty:
+                stamped = None
+        batch: list[machine_input.Event] = []
+        for (port, name), transition in latest.items():
+            if (transition == "press") != ((port, name) in self._held):
+                batch.append(machine_input.joystick_event(port, transition, [name]))
+                if transition == "press":
+                    self._held.add((port, name))
+                else:
+                    self._held.discard((port, name))
         return batch
 
     def _held_state(self) -> list[machine_input.Event]:
