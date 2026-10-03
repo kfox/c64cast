@@ -184,6 +184,14 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **A still picture now repaints after a dropped Ultimate DMA connection.**
+  When the connection to an Ultimate was reset with writes still unconfirmed
+  (the DMA service switched off, for instance), or a write failed outright on
+  any device, the parts of the picture those writes
+  carried stayed wrong until they next changed, because c64cast remembered
+  them as sent. It now forgets everything it sent after such a loss, and the
+  next frame redraws the whole picture.
+
 - **On Ultimate firmware 3.15, the first write after a pause of a second or
   more no longer goes missing.** Firmware 3.15 closes a DMA connection that has
   sent it nothing for one second, and the next write went into the closed

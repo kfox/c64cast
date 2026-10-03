@@ -523,6 +523,8 @@ class BufferedWriteBackend(C64Backend):
         # bytes so write_region's diff doesn't re-wrap a fresh np.frombuffer on
         # every call; bytes are immutable, so it stays valid.
         self._cache: dict[int, tuple[bytes, np.ndarray]] = {}
+        # The delivery epoch `_cache` was filled under; see delivery_epoch.
+        self._cache_epoch = 0
         self._stats: dict[str, int] = {
             "writes": 0,
             "skipped": 0,
@@ -547,6 +549,22 @@ class BufferedWriteBackend(C64Backend):
         `_note_emit_success()` / `_note_emit_failure(addr, e)` so every
         backend shares one escalating failure ladder."""
         ...
+
+    def _possible_loss_count(self) -> int:
+        """How many times the transport has given up on a connection that
+        held writes `_emit` had already returned from, so they may never
+        have run. Monotonic. Default 0: a transport that acks every write
+        fails the write itself, which `_note_emit_failure` counts."""
+        return 0
+
+    @property
+    def delivery_epoch(self) -> int:
+        """A number that changes whenever a write this backend accepted may
+        not have reached the machine: a failed `_emit` or a transport loss
+        (`_possible_loss_count`). Anything that remembers what it sent in
+        order to skip resending it compares this, and stops trusting that
+        memory when it moves; `write_region`'s cache does."""
+        return self._stats["errors"] + self._possible_loss_count()
 
     def _note_emit_success(self) -> None:
         """Clear the consecutive-failure counter after a successful write."""
@@ -640,6 +658,9 @@ class BufferedWriteBackend(C64Backend):
         reconnect handling and `_emit`'s failure ladder.
 
         Strategy:
+          * A `delivery_epoch` that moved since the cache was filled drops
+            every region first: the bytes it remembers may never have landed.
+            That includes a move during a previous call's own writes.
           * No prior cache OR length mismatch → full upload.
           * Otherwise the choice is between one write covering the whole dirty
             span and several writes covering only the dirty DELTA_CHUNK_BYTES
@@ -656,6 +677,10 @@ class BufferedWriteBackend(C64Backend):
         docs/architecture/hardware-io.md#the-chunking-decision-is-per-link-because-the-two-links-are-opposites.
         """
         key = region_id if region_id is not None else address
+        epoch = self.delivery_epoch
+        if epoch != self._cache_epoch:
+            self._cache.clear()
+            self._cache_epoch = epoch
         # bytes(b"...") returns the same object in CPython but bytes(bytearray)
         # copies, so the isinstance guard skips a copy that would be wasted.
         new = data if isinstance(data, bytes) else bytes(data)

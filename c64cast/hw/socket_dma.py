@@ -113,7 +113,12 @@ class SocketDMAClient:
     A redial for any other reason (a reset, an early FIN, a stray byte, an
     unanswered idle IDENTIFY, a failed send) abandons a connection whose
     unconfirmed commands may never have run, so the next ``flush()``
-    raises ``ConnectionError`` once instead of reporting them drained."""
+    raises ``ConnectionError`` once instead of reporting them drained.
+    ``possible_loss_count`` counts every such abandonment, and a ``flush()``
+    that fails with commands unconfirmed, since construction; a caller that
+    remembers what it sent (``write_region``'s dirty cache) reads it through
+    ``check_for_loss()`` to know when that memory may no longer match the
+    machine."""
 
     def __init__(
         self,
@@ -154,6 +159,7 @@ class SocketDMAClient:
         # way that may have dropped them, until flush() reports it.
         self._maybe_lost: str | None = None
         self.reconnect_count = 0
+        self.possible_loss_count = 0
 
     def connect(self) -> None:
         """Open the TCP socket and complete the handshake.
@@ -334,17 +340,25 @@ class SocketDMAClient:
         self._last_send = time.monotonic()
         self._unconfirmed = False
 
-    def _redial_locked(self, reason: str, *, benign: bool = False) -> None:
-        """Close the current socket and open a fresh one.
+    def _abandon_locked(self, reason: str, *, benign: bool = False) -> None:
+        """Close a connection the client is giving up on mid-run.
 
-        Unless ``benign``, commands sent on the old connection since its
-        last answered IDENTIFY may never have run, and the next ``flush()``
-        raises once for them; the round trips on the new connection say
-        nothing about the old one."""
-        log.debug("socket dma: %s — reconnecting", reason)
-        if self._unconfirmed and not benign and self._maybe_lost is None:
-            self._maybe_lost = reason
+        Unless ``benign``, commands sent on it since its last answered
+        IDENTIFY may never have run: ``possible_loss_count`` goes up, and
+        the next ``flush()`` raises once for them; the round trips on a new
+        connection say nothing about this one."""
+        if self._unconfirmed and not benign:
+            self.possible_loss_count += 1
+            if self._maybe_lost is None:
+                self._maybe_lost = reason
+        self._unconfirmed = False
         self._close_locked()
+
+    def _redial_locked(self, reason: str, *, benign: bool = False) -> None:
+        """Abandon the current socket (see ``_abandon_locked``) and open a
+        fresh one."""
+        log.debug("socket dma: %s — reconnecting", reason)
+        self._abandon_locked(reason, benign=benign)
         self._reconnect_locked(quiet=benign)
 
     def _peer_gone_locked(self) -> tuple[str, bool] | None:
@@ -396,6 +410,29 @@ class SocketDMAClient:
             return f"idle connection did not answer IDENTIFY ({e})"
         self._note_answered_locked()
         return None
+
+    def check_for_loss(self) -> int:
+        """Return ``possible_loss_count``, first abandoning the connection
+        if the server has already dropped it with commands unconfirmed.
+
+        A caller that sends nothing while its picture holds still would
+        otherwise learn of the loss only at its next command, which may be
+        minutes away. The check is the per-command peek and sends nothing;
+        it is skipped when nothing is unconfirmed, or when another thread
+        holds the connection, since that thread's own command checks it.
+        A connection found closed harmlessly (the idle close) is left for
+        the next command to redial."""
+        if not self._lock.acquire(blocking=False):
+            return self.possible_loss_count
+        try:
+            if self._sock is not None and self._unconfirmed:
+                gone = self._peer_gone_locked()
+                if gone is not None and not gone[1]:
+                    log.debug("socket dma: %s — closing", gone[0])
+                    self._abandon_locked(gone[0])
+            return self.possible_loss_count
+        finally:
+            self._lock.release()
 
     def _ensure_live_locked(self) -> None:
         """Leave ``self._sock`` on a connection the next command will reach,
@@ -559,7 +596,7 @@ class SocketDMAClient:
             # an unconsumed IDENTIFY reply may still be in flight (a
             # TimeoutError is an OSError), and the next flush()/command
             # would read it as its own, permanently one reply behind.
-            self._close_locked()
+            self._abandon_locked("flush IDENTIFY went unanswered")
             raise
         self._latencies.append(time.perf_counter() - t0)
         self._note_answered_locked()

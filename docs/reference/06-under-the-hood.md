@@ -258,6 +258,13 @@ A display mode invalidates the cache when it sets up, so a mode switch starts
 from a clean baseline instead of diffing new bytes against the previous mode's
 reading of the same addresses.
 
+The cache also empties itself whenever a write may not have arrived: a write
+that failed, or, on an Ultimate, a dropped DMA connection that still had writes
+the machine had not confirmed. The next frame then resends every region in
+full, so a still picture that lost part of a frame repaints instead of staying
+wrong until that part changes. The Ultimate is checked for a dropped connection
+on every upload, even one that sends nothing.
+
 ### Why Cuts Do Not Tear
 
 Writing 8000 bytes takes long enough that the VIC will draw part of the old

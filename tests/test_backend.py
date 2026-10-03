@@ -14,6 +14,7 @@ stubs out the socket connect, and the ABC contract is checked structurally.
 from __future__ import annotations
 
 import unittest
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
 from unittest import mock
 
@@ -49,8 +50,17 @@ class _RecordingBackend(BufferedWriteBackend):
         self.profile = profile
         self.emits: list[tuple[int, bytes]] = []
         self.fail = False
+        # The transport's possible-loss counter; on_emit runs inside each
+        # emit, so a test can move it mid-write.
+        self.losses = 0
+        self.on_emit: Callable[[], None] | None = None
+
+    def _possible_loss_count(self) -> int:
+        return self.losses
 
     def _emit(self, addr: int, payload: bytes) -> None:
+        if self.on_emit is not None:
+            self.on_emit()
         if self.fail:
             self._note_emit_failure(addr, RuntimeError("boom"))
             return
@@ -396,6 +406,68 @@ class BufferedWriteBackendTest(unittest.TestCase):
         b.emits.clear()
         self.assertEqual(b.write_region(0x0400, data, region_id=1), 40)
         self.assertEqual(len(b.emits), 1)
+
+    def test_a_transport_loss_resends_every_unchanged_region_in_full(self):
+        # c64cast#531: a lossy reconnect may have dropped writes the cache
+        # recorded, so an unchanged frame after it must not be skipped.
+        b = self._b()
+        b.write_region(0x0400, bytes(40), region_id=1)
+        b.write_region(0xD800, bytes(40), region_id=2)
+        b.losses += 1
+        b.emits.clear()
+        self.assertEqual(b.write_region(0x0400, bytes(40), region_id=1), 40)
+        self.assertEqual(b.write_region(0xD800, bytes(40), region_id=2), 40)
+        self.assertEqual(b.emits, [(0x0400, bytes(40)), (0xD800, bytes(40))])
+
+    def test_the_cache_resumes_skipping_after_the_full_resend(self):
+        b = self._b()
+        b.write_region(0x0400, bytes(40), region_id=1)
+        b.losses += 1
+        b.write_region(0x0400, bytes(40), region_id=1)
+        self.assertEqual(b.write_region(0x0400, bytes(40), region_id=1), 0)
+
+    def test_a_failed_write_is_not_remembered(self):
+        b = self._b()
+        b.write_region(0x0400, bytes(40), region_id=1)
+        b.write_region(0xD800, bytes(40), region_id=2)
+        b.fail = True
+        with self.assertLogs("c64cast.hw.backend", level="DEBUG"):
+            b.write_region(0x0400, b"\x01" * 40, region_id=1)
+        b.fail = False
+        b.emits.clear()
+        self.assertEqual(b.write_region(0x0400, b"\x01" * 40, region_id=1), 40)
+        # The failure may have come with a reconnect, so the other region
+        # is resent too.
+        self.assertEqual(b.write_region(0xD800, bytes(40), region_id=2), 40)
+
+    def test_a_loss_during_the_write_is_not_remembered(self):
+        b = self._b()
+
+        def lose():
+            b.losses += 1
+
+        b.on_emit = lose
+        b.write_region(0x0400, bytes(40), region_id=1)
+        b.on_emit = None
+        self.assertEqual(b.write_region(0x0400, bytes(40), region_id=1), 40)
+
+    def test_a_loss_during_a_chunked_write_is_not_remembered(self):
+        b = self._b(TEENSYROM_PROFILE)
+        n = DELTA_CHUNK_BYTES * 8
+        b.write_region(0x4000, bytes(n), region_id=3)
+        changed = bytearray(n)
+        changed[0] = changed[-1] = 1
+
+        def lose():
+            b.losses += 1
+
+        b.on_emit = lose
+        b.emits.clear()
+        b.write_region(0x4000, bytes(changed), region_id=3)
+        self.assertEqual(len(b.emits), 2)  # the per-chunk branch ran
+        b.on_emit = None
+        b.emits.clear()
+        self.assertEqual(b.write_region(0x4000, bytes(changed), region_id=3), n)
 
     def test_region_accepts_bytearray(self):
         b = self._b()
