@@ -412,8 +412,8 @@ configuration file makes sense, and that the Commodore answers.
 
 ![Figure 1-1. Doctor reporting on the environment, the configuration and the hardware.](img/fig-1-1-doctor.png)
 
-When the Commodore answers, a line in the hardware section names the machine
-and its firmware, such as
+When an Ultimate answers, a line in the CONNECTIVITY section names the
+machine and its firmware, such as
 `Ultimate 64-II B95B01 (firmware 3.15a build dddd29b2, FPGA 125, core 1.50)`.
 The `build` part appears from Ultimate firmware 3.15a onward; older firmware
 and the C64 Ultimate leave it out, and the rest of the line reads the same.
