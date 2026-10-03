@@ -799,7 +799,7 @@ measurement above shows.
   N small writes per frame should be a yellow flag.
 
   The reason count is the lever, measured: **payload is free below
-  ~2.4 KB**. A write of 8 bytes and a write of 2 KB both cost ~5.2 ms,
+  ~2.1 KB**. A write of 8 bytes and a write of 2 KB both cost ~5.2 ms,
   and only past that knee does cost start rising (~1.85 µs/byte). So
   splitting one write into two doubles its price no matter how few bytes
   each carries, while widening a write to cover a clean gap is free.

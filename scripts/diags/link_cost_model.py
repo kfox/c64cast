@@ -15,9 +15,10 @@ the profile.
 dirty span and several covering only the dirty slabs inside it. Which is right
 is entirely a property of the link, and the two backends here sit at opposite
 extremes: the Ultimate charges ~5.2 ms per write and nothing for payload up to
-~2.4 KB, so chunking multiplies cost; the TeensyROM charges ~0.29 ms per write
+~2.1 KB, so chunking multiplies cost; the TeensyROM charges ~0.29 ms per write
 and is otherwise all payload, so chunking pays. **Both were measured with this
-tool** (2026-08-12, r2 = 1.0000 per cell). The rule this replaced compared byte
+tool** (2026-08-12, r2 = 1.0000 per cell; the Ultimate again on firmware 3.15a,
+2026-10-03, five runs). The rule this replaced compared byte
 counts, which is the wrong currency on a link with a floor that high.
 
 Two regimes rather than a single line because that is what the links measure
