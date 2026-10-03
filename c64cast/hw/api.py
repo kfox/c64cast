@@ -1571,15 +1571,6 @@ def read_config_category_body(
     return body
 
 
-def _names_an_error(response: requests.Response) -> bool:
-    try:
-        body = response.json()
-    except ValueError:
-        return False
-    errors = body.get("errors") if isinstance(body, dict) else None
-    return isinstance(errors, list) and bool(errors)
-
-
 RouteAnswer = Literal["present", "unsupported", "absent", "unknown"]
 
 
@@ -1606,11 +1597,23 @@ def classify_route_answer(status: int, body: bytes) -> RouteAnswer:
     return "present" if _body_names_an_error(body) else "unknown"
 
 
+def _names_an_error(response: requests.Response) -> bool:
+    try:
+        parsed = response.json()
+    except (ValueError, RecursionError):
+        return False
+    return _lists_errors(parsed)
+
+
 def _body_names_an_error(body: bytes) -> bool:
     try:
         parsed = json.loads(body)
     except (ValueError, RecursionError):
         return False
+    return _lists_errors(parsed)
+
+
+def _lists_errors(parsed: object) -> bool:
     errors = parsed.get("errors") if isinstance(parsed, dict) else None
     return isinstance(errors, list) and bool(errors)
 

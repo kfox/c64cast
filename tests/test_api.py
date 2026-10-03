@@ -1070,6 +1070,15 @@ class ReadSideTest(unittest.TestCase):
         with self.assertRaises(requests.HTTPError):
             self.api.get_config_category("Audio Mixer")
 
+    def test_get_config_category_404_too_deep_to_parse_raises_http_error(self):
+        import requests
+
+        self.get.return_value.status_code = 404
+        self.get.return_value.json.side_effect = RecursionError
+        self.get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
     def test_read_config_category_body_tells_absent_from_present(self):
         from c64cast.hw.api import read_config_category_body
 
