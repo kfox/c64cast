@@ -230,10 +230,12 @@ class TeensyROMBackend(_SidPlayerMixin, _StubRunnerBackend):
 
     def _emit(self, addr: int, payload: bytes) -> None:
         """Split `payload` into segments and push each, waiting on its ack —
-        as sliced WriteC64Spans commands when the firmware has them, else as
-        WriteC64Mem. Like the Ultimate's _emit, transient transport failures
-        are absorbed (logged on the shared escalating ladder) rather than
-        raised — a blip shouldn't crash the playlist."""
+        as sliced WriteC64Spans commands when the firmware has them, an NMI
+        consumer is noted, the segment is longer than one slice and the write
+        stays clear of cart IO; else as WriteC64Mem. Like the Ultimate's
+        _emit, transient transport failures are absorbed (logged on the shared
+        escalating ladder) rather than raised — a blip shouldn't crash the
+        playlist."""
         spans = self._spans
         # A write no longer than one halt (one slice, or one command at slice
         # 0) halts as long on WriteC64Mem, which spares two round trips.
