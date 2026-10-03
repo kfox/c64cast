@@ -1415,7 +1415,7 @@ def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
     """An Ultimate network password the ``X-Password`` header cannot carry
     stops every run at connect (exit 4), so the offline check reports it too.
     The message is `password_header_value`'s own, which never quotes it."""
-    from c64cast.hw.api import password_header_value
+    from c64cast.hw.api import InvalidPasswordError, password_header_value
 
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
@@ -1424,7 +1424,7 @@ def _validate_network_password(loaded: LoadResult) -> list[Diagnostic]:
             continue
         try:
             password_header_value(password)
-        except ValueError as e:
+        except InvalidPasswordError as e:
             out.append(
                 Diagnostic(
                     level="error",
@@ -1600,15 +1600,15 @@ def _probe_one_system(name: str, cfg: Config) -> list[Diagnostic]:
     """Connect one system's backend, probe it, and run the per-service
     probes that apply. Connection failures come back as diagnostics, not
     exceptions, so one dead system doesn't hide the others' reports."""
-    from c64cast.hw.api import RestAuthError
-    from c64cast.hw.backend import make_backend
+    from c64cast.hw.api import InvalidPasswordError, RestAuthError
+    from c64cast.hw.backend import BackendSetupError, make_backend
     from c64cast.hw.socket_dma import SocketDMAError
     from c64cast.hw.teensyrom_dma import TRError
 
     url = cfg.ultimate64.url
     try:
         api = make_backend(cfg)
-    except ValueError as e:
+    except (InvalidPasswordError, BackendSetupError) as e:
         return [
             Diagnostic(
                 level="error",

@@ -310,15 +310,28 @@ class OpenBackendPasswordTest(unittest.TestCase):
         self.assertIn("(system): REST API refused c64cast", "\n".join(logs.output))
         backend.close.assert_called_once()
 
-    def test_an_unsendable_password_is_exit_4(self):
+    def test_an_unsendable_password_or_unbuildable_backend_is_exit_4(self):
+        from c64cast.hw.api import InvalidPasswordError
+        from c64cast.hw.backend import BackendSetupError
+
+        for exc in (InvalidPasswordError("bad header"), BackendSetupError("no serial port")):
+            with (
+                self.subTest(exc=type(exc).__name__),
+                mock.patch.object(session, "make_backend", side_effect=exc),
+                self.assertLogs("c64cast", "ERROR") as logs,
+                self.assertRaises(session.StackBuildError) as caught,
+            ):
+                session._open_backend(cfgmod.Config(), "system")
+            self.assertEqual(caught.exception.exit_code, 4)
+            self.assertIn(str(exc), "\n".join(logs.output))
+
+    def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
         with (
-            mock.patch.object(session, "make_backend", side_effect=ValueError("bad header")),
-            self.assertLogs("c64cast", "ERROR") as logs,
-            self.assertRaises(session.StackBuildError) as caught,
+            mock.patch.object(session, "make_backend", side_effect=ValueError("a defect")),
+            self.assertNoLogs("c64cast", "ERROR"),
+            self.assertRaisesRegex(ValueError, "a defect"),
         ):
             session._open_backend(cfgmod.Config(), "system")
-        self.assertEqual(caught.exception.exit_code, 4)
-        self.assertIn("bad header", "\n".join(logs.output))
 
 
 class BuildStackCameraTest(unittest.TestCase):

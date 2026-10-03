@@ -1486,12 +1486,14 @@ class RunCalibrateDacConnectFailureTest(unittest.TestCase):
         import argparse
 
         from c64cast.app import cli_commands
-        from c64cast.hw.socket_dma import SocketDMAError
+        from c64cast.hw.backend import BackendSetupError
+        from c64cast.hw.socket_dma import InvalidPasswordError, SocketDMAError
         from c64cast.hw.teensyrom_dma import TRError
 
         args = argparse.Namespace(audio_device=None)
         for exc in (
-            ValueError("bad network password"),
+            InvalidPasswordError("bad network password"),
+            BackendSetupError("no attached TeensyROM"),
             SocketDMAError("authentication rejected"),
             TRError("no serial port"),
         ):
@@ -1507,6 +1509,19 @@ class RunCalibrateDacConnectFailureTest(unittest.TestCase):
                 self.assertIn(str(exc), cm.output[0])
                 self.assertIn("--calibrate-dac", cm.output[0])
                 run.assert_not_called()
+
+    def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
+        import argparse
+
+        from c64cast.app import cli_commands
+
+        with (
+            patch.object(cli_commands, "AUDIO_AVAILABLE", True),
+            patch.object(cli_commands, "make_backend", side_effect=ValueError("a defect")),
+            self.assertNoLogs("c64cast", level="ERROR"),
+            self.assertRaisesRegex(ValueError, "a defect"),
+        ):
+            cli_commands.run_calibrate_dac(_u64_cfg(), argparse.Namespace(audio_device=None))
 
 
 if __name__ == "__main__":

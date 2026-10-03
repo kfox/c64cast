@@ -400,6 +400,28 @@ class ConnectivityProbeTest(unittest.TestCase):
         self.assertEqual(conn[0].level, "error")
         self.assertIn("X-Password", conn[0].message)
 
+    def test_an_unbuildable_backend_is_a_connectivity_error(self):
+        from c64cast.hw.backend import BackendSetupError
+
+        loaded = _load('[ultimate64]\nurl = "http://fake"\n')
+        with mock.patch(
+            "c64cast.hw.backend.make_backend", side_effect=BackendSetupError("no serial port")
+        ):
+            diags = doctor.validate_load_result(loaded, probe_u64=True)
+        conn = [d for d in diags if d.category == "connectivity"]
+        self.assertEqual(
+            [(d.level, d.message) for d in conn],
+            [("error", "cannot connect to http://fake: no serial port")],
+        )
+
+    def test_an_unrelated_value_error_is_not_reported_as_a_connect_failure(self):
+        loaded = _load('[ultimate64]\nurl = "http://fake"\n')
+        with (
+            mock.patch("c64cast.hw.backend.make_backend", side_effect=ValueError("a defect")),
+            self.assertRaisesRegex(ValueError, "a defect"),
+        ):
+            doctor.validate_load_result(loaded, probe_u64=True)
+
     def test_unsendable_password_is_an_offline_error_too(self):
         loaded = _load('[ultimate64]\nurl = "http://fake"\ndma_password = "pw "\n')
         diags = doctor.validate_load_result(loaded, probe_u64=False)
