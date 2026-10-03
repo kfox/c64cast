@@ -90,6 +90,17 @@ class DeriveHardwarePaletteTest(PaletteSwapTestCase):
         others = [i for i in range(16) if i != 8]
         np.testing.assert_array_equal(table[others], MACHINE[others])
 
+    def test_the_sampled_pixels_fit_the_palette_the_frames_do(self):
+        sampler = palette.FrameSampler()
+        for k in range(7):
+            sampler.add(np.roll(_warm_image(), 13 * k, axis=1))
+        pixels = sampler.pixels()
+        self.assertLessEqual(pixels.shape[0], palette._FORCE_PALETTE_SAMPLE_CAP)
+        np.testing.assert_array_equal(
+            palette.derive_hardware_palette([pixels], MACHINE),
+            palette.derive_hardware_palette(sampler.frames, MACHINE),
+        )
+
     def test_gray_pixels_do_not_spend_a_free_index(self):
         img = np.zeros((20, 40, 3), dtype=np.uint8)
         img[:, :20] = (30, 95, 175)
@@ -688,6 +699,14 @@ class VideoPushTest(unittest.TestCase):
         first, second = (c.args[0] for c in self.control.show.call_args_list)
         np.testing.assert_array_equal(first, second)
         self.assertIs(self.mode.set_color_fit.call_args.args[0], self.fit)
+
+    def test_the_kept_pre_scan_is_a_pixel_sample_not_the_frames(self):
+        self.scene.setup()
+        kept = self.scene._hw_prescan
+        assert kept is not None
+        self.assertEqual(len(kept.frames), 1)
+        self.assertEqual(kept.frames[0].shape[1:], (1, 3))
+        self.assertLessEqual(kept.frames[0].shape[0], palette._FORCE_PALETTE_SAMPLE_CAP)
 
     def test_a_different_source_pre_scans_again(self):
         self.scene.setup()

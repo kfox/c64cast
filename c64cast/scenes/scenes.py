@@ -1379,7 +1379,9 @@ class VideoScene(MediaFileMixin, Scene):
                         decode_target_size=decode_target,
                         on_progress=progress.reporter("prescan"),
                     )
-                    sampled = frames.frames if frames is not None else []
+                    # The sampled pixels rather than the frames: a run keeps one
+                    # of these per video scene.
+                    sampled = [frames.pixels()] if frames is not None and frames.frames else []
                     self._hw_prescan = (
                         _HardwarePrescan(prescan_key, fit, sampled) if sampled else None
                     )

@@ -1317,6 +1317,22 @@ class FrameSampler:
             )
         self.frames.append(img_bgr.copy())
 
+    def pixels(self) -> np.ndarray:
+        """The pixels `derive_hardware_palette` would sample from `frames`, as
+        one (N, 1, 3) image of at most _FORCE_PALETTE_SAMPLE_CAP pixels.
+
+        The display modes' shaping is per pixel, so fitting to this image gives
+        the palette fitting to `frames` would, for a fraction of the memory."""
+        if not self.frames:
+            return np.zeros((0, 1, 3), dtype=np.uint8)
+        per_frame = max(1, _FORCE_PALETTE_SAMPLE_CAP // len(self.frames))
+        blocks = []
+        for frame in self.frames:
+            flat = frame.reshape(-1, 3)
+            if flat.shape[0]:
+                blocks.append(flat[:: max(1, -(-flat.shape[0] // per_frame))])
+        return np.concatenate(blocks).reshape(-1, 1, 3)
+
 
 def _sample_lab(frames: Sequence[np.ndarray]) -> np.ndarray:
     """At most _FORCE_PALETTE_SAMPLE_CAP Lab pixels, spread evenly over `frames`."""
