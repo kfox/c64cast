@@ -279,6 +279,11 @@ while the kernal interrupt runs; `auto` takes either; `none` polls nothing and
 leaves `duration_s` a plain timer, which is what a demo wants. The pause and
 skip modifier keys are deliberately never counted as play.
 
+A `[midi_control]` `joystick` mapping drives joystick input *into* the
+program while this scene runs (Chapter 6, "Driving the Machine's Joystick").
+Each injection counts as a player for the idle timeout, and whatever is still
+held is released when the scene ends.
+
 In an ensemble, `bypass_audio_lock = true` lets several launcher systems run
 at once, each player hearing their own machine.
 
