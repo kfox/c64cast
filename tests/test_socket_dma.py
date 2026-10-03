@@ -478,6 +478,7 @@ class ReconnectTest(unittest.TestCase):
 
             c.dmawrite(0xD020, b"\x0e")
         self.assertIn(b"\x06\xff\x03\x00\x20\xd0\x0e", bytes(fake3.sent))
+        self.assertEqual(c.reconnect_count, 1)  # the failed handshake is not counted
 
 
 class ThreadSafetyTest(unittest.TestCase):
@@ -583,10 +584,18 @@ class _LoopbackDMAServer:
     answered and DMAWRITEs are recorded. With ``idle_close_s`` set, a
     connection that has sent nothing for that long is closed, as firmware
     3.15a does after one second; ``None`` keeps it open, as 3.14e and C64
-    Ultimate 1.1.0 do. ``idle_closed`` is set each time that happens."""
+    Ultimate 1.1.0 do. ``idle_closed`` is set each time that happens.
 
-    def __init__(self, idle_close_s: float | None):
+    With ``drop_after_writes`` set, the first connection is closed once that
+    many DMAWRITEs have run and the next command is waiting unread, so the
+    kernel answers with a reset and that command is lost, as when the
+    service is switched off or the machine restarts. ``dropped`` is set
+    when that happens."""
+
+    def __init__(self, idle_close_s: float | None, drop_after_writes: int | None = None):
         self.idle_close_s = idle_close_s
+        self.drop_after_writes = drop_after_writes
+        self.dropped = threading.Event()
         self.writes: list[tuple[int, bytes]] = []
         self.accepted = 0
         self.idle_closed = threading.Event()
@@ -636,7 +645,20 @@ class _LoopbackDMAServer:
                 conn.sendall(_IDENT_REPLY)
             elif opcode == CMD_DMAWRITE:
                 self.writes.append((struct.unpack("<H", payload[:2])[0], payload[2:]))
+                if len(self.writes) == self.drop_after_writes and not self.dropped.is_set():
+                    self._close_with_the_next_command_unread(conn)
+                    return
             last = time.monotonic()
+
+    def _close_with_the_next_command_unread(self, conn: socket.socket) -> None:
+        while not self._stop.is_set():
+            try:
+                conn.recv(1, socket.MSG_PEEK)
+            except TimeoutError:
+                continue
+            break
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        self.dropped.set()
 
 
 class IdleCloseTest(unittest.TestCase):
@@ -696,6 +718,22 @@ class IdleCloseTest(unittest.TestCase):
         self.assertEqual(server.writes, [(0x0400, b"\x01"), (0x0401, b"\x02")])
         self.assertEqual(c.reconnect_count, 0)
         self.assertEqual(server.accepted, 1)
+
+    def test_a_reset_with_a_write_unread_fails_the_next_flush_once(self):
+        # A real kernel reset for a command the server never read: the
+        # redial before the flush must not let the barrier pass.
+        server = _LoopbackDMAServer(idle_close_s=None, drop_after_writes=1)
+        self.addCleanup(server.stop)
+        c = self._connect_quietly(server, idle_verify_after_s=60.0)
+        c.dmawrite(0x0400, b"\x01")
+        c.dmawrite(0x0401, b"\x02")
+        self.assertTrue(server.dropped.wait(2.0))
+        time.sleep(0.05)  # let the reset reach this side of the loopback
+        with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+            with self.assertRaises(ConnectionError):
+                c.flush()
+            c.flush()
+        self.assertEqual(server.writes, [(0x0400, b"\x01")])
 
     def test_a_server_without_the_timeout_never_sees_a_redial(self):
         # Firmware 3.14e and C64 Ultimate 1.1.0 keep an idle connection open;

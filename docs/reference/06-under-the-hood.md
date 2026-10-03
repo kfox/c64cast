@@ -297,6 +297,7 @@ profile[webcam:mcm] n=58 |
     writes/frame avg=24 p95=27 |
     bytes/frame avg=8192 p95=8192
 u64 dma latency: n=256 avg=5.1 p50=4.9 p95=7.8 max=18.4 ms
+    reconnects=0
 ```
 
 `frame` is wall-clock per frame and should sit near `1 / target_fps` at steady

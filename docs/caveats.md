@@ -808,7 +808,7 @@ measurement above shows.
   lives in U64 RAM and is consumed by a raster IRQ, leaving Python to
   write only when something macro-level changes.
 * **`--profile` reports the live transport.** The summary line is
-  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms` — the DMA path, not
+  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms reconnects=N` — the DMA path, not
   REST. Re-measuring REST means pointing the writes at `requests.put`
   in a scratch branch; nothing in the shipped code exercises it.
 
