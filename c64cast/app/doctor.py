@@ -56,6 +56,7 @@ from .scene_factory import (
     validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
+    validate_hardware_palette_cfg,
     validate_midi_control_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
@@ -182,6 +183,7 @@ def validate_load_result(
     out.extend(_validate_color_match(loaded))
     out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_motion_smoothing(loaded))
+    out.extend(_validate_hardware_palette(loaded))
     out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
@@ -943,6 +945,29 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
                     subject=f"{name}/dac_bitmap_tempo",
                     message=str(e),
                     hint="Measure with scripts/diags/mhires_tempo_clock_ab.py, or set to 1.0 (off).",
+                )
+            )
+    return out
+
+
+def _validate_hardware_palette(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a bad [color].hardware_palette per system: an unknown value, or
+    `"source"` alongside force_palette or flicker_tolerance, on [color], a
+    scene's override or a clip's. Offline — delegates to
+    config.validate_hardware_palette_cfg, the guard a run applies at startup."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        try:
+            validate_hardware_palette_cfg(cfg)
+        except ConfigError as e:
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="color",
+                    subject=f"{name}/hardware_palette",
+                    message=str(e),
+                    hint="See [color].hardware_palette in the config reference / "
+                    "--describe section:color.",
                 )
             )
     return out

@@ -1628,6 +1628,45 @@ class SceneColorOverrideDiagnosticTest(unittest.TestCase):
         self.assertNotIn("override", ok[0].message)
 
 
+class HardwarePaletteDiagnosticTest(unittest.TestCase):
+    """The refusals `--doctor --skip-probe` reports must be the ones a run
+    raises at startup, or a config passes the offline check and then fails
+    with the hardware already open."""
+
+    def _diags(self, toml: str) -> list[doctor.Diagnostic]:
+        return doctor.validate_load_result(_load(toml), probe_u64=False, probe_environment=False)
+
+    def _hardware_palette_errors(self, toml: str) -> list[doctor.Diagnostic]:
+        return [d for d in self._diags(toml) if d.subject.endswith("/hardware_palette")]
+
+    def test_source_with_force_palette_is_an_error(self):
+        errors = self._hardware_palette_errors(
+            '[color]\nhardware_palette = "source"\nforce_palette = true\n'
+        )
+        self.assertEqual([d.level for d in errors], ["error"])
+        self.assertIn("force_palette", errors[0].message)
+
+    def test_source_with_flicker_blending_is_an_error(self):
+        errors = self._hardware_palette_errors(
+            '[color]\nhardware_palette = "source"\nflicker_tolerance = "clean"\n'
+        )
+        self.assertEqual([d.level for d in errors], ["error"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_scene_override_is_an_error_naming_the_scene(self):
+        errors = self._hardware_palette_errors(
+            '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n'
+            '  [scenes.color]\n  hardware_palette = "source"\n  force_palette = true\n'
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("[[scenes]][0].color", errors[0].message)
+
+    def test_source_on_its_own_reports_nothing(self):
+        self.assertEqual(
+            self._hardware_palette_errors('[color]\nhardware_palette = "source"\n'), []
+        )
+
+
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
     """A loaded single-system config whose file is still on disk, plus its

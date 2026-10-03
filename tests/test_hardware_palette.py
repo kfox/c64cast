@@ -183,6 +183,73 @@ class PaletteGenerationTest(PaletteSwapTestCase):
         palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
         self.assertEqual(InversePopStyle._LUT_CACHE, {})
 
+    def _swap_to_a_reversed_palette(self) -> None:
+        """A palette whose rows are reversed moves every gray's nearest slot."""
+        palette.set_host_palette(palette.C64_PALETTE_BGR[::-1].copy(), name="reversed")
+
+    def test_mhires_grayscale_slots_follow_a_swap_at_compose(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        mode = MultiHiresDisplayMode("grayscale")
+        assert mode._fixed_lut is not None
+        stale = mode._fixed_lut.copy()
+        self._swap_to_a_reversed_palette()
+        mode.compose(np.zeros((200, 160, 3), dtype=np.uint8))
+        fresh = MultiHiresDisplayMode("grayscale")
+        assert fresh._fixed_lut is not None
+        self.assertFalse(np.array_equal(fresh._fixed_lut, stale))
+        np.testing.assert_array_equal(mode._fixed_lut, fresh._fixed_lut)
+
+    def test_mhires_grayscale_slots_follow_a_swap_at_set_color_match(self):
+        from c64cast.video.modes import MultiHiresDisplayMode
+
+        palette.set_host_palette(palette.PEPTO_PALETTE_BGR, name="pepto")
+        mode = MultiHiresDisplayMode("grayscale")
+        self._swap_to_a_reversed_palette()
+        mode.set_color_match("perceptual")
+        fresh = MultiHiresDisplayMode("grayscale", perceptual=True)
+        np.testing.assert_array_equal(mode._fixed_lut, fresh._fixed_lut)
+
+
+class QuantizerInputTest(unittest.TestCase):
+    """`quantizer_input` is what the hardware palette is fitted to, so it has
+    to be the shaping the mode's compose quantizes from."""
+
+    BOOST = [1.2, 0.9, 1.1]
+
+    def _image(self) -> np.ndarray:
+        rng = np.random.default_rng(7)
+        return rng.integers(0, 256, size=(16, 24, 3), dtype=np.uint8)
+
+    def _expected(self, img: np.ndarray, mode, sat: float) -> np.ndarray:
+        shaped = palette.boost_saturation(img, sat)
+        shaped = palette.apply_hue_corrections(shaped, mode._hue_corrections)
+        return np.clip(shaped.astype(np.float32) * mode._channel_boost, 0, 255)
+
+    def test_mcm_applies_its_palette_modes_saturation(self):
+        from c64cast.video.modes import MCMDisplayMode
+        from c64cast.video.modes.base import DEFAULT_SAT_FACTOR
+
+        img = self._image()
+        for palette_mode, sat in (("percell", DEFAULT_SAT_FACTOR), ("grayscale", 1.0)):
+            with self.subTest(palette_mode=palette_mode):
+                mode = MCMDisplayMode(palette_mode, channel_boost=self.BOOST)
+                np.testing.assert_allclose(
+                    mode.quantizer_input(img), self._expected(img, mode, sat), atol=1e-3
+                )
+
+    def test_petscii_ignores_a_styles_own_saturation(self):
+        from c64cast.video.modes import PETSCIIDisplayMode
+
+        img = self._image()
+        for style in ("default", "inverse_pop"):
+            with self.subTest(style=style):
+                mode = PETSCIIDisplayMode(style, channel_boost=self.BOOST)
+                np.testing.assert_allclose(
+                    mode.quantizer_input(img), self._expected(img, mode, 1.0), atol=1e-3
+                )
+
 
 class _FakeApi:
     """The parts of Ultimate64API the pusher touches."""
@@ -309,6 +376,15 @@ class HardwarePaletteTest(PaletteSwapTestCase):
         self.api.listeners[0]()
         self.assertEqual(len(self.pushes), 2)
 
+    def test_a_re_push_that_fails_after_a_reset_turns_pushing_off(self):
+        self._show()
+        self.answers = [False, False]
+        with self.assertLogs("c64cast.hw.hardware_palette", level="WARNING") as logs:
+            self.api.listeners[0]()
+        self.assertIn("re-push after a C64 reset", logs.output[0])
+        self.assertEqual(palette.active_host_palette_name(), "pepto")
+        self.assertFalse(self.control.show(self.scene_table, "scene"))
+
     def test_restore_pushes_the_snapshot_never_the_built_in_table(self):
         """RESET_PALETTE would load the firmware's default table, which on a
         machine running a .vpl is not what it was showing."""
@@ -420,6 +496,16 @@ class ProvisionTest(unittest.TestCase):
         api = _u64()
         with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
             control = hp.provision_hardware_palette(api, cfg, is_ensemble=False)
+        self.assertIsNotNone(control)
+
+    def test_a_clip_override_asks_on_its_own(self):
+        cfg = _cfg(source=False)
+        cfg.performance.clips = [
+            {"slot": 1, "type": "video", "file": "a.mp4", "color": {"hardware_palette": "source"}}
+        ]
+        self.assertEqual(hp.wanting_scene_types(cfg), ["video"])
+        with self.assertLogs("c64cast.hw.hardware_palette", level="INFO"):
+            control = hp.provision_hardware_palette(_u64(), cfg, is_ensemble=False)
         self.assertIsNotNone(control)
 
     def test_installs_the_pusher_and_its_reset_listener(self):
@@ -629,6 +715,19 @@ class SlideshowPushTest(unittest.TestCase):
         self.control.show.assert_not_called()
         self.control.release.assert_not_called()
         self.assertFalse(self.scene.pushes_hardware_palette)
+
+
+class PushSourcePaletteTest(unittest.TestCase):
+    def test_a_source_with_no_pixels_puts_the_machines_palette_back(self):
+        """A pre-scan that sampled nothing leaves nothing to fit."""
+        from c64cast.scenes.scenes import _push_source_palette
+
+        control = mock.Mock(spec=hp.HardwarePalette)
+        control.machine_palette = MACHINE.copy()
+        scene = mock.MagicMock()
+        _push_source_palette(scene, control, [])
+        control.show_machine.assert_called_once_with()
+        control.show.assert_not_called()
 
 
 class VideoPushTest(unittest.TestCase):
