@@ -1775,6 +1775,8 @@ class LauncherScene(MediaFileMixin, Scene):
         self._prepared = False
 
     def setup(self) -> None:
+        self._discard_injected()
+        self._injection_refused_logged = False
         if self._prepared:
             self._prepared = False
         elif not self._pick_filepath():
@@ -1972,9 +1974,9 @@ class LauncherScene(MediaFileMixin, Scene):
         if self.api.send_input(events) is None and self.api.profile.supports_rest_input:
             self._resync = True
 
-    def _release_injected(self) -> None:
-        """Let go of anything injected input still holds. The reset that
-        follows would too, but it is a separate step that can fail."""
+    def _discard_injected(self) -> None:
+        """Forget every queued event and the sender's view of the machine,
+        without telling the machine."""
         while True:
             try:
                 self._injected.get_nowait()
@@ -1985,6 +1987,11 @@ class LauncherScene(MediaFileMixin, Scene):
         self._held.clear()
         self._pressed_at.clear()
         self._resync = False
+
+    def _release_injected(self) -> None:
+        """Let go of anything injected input still holds. The reset that
+        follows would too, but it is a separate step that can fail."""
+        self._discard_injected()
         if self._injected_any:
             self._injected_any = False
             self.api.send_input([machine_input.RELEASE_ALL])

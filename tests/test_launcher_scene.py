@@ -172,6 +172,30 @@ class JoystickInjectionTest(unittest.TestCase):
             self.assertIn("program is not running", cm.output[0])
             self.assertTrue(scene._injected.empty())
 
+    def test_an_event_queued_after_teardown_is_not_posted_on_the_next_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            scene.teardown()
+            # What an injection that passed its running check just before
+            # teardown stopped the sender leaves behind.
+            scene._enqueue(_joy(2, "press", "fire"))
+            self.posted.clear()
+            scene.setup()
+            scene.inject_joystick(2, "up", True)
+            self.assertTrue(self.posted.wait(2.0))
+            self.assertEqual(api.send_input.call_args_list[0].args[0], [_joy(2, "press", "up")])
+
+    def test_each_pass_of_the_scene_warns_once_about_dropped_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._running_scene(tmp, supported=False)
+            for _ in range(2):
+                with self.assertLogs("c64cast.scenes.scenes", level="WARNING") as cm:
+                    scene.inject_joystick(2, "up", True)
+                    scene.inject_joystick(2, "up", False)
+                self.assertEqual(len(cm.records), 1)
+                scene.teardown()
+                scene.setup()
+
     def test_events_still_queued_at_teardown_are_discarded_not_posted(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = self._running_scene(tmp, supported=True)
