@@ -982,18 +982,30 @@ _OVERRIDE_COLOR_CHECKS: tuple[
 )
 
 
+def _a_scene_reports(cfg: Config, message: str) -> bool:
+    """Whether `_validate_scenes` reports `message` against one of `cfg`'s scenes."""
+    for s in cfg.scenes:
+        try:
+            validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+        except (OrchestratorError, ValueError) as e:
+            if str(e) == message:
+                return True
+    return False
+
+
 def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a bad color value a run refuses at startup (scene_factory's
     per-system validators read every section through `effective_colors`) that
     no per-scene check above reaches: [color].flicker_tolerance, a
     `[[performance.clips]]` override, and a `[[scenes]]` override on a scene
     whose per-scene check skips it. A value inherited from a bad [color] is
-    left to the [color] report. An override that does not resolve is reported
+    left to the [color] report, and a bad [color].flicker_tolerance to the
+    scene report that already names it. An override that does not resolve is reported
     by `_validate_scenes` or `_validate_hardware_palette`."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         err = flicker_tolerance_cfg_error("[color]", cfg.color)
-        if err:
+        if err and not _a_scene_reports(cfg, err):
             out.append(
                 Diagnostic(
                     level="error",
@@ -1014,10 +1026,8 @@ def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
             for check, checked_per_scene in _OVERRIDE_COLOR_CHECKS:
                 if is_scene and checked_per_scene(s):
                     continue
-                if check("[color]", cfg.color):
-                    continue
                 err = check(f"{owner}.color", color)
-                if err:
+                if err and err != check(f"{owner}.color", cfg.color):
                     out.append(
                         Diagnostic(
                             level="error",

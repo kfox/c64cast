@@ -1770,6 +1770,25 @@ class ClipColorDiagnosticTest(unittest.TestCase):
             [d.subject for d in diags if d.level == "error"], ["system/flicker_tolerance"]
         )
 
+    def test_a_bad_global_flicker_tolerance_a_scene_reports_is_not_repeated(self):
+        loaded = _load(
+            '[color]\nflicker_tolerance = "bogus"\n\n[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual([d.subject for d in errors], ["system/video#0"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_clip_value_differing_from_a_bad_global_is_reported(self):
+        loaded = _load(
+            '[color]\ndither = "bogus"\n\n' + self._CLIP.format(key="dither", value='"other"')
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"],
+            ["system/dither", "system/[[performance.clips]][0].color"],
+        )
+
     def test_a_scene_override_its_per_scene_check_skips_is_reported(self):
         bad = {
             "cell_strategy": '"bogus"',
