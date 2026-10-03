@@ -9,6 +9,7 @@ AUTHENTICATE)."""
 from __future__ import annotations
 
 import errno
+import logging
 import socket
 import struct
 import threading
@@ -963,9 +964,20 @@ class LostCommandReportTest(unittest.TestCase):
         c._last_send -= c.idle_verify_after_s
         fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
         with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
-            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG"):
+            with self.assertLogs("c64cast.hw.socket_dma", level="DEBUG") as cap:
                 c.flush()
         self.assertEqual(c.reconnect_count, 1)
+        # Routine on 3.15 after every pause: nothing at the default INFO level.
+        self.assertEqual([r.getMessage() for r in cap.records if r.levelno >= logging.INFO], [])
+
+    def test_a_redial_that_may_have_lost_writes_logs_its_connect_at_info(self):
+        fake1, c = self._writing_client()
+        fake1.peer_reset = True
+        fake2 = FakeSocket([_IDENT_REPLY, _IDENT_REPLY])
+        with patch("c64cast.hw.socket_dma.socket.create_connection", return_value=fake2):
+            with self.assertLogs("c64cast.hw.socket_dma", level="INFO") as cap:
+                self._assert_flush_reports_a_loss(c)
+        self.assertTrue(any("connected to" in r.getMessage() for r in cap.records))
 
     def test_a_reset_after_the_idle_close_fin_fails_the_next_flush(self):
         # A write that crossed the idle close draws a reset after the FIN;

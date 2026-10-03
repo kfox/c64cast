@@ -170,7 +170,7 @@ class SocketDMAClient:
             self._auth_rejected = False
             self._connect_locked()
 
-    def _reconnect_locked(self) -> None:
+    def _reconnect_locked(self, *, quiet: bool = False) -> None:
         """``_connect_locked()``, but refuses instead of redialing when the
         client was closed or a previous AUTHENTICATE was rejected — see the
         class docstring. Used by every implicit reconnect, and counts each
@@ -186,10 +186,10 @@ class SocketDMAClient:
                 "dma_password / C64CAST_DMA_PASSWORD and call connect() "
                 "explicitly"
             )
-        self._connect_locked()
+        self._connect_locked(quiet=quiet)
         self.reconnect_count += 1
 
-    def _connect_locked(self) -> None:
+    def _connect_locked(self, *, quiet: bool = False) -> None:
         # Caller must hold self._lock.
         try:
             sock = socket.create_connection((self.host, self.port), timeout=self.connect_timeout)
@@ -218,7 +218,13 @@ class SocketDMAClient:
             raise
         self._last_send = time.monotonic()
         self._unconfirmed = False
-        log.info("socket dma: connected to %s:%d (%s)", self.host, self.port, self.product)
+        log.log(
+            logging.DEBUG if quiet else logging.INFO,
+            "socket dma: connected to %s:%d (%s)",
+            self.host,
+            self.port,
+            self.product,
+        )
 
     def _authenticate_locked(self) -> None:
         assert self._sock is not None
@@ -334,7 +340,7 @@ class SocketDMAClient:
         if self._unconfirmed and not benign and self._maybe_lost is None:
             self._maybe_lost = reason
         self._close_locked()
-        self._reconnect_locked()
+        self._reconnect_locked(quiet=benign)
 
     def _peer_gone_locked(self) -> tuple[str, bool] | None:
         """``(why, benign)`` when the server can no longer be reached on
