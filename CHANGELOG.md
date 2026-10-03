@@ -27,8 +27,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   a custom `.vpl` palette was being quantized against the wrong 16 — a wrong
   table does not tint the picture, it changes which color each pixel becomes.
   The read goes over the Ultimate Command Interface, costs one round of
-  register polling at startup, and uploads no 6502 code. It needs firmware
-  **3.15** or newer, which added runtime palette control to the Command
+  register polling at startup, and uploads no 6502 code. It needs Ultimate 64
+  firmware **3.15a** or newer, which added runtime palette control to the Command
   Interface. Anything that cannot answer — older firmware, a failed read —
   falls back to the built-in table exactly as before, including the existing
   warning that names the loaded `.vpl`.

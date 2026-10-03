@@ -307,7 +307,7 @@ class HardwareCfg:
         metadata={
             "help": "The 16 colors the C64 being driven actually emits, which "
             "the quantizer aims at. 'auto' (default) reads it from the machine "
-            "where it can — an Ultimate on firmware 3.15 or newer reports the "
+            "where it can — an Ultimate 64 on firmware 3.15a or newer reports the "
             "colors it is really driving, a custom .vpl included — and "
             "otherwise assumes a real VIC-II. 'u64' is the "
             "Ultimate 64's own built-in table; 'pepto' is the classic VIC-II "
