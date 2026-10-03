@@ -224,6 +224,23 @@ class JoystickSenderTest(unittest.TestCase):
                 ],
             )
 
+    def test_an_event_that_changes_nothing_costs_no_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, _ = self._scene(tmp)
+            for event in (
+                _joy(2, "release", "up"),
+                _joy(2, "press", "up"),
+                _joy(2, "press", "up"),
+                _joy(2, "press", "up"),
+                _joy(2, "release", "up"),
+                _joy(2, "release", "up"),
+            ):
+                scene._injected.put(event)
+            self.assertEqual(
+                self._drain(scene),
+                [[_joy(2, "press", "up")], [_joy(2, "release", "up")]],
+            )
+
     def test_failed_post_resends_the_held_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             scene, api = self._scene(tmp)

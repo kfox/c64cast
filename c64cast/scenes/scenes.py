@@ -1839,32 +1839,32 @@ class LauncherScene(MediaFileMixin, Scene):
         """The next request's events, in order. A request changes each input
         at most once: the firmware applies a body's events back to back, so a
         press and its release in one body never reach the port. The event that
-        would repeat an input waits in `_carry` for the next request."""
-        first = self._carry
-        self._carry = None
-        if first is None:
-            try:
-                first = self._injected.get(timeout=0.05)
-            except queue.Empty:
-                return []
-        batch = [first]
-        touched = _joystick_inputs(first)
+        would repeat an input waits in `_carry` for the next request. An event
+        that changes nothing already held or released is dropped, so a cc knob
+        swept past its threshold costs no request per value."""
+        batch: list[machine_input.Event] = []
+        touched: set[tuple[int, str]] = set()
         while len(batch) < machine_input.MAX_EVENTS:
-            try:
-                event = self._injected.get_nowait()
-            except queue.Empty:
-                break
+            event = self._carry
+            self._carry = None
+            if event is None:
+                try:
+                    event = self._injected.get(block=not batch, timeout=0.05)
+                except queue.Empty:
+                    break
             inputs = _joystick_inputs(event)
+            pressing = event["transition"] == "press"
+            if not (inputs - self._held if pressing else inputs & self._held):
+                continue
             if inputs & touched:
                 self._carry = event
                 break
             batch.append(event)
             touched |= inputs
-        for event in batch:
-            if event["transition"] == "press":
-                self._held |= _joystick_inputs(event)
+            if pressing:
+                self._held |= inputs
             else:
-                self._held -= _joystick_inputs(event)
+                self._held -= inputs
         return batch
 
     def _held_state(self) -> list[machine_input.Event]:
