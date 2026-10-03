@@ -102,6 +102,7 @@ all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
 | `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | — | Nothing to read or raise; every source plays at its own level |
 | Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
 | Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |
+| The `[midi_control]` `joystick` action, driving a launched program's joystick ports | ✓ | ✓ from 3.15 | — | The mapping does nothing, with one warning per launcher scene |
 
 The palette read goes over the Command Interface, and is asked of an Ultimate
 64 only: an Ultimate II+ drives a real VIC-II, so `auto` assumes that rendering
