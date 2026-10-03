@@ -25,7 +25,7 @@ import contextlib
 import logging
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -114,6 +114,9 @@ class HardwareProfile:
     supports_menu_screen: bool = False  # GET /v1/machine:menu_screen (firmware
     #   3.15+): reads the Ultimate menu's own screen while it is open. Granted
     #   by refine_capabilities' route probe, so False on an unprobed run.
+    supports_rest_input: bool = False  # POST /v1/machine:input (firmware 3.15+,
+    #   Ultimate 64 only): keyboard and joystick injection. Granted by the same
+    #   probe, so False on an unprobed run.
     reu_bus_clean: bool = False  # REU writes don't perturb the C64 bus/SID
     writes_are_acked: bool = False  # each write returns an ack (=> flush ~free)
     kernal_irq_intact: bool = True  # the kernal IRQ chain runs at bring-up
@@ -505,6 +508,12 @@ class C64Backend(ABC):
         """What the Ultimate menu is drawing, or None while it is closed.
         Default raises; callers gate on ``profile.supports_menu_screen``."""
         raise BackendCapabilityError("read_menu_screen")
+
+    def send_input(self, events: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+        """Inject keyboard and joystick events (see `machine_input`) and return
+        what the machine reports held afterwards, or None when that failed.
+        Default raises; callers gate on ``profile.supports_rest_input``."""
+        raise BackendCapabilityError("send_input")
 
     def refine_capabilities(self) -> None:
         """Downgrade optimistic profile capability flags against the connected

@@ -566,6 +566,33 @@ class MidiControlLoopAudioTest(unittest.TestCase):
         self.assertIn("loop_audio", str(ctx.exception))
 
 
+class MidiControlJoystickTest(unittest.TestCase):
+    """validate_midi_control_cfg guards the joystick action's port and input."""
+
+    def _check(self, entry: dict) -> None:
+        from dataclasses import replace
+
+        cfg = replace(cfgmod.MidiControlCfg(), enabled=True, cc_map=[entry])
+        scene_factory.validate_midi_control_cfg(cfg)
+
+    def test_valid_entries_pass(self):
+        self._check({"type": "note", "number": 36, "action": "joystick", "input": "fire"})
+        self._check({"type": "note", "number": 37, "action": "joystick", "input": "up", "port": 1})
+        self._check({"type": "cc", "number": 20, "action": "joystick", "input": "fire"})
+
+    def test_bad_entries_raise(self):
+        for entry in (
+            {"type": "note", "number": 36, "action": "joystick"},
+            {"type": "note", "number": 36, "action": "joystick", "input": "jump"},
+            {"type": "note", "number": 36, "action": "joystick", "input": "up", "port": 3},
+            {"type": "note", "number": 36, "action": "joystick", "input": "up", "port": True},
+            {"type": "pc", "number": 36, "action": "joystick", "input": "up"},
+            {"type": "mmc", "number": 2, "action": "joystick", "input": "up"},
+        ):
+            with self.subTest(entry=entry), self.assertRaises(cfgmod.ConfigError):
+                self._check(entry)
+
+
 class ConfigErrorTest(unittest.TestCase):
     def test_missing_file_raises_config_error(self):
         with self.assertRaises(cfgmod.ConfigError) as ctx:
