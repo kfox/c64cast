@@ -216,8 +216,7 @@ class SocketDMAClient:
         except Exception:
             self._close_locked()
             raise
-        self._last_send = time.monotonic()
-        self._unconfirmed = False
+        self._note_answered_locked()
         log.log(
             logging.DEBUG if quiet else logging.INFO,
             "socket dma: connected to %s:%d (%s)",
@@ -329,6 +328,12 @@ class SocketDMAClient:
             self._sock.settimeout(self.io_timeout)
         return bytes(buf)
 
+    def _note_answered_locked(self) -> None:
+        """Record an answered round trip: every command sent on this
+        connection has run, and the server's idle timer restarts now."""
+        self._last_send = time.monotonic()
+        self._unconfirmed = False
+
     def _redial_locked(self, reason: str, *, benign: bool = False) -> None:
         """Close the current socket and open a fresh one.
 
@@ -389,8 +394,7 @@ class SocketDMAClient:
             self._identify_roundtrip_locked()
         except OSError as e:
             return f"idle connection did not answer IDENTIFY ({e})"
-        self._last_send = time.monotonic()
-        self._unconfirmed = False
+        self._note_answered_locked()
         return None
 
     def _ensure_live_locked(self) -> None:
@@ -558,8 +562,7 @@ class SocketDMAClient:
             self._close_locked()
             raise
         self._latencies.append(time.perf_counter() - t0)
-        self._last_send = time.monotonic()
-        self._unconfirmed = False
+        self._note_answered_locked()
         if self._maybe_lost is not None:
             raise ConnectionError(
                 f"socket dma: {self._maybe_lost}; commands sent before the "
