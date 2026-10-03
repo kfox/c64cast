@@ -719,8 +719,15 @@ itself is the suspect.
 `AudioStreamer` **shares** the render path's `Ultimate64API` instance
 rather than opening its own. The U64 DMA service is single-connection
 only: a second concurrent TCP accept on port 64 succeeds, but its
-IDENTIFY round-trip never gets a reply, and the first connection
-continues to block subsequent ones for a few seconds after it closes.
+IDENTIFY round-trip gets no reply while the first connection is open.
+On firmware before 3.15 the first connection was observed to block new
+ones for a few seconds after it closed; on 3.15a a new connection after
+a clean close is served at once (about 7 ms including IDENTIFY).
+Firmware 3.15 also closes a DMA connection that has sent nothing for
+one second. `SocketDMAClient` checks for that close before every
+command and reopens the connection first, so the write is not lost
+(c64cast#520; details in
+[hardware-io.md](architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient)).
 Sharing the API instance is safe because `SocketDMAClient` serializes
 every command on the wire via an internal lock, and the combined write
 rate (audio ≈8/sec + render ≈30-60/sec) sits well under the ≈200/sec
@@ -808,7 +815,7 @@ measurement above shows.
   lives in U64 RAM and is consumed by a raster IRQ, leaving Python to
   write only when something macro-level changes.
 * **`--profile` reports the live transport.** The summary line is
-  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms` — the DMA path, not
+  `u64 dma latency: n=N avg=… p50=… p95=… max=… ms reconnects=N` — the DMA path, not
   REST. Re-measuring REST means pointing the writes at `requests.put`
   in a scratch branch; nothing in the shipped code exercises it.
 
