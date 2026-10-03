@@ -38,6 +38,7 @@ from .config import (
     ConfigError,
     LoadResult,
     resolve_recording_path,
+    scene_and_clip_cfgs,
     scene_color,
 )
 from .orchestrator import OrchestratorError
@@ -46,6 +47,7 @@ from .scene_factory import (
     cell_strategy_cfg_error,
     color_match_cfg_error,
     dither_cfg_error,
+    hardware_palette_cfg_error,
     motion_smoothing_cfg_error,
     resolve_cell_strategy,
     resolve_color_match,
@@ -56,7 +58,6 @@ from .scene_factory import (
     validate_control_cfg,
     validate_dac_bitmap_tempo_cfg,
     validate_dac_curve_cfg,
-    validate_hardware_palette_cfg,
     validate_midi_control_cfg,
     validate_scene_cfg,
     validate_sid_model_cfg,
@@ -953,23 +954,33 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
 def _validate_hardware_palette(loaded: LoadResult) -> list[Diagnostic]:
     """Flag a bad [color].hardware_palette per system: an unknown value, or
     `"source"` alongside force_palette or flicker_tolerance, on [color], a
-    scene's override or a clip's. Offline — delegates to
-    config.validate_hardware_palette_cfg, the guard a run applies at startup."""
+    scene's override or a clip's. Offline — the same per-section check as
+    scene_factory.validate_hardware_palette_cfg, applied to every section so
+    one refusal does not hide the next. An override that does not resolve is
+    reported by `_validate_scenes`, not here."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
-        try:
-            validate_hardware_palette_cfg(cfg)
-        except ConfigError as e:
-            out.append(
-                Diagnostic(
-                    level="error",
-                    category="color",
-                    subject=f"{name}/hardware_palette",
-                    message=str(e),
-                    hint="See [color].hardware_palette in the config reference / "
-                    "--describe section:color.",
+        sections: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
+        for owner, s in scene_and_clip_cfgs(cfg):
+            if not s.color:
+                continue
+            try:
+                sections.append((f"{owner}.color", scene_color(cfg, s)))
+            except ValueError:
+                continue
+        for label, color in sections:
+            err = hardware_palette_cfg_error(label, color)
+            if err:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=f"{name}/hardware_palette",
+                        message=err,
+                        hint="See [color].hardware_palette in the config reference / "
+                        "--describe section:color.",
+                    )
                 )
-            )
     return out
 
 

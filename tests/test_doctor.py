@@ -1666,6 +1666,28 @@ class HardwarePaletteDiagnosticTest(unittest.TestCase):
             self._hardware_palette_errors('[color]\nhardware_palette = "source"\n'), []
         )
 
+    _REFUSED_SCENE = (
+        '[[scenes]]\ntype = "video"\nfile = "{file}"\n'
+        '  [scenes.color]\n  hardware_palette = "source"\n  force_palette = true\n'
+    )
+
+    def test_every_refused_scene_is_reported(self):
+        errors = self._hardware_palette_errors(
+            self._REFUSED_SCENE.format(file="a.mp4") + self._REFUSED_SCENE.format(file="b.mp4")
+        )
+        self.assertEqual(len(errors), 2)
+        self.assertIn("[[scenes]][0].color", errors[0].message)
+        self.assertIn("[[scenes]][1].color", errors[1].message)
+
+    def test_an_unresolvable_override_neither_hides_nor_is_reported_as_one(self):
+        errors = self._hardware_palette_errors(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  force_palette_colors = ["black"]\n'
+            + self._REFUSED_SCENE.format(file="a.mp4")
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("[[scenes]][1].color", errors[0].message)
+
 
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
