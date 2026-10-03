@@ -295,8 +295,8 @@ One of the following:
     carrying the operations that have no DMA equivalent: reset, launching a
     program or a SID, and every memory *read*, including the keyboard poll and
     the character-ROM dump. Without it pixels still paint, but nothing starts.
-    On Ultimate 64 and Ultimate II+ firmware before 3.12 it has no switch of
-    its own and is already on.
+    On Ultimate 64 and Ultimate II+ firmware before 3.12 neither network
+    service has a switch of its own, and both are already on.
 
   Nothing else needs enabling by hand: c64cast turns on the REU and maps the
   Ultimate Audio sampler itself when a run needs them, and puts both back at

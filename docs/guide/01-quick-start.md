@@ -29,8 +29,9 @@ you are asked. You only ever have to do this once.
 > Command Interface off, c64cast will connect and then hang. The Web Remote
 > Control Service is a different service again, on a different port, and it
 > is what starts SID tunes and native programs. On Ultimate 64 and
-> Ultimate II+ firmware before 3.12 the last one is served alongside the web
-> interface and has no switch of its own.
+> Ultimate II+ firmware before 3.12 there is no Network Settings menu: both
+> network services are always on, and only the Command Interface needs
+> enabling.
 
 **Step 2: Install c64cast.** On your computer, in a terminal:
 

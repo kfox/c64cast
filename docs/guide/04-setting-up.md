@@ -95,10 +95,11 @@ pixels will work without it. Scenes that start something running on the
 Commodore will not.
 
 > [!NOTE]
-> On Ultimate 64 and Ultimate II+ firmware before 3.12 the third service has
-> no switch of its own and is served alongside the web interface, so it is
-> already on. The separate **Web Remote Control Service** toggle appears from
-> firmware 3.12, and on the Commodore 64 Ultimate.
+> On Ultimate 64 and Ultimate II+ firmware before 3.12 there is no
+> **Network Settings** menu: the DMA Service and the Web Remote Control
+> Service have no switches of their own and are already on, so only the
+> Command Interface needs enabling. Both switches appear from firmware 3.12,
+> and on the Commodore 64 Ultimate.
 
 If a firewall sits between your computer and the Commodore, allow outbound
 TCP to port 64 and port 80 on the Commodore's address.
