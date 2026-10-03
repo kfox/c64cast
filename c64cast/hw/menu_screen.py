@@ -8,7 +8,7 @@ set for reverse video (``Screen_MemMappedCharMatrix::output_raw``). Codes below
 ``0x20`` are the font's line-drawing glyphs (``software/io/c64/screen.h``). A
 color byte is ``fg | (bg << 4)``.
 
-See docs/architecture/hardware-io.md#apipy--ultimate64api--socket_dmapy--socketdmaclient.
+See docs/architecture/hardware-io.md#menu_screenpy--the-ultimate-menus-own-screen.
 """
 
 from __future__ import annotations
