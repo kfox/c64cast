@@ -1644,8 +1644,9 @@ class VideoScene(MediaFileMixin, Scene):
 # How long the launcher's input sender waits before re-sending the held
 # joystick state after that post failed too.
 _INJECT_RESYNC_RETRY_S = 0.25
-# The shortest time an injected press stays down: the firmware's own tap
-# hold, so a program that reads the port once a frame sees a quick pad hit.
+# The shortest time an injected press stays down, about three frames, so a
+# program that reads the port once a frame sees a quick pad hit. It is the
+# firmware's keyboard tap hold; its own joystick tap is a single 20 ms tick.
 _INJECT_MIN_HOLD_S = 0.06
 # How long an injected event may wait for the sender before the backlog is
 # collapsed to each input's latest transition. The hold caps one input at about
