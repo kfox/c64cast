@@ -291,6 +291,36 @@ class BuildSessionTest(unittest.TestCase):
         self.assertEqual([c.args[2] for c in bs.call_args_list], [stacks[0].api, stacks[1].api])
 
 
+class OpenBackendPasswordTest(unittest.TestCase):
+    """A network-password problem stops the stack with exit 4, the code a
+    rejected DMA password already gets, and logs the reason."""
+
+    def test_a_rest_password_refusal_is_exit_4(self):
+        from c64cast.hw.api import RestAuthError
+
+        backend = mock.MagicMock(name="backend")
+        backend.probe.side_effect = RestAuthError("REST API refused c64cast")
+        with (
+            mock.patch.object(session, "make_backend", return_value=backend),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        self.assertIn("(system): REST API refused c64cast", "\n".join(logs.output))
+        backend.close.assert_called_once()
+
+    def test_an_unsendable_password_is_exit_4(self):
+        with (
+            mock.patch.object(session, "make_backend", side_effect=ValueError("bad header")),
+            self.assertLogs("c64cast", "ERROR") as logs,
+            self.assertRaises(session.StackBuildError) as caught,
+        ):
+            session._open_backend(cfgmod.Config(), "system")
+        self.assertEqual(caught.exception.exit_code, 4)
+        self.assertIn("bad header", "\n".join(logs.output))
+
+
 class BuildStackCameraTest(unittest.TestCase):
     """build_stack opens the camera only when something needs it — and a
     [[performance.clips]] table counts: `type` defaults to "webcam" there, so

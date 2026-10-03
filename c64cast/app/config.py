@@ -449,8 +449,10 @@ class Ultimate64Cfg:
     dma_password: str | None = field(
         default=None,
         metadata={
-            "help": "U64 network password, if set. Prefer the C64CAST_DMA_PASSWORD "
-            "env var over committing it here."
+            "help": "The Ultimate's network password, if one is set. It is sent "
+            "on the DMA socket and in the X-Password header of every REST call, "
+            "because the firmware checks the same password on both. Prefer the "
+            "C64CAST_DMA_PASSWORD env var over committing it here."
         },
     )
     # Auto-provision the U64's REU for runs that hard-require it ([audio].use_reu_pump
