@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import queue
 import random
 import threading
 import time
@@ -31,6 +32,7 @@ from c64cast.audio.audio_handlers import (
 )
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.control.transport import make_loop_preset_store, timecode
+from c64cast.hw import machine_input
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import CIA1, SCREEN
 from c64cast.video.modes import BitmapDisplayMode, DisplayMode
@@ -1672,6 +1674,12 @@ class LauncherScene(MediaFileMixin, Scene):
     Audio: the program drives the real SID directly, so this scene carries no
     AudioStreamer (built with audio=None) but still WANTS_AUDIO_LOCK so it
     coordinates the ensemble slot like the SID/MIDI scenes.
+
+    Joystick input can also be driven *into* the program: `inject_joystick`
+    is what a `[midi_control]` `joystick` mapping calls. It needs a machine
+    with ``POST /v1/machine:input`` (an Ultimate 64 on firmware 3.15+); a
+    sender thread posts the queued events, so the caller never waits on REST,
+    and teardown releases whatever is still held before the reset.
     """
 
     WANTS_AUDIO_LOCK = True
@@ -1723,6 +1731,10 @@ class LauncherScene(MediaFileMixin, Scene):
         self._input_lock = threading.Lock()
         self._baseline: bytes | None = None
         self._poll = PollThread(self._input_loop, name="launcher-input-poll", manual=True)
+        self._injected: queue.SimpleQueue[machine_input.Event] = queue.SimpleQueue()
+        self._sender = PollThread(self._send_loop, name="launcher-input-send", manual=True)
+        self._injected_any = False
+        self._injection_refused_logged = False
         self._prepared = False
 
     def setup(self) -> None:
@@ -1757,6 +1769,56 @@ class LauncherScene(MediaFileMixin, Scene):
             return
         if self.input_source != "none":
             self._poll.start()
+        if self.api.profile.supports_rest_input:
+            self._sender.start()
+
+    def inject_joystick(self, port: int, direction: str, pressed: bool) -> None:
+        """Press or release one joystick `direction` (see
+        `machine_input.JOYSTICK_INPUTS`) on `port` of the running program.
+        Returns at once; the sender thread posts it. Counts as player input
+        for the idle timeout. Dropped, with one WARNING per scene, on a machine
+        without the input API or while the program is not running."""
+        if not self._sender.is_running():
+            if not self._injection_refused_logged:
+                self._injection_refused_logged = True
+                log.warning(
+                    "launcher: joystick input dropped — %s",
+                    "the program is not running"
+                    if self.api.profile.supports_rest_input
+                    else "this machine has no input API (an Ultimate 64 on firmware 3.15+)",
+                )
+            return
+        transition = "press" if pressed else "release"
+        self._injected.put(machine_input.joystick_event(port, transition, [direction]))
+        with self._input_lock:
+            self._last_input_t = time.time()
+
+    def _send_loop(self, stop: threading.Event) -> None:
+        """Post queued injections, each burst as one request."""
+        while not stop.is_set():
+            try:
+                batch = [self._injected.get(timeout=0.05)]
+            except queue.Empty:
+                continue
+            while len(batch) < machine_input.MAX_EVENTS:
+                try:
+                    batch.append(self._injected.get_nowait())
+                except queue.Empty:
+                    break
+            self._injected_any = True
+            self.api.send_input(batch)
+
+    def _release_injected(self) -> None:
+        """Let go of anything injected input still holds. The reset that
+        follows would too, but it is a separate step that can fail."""
+        while True:
+            try:
+                self._injected.get_nowait()
+            except queue.Empty:
+                break
+        if self._injected_any:
+            self._injected_any = False
+            self.api.send_input([machine_input.RELEASE_ALL])
 
     def process_frame(self, current_time: float) -> bool:
         if (current_time - self.start_time) >= self.max_duration_s:
@@ -1777,6 +1839,8 @@ class LauncherScene(MediaFileMixin, Scene):
             type(self).__name__,
             [
                 ("input poll stop", self._poll.stop),
+                ("input sender stop", self._sender.stop),
+                ("injected input release", self._release_injected),
                 ("base teardown", super().teardown),
                 ("program reset", self.api.reset),
             ],

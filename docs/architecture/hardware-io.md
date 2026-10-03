@@ -16,6 +16,7 @@ Part of the [architecture reference](../architecture.md). For end-user configura
 * [`hw_provision.py` — live REU + sampler auto-provisioning](#hw_provisionpy--live-reu--sampler-auto-provisioning)
 * [`uci.py` — the Ultimate Command Interface at `$DF1C-$DF1F`](#ucipy--the-ultimate-command-interface-at-df1c-df1f)
 * [`menu_screen.py` — the Ultimate menu's own screen](#menu_screenpy--the-ultimate-menus-own-screen)
+* [`machine_input.py` — keyboard and joystick injection](#machine_inputpy--keyboard-and-joystick-injection)
 
 ---
 
@@ -287,3 +288,13 @@ What c64cast uses it for is the one bit "the menu is open", because that is a si
 | Overlay on HDMI | keeps running; DMA writes show | the menu covers the right-hand part | leaves the menu open |
 
 Either way the menu takes the keyboard, and since 3.15 REST memory access no longer closes it. `--doctor` warns when it finds the menu open and logs the decoded screen at DEBUG for a bug report; it never presses the menu button, because doctor does not change machine state. A run checks once, after the bring-up reset and clear loop, so only a menu that survived the reset (an overlay) is reported. The check is one `GET`, gated on the probe, and absent from older firmware with the probe's INFO line saying so.
+
+## `machine_input.py` — keyboard and joystick injection
+
+Firmware 3.15 added `POST /v1/machine:input` on the Ultimate 64: up to 64 events per request, each `keyboard`, `joystick` (port 1 or 2) or `release_all`, with a `transition` of `press`, `release` or `tap` and the keys or directions in an `inputs` list — at most 8 keys or the 7 joystick inputs `up down left right fire fire2 fire3`. The body must be `application/json` and under 4096 bytes, and the firmware validates the whole batch before applying any of it. Key names are matrix positions, not characters (`"` is `left_shift` plus `2`), and `restore` is the NMI line, so the firmware accepts it only in a `tap`. [machine_input.py](../../c64cast/hw/machine_input.py) holds that vocabulary and those limits, and `encode_batches` validates every event and packs them into bodies the firmware accepts, so a bad event is a `ValueError` naming it rather than a 400 that drops the batch, and a long sequence goes out as several requests. `text_to_events` types text in the power-on uppercase mode, one tap per character; the firmware paces taps itself (a 60 ms hold and a 40 ms gap), so a whole line goes in one request.
+
+`Ultimate64API.send_input` posts those bodies and returns the state the machine reports. A refusal, a transport failure or an odd answer returns `None` with a throttled WARNING, and never raises into a scene; a 404 or 501 also revokes `supports_rest_input` for the connection. Each body is all-or-nothing, but a later body failing leaves the earlier ones applied. The capability comes from the [route probe](#apipy--ultimate64api--socket_dmapy--socketdmaclient) on `GET /v1/machine:input`: 200 on an Ultimate 64 on 3.15, 501 on an Ultimate II+ (the firmware registers the route to say it cannot), and a 404 with an empty body on 3.14 and C64 Ultimate 1.1.0.
+
+`GET` (`input_state`) reports what the API and the Ultimate menu are holding, **not** the physical keyboard or joysticks, so it cannot replace the `$028D` and CIA polls in `control/keyboard.py` or the launcher's idle detection; it confirms only what c64cast injected. A machine reset releases everything the API holds. `SocketDMAClient.keyb()` — a DMA write into the KERNAL keyboard buffer — has no caller and is not a fallback: it can neither hold a key nor reach a joystick, so on firmware without the route the feature is simply not offered.
+
+The consumer is `LauncherScene.inject_joystick`, which the `[midi_control]` `joystick` action calls on a note or pad press and release. It only queues the event; the scene's own sender thread posts each burst as one request, so the MIDI reader never waits on REST. An injection counts as player input for the idle timeout, and teardown sends `release_all` before the reset. Measured on a U64-II on 3.15a with `scripts/diags/rest_input_probe.py`: typed `PRINT "HELLO"` ran at the READY prompt (HDMI capture and screen RAM agree), and holding fire on port 2 read `$DC00 = $6F`, back to `$7F` on release.

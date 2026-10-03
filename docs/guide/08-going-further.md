@@ -86,6 +86,22 @@ c64cast --midi-setup
 and c64cast asks you to move each control in turn, learning your layout and
 writing the mapping out for you.
 
+The pads can also play a game a `launcher` scene is running. Each `joystick`
+mapping holds one direction or the fire button for as long as the pad is down:
+
+```toml
+[[midi_control.cc_map]]
+type = "note"
+number = 60
+action = "joystick"
+input = "fire"   # up, down, left, right, fire, fire2, fire3
+port = 2             # the joystick port; 2 is the default
+```
+
+This needs an Ultimate 64 on firmware 3.15 or newer, which can press keys and
+move joysticks on the machine for c64cast. On anything else the pad does
+nothing, and the log says why.
+
 > [!TIP]
 > There is more here than one section can cover: a tempo and beat grid, a
 > clip-launch grid with lit pads on controllers that support it, and a layerable

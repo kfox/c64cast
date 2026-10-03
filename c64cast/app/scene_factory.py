@@ -43,6 +43,7 @@ from c64cast.audio.audio_source import (
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
 from c64cast.hw.c64 import SCREEN, VIC_BANK_0, nmi_rate_safety
+from c64cast.hw.machine_input import JOYSTICK_INPUTS, JOYSTICK_PORTS
 from c64cast.scenes import scenes as _scenes
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import GenerativeSource, build_generator
@@ -1703,6 +1704,18 @@ def validate_midi_control_cfg(midi_cfg: MidiControlCfg) -> None:
                 raise ConfigError(
                     f"[midi_control].cc_map[{i}] action 'fx_toggle' needs an int 'slot' "
                     f">= 0 (0-based effect layer index), got {slot!r}"
+                )
+        if action == "joystick":
+            port = entry.get("port")
+            if port is not None and port not in JOYSTICK_PORTS:
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'joystick' port must be 1 or 2, "
+                    f"got {port!r}"
+                )
+            if entry.get("input") not in JOYSTICK_INPUTS:
+                raise ConfigError(
+                    f"[midi_control].cc_map[{i}] action 'joystick' needs an 'input', one of "
+                    f"{', '.join(JOYSTICK_INPUTS)}, got {entry.get('input')!r}"
                 )
 
 

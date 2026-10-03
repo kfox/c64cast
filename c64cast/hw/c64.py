@@ -367,6 +367,7 @@ class U64_API:
     VERSION: Final = "/v1/version"
     # Firmware 3.15+; probed per connection (Ultimate64API.probe_route).
     MENU_SCREEN: Final = "/v1/machine:menu_screen"
+    INPUT: Final = "/v1/machine:input"
 
 
 # System clocks in Hz.

@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock
 
+from c64cast.hw import machine_input
 from c64cast.hw.c64 import CIA1
 from c64cast.scenes.scenes import LauncherScene
 
@@ -103,6 +105,52 @@ class InputSnapshotTest(unittest.TestCase):
                 scene._read_snapshot()
                 for call in api.read_memory.call_args_list:
                     self.assertNotEqual(call.args[0], 0x028D)
+
+
+class JoystickInjectionTest(unittest.TestCase):
+    """inject_joystick queues for the sender thread, which posts it; teardown
+    releases what was injected; a machine without the input API drops it."""
+
+    def _running_scene(self, tmp, *, supported: bool):
+        scene, api = _make_scene(tmp, input_source="none", reset_before_launch=False)
+        api.profile.supports_rest_input = supported
+        self.posted = threading.Event()
+        api.send_input.side_effect = lambda events: self.posted.set()
+        scene.setup()
+        self.addCleanup(scene._sender.stop)
+        return scene, api
+
+    def test_press_is_posted_and_teardown_releases_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            scene._last_input_t = 0.0
+            scene.inject_joystick(2, "fire", True)
+            self.assertTrue(self.posted.wait(2.0))
+            self.assertEqual(
+                api.send_input.call_args_list[0].args[0],
+                [machine_input.joystick_event(2, "press", ["fire"])],
+            )
+            self.assertGreater(scene._last_input_t, 0.0)
+            scene.teardown()
+            self.assertEqual(api.send_input.call_args.args[0], [machine_input.RELEASE_ALL])
+            self.assertFalse(scene._sender.is_running())
+
+    def test_teardown_without_injection_sends_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=True)
+            scene.teardown()
+            api.send_input.assert_not_called()
+
+    def test_machine_without_the_api_drops_with_one_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scene, api = self._running_scene(tmp, supported=False)
+            with self.assertLogs("c64cast.scenes.scenes", level="WARNING") as cm:
+                scene.inject_joystick(2, "up", True)
+                scene.inject_joystick(2, "up", False)
+            self.assertEqual(len(cm.records), 1)
+            self.assertIn("no input API", cm.output[0])
+            scene.teardown()
+            api.send_input.assert_not_called()
 
 
 if __name__ == "__main__":

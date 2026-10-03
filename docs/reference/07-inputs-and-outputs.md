@@ -187,6 +187,7 @@ system-exclusive frame). The actions fall into five groups:
 | Transport of a video | `transport.play_pause`, `transport.stop`, `transport.loop_toggle`, `transport.rw`, `transport.ff`, `transport.jog`, `transport.record`, `loop_slot` |
 | Performance | `clip_launch`, `tempo_tap`, `look_save`, `look_recall` |
 | Feedback | `osd.position` |
+| The machine's joystick | `joystick` |
 
 A `param` entry names its target as `holder.name`:
 
@@ -216,6 +217,37 @@ Anything that would need a scene *rebuild* is deliberately absent: a display-mod
 switch or a scene-type change costs real setup time, and is categorically wrong
 for a control that fires on a beat. Launching a whole scene from a pad is what
 the clip grid below is for, and it hides that cost behind a count-in.
+
+### Driving the Machine's Joystick
+
+A `joystick` entry holds one joystick input for as long as its note or pad is
+down. It acts on the program a `launcher` scene is running, and in any other
+scene it does nothing.
+
+```toml
+[[midi_control.cc_map]]
+type = "note"
+number = 61
+action = "joystick"
+input = "up"     # up, down, left, right, fire, fire2, fire3
+port = 2             # 1 or 2; 2 when left out
+```
+
+The input goes through the Ultimate's `POST /v1/machine:input`, which arrived
+in Ultimate 64 firmware 3.15. c64cast checks for it when it connects, not by
+version number:
+
+| Machine | `joystick` mapping |
+|---|---|
+| Ultimate 64 on 3.15 or newer | Drives the joystick port |
+| Ultimate 64 on 3.14 or older, C64 Ultimate on 1.1.0 | Dropped. The route does not exist, and the connect log says so |
+| Ultimate II+ on 3.15 | Dropped. The firmware answers that a cartridge cannot drive the lines |
+| TeensyROM+ | Dropped |
+
+When an input is dropped, the launcher logs one warning for that scene. An
+injection counts as player input for the launcher's idle timeout. When the
+scene ends, c64cast releases everything it pressed and then resets the
+machine.
 
 ### What Ships Mapped
 
