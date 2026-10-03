@@ -377,9 +377,11 @@ class TeensyromCfg:
         metadata={
             "help": "Write C64 memory with WriteC64Spans, which DMAs in slices and "
             "lets the 6510 run between them, so a large write no longer halts the "
-            "CPU across many NMI/IRQ periods. 'auto' uses it when the firmware "
-            "has it (TR+ v0.9+); 'on' warns if it does not; 'off' always uses "
-            "the single-halt WriteC64Mem.",
+            "CPU across many NMI/IRQ periods. Only while $D418-DAC audio plays, "
+            "and only for writes longer than one slice: slicing costs bulk "
+            "throughput, so otherwise every write stays on WriteC64Mem. 'auto' "
+            "uses it when the firmware has it (TR+ v0.9+); 'on' warns if it does "
+            "not; 'off' always uses the single-halt WriteC64Mem.",
             "choices": _TR_DMA_SLICING_CHOICES,
         },
     )
@@ -387,7 +389,8 @@ class TeensyromCfg:
         default=32,
         metadata={
             "help": "Largest single DMA halt, in bytes, when dma_slicing is in "
-            "use (1-255; 0 = no slicing, writes split into 1 KiB halts). Each slice "
+            "use (1-255; 0 = no slicing, writes split into 1 KiB halts while DAC "
+            "audio plays). Each slice "
             "also costs ~75 cycles of handshake, so smaller is gentler on "
             "audio and raster IRQs but slower."
         },
