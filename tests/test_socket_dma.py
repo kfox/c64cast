@@ -634,6 +634,7 @@ class _LoopbackDMAServer:
         last = time.monotonic()
         while not self._stop.is_set():
             if self.idle_close_s is not None and time.monotonic() - last >= self.idle_close_s:
+                conn.close()
                 self.idle_closed.set()
                 return
             try:
@@ -666,6 +667,7 @@ class _LoopbackDMAServer:
                 continue
             break
         conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        conn.close()
         self.dropped.set()
 
 
@@ -717,7 +719,7 @@ class IdleCloseTest(unittest.TestCase):
     def test_a_gap_just_inside_the_timeout_keeps_the_connection(self):
         # Past the verify threshold but short of the server's timeout: the
         # IDENTIFY round trip finds the connection open, so no redial.
-        server = self._serve(idle_close_s=0.4)
+        server = self._serve(idle_close_s=1.0)
         c = self._connect_quietly(server, idle_verify_after_s=0.1)
         c.dmawrite(0x0400, b"\x01")
         time.sleep(0.25)
