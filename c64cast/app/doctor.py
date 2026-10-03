@@ -956,17 +956,27 @@ def _validate_hardware_palette(loaded: LoadResult) -> list[Diagnostic]:
     `"source"` alongside force_palette or flicker_tolerance, on [color], a
     scene's override or a clip's. Offline — the same per-section check as
     scene_factory.validate_hardware_palette_cfg, applied to every section so
-    one refusal does not hide the next. An override that does not resolve is
-    reported by `_validate_scenes`, not here."""
+    one refusal does not hide the next. A scene override that does not resolve
+    is reported by `_validate_scenes`; a clip's, which no other check reaches,
+    is reported here under its own subject."""
     out: list[Diagnostic] = []
     for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
         sections: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
-        for owner, s in scene_and_clip_cfgs(cfg):
+        for i, (owner, s) in enumerate(scene_and_clip_cfgs(cfg)):
             if not s.color:
                 continue
             try:
                 sections.append((f"{owner}.color", scene_color(cfg, s)))
-            except ValueError:
+            except ValueError as e:
+                if i >= len(cfg.scenes):
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=f"{name}/{owner}.color",
+                            message=f"{owner}.color: {e}",
+                        )
+                    )
                 continue
         for label, color in sections:
             err = hardware_palette_cfg_error(label, color)

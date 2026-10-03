@@ -1688,6 +1688,19 @@ class HardwarePaletteDiagnosticTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("[[scenes]][1].color", errors[0].message)
 
+    def test_an_unresolvable_clip_override_is_still_reported(self):
+        # No other doctor check builds a clip, and a run refuses this one at
+        # startup, so the offline check must not pass it.
+        diags = self._diags(
+            '[[scenes]]\ntype = "blank"\n\n'
+            '[[performance.clips]]\nslot = 1\ntype = "video"\nfile = "z.mp4"\n'
+            '  [performance.clips.color]\n  force_palette_colors = ["black"]\n'
+        )
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].subject, "system/[[performance.clips]][0].color")
+        self.assertIn("force_palette_colors", errors[0].message)
+
 
 @contextlib.contextmanager
 def _loaded_config_file(body: str) -> Iterator[tuple[cfgmod.LoadResult, str]]:
