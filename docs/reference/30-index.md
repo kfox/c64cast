@@ -145,7 +145,7 @@ Every name c64cast answers to — 462 of them — and the pages that discuss eac
 | `dma_port` | [What a Target Decomposes Into (1)](02-config-rules.md#what-a-target-decomposes-into), [`ultimate64` (A)](20-appendix-a-configuration.md#ultimate64) |
 | `dma_slice_bytes` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `dma_slice_gap_us` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
-| `dma_slicing` | [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
+| `dma_slicing` | [The Bitmap-and-DAC Time Stretch (4)](05-sound-and-music.md#the-bitmap-and-dac-time-stretch), [`teensyrom` (A)](20-appendix-a-configuration.md#teensyrom) |
 | `dna` | [`generative` (B)](21-appendix-b-scene-types.md#generative), [Generators (E)](24-appendix-e-generators-effects.md#generators), [`source` (F)](25-appendix-f-live-targets.md#source) |
 | `--doctor` | [Files and Where They Are Found (1)](02-config-rules.md#files-and-where-they-are-found), [Editor Autocomplete (1)](02-config-rules.md#editor-autocomplete), [`--doctor` (1)](02-config-rules.md#--doctor) |
 | `done_text` | [The Overlays (2)](03-vocabulary.md#the-overlays), [`countdown` (C)](22-appendix-c-overlays.md#countdown) |
