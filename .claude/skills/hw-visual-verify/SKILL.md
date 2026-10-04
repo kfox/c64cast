@@ -56,7 +56,14 @@ name matches no webcam, phone or virtual-camera pattern — and prints
 every camera rather than open one — the laptop's own camera is one
 renumbering away from index 0. Never pass an index to find out which camera
 is which; read `c64cast --list-devices` instead. `$C64_DIAG_CAMERA` sets the
-default for a shell; an index-only `$C64_DIAG_CV2` still works, with a warning.
+default for a shell. The removed `$C64_DIAG_CV2` stops every capture tool
+while it is set.
+
+Audio comes from the input named like that capture camera: `run_and_capture.py`
+and the audio tools print `[audio] picked …` to stderr. `-D` (or
+`$C64_DIAG_AVF_AUDIO` / `$C64_DIAG_SD_AUDIO`) names another, by index or name.
+With no match or several, the tool exits listing the inputs; it never records
+from the system default input, which is the laptop microphone.
 
 ## When a capture returns no frame
 

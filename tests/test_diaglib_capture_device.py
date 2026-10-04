@@ -116,19 +116,25 @@ class CamLinkAndFaceTimeTest(CaptureDeviceTestCase):
         os.environ["C64_DIAG_CAMERA"] = "FaceTime"
         self.assertEqual(_diaglib.resolve_capture("0fd9:0066"), (1, _AVF))
 
-    def test_legacy_index_env_still_works_and_warns(self) -> None:
-        os.environ["C64_DIAG_CV2"] = "0"
-        err = io.StringIO()
-        with redirect_stderr(err):
-            self.assertEqual(_diaglib.resolve_capture(None), (0, None))
-        self.assertIn("C64_DIAG_CV2=0", err.getvalue())
-        self.assertIn("set C64_DIAG_CAMERA", err.getvalue())
-
-    def test_legacy_env_that_is_not_an_index_is_refused(self) -> None:
-        os.environ["C64_DIAG_CV2"] = "Cam Link"
-        with self.assertRaises(SystemExit) as cm:
-            _diaglib.resolve_capture(None)
-        self.assertIn("C64_DIAG_CAMERA", str(cm.exception))
+    def test_the_removed_index_env_stops_the_tool(self) -> None:
+        """Set, ``C64_DIAG_CV2`` stops every lookup, a named device and
+        ``C64_DIAG_CAMERA`` included, rather than being silently ignored."""
+        for value in ("0", "1", "Cam Link"):
+            os.environ["C64_DIAG_CV2"] = value
+            for device, camera_env in ((None, None), (None, "cam link"), ("0fd9:0066", None)):
+                if camera_env is None:
+                    os.environ.pop("C64_DIAG_CAMERA", None)
+                else:
+                    os.environ["C64_DIAG_CAMERA"] = camera_env
+                with self.subTest(cv2=value, device=device, camera_env=camera_env):
+                    with patch.object(cv2, "VideoCapture") as video_capture:
+                        with self.assertRaises(SystemExit) as cm:
+                            _diaglib.open_capture(device)
+                    video_capture.assert_not_called()
+                    message = str(cm.exception)
+                    self.assertIn(f"C64_DIAG_CV2={value!r} was removed", message)
+                    self.assertIn("C64_DIAG_CAMERA", message)
+                    self.assertIn("index, name or VID:PID", message)
 
     def test_open_capture_opens_the_autopicked_index_on_its_backend(self) -> None:
         with patch.object(cv2, "VideoCapture") as video_capture, redirect_stderr(io.StringIO()):

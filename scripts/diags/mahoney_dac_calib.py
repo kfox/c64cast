@@ -68,6 +68,7 @@ import time
 import wave
 from pathlib import Path
 
+import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
@@ -87,7 +88,6 @@ from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 
 CAP_SR = 48000
-CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx); resolved by name too
 OUT = Path(__file__).resolve().parent / "out"
 
 NMI_RATE = 8000  # consumer rate; well under the ~14 kHz handler ceiling
@@ -126,13 +126,6 @@ def tone_amplitude(cap: np.ndarray, sr: int, freq: float) -> float:
     peak = float(spec[idx].max()) if idx.size else 0.0
     # coherent-gain normalization: Hann sums to N/2; ×2 for one-sided rfft.
     return peak * 2.0 / win.sum()
-
-
-def find_camlink(fallback: int) -> int:
-    for i, dev in enumerate(sd.query_devices()):
-        if "cam link" in dev["name"].lower() and dev["max_input_channels"] > 0:
-            return i
-    return fallback
 
 
 def latch_for(rate: int, system: str) -> int:
@@ -287,13 +280,14 @@ def main() -> int:
     )
     ap.add_argument("--secs", type=float, default=1.2, help="capture seconds per code")
     ap.add_argument("--settle", type=float, default=0.5, help="settle seconds after ring swap")
-    ap.add_argument("--device", type=int, default=CAP_DEVICE, help="Cam Link audio sd index")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument(
         "--pan-center",
         action="store_true",
         help="(U64) set Audio Mixer Pan Socket 1 = Center for capture, restore on exit",
     )
     args = ap.parse_args()
+    audio = d.resolve_audio_input("sd", args.device)
 
     full = args.full or args.signed
     codes = (
@@ -322,7 +316,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = find_camlink(args.device)
+        device = d.refind_sd_audio_input(audio)
         print(f"[cap] device idx {device}: {sd.query_devices(device)['name']}")
         print(f"[cap] toggle freq {TOGGLE_FREQ:.0f} Hz, ref=${args.ref:02X}, {len(codes)} codes\n")
 

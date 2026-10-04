@@ -13,15 +13,16 @@ Use it to set each [vision] threshold from real numbers: capture a window while
 performing one gesture, read the printed min/median/max, pick a threshold that
 cleanly separates that gesture from rest. No U64 needed — camera only.
 
-    scripts/diags/vision_tune.py                 # run until Ctrl-C, FaceTime camera
+    scripts/diags/vision_tune.py                 # run until Ctrl-C, auto-picked webcam
     scripts/diags/vision_tune.py -t 6            # one 6-second capture window
     scripts/diags/vision_tune.py --device "USB Camera"  # pick another camera
     scripts/diags/vision_tune.py --pinch 0.06 --swipe 1.0   # preview thresholds
 
 ``--device`` takes what ``[video].device`` takes: a camera name substring, a
-USB ``VID:PID``, or a cv2 index. The default is the name "FaceTime", not an
-index, because the indices renumber whenever a USB camera such as the Cam Link
-comes or goes. ``c64cast --list-devices`` prints the names and IDs.
+USB ``VID:PID``, or a cv2 index. With none, the tool opens the one connected
+camera that does not look like an HDMI capture device, and exits listing the
+cameras when there is not exactly one. ``c64cast --list-devices`` prints the
+names and IDs.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from __future__ import annotations
 import argparse
 import time
 
-import _diaglib  # noqa: F401  (path bootstrap: makes `import c64cast` work)
+import _diaglib as d
 import numpy as np
 
 from c64cast.app.config import VisionCfg
@@ -57,8 +58,9 @@ def main() -> None:
     )
     ap.add_argument(
         "--device",
-        default="FaceTime",
-        help="camera: a name substring, a USB VID:PID, or a cv2 index (default: FaceTime)",
+        default=None,
+        help="camera: a name substring, a USB VID:PID, or a cv2 index (default: the one "
+        "connected camera that does not look like an HDMI capture device)",
     )
     ap.add_argument(
         "--model",
@@ -97,6 +99,8 @@ def main() -> None:
         help="mirror the frame (match the webcam view)",
     )
     args = ap.parse_args()
+    if args.device is None:
+        args.device = d.autopick_webcam()
 
     print(
         f"opening camera {args.device!r} + loading model "

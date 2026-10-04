@@ -30,6 +30,7 @@ import argparse
 import sys
 import time
 
+import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
@@ -37,7 +38,6 @@ from c64cast.app.config import Config
 from c64cast.app.connect import apply_to_config, parse_connection_uri
 from c64cast.audio import dac_calibration as dc
 from c64cast.audio import dac_calibration_store as dcs
-from c64cast.audio import dac_capture_device as dcap
 from c64cast.audio import dac_slot_ring as dsr
 from c64cast.audio.audio import AudioStreamer
 from c64cast.audio.audio_handlers import (
@@ -96,9 +96,10 @@ def main() -> int:
     ap.add_argument("--socket", type=int, default=1, choices=(1, 2))
     ap.add_argument("--system", default="NTSC", choices=("NTSC", "PAL"))
     ap.add_argument("--profile", default=None, help="[audio].dac_calibration_profile")
-    ap.add_argument("--device", type=int, default=None)
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument("--secs", type=float, default=3.0)
     args = ap.parse_args()
+    audio = d.resolve_audio_input("sd", args.device)
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
@@ -146,7 +147,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = dcap.find_capture_device(args.device)
+        dev = d.refind_sd_audio_input(audio)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
         print(f"[cap] test tone {TONE_HZ:.1f} Hz, {args.secs}s per curve\n")
 

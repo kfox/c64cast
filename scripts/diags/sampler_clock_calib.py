@@ -192,6 +192,7 @@ def main() -> int:
     )
     ap.add_argument("--no-reset", action="store_true", help="leave the machine running")
     ap.add_argument("--analyze-only", metavar="WAV", help="skip playback; analyze an existing wav")
+    d.add_audio_device_arg(ap, "-D", "--avf-audio", dest="avf_audio", backend="avf")
     args = ap.parse_args()
 
     if args.analyze_only:
@@ -202,9 +203,10 @@ def main() -> int:
         report(res[0], res[1], args.freq, args.ref)
         return 0
 
+    audio_dev = str(d.resolve_audio_input("avf", args.avf_audio).device)
     wav = d.stamped("sampler_clock", "wav")
     cap_secs = args.seconds + 6
-    print(f"[cap] {cap_secs:.0f}s of HDMI audio ({d.CAMLINK_AVF_AUDIO}) -> {wav}")
+    print(f"[cap] {cap_secs:.0f}s of HDMI audio ({audio_dev}) -> {wav}")
     ff = subprocess.Popen(
         [
             "ffmpeg",
@@ -214,7 +216,7 @@ def main() -> int:
             "-f",
             "avfoundation",
             "-i",
-            d.CAMLINK_AVF_AUDIO,
+            audio_dev,
             "-t",
             str(cap_secs),
             "-y",

@@ -42,6 +42,7 @@ import time
 import wave
 from pathlib import Path
 
+import _diaglib as d
 import numpy as np
 import sounddevice as sd
 
@@ -62,7 +63,6 @@ from c64cast.hw.backend import make_backend
 from c64cast.hw.c64 import CIA2, CLOCK_NTSC, CLOCK_PAL
 
 CAP_SR = 48000
-CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx)
 OUT = Path(__file__).resolve().parent / "out"
 
 # The ring holds exactly RING_CYCLES sine periods so it loops seamlessly (no
@@ -101,15 +101,6 @@ def measured_pitch(cap: np.ndarray, sr: int, lo: float, hi: float) -> float:
         delta = 0.0
     df = f[1] - f[0]
     return float(f[k] + delta * df)
-
-
-def find_camlink(fallback: int) -> int:
-    """Resolve the Cam Link audio input index by NAME (robust to PortAudio
-    re-enumeration after an HDMI hotplug), falling back to `fallback`."""
-    for i, dev in enumerate(sd.query_devices()):
-        if "cam link" in dev["name"].lower() and dev["max_input_channels"] > 0:
-            return i
-    return fallback
 
 
 def latch_for(rate: int, system: str) -> int:
@@ -185,8 +176,9 @@ def main() -> int:
         default="8000,10500,11025,11600,13000,14000,15000",
         help="comma-separated sample rates to sweep",
     )
-    ap.add_argument("--device", type=int, default=CAP_DEVICE, help="Cam Link audio sd index")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     args = ap.parse_args()
+    audio = d.resolve_audio_input("sd", args.device)
 
     rates = [int(r) for r in args.rates.split(",")]
     cfg = Config()
@@ -202,7 +194,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = find_camlink(args.device)
+        device = d.refind_sd_audio_input(audio)
         print(f"[cap] capturing from device idx {device}: {sd.query_devices(device)['name']}")
         for r in rates:
             pitch, _ = capture_rate(be, r, args.system, args.secs, device)
