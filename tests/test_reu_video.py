@@ -171,7 +171,11 @@ class WiredModeRecOwnershipTest(unittest.TestCase):
         # The display-name gate in resolve_use_reu_staged against the modes'
         # own drives_rec_from_host, for every concrete display.
         from c64cast.app.config import _DISPLAY_CHOICES
-        from c64cast.app.scene_factory import DisplayWiring, build_wired_display_mode
+        from c64cast.app.scene_factory import (
+            _HOST_REC_STAGED_MODES,
+            DisplayWiring,
+            build_wired_display_mode,
+        )
 
         for d in (c for c in _DISPLAY_CHOICES if c != "random"):
             for pump in (False, True):
@@ -181,8 +185,12 @@ class WiredModeRecOwnershipTest(unittest.TestCase):
                     )
                     with quiet_logging():
                         mode = build_wired_display_mode(d, wiring)
-                    expected = (not pump) and d in ("petscii", "blank")
+                    # Pump on: no mode drives REC. Pump off: exactly the named
+                    # set does, so the set and the property cannot drift apart.
+                    expected = (not pump) and d in _HOST_REC_STAGED_MODES
                     self.assertEqual(mode.drives_rec_from_host, expected)
+                    if not pump:
+                        self.assertEqual(d in _HOST_REC_STAGED_MODES, mode.drives_rec_from_host)
 
 
 class ReuPumpSkipsIrqHookTest(unittest.TestCase):
