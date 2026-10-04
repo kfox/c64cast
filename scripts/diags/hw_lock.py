@@ -67,8 +67,19 @@ def lock_path(device: str) -> Path:
     return lock_dir() / f"{lock_key(device)}.lock"
 
 
-def _held_by_an_ancestor(path: Path) -> bool:
-    return str(path) in os.environ.get(HELD_ENV, "").split(os.pathsep)
+def _held_by_an_ancestor(path: Path, holder: str) -> bool:
+    """True when the lock file's holder pid is the one an ancestor exported for ``path``."""
+    pid = holder.split(":", 1)[0]
+    return f"{pid}@{path}" in os.environ.get(HELD_ENV, "").splitlines()
+
+
+def _export_held(path: Path) -> None:
+    others = [
+        entry
+        for entry in os.environ.get(HELD_ENV, "").splitlines()
+        if entry and entry.partition("@")[2] != str(path)
+    ]
+    os.environ[HELD_ENV] = "\n".join([*others, f"{os.getpid()}@{path}"])
 
 
 def _exec(command: list[str]) -> int:
@@ -109,10 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        if _held_by_an_ancestor(path):
+        holder = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip() or "unknown"
+        if _held_by_an_ancestor(path, holder):
             os.close(fd)
             return _exec(command)
-        holder = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip() or "unknown"
         print(f"hw_lock: waiting for {path} (held by pid {holder})", file=sys.stderr, flush=True)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -128,8 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     os.ftruncate(fd, 0)
     os.pwrite(fd, f"{os.getpid()}: {shlex.join(command)}\n".encode(), 0)
     os.set_inheritable(fd, True)
-    if not _held_by_an_ancestor(path):
-        os.environ[HELD_ENV] = os.pathsep.join(filter(None, [os.environ.get(HELD_ENV), str(path)]))
+    _export_held(path)
     return _exec(command)
 
 

@@ -48,6 +48,13 @@ class LockKeyTest(unittest.TestCase):
     def test_a_malformed_url_keys_on_the_whole_string(self) -> None:
         self.assertEqual(hw_lock.lock_key("http://[bad"), "http_bad")
 
+    def test_an_exported_lock_is_an_ancestors_only_while_its_pid_holds_it(self) -> None:
+        path = Path("/x/locks/default.lock")
+        with patch.dict(os.environ, {hw_lock.HELD_ENV: f"other\n123@{path}"}):
+            self.assertTrue(hw_lock._held_by_an_ancestor(path, "123: make test"))
+            self.assertFalse(hw_lock._held_by_an_ancestor(path, "456: another session"))
+            self.assertFalse(hw_lock._held_by_an_ancestor(path, "unknown"))
+
     def test_lock_dir_override(self) -> None:
         with patch.dict(os.environ, {"C64_DIAG_LOCK_DIR": "/x/locks"}):
             self.assertEqual(hw_lock.lock_path("u64://Host"), Path("/x/locks/host.lock"))
