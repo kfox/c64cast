@@ -274,8 +274,10 @@ def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
       camera's index and the backend it was enumerated with.
 
     Raises ``RuntimeError`` (actionable message) when the ``camera`` extra is
-    missing or no camera matches. Warns and takes the first on multiple matches
-    (mirrors :func:`c64cast.hw.teensyrom_dma.autodetect_serial_port`)."""
+    missing or no camera matches. Warns and takes the first camera when several
+    match (mirrors :func:`c64cast.hw.teensyrom_dma.autodetect_serial_port`),
+    counting a Linux camera's per-backend listings as one and returning its
+    V4L2 listing when it has one."""
     if isinstance(device, int):
         return (0 if device < 0 else device, None)
     token = device.strip()

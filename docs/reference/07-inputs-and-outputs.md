@@ -139,7 +139,7 @@ c64cast --list-devices
 ```
 
 prints what can be found, cameras and audio inputs both, with identifiers and
-indices. An ambiguous name warns and takes the first match; a name that matches
+indices. A name that matches several cameras warns and takes the first of them; a name that matches
 nothing is an error naming the candidates.
 
 **One camera is shared.** The webcam scene and the gesture controller read
