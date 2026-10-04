@@ -31,8 +31,8 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 ### Added
 
 - **`scripts/diags/hw_lock.py` runs a command while holding a per-user lock on
-  one rig**, so two contributors' scripts or agents sharing a machine take turns
-  on the U64's single-connection DMA service and the capture device instead of
+  one rig**, so the shells and agents one user account runs against a rig take
+  turns on the U64's single-connection DMA service and the capture device instead of
   breaking each other's runs. It waits, says on stderr who holds the lock, then
   execs the command, so the exit code and Ctrl-C are the command's own.
   `--device` keys the lock on a URL's host, so a second rig does not wait on the
