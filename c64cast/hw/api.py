@@ -122,8 +122,8 @@ BASIC_CLEAR_LOOP_PRG = bytes(
     ]
 )
 
-# C64-side SID player. Default base $C300 (just past audio_handlers.py's
-# $C000-$C2FF allocation for the NMI DAC + REU pump handlers); per-tune
+# C64-side SID player. Default base $C300 (just past $C000-$C2FF: big_text
+# at $C000-$C01F, then audio_handlers.py's NMI DAC + REU pump handlers); per-tune
 # relocated by [_choose_player_layout] when the SID payload would overlap
 # the default. 73 bytes; the IRQ handler entry sits at base +
 # SID_PLAYER_IRQ_HANDLER_OFFSET.
@@ -498,7 +498,7 @@ def _find_free_layout(parsed: ParsedPsid, avoid: bytes | bytearray) -> _PlayerLa
 
     `avoid` is the union of the tune's observed write footprint and the
     scene-reserved regions. We scan $0820-$D000 for runs of bytes that are
-    free of `avoid`, the SID payload, and audio_handlers.py's $C000-$C2FF region,
+    free of `avoid`, the SID payload, and the $C000-$C2FF big_text/audio region,
     and pick the largest such run that can hold the 115-byte bundle (player
     MC 73 + re-INIT stub at player_base+80). Largest-first (tie-break
     lowest address) puts the player deep in genuinely-unused RAM, which

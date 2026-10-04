@@ -11,7 +11,7 @@ The 13 overlays and their 76 parameters. An overlay is attached to a scene with 
 
 Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only).
 
-Restrictions: only on `blank`, `mcm`.
+Restrictions: only on `blank`, `mcm`; not on `blank` while `[audio].use_reu_pump` is on.
 
 ```toml
   [[scenes.overlays]]

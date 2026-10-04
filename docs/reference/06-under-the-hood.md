@@ -166,8 +166,10 @@ does today.
 | `$C500` | The bank-swap interrupt handler |
 | `$C700-$C70F` | The frame tracker that handler reads |
 
-`$C000-$C2FF` belongs to audio, which is why the player starts at `$C300` and
-why the relocator refuses any layout that would overlap it. A tune whose payload
+`$C000-$C2FF` belongs to audio and to `big_text`, whose raster interrupt
+handler and two shadow registers fill `$C000-$C01F` on a `blank` scene. That is
+why the player starts at `$C300` and why the relocator refuses any layout that
+would overlap the range. A tune whose payload
 covers `$C300` moves the player into the largest clear hole instead.
 
 The frame tracker is sixteen bytes packed contiguously so the host can stage a
