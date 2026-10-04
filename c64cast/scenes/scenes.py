@@ -1623,7 +1623,7 @@ class VideoScene(MediaFileMixin, Scene):
                     tr.seek(tr.loop_a)
                 return True
         # Through a resync splice's hold this is the target, ahead of clock_s.
-        frame_clock_s = tr.target_clock_s()
+        frame_clock_s = tr.target_clock_s(clock_s)
         img = self.source.current_frame(frame_clock_s)
         if img is None:
             return True  # still pre-rolling

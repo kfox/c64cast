@@ -950,6 +950,24 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(scene._av_lag_count, 1)
         self.assertAlmostEqual(scene._av_lag_min, 0.0)
 
+    def test_a_running_clock_outside_a_hold_is_counted_as_lag(self):
+        # The sampler's position is a wall clock, so no two reads agree.
+        scene, source, audio = self._resync_scene(position=3.0)
+        reads = iter(3.0 + 0.001 * i for i in range(100))
+        audio.position_seconds = lambda: next(reads)  # type: ignore[method-assign]
+        scene._av_lag_count = 0
+        source.last_frame_pts = 3.0
+        source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        with (
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+            scene.transport.touch()
+            source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            scene.process_frame(0.0)
+        self.assertEqual(scene._av_lag_count, 2)
+
     def test_a_frame_shown_through_the_hold_is_labeled_with_its_own_time(self):
         scene, source, audio = self._resync_scene(position=3.0)
         audio.ring_lead = 0.34

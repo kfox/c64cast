@@ -356,13 +356,16 @@ class VideoTransportControls:
         otherwise lose the hold's length on every step."""
         return self.clock_to_content(self.target_clock_s())
 
-    def target_clock_s(self) -> float:
+    def target_clock_s(self, clock_s: float | None = None) -> float:
         """clock_s(), except through a resync splice's hold, where it is the
         splice target the clock is waiting to reach. The displayed frame is
         chosen by it, so a seek shows its target frame as a still through the
         hold rather than nothing: a held FF/RW re-seeks faster than a hold
-        ends and would otherwise show no picture until release."""
-        clk = self.clock_s()
+        ends and would otherwise show no picture until release.
+
+        A caller that already read ``clock_s`` passes it, and outside a hold
+        gets that same value back; a second read of a running clock differs."""
+        clk = self.clock_s() if clock_s is None else clock_s
         if self.touched and self.resync:
             clk = max(clk, self.audio_anchor_clock_s)
         return clk
