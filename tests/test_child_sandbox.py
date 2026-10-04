@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from typing import Any
 from unittest import mock
@@ -110,6 +111,46 @@ class ClampTest(unittest.TestCase):
         # `upgrade._stop`'s interrupt grace is exactly `BOUND_S`.
         with self.assertRaises(subprocess.TimeoutExpired):
             subprocess.run(_hangs(), timeout=_TEST_BOUND_S, capture_output=True)
+
+    def test_a_slow_reap_after_the_callers_own_kill_is_left_to_the_caller(self):
+        # #539. `subprocess.run` answers its own expiry with `kill()` and an
+        # unbounded `wait()`; a reap slower than `BOUND_S` on a loaded runner
+        # turned that `TimeoutExpired` into a `ChildProcessHung`. The real
+        # kill lands two bounds late here, so the reap always outlasts one.
+        real_kill = _child_sandbox._ORIGINAL_KILL
+        timers: list[threading.Timer] = []
+
+        def kill_late(popen: subprocess.Popen[Any]) -> None:
+            timer = threading.Timer(_TEST_BOUND_S * 2, real_kill, (popen,))
+            timers.append(timer)
+            timer.start()
+
+        self.addCleanup(lambda: [timer.join() for timer in timers])
+        with (
+            mock.patch.object(_child_sandbox, "_ORIGINAL_KILL", kill_late),
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            subprocess.run(_hangs(), timeout=_TEST_BOUND_S, capture_output=True)
+
+    def test_a_killed_child_that_is_never_reaped_is_still_named(self):
+        # The reap allowance is a bound too: a kill that never lands is a
+        # hang like any other.
+        real_kill = _child_sandbox._ORIGINAL_KILL
+        survivors: list[subprocess.Popen[Any]] = []
+
+        def reap_survivors() -> None:
+            for popen in set(survivors):
+                real_kill(popen)
+                _child_sandbox._ORIGINAL_WAIT(popen, _child_sandbox._REAP_S)
+
+        self.addCleanup(reap_survivors)
+        with (
+            mock.patch.object(_child_sandbox, "_ORIGINAL_KILL", survivors.append),
+            mock.patch.object(_child_sandbox, "_REAP_S", _TEST_BOUND_S),
+            self.assertRaises(ChildProcessHung) as caught,
+        ):
+            subprocess.run(_hangs(), timeout=_TEST_BOUND_S / 5, capture_output=True)
+        self.assertIn("the caller allowed no bound at all", str(caught.exception))
 
     def test_an_except_exception_around_the_call_cannot_swallow_it(self):
         # Neither production site catches `Exception`, but both swallow the
