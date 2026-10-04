@@ -149,7 +149,7 @@ def _input_named_like_capture_camera(inputs: list[_Input]) -> int:
     if one is not None:
         log.info("calib: capture input %d is named like the capture device %r", one.index, cam.name)
         return one.index
-    reason = "no audio input" if not found else f"{len(found)} audio inputs"
+    reason = "no audio input" if not found else "more than one audio input"
     raise CaptureUnavailableError(
         f"{reason} named like the capture device {cam.name!r}, so nothing is recorded. "
         + pick_device_hint("Name the input with")

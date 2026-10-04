@@ -1446,7 +1446,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
 
     def test_two_inputs_named_like_the_capture_device_are_ambiguous(self):
         message = self._refused([("Cam Link 4K", 2), ("Cam Link 4K #2", 2)])
-        self.assertIn("2 audio inputs named like", message)
+        self.assertIn("more than one audio input named like", message)
 
     def test_a_missing_camera_extra_is_refused(self):
         message = self._refused([(_MIC, 1), ("Cam Link 4K", 2)], camera_extra=False)
@@ -1496,7 +1496,7 @@ class FindCaptureDeviceTest(unittest.TestCase):
 
     def test_two_inputs_in_one_host_api_stay_ambiguous(self):
         inputs = self.windows + [("Digital Audio Interface (Cam Link 4K #2)", 2, 2)]
-        self.assertIn("3 audio inputs named like", self._refused(inputs))
+        self.assertIn("more than one audio input named like", self._refused(inputs))
         line_in = self.windows + [("Line In (Realtek Audio)", 2, 1)]
         self.assertIn("matches more than one", self._refused(line_in, "realtek"))
         self.assertIn("matches more than one", self._refused(inputs, "link 4k"))
