@@ -253,6 +253,10 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Removed
 
+- **`C64_DIAG_CV2`.** The diag tools' index-only camera variable opened
+  whatever camera sat at that index. A tool now exits while it is set; use
+  `C64_DIAG_CAMERA`, which takes an index, a name substring or a VID:PID.
+
 - **`scripts/diags/reu_servo_probe.py`.** It tested a host-side servo on the
   REU pump's CIA #1 latch, a design that never shipped: the pump is held to
   the reader by the C64-side governor in its own IRQ handler instead. The
@@ -286,18 +290,19 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   scene in an ensemble (which holds no audio). `big_text` on
   `mcm` hooks no interrupt and is unaffected.
 
-- **The diag and capture tools open the Cam Link by its USB ID, and stop if it
-  is absent.** With no device flag they opened cv2 index 0. When a U64
-  PAL/NTSC switch dropped the Cam Link off the USB bus, the laptop's own
-  camera moved to index 0 and the tools filmed the room instead of the C64.
-  The default is now the Cam Link's `0fd9:0066`, and a missing Cam Link ends
-  the run with a message rather than opening another camera. Every tool in
+- **The diag and capture tools pick the HDMI capture device themselves, and
+  stop rather than open another camera.** With no device flag they opened cv2
+  index 0. When a U64 PAL/NTSC switch dropped the Cam Link off the USB bus,
+  the laptop's own camera moved to index 0 and the tools filmed the room
+  instead of the C64. With no `--device` and no `C64_DIAG_CAMERA`, a tool now
+  opens the one connected camera that looks like an HDMI capture device: a USB
+  device whose name matches no webcam, phone or virtual-camera pattern. With
+  none or several, it exits listing every camera's name and VID:PID rather
+  than opening one. Every tool in
   `scripts/diags/` that captures video, and `scripts/capture_guide_figure.py`,
   now takes the same `--device` (an index, a name substring, or a VID:PID);
-  the older `--index`, `--cv2-index` and `--cam` still work. An index-only
-  `C64_DIAG_CV2` is still read, with a warning; `C64_DIAG_CAMERA` takes any
-  form. `scripts/diags/vision_tune.py` picks its camera by the name "FaceTime"
-  rather than index 1.
+  the older `--index`, `--cv2-index` and `--cam` still work.
+  `C64_DIAG_CAMERA` takes any of those forms.
 
 - **The HDMI capture diag tools wait out a capture that returns no frame for a
   moment.** `scripts/diags/hdmi_capture.py` gave up on the first read that
@@ -308,6 +313,30 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `c64cast --list-devices`. `menu_inject.py`, `run_and_capture.py` and
   `scripts/capture_guide_figure.py` retry their stills the same way; the
   last two used to drop a failed still silently and now print why.
+
+- **The diag tools that run c64cast find their capture device before they
+  start it.** `run_and_capture.py`, `doublebuffer_tear_ab.py`,
+  `flicker_tear_ab.py`, `menu_inject.py --frames` and `flicker_score_grid.py`
+  looked for the camera only once c64cast had booted the C64, so a missing or
+  ambiguous capture device failed after the machine had been reset and
+  driven, and the tools then reset it again. They now look first and exit in
+  seconds without touching the machine.
+
+- **The diag tools' audio capture no longer falls back to a fixed device.**
+  The ffmpeg tools recorded from avfoundation input `:3` whenever the Cam
+  Link's name was not found, and `reu_audio_spectrum.py` always did; the
+  sounddevice tools defaulted to input 1, and two of them fell back to the
+  system default input, which on a laptop is its microphone. With no `-D` and
+  no `C64_DIAG_AVF_AUDIO` / `C64_DIAG_SD_AUDIO`, a tool now records from the
+  one audio input named like the capture camera (the tool's own `--device`
+  where it has one, else the one `C64_DIAG_CAMERA` names, else the
+  auto-picked HDMI capture device), and exits listing the
+  inputs when none or several match. It looks before it touches the machine.
+  `-D` takes an index or a name substring on every audio tool.
+  `scripts/diags/vision_tune.py` no longer defaults to the camera named
+  "FaceTime": with no `--device` it opens the one connected camera that does
+  not look like an HDMI capture device, and exits listing the cameras when
+  there is not exactly one.
 
 - **Mic and webcam audio through the REU pump now plays under `mhires`
   and `hires` REU-staged video (#551).** With `[audio].use_reu_pump` on a
@@ -400,6 +429,13 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   8 seconds, instead of trying again on every write; against a switched-off
   Ultimate each attempt could stall the picture and the audio for up to
   5 seconds.
+
+- **Video no longer runs ahead of `$D418` DAC audio.** The DAC clock counted a
+  sample as played once it reached the C64's ring buffer, but the C64 plays it
+  about a third of a second later, so the picture led the sound by that much
+  for the whole run. The clock now subtracts what is still waiting in the ring.
+  A seek or loop wrap holds the picture for the same third of a second, so the
+  picture and the sound change together.
 
 - **A run on an Ultimate whose `Vol Master` is OFF is no longer silent.**
   Firmware 3.15 adds a master level to the audio mixer (F2 → Audio Mixer on an

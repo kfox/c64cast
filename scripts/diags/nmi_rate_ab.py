@@ -65,7 +65,6 @@ from c64cast.hw.api import Ultimate64API
 from c64cast.video.video import _compute_normalization_gain, decode_audio_full
 
 CAP_SR = 48000
-CAP_DEVICE = 1  # Cam Link 4K audio (sounddevice idx); override with --device
 READ_PTR_ADDR = NMI_ROUTINE_ADDR + 5  # $C025 (LO)/$C026 (HI) — NMI read pointer
 SYS_CATEGORY = "U64 Specific Settings"
 SYS_SETTING = "System Mode"
@@ -386,7 +385,7 @@ def main() -> int:
     ap.add_argument("--rate-a", type=int, default=8000, help="pass-A sample rate (baseline)")
     ap.add_argument("--rate-b", type=int, default=10500, help="pass-B sample rate (candidate)")
     ap.add_argument("--secs", type=float, default=15.0)
-    ap.add_argument("--device", type=int, default=CAP_DEVICE, help="Cam Link audio sd index")
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument("--url", default=d.U64_URL)
     ap.add_argument("--reverse", action="store_true", help="play B before A")
     args = ap.parse_args()
@@ -394,6 +393,7 @@ def main() -> int:
     for c in args.clips:
         if not Path(c).exists():
             ap.error(f"clip not found: {c}")
+    audio = d.resolve_audio_input("sd", args.device)
 
     if args.switch_system:
         ensure_system_mode(args.url, args.system)
@@ -420,7 +420,7 @@ def main() -> int:
                 rate,
                 args.system,
                 args.secs,
-                args.device,
+                d.refind_sd_audio_input(audio),
                 f"{args.system}_{stem}_{side}",
             )
             results[side] = wav

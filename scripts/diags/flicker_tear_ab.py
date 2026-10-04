@@ -350,6 +350,7 @@ def main() -> int:
     d.add_capture_device_arg(ap)
     ap.add_argument("--no-reset", action="store_true")
     args = ap.parse_args()
+    d.resolve_capture(args.device)  # fail before c64cast touches the machine
 
     out = d.out_dir() / "flickertear"
     out.mkdir(parents=True, exist_ok=True)

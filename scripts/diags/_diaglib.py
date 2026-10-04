@@ -11,8 +11,10 @@ this module exists to kill:
   ignored), not a coin-flip between ``/tmp`` and ``/private/tmp``.
 * **Hardware indices drift.** The cv2 camera indices, the avfoundation audio
   index and the U64 URL all shift with hotplug + DHCP, so every default here
-  is overridable by env var (and the tools expose matching CLI flags), and the
-  capture device defaults to the Cam Link's USB identity, never to an index.
+  is overridable by env var (and the tools expose matching CLI flags), and a
+  capture device nobody named is picked by what it is, never by an index.
+  Its audio input is the one named like it; no tool records from the
+  system default input.
 
 The values below are *defaults*, not ground truth: they are one rig's
 working values, confirmed as of 2026-06-10. Point the env vars at yours.
@@ -26,6 +28,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from c64cast.control.camera import CameraInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "scripts" / "diags" / "out"
@@ -82,40 +88,66 @@ U64_URL = os.environ.get("C64_DIAG_URL", "http://192.168.2.64")
 #: Ultimate II+ on the same LAN. Override: C64_DIAG_U2P_URL.
 U2P_URL = os.environ.get("C64_DIAG_U2P_URL", "http://192.168.2.65")
 
-#: The Cam Link 4K's USB ``VID:PID``: the device every capture tool opens when
-#: its user names none. An identity rather than a cv2 index, because the indices
-#: renumber on hotplug — a U64 PAL/NTSC switch has dropped the Cam Link off the
-#: bus and moved the laptop's own camera to index 0.
-CAMLINK_ID = "0fd9:0066"
+#: Name substrings (lowercase) of video devices that are not HDMI capture
+#: devices: built-in and USB webcams, phones, and virtual cameras. Webcams,
+#: built-in cameras, phones and virtual devices mostly call themselves a
+#: "camera"; an HDMI capture device names itself after the stick.
+NOT_CAPTURE_NAME_PATTERNS: tuple[str, ...] = (
+    "camera",
+    # webcams
+    "webcam",
+    "facecam",
+    "lifecam",
+    "brio",
+    "kiyo",
+    "insta360",
+    "obs",
+    # phones
+    "iphone",
+    "ipad",
+    "epoccam",
+    "droidcam",
+    "camo",
+    # virtual cameras
+    "virtual",
+    "xsplit",
+    "mmhmm",
+    "broadcast",
+    "screen",
+)
 
 
-def default_capture_device() -> str:
-    """The capture device a tool opens when its user passed no device flag.
+def looks_like_hdmi_capture(name: str, usb_id: str | None) -> bool:
+    """Whether a device called ``name``, with USB ``VID:PID`` ``usb_id``
+    (``None`` when it reports none), may be auto-picked as the HDMI capture
+    device: it must be a USB device with a non-empty name that matches none of
+    :data:`NOT_CAPTURE_NAME_PATTERNS`. A device with no USB identity, or no
+    name to judge, is not picked: built-in and virtual cameras report none."""
+    lowered = name.strip().lower()
+    if not lowered or not usb_id:
+        return False
+    return not any(pattern in lowered for pattern in NOT_CAPTURE_NAME_PATTERNS)
 
-    ``$C64_DIAG_CAMERA`` (an index, a name substring or a ``VID:PID``) wins.
-    The older index-only ``$C64_DIAG_CV2`` is still honored, with a warning on
-    stderr, since an index names whichever camera is enumerated there today.
-    Otherwise :data:`CAMLINK_ID`."""
+
+def capture_device_from_env() -> str | None:
+    """The capture device the environment names, or ``None`` to auto-pick.
+
+    ``$C64_DIAG_CAMERA`` takes an index, a name substring or a ``VID:PID``.
+    The removed index-only ``$C64_DIAG_CV2`` stops the tool when it is set,
+    so a value someone still exports is not silently ignored."""
+    reject_removed_env()
     camera = os.environ.get("C64_DIAG_CAMERA", "").strip()
-    if camera:
-        return camera
+    return camera or None
+
+
+def reject_removed_env() -> None:
+    """Raise ``SystemExit`` when ``$C64_DIAG_CV2``, which was removed, is set."""
     legacy = os.environ.get("C64_DIAG_CV2", "").strip()
     if legacy:
-        try:
-            int(legacy)
-        except ValueError:
-            raise SystemExit(
-                f"C64_DIAG_CV2={legacy!r} is not a cv2 index; "
-                "set C64_DIAG_CAMERA to a name or VID:PID instead"
-            ) from None
-        print(
-            f"[capture] warning: C64_DIAG_CV2={legacy} opens whatever camera is at "
-            f"cv2 index {legacy} now; set C64_DIAG_CAMERA={CAMLINK_ID} to open the "
-            "Cam Link by identity",
-            file=sys.stderr,
+        raise SystemExit(
+            f"C64_DIAG_CV2={legacy!r} was removed. Unset it, and set C64_DIAG_CAMERA "
+            "to the capture device's index, name or VID:PID instead."
         )
-        return legacy
-    return CAMLINK_ID
 
 
 def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> None:
@@ -124,8 +156,8 @@ def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> No
     ``aliases`` are extra option strings for the same value, such as ``-d`` or
     a tool's older ``--cv2-index``, so existing invocations keep working. The
     value is an index, a camera name substring or a USB ``VID:PID``; leaving it
-    out stores ``None``, which :func:`open_capture` reads as "the default
-    device", never as an index."""
+    out stores ``None``, which :func:`open_capture` reads as "the environment's
+    device, else the auto-picked one", never as an index."""
     short = [a for a in aliases if not a.startswith("--")]
     long = [a for a in aliases if a.startswith("--")]
     parser.add_argument(
@@ -136,27 +168,106 @@ def add_capture_device_arg(parser: argparse.ArgumentParser, *aliases: str) -> No
         default=None,
         metavar="DEVICE",
         help="capture device: a cv2 index, a camera name substring, or a USB VID:PID "
-        f"(default: $C64_DIAG_CAMERA, else the Cam Link {CAMLINK_ID}; "
-        "see `c64cast --list-devices`)",
+        "(default: $C64_DIAG_CAMERA, else the one connected camera that looks like "
+        "an HDMI capture device; see `c64cast --list-devices`)",
+    )
+
+
+def _camera_listing(cams: list[CameraInfo]) -> str:
+    """Every enumerated camera, one per line, with its index, name and VID:PID."""
+    if not cams:
+        return "  (no cameras found)"
+    return "\n".join(f"  [{c.index}] {c.name} ({c.vidpid_str() or 'no USB VID:PID'})" for c in cams)
+
+
+def autopick_capture() -> tuple[int, int]:
+    """``(cv2_index, backend)`` of the one connected camera
+    :func:`looks_like_hdmi_capture` accepts, from the app's own enumeration.
+
+    Raises ``SystemExit``, listing every camera found, when it accepts none or
+    more than one, or when the ``camera`` extra is missing: no camera is opened
+    that nobody named and the classifier did not single out, since it may be
+    pointed at a person."""
+    from c64cast.control import camera
+
+    if not camera.camera_enumeration_available():
+        raise SystemExit(
+            "picking the capture device needs the 'camera' extra: run `uv sync "
+            "--all-extras`, or name one with --device. No camera is opened by index "
+            "in its place."
+        )
+    cams = camera.enumerate_cameras()
+    picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
+    if len(picked) == 1:
+        chosen = picked[0]
+        print(
+            f"[capture] auto-picked [{chosen.index}] {chosen.name} ({chosen.vidpid_str()})",
+            file=sys.stderr,
+        )
+        return chosen.index, chosen.backend
+    reason = (
+        "no connected camera looks like an HDMI capture device"
+        if not picked
+        else f"{len(picked)} connected cameras look like HDMI capture devices"
+    )
+    raise SystemExit(
+        f"{reason}, so none is opened. Cameras found:\n{_camera_listing(cams)}\n"
+        "Choose one with --device NAME|VID:PID, or set C64_DIAG_CAMERA."
+    )
+
+
+def autopick_webcam() -> str:
+    """The name of the one connected camera :func:`looks_like_hdmi_capture`
+    rejects, for a tool that films a person rather than the C64.
+
+    Raises ``SystemExit``, listing every camera found, when there is none,
+    more than one, or one whose name also matches another camera's (the name
+    is what the caller opens it by), or when the ``camera`` extra is missing."""
+    from c64cast.control import camera
+
+    if not camera.camera_enumeration_available():
+        raise SystemExit(
+            "picking the webcam needs the 'camera' extra: run `uv sync --all-extras`, "
+            "or name one with --device."
+        )
+    cams = camera.enumerate_cameras()
+    picked = [c for c in cams if not looks_like_hdmi_capture(c.name, c.vidpid_str())]
+    if len(picked) == 1:
+        name = picked[0].name
+        if sum(name.lower() in c.name.lower() for c in cams) == 1:
+            print(f"[camera] auto-picked [{picked[0].index}] {name}", file=sys.stderr)
+            return name
+        reason = f"the webcam's name {name!r} also matches another camera"
+    elif not picked:
+        reason = "every connected camera looks like an HDMI capture device"
+    else:
+        reason = f"{len(picked)} connected cameras do not look like HDMI capture devices"
+    raise SystemExit(
+        f"{reason}, so none is opened. Cameras found:\n{_camera_listing(cams)}\n"
+        "Choose one with --device NAME|VID:PID|INDEX."
     )
 
 
 def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
     """Resolve a capture-device value to ``(cv2_index, backend_or_None)``.
 
-    ``None`` means :func:`default_capture_device`. Resolution goes through the
-    app's own :func:`c64cast.control.camera.resolve_camera_index` rather than a
-    second copy of the matcher, so a diag tool and a ``[video].device`` in a
-    config pick the same stick from the same string — including the
-    **backend** the matched index is only valid against (an AVFoundation index
-    opened with ``CAP_ANY`` is some other camera).
+    ``None`` means :func:`capture_device_from_env`, and when that names nothing
+    either, :func:`autopick_capture`. A named device resolves through the app's
+    own :func:`c64cast.control.camera.resolve_camera_index` rather than a second
+    copy of the matcher, so a diag tool and a ``[video].device`` in a config
+    pick the same stick from the same string — including the **backend** the
+    matched index is only valid against (an AVFoundation index opened with
+    ``CAP_ANY`` is some other camera).
 
-    Raises ``SystemExit`` when nothing matches. The default identity that
-    matches nothing fails here too: there is no fallback to an index or to any
-    other camera, since that camera may be pointed at a person."""
+    Raises ``SystemExit`` when nothing matches: there is no fallback to an
+    index or to any other camera, since that camera may be pointed at a
+    person."""
     from c64cast.control import camera
 
-    spec = default_capture_device() if device is None else device
+    reject_removed_env()
+    spec = capture_device_from_env() if device is None else device
+    if spec is None:
+        return autopick_capture()
     try:
         return camera.resolve_camera_index(spec)
     except RuntimeError as e:
@@ -165,12 +276,6 @@ def resolve_capture(device: int | str | None) -> tuple[int, int | None]:
                 f"finding capture device {spec!r} by name or VID:PID needs the 'camera' "
                 "extra: run `uv sync --all-extras`. No camera is opened by index in "
                 "its place."
-            ) from e
-        if str(spec).strip().lower() == CAMLINK_ID:
-            raise SystemExit(
-                f"the Cam Link 4K (USB {CAMLINK_ID}) is not connected, and no other "
-                f"camera will be opened in its place. {e} Replug it, or name a "
-                "device with --device."
             ) from e
         raise SystemExit(str(e)) from e
 
@@ -242,32 +347,52 @@ def read_frame(cap, device: int | str | None, *, timeout_s: float = NO_FRAME_RET
         time.sleep(NO_FRAME_POLL_S)
 
 
-#: Cam Link 4K avfoundation *audio* device. Override: C64_DIAG_AVF_AUDIO.
-#: avfoundation video for the Cam Link is "[0]" but cv2 is more reliable for
-#: frames (direct ffmpeg avfoundation video has thrown I/O errors here).
-#: Unset (the default) means "resolve by name at run time" — see camlink_avf_audio.
-#: Read as the module attribute ``CAMLINK_AVF_AUDIO``, which resolves on access
-#: via the module __getattr__ at the bottom of this file, so the ffmpeg
-#: enumeration only runs for tools that actually capture.
-_AVF_AUDIO_ENV = os.environ.get("C64_DIAG_AVF_AUDIO")
+class AudioInput(NamedTuple):
+    """An audio input a tool records from: ``device`` is what the backend
+    takes (a sounddevice index, or ffmpeg avfoundation's ``:N``) and ``name``
+    is what the device calls itself, which outlives a re-enumeration."""
+
+    device: int | str
+    name: str
 
 
-def camlink_avf_audio(name: str = "Cam Link") -> str:
-    """The Cam Link's avfoundation *audio* index, as ffmpeg's ``:N`` spec.
+#: The environment variable that names each backend's audio input.
+AUDIO_ENV = {"sd": "C64_DIAG_SD_AUDIO", "avf": "C64_DIAG_AVF_AUDIO"}
 
-    Resolved by NAME on every call rather than pinned to a constant. macOS
-    re-enumerates avfoundation devices as things are plugged in, joined or left
-    (a call app, a stream mixer, a headset), so a hardcoded index silently
-    becomes some other device: this was pinned at ``:3``, which had drifted onto
-    a virtual mixer, and the capture failed with a bare "Invalid argument" while
-    the run it was measuring carried on to completion. The sounddevice-based
-    probes already resolve by name for exactly this reason.
 
-    Falls back to ``:3`` only if enumeration itself fails, so a broken ffmpeg
-    surfaces as the old behavior rather than a crash.
-    """
-    if _AVF_AUDIO_ENV:
-        return _AVF_AUDIO_ENV
+def add_audio_device_arg(
+    parser: argparse.ArgumentParser, *flags: str, dest: str, backend: str
+) -> None:
+    """Add the option that names a tool's audio input, as ``flags``.
+
+    Leaving it out stores ``None``, which :func:`resolve_audio_input` reads as
+    "the environment's input, else the one named like the capture camera"."""
+    parser.add_argument(
+        *flags,
+        dest=dest,
+        default=None,
+        metavar="AUDIO",
+        help="audio input: an index or a name substring (default: "
+        f"${AUDIO_ENV[backend]}, else the input named like the capture camera)",
+    )
+
+
+def sd_audio_inputs() -> list[AudioInput]:
+    """Every sounddevice device with an input channel."""
+    import sounddevice as sd
+
+    return [
+        AudioInput(i, str(dev["name"]))
+        for i, dev in enumerate(sd.query_devices())
+        if dev["max_input_channels"] > 0
+    ]
+
+
+def avf_audio_inputs() -> list[AudioInput]:
+    """Every ffmpeg avfoundation audio device, as ``(":N", name)``.
+
+    Raises ``SystemExit`` when ffmpeg cannot list them: no index is assumed in
+    their place."""
     import re
     import subprocess
 
@@ -278,8 +403,12 @@ def camlink_avf_audio(name: str = "Cam Link") -> str:
             text=True,
             timeout=20,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ":3"
+    except (OSError, subprocess.SubprocessError) as e:
+        raise SystemExit(
+            f"could not list the avfoundation audio inputs with ffmpeg ({e}); a named "
+            "input is checked against that list too, so ffmpeg has to run first"
+        ) from e
+    inputs: list[AudioInput] = []
     audio = False
     for line in r.stderr.splitlines():
         if "audio devices" in line:
@@ -289,9 +418,121 @@ def camlink_avf_audio(name: str = "Cam Link") -> str:
             audio = False
             continue
         m = re.search(r"\[(\d+)\]\s+(.*\S)", line)
-        if audio and m and name.lower() in m.group(2).lower():
-            return f":{m.group(1)}"
-    return ":3"
+        if audio and m:
+            inputs.append(AudioInput(f":{m.group(1)}", m.group(2)))
+    return inputs
+
+
+def _audio_listing(inputs: list[AudioInput]) -> str:
+    if not inputs:
+        return "  (no audio inputs found)"
+    return "\n".join(f"  {a.device}: {a.name}" for a in inputs)
+
+
+def _names_match(a: str, b: str) -> bool:
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a in b or b in a)
+
+
+def capture_camera_name(camera: int | str | None) -> str:
+    """The name of the camera :func:`resolve_capture` picks for ``camera``."""
+    from c64cast.control import camera as cam
+
+    index, backend = resolve_capture(camera)
+    if not cam.camera_enumeration_available():
+        raise SystemExit(
+            "naming the capture camera needs the 'camera' extra: run `uv sync "
+            "--all-extras`, or name the audio input yourself."
+        )
+    for c in cam.enumerate_cameras():
+        if c.index == index and (backend is None or c.backend == backend):
+            return c.name
+    raise SystemExit(f"capture camera at cv2 index {index} has no name to match audio by")
+
+
+def _named_audio_input(inputs: list[AudioInput], spec: str, backend: str) -> AudioInput:
+    """The one input ``spec`` names: an index (``N``, or ``:N`` for
+    avfoundation) or a name, exact first and then as a substring."""
+    text = spec.strip()
+    index = text.removeprefix(":") if backend == "avf" else text
+    if index.isdigit():
+        key: int | str = f":{index}" if backend == "avf" else int(index)
+        for a in inputs:
+            if a.device == key:
+                return a
+        raise SystemExit(
+            f"audio input {spec!r} is not an audio input index. Inputs found:\n"
+            + _audio_listing(inputs)
+        )
+    exact = [a for a in inputs if a.name.strip().lower() == text.lower()]
+    matches = exact or [a for a in inputs if text.lower() in a.name.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    reason = "matches no audio input" if not matches else "matches more than one audio input"
+    raise SystemExit(f"audio input {spec!r} {reason}. Inputs found:\n" + _audio_listing(inputs))
+
+
+def resolve_audio_input(
+    backend: str, spec: int | str | None = None, *, camera: int | str | None = None
+) -> AudioInput:
+    """The audio input a tool records from, on ``backend`` (``"sd"`` for
+    sounddevice, ``"avf"`` for ffmpeg avfoundation).
+
+    ``spec``, else ``$C64_DIAG_SD_AUDIO`` / ``$C64_DIAG_AVF_AUDIO``, names it
+    by index or name. With neither, it is the one input whose name matches the
+    capture camera's: ``camera`` as :func:`resolve_capture` resolves it, which
+    with no device named is the auto-picked HDMI capture device. Raises
+    ``SystemExit`` with the inputs listed when that matches none or several:
+    the system default input is never used in its place, since it is usually
+    a microphone."""
+    inputs = sd_audio_inputs() if backend == "sd" else avf_audio_inputs()
+    if spec is None:
+        spec = os.environ.get(AUDIO_ENV[backend], "").strip() or None
+    if spec is not None:
+        return _named_audio_input(inputs, str(spec), backend)
+    flag_hint = f"Name one with -D or ${AUDIO_ENV[backend]}. Inputs found:\n"
+    try:
+        camera_name = capture_camera_name(camera)
+    except SystemExit as e:
+        raise SystemExit(
+            f"{e}\nThe audio input is picked by the capture camera's name, so none is "
+            "opened. " + flag_hint + _audio_listing(inputs)
+        ) from None
+    matches = [a for a in inputs if _names_match(a.name, camera_name)]
+    if len(matches) == 1:
+        print(
+            f"[audio] picked {matches[0].device} {matches[0].name} "
+            f"(named like capture camera {camera_name!r})",
+            file=sys.stderr,
+        )
+        return matches[0]
+    reason = "no audio input" if not matches else f"{len(matches)} audio inputs"
+    raise SystemExit(
+        f"{reason} named like capture camera {camera_name!r}, so none is opened. "
+        + flag_hint
+        + _audio_listing(inputs)
+    )
+
+
+def refind_sd_audio_input(audio: AudioInput) -> int:
+    """The sounddevice index of ``audio`` once PortAudio has re-enumerated,
+    found by its exact name: another input whose name merely contains it is
+    a different device. Among several inputs with that exact name, the one
+    still at ``audio``'s index is taken.
+
+    Raises ``SystemExit`` listing the inputs when the name is gone, or is
+    shared by several inputs none of which is at that index."""
+    inputs = sd_audio_inputs()
+    named = [a for a in inputs if a.name.strip().lower() == audio.name.strip().lower()]
+    reason = "is gone" if not named else "now names more than one input"
+    if len(named) > 1:
+        named = [a for a in named if a.device == audio.device]
+    if len(named) == 1:
+        return int(named[0].device)
+    raise SystemExit(
+        f"audio input {audio.name!r} {reason} after the re-enumeration, so none is "
+        "opened. Inputs found:\n" + _audio_listing(inputs)
+    )
 
 
 def python_exe() -> str:
@@ -584,17 +825,3 @@ def describe_tr_writes(be) -> str:
     if not isinstance(be, TeensyROMBackend):
         return "not a TeensyROM (slicing flags ignored)"
     return be.describe_writes()
-
-
-def __getattr__(name: str) -> object:
-    """Resolve ``CAMLINK_AVF_AUDIO`` on first access (PEP 562).
-
-    A dozen tools take it as an argparse default, so it has to keep reading
-    like a constant — but resolving it at import would run an ffmpeg
-    enumeration for every tool that merely imports this module, capture or
-    not. Module-level __getattr__ gives the constant's ergonomics with the
-    function's freshness.
-    """
-    if name == "CAMLINK_AVF_AUDIO":
-        return camlink_avf_audio()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

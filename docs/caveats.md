@@ -1156,11 +1156,11 @@ design, not bugs:
   fade-in on the first post-flush chunk.
 - **DAC splices cut over after the constant ring latency.** On the 4-bit
   `$D418` DAC path (`[audio].backend = "dac"`), `flush()` does not stomp the
-  ring at a seek/loop wrap — the servo-held ≈4096-byte gap (≈0.3-0.5 s) is the
-  accepted constant output latency, so the not-yet-heard approach to the splice
-  point finishes playing while fresh audio lands behind it. The audio therefore
-  cuts over a *constant* ≈0.3-0.5 s after the video jumps, identical every
-  splice — no silence hole, no mid-phrase chop, but not frame-tight either.
+  ring at a seek/loop wrap — the servo-held ≈4096-byte gap (≈0.34 s) is
+  constant output latency, so the not-yet-heard approach to the splice point
+  finishes playing while fresh audio lands behind it. The video holds for that
+  latency and cuts over with the audio, so a seek takes effect ≈0.34 s after
+  the key press, every time.
 - **Sampler splices play ≤ `FLUSH_GUARD_S` (0.15 s) past the splice point.**
   The sampler `flush()` leaves a small guard between the computed read head and
   the first rewritten byte (covers open-loop read-head jitter + REUWRITE

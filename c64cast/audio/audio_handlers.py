@@ -368,6 +368,10 @@ HOST_DMA_SERVO_KI = 5e-7  # s/(byte*chunk)    (HW-TUNABLE)
 HOST_DMA_SERVO_INTEG_CLAMP = 0.5  # max |ki*integ|, frac of chunk_period
 HOST_DMA_SERVO_PERIOD_MIN_FRAC = 0.5
 HOST_DMA_SERVO_PERIOD_MAX_FRAC = 1.5
+# Per-reading weight of the ring-lead EMA the A/V clock subtracts: about a
+# second at one R read per 1 KiB chunk, so one torn R read moves the clock by
+# a few ms rather than jumping it by up to a whole ring.
+RING_LEAD_EMA_ALPHA = 0.08
 
 # Seconds between the worker's health lines (0 disables). Short enough to place
 # an onset within a few seconds of where a listener hears it, long enough that

@@ -6,7 +6,9 @@ $D418 DAC (``[audio].backend = "dac"``) plays perceptibly SLOW — but at correc
 PITCH — when the display is a bitmap mode (mhires/hires); in char (petscii) mode
 the same clip is fine. The video is slaved to the audio *position* clock
 (``AudioStreamer.position_seconds()``), which on the host-DMA DAC path is
-DRAIN-based: (samples pushed − samples still queued) / sample_rate. If the audio
+DRAIN-based: (samples pushed − samples still queued − the ring's unplayed lead)
+/ effective_rate. The lead starts at the prebuffer and settles to the servo's
+gap within a few seconds, so measure over tens of seconds. If the audio
 worker's drain to the C64 ring stalls (mutex contention with the big bitmap
 host-DMA push), that clock advances slower than real time and the whole timeline
 stretches.

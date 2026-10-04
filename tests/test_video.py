@@ -724,12 +724,16 @@ class _FakeSceneAudio:
     def __init__(self, position: float = 0.0, events: list[tuple[str, object]] | None = None):
         self.sample_rate = 8000
         self._position = position
+        self.ring_lead = 0.0
         self.use_reu_pump = False
         self.flush_calls: list[bool] = []
         self._events = events
 
     def position_seconds(self) -> float:
         return self._position
+
+    def ring_lead_seconds(self) -> float:
+        return self.ring_lead
 
     def flush(self, *, silence_output: bool = False) -> None:
         self.flush_calls.append(silence_output)
@@ -838,6 +842,41 @@ class VideoSceneSpliceTest(unittest.TestCase):
         self.assertEqual(audio.flush_calls, [False])  # plain flush (not silence)
         self.assertAlmostEqual(scene.transport.audio_anchor_clock_s, 42.0)  # tempo 1.0
 
+    def test_seek_waits_out_the_ring_lead(self):
+        # The flush keeps the ring's unplayed lead, so the target is heard that
+        # much later: the clock sits that far below the target until it is.
+        scene, _, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0 - 0.34)
+        audio._position = 3.34
+        self.assertAlmostEqual(scene.transport.clock_s(), 42.0)
+
+    def test_position_reports_the_seek_target_while_the_ring_lead_plays_out(self):
+        # A held FF seeks to position() + delta every tick; a position that
+        # read one ring lead below the last target would scrub backward.
+        scene, _, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertAlmostEqual(scene.transport_position(), 42.0)
+        scene.transport_seek(scene.transport_position() + 0.02)
+        self.assertAlmostEqual(scene.transport_position(), 42.02)
+        audio._position = 3.34 + 1.0
+        self.assertAlmostEqual(scene.transport_position(), 43.02)
+
+    def test_pause_inside_the_ring_lead_freezes_at_the_seek_target(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        audio._position = 3.1
+        scene.transport_pause()
+        self.assertAlmostEqual(scene.transport_position(), 42.0)
+        scene.transport_resume()
+        self.assertEqual(source.seeks[-1], 42.0)
+
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
         scene.transport.touch()  # anchor_clock=0, anchor_pos=0
@@ -871,6 +910,81 @@ class VideoSceneSpliceTest(unittest.TestCase):
             ["seek", "flush", "muted"],
         )
         self.assertEqual(events[-1], ("muted", False))
+
+    def test_a_seek_shows_its_target_frame_through_the_ring_lead(self):
+        # A held FF re-seeks before each hold ends; frames chosen by the held
+        # clock would leave the screen blank until release.
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        asked: list[float] = []
+        # None skips the render, which the stub scene cannot do.
+        source.current_frame = lambda clock_s: asked.append(clock_s)  # type: ignore[method-assign]
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        scene.process_frame(0.0)
+        self.assertAlmostEqual(asked[-1], 42.0)
+        audio._position = 3.34 + 1.0
+        scene.process_frame(0.0)
+        self.assertAlmostEqual(asked[-1], 43.0)
+
+    def test_a_frame_shown_through_the_hold_is_not_counted_as_lag(self):
+        # The held clock still reads the pre-splice audio, so measuring the
+        # target frame against it logs the hold's length as lag on every seek.
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene._av_lag_count = 0
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        source.last_frame_pts = 42.0
+        source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        with (
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+            self.assertEqual(scene._av_lag_count, 0)
+            audio._position = 3.34 + 1.0
+            source.last_frame_pts = 43.0
+            source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            scene.process_frame(0.0)
+        self.assertEqual(scene._av_lag_count, 1)
+        self.assertAlmostEqual(scene._av_lag_min, 0.0)
+
+    def test_a_running_clock_outside_a_hold_is_counted_as_lag(self):
+        # The sampler's position is a wall clock, so no two reads agree.
+        scene, source, audio = self._resync_scene(position=3.0)
+        reads = iter(3.0 + 0.001 * i for i in range(100))
+        audio.position_seconds = lambda: next(reads)  # type: ignore[method-assign]
+        scene._av_lag_count = 0
+        source.last_frame_pts = 3.0
+        source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+        with (
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+            scene.transport.touch()
+            source._frame = np.zeros((200, 320, 3), dtype=np.uint8)
+            scene.process_frame(0.0)
+        self.assertEqual(scene._av_lag_count, 2)
+
+    def test_a_frame_shown_through_the_hold_is_labeled_with_its_own_time(self):
+        scene, source, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.show_frame_numbers = True
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        labels: list[str] = []
+        with (
+            mock.patch.object(
+                scenes, "_annotate_frame_number", lambda img, lbl: labels.append(lbl) or img
+            ),
+            mock.patch.object(scenes, "_render_with_overlays"),
+            mock.patch.object(scenes, "_crop_to_aspect", side_effect=lambda x: x),
+        ):
+            scene.process_frame(0.0)
+        self.assertTrue(labels, "frame-number label was not rendered")
+        self.assertTrue(labels[0].startswith(timecode(42.0)), labels[0])
 
     def test_loop_wrap_splices_once_while_seek_pending(self):
         scene, source, _ = self._resync_scene(position=0.0)

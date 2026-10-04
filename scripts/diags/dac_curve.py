@@ -67,7 +67,6 @@ from c64cast.hw.c64 import SID
 
 SR = 8000  # SID DAC sample rate (audio default)
 CAP_SR = 48000  # Cam Link capture rate
-CAP_DEVICE = 1  # Cam Link 4K sounddevice input index (see local-capture-hardware)
 F0 = 1000.0  # square-wave toggle frequency (8 samples/period @ 8 kHz)
 SEG_S = 1.0  # measurement-segment duration (per code); CLI --seg overrides
 MARKER_S = 1.6  # leading marker duration (longer => unambiguous)
@@ -292,12 +291,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--url", default=d.U64_URL)
-    ap.add_argument(
-        "--device",
-        type=int,
-        default=CAP_DEVICE,
-        help=f"sounddevice input index (default {CAP_DEVICE} = Cam Link)",
-    )
+    d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument(
         "--voices",
         type=int,
@@ -328,6 +322,7 @@ def main() -> int:
         report(analyze(cap, sr))
         return 0
 
+    device = int(d.resolve_audio_input("sd", args.device).device)
     plan = segment_order()
     dur_s = 1.5 + len(plan) * (args.seg + GAP_S) + (MARKER_S - args.seg) + 0.5
     cap_s = dur_s + 4.0
@@ -335,10 +330,10 @@ def main() -> int:
     wav = str(d.stamped(args.label, "wav"))
 
     print(
-        f"capturing {cap_s:.1f}s @ device {args.device}; "
+        f"capturing {cap_s:.1f}s @ device {device}; "
         f"bias = {args.voices} voices, sustain {args.sustain}"
     )
-    rec = sd.rec(nframes, samplerate=CAP_SR, channels=2, device=args.device, dtype="float32")
+    rec = sd.rec(nframes, samplerate=CAP_SR, channels=2, device=device, dtype="float32")
     time.sleep(2.0)  # capture warmup before audio starts
 
     api = Ultimate64API(args.url)

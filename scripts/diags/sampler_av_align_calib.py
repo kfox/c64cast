@@ -205,7 +205,9 @@ def _gen_content(rate: int, run_s: float, period_s: float) -> tuple[np.ndarray, 
     return buf, events
 
 
-def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_reset: bool) -> Path:
+def play_and_capture(
+    url: str, ref_hz: int, run_s: float, period_s: float, no_reset: bool, audio_dev: str
+) -> Path:
     import c64cast.app.config as cfgmod
     import c64cast.hw.hw_provision as hw_provision
     from c64cast.app.connect import apply_to_config, parse_connection_uri
@@ -234,7 +236,7 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
         _sid_setup(api)
 
         cap_secs = run_s + 8
-        print(f"[cap] {cap_secs:.0f}s HDMI audio ({d.CAMLINK_AVF_AUDIO}) -> {wav.name}")
+        print(f"[cap] {cap_secs:.0f}s HDMI audio ({audio_dev}) -> {wav.name}")
         ff = subprocess.Popen(
             [
                 "ffmpeg",
@@ -244,7 +246,7 @@ def play_and_capture(url: str, ref_hz: int, run_s: float, period_s: float, no_re
                 "-f",
                 "avfoundation",
                 "-i",
-                d.CAMLINK_AVF_AUDIO,
+                audio_dev,
                 "-t",
                 str(cap_secs),
                 "-y",
@@ -305,10 +307,12 @@ def main() -> int:
     ap.add_argument("--period", type=float, default=5.0, help="seconds between markers")
     ap.add_argument("--no-reset", action="store_true")
     ap.add_argument("--analyze-only", metavar="WAV")
+    d.add_audio_device_arg(ap, "-D", "--avf-audio", dest="avf_audio", backend="avf")
     a = ap.parse_args()
     if a.analyze_only:
         return analyze(Path(a.analyze_only), a.period, a.ref)
-    wav = play_and_capture(a.url, a.ref, a.seconds, a.period, a.no_reset)
+    audio_dev = str(d.resolve_audio_input("avf", a.avf_audio).device)
+    wav = play_and_capture(a.url, a.ref, a.seconds, a.period, a.no_reset, audio_dev)
     print()
     return analyze(wav, a.period, a.ref)
 

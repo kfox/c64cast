@@ -545,6 +545,8 @@ def main() -> None:
         help="skip the capture-based check that the C64 is alternating every field",
     )
     args = ap.parse_args()
+    if not args.no_source_check:
+        d.resolve_capture(args.device)  # fail before c64cast touches the machine
 
     seed = args.seed if args.seed is not None else random.randrange(1 << 30)
     rng = random.Random(seed)
