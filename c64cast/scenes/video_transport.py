@@ -346,8 +346,16 @@ class VideoTransportControls:
     def position(self) -> float:
         """The playback position in content seconds, which is what the whole
         transport surface speaks; the internal clock is in the scaled/PTS
-        domain on the resync tempo path, and identical elsewhere."""
-        return self.clock_to_content(self.clock_s())
+        domain on the resync tempo path, and identical elsewhere.
+
+        On the resync path a splice holds the clock below its target until the
+        target is heard; this reports the target through that hold, because a
+        held FF/RW and a relative jog seek to ``position() + delta`` and would
+        otherwise lose the hold's length on every step."""
+        clk = self.clock_s()
+        if self.touched and self.resync:
+            clk = max(clk, self.audio_anchor_clock_s)
+        return self.clock_to_content(clk)
 
     def duration(self) -> float | None:
         source = self._scene.source

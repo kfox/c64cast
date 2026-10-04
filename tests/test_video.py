@@ -853,6 +853,19 @@ class VideoSceneSpliceTest(unittest.TestCase):
         audio._position = 3.34
         self.assertAlmostEqual(scene.transport.clock_s(), 42.0)
 
+    def test_position_reports_the_seek_target_while_the_ring_lead_plays_out(self):
+        # A held FF seeks to position() + delta every tick; a position that
+        # read one ring lead below the last target would scrub backward.
+        scene, _, audio = self._resync_scene(position=3.0)
+        audio.ring_lead = 0.34
+        scene.transport.touch()
+        scene.transport_seek(42.0)
+        self.assertAlmostEqual(scene.transport_position(), 42.0)
+        scene.transport_seek(scene.transport_position() + 0.02)
+        self.assertAlmostEqual(scene.transport_position(), 42.02)
+        audio._position = 3.34 + 1.0
+        self.assertAlmostEqual(scene.transport_position(), 43.02)
+
     def test_clock_tracks_audio_delta_not_wall(self):
         scene, _, audio = self._resync_scene(position=0.0)
         scene.transport.touch()  # anchor_clock=0, anchor_pos=0
