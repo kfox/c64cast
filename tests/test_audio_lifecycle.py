@@ -1542,6 +1542,60 @@ class LifecycleTest(unittest.TestCase):
         s._note_ring_landed(32, 0)
         self.assertEqual(s._content_lead(), 200.0)
 
+    def test_the_worker_clears_the_tail_pad_before_it_counts_the_landing(self):
+        # Content landing behind a dry tail: a reader between the two steps
+        # must not pair the new landed count with the old tail pad, which would
+        # put the clock a ring of pad past anything heard.
+        s = _make_worker_streamer(chunk_size=32)
+        s.host_dma_servo = False
+        total = 32 * 6 + 20
+        seen: list[float] = []
+        consume = s._consume_queued
+
+        def consume_then_read(n: int) -> None:
+            consume(n)
+            if n:
+                seen.append(s.position_seconds())
+
+        s._consume_queued = consume_then_read  # type: ignore[method-assign]
+        with quiet_logging():
+            s.start_for_external_source()
+            try:
+                s.push_samples(np.zeros(total, dtype=np.int16))
+                deadline = time.monotonic() + 5.0
+                while s._full_underruns < 12 and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                underruns = s._full_underruns
+                seen.clear()
+                s.push_samples(np.zeros(32, dtype=np.int16))
+                while not seen and time.monotonic() < deadline:
+                    time.sleep(0.001)
+            finally:
+                s.stop()
+        self.assertGreaterEqual(underruns, 12)
+        self.assertTrue(seen)
+        self.assertLessEqual(seen[0], total / s.effective_rate)
+
+    def test_position_seconds_reads_the_landed_count_before_the_tail_pad(self):
+        # The worker lands content after clearing the tail pad, so a reader
+        # that took the pad first and the count after could pair them.
+        s = _make()
+        s.servo.ring_lead = 192.0
+        s._pushed_count = 1032
+        s._queued_samples = 32
+        for _ in range(10):
+            s._note_ring_landed(32, 32)
+        content_lead = s._content_lead
+
+        def lead_then_land() -> float | None:
+            lead = content_lead()
+            s._note_ring_landed(32, 0)
+            s._consume_queued(32)
+            return lead
+
+        s._content_lead = lead_then_land  # type: ignore[method-assign]
+        self.assertLessEqual(s.position_seconds(), 1000 / s.effective_rate)
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is
