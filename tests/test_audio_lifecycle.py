@@ -1496,6 +1496,42 @@ class LifecycleTest(unittest.TestCase):
         s.servo.reset_for_consumer_start(2048)
         self.assertAlmostEqual(s.position_seconds() + s.ring_lead_seconds(), landed, places=6)
 
+    def test_the_prebuffer_lead_leaves_out_a_padded_chunks_pad(self):
+        # position_seconds() counts content only, so the clock already lags by
+        # a prebuffer pad; a lead that also counted the pad would hold the
+        # picture that far past the splice's first sample.
+        s = _make_worker_streamer(chunk_size=32)
+        before: list[float] = []
+        seeds: list[int] = []
+        seed = s.servo.reset_for_consumer_start
+
+        def capture_then_seed(ring_lead: int) -> None:
+            before.append(s.ring_lead_seconds())
+            seeds.append(ring_lead)
+            seed(ring_lead)
+
+        s.servo.reset_for_consumer_start = capture_then_seed  # type: ignore[method-assign]
+        s.host_dma_servo = False
+        s.start_for_external_source()
+
+        def stop_quietly() -> None:
+            # The run summary stop() logs is asserted by the underrun tests.
+            with quiet_logging():
+                s.stop()
+
+        self.addCleanup(stop_quietly)
+        s.push_samples(np.zeros(20, dtype=np.int16))
+        deadline = time.monotonic() + 5.0
+        while s._pushed_count - s._queued_samples < 20 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(s._pushed_count - s._queued_samples, 20)
+        s.push_samples(np.zeros(32 * 6, dtype=np.int16))
+        while not seeds and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(len(seeds), 1)
+        pad = 32 - 20
+        self.assertAlmostEqual(before[0], (seeds[0] - pad) / s.effective_rate, places=9)
+
     def test_position_seconds_starts_at_zero_after_the_prebuffer(self):
         # The prebuffer lands before the consumer starts, so it is all lead.
         s = _make_worker_streamer(chunk_size=32)
