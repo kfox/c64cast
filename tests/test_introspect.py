@@ -219,6 +219,10 @@ def imported_choices() -> dict[str, tuple[str, object]]:
             "audio.dac_curves.DAC_CURVE_CHOICES",
             dac_curves.DAC_CURVE_CHOICES,
         ),
+        "HARDWARE_PALETTE_CHOICES": (
+            "video.palette.HARDWARE_PALETTE_CHOICES",
+            palette.HARDWARE_PALETTE_CHOICES,
+        ),
         "HIRES_CELL_PICKS": (
             "video.palette.HIRES_CELL_PICKS",
             palette.HIRES_CELL_PICKS,

@@ -34,7 +34,7 @@ from c64cast.audio import dac_curve_resolve
 from c64cast.audio.audio import AUDIO_AVAILABLE, AudioStreamer
 from c64cast.control.keyboard import CommodoreKeyPoller
 from c64cast.control.vision import MediaPipeHandRecognizer, VisionController
-from c64cast.hw import char_rom, hw_provision
+from c64cast.hw import char_rom, hardware_palette, hw_provision
 from c64cast.hw.api import InvalidPasswordError, RestAuthError, SocketDMAError
 from c64cast.hw.backend import BackendSetupError, C64Backend, make_backend
 from c64cast.hw.teensyrom_dma import TRError
@@ -635,7 +635,6 @@ def _acquire_stack(
     )
     if video_output_restore is not None and api.profile.supports_reset:
         api.reset()
-
     audio = _build_audio(cfg, api)
     if audio is not None:
         release_on_failure("audio shutdown", audio.close)
@@ -672,6 +671,13 @@ def _acquire_stack(
     # dump soft-resets and puts the clear loop back itself. Best-effort and never
     # fatal; a no-op once cached.
     char_rom.ensure_installed(api, cfg)
+
+    # Reads the machine's palette, so after the startup resets above.
+    palette_control = hardware_palette.provision_hardware_palette(api, cfg, is_ensemble=is_ensemble)
+    release_on_failure(
+        "hardware palette restore",
+        lambda: hardware_palette.restore_hardware_palette(palette_control),
+    )
 
     api.disable_case_switch()
 
@@ -754,6 +760,7 @@ def _acquire_stack(
         sampler_restore=sampler_restore,
         master_volume_restore=master_volume_restore,
         video_output_restore=video_output_restore,
+        hardware_palette=palette_control,
         framebuffer=framebuffer,
         preview_window=preview_window,
         recorder=recorder,
@@ -796,6 +803,12 @@ def teardown_stack(stack: SystemStack) -> None:
         (
             "video output restore",
             lambda: hw_provision.restore_video_output(stack.api, stack.video_output_restore),
+        ),
+        # Before the reset, so a reset that fails still leaves the machine
+        # showing its own palette.
+        (
+            "hardware palette restore",
+            lambda: hardware_palette.restore_hardware_palette(stack.hardware_palette),
         ),
         ("U64 reset", stack.api.reset),
         # The last thing before the link goes, and that position is the point.

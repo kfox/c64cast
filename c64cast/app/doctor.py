@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Literal
@@ -37,7 +38,9 @@ from .config import (
     Config,
     ConfigError,
     LoadResult,
+    SceneCfg,
     resolve_recording_path,
+    scene_and_clip_cfgs,
     scene_color,
 )
 from .orchestrator import OrchestratorError
@@ -46,6 +49,8 @@ from .scene_factory import (
     cell_strategy_cfg_error,
     color_match_cfg_error,
     dither_cfg_error,
+    flicker_tolerance_cfg_error,
+    hardware_palette_cfg_error,
     motion_smoothing_cfg_error,
     resolve_cell_strategy,
     resolve_color_match,
@@ -182,6 +187,8 @@ def validate_load_result(
     out.extend(_validate_color_match(loaded))
     out.extend(_validate_cell_strategy(loaded))
     out.extend(_validate_motion_smoothing(loaded))
+    out.extend(_validate_hardware_palette(loaded))
+    out.extend(_validate_clip_colors(loaded))
     out.extend(_validate_control(loaded))
     out.extend(_validate_midi_control(loaded))
     out.extend(_validate_wled(loaded))
@@ -948,6 +955,139 @@ def _validate_dac_bitmap_tempo(loaded: LoadResult) -> list[Diagnostic]:
     return out
 
 
+def _dither_checked_per_scene(s: SceneCfg) -> bool:
+    return s.type in ("webcam", "video", "slideshow", "generative")
+
+
+def _color_match_checked_per_scene(s: SceneCfg) -> bool:
+    return resolve_scene_display(s.display, s.type) not in ("blank", "hires_edges")
+
+
+def _percell_checked_per_scene(s: SceneCfg) -> bool:
+    return resolve_scene_display(s.display, s.type) == "mhires" and s.palette_mode == "percell"
+
+
+def _flicker_checked_per_scene(s: SceneCfg, cfg: Config) -> bool:
+    """Whether the scene's display build reports its flicker_tolerance, which it
+    names under [color]'s label. A build that forces host DMA never resolves it."""
+    return _scene_reports(s, cfg, flicker_tolerance_cfg_error("[color]", scene_color(cfg, s)))
+
+
+_OVERRIDE_COLOR_CHECKS: tuple[
+    tuple[Callable[[str, ColorCfg], str | None], Callable[[SceneCfg, Config], bool]], ...
+] = (
+    (dither_cfg_error, lambda s, _cfg: _dither_checked_per_scene(s)),
+    (color_match_cfg_error, lambda s, _cfg: _color_match_checked_per_scene(s)),
+    (cell_strategy_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
+    (motion_smoothing_cfg_error, lambda s, _cfg: _percell_checked_per_scene(s)),
+    (flicker_tolerance_cfg_error, _flicker_checked_per_scene),
+)
+
+
+def _scene_reports(s: SceneCfg, cfg: Config, message: str | None) -> bool:
+    """Whether `_validate_scenes` reports `message` against scene `s`."""
+    try:
+        validate_scene_cfg(s, cfg, audio_enabled=cfg.audio.enabled)
+    except (OrchestratorError, ValueError) as e:
+        return str(e) == message
+    return False
+
+
+def _a_scene_reports(cfg: Config, message: str) -> bool:
+    """Whether `_validate_scenes` reports `message` against one of `cfg`'s scenes."""
+    return any(_scene_reports(s, cfg, message) for s in cfg.scenes)
+
+
+def _validate_clip_colors(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a bad color value a run refuses at startup (scene_factory's
+    per-system validators read every section through `effective_colors`) that
+    no per-scene check above reaches: [color].flicker_tolerance, a
+    `[[performance.clips]]` override, and a `[[scenes]]` override on a scene
+    whose per-scene check skips it. A value inherited from a bad [color] is
+    left to the [color] report, and a bad [color].flicker_tolerance to the
+    scene report that already names it. An override that does not resolve is reported
+    by `_validate_scenes` or `_validate_hardware_palette`."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        err = flicker_tolerance_cfg_error("[color]", cfg.color)
+        if err and not _a_scene_reports(cfg, err):
+            out.append(
+                Diagnostic(
+                    level="error",
+                    category="color",
+                    subject=f"{name}/flicker_tolerance",
+                    message=err,
+                    hint="See --describe section:color.",
+                )
+            )
+        for i, (owner, s) in enumerate(scene_and_clip_cfgs(cfg)):
+            if not s.color:
+                continue
+            try:
+                color = scene_color(cfg, s)
+            except ValueError:
+                continue
+            is_scene = i < len(cfg.scenes)
+            for check, checked_per_scene in _OVERRIDE_COLOR_CHECKS:
+                err = check(f"{owner}.color", color)
+                if not err or err == check(f"{owner}.color", cfg.color):
+                    continue
+                if not (is_scene and checked_per_scene(s, cfg)):
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=f"{name}/{owner}.color",
+                            message=err,
+                            hint="See --describe section:color.",
+                        )
+                    )
+    return out
+
+
+def _validate_hardware_palette(loaded: LoadResult) -> list[Diagnostic]:
+    """Flag a bad [color].hardware_palette per system: an unknown value, or
+    `"source"` alongside force_palette or flicker_tolerance, on [color], a
+    scene's override or a clip's. Offline — the same per-section check as
+    scene_factory.validate_hardware_palette_cfg, applied to every section so
+    one refusal does not hide the next. A scene override that does not resolve
+    is reported by `_validate_scenes`; a clip's, which no other check reaches,
+    is reported here under its own subject."""
+    out: list[Diagnostic] = []
+    for name, cfg in zip(loaded.names, loaded.cfgs, strict=True):
+        sections: list[tuple[str, ColorCfg]] = [("[color]", cfg.color)]
+        for i, (owner, s) in enumerate(scene_and_clip_cfgs(cfg)):
+            if not s.color:
+                continue
+            try:
+                sections.append((f"{owner}.color", scene_color(cfg, s)))
+            except ValueError as e:
+                if i >= len(cfg.scenes):
+                    out.append(
+                        Diagnostic(
+                            level="error",
+                            category="color",
+                            subject=f"{name}/{owner}.color",
+                            message=f"{owner}.color: {e}",
+                        )
+                    )
+                continue
+        for label, color in sections:
+            err = hardware_palette_cfg_error(label, color)
+            if err:
+                out.append(
+                    Diagnostic(
+                        level="error",
+                        category="color",
+                        subject=f"{name}/hardware_palette",
+                        message=err,
+                        hint="See [color].hardware_palette in the config reference / "
+                        "--describe section:color.",
+                    )
+                )
+    return out
+
+
 def _validate_sid_model(loaded: LoadResult) -> list[Diagnostic]:
     """Flag an unknown [ultimate64].sid_model value per system. Offline —
     delegates to config.validate_sid_model_cfg."""
@@ -996,7 +1136,7 @@ def _validate_dither(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
         for i, s in enumerate(cfg.scenes):
-            if s.type not in ("webcam", "video", "slideshow", "generative"):
+            if not _dither_checked_per_scene(s):
                 continue
             subject = f"{name}/{s.name or s.type}/dither"
             try:
@@ -1068,7 +1208,7 @@ def _validate_color_match(loaded: LoadResult) -> list[Diagnostic]:
             )
         for i, s in enumerate(cfg.scenes):
             display = resolve_scene_display(s.display, s.type)
-            if display in ("blank", "hires_edges"):
+            if not _color_match_checked_per_scene(s):
                 continue  # these pick no colors — color_match is a no-op
             subject = f"{name}/{s.name or s.type}/color_match"
             try:
@@ -1143,8 +1283,7 @@ def _validate_cell_strategy(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
         for i, s in enumerate(cfg.scenes):
-            display = resolve_scene_display(s.display, s.type)
-            if display != "mhires" or s.palette_mode != "percell":
+            if not _percell_checked_per_scene(s):
                 continue  # cell_strategy only affects mhires percell
             subject = f"{name}/{s.name or s.type}/cell_strategy"
             try:
@@ -1217,8 +1356,7 @@ def _validate_motion_smoothing(loaded: LoadResult) -> list[Diagnostic]:
                 )
             )
         for i, s in enumerate(cfg.scenes):
-            display = resolve_scene_display(s.display, s.type)
-            if display != "mhires" or s.palette_mode != "percell":
+            if not _percell_checked_per_scene(s):
                 continue  # motion_smoothing only affects mhires percell
             subject = f"{name}/{s.name or s.type}/motion_smoothing"
             try:

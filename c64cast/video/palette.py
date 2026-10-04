@@ -308,12 +308,25 @@ def active_host_palette_name() -> str:
     return _ACTIVE_PALETTE_NAME
 
 
+# Bumped by every set_host_palette that changes the colors, so a display mode
+# holding a per-instance palette-derived table can tell it has gone stale.
+_PALETTE_GENERATION = 0
+
+
+def palette_generation() -> int:
+    """A counter that changes whenever the active palette's colors do."""
+    return _PALETTE_GENERATION
+
+
 def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str = "custom") -> None:
     """Point the whole render pipeline at the 16 BGR colors the host emits.
 
-    Call once, before any rendering. Every palette-derived table is rebuilt in
-    place, including the ones other modules imported by reference, so there is
-    no window where two of them disagree about what color 8 is.
+    Called once before any rendering, and again by `[color].hardware_palette`
+    whenever a scene changes the colors the machine emits. Every palette-derived
+    table is rebuilt in place, including the ones other modules imported by
+    reference, so there is no window where two of them disagree about what
+    color 8 is. A display mode holding a table of its own checks
+    `palette_generation`.
 
     Process-wide, which an ensemble driving machines with *different* palettes
     would need to be per-system. Threading a palette through every quantizer,
@@ -328,7 +341,8 @@ def set_host_palette(colors: Sequence[Sequence[int]] | np.ndarray, *, name: str 
     _ACTIVE_PALETTE_NAME = name
     if np.array_equal(table, C64_PALETTE_BGR):
         return
-    global _WPAL, _PAL_NORMSQ, _PAL_LAB_T, _PAL_LAB_NORMSQ, _PALETTE_HUES_DEG
+    global _WPAL, _PAL_NORMSQ, _PAL_LAB_T, _PAL_LAB_NORMSQ, _PALETTE_HUES_DEG, _PALETTE_GENERATION
+    _PALETTE_GENERATION += 1
     C64_PALETTE_BGR[:] = table
     PALETTE_LUMA[:] = C64_PALETTE_BGR @ np.array([0.114, 0.587, 0.299], dtype=np.float32)
     _PALETTE_LAB[:] = _palette_lab()
@@ -1271,6 +1285,160 @@ def suggest_palette(samples_lab: np.ndarray, max_k: int = 16) -> list[tuple[int,
         nearest = best_nearest
         remaining.remove(best_idx)
     return chosen
+
+
+# Image-optimized hardware palettes ([color].hardware_palette = "source"). The
+# gray axis stays the machine's own: fades end on index 0, cards and overlays
+# draw in 0 and 1, and the gray penalty and grayscale mode are written against
+# those five indices. The other eleven are re-chosen from the source.
+HARDWARE_PALETTE_CHOICES: tuple[str, ...] = ("off", "source")
+# The scene types that can see their content before they paint it.
+HARDWARE_PALETTE_SCENE_TYPES: tuple[str, ...] = ("video", "slideshow")
+HARDWARE_PALETTE_PINNED = GRAY_INDICES
+_HARDWARE_PALETTE_FREE = tuple(i for i in range(16) if i not in HARDWARE_PALETTE_PINNED)
+_HARDWARE_PALETTE_ITERATIONS = 20
+
+
+class FrameSampler:
+    """Keeps a downscaled copy of each sampled frame, for a derivation that can
+    only run once the whole scan is in: the hardware palette is fitted to the
+    frames *after* the display mode's shaping, and that shaping includes the
+    auto-fit derived from the same scan."""
+
+    def __init__(self) -> None:
+        self.frames: list[np.ndarray] = []
+
+    def add(self, img_bgr: np.ndarray) -> None:
+        h, w = img_bgr.shape[:2]
+        if w > _FORCE_PALETTE_SCAN_WIDTH:
+            new_h = max(1, h * _FORCE_PALETTE_SCAN_WIDTH // w)
+            img_bgr = cv2.resize(
+                img_bgr, (_FORCE_PALETTE_SCAN_WIDTH, new_h), interpolation=cv2.INTER_AREA
+            )
+        self.frames.append(img_bgr.copy())
+
+    def pixels(self) -> np.ndarray:
+        """The pixels `derive_hardware_palette` would sample from `frames`, as
+        one (N, 1, 3) image of at most _FORCE_PALETTE_SAMPLE_CAP pixels.
+
+        Unshaped, fitting to this image gives the palette fitting to `frames`
+        would. Shaped, it need not: OpenCV's HSV conversions round a pixel up to
+        3 levels differently in a one-pixel-wide column than in a full frame,
+        and the k-means can settle elsewhere on that difference."""
+        if not self.frames:
+            return np.zeros((0, 1, 3), dtype=np.uint8)
+        per_frame = max(1, _FORCE_PALETTE_SAMPLE_CAP // len(self.frames))
+        blocks = []
+        for frame in self.frames:
+            flat = frame.reshape(-1, 3)
+            if flat.shape[0]:
+                blocks.append(flat[:: max(1, -(-flat.shape[0] // per_frame))])
+        return np.concatenate(blocks).reshape(-1, 1, 3)
+
+
+def _sample_lab(frames: Sequence[np.ndarray]) -> np.ndarray:
+    """At most _FORCE_PALETTE_SAMPLE_CAP Lab pixels, spread evenly over `frames`."""
+    if not frames:
+        return np.zeros((0, 3), dtype=np.float32)
+    per_frame = max(1, _FORCE_PALETTE_SAMPLE_CAP // len(frames))
+    blocks = []
+    for frame in frames:
+        flat = np.asarray(frame, dtype=np.float32).reshape(-1, 3)
+        if flat.shape[0] == 0:
+            continue
+        stride = max(1, -(-flat.shape[0] // per_frame))
+        blocks.append(_bgr_to_lab(flat[::stride]))
+    if not blocks:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.concatenate(blocks)
+
+
+def _lab_to_bgr(lab: np.ndarray) -> np.ndarray:
+    u8 = np.clip(np.rint(lab), 0, 255).astype(np.uint8).reshape(-1, 1, 3)
+    return cv2.cvtColor(u8, cv2.COLOR_LAB2BGR).reshape(-1, 3)
+
+
+def derive_hardware_palette(
+    frames: Sequence[np.ndarray], base_bgr: Sequence[Sequence[int]] | np.ndarray
+) -> np.ndarray | None:
+    """The 16 BGR colors to push to the machine for a source, or None when the
+    frames hold no pixels.
+
+    `frames` are BGR images as the quantizer will see them; `base_bgr` is the
+    palette the machine shows of its own. The pinned gray axis is taken from
+    `base_bgr` unchanged. The eleven free entries are a k-means in Lab over the
+    frames with the pinned grays as fixed centers, so no cluster is spent on a
+    color the grays already reproduce. Each cluster then lands on the free
+    index whose own color it is nearest (a min-cost bijection), which keeps the
+    color names, multicolor char mode's 0-7 per-cell range and the rest of the
+    index-keyed pipeline meaningful. A free index no cluster reaches keeps its
+    base color.
+    """
+    samples = _sample_lab(frames)
+    if samples.shape[0] == 0:
+        return None
+    base = np.asarray(base_bgr, dtype=np.float32).reshape(16, 3)
+    base_lab = _bgr_to_lab(base)
+    pinned = base_lab[list(HARDWARE_PALETTE_PINNED)]
+    free = _seed_free_centers(samples, pinned, len(_HARDWARE_PALETTE_FREE))
+    if free.shape[0] == 0:
+        return base.astype(np.uint8)
+    for _ in range(_HARDWARE_PALETTE_ITERATIONS):
+        centers = np.concatenate([pinned, free])
+        nearest = _nearest_center(samples, centers) - len(pinned)
+        moved = free.copy()
+        for k in range(free.shape[0]):
+            members = samples[nearest == k]
+            if members.shape[0]:
+                moved[k] = members.mean(axis=0)
+        if np.allclose(moved, free, atol=0.5):
+            free = moved
+            break
+        free = moved
+
+    free_base_lab = base_lab[list(_HARDWARE_PALETTE_FREE)]
+    diff = free[:, None, :] - free_base_lab[None, :, :]
+    cost = (diff * diff).sum(axis=2)
+    if free.shape[0] < len(_HARDWARE_PALETTE_FREE):
+        square = np.zeros((len(_HARDWARE_PALETTE_FREE),) * 2, dtype=np.float32)
+        square[: free.shape[0]] = cost
+        assign = _hungarian(square)[: free.shape[0]]
+    else:
+        assign = _hungarian(cost)
+
+    out = base.astype(np.uint8)
+    free_bgr = _lab_to_bgr(free)
+    for k, slot in enumerate(assign):
+        out[_HARDWARE_PALETTE_FREE[int(slot)]] = free_bgr[k]
+    return out
+
+
+def _nearest_center(samples: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    d = (samples**2).sum(axis=1)[:, None] - 2.0 * samples @ centers.T + (centers**2).sum(axis=1)
+    return np.argmin(d, axis=1)
+
+
+def _seed_free_centers(samples: np.ndarray, pinned: np.ndarray, k: int) -> np.ndarray:
+    """k-means++ seeding continued from the pinned centers, deterministically.
+
+    Fewer than `k` centers come back when the samples hold fewer distinct
+    colors than that, since a duplicated center is a wasted palette entry.
+    """
+    rng = np.random.default_rng(0)
+    free: list[np.ndarray] = []
+    nearest_d = np.full(samples.shape[0], np.inf, dtype=np.float64)
+    for c in pinned:
+        nearest_d = np.minimum(nearest_d, ((samples - c) ** 2).sum(axis=1))
+    for _ in range(k):
+        total = float(nearest_d.sum())
+        if total <= 0.0:
+            break
+        pick = samples[int(rng.choice(samples.shape[0], p=nearest_d / total))]
+        free.append(pick)
+        nearest_d = np.minimum(nearest_d, ((samples - pick) ** 2).sum(axis=1))
+    if not free:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.asarray(free, dtype=np.float32)
 
 
 def nearest_palette_index(rgb: Sequence[int]) -> int:

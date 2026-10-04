@@ -36,6 +36,7 @@ from c64cast.video.flicker import DEFAULT_TOLERANCE, FLICKER_TOLERANCES
 from c64cast.video.palette import (
     CELL_STRATEGIES,
     COLOR_MATCH_MODES,
+    HARDWARE_PALETTE_CHOICES,
     HIRES_CELL_PICKS,
     resolve_color,
 )
@@ -1896,6 +1897,22 @@ class ColorCfg:
             "vocabulary": "c64color",
         },
     )
+    hardware_palette: str = field(
+        default="off",
+        metadata={
+            "help": "Re-choose the machine's own 16 colors for each scene. "
+            "'source' fits 11 of them to the scene's content (the black, "
+            "white and three grays stay the machine's) and pushes them to the "
+            "Ultimate before the scene paints; quantization, dither and fades "
+            "then aim at exactly those colors, and the machine's palette is "
+            "put back before the next scene that does not use it, and at exit. "
+            "Video and slideshow scenes only, "
+            "since they can see their content first. Needs an Ultimate 64 on "
+            "firmware 3.15a or newer; elsewhere it is skipped with a warning. "
+            "Cannot be combined with force_palette or flicker_tolerance.",
+            "choices": HARDWARE_PALETTE_CHOICES,
+        },
+    )
     dither: str = field(
         default="auto",
         metadata={
@@ -3409,6 +3426,19 @@ def clip_scene_cfg(clip: dict[str, Any]) -> SceneCfg:
         # launch engine's loop path), so their timing/song-length logic is kept.
         sc.duration_s = 0.0
     return sc
+
+
+def scene_and_clip_cfgs(cfg: Config) -> list[tuple[str, SceneCfg]]:
+    """Every ``[[scenes]]`` entry and every ``[[performance.clips]]`` entry
+    whose scene spec builds, each with the label a ConfigError names it by. A
+    clip whose spec does not build is left to build time, which reports it."""
+    out = [(f"[[scenes]][{i}]", s) for i, s in enumerate(cfg.scenes)]
+    for i, clip in enumerate(cfg.performance.clips):
+        try:
+            out.append((f"[[performance.clips]][{i}]", clip_scene_cfg(clip)))
+        except ValueError:
+            continue
+    return out
 
 
 # Clip scene types whose "loop" is a continuous hold (run-forever) rather than a

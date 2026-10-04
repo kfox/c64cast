@@ -425,6 +425,62 @@ class OpenBackendIdentityTest(unittest.TestCase):
         self.assertTrue(self._detailed_at("DEBUG"))
 
 
+class BuildStackHardwarePaletteTest(unittest.TestCase):
+    """build_stack provisions the run's palette pusher after the startup
+    resets, and a build that fails later gives the machine its own palette
+    back. Everything around the call is stubbed; the step after it fails the
+    build, which runs the unwind ladder."""
+
+    def _build(self, cfg: cfgmod.Config, control: object) -> mock.MagicMock:
+        api = mock.MagicMock(name="api")
+        api.profile.max_fps = None
+        api.disable_case_switch.side_effect = session.StackBuildError(4)
+        api.read_menu_screen.return_value = None
+        self.cleared_before_provision: list[bool] = []
+
+        def provision_after_noting(*_args, **_kwargs):
+            self.cleared_before_provision.append(api.run_basic_clear_loop.called)
+            return control
+
+        provision = mock.MagicMock(side_effect=provision_after_noting)
+        with (
+            mock.patch.object(session, "_open_backend", return_value=api),
+            mock.patch.object(session, "hw_provision"),
+            mock.patch.object(session, "_build_audio", return_value=None),
+            mock.patch.object(session, "_resolve_reu_available", return_value=False),
+            mock.patch.object(session, "_resolve_sampler_available", return_value=False),
+            mock.patch.object(session.scene_factory, "scenes_from_config", return_value=[]),
+            mock.patch.object(session.char_rom, "ensure_installed"),
+            mock.patch.object(session.time, "sleep"),
+            mock.patch.object(session.hardware_palette, "provision_hardware_palette", provision),
+        ):
+            with self.assertRaises(session.StackBuildError):
+                session.build_stack(
+                    cfg,
+                    "a",
+                    stop_event=threading.Event(),
+                    profiler=mock.MagicMock(name="profiler"),
+                    is_ensemble=True,
+                )
+        return provision
+
+    def test_it_provisions_after_the_startup_reset_for_this_run(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        provision = self._build(cfg, None)
+        self.assertEqual(self.cleared_before_provision, [True])
+        provision.assert_called_once()
+        self.assertIs(provision.call_args.args[1], cfg)
+        self.assertTrue(provision.call_args.kwargs["is_ensemble"])
+
+    def test_a_build_that_fails_afterwards_restores_the_machines_palette(self):
+        cfg = cfgmod.Config()
+        cfg.scenes = []
+        control = mock.MagicMock(name="control")
+        self._build(cfg, control)
+        control.restore.assert_called_once()
+
+
 class BuildPreviewAndRecordingTest(unittest.TestCase):
     def test_a_recorder_that_fails_to_start_detaches_the_framebuffer(self):
         # The write listener costs a shadow-memory update on every DMA write for the

@@ -916,6 +916,15 @@ force_palette_colors = 16
 # prints the C64 colors that best (faithfully) represent it, ranked, so you can
 # paste a prefix here.
 #
+# hardware_palette: instead of choosing among the machine's 16 colors, choose
+# the 16. "source" fits 11 of them to each video or slideshow image (black,
+# white and the three grays stay the machine's own) and pushes them to the
+# Ultimate before the scene paints, then puts the machine's palette back
+# before the next scene that does not use it, and at exit. Needs an Ultimate 64
+# on firmware 3.15a+; anything else is skipped with a warning. Not with
+# force_palette or flicker_tolerance.
+hardware_palette = "off"
+#
 # hue_corrections: the C64's single purple (index 4) is a bright magenta, so
 # dark real-world violets quantize to gray/blue and never to purple. The
 # built-in default ships one band ("purple_rescue") that snaps + boosts the

@@ -525,3 +525,40 @@ class ReadPaletteFailureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetPaletteTest(unittest.TestCase):
+    def test_pushes_target_command_and_the_forty_eight_color_bytes(self):
+        device = _FakeUltimate(reply=b"")
+        self.assertTrue(uci.set_palette_rgb(device, PALETTE_RGB))
+        # ControlTarget id 4, CTRL_CMD_SET_PALETTE 0x52, then 16 RGB triples:
+        # the firmware refuses any length but exactly 50.
+        self.assertEqual(device.commands, [0x04, 0x52, *PALETTE_BYTES])
+        self.assertEqual(len(device.commands), 50)
+
+    def test_acks_the_status_and_leaves_the_interface_idle(self):
+        device = _FakeUltimate(reply=b"")
+        uci.set_palette_rgb(device, PALETTE_RGB)
+        self.assertEqual(device.control_writes, [0x01, 0x02])
+        self.assertTrue(device.released)
+
+    def test_false_when_the_firmware_does_not_know_the_command(self):
+        device = _FakeUltimate(reply=b"", status=STATUS_UNKNOWN_COMMAND)
+        self.assertFalse(uci.set_palette_rgb(device, PALETTE_RGB))
+        self.assertTrue(device.released)
+
+    def test_false_when_the_firmware_rejects_the_parameters(self):
+        device = _FakeUltimate(reply=b"", status=b"81,INVALID PARAMS")
+        self.assertFalse(uci.set_palette_rgb(device, PALETTE_RGB))
+
+    def test_false_when_the_registers_are_really_ram(self):
+        self.assertFalse(uci.set_palette_rgb(_WriteThroughRamBus(), PALETTE_RGB))
+
+    def test_false_when_the_backend_cannot_read_memory(self):
+        self.assertFalse(uci.set_palette_rgb(_RaisingBus(), PALETTE_RGB))
+
+    def test_refuses_a_palette_that_is_not_sixteen_triples(self):
+        with self.assertRaises(ValueError):
+            uci.set_palette_rgb(_FakeUltimate(reply=b""), PALETTE_RGB[:15])
+        with self.assertRaises(ValueError):
+            uci.set_palette_rgb(_FakeUltimate(reply=b""), [(1, 2)] * 16)

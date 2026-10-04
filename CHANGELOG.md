@@ -30,6 +30,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Added
 
+- **`[color].hardware_palette = "source"` re-chooses an Ultimate 64's own 16
+  colors for each video and slideshow scene.** The palette is fitted to the
+  scene's content (black, white and the three grays stay the machine's),
+  pushed over the Command Interface before the scene paints, and the whole
+  color pipeline aims at it; per-pixel color error over the bundled pictures
+  falls to about a third. The machine's palette, a custom `.vpl` included, is
+  put back before the next scene that does not use the setting and at exit, and
+  pushed again after every reset c64cast issues. Needs Ultimate 64 firmware
+  3.15a or newer; a C64 Ultimate on 1.1.0, older firmware and other machines skip it
+  with a warning. Off by default, and refused alongside `force_palette` or
+  `flicker_tolerance`.
+
 - **Play a launched game from a MIDI pad.** A new `[midi_control]` action,
   `joystick`, holds a joystick direction or the fire button (`input`, on
   `port` 1 or 2) for as long as its note is down. It drives the program a
@@ -302,6 +314,18 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   reported that the sampler's state "could not be read" on a device with no
   sampler mixer; it now reads the sampler as absent and falls back to the
   4-bit DAC without that warning, as it did before 3.15.
+
+- **A performance clip's `color` override is now checked at load, the same as a
+  scene's.** The `dither`, `motion_smoothing`, `color_match`, `cell_strategy`
+  and `flicker_tolerance` checks read `[color]` and every `[[scenes]]` override
+  but no `[[performance.clips]]` one, so a bad value in a clip was not caught
+  at load. Such a config is now refused at load, naming the clip, and
+  `--doctor` reports it.
+
+- **`--doctor` passed some color values that a run refuses at startup.** A bad
+  `[color].flicker_tolerance`, and a `[[scenes]]` override's `color_match`,
+  `cell_strategy` or `motion_smoothing` on a display that setting does not
+  affect, passed `--doctor --skip-probe`. `--doctor` now reports them.
 
 - **`--serve` could leave a background poller running after it shut down.** The
   session supervisor started its `session-reap` poller outside the lock that

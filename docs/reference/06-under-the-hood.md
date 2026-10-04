@@ -99,6 +99,7 @@ all of the ones below, and C64 Ultimate firmware 1.1.0 answers none of them.
 | Feature | Ultimate 64 firmware 3.15a and later | Ultimate 64 firmware before 3.15a | C64 Ultimate firmware 1.1.0 | Without it |
 |---|---|---|---|---|
 | Live palette read, for `host_palette = auto` | ✓ | — | — | The Ultimate 64's built-in palette is assumed, with a warning when the machine has a custom `.vpl` loaded |
+| Palette push, for `[color].hardware_palette = "source"` | ✓ | — | — | Scenes show the machine's own palette, after one warning |
 | `Vol Master`, the mixer's master level: read when deciding whether audio is audible, and raised from `OFF` for a run that wants audio | ✓ | ✓ from 3.15 | — | Nothing to read or raise; every source plays at its own level |
 | Closes a DMA connection idle for one second | ✓ | — | — | Nothing to recover from: the connection stays open, and the check before each write finds it alive |
 | Telling that the Ultimate menu is open, in `--doctor` and at startup | ✓ | ✓ from 3.15 | — | No warning: an open menu takes the keyboard and hides the picture with nothing on the host side to say why |

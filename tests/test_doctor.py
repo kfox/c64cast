@@ -18,7 +18,7 @@ from _fakes import FakeAPI, MachineSettingsIsolation, tmp_cwd
 import c64cast
 from c64cast.app import config as cfgmod
 from c64cast.app import config_serialize as ser
-from c64cast.app import doctor, paths
+from c64cast.app import doctor, paths, scene_factory
 from c64cast.audio import dac_calibration_store
 from c64cast.hw.backend import HardwareProfile
 from c64cast.hw.c64 import max_safe_sample_rate
@@ -1781,6 +1781,215 @@ class SceneColorOverrideDiagnosticTest(unittest.TestCase):
         ok = [d for d in diags if d.level == "ok"]
         self.assertTrue(ok)
         self.assertNotIn("override", ok[0].message)
+
+
+class HardwarePaletteDiagnosticTest(unittest.TestCase):
+    """The refusals `--doctor --skip-probe` reports must be the ones a run
+    raises at startup, or a config passes the offline check and then fails
+    with the hardware already open."""
+
+    def _diags(self, toml: str) -> list[doctor.Diagnostic]:
+        return doctor.validate_load_result(_load(toml), probe_u64=False, probe_environment=False)
+
+    def _hardware_palette_errors(self, toml: str) -> list[doctor.Diagnostic]:
+        return [d for d in self._diags(toml) if d.subject.endswith("/hardware_palette")]
+
+    def test_source_with_force_palette_is_an_error(self):
+        errors = self._hardware_palette_errors(
+            '[color]\nhardware_palette = "source"\nforce_palette = true\n'
+        )
+        self.assertEqual([d.level for d in errors], ["error"])
+        self.assertIn("force_palette", errors[0].message)
+
+    def test_source_with_flicker_blending_is_an_error(self):
+        errors = self._hardware_palette_errors(
+            '[color]\nhardware_palette = "source"\nflicker_tolerance = "clean"\n'
+        )
+        self.assertEqual([d.level for d in errors], ["error"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_scene_override_is_an_error_naming_the_scene(self):
+        errors = self._hardware_palette_errors(
+            '[[scenes]]\ntype = "video"\nfile = "clip.mp4"\n'
+            '  [scenes.color]\n  hardware_palette = "source"\n  force_palette = true\n'
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("[[scenes]][0].color", errors[0].message)
+
+    def test_source_on_its_own_reports_nothing(self):
+        self.assertEqual(
+            self._hardware_palette_errors('[color]\nhardware_palette = "source"\n'), []
+        )
+
+    _REFUSED_SCENE = (
+        '[[scenes]]\ntype = "video"\nfile = "{file}"\n'
+        '  [scenes.color]\n  hardware_palette = "source"\n  force_palette = true\n'
+    )
+
+    def test_every_refused_scene_is_reported(self):
+        errors = self._hardware_palette_errors(
+            self._REFUSED_SCENE.format(file="a.mp4") + self._REFUSED_SCENE.format(file="b.mp4")
+        )
+        self.assertEqual(len(errors), 2)
+        self.assertIn("[[scenes]][0].color", errors[0].message)
+        self.assertIn("[[scenes]][1].color", errors[1].message)
+
+    def test_an_unresolvable_override_neither_hides_nor_is_reported_as_one(self):
+        errors = self._hardware_palette_errors(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  force_palette_colors = ["black"]\n'
+            + self._REFUSED_SCENE.format(file="a.mp4")
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("[[scenes]][1].color", errors[0].message)
+
+    def test_an_unresolvable_clip_override_is_still_reported(self):
+        # No other doctor check builds a clip, and a run refuses this one at
+        # startup, so the offline check must not pass it.
+        diags = self._diags(
+            '[[scenes]]\ntype = "blank"\n\n'
+            '[[performance.clips]]\nslot = 1\ntype = "video"\nfile = "z.mp4"\n'
+            '  [performance.clips.color]\n  force_palette_colors = ["black"]\n'
+        )
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].subject, "system/[[performance.clips]][0].color")
+        self.assertIn("force_palette_colors", errors[0].message)
+
+    def test_an_unresolvable_scene_override_is_left_to_validate_scenes(self):
+        diags = self._diags(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  force_palette_colors = ["black"]\n'
+        )
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error" and d.subject.endswith(".color")],
+            [],
+        )
+        self.assertIn(
+            ("scene", "system/video#0"),
+            [(d.category, d.subject) for d in diags if d.level == "error"],
+        )
+
+
+class ClipColorDiagnosticTest(unittest.TestCase):
+    """A clip's color override that a run refuses at startup must not pass
+    `--doctor --skip-probe`."""
+
+    _CLIP = (
+        '[[scenes]]\ntype = "blank"\n\n'
+        '[[performance.clips]]\nslot = 1\ntype = "video"\nfile = "z.mp4"\n'
+        "  [performance.clips.color]\n  {key} = {value}\n"
+    )
+
+    def _clip_errors(self, key: str, value: str) -> list[doctor.Diagnostic]:
+        loaded = _load(self._CLIP.format(key=key, value=value))
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        return [d for d in diags if d.level == "error"]
+
+    def test_each_value_a_run_refuses_is_reported_against_the_clip(self):
+        bad = {
+            "dither": '"bogus"',
+            "color_match": '"bogus"',
+            "cell_strategy": '"bogus"',
+            "motion_smoothing": "5.0",
+            "flicker_tolerance": '"bogus"',
+        }
+        for key, value in bad.items():
+            with self.subTest(key=key):
+                loaded = _load(self._CLIP.format(key=key, value=value))
+                with self.assertRaises(cfgmod.ConfigError):
+                    for validate in scene_factory.PER_SYSTEM_VALIDATORS:
+                        validate(loaded.cfgs[0])
+                errors = self._clip_errors(key, value)
+                self.assertEqual(
+                    [d.subject for d in errors], ["system/[[performance.clips]][0].color"]
+                )
+                self.assertIn(key, errors[0].message)
+
+    def test_a_scenes_bad_value_is_left_to_the_per_scene_check(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n  [scenes.color]\n  dither = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        subjects = [d.subject for d in diags if d.level == "error"]
+        self.assertEqual(len(subjects), 1)
+        self.assertTrue(subjects[0].endswith("/dither"))
+
+    def test_a_bad_global_flicker_tolerance_is_reported_once_against_color(self):
+        loaded = _load(
+            '[color]\nflicker_tolerance = "bogus"\n\n'
+            + self._CLIP.format(key="dither_strength", value="1.0")
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/flicker_tolerance"]
+        )
+
+    def test_a_bad_global_flicker_tolerance_a_scene_reports_is_not_repeated(self):
+        loaded = _load(
+            '[color]\nflicker_tolerance = "bogus"\n\n[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual([d.subject for d in errors], ["system/video#0"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_clip_value_differing_from_a_bad_global_is_reported(self):
+        loaded = _load(
+            '[color]\ndither = "bogus"\n\n' + self._CLIP.format(key="dither", value='"other"')
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"],
+            ["system/dither", "system/[[performance.clips]][0].color"],
+        )
+
+    def test_a_scene_override_its_per_scene_check_skips_is_reported(self):
+        bad = {
+            "cell_strategy": '"bogus"',
+            "motion_smoothing": "5.0",
+        }
+        for key, value in bad.items():
+            with self.subTest(key=key):
+                loaded = _load(
+                    '[[scenes]]\ntype = "video"\nfile = "z.mp4"\ndisplay = "hires"\n'
+                    f"  [scenes.color]\n  {key} = {value}\n"
+                )
+                diags = doctor.validate_load_result(
+                    loaded, probe_u64=False, probe_environment=False
+                )
+                errors = [d for d in diags if d.level == "error"]
+                self.assertEqual([d.subject for d in errors], ["system/[[scenes]][0].color"])
+                self.assertIn(key, errors[0].message)
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\ndisplay = "hires_edges"\n'
+            '  [scenes.color]\n  color_match = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual(
+            [d.subject for d in diags if d.level == "error"], ["system/[[scenes]][0].color"]
+        )
+
+    def test_a_flicker_override_on_a_scene_whose_build_skips_it_is_reported(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "generative"\naudio_source = "sid"\nfile = "z.sid"\n'
+            'display = "petscii"\n  [scenes.color]\n  flicker_tolerance = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        errors = [d for d in diags if d.level == "error"]
+        self.assertEqual([d.subject for d in errors], ["system/[[scenes]][0].color"])
+        self.assertIn("flicker_tolerance", errors[0].message)
+
+    def test_a_flicker_override_the_scene_build_reports_is_not_repeated(self):
+        loaded = _load(
+            '[[scenes]]\ntype = "video"\nfile = "z.mp4"\n'
+            '  [scenes.color]\n  flicker_tolerance = "bogus"\n'
+        )
+        diags = doctor.validate_load_result(loaded, probe_u64=False, probe_environment=False)
+        self.assertEqual([d.subject for d in diags if d.level == "error"], ["system/video#0"])
+
+    def test_a_valid_clip_override_reports_nothing(self):
+        self.assertEqual(self._clip_errors("dither", '"ordered"'), [])
 
 
 @contextlib.contextmanager

@@ -33,9 +33,9 @@ import logging
 import os
 import time
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from urllib.parse import quote, urlparse
 
 import requests
@@ -74,6 +74,9 @@ from .socket_dma import (
     encode_password,
 )
 from .vic_stream import VicStreamReceiver
+
+if TYPE_CHECKING:
+    from .hardware_palette import HardwarePalette
 
 __all__ = [
     "Ultimate64API",
@@ -1716,6 +1719,10 @@ def _lists_errors(parsed: object) -> bool:
 
 
 class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
+    # Set by `hardware_palette.provision_hardware_palette` for a run that pushes
+    # palettes; the scenes that push read it from here.
+    hardware_palette: HardwarePalette | None = None
+
     def __init__(
         self,
         base_url: str,
@@ -1736,6 +1743,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # Set by flush() so _flush_or_raise can tell a swallowed failure from a
         # clean round-trip without changing flush()'s own -> None contract.
         self._last_flush_failed = False
+        self._reset_listeners: list[Callable[[], None]] = []
         # Per connection: a firmware update needs a reconnect anyway.
         self._route_answers: dict[str, RouteAnswer] = {}
         # A performer's pad can fire many events a second into a dead link.
@@ -1755,6 +1763,27 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
         # connect() raises SocketDMAError on refused/auth-rejected; the CLI
         # renders that into a user-actionable message.
         self.socket_dma.connect()
+
+    def add_reset_listener(self, callback: Callable[[], None]) -> None:
+        """Call `callback` after every C64 reset this API issues: `reset()`
+        and every `run_prg`/`run_crt` kick, which reset the machine too.
+
+        The firmware re-applies part of its configuration on each of those
+        resets (the `Palette Definition` among it), so a listener is how
+        volatile state set over the run gets put back. A listener that raises
+        is logged and skipped."""
+        self._reset_listeners.append(callback)
+
+    def remove_reset_listener(self, callback: Callable[[], None]) -> None:
+        if callback in self._reset_listeners:
+            self._reset_listeners.remove(callback)
+
+    def _notify_reset(self) -> None:
+        for callback in list(self._reset_listeners):
+            try:
+                callback()
+            except Exception:
+                log.exception("reset listener raised; continuing")
 
     _EMIT_WRITE_LABEL = "U64 dma write"
     _EMIT_DEVICE_LABEL = "U64"
@@ -2126,6 +2155,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             r.raise_for_status()
         except requests.RequestException as e:
             log.warning("run_prg (clear loop) failed: %s", e)
+        else:
+            self._notify_reset()
 
     def launch_program(self, path: str, timeout: float = 10.0) -> None:
         """Upload and run a C64 program on the real machine.
@@ -2191,6 +2222,8 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             self.session.put(self.reset_url, timeout=2.0)
         except requests.RequestException as e:
             log.warning("U64 reset failed: %s", e)
+        else:
+            self._notify_reset()
 
     def _launch_sid_player(self, launch: _SidLaunch) -> bool:
         """Ultimate kick: DMA the SID payload + player MC + re-INIT stub, flush
@@ -2340,6 +2373,7 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
             if e.response is not None and e.response.status_code == 404:
                 raise RuntimeError(f"U64 endpoint {url} returned 404 — {what}") from e
             raise
+        self._notify_reset()
 
     def reu_write(self, reu_offset: int, data: bytes) -> None:
         """Bus-clean write into FPGA-mapped REU SRAM at 24-bit ``reu_offset``.

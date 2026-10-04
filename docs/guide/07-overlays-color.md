@@ -123,6 +123,26 @@ This is a deliberate stylistic effect rather than a fidelity improvement.
 Four cold colors make everything look like a monitor from a submarine
 film, and that is sometimes exactly what you want.
 
+### Changing the Machine's Own Colors
+
+An Ultimate 64 on firmware 3.15a or newer can do something no real Commodore
+can: show sixteen colors of c64cast's choosing. Turn it on and each video and
+slideshow image gets a palette fitted to what it actually contains, with
+black, white and the grays left alone:
+
+```toml
+[color]
+hardware_palette = "source"
+```
+
+A sunset can spend its eleven free colors on oranges and reds instead of
+making do with one orange and a brown. The machine's own palette comes back
+before any scene that does not use the setting, and when c64cast exits. On any other machine, or older firmware, the setting is skipped with a
+warning and the show looks as it always has. It cannot be combined with
+`force_palette` or `flicker_tolerance`.
+[The Programmer's Reference Guide](https://github.com/kfox/c64cast/blob/main/docs/reference/04-display-pipeline.md#choosing-the-sixteen--hardware_palette)
+has the details.
+
 ### Mixing Looks Across Scenes
 
 Any `[[scenes]]` block can override part of `[color]` for itself alone, in a

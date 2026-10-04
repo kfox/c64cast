@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from c64cast.control.transport import LiveTuneTracker, TransportSession
+from c64cast.hw import hardware_palette
 from c64cast.hw.backend import C64Backend
 from c64cast.scenes.scenes import Scene
 
@@ -590,6 +591,7 @@ class Playlist:
         self.ensemble_coord.maybe_install_conductor(scene)
         # Before the scene renders a frame, for any `mod_source = "clock"` layer.
         scene.clock_modulation = self._clock_modulation
+        hardware_palette.settle_for(self.api, scene)
         scene.setup()
         # Mode instances are per-scene, so a dim set on the previous scene's mode
         # would not otherwise carry.

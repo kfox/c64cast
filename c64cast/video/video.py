@@ -28,7 +28,7 @@ from c64cast._native_io import silence_native_stderr
 from c64cast._pollthread import PollThread
 from c64cast.audio.audio_handlers import DAC_VOLUME_SCALE, INT16_FULL_SCALE, INT16_MAX, INT16_MIN
 
-from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator
+from .palette import ColorFit, ColorFitAccumulator, ColorMap, ColorMapAccumulator, FrameSampler
 
 log = logging.getLogger(__name__)
 
@@ -505,6 +505,7 @@ def prescan_source_color(
     fit_strength: float | None = None,
     map_colors: int | None = None,
     map_indices: list[int] | None = None,
+    frames: FrameSampler | None = None,
     decode_target_size: tuple[int, int] | None = None,
     on_progress: Callable[[float], None] | None = None,
 ) -> tuple[ColorFit | None, ColorMap | None]:
@@ -512,12 +513,15 @@ def prescan_source_color(
 
     ``fit_strength`` not None enables the adaptive ColorFit ([color].auto_fit);
     ``map_colors``/``map_indices`` not None/empty enables the forced-palette
-    ColorMap ([color].force_palette). Both stages share a single decode pass.
+    ColorMap ([color].force_palette). Both stages share a single decode pass,
+    and so does ``frames``, which keeps the sampled frames for a derivation that
+    needs the fit first ([color].hardware_palette).
     ``decode_target_size`` downscales sampled frames during decode (see
     scan_video_samples). Returns (ColorFit|None, ColorMap|None); a disabled or
     failed stage is None, so callers can unconditionally pass the results to
-    set_color_fit / set_color_map. See palette.ColorFitAccumulator /
-    palette.ColorMapAccumulator.
+    set_color_fit / set_color_map. A failed scan also empties ``frames``, so
+    nothing is fitted to, or kept from, a partial pass. See
+    palette.ColorFitAccumulator / palette.ColorMapAccumulator.
     """
     fit_acc = ColorFitAccumulator(strength=fit_strength) if fit_strength is not None else None
     map_acc = (
@@ -525,10 +529,12 @@ def prescan_source_color(
         if (map_colors is not None or map_indices)
         else None
     )
-    accs = [a for a in (fit_acc, map_acc) if a is not None]
+    accs = [a for a in (fit_acc, map_acc, frames) if a is not None]
     if not scan_video_samples(
         path, accs, decode_target_size=decode_target_size, on_progress=on_progress
     ):
+        if frames is not None:
+            frames.frames.clear()
         return None, None
     return (fit_acc.result() if fit_acc else None, map_acc.result() if map_acc else None)
 

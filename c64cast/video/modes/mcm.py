@@ -13,9 +13,6 @@ from c64cast.video.palette import (
     C64_PALETTE_BGR,
     COLOR_MATCH_MODES,
     PERCEPTUAL_DIST_SCALE,
-    apply_color_fit,
-    apply_hue_corrections,
-    boost_saturation,
     build_fade_lut,
     pick_diverse_top_n,
     quantize_distances,
@@ -31,6 +28,7 @@ from .base import (
     ema_counts,
     palette_mode_settings,
     resolve_color_shaping,
+    shape_for_quantize,
     validate_palette_mode,
 )
 from .char import CharDisplayMode, clear_char_screen
@@ -170,6 +168,15 @@ class MCMDisplayMode(CharDisplayMode):
         api.write_regs("d020", 0, 0, 0, 0)
         api.write_memory("d011", "1b")
 
+    def quantizer_input(self, img: np.ndarray) -> np.ndarray:
+        return shape_for_quantize(
+            img,
+            self._fit_for_apply(),
+            self._sat_factor,
+            self._hue_corrections,
+            self._channel_boost,
+        )
+
     def compose(self, frame) -> MCMComposeBuffers:
         assert self.frame_target_size is not None
         img = cv2.resize(frame, self.frame_target_size, interpolation=cv2.INTER_AREA)
@@ -179,12 +186,7 @@ class MCMDisplayMode(CharDisplayMode):
             flat = self._color_map.apply(img).reshape(-1, 3).astype(np.float32)
             all_d = quantize_distances(flat)  # (4000, 16)
         else:
-            fit = self._fit_for_apply()
-            if fit is not None:
-                img = apply_color_fit(img, fit)
-            img = boost_saturation(img, self._sat_factor)
-            img = apply_hue_corrections(img, self._hue_corrections)
-            flat = np.clip(img.reshape(-1, 3).astype(np.float32) * self._channel_boost, 0, 255)
+            flat = self.quantizer_input(img).reshape(-1, 3)
             offset_fn = ORDERED_DITHER_OFFSET_FNS.get(self._dither_method)
             if offset_fn is not None:
                 w, h = self.frame_target_size

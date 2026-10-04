@@ -245,6 +245,16 @@ class TeardownStackOrderTest(unittest.TestCase):
         teardown_stack(st)
         self.assertEqual(order[order.index("stream_off") + 1], "api_close")
 
+    def test_the_hardware_palette_is_restored_before_the_reset(self):
+        """The reset is the step that can fail or wedge the link; the machine
+        must already be showing its own palette by then."""
+        st, order = self._record_order()
+        st.hardware_palette = MagicMock()
+        st.hardware_palette.restore.side_effect = lambda: order.append("palette")
+        teardown_stack(st)
+        self.assertEqual(order.count("palette"), 1)
+        self.assertLess(order.index("palette"), order.index("reset"))
+
     def test_one_failure_doesnt_strand_remaining_steps(self):
         st, order = self._record_order()
         st.audio.close.side_effect = lambda: (_ for _ in ()).throw(RuntimeError("audio gone weird"))
