@@ -317,8 +317,9 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   sounddevice tools defaulted to input 1, and two of them fell back to the
   system default input, which on a laptop is its microphone. With no `-D` and
   no `C64_DIAG_AVF_AUDIO` / `C64_DIAG_SD_AUDIO`, a tool now records from the
-  one audio input named like the capture camera (the one `C64_DIAG_CAMERA`
-  names, else the auto-picked HDMI capture device), and exits listing the
+  one audio input named like the capture camera (the tool's own `--device`
+  where it has one, else the one `C64_DIAG_CAMERA` names, else the
+  auto-picked HDMI capture device), and exits listing the
   inputs when none or several match. It looks before it touches the machine.
   `-D` takes an index or a name substring on every audio tool.
   `scripts/diags/vision_tune.py` no longer defaults to the camera named
