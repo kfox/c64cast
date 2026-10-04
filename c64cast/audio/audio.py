@@ -2165,15 +2165,20 @@ class AudioStreamer:
 
         Before the consumer starts, nothing landed has played, so the lead is
         the whole landed count: a splice during the prebuffer is heard only
-        after the pre-splice prebuffer it lands behind."""
+        after the pre-splice prebuffer it lands behind. After it starts, the
+        lead is capped at the landed count: the smoothed gap counts prebuffer
+        pad, and while it exceeds the landed content position_seconds() reads
+        0, so an uncapped lead would anchor the splice that pad past its first
+        sample."""
         rate = self.effective_rate
         if not rate or self._reu_pump_armed:
             return 0.0
+        with self._count_lock:
+            landed = max(0, self._pushed_count - self._queued_samples)
         lead = self._content_lead()
         if lead is None:
-            with self._count_lock:
-                lead = max(0, self._pushed_count - self._queued_samples)
-        return lead / rate
+            return landed / rate
+        return min(lead, landed) / rate
 
     def _content_lead(self) -> float | None:
         """The servo's smoothed ring gap less the pad landed behind the last

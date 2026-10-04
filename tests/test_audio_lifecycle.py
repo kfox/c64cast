@@ -1496,6 +1496,20 @@ class LifecycleTest(unittest.TestCase):
         s.servo.reset_for_consumer_start(2048)
         self.assertAlmostEqual(s.position_seconds() + s.ring_lead_seconds(), landed, places=6)
 
+    def test_a_splice_just_after_the_start_leaves_out_the_prebuffer_pad(self):
+        # The consumer starts behind a prebuffer whose last chunk was padded,
+        # so the seeded lead exceeds the landed content and position_seconds()
+        # reads 0; the anchor still has to be the landed content, not the pad
+        # past it.
+        s = _make()
+        s._pushed_count = 2036
+        s._queued_samples = 0
+        s.servo.reset_for_consumer_start(2048)
+        self.assertEqual(s.position_seconds(), 0.0)
+        self.assertAlmostEqual(
+            s.position_seconds() + s.ring_lead_seconds(), 2036 / s.effective_rate, places=6
+        )
+
     def test_the_prebuffer_lead_leaves_out_a_padded_chunks_pad(self):
         # position_seconds() counts content only, so the clock already lags by
         # a prebuffer pad; a lead that also counted the pad would hold the
