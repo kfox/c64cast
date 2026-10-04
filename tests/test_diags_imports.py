@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import ast
 import importlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
+
+import c64cast.video
 
 _DIAGS = Path(__file__).resolve().parents[1] / "scripts" / "diags"
 _LOCAL_PREFIX = "scripts.diags."
@@ -91,7 +95,9 @@ def _resolves(module: str, name: str) -> bool:
         return False
     try:
         importlib.import_module(f"{module}.{name}")
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
+        if exc.name != f"{module}.{name}":
+            raise
         return False
     return True
 
@@ -224,6 +230,14 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
     def test_a_missing_name_from_a_sibling_tool_is_reported(self):
         missing = self._check("from ring_race_probe import no_such_name\n")
         self.assertEqual(missing, ["line 1: from ring_race_probe import no_such_name"])
+
+    def test_a_submodule_missing_a_third_party_dependency_is_not_reported_as_stale(self):
+        with patch.dict(sys.modules, {"cv2": None}), patch.dict(c64cast.video.__dict__):
+            sys.modules.pop("c64cast.video.flicker", None)
+            c64cast.video.__dict__.pop("flicker", None)
+            with self.assertRaises(ModuleNotFoundError) as caught:
+                self._check("from c64cast.video import flicker\n")
+        self.assertEqual(caught.exception.name, "cv2")
 
     def test_names_that_exist_pass(self):
         missing = self._check(
