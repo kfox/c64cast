@@ -138,7 +138,8 @@ class PickCaptureCameraTest(unittest.TestCase):
 
     def test_a_linux_stick_listed_once_per_backend_is_one_camera(self):
         cams = [*self._linux(0, "Integrated Camera"), *self._linux(2, "Cam Link 4K", 0x0FD9, 0x66)]
-        self.assertEqual(self._pick(cams).name, "Cam Link 4K")
+        picked = self._pick(cams)
+        self.assertEqual((picked.name, picked.index), ("Cam Link 4K", 202))
 
     def test_two_identical_linux_sticks_stay_two(self):
         cams = [

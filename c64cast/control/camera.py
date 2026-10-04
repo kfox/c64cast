@@ -236,7 +236,7 @@ def pick_capture_camera() -> CameraInfo:
     picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
     devices = {device_identity(c) for c in picked}
     if len(devices) == 1:
-        return picked[0]
+        return _listing_to_open(picked)
     reason = (
         "no connected camera looks like an HDMI capture device"
         if not picked
@@ -251,6 +251,17 @@ def device_identity(cam: CameraInfo) -> tuple[str, str | None, int]:
     :func:`_platform_api_preference`), and OpenCV reads ``N`` back as
     ``index % 100``."""
     return (cam.name, cam.vidpid_str(), cam.index % 100)
+
+
+def _listing_to_open(listings: list[CameraInfo]) -> CameraInfo:
+    """Which of one camera's listings to open it by: the V4L2 one when the
+    enumerator listed it per Linux backend, since OpenCV opens ``backend + N``
+    under ``CAP_ANY`` with that backend and its pip wheels lack GStreamer;
+    otherwise the first."""
+    for cam in listings:
+        if cam.backend == int(cv2.CAP_ANY) and cam.index - cam.index % 100 == int(cv2.CAP_V4L2):
+            return cam
+    return listings[0]
 
 
 def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
