@@ -229,6 +229,16 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
 
 ### Fixed
 
+- **The diag tools' REST memory writes work on Ultimate firmware 3.15.**
+  `scripts/diags/_diaglib.py`'s `rest_writemem` sent the bytes in the URL of
+  a POST, which firmware 3.15a refuses with HTTP 412 "Expected Body, but got
+  none." — and the helper reported that only as a `False` nobody checked, so
+  `run_and_capture.py --border-flash` drew no markers and said nothing. It now
+  sends a PUT, the form 3.14, 3.15 and the C64 Ultimate's 1.1.0 all accept for
+  up to 128 bytes, and a refused write raises with the firmware's error text.
+  `reu_servo_probe.py` sets its latch through the same helper, and a failed
+  border flash or latch restore is printed.
+
 - **A still picture now repaints after a dropped Ultimate DMA connection.**
   When the connection to an Ultimate was reset with writes still unconfirmed
   (the DMA service switched off, for instance), or a write failed outright on

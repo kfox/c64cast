@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 import _diaglib as d
+import requests
 
 from c64cast.audio.audio_handlers import (
     NMI_ROUTINE_ADDR,
@@ -77,17 +78,7 @@ def _read_W(url: str) -> int | None:
 
 
 def _set_latch(url: str, latch: int) -> None:
-    latch &= 0xFFFF
-    d_requests_put(url, CIA1_TIMER_A_LO, f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}")
-
-
-def d_requests_put(url: str, addr: int, data_hex: str) -> None:
-    d.rest_request(
-        "PUT",
-        url + "/v1/machine:writemem",
-        params={"address": f"{addr:04X}", "data": data_hex},
-        timeout=3,
-    )
+    d.rest_writemem(CIA1_TIMER_A_LO, (latch & 0xFFFF).to_bytes(2, "little"), url, timeout=3)
 
 
 def _rate_window(url: str, secs: float, hz: float) -> tuple[float, float, list[int]]:
@@ -207,7 +198,10 @@ def main() -> int:
         elif args.servo:
             rc = _run_servo(args, clock)
     finally:
-        _set_latch(args.url, REU_PUMP_CIA1_LATCH)  # restore nominal before teardown
+        try:
+            _set_latch(args.url, REU_PUMP_CIA1_LATCH)  # restore nominal before teardown
+        except requests.RequestException as e:
+            print(f"[restore] nominal latch NOT restored: {e}")
         if app is not None:
             app.terminate()
             try:

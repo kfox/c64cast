@@ -302,33 +302,51 @@ def machine_reset(url: str) -> bool:
             close()
 
 
-def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> bool:
-    """POST /v1/machine:writemem?address=HHHH&data=<hex> — write raw bytes to C64
-    memory over REST. Address WITHOUT a `$` prefix (the recurring gotcha).
-    Returns True on HTTP 2xx. Coexists with c64cast's DMA socket (separate
-    transport), like rest_readmem — fine to poke concurrently with a running app."""
+#: Most bytes the query-string form of ``writemem`` carries, on every firmware.
+REST_WRITEMEM_MAX = 128
+
+
+def rest_writemem(address: int, data: bytes, url: str = U64_URL, timeout: float = 2.0) -> None:
+    """PUT /v1/machine:writemem?address=HHHH&data=<hex> — write 1 to 128 raw
+    bytes to C64 memory over REST. Coexists with c64cast's DMA socket (separate
+    transport), like rest_readmem — fine to poke concurrently with a running app.
+
+    PUT is the form Ultimate 3.14e, 3.15a and C64 Ultimate 1.1.0 all accept
+    with the bytes in the URL. POST takes the bytes only as a request body, and
+    3.15a answers a bodiless POST with HTTP 412 "Expected Body, but got none.".
+
+    Raises ``ValueError`` for a write the firmware would refuse by its length
+    or end address, and ``requests.HTTPError`` carrying the firmware's error
+    text for any non-2xx answer; transport failures propagate as
+    ``requests.RequestException``. A caller that wants to carry on catches."""
     import requests
 
-    try:
-        r = rest_request(
-            "POST",
-            url + "/v1/machine:writemem",
-            params={"address": f"{address:04X}", "data": data.hex()},
-            timeout=timeout,
+    if not 1 <= len(data) <= REST_WRITEMEM_MAX:
+        raise ValueError(f"writemem takes 1 to {REST_WRITEMEM_MAX} bytes, got {len(data)}")
+    if address < 0 or address + len(data) > 0x10000:
+        raise ValueError(f"writemem of {len(data)} bytes at ${address:04X} passes $FFFF")
+    r = rest_request(
+        "PUT",
+        url + "/v1/machine:writemem",
+        params={"address": f"{address:04X}", "data": data.hex()},
+        timeout=timeout,
+    )
+    if not r.ok:
+        raise requests.HTTPError(
+            f"PUT writemem ${address:04X} ({len(data)} bytes): "
+            f"HTTP {r.status_code} {r.text.strip()[:200]}",
+            response=r,
         )
-        return r.ok
-    except requests.RequestException:
-        return False
 
 
-def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> bool:
+def flash_border(url: str = U64_URL, color: int = 1, timeout: float = 2.0) -> None:
     """Set the VIC border color register $D020 to `color` (0-15) over REST — the
     primitive behind the border-flash A/V sync marker (see the border-flash
     auto-memory): poke a bright color at known wall-clock times during a capture,
     then align the visible flashes to the source to measure playback tempo / A/V
     drift. $D020 is bus-clean to poke (one byte) and visible regardless of display
-    mode. Returns True on success."""
-    return rest_writemem(0xD020, bytes([color & 0x0F]), url, timeout)
+    mode. Raises as :func:`rest_writemem` does."""
+    rest_writemem(0xD020, bytes([color & 0x0F]), url, timeout)
 
 
 def rest_reboot(url: str = U64_URL, timeout: float = 5.0) -> int | None:
