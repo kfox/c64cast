@@ -155,6 +155,93 @@ def _describe(cams: list[CameraInfo]) -> str:
     return ", ".join(parts)
 
 
+#: Name substrings (lowercase) of video devices that are not HDMI capture
+#: devices: built-in and USB webcams, phones, and virtual cameras. Webcams,
+#: built-in cameras, phones and virtual devices mostly call themselves a
+#: "camera"; an HDMI capture device names itself after the stick.
+NOT_CAPTURE_NAME_PATTERNS: tuple[str, ...] = (
+    "camera",
+    # webcams
+    "webcam",
+    "facecam",
+    "lifecam",
+    "brio",
+    "kiyo",
+    "insta360",
+    "obs",
+    # phones
+    "iphone",
+    "ipad",
+    "epoccam",
+    "droidcam",
+    "camo",
+    # virtual cameras
+    "virtual",
+    "xsplit",
+    "mmhmm",
+    "broadcast",
+    "screen",
+)
+
+
+def looks_like_hdmi_capture(name: str, usb_id: str | None) -> bool:
+    """Whether a device called ``name``, with USB ``VID:PID`` ``usb_id``
+    (``None`` when it reports none), may be auto-picked as the HDMI capture
+    device: it must be a USB device with a non-empty name that matches none of
+    :data:`NOT_CAPTURE_NAME_PATTERNS`. A device with no USB identity, or no
+    name to judge, is not picked: built-in and virtual cameras report none."""
+    lowered = name.strip().lower()
+    if not lowered or not usb_id:
+        return False
+    return not any(pattern in lowered for pattern in NOT_CAPTURE_NAME_PATTERNS)
+
+
+def camera_listing(cams: list[CameraInfo]) -> str:
+    """Every enumerated camera, one per line, with its index, name and VID:PID."""
+    if not cams:
+        return "  (no cameras found)"
+    return "\n".join(f"  [{c.index}] {c.name} ({c.vidpid_str() or 'no USB VID:PID'})" for c in cams)
+
+
+class CaptureCameraError(RuntimeError):
+    """No single connected camera can be picked as the HDMI capture device.
+
+    ``extra_missing`` is true when the ``camera`` extra that enumerates them is
+    not installed; otherwise ``cameras`` is what was enumerated, so the caller
+    can list it beside its own advice on naming a device."""
+
+    def __init__(self, reason: str, cameras: list[CameraInfo], *, extra_missing: bool = False):
+        super().__init__(reason)
+        self.reason = reason
+        self.cameras = cameras
+        self.extra_missing = extra_missing
+
+
+def pick_capture_camera() -> CameraInfo:
+    """The one connected camera :func:`looks_like_hdmi_capture` accepts.
+
+    Raises :class:`CaptureCameraError` when it accepts none or more than one,
+    or when the ``camera`` extra is missing: there is no fallback to an index
+    or to any other camera, since that camera may be pointed at a person.
+    Enumerating opens no camera."""
+    if not camera_enumeration_available():
+        raise CaptureCameraError(
+            f"picking the capture device needs the 'camera' extra — {_EXTRA_HINT}",
+            [],
+            extra_missing=True,
+        )
+    cams = enumerate_cameras()
+    picked = [c for c in cams if looks_like_hdmi_capture(c.name, c.vidpid_str())]
+    if len(picked) == 1:
+        return picked[0]
+    reason = (
+        "no connected camera looks like an HDMI capture device"
+        if not picked
+        else f"{len(picked)} connected cameras look like HDMI capture devices"
+    )
+    raise CaptureCameraError(reason, cams)
+
+
 def resolve_camera_index(device: int | str) -> tuple[int, int | None]:
     """Resolve a ``[video].device`` value to ``(cv2_index, backend_or_None)``.
 

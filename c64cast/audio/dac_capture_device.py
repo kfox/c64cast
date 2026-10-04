@@ -1,5 +1,6 @@
 """Finding and probing the audio-capture input for ``--calibrate-dac``:
-device selection (:func:`find_capture_device`), format probing
+device selection (:func:`find_capture_device`, by name or by the HDMI capture
+device's name, never the system default input), format probing
 (:func:`resolve_capture_format`), and the failure text that names the device
 recorded from and lists the alternatives (:func:`capture_fault_message`).
 
@@ -12,6 +13,7 @@ See docs/architecture/audio.md#picking-the-capture-device.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -25,54 +27,104 @@ log = logging.getLogger(__name__)
 #: its rate as a parameter, so any of these measures correctly.
 CAP_SR_FALLBACKS = (96000, 44100, 32000)
 
-#: Name fragments that identify an input as video-capture hardware, most
-#: specific first. The measurement needs the input the C64's audio arrives on,
-#: which is essentially always an HDMI capture device — but only the author's
-#: Cam Link used to be recognized, so every other rig silently fell through to
-#: the *system default input*. On Windows that is the on-board microphone, which
-#: records room noise and measures like a dead chip (see
-#: :data:`RING_SPREAD_NOT_THE_RING`). These cover the common sticks: Elgato, the
-#: MacroSilicon-based HDMI→USB dongles ("USB Video", "USB3.0 HD Video Capture"),
-#: and anything self-describing as a capture/HDMI input.
-CAPTURE_NAME_HINTS = (
-    "cam link",
-    "elgato",
-    "hdmi",
-    "capture",
-    "macrosilicon",
-    "usb video",
-    "av to usb",
-)
-
-
-def looks_like_capture_input(name: str) -> bool:
-    """Whether an input device's name identifies it as video-capture hardware.
-
-    Used to pick one automatically, and to warn when the fallback lands on
-    something that is probably a microphone."""
-    low = name.lower()
-    return any(h in low for h in CAPTURE_NAME_HINTS)
-
-
-def find_capture_device(preferred: int | None) -> int:
-    """Resolve the capture device index: `preferred` if given, else the first
-    input-capable device whose name looks like video-capture hardware
-    (:data:`CAPTURE_NAME_HINTS`, in order), else the system default input."""
-    import sounddevice as sd
-
-    if preferred is not None:
-        return preferred
-    devices = list(sd.query_devices())
-    for hint in CAPTURE_NAME_HINTS:
-        for i, dev in enumerate(devices):
-            if hint in str(dev["name"]).lower() and dev["max_input_channels"] > 0:
-                return i
-    default_in = sd.default.device[0]
-    return int(default_in) if default_in is not None and default_in >= 0 else 0
-
 
 class CaptureUnavailableError(RuntimeError):
     """Raised when sounddevice / a usable capture device isn't available."""
+
+
+def names_match(a: str, b: str) -> bool:
+    """Whether one device name contains the other, ignoring case and outer
+    whitespace: how an audio input is matched to the video device it belongs
+    to, since a capture stick enumerates both under its own name."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a in b or b in a)
+
+
+def named_positions(names: Sequence[str], spec: str) -> list[int]:
+    """The positions in ``names`` that ``spec`` names: the names equal to it,
+    ignoring case, else the names that contain it."""
+    text = spec.strip().lower()
+    exact = [i for i, n in enumerate(names) if n.strip().lower() == text]
+    return exact or [i for i, n in enumerate(names) if text and text in n.lower()]
+
+
+def _input_devices() -> list[tuple[int, str]]:
+    """``(index, name)`` of every input-capable sounddevice device."""
+    import sounddevice as sd
+
+    return [
+        (i, str(d["name"])) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0
+    ]
+
+
+def find_capture_device(preferred: int | str | None) -> int:
+    """The sounddevice index of the input the C64's audio arrives on.
+
+    ``preferred`` (``--audio-device``) names it: an index, or a name, matched
+    by :func:`named_positions`. With nothing named, it is the one input whose
+    name :func:`names_match` the HDMI capture device's that
+    :func:`c64cast.control.camera.pick_capture_camera` singles out.
+
+    Raises :class:`CaptureUnavailableError`, listing the inputs, when a name
+    matches none or several inputs, when no single capture device is found,
+    or when the ``camera`` extra that finds it is missing. The system default
+    input is never used in its place: on most machines it is a microphone."""
+    inputs = _input_devices()
+    if preferred is not None:
+        return _named_input(inputs, preferred)
+    return _input_named_like_capture_camera(inputs)
+
+
+def _named_input(inputs: list[tuple[int, str]], preferred: int | str) -> int:
+    """The input ``preferred`` names, as :func:`find_capture_device` describes."""
+    text = str(preferred).strip()
+    try:
+        index = int(text)
+    except ValueError:
+        pass
+    else:
+        if index < 0:
+            raise CaptureUnavailableError(
+                f"--audio-device {text} asks for the system default input, which "
+                "calibration never records from. " + pick_device_hint("Name the input with")
+            )
+        return index
+    found = named_positions([name for _, name in inputs], text)
+    if len(found) == 1:
+        return inputs[found[0]][0]
+    reason = "matches no audio input" if not found else "matches more than one audio input"
+    raise CaptureUnavailableError(
+        f"--audio-device {text!r} {reason}. " + pick_device_hint("Name the input with")
+    )
+
+
+def _input_named_like_capture_camera(inputs: list[tuple[int, str]]) -> int:
+    """The one input named like the auto-picked HDMI capture device."""
+    from c64cast.control import camera
+
+    try:
+        cam = camera.pick_capture_camera()
+    except camera.CaptureCameraError as e:
+        if e.extra_missing:
+            raise CaptureUnavailableError(
+                f"{e}. Without it the capture input cannot be found, and calibration "
+                "does not record from the system default input in its place. Install "
+                "the extra, or " + pick_device_hint("name the input with")
+            ) from None
+        raise CaptureUnavailableError(
+            f"{e.reason}, so the capture input, the audio input named like it, cannot "
+            f"be found and nothing is recorded. Cameras found:\n"
+            f"{camera.camera_listing(e.cameras)}\n" + pick_device_hint("Name the input with")
+        ) from None
+    found = [i for i, name in inputs if names_match(name, cam.name)]
+    if len(found) == 1:
+        log.info("calib: capture input %d is named like the capture device %r", found[0], cam.name)
+        return found[0]
+    reason = "no audio input" if not found else f"{len(found)} audio inputs"
+    raise CaptureUnavailableError(
+        f"{reason} named like the capture device {cam.name!r}, so nothing is recorded. "
+        + pick_device_hint("Name the input with")
+    )
 
 
 def _input_device_list() -> str:

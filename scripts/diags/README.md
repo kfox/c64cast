@@ -29,7 +29,7 @@ These are **dev tools, not part of the shipped package** — they live under
   |-----|---------|---------|
   | `C64_DIAG_URL` | `http://192.168.2.64` | U64 base URL |
   | `C64_DIAG_U2P_URL` | `http://192.168.2.65` | U2+ base URL |
-  | `C64_DIAG_CAMERA` | unset | capture device: a cv2 index, a camera name substring, or a USB VID:PID. Unset, a tool opens the one connected camera that looks like an HDMI capture device (`_diaglib.looks_like_hdmi_capture`: a USB device whose name matches no webcam, phone or virtual-camera pattern); with none or several, it exits listing every camera rather than open one |
+  | `C64_DIAG_CAMERA` | unset | capture device: a cv2 index, a camera name substring, or a USB VID:PID. Unset, a tool opens the one connected camera that looks like an HDMI capture device (`c64cast.control.camera.looks_like_hdmi_capture`: a USB device whose name matches no webcam, phone or virtual-camera pattern); with none or several, it exits listing every camera rather than open one |
   | `C64_DIAG_CV2` | — | removed: a tool exits if it is set. Use `C64_DIAG_CAMERA` (index, name or VID:PID) instead |
   | `C64_DIAG_AVF_AUDIO` | unset | audio input for the ffmpeg/avfoundation tools: an index (`:N` or `N`) or a name substring. Unset, a tool records from the one audio input named like the capture camera (the tool's own `--device` where it has one, else `C64_DIAG_CAMERA`, else the auto-picked one); with none or several, it exits listing the inputs. The system default input is never used |
   | `C64_DIAG_SD_AUDIO` | unset | the same, for the sounddevice tools (`N` is a sounddevice index) |

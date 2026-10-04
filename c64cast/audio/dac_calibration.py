@@ -68,8 +68,6 @@ from .dac_capture_device import (
     CaptureUnavailableError,
     capture_fault_message,
     find_capture_device,
-    looks_like_capture_input,
-    pick_device_hint,
     resolve_capture_format,
 )
 from .dac_slot_ring import (
@@ -420,10 +418,12 @@ def _bring_up_dac_env(be: C64Backend, cfg: Config, log_fn: Callable[[str], None]
     return st
 
 
-def _open_capture(device: int | None, log_fn: Callable[[str], None]) -> tuple[int, CaptureFormat]:
-    """(Re)initialize PortAudio and resolve the capture device + format,
-    saying immediately when the auto-pick fell through to the system default
-    (a laptop's microphone would record room noise for ~50 s and fail)."""
+def _open_capture(
+    device: int | str | None, log_fn: Callable[[str], None]
+) -> tuple[int, CaptureFormat]:
+    """(Re)initialize PortAudio and resolve the capture device + format.
+    PortAudio is re-enumerated first, so the input is found by its name
+    in the listing the capture will use."""
     import sounddevice as sd
 
     log_fn("[calib] settling HDMI + (re)initializing capture…")
@@ -436,13 +436,6 @@ def _open_capture(device: int | None, log_fn: Callable[[str], None]) -> tuple[in
     log_fn(
         f"[calib] capture device idx {dev}: {dev_name} ({fmt.channels} ch @ {fmt.samplerate} Hz)"
     )
-    if device is None and not looks_like_capture_input(dev_name):
-        log_fn(
-            f"[calib] warning: {dev_name!r} doesn't look like a video-capture "
-            "input — this is the system default, picked because no capture "
-            "device was recognized. If the C64's audio doesn't arrive on it, "
-            + pick_device_hint("stop now and pick with")
-        )
     return dev, fmt
 
 
@@ -662,7 +655,7 @@ def run_calibration(
     # passes inside the window wherever the capture happens to start.
     secs: float = 4.5,
     settle: float = 0.4,
-    device: int | None = None,
+    device: int | str | None = None,
     log_fn: Callable[[str], None] = print,
 ) -> CalibrationRun:
     """Measure the connected SID's (or SIDs', on a U64/U2+ with populated

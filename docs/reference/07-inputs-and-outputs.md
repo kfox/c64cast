@@ -155,11 +155,13 @@ no identifier, since the audio layer exposes none. Unlike the camera resolver
 this one never fails: a name matching nothing warns and falls back to the system
 default input.
 
-That forgiveness has a cost worth knowing about during DAC calibration, where
-the system default is usually the built-in microphone and a calibration measured
-off room noise fails expensively. The calibrator therefore looks for a capture
-device by name first, and warns immediately when it has fallen back — five
-seconds into the run rather than fifty.
+DAC calibration does not forgive, because the system default is usually the
+built-in microphone and a calibration measured off room noise fails
+expensively. There, a name matching no input or several is an error, and with
+no `--audio-device` the calibrator records from the one input named like the
+connected HDMI capture device, which it finds with the `camera` extra. When it
+cannot single one out, it stops before touching the machine and lists the
+inputs; it never falls back to the system default input.
 
 `--save-settings` persists whichever devices you chose, so they need not be
 retyped; see Chapter 1.
