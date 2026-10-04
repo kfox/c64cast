@@ -851,6 +851,7 @@ class _FakeStreamer:
         # reactive MicAudioSource installs into (see audio_features.py).
         self.sample_rate = 12000
         self.analysis_sink = None
+        self.use_reu_pump = True
 
     def start_mic(self, device, sensitivity, noise_gate, *, skip_irq_vector_hook=False):
         self.started = {
@@ -902,6 +903,30 @@ class AudioSourceTest(unittest.TestCase):
         self.assertTrue(streamer.started["skip"])  # mirrors REU-pump coordination
         mic.teardown()
         self.assertTrue(streamer.stopped)
+
+    def _mic_over(self, streamer, mode) -> MicAudioSource:
+        return MicAudioSource(
+            cast(AudioStreamer, streamer),
+            cast(AudioCfg, SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)),
+            display_mode=cast(DisplayMode, mode),
+            reactive=False,
+        )
+
+    def test_mic_pump_refuses_a_host_rec_staged_mode(self):
+        # The REU-staged char push and the REU mic pump both drive the REC.
+        streamer = _FakeStreamer()
+        mic = self._mic_over(streamer, SimpleNamespace(drives_rec_from_host=True))
+        with self.assertRaises(ValueError):
+            mic.setup()
+        self.assertIsNone(streamer.started)
+
+    def test_mic_without_pump_accepts_a_host_rec_staged_mode(self):
+        streamer = _FakeStreamer()
+        streamer.use_reu_pump = False
+        mic = self._mic_over(streamer, SimpleNamespace(drives_rec_from_host=True))
+        mic.setup()
+        assert streamer.started is not None
+        self.assertFalse(streamer.started["skip"])
 
     def _mic(self, streamer, *, reactive: bool) -> MicAudioSource:
         return MicAudioSource(

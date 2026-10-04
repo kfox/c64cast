@@ -26,6 +26,13 @@ class CharDisplayMode(DisplayMode):
     is_bitmapped = False
     default_target_fps = None  # follow the playlist's NTSC/PAL default
     supports_compose = True
+    # PETSCII and Blank set it per instance: their push() then stages the
+    # screen through modes_irq.push_screen_via_reu.
+    use_reu_staged = False
+
+    @property
+    def drives_rec_from_host(self) -> bool:
+        return self.use_reu_staged
 
     def apply_fade(self, buffers: ComposeBuffers) -> ComposeBuffers:
         """Char modes carry per-cell foreground color in the `color` buffer

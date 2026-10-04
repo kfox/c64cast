@@ -437,6 +437,13 @@ class DisplayMode:
     user_dim: float = 1.0
 
     @property
+    def drives_rec_from_host(self) -> bool:
+        """True when push() programs the REU controller's registers
+        ($DF01-$DF08) from the host — a sequence of separate DMA writes the
+        C64 can interrupt between any two. See modes_irq.reu_pump_skips_irq_hook."""
+        return False
+
+    @property
     def _fade_lut_alpha(self) -> float:
         """Effective dimming alpha folded into the fade LUT: the transient scene
         fade (`fade_alpha`) times the persistent user brightness (`user_dim`).
