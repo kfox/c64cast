@@ -137,7 +137,7 @@ class HardwareProfile:
     # scripts/diags/link_cost_model.py; the defaults are the Ultimate's, so an
     # unmeasured backend inherits the conservative (count-bound) shape.
     write_cost_floor_s: float = 5.2e-3  # per-write overhead payload can't touch
-    write_cost_intercept_s: float = 0.8e-3
+    write_cost_intercept_s: float = 1.3e-3
     write_cost_per_byte_s: float = 1.85e-6
 
     def write_cost_s(self, nbytes: int) -> float:
@@ -148,7 +148,7 @@ class HardwareProfile:
         where that runs out, a marginal per-byte transfer cost.
 
         On the Ultimate the fixed term is ~5.2 ms and payload is *free* up to
-        ~2.4 KB, so what a frame spends is writes; on the TeensyROM the fixed
+        ~2.1 KB, so what a frame spends is writes; on the TeensyROM the fixed
         term is ~0.29 ms and cost is essentially all payload, so what a frame
         spends is bytes. That 18x difference in the fixed term is what makes
         the same delta strategy right on one backend and wrong on the other.
@@ -225,10 +225,12 @@ ULTIMATE_PROFILE = HardwareProfile(
     write_transport="socket_dma",
     max_fps=None,  # no extra cap beyond the system rate
     max_write_rate_hz=200.0,  # ~200 writes/sec DMA ceiling (see caveats)
-    # HW-measured 2026-08-12, scripts/diags/link_cost_model.py: flat at 5.22 ms
-    # from 8 B to ~2.4 KB, then 1.85 us/byte — write-count-bound.
+    # HW-measured with scripts/diags/link_cost_model.py: flat at 5.22 ms from
+    # 8 B to ~2.1 KB, then 1.85 us/byte — write-count-bound. Floor and slope
+    # from 2026-08-12, re-confirmed on firmware 3.15a / FPGA 125; the intercept
+    # is the 3.15a median of five runs (2026-10-03). See hardware-io.md.
     write_cost_floor_s=5.222e-3,
-    write_cost_intercept_s=0.784e-3,
+    write_cost_intercept_s=1.328e-3,
     write_cost_per_byte_s=1.8454e-6,
     audio_ring_addr=0x4000,
 )

@@ -389,7 +389,7 @@ class BufferedWriteBackendTest(unittest.TestCase):
         self.assertEqual(b.emits[0], (0x4000, changed))
 
     def test_region_below_the_knee_is_never_split(self):
-        # Below the Ultimate's ~2.4 KB payload knee a write costs the same whole
+        # Below the Ultimate's ~2.1 KB payload knee a write costs the same whole
         # as it does in pieces, so no dirty pattern may split it.
         b = self._b(ULTIMATE_PROFILE)
         n = 1000  # screen / color RAM
