@@ -643,8 +643,8 @@ _assert_chunk_offsets(
 
 
 # $C200 slot, just past the audio handler region ($C100-$C1FF). Both the mic
-# pump and the tracked video pump load $DF04/$DF05/$DF06 from this 3-byte
-# tracker every IRQ; a scene runs at most one of them, so sharing is safe.
+# pump and the tracked video pump load $DF02-$DF06 from this 5-byte tracker
+# every IRQ; a scene runs at most one of them, so sharing is safe.
 REU_AUDIO_SRC_TRACKER_ADDR = 0xC200
 _TRK_LO = REU_AUDIO_SRC_TRACKER_ADDR & 0xFF
 _TRK_HI_BYTE = (REU_AUDIO_SRC_TRACKER_ADDR >> 8) & 0xFF
@@ -689,8 +689,9 @@ REU_PUMP_TICK_DIVIDER = 3
 # the chunked mhires dispatcher JSRs it directly between per-frame REC
 # families to catch CIA #1 ticks that latched during the bank-swap halt.
 # Used INSTEAD OF the plain handler when AudioStreamer.start_for_reu_staged
-# is called with skip_irq_vector_hook=True; the solo audio path keeps the
-# plain one.
+# is called with skip_irq_vector_hook=True; the solo video path keeps the
+# plain one. The REU mic pump always runs this body, with its src wrap
+# appended (REU_MIC_PUMP_BODY_SUBROUTINE).
 #
 # Byte layout of the body (offsets relative to the body's first byte):
 #   0    LDA #<chunk_size / STA $DF07              ┐ re-set length
@@ -971,176 +972,75 @@ REU_MIC_BASE_HI = (REU_MIC_BASE >> 16) & 0xFF
 REU_MIC_END_HI = (REU_MIC_END >> 16) & 0xFF
 REU_MIC_BOOTSTRAP_BYTES = 1600  # ~133 ms @ 12 kHz; tunes steady-state latency
 
-# Main-RAM REU-source tracker for the mic pump. Three bytes (LO/MI/HI) the
-# handler loads into $DF04/$DF05/$DF06 before each trigger, then increments
-# by REU_PUMP_CHUNK_SIZE after. Wraps at REU_MIC_END_HI back to REU_MIC_BASE.
+# The mic pump is the tracked pump with one addition: its REU source is a
+# ring too, so after the shared body it wraps the src tracker at
+# REU_MIC_END_HI back to REU_MIC_BASE (the host's _push_mic_to_reu wraps its
+# write position by the same modulus). The src side comes from the $C200
+# tracker rather than from $DF04-$DF06 because the U64's REU returns garbage
+# in the upper bits of $DF06 read-back ($F8 where the page holds $10): a wrap
+# test on that read fires on every IRQ and pins the pump to the ring start,
+# so the audio stays silent. The dst side comes from the $C203/$C204 tracker
+# for the reason the tracked video pump does: a bank-swap REC DMA or a REU
+# screen push rewrites $DF02-$DF08 between pump ticks.
 #
-# Why not just read $DF06 like the dst-wrap path reads $DF03? The U64's REU
-# emulation returns GARBAGE in the upper bits of $DF06 read-back ($F8 instead
-# of the $00/$10 the LO/HI page actually contains). The dst-side $DF03 reads
-# correctly, but the src-side $DF06 doesn't. If the handler trusts that read,
-# CMP #reu_end_hi sees $F8 every time, BCC src_done never branches, and the
-# wrap-reset block fires on EVERY IRQ — meaning the pump always reads from
-# the start of the REU ring (the bootstrap NEUTRAL prefill) and never sees
-# the real mic data the host wrote further in. Audio output stays silent.
-# Tracking in main RAM bypasses the unreliable register read entirely.
+# It runs at $C180 behind REU_IRQ_HANDLER_TRACKED at $C100, so the chunked
+# mhires dispatcher's inline JSR $C180 calls run the mic pump too, and a
+# scene never leaves $C180 holding another pump's body.
 #
-# Lives in the $C200 slot just past the 102-byte handler at $C100 (handler
-# ends at $C166; slot is in the free $C167-$C1FF region of the audio module's
-# $C000-$C2FF allocation). The tracker is REU_AUDIO_SRC_TRACKER_ADDR
-# (defined up by REU_IRQ_HANDLER_TRACKED) — both pumps share the same RAM
-# slot since a single scene only runs one.
-
-# 6502 IRQ handler at $C100 for the mic pump.
+# Byte layout (offsets relative to $C180):
+#   0    <_TRACKED_PUMP_BODY>                      104 bytes; its no-wrap
+#                                                  BCC lands on offset 104
+# 104    LDA src_hi / CMP #reu_end_hi              ┐ src wrap check
+# 109    BCC +13 → offset 124 (RTS)                │
+# 111    LDA #reu_start_hi / STA src_hi            │ reset tracker to
+# 116    LDA #$00 / STA src_mi / STA src_lo        ┘   REU_MIC_BASE
+# 124    RTS
 #
-# Per-trigger:
-#   1. Re-set length register (auto-decremented during the previous transfer)
-#   2. LOAD src registers from main-RAM tracker (works around $DF06 garbage)
-#   3. Trigger DMA (~128 cyc CPU halt while REU→main runs)
-#   4. ADVANCE main-RAM tracker by chunk_size
-#   5. SRC WRAP: if tracker HI ≥ REU_MIC_END_HI, reset tracker to REU_MIC_BASE
-#   6. DST WRAP: if $DF03 ≥ RING_BUFFER_END_HI, reset dst to RING_BUFFER_ADDR
-#      (this side reads $DF03 directly — that register IS reliable)
-#   7. Chain to kernal IRQ
-#
-# Byte layout (offsets relative to $C100):
-#   0    PHA
-#   1    LDA #<chunk_size / STA $DF07              ┐ re-set length
-#   6    LDA #>chunk_size / STA $DF08              ┘
-#  11    LDA tracker_lo / STA $DF04                ┐ load src from main RAM
-#  17    LDA tracker_mi / STA $DF05                │
-#  23    LDA tracker_hi / STA $DF06                ┘
-#  29    LDA #$91 / STA $DF01                      ; trigger DMA
-#  34    CLC
-#  35    LDA tracker_lo / ADC #<chunk_size / STA tracker_lo  ┐ advance tracker
-#  43    LDA tracker_mi / ADC #>chunk_size / STA tracker_mi  │
-#  51    LDA tracker_hi / ADC #$00 / STA tracker_hi          ┘
-#  59    LDA tracker_hi / CMP #reu_end_hi          ; src wrap check
-#  64    BCC +15 → offset 81 (dst wrap block)
-#  66    LDA #reu_start_hi / STA tracker_hi        ┐ reset tracker to base
-#  71    LDA #$00 / STA tracker_mi                 │
-#  76    LDA #$00 / STA tracker_lo                 ┘
-#  81    LDA $DF03 / CMP #ring_end_hi              ; dst wrap check ($DF03 IS reliable)
-#  86    BCC +10 → offset 98 (PLA)
-#  88    LDA #ring_start_hi / STA $DF03            ┐ reset dst to RING_BUFFER_ADDR
-#  93    LDA #$00 / STA $DF02                      ┘
-#  98    PLA / JMP $EA31                           ; chain to kernal IRQ
-REU_MIC_IRQ_HANDLER = bytes(
+# 125 bytes, ending below the $C200 tracker. There is no governed variant:
+# the governor's 17-byte test would not fit, and the host-fed mic ring has
+# no surplus for it to trim.
+_MIC_SRC_WRAP = bytes(
     [
-        0x48,  # PHA
-        # re-set length (auto-decrements during DMA, must reload):
-        0xA9,
-        REU_PUMP_CHUNK_SIZE & 0xFF,  # LDA #<chunk_size
-        0x8D,
-        0x07,
-        0xDF,  # STA $DF07
-        0xA9,
-        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # LDA #>chunk_size
-        0x8D,
-        0x08,
-        0xDF,  # STA $DF08
-        # load src from main-RAM tracker:
-        0xAD,
-        _TRK_LO,
-        _TRK_HI_BYTE,  # LDA tracker_lo
-        0x8D,
-        0x04,
-        0xDF,  # STA $DF04
-        0xAD,
-        (_TRK_LO + 1) & 0xFF,
-        _TRK_HI_BYTE,  # LDA tracker_mi
-        0x8D,
-        0x05,
-        0xDF,  # STA $DF05
         0xAD,
         (_TRK_LO + 2) & 0xFF,
-        _TRK_HI_BYTE,  # LDA tracker_hi
-        0x8D,
-        0x06,
-        0xDF,  # STA $DF06
-        # trigger DMA:
-        0xA9,
-        REU_CMD_FETCH_EXEC,  # LDA #$91
-        0x8D,
-        0x01,
-        0xDF,  # STA $DF01
-        # advance tracker by chunk_size (16-bit add-with-carry across 3 bytes):
-        0x18,  # CLC
-        0xAD,
-        _TRK_LO,
-        _TRK_HI_BYTE,  # LDA tracker_lo
-        0x69,
-        REU_PUMP_CHUNK_SIZE & 0xFF,  # ADC #<chunk_size
-        0x8D,
-        _TRK_LO,
-        _TRK_HI_BYTE,  # STA tracker_lo
-        0xAD,
-        (_TRK_LO + 1) & 0xFF,
-        _TRK_HI_BYTE,  # LDA tracker_mi
-        0x69,
-        (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF,  # ADC #>chunk_size
-        0x8D,
-        (_TRK_LO + 1) & 0xFF,
-        _TRK_HI_BYTE,  # STA tracker_mi
-        0xAD,
-        (_TRK_LO + 2) & 0xFF,
-        _TRK_HI_BYTE,  # LDA tracker_hi
-        0x69,
-        0x00,  # ADC #$00 (carry only)
-        0x8D,
-        (_TRK_LO + 2) & 0xFF,
-        _TRK_HI_BYTE,  # STA tracker_hi
-        # src wrap check on tracker_hi:
-        0xAD,
-        (_TRK_LO + 2) & 0xFF,
-        _TRK_HI_BYTE,  # LDA tracker_hi
+        _TRK_HI_BYTE,  # LDA src_hi
         0xC9,
         REU_MIC_END_HI,  # CMP #reu_end_hi
         0x90,
-        0x0F,  # BCC +15 → offset 81 (dst wrap)
+        0x0D,  # BCC +13 → RTS
         0xA9,
         REU_MIC_BASE_HI,  # LDA #reu_start_hi
         0x8D,
         (_TRK_LO + 2) & 0xFF,
-        _TRK_HI_BYTE,  # STA tracker_hi
+        _TRK_HI_BYTE,  # STA src_hi
         0xA9,
         0x00,  # LDA #$00
         0x8D,
         (_TRK_LO + 1) & 0xFF,
-        _TRK_HI_BYTE,  # STA tracker_mi
-        0xA9,
-        0x00,  # LDA #$00
+        _TRK_HI_BYTE,  # STA src_mi
         0x8D,
         _TRK_LO,
-        _TRK_HI_BYTE,  # STA tracker_lo
-        # dst wrap check on $DF03 (reliable, same as video handler):
-        0xAD,
-        0x03,
-        0xDF,  # LDA $DF03
-        0xC9,
-        RING_BUFFER_END_HI,  # CMP #ring_end_hi
-        0x90,
-        0x0A,  # BCC +10 → offset 98 (PLA)
-        0xA9,
-        RING_BUFFER_HI,  # LDA #ring_start_hi
-        0x8D,
-        0x03,
-        0xDF,  # STA $DF03
-        0xA9,
-        0x00,  # LDA #$00
-        0x8D,
-        0x02,
-        0xDF,  # STA $DF02
-        # end:
-        0x68,  # PLA
-        0x4C,
-        0x31,
-        0xEA,  # JMP $EA31
+        _TRK_HI_BYTE,  # STA src_lo
     ]
 )
-assert len(REU_MIC_IRQ_HANDLER) == 102, (
-    "REU_MIC_IRQ_HANDLER length changed — BCC offsets (currently +15 src, +10 dst) "
-    "must be recomputed to land on the dst-wrap LDA $DF03 and trailing PLA."
+# The BCC at offset 5 must land one past the block, on the RTS. Asserted here
+# because the py65 tests do not catch a BCC aimed one byte short: it lands on
+# the last STA's operand byte, and the emulated run still reaches a return.
+assert _MIC_SRC_WRAP[5] == 0x90 and _MIC_SRC_WRAP[6] == len(_MIC_SRC_WRAP) - 7, (
+    "_MIC_SRC_WRAP changed — its BCC must still land on the RTS behind it."
+)
+REU_MIC_PUMP_BODY_SUBROUTINE = _TRACKED_PUMP_BODY + _MIC_SRC_WRAP + bytes([_RTS])
+REU_MIC_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS = _TRACKED_PUMP_BODY_CHUNK_OFFSETS
+_assert_chunk_offsets(
+    REU_MIC_PUMP_BODY_SUBROUTINE,
+    REU_MIC_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS,
+    "REU_MIC_PUMP_BODY_SUBROUTINE",
+)
+assert REU_PUMP_BODY_SUBROUTINE_ADDR + len(REU_MIC_PUMP_BODY_SUBROUTINE) <= (
+    REU_AUDIO_SRC_TRACKER_ADDR
+), "mic pump-body subroutine overruns the $C200 tracker"
+assert REU_MIC_SIZE % REU_PUMP_CHUNK_SIZE == 0, (
+    "the mic src wrap resets to REU_MIC_BASE only when a chunk lands exactly on REU_MIC_END"
 )
 
 

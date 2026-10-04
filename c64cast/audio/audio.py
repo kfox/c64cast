@@ -73,7 +73,7 @@ from .audio_handlers import (
     REU_IRQ_HANDLER_TRACKED,
     REU_MIC_BASE,
     REU_MIC_BOOTSTRAP_BYTES,
-    REU_MIC_IRQ_HANDLER,
+    REU_MIC_PUMP_BODY_SUBROUTINE,
     REU_MIC_SIZE,
     REU_PUMP_BODY_SUBROUTINE,
     REU_PUMP_BODY_SUBROUTINE_ADDR,
@@ -279,8 +279,8 @@ class AudioStreamer:
         # Uploads the skip-when-ahead governor pump so it self-throttles with
         # zero host bus writes; False uploads the open-loop one, which drifts
         # into an echo. Applies to both the plain handler and the tracked
-        # $C180 body the bank-swap video path runs; the REU mic pump has no
-        # governed variant.
+        # $C180 body the bank-swap video path runs; the REU mic pump's $C180
+        # body has no governed variant.
         self.reu_pump_governor = reu_pump_governor
         # Closed-loop pacing for the host-DMA worker: read R once per chunk and
         # run servo_period's PI controller on the sleep so the ring gap locks
@@ -1405,6 +1405,37 @@ class AudioStreamer:
         )
         return latch
 
+    def _install_tracked_pump(self, body: bytes, *, src: int, dst: int) -> None:
+        """Seed the $C200 trackers, then upload ``body`` at $C180 and the
+        REU_IRQ_HANDLER_TRACKED entry at $C100, in that order.
+
+        ``src`` is the 24-bit REU offset of the first chunk and ``dst`` the
+        C64 ring address it lands at. Both pumps that reload their REC
+        addresses from the trackers come through here: the tracked video pump
+        and the REU mic pump.
+
+        The order is what keeps a CIA #1 tick that lands mid-install safe. A
+        bank-swap dispatcher that owns $0314 can reach $C180 directly (the
+        chunked mhires one JSRs it between REC families) and $C100 through its
+        fall-through, and its installer leaves an RTS at $C180 and a JMP $EA31
+        at $C100 until this runs. Seeding the trackers first means the body
+        never runs on stale ones (static into the ring, writes into color RAM),
+        and uploading the body before the entry means the entry never JSRs into
+        a body that is not there yet.
+        """
+        self.api.write_memory(
+            f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}",
+            f"{src & 0xFF:02X}{(src >> 8) & 0xFF:02X}{(src >> 16) & 0xFF:02X}"
+            f"{dst & 0xFF:02X}{(dst >> 8) & 0xFF:02X}",
+        )
+        # Seed the tick divider to 1 so the first IRQ DECs to 0, reloads N and
+        # chains. Unseeded, $C205 holds whatever was in RAM — 0 wraps to $FF on
+        # the DEC, costing 254 lean exits (~2.5 s of unresponsive keyboard)
+        # before the first kernal tail.
+        self.api.write_memory(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
+        self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
+        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_IRQ_HANDLER_TRACKED)
+
     def _start_mic_for_reu_pump(
         self, device: int | str, *, skip_irq_vector_hook: bool = False
     ) -> None:
@@ -1448,27 +1479,13 @@ class AudioStreamer:
         # the $4000 ring _upload_nmi_and_buffers just NEUTRAL-filled.
         self._upload_nmi_and_buffers()
 
-        # Install the mic IRQ handler at $C100 and seed the main-RAM REU source
-        # tracker at $C200 with REU_MIC_BASE; the handler reloads
-        # $DF04/$DF05/$DF06 from it every IRQ, around the $DF06 read-back
-        # garbage documented in audio_handlers.py. REU regs: dest =
-        # RING_BUFFER_ADDR, length = REU_PUMP_CHUNK_SIZE, address-control = 0
-        # (both auto-inc, no autoload). src needs no init — the handler writes
-        # it on every trigger.
-        self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", REU_MIC_IRQ_HANDLER)
-        self.api.write_memory(
-            f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}",
-            f"{REU_MIC_BASE & 0xFF:02X}"
-            f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
-            f"{(REU_MIC_BASE >> 16) & 0xFF:02X}",
-        )
-        self.api.write_memory(
-            f"{REU.C64_ADDR_LO:04X}",
-            f"{RING_BUFFER_ADDR & 0xFF:02X}{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}",
-        )
-        self.api.write_memory(
-            f"{REU.LENGTH_LO:04X}",
-            f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}",
+        # Install the tracked pump with the mic body at $C180: src tracker =
+        # REU_MIC_BASE, dst tracker = RING_BUFFER_ADDR. Every tick reloads all
+        # five REC addresses from the trackers, so a bank-swap REC DMA or a REU
+        # screen push between ticks cannot redirect it (#551). Address control
+        # = 0: both sides auto-increment, no autoload.
+        self._install_tracked_pump(
+            REU_MIC_PUMP_BODY_SUBROUTINE, src=REU_MIC_BASE, dst=RING_BUFFER_ADDR
         )
         self.api.write_memory(f"{REU.ADDR_CONTROL:04X}", "00")
 
@@ -1833,7 +1850,6 @@ class AudioStreamer:
         # length into another instruction's operand and DMAs to a garbage
         # address.
         if skip_irq_vector_hook:
-            handler = REU_IRQ_HANDLER_TRACKED
             if self.reu_pump_governor:
                 body = patch_chunk_size(
                     REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
@@ -1844,31 +1860,7 @@ class AudioStreamer:
                 body = patch_chunk_size(
                     REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS, chunk
                 )
-            # Seed src + dst trackers BEFORE uploading the tracked handler: in
-            # between, a CIA #1 IRQ through the bank-swap dispatcher would run
-            # the handler on stale trackers and DMA to garbage addresses (static
-            # into the ring, writes into color RAM). The bank-swap install's JMP
-            # $EA31 stub at $C100 covers the window, and the handler upload then
-            # swaps it out atomically once the tracker is valid.
-            self.api.write_memory(
-                f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}",
-                f"{initial_src_off & 0xFF:02X}"
-                f"{(initial_src_off >> 8) & 0xFF:02X}"
-                f"{(initial_src_off >> 16) & 0xFF:02X}"
-                f"{initial_dst & 0xFF:02X}"
-                f"{(initial_dst >> 8) & 0xFF:02X}",
-            )
-            # Seed the tick divider to 1 so the first IRQ DECs to 0, reloads N
-            # and chains. Unseeded, $C205 holds whatever was in RAM — 0 wraps to
-            # $FF on the DEC, costing 254 lean exits (~2.5 s of unresponsive
-            # keyboard) before the first kernal tail.
-            self.api.write_memory(f"{REU_PUMP_TICK_COUNTER_ADDR:04X}", "01")
-            # Upload the pump body at $C180 BEFORE the entry at $C100: the
-            # chunked mhires dispatcher JSRs to $C180 between per-frame REC
-            # chunks, so an entry installed first lets a mid-install CIA #1 IRQ
-            # call into uninitialized RAM.
-            self.api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", body)
-            self.api.write_memory_file(f"{REU_PUMP_HANDLER_ADDR:04X}", handler)
+            self._install_tracked_pump(body, src=initial_src_off, dst=initial_dst)
         elif self.reu_pump_governor:
             # Governor handler: skip-when-ahead prefix + the pump body.
             handler = patch_chunk_size(

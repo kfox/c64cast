@@ -23,6 +23,7 @@ from _fakes import FakeAPI
 
 from c64cast.app.config import Config, VideoCfg
 from c64cast.app.scene_factory import _build_display_mode
+from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
 from c64cast.hw.api import Ultimate64API
 from c64cast.hw.c64 import (
     CIA1,
@@ -60,6 +61,7 @@ from c64cast.video.modes_irq import (
     MHIRES_TRACKER_OFF_COLOR_REGS,
     MHIRES_TRACKER_OFF_READY_FLAG,
     MHIRES_TRACKER_OFF_SCREEN_REGS,
+    PUMP_BODY_STUB,
     REU_VIDEO_BITMAP_BASE,
     REU_VIDEO_BITMAP_COLOR_BASE,
     REU_VIDEO_BITMAP_COLOR_LEN,
@@ -1408,6 +1410,38 @@ class MergedDispatcherSetupTest(unittest.TestCase):
             if op[0] == "write_regs" and op[1].lower() == vec_addr
         )
         self.assertLess(stub_idx, vec_idx)
+
+    def test_pump_body_stub_uploaded_before_irq_vector_hook_mhires(self):
+        # #551: the chunked mhires dispatcher JSRs $C180 itself, so an RTS has
+        # to be there before $0314 is hooked — otherwise the first CIA #1 tick
+        # that latches during a REC family calls power-on RAM or a previous
+        # scene's pump body.
+        fake = FakeAPI()
+        api = cast(Ultimate64API, fake)
+        m = MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=True)
+        m.setup(api)
+        body_key = f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}"
+        self.assertEqual(fake.mem_files[body_key], PUMP_BODY_STUB)
+        self.assertEqual(PUMP_BODY_STUB, bytes([0x60]))
+        body_idx = next(
+            i
+            for i, op in enumerate(fake.ops)
+            if op[0] == "write_memory_file" and op[1].upper() == body_key
+        )
+        vec_idx = next(
+            i
+            for i, op in enumerate(fake.ops)
+            if op[0] == "write_regs" and op[1].upper() == f"{VECTORS.IRQ:04X}"
+        )
+        self.assertLess(body_idx, vec_idx)
+
+    def test_pump_body_stub_not_uploaded_when_audio_inactive(self):
+        # Without the merged dispatcher nothing JSRs $C180, and whatever an
+        # audio path put there is not this installer's to overwrite.
+        fake = FakeAPI()
+        api = cast(Ultimate64API, fake)
+        MultiHiresDisplayMode(use_reu_staged=True, audio_reu_pump_active=False).setup(api)
+        self.assertNotIn(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", fake.mem_files)
 
 
 class MergedDispatcherFlagWiringTest(unittest.TestCase):

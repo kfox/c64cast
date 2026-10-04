@@ -20,13 +20,17 @@ from c64cast.audio.audio_handlers import (
     NEUTRAL_SAMPLE,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_CMD_FETCH_EXEC,
+    REU_IRQ_HANDLER_TRACKED,
     REU_MIC_BASE,
+    REU_MIC_BASE_HI,
     REU_MIC_BOOTSTRAP_BYTES,
-    REU_MIC_IRQ_HANDLER,
+    REU_MIC_PUMP_BODY_SUBROUTINE,
     REU_MIC_SIZE,
+    REU_PUMP_BODY_SUBROUTINE_ADDR,
     REU_PUMP_CHUNK_SIZE,
     REU_PUMP_CIA1_LATCH_8KHZ,
     REU_PUMP_HANDLER_ADDR,
+    REU_PUMP_TICK_COUNTER_ADDR,
     REU_UPLOAD_SLICE,
     RING_BUFFER_ADDR,
     RING_BUFFER_END_HI,
@@ -47,81 +51,141 @@ def _packed_latch(latch: int) -> str:
     return f"{latch & 0xFF:02X}{(latch >> 8) & 0xFF:02X}"
 
 
-class ReuMicIrqHandlerTest(unittest.TestCase):
-    """The mic pump handler, EXECUTED on the repo's own 6502 (see
-    _fakes.run_irq_handler) instead of pinning instruction offsets: the
-    old tests hard-coded byte positions (BCC at 64, PLA at 98, ...), so
-    inserting one instruction broke them all and required renames — while
-    the constraints they guard (a wrong displacement JAMs the CPU; the
-    src side must come from the main-RAM tracker because $DF06 read-back
-    is garbage on the U64) are exactly what running the handler proves."""
+class ReuMicPumpTest(unittest.TestCase):
+    """The mic pump — REU_IRQ_HANDLER_TRACKED at $C100 calling
+    REU_MIC_PUMP_BODY_SUBROUTINE at $C180 — EXECUTED on the repo's own 6502
+    (see _fakes.run_irq_handler) instead of pinning instruction offsets: a
+    wrong branch displacement JAMs a real C64, and the constraints these
+    guard (the REC addresses come from the main-RAM trackers, never from
+    $DF02-$DF06, which the bank-swap and screen-push DMAs rewrite and whose
+    $DF06 read-back is garbage on the U64) are exactly what running it proves."""
 
-    def _run(self, *, src: int, df03: int = RING_BUFFER_HI):
+    def _run(self, *, src: int, dst: int = RING_BUFFER_ADDR, extra_seed=None):
+        t = REU_AUDIO_SRC_TRACKER_ADDR
         seed = {
-            REU_AUDIO_SRC_TRACKER_ADDR + 0: src & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 1: (src >> 8) & 0xFF,
-            REU_AUDIO_SRC_TRACKER_ADDR + 2: (src >> 16) & 0xFF,
-            0xDF03: df03,  # REC dst HI as the (reliable) hardware would report it
+            t + 0: src & 0xFF,
+            t + 1: (src >> 8) & 0xFF,
+            t + 2: (src >> 16) & 0xFF,
+            t + 3: dst & 0xFF,
+            t + 4: (dst >> 8) & 0xFF,
+            REU_PUMP_TICK_COUNTER_ADDR: 1,
         }
-        return run_irq_handler(REU_MIC_IRQ_HANDLER, addr=REU_PUMP_HANDLER_ADDR, seed=seed)
+        seed.update(extra_seed or {})
+        return run_irq_handler(
+            REU_IRQ_HANDLER_TRACKED,
+            addr=REU_PUMP_HANDLER_ADDR,
+            seed=seed,
+            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_MIC_PUMP_BODY_SUBROUTINE},
+        )
 
-    def _tracker(self, run) -> int:
+    def _src(self, run) -> int:
         t = REU_AUDIO_SRC_TRACKER_ADDR
         ram = run.memory.ram
         return ram[t] | (ram[t + 1] << 8) | (ram[t + 2] << 16)
 
-    def test_pumps_one_chunk_from_the_main_ram_tracker(self):
-        src = REU_MIC_BASE + 0x1234
-        run = self._run(src=src)
+    def _dst(self, run) -> int:
+        t = REU_AUDIO_SRC_TRACKER_ADDR
         ram = run.memory.ram
-        # REC programmed from the tracker (never $DF06 read-back) + triggered.
+        return ram[t + 3] | (ram[t + 4] << 8)
+
+    def test_pumps_one_chunk_from_the_main_ram_trackers(self):
+        src = REU_MIC_BASE + 0x1234
+        dst = RING_BUFFER_ADDR + 0x0400
+        run = self._run(src=src, dst=dst)
+        ram = run.memory.ram
         self.assertEqual(ram[0xDF07], REU_PUMP_CHUNK_SIZE & 0xFF)
         self.assertEqual(ram[0xDF08], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
         self.assertEqual(
             [ram[0xDF04], ram[0xDF05], ram[0xDF06]],
             [src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF],
         )
+        self.assertEqual([ram[0xDF02], ram[0xDF03]], [dst & 0xFF, dst >> 8])
         self.assertEqual(ram[0xDF01], REU_CMD_FETCH_EXEC)
-        # Tracker advanced one chunk; handler chained the kernal IRQ tail
-        # (keyboard scan + jiffy clock keep working) with a balanced stack.
-        self.assertEqual(self._tracker(run), src + REU_PUMP_CHUNK_SIZE)
+        # Both trackers advanced one chunk; the entry chained the kernal IRQ
+        # tail (keyboard scan + jiffy clock keep working) with a balanced stack.
+        self.assertEqual(self._src(run), src + REU_PUMP_CHUNK_SIZE)
+        self.assertEqual(self._dst(run), dst + REU_PUMP_CHUNK_SIZE)
         self.assertEqual(run.exit_pc, 0xEA31)
-        self.assertEqual(run.mpu.sp, 0xFF, "handler must balance its own PHA/PLA")
+        self.assertEqual(run.mpu.sp, 0xFF, "entry and body must balance the stack")
+
+    def test_rec_registers_left_by_a_video_dma_are_ignored(self):
+        # #551: a bank-swap REC DMA (or a REU screen push) between ticks leaves
+        # $DF02-$DF06 pointing at video staging and screen RAM. The mic pump
+        # must DMA from the trackers regardless.
+        stale = {0xDF02: 0x00, 0xDF03: 0xD8, 0xDF04: 0x40, 0xDF05: 0x1F, 0xDF06: 0xE0}
+        src = REU_MIC_BASE + 0x0800
+        run = self._run(src=src, dst=RING_BUFFER_ADDR, extra_seed=stale)
+        ram = run.memory.ram
+        self.assertEqual([ram[0xDF02], ram[0xDF03]], [RING_BUFFER_ADDR & 0xFF, RING_BUFFER_HI])
+        self.assertEqual(
+            [ram[0xDF04], ram[0xDF05], ram[0xDF06]],
+            [src & 0xFF, (src >> 8) & 0xFF, (src >> 16) & 0xFF],
+        )
 
     def test_src_wraps_to_mic_ring_base_at_ring_end(self):
         # The last chunk of the mic ring must reset the tracker to the ring
         # base — the host's _push_mic_to_reu wraps its write position by the
         # same modulus, so the two stay aligned.
         run = self._run(src=REU_MIC_BASE + REU_MIC_SIZE - REU_PUMP_CHUNK_SIZE)
-        self.assertEqual(self._tracker(run), REU_MIC_BASE)
+        self.assertEqual(self._src(run), REU_MIC_BASE)
 
-    def test_dst_wraps_rec_registers_to_the_audio_ring(self):
-        # The dst side reads $DF03 directly (that register IS reliable) and
-        # resets the REC dst to RING_BUFFER_ADDR at the ring end.
-        run = self._run(src=REU_MIC_BASE, df03=RING_BUFFER_END_HI)
-        self.assertEqual(run.memory.ram[0xDF03], RING_BUFFER_HI)
-        self.assertEqual(run.memory.ram[0xDF02], RING_BUFFER_ADDR & 0xFF)
+    def test_src_below_ring_end_is_not_wrapped(self):
+        src = REU_MIC_BASE + REU_MIC_SIZE - 2 * REU_PUMP_CHUNK_SIZE
+        run = self._run(src=src)
+        self.assertEqual(self._src(run), src + REU_PUMP_CHUNK_SIZE)
 
-    def test_dst_below_ring_end_is_left_to_auto_increment(self):
-        run = self._run(src=REU_MIC_BASE, df03=RING_BUFFER_END_HI - 1)
-        self.assertEqual(run.memory.ram[0xDF03], RING_BUFFER_END_HI - 1)
+    def test_dst_tracker_wraps_to_the_audio_ring(self):
+        last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
+        run = self._run(src=REU_MIC_BASE, dst=last_chunk_dst)
+        self.assertEqual(self._dst(run), RING_BUFFER_ADDR)
 
-    def test_handler_does_not_read_DF06(self):
-        # $DF06 is written during the src reload but never read: the U64's
-        # REU returns garbage in the upper bits of that read-back, which is
-        # what made the audio silent.
-        for i in range(len(REU_MIC_IRQ_HANDLER) - 2):
-            # 6502 absolute LDA = 0xAD; check no LDA absolute reads $DF06.
-            if REU_MIC_IRQ_HANDLER[i] == 0xAD:
-                addr_lo = REU_MIC_IRQ_HANDLER[i + 1]
-                addr_hi = REU_MIC_IRQ_HANDLER[i + 2]
-                self.assertNotEqual(
-                    (addr_lo, addr_hi),
-                    (0x06, 0xDF),
-                    f"handler reads $DF06 at offset {i} — "
-                    "the read-back is garbage; use the "
-                    "main-RAM tracker instead",
-                )
+    def test_both_trackers_wrap_on_the_same_tick(self):
+        # The src wrap follows the body's dst wrap; a displacement that skipped
+        # one when the other fired would show up only here.
+        last_chunk_dst = (RING_BUFFER_END_HI << 8) - REU_PUMP_CHUNK_SIZE
+        run = self._run(src=REU_MIC_BASE + REU_MIC_SIZE - REU_PUMP_CHUNK_SIZE, dst=last_chunk_dst)
+        self.assertEqual(self._src(run), REU_MIC_BASE)
+        self.assertEqual(self._dst(run), RING_BUFFER_ADDR)
+
+    def test_chunked_dispatcher_call_returns_to_its_caller(self):
+        # The chunked mhires dispatcher JSRs $C180 directly between REC
+        # families, so the body must RTS rather than chain to the kernal.
+        caller = bytes(
+            [
+                0x20,
+                REU_PUMP_BODY_SUBROUTINE_ADDR & 0xFF,
+                REU_PUMP_BODY_SUBROUTINE_ADDR >> 8,  # JSR $C180
+                0x4C,
+                0x31,
+                0xEA,  # JMP $EA31
+            ]
+        )
+        t = REU_AUDIO_SRC_TRACKER_ADDR
+        seed = {t + 2: REU_MIC_BASE_HI, t + 4: RING_BUFFER_HI}
+        run = run_irq_handler(
+            caller,
+            addr=0xC000,
+            seed=seed,
+            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_MIC_PUMP_BODY_SUBROUTINE},
+        )
+        self.assertEqual(run.exit_pc, 0xEA31)
+        self.assertEqual(run.mpu.sp, 0xFF)
+        self.assertEqual(run.memory.ram[0xDF01], REU_CMD_FETCH_EXEC)
+
+    def test_pump_never_reads_the_rec_address_registers(self):
+        # Reading $DF02-$DF06 back is what #551 and the $DF06-garbage silence
+        # both came from; the trackers are the only source of truth. Scans for
+        # every absolute-mode read opcode with a REC address operand.
+        absolute_reads = {0xAD, 0xAE, 0xAC, 0xCD, 0x6D, 0xED, 0x2D, 0x0D, 0x4D, 0x2C}
+        for code, name in (
+            (REU_IRQ_HANDLER_TRACKED, "REU_IRQ_HANDLER_TRACKED"),
+            (REU_MIC_PUMP_BODY_SUBROUTINE, "REU_MIC_PUMP_BODY_SUBROUTINE"),
+        ):
+            for i in range(len(code) - 2):
+                if code[i] in absolute_reads and code[i + 2] == 0xDF:
+                    self.assertNotIn(
+                        code[i + 1], range(0x02, 0x07), f"{name} reads $DF{code[i + 1]:02X} at {i}"
+                    )
 
 
 class PushMicToReuTest(unittest.TestCase):
@@ -183,10 +247,10 @@ class StartMicForReuPumpTest(unittest.TestCase):
     sounddevice InputStream open is unreachable without real audio
     hardware, so we monkey-patch _open_input_stream to a no-op."""
 
-    def _start(self, **overrides):
+    def _start(self, *, skip_irq_vector_hook: bool = False, **overrides):
         s = _new_streamer(**overrides)
         s._open_input_stream = lambda device, callback=None, *, sample_rate=None: _FakeStream()
-        s._start_mic_for_reu_pump(device=-1)
+        s._start_mic_for_reu_pump(device=-1, skip_irq_vector_hook=skip_irq_vector_hook)
         return s
 
     def test_reu_ring_is_prefilled_with_neutral(self):
@@ -202,41 +266,53 @@ class StartMicForReuPumpTest(unittest.TestCase):
                 all(b == NEUTRAL_SAMPLE for b in data), "REU mic prefill must be NEUTRAL_SAMPLE"
             )
 
-    def test_handler_lands_at_c100(self):
+    def test_tracked_entry_lands_at_c100_and_mic_body_at_c180(self):
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        key = f"{REU_PUMP_HANDLER_ADDR:04X}"
-        self.assertIn(key, fake.mem_files)
-        self.assertEqual(fake.mem_files[key], REU_MIC_IRQ_HANDLER)
+        self.assertEqual(fake.mem_files[f"{REU_PUMP_HANDLER_ADDR:04X}"], REU_IRQ_HANDLER_TRACKED)
+        self.assertEqual(
+            fake.mem_files[f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}"], REU_MIC_PUMP_BODY_SUBROUTINE
+        )
 
-    def test_reu_dest_starts_at_audio_ring(self):
-        # DF02 (C64 dst LO) + DF03 (HI) → packed two-byte payload pointing
-        # at RING_BUFFER_ADDR. write_memory stores the hex string under the
-        # uppercase address key.
-        s = self._start()
+    def test_install_order_is_trackers_then_body_then_entry(self):
+        # Under a bank-swap dispatcher that owns $0314, a CIA #1 tick can reach
+        # $C180 (chunked mhires JSR) or $C100 (fall-through) mid-install. The
+        # body must never run on unseeded trackers, and the entry must never
+        # JSR a body that is not there yet.
+        s = self._start(skip_irq_vector_hook=True)
         fake = cast(FakeAPI, s.api)
-        expected = f"{RING_BUFFER_ADDR & 0xFF:02X}{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}"
-        self.assertEqual(fake.memories["DF02"], expected)
 
-    def test_main_ram_tracker_seeded_to_mic_base(self):
-        # The 3-byte src tracker at $C200 is seeded with REU_MIC_BASE at
-        # bring-up and read by the handler (not $DF06) on every IRQ; a wrong
-        # seed makes the first transfer read a bogus REU offset.
+        def first(kind: str, addr: int) -> int:
+            key = f"{addr:04X}"
+            return next(
+                i for i, op in enumerate(fake.ops) if op[0] == kind and op[1].upper() == key
+            )
+
+        tracker = first("write_memory", REU_AUDIO_SRC_TRACKER_ADDR)
+        body = first("write_memory_file", REU_PUMP_BODY_SUBROUTINE_ADDR)
+        entry = first("write_memory_file", REU_PUMP_HANDLER_ADDR)
+        self.assertLess(tracker, body)
+        self.assertLess(body, entry)
+
+    def test_trackers_seeded_to_mic_base_and_ring_start(self):
+        # src LO/MI/HI = REU_MIC_BASE, dst LO/HI = RING_BUFFER_ADDR. The pump
+        # reads only these, so a wrong seed makes the first transfer read a
+        # bogus REU offset or land outside the ring.
         s = self._start()
         fake = cast(FakeAPI, s.api)
         expected = (
             f"{REU_MIC_BASE & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 8) & 0xFF:02X}"
             f"{(REU_MIC_BASE >> 16) & 0xFF:02X}"
+            f"{RING_BUFFER_ADDR & 0xFF:02X}"
+            f"{(RING_BUFFER_ADDR >> 8) & 0xFF:02X}"
         )
-        key = f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"
-        self.assertEqual(fake.memories[key], expected)
+        self.assertEqual(fake.memories[f"{REU_AUDIO_SRC_TRACKER_ADDR:04X}"], expected)
 
-    def test_reu_length_matches_chunk_size(self):
+    def test_tick_counter_seeded_to_one(self):
         s = self._start()
         fake = cast(FakeAPI, s.api)
-        expected = f"{REU_PUMP_CHUNK_SIZE & 0xFF:02X}{(REU_PUMP_CHUNK_SIZE >> 8) & 0xFF:02X}"
-        self.assertEqual(fake.memories["DF07"], expected)
+        self.assertEqual(fake.memories[f"{REU_PUMP_TICK_COUNTER_ADDR:04X}"], "01")
 
     def test_cia1_latch_is_derived_from_the_live_nmi_rate(self):
         """The mic pump's latch must be the matched pump period for the
