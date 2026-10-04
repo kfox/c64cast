@@ -653,6 +653,12 @@ sharing the scene is dragged sideways by the scroll and blinks out on the
 frames that show the other page. Give `big_text` its own scene, and put the
 clock on the next one.
 
+On a `blank` scene it also takes over the machine's interrupt, so that the
+scroll and the page flip land between frames. The REU audio pump
+(`[audio].use_reu_pump`) needs the same interrupt, so the two are refused
+together at configuration time. Turn the pump off, mute that scene with
+`audio = false`, or use `mcm`, where `big_text` needs no interrupt.
+
 ## Choosing a Display Mode for an Overlay
 
 Appendix D is the matrix. A cell in it is refused at configuration time, not

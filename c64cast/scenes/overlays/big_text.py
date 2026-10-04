@@ -44,23 +44,26 @@ SCREEN_PAGE_ADDRS = (0x0400, 0x0C00)
 # charset at $1000 (standard ROM). $14 → screen=$0400, $34 → screen=$0C00.
 D018_PAGE_VALUES = (0x14, 0x34)
 
-# $C000-$C01F is free: the audio NMI routine starts at $C020 (audio_handlers).
-# A/X/Y are saved and restored by the kernal IRQ entry at $FF48 → $EA81, so this
-# routine needs no stack save of its own.
+# $C000-$C01F is big_text's: the raster handler from the bottom, its two shadow
+# bytes at the top. The audio NMI routine starts at $C020 and the REU pump at
+# $C100 (audio_handlers), and tests/test_c64_ram_map.py holds every fixed $Cxxx
+# region to that kind of disjointness. A/X/Y are saved and restored by the
+# kernal IRQ entry at $FF48 → $EA81, so this routine needs no stack save of its
+# own.
 IRQ_HANDLER_ADDR = 0xC000
-SHADOW_D016_ADDR = 0xC100
-SHADOW_D018_ADDR = 0xC101
+SHADOW_D016_ADDR = 0xC01E
+SHADOW_D018_ADDR = 0xC01F
 RASTER_IRQ_HANDLER = bytes(
     [
         0xAD,
-        0x00,
-        0xC1,  # LDA $C100   ; shadow D016
+        SHADOW_D016_ADDR & 0xFF,
+        SHADOW_D016_ADDR >> 8,  # LDA shadow D016
         0x8D,
         0x16,
         0xD0,  # STA $D016
         0xAD,
-        0x01,
-        0xC1,  # LDA $C101   ; shadow D018
+        SHADOW_D018_ADDR & 0xFF,
+        SHADOW_D018_ADDR >> 8,  # LDA shadow D018
         0x8D,
         0x18,
         0xD0,  # STA $D018
@@ -73,6 +76,9 @@ RASTER_IRQ_HANDLER = bytes(
         0x31,
         0xEA,  # JMP $EA31   ; chain to kernal (kbd scan + jiffy)
     ]
+)
+assert IRQ_HANDLER_ADDR + len(RASTER_IRQ_HANDLER) <= SHADOW_D016_ADDR, (
+    "big_text raster handler runs into its own shadow bytes"
 )
 RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first line past the last badline
 
@@ -131,6 +137,9 @@ class BigTextOverlay(Overlay):
 
     PAINTS_INTO_BUFFERS = True
     COMPATIBLE_MODES = ("blank", "mcm")
+    # Blank scenes get the shadow-register raster IRQ (_install_raster_irq);
+    # MCM writes through the scene's buffers and hooks nothing.
+    HOOKS_IRQ_ON_MODES = ("blank",)
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
     PARAM_HELP = {
         "messages": "List of message strings (or {text, color} tables) to scroll.",
@@ -209,7 +218,7 @@ class BigTextOverlay(Overlay):
         self._published_msg_idx: int = -1
 
         # Stashed in setup(): compose() is otherwise buffer-only, but the
-        # smooth scroll needs the shadow X-scroll byte at $C100 written every
+        # smooth scroll needs the shadow X-scroll byte written every
         # frame for the raster IRQ handler to commit.
         self._api = None
         self._last_xscroll_byte = -1

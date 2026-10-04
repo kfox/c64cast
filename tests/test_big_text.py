@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from c64cast.scenes.overlays import validate_for_scene
-from c64cast.scenes.overlays.big_text import BigTextOverlay
+from c64cast.scenes.overlays.big_text import SHADOW_D016_ADDR, BigTextOverlay
 from c64cast.video.modes import BlankDisplayMode, MCMDisplayMode, PETSCIIDisplayMode
 
 
@@ -194,7 +194,7 @@ class RenderTest(unittest.TestCase):
 
 
 class SmoothScrollTest(unittest.TestCase):
-    """compose() updates the shadow X-scroll byte ($C100) each frame; a
+    """compose() updates the shadow X-scroll byte each frame; a
     raster IRQ on the C64 commits it into $D016 during VBLANK. Tearing-
     free, so motion is pixel-smooth between cell-aligned screen updates."""
 
@@ -209,15 +209,15 @@ class SmoothScrollTest(unittest.TestCase):
         ov.setup(api=api, scene=self._scene(BlankDisplayMode()))
         # Drive 8 frames spaced 1 px of scroll apart. Each frame should
         # produce a different X-scroll byte, written to the shadow address
-        # at $C100 (the raster IRQ handler reads from there).
+        # the raster IRQ handler reads.
         seen = set()
         for i in range(8):
             ov.compose(_make_buffers(), self._scene(BlankDisplayMode()), float(i) / 64.0)
-            # Look at the most recent write_memory call for $C100 (case-
+            # Look at the most recent write_memory call for the shadow (case-
             # insensitive, since the U64 accepts either).
             for call in reversed(api.write_memory.call_args_list):
                 args, _ = call
-                if args and args[0].lower() == "c100":
+                if args and args[0].lower() == f"{SHADOW_D016_ADDR:04x}":
                     seen.add(args[1])
                     break
         # At least 4 distinct X-scroll bytes across the 8 steps: per-frame

@@ -95,9 +95,7 @@ REU_VIDEO_BITMAP_COLOR_LEN = SCREEN.N_CELLS
 
 # C64-side bank-swap raster IRQ handler. Lives at $C500 (audio_handlers.py owns
 # $C000-$C2FF for NMI DAC + REU pump handlers; api.py uses $C300/$C400
-# for the SID player + re-INIT stub; big_text.py uses $C000 — but
-# big_text is only valid on `blank`/`mcm` scenes, and HiresDisplayMode
-# is a bitmap mode, so they never coexist). The frame tracker at
+# for the SID player + re-INIT stub; big_text.py uses $C000-$C01F). The frame tracker at
 # $C700-$C70F holds everything the IRQ needs per frame, packed
 # contiguously so the host can stage a frame in one DMAWRITE.
 BANK_SWAP_IRQ_HANDLER_ADDR = 0xC500

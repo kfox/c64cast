@@ -206,6 +206,48 @@ class RandomSlideshowOverlayValidationTest(unittest.TestCase):
         self._validate("mhires")
 
 
+class BigTextReuPumpRefusalTest(unittest.TestCase):
+    """big_text on a blank display hooks $0314 and masks CIA #1, the REU audio
+    pump's interrupt, after the scene has started its audio, so the pair is
+    refused at validation (#559)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clip = os.path.join(self.tmp.name, "clip.mp4")
+        open(self.clip, "wb").close()
+
+    def _validate(self, *, pump=True, audio_enabled=True, **scene):
+        cfg = Config()
+        cfg.audio.use_reu_pump = pump
+        scene.setdefault("type", "blank")
+        scene.setdefault("overlays", [{"type": "big_text", "messages": [{"text": "HI"}]}])
+        scene_factory.validate_scene_cfg(SceneCfg(**scene), cfg, audio_enabled=audio_enabled)
+
+    def test_blank_scene_with_the_pump_on_is_refused(self):
+        with self.assertRaisesRegex(ValueError, r"big_text.*use_reu_pump"):
+            self._validate()
+
+    def test_video_on_a_blank_display_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "use_reu_pump"):
+            self._validate(type="video", display="blank", file=self.clip)
+
+    def test_mcm_hooks_no_irq_so_it_is_allowed(self):
+        self._validate(type="video", display="mcm", file=self.clip)
+
+    def test_pump_off_is_allowed(self):
+        self._validate(pump=False)
+
+    def test_audio_off_is_allowed(self):
+        self._validate(audio_enabled=False)
+
+    def test_scene_muted_is_allowed(self):
+        self._validate(audio=False)
+
+    def test_another_overlay_is_unaffected(self):
+        self._validate(overlays=[{"type": "clock"}])
+
+
 class InterleavedVideoWiringTest(unittest.TestCase):
     """Auto-interleaved videos were constructed directly, reproducing one of
     the six things `_build_video` does."""

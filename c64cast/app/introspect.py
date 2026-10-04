@@ -88,6 +88,7 @@ class OverlayDoc:
     requires_audio: bool
     compatible_modes: tuple[str, ...]
     supports_bitmap_text: bool
+    irq_hook_modes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -567,6 +568,7 @@ def overlay_docs() -> list[OverlayDoc]:
                 requires_audio=bool(getattr(cls, "REQUIRES_AUDIO", False)),
                 compatible_modes=tuple(getattr(cls, "COMPATIBLE_MODES", ())),
                 supports_bitmap_text=bool(getattr(cls, "SUPPORTS_BITMAP_TEXT", False)),
+                irq_hook_modes=tuple(getattr(cls, "HOOKS_IRQ_ON_MODES", ())),
             )
         )
     return out
@@ -678,6 +680,7 @@ def as_dict() -> dict[str, Any]:
                 "requires_audio": o.requires_audio,
                 "compatible_modes": list(o.compatible_modes),
                 "supports_bitmap_text": o.supports_bitmap_text,
+                "irq_hook_modes": list(o.irq_hook_modes),
             }
             for o in overlay_docs()
         ],
@@ -799,6 +802,12 @@ def _render_overlay(od: OverlayDoc) -> str:
         restr.append("requires [audio].enabled")
     if od.compatible_modes:
         restr.append("only on display modes: " + ", ".join(od.compatible_modes))
+    if od.irq_hook_modes:
+        restr.append(
+            "refused on display modes "
+            + ", ".join(od.irq_hook_modes)
+            + " while [audio].use_reu_pump is on (it takes the $0314 IRQ vector)"
+        )
     if restr:
         for r in restr:
             lines.append(f"  ! {r}")

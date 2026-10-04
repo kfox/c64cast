@@ -29,7 +29,7 @@ import os
 import random
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -48,7 +48,12 @@ from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
 from c64cast.scenes import scenes as _scenes
 from c64cast.scenes.effects import build_effect
 from c64cast.scenes.generators import GenerativeSource, build_generator
-from c64cast.scenes.overlays import build_overlay, paints_into_buffers, validate_for_scene
+from c64cast.scenes.overlays import (
+    Overlay,
+    build_overlay,
+    paints_into_buffers,
+    validate_for_scene,
+)
 from c64cast.scenes.scenes import (
     BlankScene,
     LauncherScene,
@@ -1971,6 +1976,37 @@ def _overlay_check_modes(s: SceneCfg, cfg: Config, mode: DisplayMode) -> list[Di
     return [build_wired_display_mode(name, wiring) for name in QUANTIZING_DISPLAYS]
 
 
+# The scene types whose audio can run the REU pump: the ones a per-scene
+# `audio` override applies to.
+_AUDIO_SCENE_TYPES: tuple[str, ...] = next(
+    f.metadata["applies_to"] for f in fields(SceneCfg) if f.name == "audio"
+)
+
+
+def reject_irq_hook_conflict(
+    overlay: Overlay, display_mode: DisplayMode, s: SceneCfg, cfg: Config, *, audio_enabled: bool
+) -> None:
+    """Raise ValueError when `overlay` would take the $0314 IRQ vector and mask
+    CIA #1 on a scene whose audio runs the REU pump.
+
+    The pump's refill IRQ is CIA #1 Timer A through $0314, and overlays set up
+    after the scene has started its audio: the overlay's mask silences the pump,
+    and the ring replays stale audio for the rest of the scene."""
+    mode_name = getattr(display_mode, "name", "?")
+    if mode_name not in overlay.HOOKS_IRQ_ON_MODES:
+        return
+    if not (cfg.audio.use_reu_pump and audio_enabled):
+        return
+    if s.type not in _AUDIO_SCENE_TYPES or s.audio is False:
+        return
+    raise ValueError(
+        f"overlay {overlay.name!r} on a {mode_name!r} display installs its own "
+        "$0314 IRQ handler and masks CIA #1, the REU audio pump's interrupt, so "
+        "it cannot run while [audio].use_reu_pump is on. Set "
+        "[audio].use_reu_pump = false, or give this scene `audio = false`."
+    )
+
+
 def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None:
     """Pre-construction validation for a SceneCfg.
 
@@ -2043,6 +2079,7 @@ def validate_scene_cfg(s: SceneCfg, cfg: Config, *, audio_enabled: bool) -> None
         ov = build_overlay(ov_cfg, audio_proxy)
         for check_mode in check_modes:
             validate_for_scene(ov, check_mode)
+            reject_irq_hook_conflict(ov, check_mode, s, cfg, audio_enabled=audio_enabled)
 
     if s.orchestrate:
         resolve_orchestrator(s)
