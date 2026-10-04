@@ -64,6 +64,7 @@ from .audio_handlers import (
     REU_AUDIO_BASE,
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
+    REU_GOVERNOR_MAX_CHUNK,
     REU_GOVERNOR_PUMP_OVERDRIVE,
     REU_IRQ_HANDLER,
     REU_IRQ_HANDLER_CHUNK_OFFSETS,
@@ -1714,7 +1715,8 @@ class AudioStreamer:
         it sets each pump DMA's bus halt rather than the byte rate. Raises
         ValueError unless it divides both RING_BUFFER_SIZE and
         REU_PUMP_INITIAL_MARGIN (reu_pump_chunk_fits_ring): any other chunk
-        DMAs past the ring end once per lap.
+        DMAs past the ring end once per lap. With reu_pump_governor on it must
+        also be at most REU_GOVERNOR_MAX_CHUNK, or ValueError.
 
         ``on_progress`` (fraction 0..1 of payload + EOF-pad bytes uploaded) is
         called once per upload slice — the seconds-long upload is the bulk of
@@ -1750,6 +1752,12 @@ class AudioStreamer:
                 f"REU pump chunk_size={chunk} must be a positive divisor of the "
                 f"{RING_BUFFER_SIZE}-byte ring and of its {REU_PUMP_INITIAL_MARGIN}-byte "
                 "initial margin"
+            )
+        if self.reu_pump_governor and chunk > REU_GOVERNOR_MAX_CHUNK:
+            raise ValueError(
+                f"REU pump chunk_size={chunk} is past the governor's "
+                f"{REU_GOVERNOR_MAX_CHUNK}-byte maximum: one pump would carry the "
+                "write head out of the skip window, which reads as an overtake"
             )
         if not audio_4bit:
             log.warning("audio: start_for_reu_staged called with empty data")

@@ -33,6 +33,7 @@ from c64cast.audio.audio_handlers import (
     REU_AUDIO_MAX_BYTES,
     REU_AUDIO_SRC_TRACKER_ADDR,
     REU_GOVERNOR_GAP_THRESHOLD_HI,
+    REU_GOVERNOR_OVERTAKE_GAP_HI,
     REU_GOVERNOR_PUMP_OVERDRIVE,
     REU_IRQ_HANDLER,
     REU_IRQ_HANDLER_CHUNK_OFFSETS,
@@ -628,8 +629,9 @@ class ReuTrackedGovernorTest(unittest.TestCase):
     of its callers reach it (the $C100 entry and the chunked mhires
     dispatcher). Under the bank-swap video DMAs the open-loop tracked pump
     lapped the NMI reader every 10.5-12 s (#544); the governed one must skip
-    a chunk while its write head is half a ring or more ahead of R, pump
-    otherwise, and return to its caller on both paths."""
+    a chunk while its write head is half a ring ahead of R, pump otherwise
+    (GovernorSkipWindowTest sweeps every gap), and return to its caller on
+    both paths."""
 
     SRC = 0x032211
 
@@ -685,11 +687,13 @@ class ReuTrackedGovernorTest(unittest.TestCase):
         dst_after = run.memory.ram[t + 3] | (run.memory.ram[t + 4] << 8)
         self.assertEqual(dst_after, r + REU_PUMP_INITIAL_MARGIN, "a skip must not advance dst")
 
-    def test_skips_when_write_head_is_nearly_a_full_ring_ahead(self):
-        # W one page behind R numerically is 31 pages AHEAD around the ring —
-        # the overrun the governor exists to stop.
+    def test_pumps_once_the_reader_has_overtaken_the_write_head(self):
+        # W one page behind R reads as 31 pages ahead mod the ring, but no
+        # pump can carry W past 16 pages ahead: only R overtaking W reaches
+        # it. Skipping there would stall W for half a ring of lap-old audio
+        # and leave the source behind the picture (#544).
         r = RING_BUFFER_ADDR + 0x1000
-        self.assertFalse(self._pumped(self._call(dst=r - 0x100, r=r)))
+        self.assertTrue(self._pumped(self._call(dst=r - 0x100, r=r)))
 
     def test_pumps_when_write_head_is_less_than_half_a_ring_ahead(self):
         r = RING_BUFFER_ADDR
@@ -893,13 +897,13 @@ class ReuPositionSecondsTest(unittest.TestCase):
 
 
 class GovernorHandlerTest(unittest.TestCase):
-    """The C64-side governor handler is the plain pump handler with an 18-byte
+    """The C64-side governor handler is the plain pump handler with a 22-byte
     skip-when-ahead prefix. A typo in the prefix bytes or branch displacement
     JAMs the 6502, so verify the structure (these run with no hardware)."""
 
     def test_length_is_prefix_plus_body(self):
-        # 18-byte governor prefix + the 37-byte plain handler sans its PHA (36).
-        self.assertEqual(len(REU_IRQ_HANDLER_GOVERNOR), 18 + 36)
+        # 22-byte governor prefix + the 37-byte plain handler sans its PHA (36).
+        self.assertEqual(len(REU_IRQ_HANDLER_GOVERNOR), 22 + 36)
 
     def test_starts_with_pha(self):
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[0], 0x48, "leading PHA")
@@ -916,28 +920,110 @@ class GovernorHandlerTest(unittest.TestCase):
             "SBC $C026 (R_hi)",
         )
 
-    def test_masks_gap_and_compares_threshold(self):
+    def test_masks_gap_and_compares_the_skip_window(self):
         # AND #$1F masks gap to 5 bits (32 ring HI values + discards REU
-        # read-back garbage); CMP #threshold tests the half-ring skip point.
+        # read-back garbage); the two CMPs bound the skip window.
         self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[8:10], bytes([0x29, 0x1F]), "AND #$1F")
         self.assertEqual(
             REU_IRQ_HANDLER_GOVERNOR[10:12],
             bytes([0xC9, REU_GOVERNOR_GAP_THRESHOLD_HI]),
             "CMP #threshold_hi",
         )
+        self.assertEqual(
+            REU_IRQ_HANDLER_GOVERNOR[14:16],
+            bytes([0xC9, REU_GOVERNOR_OVERTAKE_GAP_HI]),
+            "CMP #overtake_hi",
+        )
         self.assertEqual(REU_GOVERNOR_GAP_THRESHOLD_HI, REU_PUMP_INITIAL_MARGIN >> 8)
 
-    def test_bcc_skips_over_skip_block_to_pump_body(self):
-        # BCC +4 (offset 12) jumps over the 4-byte skip block (PLA + JMP $EA31)
-        # to the pump body at offset 18. A wrong displacement lands mid-JMP and
-        # JAMs the CPU.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x04]), "BCC +4")
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[14], 0x68, "skip-path PLA")
+    def test_branches_skip_over_skip_block_to_pump_body(self):
+        # BCC +8 (offset 12) and BCS +4 (offset 16) both land on the pump body
+        # at offset 22, past the 4-byte skip block (PLA + JMP $EA31). A wrong
+        # displacement lands mid-JMP and JAMs the CPU.
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[12:14], bytes([0x90, 0x08]), "BCC +8")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[16:18], bytes([0xB0, 0x04]), "BCS +4")
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[18], 0x68, "skip-path PLA")
         self.assertEqual(
-            REU_IRQ_HANDLER_GOVERNOR[15:18], bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31"
+            REU_IRQ_HANDLER_GOVERNOR[19:22], bytes([0x4C, 0x31, 0xEA]), "skip-path JMP $EA31"
         )
-        # Pump body (offset 18) is REU_IRQ_HANDLER without its leading PHA.
-        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[18:], REU_IRQ_HANDLER[1:])
+        # Pump body (offset 22) is REU_IRQ_HANDLER without its leading PHA.
+        self.assertEqual(REU_IRQ_HANDLER_GOVERNOR[22:], REU_IRQ_HANDLER[1:])
+
+
+class GovernorSkipWindowTest(unittest.TestCase):
+    """Both governed pumps, EXECUTED on py65 at every ring gap: skip only for
+    gap_hi in [REU_GOVERNOR_GAP_THRESHOLD_HI, REU_GOVERNOR_OVERTAKE_GAP_HI)
+    (16-17), pump below it (0-15) and at or past it (18-31), where only the
+    reader overtaking the write head can put the gap (#544)."""
+
+    R = RING_BUFFER_ADDR + 0x0A40  # arbitrary, off a page boundary
+
+    def _w(self, gap_hi: int) -> int:
+        return RING_BUFFER_ADDR + ((self.R - RING_BUFFER_ADDR + (gap_hi << 8)) % RING_BUFFER_SIZE)
+
+    def _plain_pumped(self, gap_hi: int) -> bool:
+        from c64cast.audio.audio_handlers import REU_CMD_FETCH_EXEC
+
+        w = self._w(gap_hi)
+        run = run_irq_handler(
+            REU_IRQ_HANDLER_GOVERNOR,
+            addr=REU_PUMP_HANDLER_ADDR,
+            seed={0xDF02: w & 0xFF, 0xDF03: w >> 8, READ_PTR_HI_ADDR: self.R >> 8},
+        )
+        self.assertEqual(run.exit_pc, 0xEA31)
+        self.assertEqual(run.mpu.sp, 0xFF, "both paths must balance the PHA")
+        return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
+
+    def _tracked_pumped(self, gap_hi: int) -> bool:
+        from c64cast.audio.audio_handlers import (
+            REU_CMD_FETCH_EXEC,
+            REU_PUMP_BODY_SUBROUTINE_ADDR,
+            REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+        )
+
+        seed = _tracker_seed(0x032211, self._w(gap_hi))
+        seed[READ_PTR_HI_ADDR] = self.R >> 8
+        caller = bytes([0x20, 0x80, 0xC1, 0x4C, 0x31, 0xEA])  # JSR $C180 / JMP $EA31
+        run = run_irq_handler(
+            caller,
+            addr=0xC000,
+            seed=seed,
+            images={REU_PUMP_BODY_SUBROUTINE_ADDR: REU_PUMP_BODY_SUBROUTINE_GOVERNOR},
+        )
+        self.assertEqual(run.exit_pc, 0xEA31, "the subroutine must RTS to its caller")
+        self.assertEqual(run.mpu.sp, 0xFF)
+        return run.memory.ram[0xDF01] == REU_CMD_FETCH_EXEC
+
+    def test_window_is_two_pages_above_half_a_ring(self):
+        self.assertEqual((REU_GOVERNOR_GAP_THRESHOLD_HI, REU_GOVERNOR_OVERTAKE_GAP_HI), (16, 18))
+
+    def test_both_governors_skip_only_inside_the_window(self):
+        expected = {gap: not (16 <= gap < 18) for gap in range(32)}
+        for name, pumped in (("plain", self._plain_pumped), ("tracked", self._tracked_pumped)):
+            with self.subTest(governor=name):
+                self.assertEqual({gap: pumped(gap) for gap in range(32)}, expected)
+
+    def test_a_pump_cannot_carry_the_write_head_out_of_the_window(self):
+        # The last gap that pumps below the window, plus one chunk of the
+        # largest size the governor accepts, must still land below the
+        # overtake bound — else the next tick reads an overtake and pumps on.
+        from c64cast.audio.audio_handlers import REU_GOVERNOR_MAX_CHUNK
+
+        last_pumping_gap_bytes = REU_GOVERNOR_GAP_THRESHOLD_HI << 8  # exclusive
+        self.assertLess(
+            (last_pumping_gap_bytes - 1 + REU_GOVERNOR_MAX_CHUNK) >> 8,
+            REU_GOVERNOR_OVERTAKE_GAP_HI,
+        )
+
+    def test_start_refuses_a_governed_chunk_past_the_maximum(self):
+        from c64cast.audio.audio_handlers import REU_GOVERNOR_MAX_CHUNK
+
+        chunk = REU_GOVERNOR_MAX_CHUNK * 2  # tiles the ring, overshoots the window
+        s = _new_streamer()
+        s.reu_pump_governor = True
+        with self.assertRaises(ValueError):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, chunk_size=chunk)
+        self.assertEqual(cast(FakeAPI, s.api).writes, [])
 
 
 class GovernorSelectionTest(unittest.TestCase):
@@ -960,7 +1046,7 @@ class GovernorSelectionTest(unittest.TestCase):
         self.assertEqual(handler[1:4], bytes([0xAD, 0x03, 0xDF]))  # governor prefix
         # chunk patched at the prefix-shifted offsets the module derives.
         lo, hi = REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS
-        self.assertEqual((lo, hi), (19, 24))
+        self.assertEqual((lo, hi), (23, 28))
         self.assertEqual(handler[lo], REU_PUMP_CHUNK_SIZE & 0xFF)
         self.assertEqual(handler[hi], (REU_PUMP_CHUNK_SIZE >> 8) & 0xFF)
 

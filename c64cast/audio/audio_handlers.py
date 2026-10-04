@@ -329,6 +329,18 @@ REU_GOVERNOR_PUMP_OVERDRIVE = 1.5
 # is half a ring, matching the bring-up seed, so bang-bang control parks the gap
 # symmetrically with ~4 KB before either a lap or an underrun.
 REU_GOVERNOR_GAP_THRESHOLD_HI = REU_PUMP_INITIAL_MARGIN >> 8  # 16 (= half ring)
+# The skip window's upper bound. The governor pumps only below the threshold,
+# so one pump of at most REU_GOVERNOR_MAX_CHUNK bytes leaves gap_hi below this;
+# the reader only ever lowers it. A gap at or above it therefore means R has
+# overtaken W (W sits behind R, and the mod-32 gap reads "far ahead"), and the
+# governor pumps rather than skips: skipping there would stall W while R plays
+# half a ring of lap-old audio, and freeze the source tracker, leaving the
+# audio behind the picture for the rest of the scene.
+REU_GOVERNOR_OVERTAKE_GAP_HI = REU_GOVERNOR_GAP_THRESHOLD_HI + 2  # 18
+REU_GOVERNOR_MAX_CHUNK = (REU_GOVERNOR_OVERTAKE_GAP_HI - REU_GOVERNOR_GAP_THRESHOLD_HI) << 8
+for _chunk in (REU_PUMP_CHUNK_SIZE, REU_PUMP_CHUNK_SIZE_HEAVY_BUS):
+    assert _chunk <= REU_GOVERNOR_MAX_CHUNK, f"pump chunk {_chunk} overshoots the skip window"
+del _chunk
 # NMI read pointer HI byte (R_hi): NMI_ROUTINE self-modifying operand at
 # $C026. Both governed pumps read this directly on-chip; the host never writes.
 READ_PTR_HI_ADDR = NMI_ROUTINE_ADDR + 6  # $C026
@@ -516,50 +528,71 @@ REU_IRQ_HANDLER_CHUNK_OFFSETS = (2, 7)
 _assert_chunk_offsets(REU_IRQ_HANDLER, REU_IRQ_HANDLER_CHUNK_OFFSETS, "REU_IRQ_HANDLER")
 
 
-def _governor_gap_check(w_hi_addr: int) -> bytes:
-    """The governor's skip-when-ahead test, shared by every governed pump.
+_BCC = 0x90
+_BCS = 0xB0
+
+
+def _governor_test(w_hi_addr: int, skip: bytes) -> bytes:
+    """The governor's skip-when-ahead test followed by ``skip``, shared by
+    every governed pump; the pump body goes immediately after the result.
 
     Loads the write head's HI byte from ``w_hi_addr``, subtracts the NMI read
-    pointer's (R_hi, ``READ_PTR_HI_ADDR``), masks the difference to the ring's
-    32 HI values and compares it with ``REU_GOVERNOR_GAP_THRESHOLD_HI``. Carry
-    comes out SET when the write head is at least half a ring ahead — the
-    chunk to skip — and CLEAR when it should pump. The caller supplies the
-    branch, since each pump leaves by a different exit.
+    pointer's (R_hi, ``READ_PTR_HI_ADDR``) and masks the difference to the
+    ring's 32 HI values. A gap in [REU_GOVERNOR_GAP_THRESHOLD_HI,
+    REU_GOVERNOR_OVERTAKE_GAP_HI) falls into ``skip``, the caller's exit for a
+    skipped chunk; any other gap branches over it to the pump. A gap at or
+    past the overtake bound pumps because the reader has passed the write
+    head (see REU_GOVERNOR_OVERTAKE_GAP_HI).
 
         LDA w_hi_addr   ; 4 cyc
         SEC             ; 2
         SBC $C026       ; 4  (R_hi)
         AND #$1F        ; 2  (gap_hi mod 32; masks REU read-back garbage too)
         CMP #threshold  ; 2
+        BCC pump        ; 2/3  W less than half a ring ahead
+        CMP #overtake   ; 2
+        BCS pump        ; 2/3  R has overtaken W
+        <skip>
 
-    11 bytes, 14 cycles; A is clobbered.
+    17 bytes plus ``skip``; A is clobbered. A gap below the threshold reaches
+    the pump in 17 cycles, an overtaken one in 21; a skip spends 20 before
+    ``skip`` runs.
     """
-    return bytes(
-        [
-            0xAD,
-            w_hi_addr & 0xFF,
-            (w_hi_addr >> 8) & 0xFF,  # LDA w_hi
-            0x38,  # SEC
-            0xED,
-            READ_PTR_HI_ADDR & 0xFF,
-            (READ_PTR_HI_ADDR >> 8) & 0xFF,  # SBC $C026   (R_hi)
-            0x29,
-            0x1F,  # AND #$1F    (gap_hi)
-            0xC9,
-            REU_GOVERNOR_GAP_THRESHOLD_HI,  # CMP #threshold_hi
-        ]
+    if len(skip) + 4 > 127:
+        raise ValueError("the governor's first branch cannot reach past the skip block")
+    return (
+        bytes(
+            [
+                0xAD,
+                w_hi_addr & 0xFF,
+                (w_hi_addr >> 8) & 0xFF,  # LDA w_hi
+                0x38,  # SEC
+                0xED,
+                READ_PTR_HI_ADDR & 0xFF,
+                (READ_PTR_HI_ADDR >> 8) & 0xFF,  # SBC $C026   (R_hi)
+                0x29,
+                0x1F,  # AND #$1F    (gap_hi)
+                0xC9,
+                REU_GOVERNOR_GAP_THRESHOLD_HI,  # CMP #threshold_hi
+                _BCC,
+                len(skip) + 4,  # BCC → pump (over the CMP/BCS pair and skip)
+                0xC9,
+                REU_GOVERNOR_OVERTAKE_GAP_HI,  # CMP #overtake_hi
+                _BCS,
+                len(skip),  # BCS → pump (over skip)
+            ]
+        )
+        + skip
     )
 
 
-_GOVERNOR_GAP_CHECK_LEN = len(_governor_gap_check(0))
-
-
-# REU_IRQ_HANDLER + an 18-byte governor prefix. Before pumping, read the
+# REU_IRQ_HANDLER behind a 22-byte governor prefix. Before pumping, read the
 # write head (dst HI, $DF03) and the NMI read pointer (R HI, $C026), compute
-# the ring gap in 256-byte units, and if the write head is already >= half a
-# ring ahead, SKIP this chunk (don't trigger, don't advance) so the reader
-# catches up. Otherwise fall through to the unmodified pump body: the gap
-# self-regulates near half a ring with no CIA reprogramming and no host writes.
+# the ring gap in 256-byte units, and if the write head is already half a ring
+# ahead (the skip window of _governor_test), SKIP this chunk (don't trigger,
+# don't advance) so the reader catches up. Otherwise run the unmodified pump
+# body: the gap self-regulates near half a ring with no CIA reprogramming and
+# no host writes.
 #
 # Byte layout (offsets relative to $C100):
 #   0   PHA
@@ -568,39 +601,34 @@ _GOVERNOR_GAP_CHECK_LEN = len(_governor_gap_check(0))
 #   5   SBC $C026            ; - R_hi (NMI read pointer HI)
 #   8   AND #$1F             ; gap_hi mod 32 (also masks REU read-back garbage)
 #  10   CMP #threshold_hi    ; >= half ring ahead?
-#  12   BCC +4 → offset 18   ; gap small → pump normally
-#  14   PLA                  ; skip: too far ahead, let reader catch up
-#  15   JMP $EA31            ; chain to kernal IRQ (keyboard/jiffy still serviced)
-#  18   <REU_IRQ_HANDLER body without its leading PHA: pump + dst wrap + PLA + JMP>
+#  12   BCC +8 → offset 22   ; gap small → pump normally
+#  14   CMP #overtake_hi     ; reader overtook the write head?
+#  16   BCS +4 → offset 22   ; yes → pump
+#  18   PLA                  ; skip: too far ahead, let reader catch up
+#  19   JMP $EA31            ; chain to kernal IRQ (keyboard/jiffy still serviced)
+#  22   <REU_IRQ_HANDLER body without its leading PHA: pump + dst wrap + PLA + JMP>
 #
 # The skipped PLA balances the offset-0 PHA on both paths. The body's internal
 # BCC (+10 to its PLA) is relative and unchanged by the prefix shift.
-REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN = 18
+REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN = 22
 REU_IRQ_HANDLER_GOVERNOR = (
     bytes([0x48])  # PHA
-    + _governor_gap_check(0xDF03)  # dst_hi (write head) vs R_hi
-    + bytes(
-        [
-            0x90,
-            0x04,  # BCC +4 → pump body (offset 18)
-            0x68,  # PLA  (skip path)
-            0x4C,
-            0x31,
-            0xEA,  # JMP $EA31
-        ]
+    + _governor_test(
+        0xDF03,  # dst_hi (write head) vs R_hi
+        bytes([0x68, 0x4C, 0x31, 0xEA]),  # skip: PLA / JMP $EA31
     )
     + REU_IRQ_HANDLER[1:]
 )  # pump body, sans leading PHA
 assert len(REU_IRQ_HANDLER_GOVERNOR) == REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN + 36, (
-    "REU_IRQ_HANDLER_GOVERNOR length changed — the governor prefix is 18 bytes "
-    "(BCC +4 over the 4-byte skip block) followed by REU_IRQ_HANDLER[1:]."
+    "REU_IRQ_HANDLER_GOVERNOR length changed — the governor prefix is 22 bytes "
+    "(17-byte test + the 4-byte skip block) followed by REU_IRQ_HANDLER[1:]."
 )
-# Pump body must start exactly at offset 18 (the BCC +4 target).
+# Pump body must start exactly at offset 22 (both branch targets).
 assert REU_IRQ_HANDLER_GOVERNOR[REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN] == REU_IRQ_HANDLER[1], (
-    "governor pump-body offset drifted from the BCC +4 target (18)"
+    "governor pump-body offset drifted from the branch target (22)"
 )
 # The body is REU_IRQ_HANDLER[1:] behind the prefix, so every plain offset
-# shifts by (prefix - 1): 2 → 19, 7 → 24. Derived rather than re-typed.
+# shifts by (prefix - 1): 2 → 23, 7 → 28. Derived rather than re-typed.
 REU_IRQ_HANDLER_GOVERNOR_CHUNK_OFFSETS = tuple(
     off + REU_IRQ_HANDLER_GOVERNOR_PREFIX_LEN - 1 for off in REU_IRQ_HANDLER_CHUNK_OFFSETS
 )
@@ -807,7 +835,6 @@ _TRACKED_PUMP_BODY_CHUNK_OFFSETS = (1, 6, 50, 58, 75, 83)
 _assert_chunk_offsets(_TRACKED_PUMP_BODY, _TRACKED_PUMP_BODY_CHUNK_OFFSETS, "_TRACKED_PUMP_BODY")
 
 _RTS = 0x60
-_BCS = 0xB0
 
 # The tracked pump as an RTS-ending subroutine at $C180. Two variants, one
 # body; AudioStreamer.start_for_reu_staged uploads the one
@@ -819,16 +846,16 @@ _BCS = 0xB0
 # dst_hi tracker ($C204) rather than from $DF03, which the bank-swap DMAs
 # leave pointing into video memory:
 #
-#   0    <_governor_gap_check($C204)>  11 bytes, 14 cyc
-#  11    BCS +104 → offset 117 (RTS)   ; W >= half a ring ahead: skip the chunk
-#  13    <_TRACKED_PUMP_BODY>          104 bytes
-# 117    RTS
+#   0    <_governor_test($C204)>      17 bytes; pump → offset 18
+#  17    RTS                          ; gap in the skip window: skip the chunk
+#  18    <_TRACKED_PUMP_BODY>         104 bytes
+# 122    RTS
 #
 # A skipped chunk triggers no DMA and advances neither tracker, so the same
 # audio is pumped on a later tick once the reader has caught up — the plain
-# governor's behavior (REU_IRQ_HANDLER_GOVERNOR). A pumping call costs 16
-# cycles more than the open-loop one (the test plus an untaken BCS); a skip
-# runs the test, a taken BCS and the RTS, and no DMA.
+# governor's behavior (REU_IRQ_HANDLER_GOVERNOR). A pumping call costs 17
+# cycles more than the open-loop one (21 once the reader has overtaken); a
+# skip runs the test and the RTS, and no DMA.
 #
 # $C180 is the address the chunked dispatcher in modes_irq.py JSRs, so the
 # subroutine cannot move, and it must end below the $C200 tracker.
@@ -836,8 +863,9 @@ REU_PUMP_BODY_SUBROUTINE_ADDR = 0xC180
 REU_PUMP_BODY_SUBROUTINE = _TRACKED_PUMP_BODY + bytes([_RTS])
 REU_PUMP_BODY_SUBROUTINE_CHUNK_OFFSETS = _TRACKED_PUMP_BODY_CHUNK_OFFSETS
 
-_TRACKED_GOVERNOR_PREFIX = _governor_gap_check(REU_AUDIO_SRC_TRACKER_ADDR + 4) + bytes(
-    [_BCS, len(_TRACKED_PUMP_BODY)]  # BCS → the RTS past the body
+_TRACKED_GOVERNOR_PREFIX = _governor_test(
+    REU_AUDIO_SRC_TRACKER_ADDR + 4,  # dst_hi tracker (write head) vs R_hi
+    bytes([_RTS]),  # skip: return to the caller
 )
 REU_PUMP_BODY_SUBROUTINE_GOVERNOR = _TRACKED_GOVERNOR_PREFIX + _TRACKED_PUMP_BODY + bytes([_RTS])
 REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS = tuple(
@@ -848,9 +876,6 @@ _assert_chunk_offsets(
     REU_PUMP_BODY_SUBROUTINE_GOVERNOR_CHUNK_OFFSETS,
     "REU_PUMP_BODY_SUBROUTINE_GOVERNOR",
 )
-# A 6502 branch reaches at most +127; past that the displacement byte wraps
-# into a backward branch.
-assert len(_TRACKED_PUMP_BODY) <= 127, "governor BCS cannot reach the RTS"
 for _sub in (REU_PUMP_BODY_SUBROUTINE, REU_PUMP_BODY_SUBROUTINE_GOVERNOR):
     assert _sub[-1] == _RTS, "subroutine must end with RTS"
     assert REU_PUMP_BODY_SUBROUTINE_ADDR + len(_sub) <= REU_AUDIO_SRC_TRACKER_ADDR, (
