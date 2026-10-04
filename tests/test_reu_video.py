@@ -209,6 +209,67 @@ class ReuPumpSkipsIrqHookTest(unittest.TestCase):
                     modes_irq.reu_pump_skips_irq_hook(mode)
 
 
+class ScenePumpStartRecOwnershipTest(unittest.TestCase):
+    """The scene-side pump starts that ask reu_pump_skips_irq_hook (#554)."""
+
+    def _audio(self, *, use_reu_pump: bool):
+        from unittest.mock import MagicMock
+
+        from c64cast.audio.audio import AudioStreamer
+
+        audio = MagicMock(spec=AudioStreamer)
+        audio.use_reu_pump = use_reu_pump
+        audio.effective_rate = 12000
+        return audio
+
+    def _webcam(self, audio):
+        from unittest.mock import MagicMock
+
+        from c64cast.scenes.scenes import WebcamScene
+
+        return WebcamScene(
+            cast(Ultimate64API, FakeAPI()),
+            audio,
+            PETSCIIDisplayMode(use_reu_staged=True),
+            MagicMock(),
+            MagicMock(),
+            "cam",
+        )
+
+    def test_webcam_without_the_pump_accepts_a_host_rec_mode(self):
+        audio = self._audio(use_reu_pump=False)
+        self._webcam(audio).setup()
+        self.assertIs(audio.start_mic.call_args.kwargs["skip_irq_vector_hook"], False)
+
+    def test_webcam_with_the_pump_refuses_a_host_rec_mode(self):
+        audio = self._audio(use_reu_pump=True)
+        with self.assertRaises(ValueError):
+            self._webcam(audio).setup()
+        audio.start_mic.assert_not_called()
+
+    def test_video_reu_pump_start_refuses_a_host_rec_mode(self):
+        from unittest import mock
+
+        from c64cast.scenes.scenes import VideoScene
+
+        audio = self._audio(use_reu_pump=True)
+        scene = VideoScene(
+            cast(Ultimate64API, FakeAPI()),
+            audio,
+            PETSCIIDisplayMode(use_reu_staged=True),
+            "https://stub.invalid/clip.mp4",
+            setup_progress=False,
+        )
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource"),
+            mock.patch.object(scene, "_preencode_audio_for_reu", return_value=b"\x07"),
+            self.assertRaises(ValueError),
+        ):
+            scene.setup()
+        audio.start_for_reu_staged.assert_not_called()
+
+
 class ValidateUseReuStagedTest(unittest.TestCase):
     """The loader accepts only true/false/"auto" for [video].use_reu_staged."""
 

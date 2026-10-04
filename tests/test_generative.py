@@ -928,6 +928,20 @@ class AudioSourceTest(unittest.TestCase):
         assert streamer.started is not None
         self.assertFalse(streamer.started["skip"])
 
+    def test_listen_only_accepts_a_host_rec_staged_mode(self):
+        # Listen-only never starts a pump, so the REC conflict cannot arise.
+        streamer = _FakeStreamer()
+        mic = MicAudioSource(
+            cast(AudioStreamer, streamer),
+            cast(AudioCfg, SimpleNamespace(device=-1, mic_sensitivity=1.0, noise_gate=0.02)),
+            display_mode=cast(DisplayMode, SimpleNamespace(drives_rec_from_host=True)),
+            reactive=False,
+            listen_only=True,
+        )
+        mic.setup()
+        assert streamer.started is not None
+        self.assertTrue(streamer.started["listen"])
+
     def _mic(self, streamer, *, reactive: bool) -> MicAudioSource:
         return MicAudioSource(
             cast(AudioStreamer, streamer),
