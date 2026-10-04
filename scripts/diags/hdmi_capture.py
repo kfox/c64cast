@@ -63,7 +63,7 @@ from pathlib import Path
 import _diaglib as d
 
 
-def grab(device: int | str, warmup: int = 5):
+def grab(device: int | str | None, warmup: int = 5):
     cap = d.open_capture(device)
     try:
         for _ in range(max(0, warmup)):  # let exposure/handshake settle
@@ -76,7 +76,9 @@ def grab(device: int | str, warmup: int = 5):
         cap.release()
 
 
-def burst(device: int | str, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12):
+def burst(
+    device: int | str | None, count: int, *, size: tuple[int, int], fps: int, warmup: int = 12
+):
     """Grab `count` consecutive frames from one open device.
 
     Returns (frames, measured_fps). The device is asked for `size`/`fps` before

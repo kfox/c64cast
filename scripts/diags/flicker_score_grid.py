@@ -417,7 +417,7 @@ SCALE = (
 )
 
 
-def check_source_alternation(device: int | str, seconds: float = 4.0) -> str:
+def check_source_alternation(device: int | str | None, seconds: float = 4.0) -> str:
     """Confirm the C64 is alternating at the field rate, with the page up.
 
     Worth the seconds it costs, because the failure it rules out is invisible
