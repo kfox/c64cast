@@ -261,6 +261,24 @@ class SmoothScrollTest(unittest.TestCase):
         self.assertEqual((last_vector[1], last_vector[2]), (0x31, 0xEA))
 
 
+class IrqHookRuleTest(unittest.TestCase):
+    """HOOKS_IRQ_ON_MODES is what config validation refuses alongside the REU
+    pump, and setup() is what actually takes $0314: the two have to name the
+    same modes, or a mode that hooks passes validation (#559)."""
+
+    def test_setup_hooks_the_irq_on_exactly_the_declared_modes(self):
+        from c64cast.app.scene_factory import _build_display_mode
+
+        for name in BigTextOverlay.COMPATIBLE_MODES:
+            with self.subTest(mode=name):
+                api = MagicMock()
+                scene = MagicMock()
+                scene.display_mode = _build_display_mode(name)
+                _make_overlay().setup(api=api, scene=scene)
+                hooked = any(c.args[0] == "0314" for c in api.write_regs.call_args_list)
+                self.assertEqual(hooked, name in BigTextOverlay.HOOKS_IRQ_ON_MODES)
+
+
 class IsBusyTest(unittest.TestCase):
     """is_busy() in one-shot (loop=False) mode reports True while messages
     are still in flight, False once every message has run through."""

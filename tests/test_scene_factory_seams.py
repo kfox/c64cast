@@ -217,9 +217,10 @@ class BigTextReuPumpRefusalTest(unittest.TestCase):
         self.clip = os.path.join(self.tmp.name, "clip.mp4")
         open(self.clip, "wb").close()
 
-    def _validate(self, *, pump=True, audio_enabled=True, **scene):
+    def _validate(self, *, pump=True, audio_enabled=True, backend="ultimate", **scene):
         cfg = Config()
         cfg.audio.use_reu_pump = pump
+        cfg.hardware.backend = backend
         scene.setdefault("type", "blank")
         scene.setdefault("overlays", [{"type": "big_text", "messages": [{"text": "HI"}]}])
         scene_factory.validate_scene_cfg(SceneCfg(**scene), cfg, audio_enabled=audio_enabled)
@@ -237,6 +238,11 @@ class BigTextReuPumpRefusalTest(unittest.TestCase):
 
     def test_pump_off_is_allowed(self):
         self._validate(pump=False)
+
+    def test_a_backend_with_no_reu_is_allowed(self):
+        # The TeensyROM has no REU, so the pump is coerced off once the backend
+        # connects — after validate_configs has already run this check.
+        self._validate(backend="teensyrom")
 
     def test_audio_off_is_allowed(self):
         self._validate(audio_enabled=False)

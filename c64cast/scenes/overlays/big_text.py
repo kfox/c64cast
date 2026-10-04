@@ -82,6 +82,10 @@ assert IRQ_HANDLER_ADDR + len(RASTER_IRQ_HANDLER) <= SHADOW_D016_ADDR, (
 )
 RASTER_IRQ_LINE = RASTER_VBLANK_LINE  # line 248 — first line past the last badline
 
+# The one display mode big_text paints through the scene's buffers instead of
+# hooking the raster IRQ.
+_BUFFER_MODE = "mcm"
+
 _VALID_ROWS = ("top", "middle", "bottom")
 _VALID_MSG_KEYS = {"text", "color"}
 
@@ -137,9 +141,10 @@ class BigTextOverlay(Overlay):
 
     PAINTS_INTO_BUFFERS = True
     COMPATIBLE_MODES = ("blank", "mcm")
-    # Blank scenes get the shadow-register raster IRQ (_install_raster_irq);
-    # MCM writes through the scene's buffers and hooks nothing.
-    HOOKS_IRQ_ON_MODES = ("blank",)
+    # MCM writes through the scene's buffers and hooks nothing; every other
+    # mode gets the shadow-register raster IRQ (_install_raster_irq). setup()
+    # and teardown() decide by the same rule, through _scene_is_mcm.
+    HOOKS_IRQ_ON_MODES = tuple(m for m in COMPATIBLE_MODES if m != _BUFFER_MODE)
     HELP = "Demo-scene 8×-scaled horizontally-scrolling big text (blank/mcm only)."
     PARAM_HELP = {
         "messages": "List of message strings (or {text, color} tables) to scroll.",
@@ -242,7 +247,7 @@ class BigTextOverlay(Overlay):
 
     @staticmethod
     def _scene_is_mcm(scene) -> bool:
-        return getattr(scene.display_mode, "name", "") == "mcm"
+        return getattr(scene.display_mode, "name", "") == _BUFFER_MODE
 
     def _glyph_bits(self, msg_idx: int) -> np.ndarray:
         """(8, n*8) bool array of every source pixel in the message,

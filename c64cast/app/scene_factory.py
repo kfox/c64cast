@@ -43,6 +43,7 @@ from c64cast.audio.audio_source import (
 )
 from c64cast.audio.dac_curves import DAC_CURVE_CHOICES
 from c64cast.audio.sampler import UltimateAudioSampler
+from c64cast.hw.backend import BASE_PROFILES
 from c64cast.hw.c64 import SCREEN, VIC_BANK_0, nmi_rate_safety
 from c64cast.hw.machine_input import JOYSTICK_INPUTS, is_joystick_port
 from c64cast.scenes import scenes as _scenes
@@ -1996,6 +1997,11 @@ def reject_irq_hook_conflict(
     if mode_name not in overlay.HOOKS_IRQ_ON_MODES:
         return
     if not (cfg.audio.use_reu_pump and audio_enabled):
+        return
+    # A backend with no REU has the pump coerced off once it connects, which is
+    # after this check runs. An unknown token keeps the refusal.
+    profile = BASE_PROFILES.get(cfg.hardware.backend)
+    if profile is not None and not profile.supports_reu:
         return
     if s.type not in _AUDIO_SCENE_TYPES or s.audio is False:
         return
