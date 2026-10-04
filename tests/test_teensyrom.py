@@ -362,6 +362,7 @@ class SlicingBackendTest(unittest.TestCase):
             dma_slice_bytes=slice_bytes,
             dma_slice_gap_us=40,
         )
+        self.connect_sent = bytes(t.sent)
         t.sent.clear()
         return b, t
 
@@ -458,6 +459,7 @@ class SlicingBackendTest(unittest.TestCase):
 
     def test_off_never_probes(self):
         b, t = self._backend("off")
+        self.assertNotIn(_SPANS_TOK, self.connect_sent)
         b.note_nmi_consumer(True)
         self.assertTrue(self._write(b, t, "4000", 256, 1).startswith(_MEM_TOK))
 
@@ -499,6 +501,11 @@ class SlicingBackendTest(unittest.TestCase):
 
 
 class SlicingConfigTest(unittest.TestCase):
+    def test_slicing_is_off_by_default(self):
+        # Sliced bitmap video drops frames that are on screen only briefly,
+        # so a TR+ has to opt in.
+        self.assertEqual(cfgmod.Config().teensyrom.dma_slicing, "off")
+
     def test_slice_fields_are_bounded_to_a_header_byte(self):
         for name in ("dma_slice_bytes", "dma_slice_gap_us"):
             for bad in (-1, 256, True, 3.0):

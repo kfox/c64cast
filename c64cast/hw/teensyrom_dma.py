@@ -8,11 +8,13 @@ command, and every command is acknowledged (`AckToken 0x64CC` / `FailToken
 0x9B7F`). c64cast uses this subset:
 
   * **WriteC64Mem `0x64FB`** — sequential DMA write into C64 address space.
-    The hot path on firmware without WriteC64Spans.
+    The hot path, and the only one unless `[teensyrom].dma_slicing` turns
+    slicing on.
   * **WriteC64Spans `0x64FC`** — up to 64 spans in one command, DMA'd in
     slices of at most `slice_bytes` with the 6510 running for `gap_us` between
     them, so no single halt outlasts what an NMI or raster IRQ can absorb.
-    TR+ firmware v0.9+; `probe_spans` detects it at connect.
+    TR+ firmware v0.9+; `probe_spans` detects it at connect unless
+    `[teensyrom].dma_slicing` is `off`, the default.
   * **ReadC64Mem `0x64FD`** — sequential DMA read back (addr + len -> ack ->
     `len` data bytes). Backs `read_memory`. Added in the same cycle-clean
     firmware that made WriteC64Mem safe over a running interpreter (TR+ fw

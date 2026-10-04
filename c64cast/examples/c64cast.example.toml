@@ -139,12 +139,13 @@ baud = 2000000                      # 2 Mbaud 8N1 (TR uses full USB bandwidth)
 host = "192.168.2.66"               # TR IP (required for tcp; via CCGMS "ATC")
 tcp_port = 2112                     # TR TCP listener port (firmware default)
 storage = "sd"                      # "sd" | "usb" — where helper PRGs upload to
-dma_slicing = "auto"                # "auto" | "on" | "off" — WriteC64Spans
+dma_slicing = "off"                 # "off" | "auto" | "on" — WriteC64Spans
                                     #   (TR+ fw v0.9+): DMA large writes in
                                     #   slices so the DAC's NMI sample player
                                     #   keeps its timing. Sliced only while
                                     #   DAC audio plays; "auto" uses it when
-                                    #   the firmware has it, "off" never
+                                    #   the firmware has it. Off by default:
+                                    #   bitmap video drops short frames
 dma_slice_bytes = 32                # largest single DMA halt (0-255; 0 = 1 KiB)
 dma_slice_gap_us = 40               # 6510 run time between slices (0-255 us)
 
