@@ -128,9 +128,15 @@ class DerivedFromTheCameraTest(AudioDeviceTestCase):
             self.assert_refuses("sd", _MIC, "Cam Link 4K")
 
     def test_ffmpeg_that_cannot_list_refuses(self) -> None:
-        with patch.object(subprocess, "run", side_effect=OSError("no ffmpeg")):
-            message = self.assert_refuses("avf")
-        self.assertIn("C64_DIAG_AVF_AUDIO", message)
+        """A named input is checked against ffmpeg's list too, so naming one
+        is no way around an ffmpeg that cannot list, and the message says so."""
+        for spec in (None, ":2"):
+            with (
+                self.subTest(spec=spec),
+                patch.object(subprocess, "run", side_effect=OSError("no ffmpeg")),
+            ):
+                message = self.assert_refuses("avf", "no ffmpeg", spec=spec)
+                self.assertIn("ffmpeg has to run first", message)
 
 
 class TwoSticksTest(AudioDeviceTestCase):

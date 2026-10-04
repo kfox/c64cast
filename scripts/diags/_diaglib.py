@@ -405,8 +405,8 @@ def avf_audio_inputs() -> list[AudioInput]:
         )
     except (OSError, subprocess.SubprocessError) as e:
         raise SystemExit(
-            f"could not list the avfoundation audio inputs with ffmpeg ({e}); name one "
-            f"with --avf-audio or ${AUDIO_ENV['avf']}"
+            f"could not list the avfoundation audio inputs with ffmpeg ({e}); a named "
+            "input is checked against that list too, so ffmpeg has to run first"
         ) from e
     inputs: list[AudioInput] = []
     audio = False

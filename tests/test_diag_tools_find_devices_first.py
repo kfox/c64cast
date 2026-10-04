@@ -169,6 +169,22 @@ class FindAudioBeforeBootTest(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertEqual(self.run_tool(name, *argv), ["audio"])
 
+    def test_analyze_only_needs_no_audio_input(self) -> None:
+        """``--analyze-only`` reads a WAV already on disk, so it runs with no
+        audio input connected."""
+        wav = _temp_file(".wav")
+        for name in ("capture_fidelity_probe", "nmi_pitch_ab"):
+            with self.subTest(tool=name):
+                tool = _load_tool(name)
+                with (
+                    patch.object(sys, "argv", [f"{name}.py", "--analyze-only", wav]),
+                    patch.object(tool.d, "resolve_audio_input") as resolve,
+                    patch.object(tool, "analyze") as analyze,
+                ):
+                    self.assertEqual(tool.main(), 0)
+                resolve.assert_not_called()
+                analyze.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

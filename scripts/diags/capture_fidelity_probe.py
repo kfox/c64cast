@@ -197,11 +197,12 @@ def main() -> int:
     ap.add_argument("--no-reset", action="store_true", help="leave the machine running")
     ap.add_argument("--analyze-only", metavar="WAV", help="skip playback; analyze an existing wav")
     args = ap.parse_args()
-    args.avf_audio = str(d.resolve_audio_input("avf", args.avf_audio).device)
 
     if args.analyze_only:
         analyze(args.analyze_only, args.seconds)
         return 0
+
+    args.avf_audio = str(d.resolve_audio_input("avf", args.avf_audio).device)
 
     out = d.out_dir()
     print(f"generating {args.seconds}s click train (1.000 s spacing) ...")
