@@ -113,7 +113,8 @@ def _is_checked(module: str) -> bool:
 
 def _unresolved(path: Path) -> list[str]:
     """Each import in ``path`` naming something its source no longer defines,
-    plus each ``alias.attr`` read through a checked module alias that misses."""
+    plus each dotted read through a checked module alias (``d.X``,
+    ``c64cast.hw.api.X``) that misses."""
     tree = _parse(path)
     missing: list[str] = []
     aliases: dict[str, str] = {}
@@ -124,8 +125,10 @@ def _unresolved(path: Path) -> list[str]:
                     continue
                 if _local_stem(alias.name) is None:
                     importlib.import_module(alias.name)
-                if alias.asname or "." not in alias.name:
-                    aliases[alias.asname or alias.name] = alias.name
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+                elif _is_checked(root := alias.name.split(".")[0]):
+                    aliases[root] = root
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             if not _is_checked(node.module):
                 continue
@@ -138,15 +141,33 @@ def _unresolved(path: Path) -> list[str]:
                 submodule = _submodule(node.module, alias.name)
                 if submodule is not None:
                     aliases[alias.asname or alias.name] = submodule
+    inner = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id in aliases
-            and not _resolves(aliases[node.value.id], node.attr)
-        ):
-            missing.append(f"line {node.lineno}: {node.value.id}.{node.attr}")
+        if isinstance(node, ast.Attribute) and id(node) not in inner:
+            miss = _unresolved_read(node, aliases)
+            if miss is not None:
+                missing.append(f"line {node.lineno}: {miss}")
     return missing
+
+
+def _unresolved_read(node: ast.Attribute, aliases: dict[str, str]) -> str | None:
+    """The first prefix of the dotted read ``node`` that misses, walking
+    ``a.b.c`` through each checked module it passes, or None."""
+    attrs: list[str] = []
+    base: ast.expr = node
+    while isinstance(base, ast.Attribute):
+        attrs.insert(0, base.attr)
+        base = base.value
+    if not isinstance(base, ast.Name) or base.id not in aliases:
+        return None
+    module: str | None = aliases[base.id]
+    for depth, attr in enumerate(attrs):
+        if module is None:
+            return None
+        if not _resolves(module, attr):
+            return ".".join([base.id, *attrs[: depth + 1]])
+        module = _submodule(module, attr)
+    return None
 
 
 class DiagImportsResolveTests(unittest.TestCase):
@@ -183,6 +204,23 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
         missing = self._check("import _diaglib as d\nd.no_such_helper()\n")
         self.assertEqual(missing, ["line 2: d.no_such_helper"])
 
+    def test_a_missing_name_read_through_a_dotted_module_path_is_reported(self):
+        missing = self._check(
+            "import c64cast.hw.api\n"
+            "from c64cast import hw\n"
+            "c64cast.hw.api.NO_SUCH_NAME\n"
+            "hw.api.NO_SUCH_NAME\n"
+            "c64cast.hw.no_such_module.X\n"
+        )
+        self.assertEqual(
+            missing,
+            [
+                "line 3: c64cast.hw.api.NO_SUCH_NAME",
+                "line 4: hw.api.NO_SUCH_NAME",
+                "line 5: c64cast.hw.no_such_module",
+            ],
+        )
+
     def test_a_missing_name_from_a_sibling_tool_is_reported(self):
         missing = self._check("from ring_race_probe import no_such_name\n")
         self.assertEqual(missing, ["line 1: from ring_race_probe import no_such_name"])
@@ -192,7 +230,9 @@ class UnresolvedImportDetectionTests(unittest.TestCase):
             "import _diaglib as d\n"
             "from c64cast.hw.c64 import CIA1\n"
             "from c64cast.audio import audio_handlers\n"
+            "import c64cast.hw.api\n"
             "print(d.U64_URL, CIA1.TIMER_A_LO, audio_handlers.REU_PUMP_CIA1_LATCH_8KHZ)\n"
+            "print(c64cast.hw.api.Ultimate64API)\n"
         )
         self.assertEqual(missing, [])
 
