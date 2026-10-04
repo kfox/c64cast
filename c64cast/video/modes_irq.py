@@ -22,7 +22,7 @@ import logging
 from collections.abc import Callable
 
 from c64cast._teardown import run_teardown_steps
-from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR, REU_PUMP_HANDLER_ADDR
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -368,7 +368,7 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # REC ($DF02-$DF08) use before returning. The audio handler at $C100 stays
 # byte-for-byte identical (audio_handlers.py owns its bytes; this side only
 # routes execution there).
-AUDIO_HANDLER_INSTALL_ADDR = 0xC100  # where audio.AudioStreamer uploads its REU pump
+AUDIO_HANDLER_INSTALL_ADDR = REU_PUMP_HANDLER_ADDR  # where audio.AudioStreamer uploads its REU pump
 AUDIO_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])  # JMP $EA31
 # What $C180 holds until the audio pump uploads its body there: the chunked
 # mhires dispatcher JSRs $C180 itself, so without it the first CIA #1 tick that
