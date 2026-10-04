@@ -45,6 +45,9 @@ class LockKeyTest(unittest.TestCase):
     def test_a_url_without_a_host_keys_on_the_whole_string(self) -> None:
         self.assertEqual(hw_lock.lock_key("tr:///dev/cu.usbmodem1"), "tr_dev_cu.usbmodem1")
 
+    def test_a_malformed_url_keys_on_the_whole_string(self) -> None:
+        self.assertEqual(hw_lock.lock_key("http://[bad"), "http_bad")
+
     def test_lock_dir_override(self) -> None:
         with patch.dict(os.environ, {"C64_DIAG_LOCK_DIR": "/x/locks"}):
             self.assertEqual(hw_lock.lock_path("u64://Host"), Path("/x/locks/host.lock"))
@@ -88,6 +91,11 @@ class RunUnderLockTest(unittest.TestCase):
         result = self._run(str(self.tmp / "no-such-command"))
         self.assertEqual(result.returncode, 127)
         self.assertIn("cannot run", result.stderr)
+
+    def test_a_nested_call_for_the_same_device_runs_without_waiting(self) -> None:
+        result = self._run(sys.executable, str(_SCRIPT), sys.executable, "-c", "pass")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("waiting", result.stderr)
 
     def test_waits_for_the_holder_and_not_for_another_device(self) -> None:
         import fcntl

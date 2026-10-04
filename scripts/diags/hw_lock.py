@@ -8,14 +8,18 @@ take turns instead:
 
     scripts/diags/hw_lock.py scripts/diags/u64_probe.py --reset
     scripts/diags/hw_lock.py uv run python -m c64cast -u u64://192.168.2.64
-    scripts/diags/hw_lock.py --device u64://192.168.2.65 scripts/diags/hdmi_capture.py
+    scripts/diags/hw_lock.py --device u64://192.168.2.65 uv run scripts/diags/hdmi_capture.py
 
 It blocks until the lock is free, saying on stderr who holds it and how long
 the wait took, then *becomes* the command (exec), so the command's exit code,
 signals and terminal are its own and Ctrl-C reaches it directly. The command
-inherits the lock and holds it until it and every child it started have exited.
-The kernel drops the lock when the holder dies, so a killed run leaves no stale
-lock behind.
+inherits the lock's descriptor, and the lock is held until every process that
+still has that descriptor open has exited; a child started with its descriptors
+closed (Python's ``subprocess`` default) does not hold it. The kernel drops the
+lock when the holder dies, so a killed run leaves no stale lock behind.
+
+A command run under the lock may itself call this tool for the same device: the
+lock is already its own, so that inner call runs its command without waiting.
 
 ``--device`` picks which lock: a URL keys on its host, so ``u64://HOST`` and
 ``http://HOST`` share one, and anything else is used as given. Every command on
@@ -38,6 +42,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_DEVICE = "default"
+HELD_ENV = "C64_DIAG_LOCK_HELD"
 
 
 def lock_dir() -> Path:
@@ -50,13 +55,28 @@ def lock_dir() -> Path:
 
 def lock_key(device: str) -> str:
     """The file-name-safe key for ``device``: a URL's host, else the string."""
-    host = urlsplit(device).hostname if "://" in device else None
+    try:
+        host = urlsplit(device).hostname if "://" in device else None
+    except ValueError:
+        host = None
     key = re.sub(r"[^A-Za-z0-9._-]+", "_", (host or device).lower()).strip("_")
     return key or DEFAULT_DEVICE
 
 
 def lock_path(device: str) -> Path:
     return lock_dir() / f"{lock_key(device)}.lock"
+
+
+def _held_by_an_ancestor(path: Path) -> bool:
+    return str(path) in os.environ.get(HELD_ENV, "").split(os.pathsep)
+
+
+def _exec(command: list[str]) -> int:
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        print(f"hw_lock: cannot run {command[0]!r}: {exc}", file=sys.stderr)
+    return 127
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,9 +109,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if _held_by_an_ancestor(path):
+            os.close(fd)
+            return _exec(command)
         holder = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip() or "unknown"
         print(f"hw_lock: waiting for {path} (held by pid {holder})", file=sys.stderr, flush=True)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except KeyboardInterrupt:
+            print("hw_lock: interrupted while waiting; command not run", file=sys.stderr)
+            return 130
         print(
             f"hw_lock: acquired {path} after {time.monotonic() - started:.0f}s",
             file=sys.stderr,
@@ -101,11 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     os.ftruncate(fd, 0)
     os.pwrite(fd, f"{os.getpid()}: {shlex.join(command)}\n".encode(), 0)
     os.set_inheritable(fd, True)
-    try:
-        os.execvp(command[0], command)
-    except OSError as exc:
-        print(f"hw_lock: cannot run {command[0]!r}: {exc}", file=sys.stderr)
-        return 127
+    if not _held_by_an_ancestor(path):
+        os.environ[HELD_ENV] = os.pathsep.join(filter(None, [os.environ.get(HELD_ENV), str(path)]))
+    return _exec(command)
 
 
 if __name__ == "__main__":

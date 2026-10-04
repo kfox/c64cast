@@ -29,7 +29,7 @@ Improve these rather than writing throwaway variants.
 
 Run every command that touches the machine or the capture device under
 [scripts/diags/hw_lock.py](../../../scripts/diags/hw_lock.py)
-(`python3 scripts/diags/hw_lock.py scripts/diags/hdmi_capture.py …`): another
+(`python3 scripts/diags/hw_lock.py uv run scripts/diags/hdmi_capture.py …`): another
 session may be driving the same rig, and the DMA service and the capture device
 each take one user at a time. Keep each locked command short.
 
