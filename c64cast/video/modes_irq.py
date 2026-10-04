@@ -22,7 +22,7 @@ import logging
 from collections.abc import Callable
 
 from c64cast._teardown import run_teardown_steps
-from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR
+from c64cast.audio.audio_handlers import REU_PUMP_BODY_SUBROUTINE_ADDR, REU_PUMP_HANDLER_ADDR
 from c64cast.hw.backend import C64Backend
 from c64cast.hw.c64 import (
     CIA1,
@@ -359,7 +359,7 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 #
 # The bank-swap handler at $C500 chains to $EA31 on non-raster IRQs (CIA #1
 # jiffy). When the scene ALSO opted into REU audio, the audio pump handler at
-# $C100 (REU_IRQ_HANDLER_TRACKED for video, REU_MIC_IRQ_HANDLER for mic) wants
+# $C100 (REU_IRQ_HANDLER_TRACKED, for both the video and the mic pump) wants
 # every CIA #1 IRQ to run its REU→ring drain, and the two cannot both own $0314.
 #
 # The merge resolves that by appending `JMP $C100` to the bank-swap handler and
@@ -369,8 +369,12 @@ MHIRES_TRACKER_OFF_READY_FLAG = 23  # 1 byte
 # REC ($DF02-$DF08) use before returning. The audio handler at $C100 stays
 # byte-for-byte identical (audio_handlers.py owns its bytes; this side only
 # routes execution there).
-AUDIO_HANDLER_INSTALL_ADDR = 0xC100  # where audio.AudioStreamer uploads its REU pump
+AUDIO_HANDLER_INSTALL_ADDR = REU_PUMP_HANDLER_ADDR  # where audio.AudioStreamer uploads its REU pump
 AUDIO_HANDLER_STUB = bytes([0x4C, 0x31, 0xEA])  # JMP $EA31
+# What $C180 holds until the audio pump uploads its body there: the chunked
+# mhires dispatcher JSRs $C180 itself, so without it the first CIA #1 tick that
+# latches during a REC family calls whatever an earlier scene or power-on left.
+PUMP_BODY_STUB = bytes([0x60])  # RTS
 
 
 def _make_merged_handler(base: bytes, audio_jmp_target: int = AUDIO_HANDLER_INSTALL_ADDR) -> bytes:
@@ -985,12 +989,9 @@ assert len(FLICKER_SWAP_IRQ_HANDLER) == 63, (
 DD00_BANK_0 = CIA2.PORT_A_BANK_0  # $97
 DD00_BANK_2 = CIA2.PORT_A_BANK_2  # $95
 
-# CIA #1 ICR control words for raster-IRQ bring-up / teardown.
-# CIA1_ICR_DISABLE_TIMER_A clears bit 0 of the ICR; CIA1_ICR_ENABLE_TIMER_A
-# re-arms it (high bit = 1 = set bits, plus bit 0 = timer A IRQ source).
-# Mirrors the audio.py CIA #2 disable/enable pattern but on CIA #1.
-_CIA1_ICR_DISABLE_TIMER_A = 0x7F
-_CIA1_ICR_ENABLE_TIMER_A = 0x81
+# CIA #1 ICR control words for raster-IRQ bring-up / teardown (see CIA1).
+_CIA1_ICR_DISABLE_TIMER_A = CIA1.ICR_DISABLE_ALL
+_CIA1_ICR_ENABLE_TIMER_A = CIA1.ICR_ENABLE_TIMER_A
 
 
 def install_bank_swap_irq(
@@ -1014,10 +1015,13 @@ def install_bank_swap_irq(
     be a merged dispatcher (BANK_SWAP_PLUS_AUDIO_IRQ_HANDLER or the
     mhires equivalent) whose non-raster branch JMPs to $C100 where the
     audio pump handler lives. We pre-upload a 3-byte JMP $EA31 stub at
-    $C100 BEFORE hooking $0314 so the gap between this install completing
-    (CIA #1 IRQ re-enabled at the end) and audio.start_for_reu_staged
-    populating the real handler bytes is covered by a safe fall-through
-    instead of a JMP into uninitialized RAM.
+    $C100 and a lone RTS at $C180 (the pump-body subroutine the chunked
+    mhires dispatcher JSRs) BEFORE hooking $0314, so the gap between this
+    install completing (CIA #1 IRQ re-enabled at the end) and the audio
+    streamer uploading the real pump is covered by a safe fall-through
+    instead of a jump into uninitialized RAM or a previous scene's pump.
+    Nothing else replaces those stubs: a scene whose audio never starts
+    keeps them, and its CIA #1 ticks reach the kernal and pump nothing.
 
     Order matters: with both raster and CIA #1 sources masked, hook $0314,
     program the raster compare line, ack any pending raster IRQ, then
@@ -1026,10 +1030,11 @@ def install_bank_swap_irq(
     half-installed handler. Same sequence as
     [overlays/big_text.py:_install_raster_irq]."""
     if audio_pump_active:
-        # The stub must be in place before CIA #1 is re-enabled at the end of
-        # this function. Uploading it before any other write means any IRQ source
-        # firing during the install sees a safe $C100, even if a future edit
-        # reorders the writes below.
+        # The stubs must be in place before CIA #1 is re-enabled at the end of
+        # this function. Uploading them before any other write means any IRQ
+        # source firing during the install sees a safe $C100 and $C180, even if
+        # a future edit reorders the writes below.
+        api.write_memory_file(f"{REU_PUMP_BODY_SUBROUTINE_ADDR:04X}", PUMP_BODY_STUB)
         api.write_memory_file(f"{AUDIO_HANDLER_INSTALL_ADDR:04X}", AUDIO_HANDLER_STUB)
     api.write_memory_file(f"{BANK_SWAP_IRQ_HANDLER_ADDR:04X}", handler_bytes)
     # Ready flag (last byte) = 0, so the first IRQ after install skips the DMA

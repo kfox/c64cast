@@ -14,9 +14,9 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
-from _fakes import FakeAPI, new_streamer, run_irq_handler
+from _fakes import FakeAPI, lose_writes_to, new_streamer, quiet_logging, run_irq_handler
 
-from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     CIA_TIMER_LATCH_MAX,
     HOST_DMA_SERVO_INTEG_CLAMP,
@@ -1309,3 +1309,62 @@ class ReuPreencodeDitherTest(unittest.TestCase):
 
     def test_different_seeds_differ(self):
         self.assertNotEqual(self._staged(4242), self._staged(9001))
+
+
+class TrackedVideoPumpInstallFailureTest(unittest.TestCase):
+    """The tracked video pump shares _install_tracked_pump with the mic pump
+    (tested in test_reu_mic.TrackedPumpDeliveryTest). When a stage never
+    confirms, start_for_reu_staged undoes its bring-up and raises, and
+    VideoScene plays the run without audio instead of letting the exception
+    reach the playlist."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.clip = os.path.join(self.tmp.name, "clip.mp4")
+        open(self.clip, "wb").close()
+
+    @staticmethod
+    def _lossy_streamer() -> AudioStreamer:
+        s = _new_streamer()
+        lose_writes_to(cast(FakeAPI, s.api), REU_AUDIO_SRC_TRACKER_ADDR)
+        return s
+
+    def test_start_raises_with_nothing_armed(self):
+        s = self._lossy_streamer()
+        fake = cast(FakeAPI, s.api)
+        with (
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+            self.assertRaises(PumpInstallError),
+        ):
+            s.start_for_reu_staged(b"\x07" * RING_BUFFER_SIZE, skip_irq_vector_hook=True)
+        self.assertFalse(s._reu_pump_armed)
+        self.assertFalse(s.running)
+        self.assertFalse(any(o[:2] == ("write_memory_file", "C100") for o in fake.ops))
+        self.assertEqual(fake.memories["C180"], "60")
+        self.assertEqual(fake.regs["DD0D"][0], 0x7F)
+
+    def test_video_scene_plays_the_run_without_audio(self):
+        s = self._lossy_streamer()
+        mode = MagicMock(
+            audio_reu_pump_active=True, use_reu_staged=True, drives_rec_from_host=False
+        )
+        scene = VideoScene(MagicMock(), s, mode, self.clip, setup_progress=False)
+        source = MagicMock(a_stream=object())
+        with (
+            mock.patch("c64cast.scenes.scenes.ensure_pyav", return_value=True),
+            mock.patch("c64cast.scenes.scenes.AVFileSource", return_value=source),
+            mock.patch.object(VideoScene, "_preencode_audio_for_reu", return_value=b"\x07" * 4096),
+            self.assertLogs("c64cast.audio.audio", level="ERROR"),
+        ):
+            scene.setup()
+        self.assertIsNone(scene.audio)
+        source.start.assert_called_once_with(audio_push=None)
+        # The transport clocks off the wall rather than a pump that never armed.
+        scene.wall_start_time = 100.0
+        with mock.patch("c64cast.scenes.video_transport.time.time", return_value=103.0):
+            self.assertAlmostEqual(scene.transport.clock_s(), 3.0)
+        # Teardown hands the streamer back for the next run.
+        with quiet_logging():
+            scene.teardown()
+        self.assertIs(scene.audio, s)

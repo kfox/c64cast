@@ -115,6 +115,12 @@ class CIA1:
     TIMER_A_LO: Final = 0xDC04
     TIMER_A_HI: Final = 0xDC05
     ICR: Final = 0xDC0D
+    # ICR control words: bit 7 = 0 clears the mask bits set in 0-6, so $7F
+    # masks every source; bit 7 = 1 sets them, so $81 re-arms Timer A only.
+    # Masking stops the IRQ, not the underflow flag: it still latches, and the
+    # kernal tail's (or a dispatcher's) $DC0D read still sees it.
+    ICR_DISABLE_ALL: Final = 0x7F
+    ICR_ENABLE_TIMER_A: Final = 0x81
 
 
 class CIA2:

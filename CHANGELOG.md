@@ -275,6 +275,29 @@ in practice not read at all. Releases that ask nothing of anyone leave it out.
   `webcam` scene in an ensemble (which holds no audio). `big_text` on
   `mcm` hooks no interrupt and is unaffected.
 
+- **Mic and webcam audio through the REU pump now plays under `mhires`
+  and `hires` REU-staged video (#551).** With `[audio].use_reu_pump` on a
+  mic or webcam scene whose display used REU staging, the C64 could crash
+  into silence on the first scene of a run, and after an REU video scene it
+  ran the earlier scene's pump instead of its own, which garbled the mic
+  audio after about 20 seconds and made the run log phantom SHIFT presses.
+  The mic pump now uses the same main-RAM address trackers
+  as the video pump, and the REU video setup parks a safe return where the
+  pump will go. Measured on an Ultimate 64 with firmware 3.15a.
+  Each step of the pump install is now confirmed delivered before the next one
+  starts. If a step still has not landed after three tries, the scene logs an
+  error and plays without audio. Before, the pump started anyway, and on
+  addresses it had never been given it could overwrite C64 memory.
+
+- **An ensemble reload keeps the settings a system inherits from the master.**
+  A reload (SIGHUP, `POST /reload`, or the console's reload button) rebuilt each
+  system from its own file and the command line only, so anything it took from
+  the master alone — `[playlist]`, `[interstitial]`, `[color]` and the rest of
+  the cascade — went back to its default. A reload now composes each system
+  exactly as startup does. On a TeensyROM, an explicit
+  `[video].use_reu_staged = true` also stays off after a reload, as it is at
+  startup, rather than reaching an REU the backend does not have.
+
 - **`[video].use_reu_staged = true` on a petscii or blank scene no longer
   corrupts the picture and the REU audio pump when `[audio].use_reu_pump` is
   on.** The screen push and the pump both drive the REU controller, and the

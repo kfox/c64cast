@@ -25,7 +25,7 @@ from c64cast._pollthread import PollThread
 from c64cast._teardown import run_teardown_steps
 from c64cast._transport_log import quiet_transport
 from c64cast.app.profiler import get_profiler
-from c64cast.audio.audio import AudioStreamer
+from c64cast.audio.audio import AudioStreamer, PumpInstallError
 from c64cast.audio.audio_handlers import (
     INT16_FULL_SCALE,
     REU_PUMP_CHUNK_SIZE_HEAVY_BUS,
@@ -1216,6 +1216,10 @@ class VideoScene(MediaFileMixin, Scene):
         self.filepath = candidates[0]
         self.source: AVFileSource | None = None
         self.wall_start_time = 0.0
+        # The scene's audio, set aside for one run whose REU pump install failed
+        # (setup) so the transport clocks off the wall instead of a pump that
+        # never armed; teardown puts it back for the next run.
+        self._audio_set_aside: SceneAudio | None = None
         # The resolved URL's yt-dlp attribution (None for a local file). Set
         # post-construction by scene_factory._build_video; read by
         # recording_metadata._video_source, nowhere in playback itself.
@@ -1456,12 +1460,18 @@ class VideoScene(MediaFileMixin, Scene):
             # and its installer has already pre-uploaded a JMP $EA31 stub at
             # $C100 covering the gap until real audio bytes land there.
             skip_hook = reu_pump_skips_irq_hook(self.display_mode)
-            self.audio.start_for_reu_staged(
-                audio_4bit,
-                chunk_size=chunk,
-                skip_irq_vector_hook=skip_hook,
-                on_progress=progress.reporter("upload"),
-            )
+            try:
+                self.audio.start_for_reu_staged(
+                    audio_4bit,
+                    chunk_size=chunk,
+                    skip_irq_vector_hook=skip_hook,
+                    on_progress=progress.reporter("upload"),
+                )
+            except PumpInstallError:
+                # The streamer logged it and undid its bring-up. Without this the
+                # transport would clock off a pump that never armed and hold the
+                # picture on its first frame.
+                self._audio_set_aside, self.audio = self.audio, None
             self.source.start(audio_push=None)
         elif has_audio:
             assert isinstance(self.audio, AudioStreamer)
@@ -1710,6 +1720,8 @@ class VideoScene(MediaFileMixin, Scene):
 
     def teardown(self) -> None:
         src, self.source = self.source, None
+        if self._audio_set_aside is not None:
+            self.audio, self._audio_set_aside = self._audio_set_aside, None
         steps: list[tuple[str, Callable[[], object]]] = [
             ("base teardown", super().teardown),
             # Idempotent, so a scene interrupted mid-record never leaves a red

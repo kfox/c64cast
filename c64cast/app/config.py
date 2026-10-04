@@ -4201,6 +4201,74 @@ def resolve_recording_path(
     return f"{stem}-{system_name}{ext}"
 
 
+@dataclass(frozen=True)
+class MasterCascade:
+    """An ensemble master's cascade inputs, as :func:`load_master` applied them.
+
+    `defaults` is the master Config (defaults -> machine settings -> master
+    TOML) and `baseline` the machine-overlaid "unset" reference
+    :func:`apply_master_defaults` measures each system against. Kept on
+    :class:`LoadResult` so a reload composes a system's Config through the same
+    :func:`load_system` call startup did. Neither is re-read on reload: the
+    master is fixed for the life of the session.
+
+    `defaults` is a private snapshot taken before :func:`load_master` folds the
+    env credentials into the process-wide sections, so the cascade a reload
+    applies is the one startup applied."""
+
+    defaults: Config
+    baseline: Config
+
+
+def load_system(
+    path: str | None, cascade: MasterCascade | None, unknown: list[UnknownKey] | None = None
+) -> Config:
+    """One system's Config from its file layers: defaults -> machine settings
+    -> the system TOML -> the master cascade (when `cascade` is given).
+
+    The single composition both startup (:func:`load_master`) and a reload
+    (:func:`compose_system`) go through, so the two cannot drift."""
+    cfg = load(path, unknown)
+    if cascade is not None:
+        apply_master_defaults(cascade.defaults, cfg, baseline=cascade.baseline)
+        # Per-system Configs never carry ensemble metadata themselves — only the
+        # master TOML does.
+        cfg.ensemble = None
+    return cfg
+
+
+def apply_cli_layers(cfg: Config, args: argparse.Namespace, *, is_ensemble: bool) -> Config:
+    """The run's top layers, in place: CLI flags and env (:func:`merge_cli`),
+    then — single-system only — the scheme-aware ``-u/--url`` /
+    ``$C64CAST_URL`` connection target.
+
+    Ensemble systems keep their TOML identity; ``cli._resolve_configs`` rejects
+    a CLI target for them before this runs."""
+    merge_cli(cfg, args)
+    if is_ensemble:
+        return cfg
+    url = getattr(args, "url", None)
+    target = url or os.environ.get("C64CAST_URL")
+    if target:
+        from .connect import apply_to_config, parse_connection_uri
+
+        log.info("connection target: %s (from %s)", target, "-u/--url" if url else "$C64CAST_URL")
+        apply_to_config(cfg, parse_connection_uri(target))
+    return cfg
+
+
+def compose_system(loaded: LoadResult, index: int, args: argparse.Namespace) -> Config:
+    """Rebuild system `index` of a running session's Config from disk, through
+    the same layers startup used: :func:`load_system` with the master cascade
+    kept on `loaded`, then :func:`apply_cli_layers`.
+
+    The hardware-dependent coercions (``session._coerce_reu_for_backend``) and
+    the pin to the running audio streamer are the caller's, because they need
+    the stack."""
+    cfg = load_system(loaded.paths[index], loaded.cascade)
+    return apply_cli_layers(cfg, args, is_ensemble=loaded.is_ensemble)
+
+
 @dataclass
 class LoadResult:
     """Wrapped return type of load_master().
@@ -4223,7 +4291,10 @@ class LoadResult:
 
     `unknown_keys` carries every stray TOML key found across all layers
     (machine settings, master, per-system) so `--doctor` can report them as
-    CONFIG rows; a normal run logs them instead (see cli._log_unknown_keys)."""
+    CONFIG rows; a normal run logs them instead (see cli._log_unknown_keys).
+
+    `cascade` is the ensemble master's :class:`MasterCascade`, which a reload
+    re-applies (:func:`compose_system`); None outside ensemble mode."""
 
     cfgs: list[Config]
     names: list[str]
@@ -4233,6 +4304,7 @@ class LoadResult:
     master_midi_control: MidiControlCfg
     master_web: WebCfg = field(default_factory=WebCfg)
     unknown_keys: list[UnknownKey] = field(default_factory=list)
+    cascade: MasterCascade | None = None
 
 
 def load_master(path: str | None) -> LoadResult:
@@ -4322,8 +4394,9 @@ def load_master(path: str | None) -> LoadResult:
     # The "unset" baseline for the per-system cascade is a machine-overlaid
     # Config (not a blank one): a field coming only from the machine layer must
     # still be treated as "this system didn't set it" so the master TOML can
-    # override it — machine < master < per-system. Built once, reused per system.
-    cascade_baseline = machine_baseline(unknown)
+    # override it — machine < master < per-system. Built once, reused per system
+    # and by every reload.
+    cascade = MasterCascade(defaults=copy.deepcopy(defaults), baseline=machine_baseline(unknown))
 
     master_dir = os.path.dirname(os.path.abspath(path))
     cfgs: list[Config] = []
@@ -4332,12 +4405,7 @@ def load_master(path: str | None) -> LoadResult:
         sub_path = entry.config
         if not os.path.isabs(sub_path):
             sub_path = os.path.join(master_dir, sub_path)
-        sys_cfg = load(sub_path, unknown)
-        sys_cfg = apply_master_defaults(defaults, sys_cfg, baseline=cascade_baseline)
-        # Per-system Configs never carry ensemble metadata themselves — only the master TOML
-        # does.
-        sys_cfg.ensemble = None
-        cfgs.append(sys_cfg)
+        cfgs.append(load_system(sub_path, cascade, unknown))
         sys_paths.append(sub_path)
     _warn_audio_only_ensemble(cfgs, [e.name for e in ensemble.systems])
     # The process-wide sections come off `defaults`, which no merge_cli call
@@ -4353,6 +4421,7 @@ def load_master(path: str | None) -> LoadResult:
         master_midi_control=defaults.midi_control,
         master_web=defaults.web,
         unknown_keys=_dedupe_unknown(unknown),
+        cascade=cascade,
     )
 
 
@@ -4482,9 +4551,10 @@ def merge_cli(cfg: Config, args: argparse.Namespace) -> Config:
     the last layer that writes into the Config and every validator until now
     fired at parse time, one layer below.
 
-    Not quite the last word on the *connection*: `cli._resolve_configs` applies
-    the scheme-aware ``-u/--url`` / ``$C64CAST_URL`` target after this, since
-    one string has to be able to pick the backend and the endpoint together."""
+    Not quite the last word on the *connection*: :func:`apply_cli_layers`
+    applies the scheme-aware ``-u/--url`` / ``$C64CAST_URL`` target after this,
+    since one string has to be able to pick the backend and the endpoint
+    together."""
     for dest, (section, key) in CLI_TO_CFG.items():
         if not hasattr(args, dest):
             continue

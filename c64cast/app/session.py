@@ -1230,17 +1230,22 @@ def build_session(
     )
 
 
-def _reload_cfg(st: SystemStack, path: str, args: argparse.Namespace) -> cfgmod.Config:
-    """The Config a reload rebuilds `st`'s scenes from: the system's file plus
-    the CLI, as at startup, with [audio].use_reu_pump pinned to the streamer
-    `st` is already running.
+def _reload_cfg(sess: Session, index: int) -> cfgmod.Config:
+    """The Config a reload rebuilds stack `index`'s scenes from: the system's
+    file composed exactly as at startup (:func:`config.compose_system` — the
+    master cascade included), then fitted to the stack that is already running.
 
-    The file alone can disagree with that streamer: an ensemble master's
-    [audio] cascade and the startup coercions are not re-applied here. A scene
-    resolved against a pump the streamer doesn't run picks REU staging the
-    running pump cannot share (scene_factory.resolve_use_reu_staged)."""
-    cfg = cfgmod.merge_cli(cfgmod.load(path), args)
+    Two things only the running stack can answer. The backend coercion is
+    re-applied, so an explicit `[video].use_reu_staged = true` stays off on a
+    backend with no REU. And `[audio].use_reu_pump` is pinned to the streamer
+    the stack runs, since the streamer was built once at startup and a scene
+    resolved against a pump it doesn't run picks REU staging the running pump
+    cannot share (scene_factory.resolve_use_reu_staged). The pin goes first so
+    the coercion only speaks up about a pump that is actually running."""
+    st = sess.stacks[index]
+    cfg = cfgmod.compose_system(sess.loaded, index, sess.args)
     cfg.audio.use_reu_pump = isinstance(st.audio, AudioStreamer) and st.audio.use_reu_pump
+    _coerce_reu_for_backend(cfg, st.api)
     return cfg
 
 
@@ -1253,13 +1258,16 @@ def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     rather than failing the whole call. Built here rather than inline in
     :func:`start_services` because a long-lived host builds the same two maps
     against whichever session is current, through a provider."""
-    args, loaded, stacks = sess.args, sess.loaded, sess.stacks
-    # Default-arg `st=st, p=p` captures by value; a closure would see only the
-    # last iteration's `st`.
+    loaded, stacks = sess.loaded, sess.stacks
+    reloadable = [
+        (i, st) for i, (st, p) in enumerate(zip(stacks, loaded.paths, strict=True)) if p is not None
+    ]
+    # Default-arg `i=i, st=st` captures by value; a closure would see only the
+    # last iteration's.
     config_loaders = {
         st.name: (
-            lambda st=st, p=p: scene_factory.scenes_from_config(
-                _reload_cfg(st, p, args),
+            lambda i=i, st=st: scene_factory.scenes_from_config(
+                _reload_cfg(sess, i),
                 st.api,
                 st.audio,
                 st.source,
@@ -1268,13 +1276,13 @@ def reload_registries(sess: Session) -> tuple[dict[str, Any], dict[str, Any]]:
                 sampler_available=st.sampler_available,
             )
         )
-        for st, p in zip(stacks, loaded.paths, strict=True)
-        if p is not None
+        for i, st in reloadable
     }
     interstitial_factories = {
-        st.name: (lambda st=st, p=p: interstitial_factory(st.api, cfgmod.load(p).interstitial))
-        for st, p in zip(stacks, loaded.paths, strict=True)
-        if p is not None
+        st.name: (
+            lambda i=i, st=st: interstitial_factory(st.api, _reload_cfg(sess, i).interstitial)
+        )
+        for i, st in reloadable
     }
     return config_loaders, interstitial_factories
 
@@ -1370,20 +1378,24 @@ def run_foreground(sess: Session) -> None:
 def reload_all(sess: Session) -> None:
     """Re-read each system's TOML and hand the playlist a fresh scene list.
 
-    Only [[scenes]] plus `config.RELOADABLE_SECTIONS` take effect; [audio],
-    [video] and [ultimate64] are set at startup and reloading them would
-    require restarting threads. The master itself isn't re-read (the system
-    list + master defaults are set at startup), so add/remove of systems
-    still needs a restart. A failed reload keeps the current playlist."""
+    Each system's Config is composed the way startup composed it — machine
+    settings, its file, the ensemble master's cascade, then the CLI and env
+    (`config.compose_system`) — so a setting a system inherits from the master
+    survives the reload. Only [[scenes]] plus `config.RELOADABLE_SECTIONS` take
+    effect; [audio], [video] and [ultimate64] are set at startup and reloading
+    them would require restarting threads. The master itself isn't re-read: its
+    system list and the defaults it cascades are the ones read at startup, so
+    an edit to the master, or adding or removing a system, still needs a
+    restart. A failed reload keeps the current playlist."""
     log.info("reloading config for %d system(s)", len(sess.stacks))
     # The songlengths lookups are process-global memos, the "no HVSC here" answer
     # included, so a long-lived host would need a restart to see a new HVSC.
     scene_factory.reset_songlengths_cache()
-    for st, sub_path in zip(sess.stacks, sess.loaded.paths, strict=True):
+    for index, (st, sub_path) in enumerate(zip(sess.stacks, sess.loaded.paths, strict=True)):
         if sub_path is None:
             continue  # no file to reload (defaults-only single-system)
         try:
-            new_cfg = _reload_cfg(st, sub_path, sess.args)
+            new_cfg = _reload_cfg(sess, index)
             new_scenes = scene_factory.scenes_from_config(
                 new_cfg,
                 st.api,

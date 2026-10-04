@@ -43,8 +43,9 @@ class Region:
     label: str
     start: int
     length: int
-    #: "module:NAME" of the constant that places the region, for the sweep.
-    const: str
+    #: "module:NAME" of the hex literal that places the region, for the sweep;
+    #: None when the address is derived from another region's constant.
+    const: str | None
 
     @property
     def end(self) -> int:
@@ -100,7 +101,6 @@ _REGIONS: tuple[Region, ...] = (
             ah.REU_IRQ_HANDLER,
             ah.REU_IRQ_HANDLER_GOVERNOR,
             ah.REU_IRQ_HANDLER_TRACKED,
-            ah.REU_MIC_IRQ_HANDLER,
         ),
         f"{_AH}:REU_PUMP_HANDLER_ADDR",
     ),
@@ -109,13 +109,18 @@ _REGIONS: tuple[Region, ...] = (
         "JMP $EA31 placeholder the bank-swap installer writes before the pump",
         mi.AUDIO_HANDLER_INSTALL_ADDR,
         len(mi.AUDIO_HANDLER_STUB),
-        f"{_MI}:AUDIO_HANDLER_INSTALL_ADDR",
+        None,
     ),
     Region(
         "reu_pump",
-        "pump-body subroutine",
+        "pump-body subroutine (every variant)",
         ah.REU_PUMP_BODY_SUBROUTINE_ADDR,
-        _longest(ah.REU_PUMP_BODY_SUBROUTINE, ah.REU_PUMP_BODY_SUBROUTINE_GOVERNOR),
+        _longest(
+            ah.REU_PUMP_BODY_SUBROUTINE,
+            ah.REU_PUMP_BODY_SUBROUTINE_GOVERNOR,
+            ah.REU_MIC_PUMP_BODY_SUBROUTINE,
+            mi.PUMP_BODY_STUB,
+        ),
         f"{_AH}:REU_PUMP_BODY_SUBROUTINE_ADDR",
     ),
     Region(
@@ -330,7 +335,7 @@ def _swept_constants() -> dict[str, int]:
 
 class SweepTest(unittest.TestCase):
     def test_every_fixed_address_in_the_range_is_mapped(self):
-        mapped = {r.const for r in _REGIONS} | set(_NOT_A_REGION)
+        mapped = {r.const for r in _REGIONS if r.const} | set(_NOT_A_REGION)
         unmapped = sorted(set(_swept_constants()) - mapped)
         self.assertEqual(
             unmapped,
@@ -341,7 +346,7 @@ class SweepTest(unittest.TestCase):
 
     def test_every_mapped_constant_still_exists(self):
         swept = _swept_constants()
-        for const in sorted({r.const for r in _REGIONS} | set(_NOT_A_REGION)):
+        for const in sorted({r.const for r in _REGIONS if r.const} | set(_NOT_A_REGION)):
             with self.subTest(const=const):
                 self.assertIn(const, swept)
 
