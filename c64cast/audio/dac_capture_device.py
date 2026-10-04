@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol, TypeVar
 
 from .dac_slot_ring import CAP_SR
 
@@ -67,7 +67,15 @@ def _input_devices() -> list[_Input]:
     ]
 
 
-def _one_device(found: list[_Input]) -> _Input | None:
+class _HostApiListing(Protocol):
+    @property
+    def hostapi(self) -> int: ...
+
+
+_ListingT = TypeVar("_ListingT", bound=_HostApiListing)
+
+
+def one_device(found: Sequence[_ListingT]) -> _ListingT | None:
     """The single device ``found`` holds, or ``None`` when it holds none or
     several. Windows lists each input once per host API (MME, DirectSound,
     WASAPI, WDM-KS), so matches that each sit in a different host API are one
@@ -117,7 +125,7 @@ def _named_input(inputs: list[_Input], preferred: int | str) -> int:
             )
         return index
     found = [inputs[i] for i in named_positions([f.name for f in inputs], text)]
-    one = _one_device(found)
+    one = one_device(found)
     if one is not None:
         return one.index
     reason = "matches no audio input" if not found else "matches more than one audio input"
@@ -145,7 +153,7 @@ def _input_named_like_capture_camera(inputs: list[_Input]) -> int:
             f"{camera.camera_listing(e.cameras)}\n" + pick_device_hint("Name the input with")
         ) from None
     found = [f for f in inputs if names_match(f.name, cam.name)]
-    one = _one_device(found)
+    one = one_device(found)
     if one is not None:
         log.info("calib: capture input %d is named like the capture device %r", one.index, cam.name)
         return one.index

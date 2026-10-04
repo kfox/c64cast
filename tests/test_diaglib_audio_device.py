@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import ModuleType
@@ -46,8 +47,10 @@ class _FakeSoundDevice:
     """The part of sounddevice the resolver may touch. Reading ``default``
     fails the test: the system default input is never a candidate."""
 
-    def __init__(self, devices: list[tuple[str, int]]) -> None:
-        self._devices = [{"name": n, "max_input_channels": ch} for n, ch in devices]
+    def __init__(self, devices: Sequence[tuple[str, int] | tuple[str, int, int]]) -> None:
+        self._devices = [
+            {"name": n, "max_input_channels": ch, "hostapi": sum(api)} for n, ch, *api in devices
+        ]
 
     def query_devices(self):
         return list(self._devices)
@@ -70,7 +73,11 @@ class AudioDeviceTestCase(unittest.TestCase):
     diag device variables set."""
 
     cameras: list[CameraInfo] = [_FACETIME, _CAMLINK]
-    sd_inputs: list[tuple[str, int]] = [(_MIC, 1), ("Cam Link 4K", 2), ("Speakers", 0)]
+    sd_inputs: list[tuple[str, int] | tuple[str, int, int]] = [
+        (_MIC, 1),
+        ("Cam Link 4K", 2),
+        ("Speakers", 0),
+    ]
     avf_inputs: list[str] = [_MIC, "ZoomAudioDevice", "Cam Link 4K"]
 
     def setUp(self) -> None:
@@ -181,10 +188,37 @@ class TwoStickInputsTest(AudioDeviceTestCase):
 
     def test_two_inputs_named_like_the_camera_is_ambiguous(self) -> None:
         message = self.assert_refuses("avf", "Cam Link 4K #2")
-        self.assertIn("2 audio inputs named like capture camera", message)
+        self.assertIn("more than one audio input named like capture camera", message)
 
     def test_an_exact_name_wins_over_a_longer_one(self) -> None:
         self.assertEqual(self.resolve("avf", "cam link 4k")[0].device, ":1")
+
+
+class WindowsHostApisTest(AudioDeviceTestCase):
+    """Windows lists each input once per host API; MME (0) truncates names
+    to 31 characters, the others (1, 2) carry the full name."""
+
+    sd_inputs = [
+        (_MIC, 2, 0),
+        ("Digital Audio Interface (Cam Li", 2, 0),
+        (_MIC, 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 1),
+        ("Digital Audio Interface (Cam Link 4K)", 2, 2),
+    ]
+
+    def test_one_input_listed_by_several_host_apis_is_one_input(self) -> None:
+        self.assertEqual(self.resolve("sd")[0].device, 3)
+        self.assertEqual(self.resolve("sd", "cam link")[0].device, 3)
+        self.assertEqual(self.resolve("sd", "macbook")[0].device, 0)
+
+
+class WindowsTwoSticksTest(AudioDeviceTestCase):
+    sd_inputs = [*WindowsHostApisTest.sd_inputs, ("Digital Audio Interface (Cam Link 4K #2)", 2, 2)]
+
+    def test_two_inputs_in_one_host_api_stay_ambiguous(self) -> None:
+        message = self.assert_refuses("sd", "Cam Link 4K #2")
+        self.assertIn("more than one audio input named like capture camera", message)
+        self.assertIn("more than one", self.assert_refuses("sd", spec="link 4k"))
 
 
 class NamedTest(AudioDeviceTestCase):

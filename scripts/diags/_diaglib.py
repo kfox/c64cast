@@ -293,11 +293,14 @@ def read_frame(cap, device: int | str | None, *, timeout_s: float = NO_FRAME_RET
 
 class AudioInput(NamedTuple):
     """An audio input a tool records from: ``device`` is what the backend
-    takes (a sounddevice index, or ffmpeg avfoundation's ``:N``) and ``name``
-    is what the device calls itself, which outlives a re-enumeration."""
+    takes (a sounddevice index, or ffmpeg avfoundation's ``:N``), ``name``
+    is what the device calls itself, which outlives a re-enumeration, and
+    ``hostapi`` is the PortAudio host API listing it (always 0 for
+    avfoundation)."""
 
     device: int | str
     name: str
+    hostapi: int = 0
 
 
 #: The environment variable that names each backend's audio input.
@@ -326,7 +329,7 @@ def sd_audio_inputs() -> list[AudioInput]:
     import sounddevice as sd
 
     return [
-        AudioInput(i, str(dev["name"]))
+        AudioInput(i, str(dev["name"]), int(dev.get("hostapi", 0)))
         for i, dev in enumerate(sd.query_devices())
         if dev["max_input_channels"] > 0
     ]
@@ -403,11 +406,12 @@ def _named_audio_input(inputs: list[AudioInput], spec: str, backend: str) -> Aud
             f"audio input {spec!r} is not an audio input index. Inputs found:\n"
             + _audio_listing(inputs)
         )
-    from c64cast.audio.dac_capture_device import named_positions
+    from c64cast.audio.dac_capture_device import named_positions, one_device
 
     matches = [inputs[i] for i in named_positions([a.name for a in inputs], text)]
-    if len(matches) == 1:
-        return matches[0]
+    one = one_device(matches)
+    if one is not None:
+        return one
     reason = "matches no audio input" if not matches else "matches more than one audio input"
     raise SystemExit(f"audio input {spec!r} {reason}. Inputs found:\n" + _audio_listing(inputs))
 
@@ -438,17 +442,17 @@ def resolve_audio_input(
             f"{e}\nThe audio input is picked by the capture camera's name, so none is "
             "opened. " + flag_hint + _audio_listing(inputs)
         ) from None
-    from c64cast.audio.dac_capture_device import names_match
+    from c64cast.audio.dac_capture_device import names_match, one_device
 
     matches = [a for a in inputs if names_match(a.name, camera_name)]
-    if len(matches) == 1:
+    one = one_device(matches)
+    if one is not None:
         print(
-            f"[audio] picked {matches[0].device} {matches[0].name} "
-            f"(named like capture camera {camera_name!r})",
+            f"[audio] picked {one.device} {one.name} (named like capture camera {camera_name!r})",
             file=sys.stderr,
         )
-        return matches[0]
-    reason = "no audio input" if not matches else f"{len(matches)} audio inputs"
+        return one
+    reason = "no audio input" if not matches else "more than one audio input"
     raise SystemExit(
         f"{reason} named like capture camera {camera_name!r}, so none is opened. "
         + flag_hint
