@@ -5,8 +5,9 @@ The REU audio pump sounds "regularly choppy" on real hardware even with the
 C64-side governor (zero host bus writes), while the host-DMA path sounds clean.
 "Regular choppiness" = a periodic amplitude modulation (the audio envelope
 wobbling at some fixed rate). This tool launches c64cast on a given config,
-records N seconds of the U64 audio via the Cam Link (avfoundation audio device
-:3), and FFTs the *amplitude envelope* (rectified + smoothed signal) to expose
+records N seconds of the U64 audio via the Cam Link (the avfoundation audio
+input ``-D`` names, else the one named like the capture camera), and FFTs the
+*amplitude envelope* (rectified + smoothed signal) to expose
 modulation peaks — e.g. a spike at the ~62 Hz pump-IRQ rate or its skip-pattern
 subharmonic would be the smoking gun.
 
