@@ -514,6 +514,27 @@ def resolve_audio_input(
     )
 
 
+def refind_sd_audio_input(audio: AudioInput) -> int:
+    """The sounddevice index of ``audio`` once PortAudio has re-enumerated,
+    found by its exact name: another input whose name merely contains it is
+    a different device. Among several inputs with that exact name, the one
+    still at ``audio``'s index is taken.
+
+    Raises ``SystemExit`` listing the inputs when the name is gone, or is
+    shared by several inputs none of which is at that index."""
+    inputs = sd_audio_inputs()
+    named = [a for a in inputs if a.name.strip().lower() == audio.name.strip().lower()]
+    reason = "is gone" if not named else "now names more than one input"
+    if len(named) > 1:
+        named = [a for a in named if a.device == audio.device]
+    if len(named) == 1:
+        return int(named[0].device)
+    raise SystemExit(
+        f"audio input {audio.name!r} {reason} after the re-enumeration, so none is "
+        "opened. Inputs found:\n" + _audio_listing(inputs)
+    )
+
+
 def python_exe() -> str:
     """The interpreter running this tool — use it to spawn ``-m c64cast``
     so the subprocess gets the same ``.venv`` rather than a stray system

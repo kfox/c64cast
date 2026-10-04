@@ -316,7 +316,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = int(d.resolve_audio_input("sd", audio.name).device)  # re-enumerated
+        device = d.refind_sd_audio_input(audio)
         print(f"[cap] device idx {device}: {sd.query_devices(device)['name']}")
         print(f"[cap] toggle freq {TOGGLE_FREQ:.0f} Hz, ref=${args.ref:02X}, {len(codes)} codes\n")
 

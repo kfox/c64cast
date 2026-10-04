@@ -555,7 +555,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = int(d.resolve_audio_input("sd", audio.name).device)  # re-enumerated
+        device = d.refind_sd_audio_input(audio)
         print(f"[cap] capturing from idx {device}: {sd.query_devices(device)['name']}")
 
         print("\n=== ref (no background writes) ===")

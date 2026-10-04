@@ -420,7 +420,7 @@ def main() -> int:
                 rate,
                 args.system,
                 args.secs,
-                int(d.resolve_audio_input("sd", audio.name).device),
+                d.refind_sd_audio_input(audio),
                 f"{args.system}_{stem}_{side}",
             )
             results[side] = wav

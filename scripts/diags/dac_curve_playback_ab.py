@@ -99,8 +99,7 @@ def main() -> int:
     d.add_audio_device_arg(ap, "-D", "--device", dest="device", backend="sd")
     ap.add_argument("--secs", type=float, default=3.0)
     args = ap.parse_args()
-    # Found by name now, and again by that name once the reset re-enumerates.
-    args.device = d.resolve_audio_input("sd", args.device).name
+    audio = d.resolve_audio_input("sd", args.device)
 
     cfg = Config()
     apply_to_config(cfg, parse_connection_uri(args.url))
@@ -148,7 +147,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = int(d.resolve_audio_input("sd", args.device).device)
+        dev = d.refind_sd_audio_input(audio)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
         print(f"[cap] test tone {TONE_HZ:.1f} Hz, {args.secs}s per curve\n")
 

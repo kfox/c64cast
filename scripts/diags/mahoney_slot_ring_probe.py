@@ -179,7 +179,7 @@ def capture_hardware(args: argparse.Namespace) -> list[tuple[list[int], dsr.Slot
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        dev = int(d.resolve_audio_input("sd", args.device).device)
+        dev = d.refind_sd_audio_input(args.audio)
         print(f"[cap] device idx {dev}: {sd.query_devices(dev)['name']}")
 
         saved = snapshot_sid_config(be)
@@ -274,8 +274,7 @@ def main() -> int:
     if args.replay:
         batches = replay(args.replay)
     elif args.url:
-        # Found by name now, and again by that name once the reset re-enumerates.
-        args.device = d.resolve_audio_input("sd", args.device).name
+        args.audio = d.resolve_audio_input("sd", args.device)
         batches = capture_hardware(args)
     else:
         ap.error("one of --url or --replay is required")

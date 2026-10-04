@@ -194,7 +194,7 @@ def main() -> int:
         time.sleep(3.0)
         sd._terminate()
         sd._initialize()
-        device = int(d.resolve_audio_input("sd", audio.name).device)  # re-enumerated
+        device = d.refind_sd_audio_input(audio)
         print(f"[cap] capturing from device idx {device}: {sd.query_devices(device)['name']}")
         for r in rates:
             pitch, _ = capture_rate(be, r, args.system, args.secs, device)

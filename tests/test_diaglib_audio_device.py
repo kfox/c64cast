@@ -212,6 +212,34 @@ class NamedTest(AudioDeviceTestCase):
         self.assert_refuses("avf", _MIC, spec=":9")
 
 
+class RefindAfterReenumerationTest(AudioDeviceTestCase):
+    """The sounddevice tools find their input again once a reset has made
+    PortAudio re-enumerate, by its exact name and never a longer one."""
+
+    def refind(self, inputs: list[tuple[str, int]], audio):
+        with patch.dict(sys.modules, {"sounddevice": _FakeSoundDevice(inputs)}):
+            return _diaglib.refind_sd_audio_input(audio)
+
+    def test_the_same_name_at_a_new_index(self) -> None:
+        audio = _diaglib.AudioInput(1, "Cam Link 4K")
+        self.assertEqual(self.refind([(_MIC, 1), ("Speakers", 0), ("Cam Link 4K", 2)], audio), 2)
+
+    def test_a_longer_name_is_not_the_input_that_went_away(self) -> None:
+        """The stick has not come back yet; its sibling is another device."""
+        audio = _diaglib.AudioInput(1, "Cam Link 4K")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            self.refind([(_MIC, 1), ("Cam Link 4K #2", 2)], audio)
+        self.assertIn("'Cam Link 4K' is gone", str(cm.exception))
+        self.assertIn("Cam Link 4K #2", str(cm.exception))
+
+    def test_a_shared_name_keeps_the_index_it_was_picked_at(self) -> None:
+        inputs = [(_MIC, 1), ("USB Audio", 2), ("USB Audio", 2)]
+        self.assertEqual(self.refind(inputs, _diaglib.AudioInput(2, "USB Audio")), 2)
+        with self.assertRaises(SystemExit) as cm:
+            self.refind(inputs, _diaglib.AudioInput(3, "USB Audio"))
+        self.assertIn("now names more than one input", str(cm.exception))
+
+
 class WebcamAutopickTest(unittest.TestCase):
     """vision_tune's default: the one camera that is not a capture stick."""
 
