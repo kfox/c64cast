@@ -87,7 +87,7 @@ MIC_LEAD_REANCHOR_GUARD = 2 * REU_PUMP_CHUNK_SIZE
 # is off by at most 256 B and passes; it costs ~128 B of lead error.
 MIC_LEAD_TORN_TOLERANCE = 1024
 # A re-anchor the callback has not claimed within this many intervals is
-# dropped with a warning, and measuring resumes: a callback that has stopped
+# dropped (the first with a warning, later ones at debug), and measuring resumes: a callback that has stopped
 # reaching it (every block flagged by PortAudio) must not freeze the loop.
 MIC_LEAD_REANCHOR_CLAIM_INTERVALS = 3
 # Consecutive failed measurements before the loop opens (drop fraction 0).
@@ -283,6 +283,7 @@ class MicLeadServo:
         self.lead_min: int | None = None
         self.lead_max: int | None = None
         self.reanchors = 0
+        self.reanchors_dropped = 0
         self.open_loop_spells = 0
 
     def start(self) -> None:
@@ -336,7 +337,8 @@ class MicLeadServo:
                     return  # the callback has not applied the last one yet
                 self._reanchor = None
         if pending is not None:
-            log.warning(
+            self.reanchors_dropped += 1
+            (log.warning if self.reanchors_dropped == 1 else log.debug)(
                 "audio[reu mic]: the mic callback has not taken a re-anchor in %.0fs; "
                 "dropping it and measuring again",
                 MIC_LEAD_REANCHOR_CLAIM_INTERVALS * self._interval,
