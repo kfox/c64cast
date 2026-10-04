@@ -932,8 +932,8 @@ class AudioStreamer:
                         n, from_queue, leftover = self._drip_chunk(
                             pending, pending_addr, chunk_buf, leftover, pace_deadline, chunk_period
                         )
-                        self._consume_queued(pending_from_queue)
                         self._note_ring_landed(len(pending), pending_pad)
+                        self._consume_queued(pending_from_queue)
                         w_head = pending_addr + len(pending)
                         if w_head >= RING_BUFFER_END:
                             w_head -= RING_BUFFER_SIZE
@@ -1016,8 +1016,8 @@ class AudioStreamer:
                 # Prebuffer fill: the NMI is not consuming yet, so there is no
                 # halt to hide from and one unsplit write primes the ring fastest.
                 self.api.write_memory_file(f"{write_addr:04X}", bytes(chunk_buf[:n]))
-                self._consume_queued(from_queue)
                 self._note_ring_landed(n, pad)
+                self._consume_queued(from_queue)
                 write_addr += n
                 if write_addr >= RING_BUFFER_END:
                     write_addr = RING_BUFFER_ADDR
@@ -2145,10 +2145,13 @@ class AudioStreamer:
             return min(elapsed, self._reu_pump_total_samples / rate)
         # q.qsize() now counts bytes-blobs, not samples — read the explicit
         # sample-count counter instead.
+        # Consumed before the lead: the worker clears the tail pad before it
+        # lands the content behind it, so a read torn across a landing lags by
+        # that chunk rather than leading by a ring of pad.
+        consumed = self._pushed_count - self._queued_samples
         lead = self._content_lead()
         if lead is None:
             return 0.0
-        consumed = self._pushed_count - self._queued_samples
         return max(0.0, (consumed - lead) / rate)
 
     def ring_lead_seconds(self) -> float:

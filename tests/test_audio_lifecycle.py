@@ -1524,6 +1524,24 @@ class LifecycleTest(unittest.TestCase):
         self.assertGreaterEqual(underruns, 12)
         self.assertAlmostEqual(position, total / s.effective_rate, places=6)
 
+    def test_a_producer_late_by_less_than_a_chunk_does_not_step_the_clock(self):
+        # A short chunk's pad sits behind content the producer has merely not
+        # sent yet; only a whole pad chunk after it says the producer ran dry.
+        s = _make()
+        s.servo.ring_lead = 200.0
+        s._note_ring_landed(32, 0)
+        s._note_ring_landed(32, 12)
+        self.assertEqual(s._content_lead(), 200.0)
+        s._note_ring_landed(32, 0)
+        self.assertEqual(s._content_lead(), 200.0)
+        s._note_ring_landed(32, 12)
+        s._note_ring_landed(32, 32)
+        self.assertEqual(s._content_lead(), 200.0 - 12 - 32)
+        s._note_ring_landed(32, 32)
+        self.assertEqual(s._content_lead(), 200.0 - 12 - 64)
+        s._note_ring_landed(32, 0)
+        self.assertEqual(s._content_lead(), 200.0)
+
     def test_position_seconds_host_dma(self):
         # The divisor is effective_rate — the rate the CIA latch actually
         # yields — not the requested sample_rate. At 8 kHz NTSC that is
