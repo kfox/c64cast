@@ -39,7 +39,6 @@ See docs/architecture/control.md#perf_consolepy--phone--web-performance-console-
 
 import asyncio
 import contextlib
-import json
 import logging
 import math
 import threading
@@ -48,6 +47,7 @@ from collections.abc import Callable, Mapping
 from pathlib import PurePath
 from typing import Any
 
+from c64cast._json import decode_json
 from c64cast.app.playlist import Playlist
 
 from . import live_tune, page_assets
@@ -125,7 +125,7 @@ _WS_POLICY_VIOLATION = 1008
 
 
 class SocketReader:
-    """One long-lived ``receive_json`` on a console socket, polled per push.
+    """One long-lived receive on a console socket, polled per push.
 
     Shared with :func:`c64cast.control.web_api.register_web_routes`'s
     ``/api/ws``, which is the same push-then-poll loop over the same payload.
@@ -158,8 +158,9 @@ class SocketReader:
         """``(arrived, frame)``, or ``(False, None)`` if nothing came in time.
 
         ``arrived`` with a ``None`` frame is a frame that did not decode: a text
-        frame that isn't JSON raises ``JSONDecodeError`` and a **binary** one
-        raises ``KeyError("text")``, neither of which is a
+        frame that isn't JSON, or is nested too deeply to decode, fails
+        :func:`~c64cast._json.decode_json` with a ``ValueError``, and a
+        **binary** one raises ``KeyError("text")``, neither of which is a
         ``WebSocketDisconnect``. Both used to reach the loop's outer handler and
         tear down the socket — the sole channel for session state and log
         lines — on one stray frame from a console build sending a ping, a stale
@@ -169,13 +170,13 @@ class SocketReader:
 
         A disconnect still propagates, which is what ends the loop."""
         if self._task is None:
-            self._task = asyncio.create_task(self._ws.receive_json())
+            self._task = asyncio.create_task(self._ws.receive_text())
         done, _ = await asyncio.wait({self._task}, timeout=timeout)
         if not done:
             return False, None
         task, self._task = self._task, None
         try:
-            return True, task.result()
+            return True, decode_json(task.result())
         except (ValueError, KeyError, TypeError):
             log.debug("%s: ignoring an unparseable frame", self._label)
             return True, None
@@ -1136,7 +1137,7 @@ def register_perf_routes(app: Any, bridge: PerfBridge) -> None:
             log.debug("perf console: %s", e)
             raise HTTPException(413, BODY_TOO_LARGE_ERROR) from e
         try:
-            parsed = json.loads(raw)
+            parsed = decode_json(raw)
         except ValueError as e:
             raise HTTPException(400, "request body is not JSON") from e
         if not isinstance(parsed, Mapping):

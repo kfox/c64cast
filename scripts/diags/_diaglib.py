@@ -370,14 +370,15 @@ def rest_get_config(category: str, url: str = U64_URL, timeout: float = 8.0) -> 
 
     import requests
 
+    from c64cast._json import decode_json
+
     try:
         r = rest_request("GET", f"{url}/v1/configs/{quote(category)}", timeout=timeout)
         r.raise_for_status()
+        body = decode_json(r)
     except requests.RequestException:
         return None
-    try:
-        body = r.json()
-    except ValueError:
+    if not isinstance(body, dict):
         return None
     inner = body.get(category)
     return inner if isinstance(inner, dict) else body
@@ -401,6 +402,8 @@ def rest_set_config(
 
     import requests
 
+    from c64cast._json import decode_json
+
     try:
         r = rest_request(
             "PUT",
@@ -409,13 +412,10 @@ def rest_set_config(
             timeout=timeout,
         )
         r.raise_for_status()
+        body = decode_json(r)
     except requests.RequestException:
         return False
-    try:
-        errs = r.json().get("errors", ["<no errors key>"])
-    except ValueError:
-        return False
-    return errs == []
+    return isinstance(body, dict) and body.get("errors", ["<no errors key>"]) == []
 
 
 def add_tr_slicing_args(ap) -> None:

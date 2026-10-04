@@ -24,6 +24,8 @@ import warnings
 from typing import Any
 from unittest.mock import patch
 
+from _fakes import TOO_DEEP_JSON
+
 from c64cast.control import perf_console
 from c64cast.control.auth import ROLE_FULL, ROLE_VIEWER, SCOPE_ROLE_KEY
 from c64cast.control.perf_console import (
@@ -1097,6 +1099,18 @@ class PerfEndpointsTest(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 400)
 
+    def test_a_body_nested_too_deeply_to_decode_is_a_400(self):
+        # The command cap (64 KiB) is below what overflows a large stack, so
+        # the decoder's RecursionError is injected rather than produced.
+        client, _pl = self._client()
+        with patch("c64cast._json.json.loads", side_effect=RecursionError):
+            r = client.post(
+                "/perf/command",
+                content=b'{"action": "tap"}',
+                headers={"content-type": "application/json"},
+            )
+        self.assertEqual(r.status_code, 400)
+
     def test_a_text_plain_post_cannot_reach_the_dispatcher(self):
         # `Request.json()` never looks at Content-Type, so a cross-site
         # `<form enctype="text/plain">` whose field name and value sandwich
@@ -1245,8 +1259,9 @@ class SocketReaderTest(unittest.TestCase):
             self.frames = list(frames)
             self.receives = 0
 
-        async def receive_json(self) -> Any:
+        async def receive_text(self) -> str:
             import asyncio
+            import json
 
             self.receives += 1
             if not self.frames:
@@ -1254,7 +1269,7 @@ class SocketReaderTest(unittest.TestCase):
             frame = self.frames.pop(0)
             if isinstance(frame, BaseException):
                 raise frame
-            return frame
+            return frame if isinstance(frame, str) else json.dumps(frame)
 
     def _drive(self, socket: Any, polls: int, timeout: float = 0.05) -> list[Any]:
         import asyncio
@@ -1275,17 +1290,18 @@ class SocketReaderTest(unittest.TestCase):
     def test_a_timeout_leaves_the_receive_pending_rather_than_cancelling_it(self):
         # Cancelling a receive that has already popped a message off
         # uvicorn's queue consumes the frame and never returns it, so one
-        # `receive_json` call across many polls is what proves the task
+        # `receive_text` call across many polls is what proves the task
         # survives a timeout.
         socket = self._Socket([])
         self.assertEqual(self._drive(socket, 4), [(False, None)] * 4)
         self.assertEqual(socket.receives, 1)
 
     def test_an_undecodable_frame_is_reported_as_none_rather_than_raised(self):
-        # A text frame that isn't JSON raises JSONDecodeError; a binary one
-        # raises KeyError("text"). Both used to close the console's only feed.
-        for boom in (ValueError("not json"), KeyError("text")):
-            with self.subTest(boom=type(boom).__name__):
+        # A text frame that isn't JSON, or is nested too deeply to decode,
+        # fails to decode; a binary one raises KeyError("text"). Each used to
+        # close the console's only feed.
+        for boom in ("not json", TOO_DEEP_JSON.decode(), KeyError("text")):
+            with self.subTest(boom=str(boom)[:10]):
                 socket = self._Socket([boom, {"action": "tap"}])
                 self.assertEqual(self._drive(socket, 2), [(True, None), (True, {"action": "tap"})])
 

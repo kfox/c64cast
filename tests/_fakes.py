@@ -885,3 +885,13 @@ class SleepDrivenClock:
         if seconds < 0:
             raise ValueError("sleep length must be non-negative")
         self._now += seconds
+
+
+#: A JSON document nested too deeply to decode: `json.loads` raises
+#: RecursionError on it rather than ValueError. Since CPython 3.14 the C
+#: decoder is bounded by the thread's real stack, not `sys.getrecursionlimit()`,
+#: so the depth it takes follows the stack rlimit: 100,000 levels overflow an
+#: 8 MiB stack but not the 64 MiB one `make test` gets on macOS. Ten million
+#: overflow both. tests/test_json_body.py asserts the premise, so a stack that
+#: holds this fails there instead of passing the readers' tests vacuously.
+TOO_DEEP_JSON = b"[" * 10_000_000

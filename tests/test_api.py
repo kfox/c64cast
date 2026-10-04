@@ -12,7 +12,8 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
-from _fakes import FakeTime, SleepDrivenClock, make_psid
+import requests
+from _fakes import TOO_DEEP_JSON, FakeTime, SleepDrivenClock, make_psid
 
 from c64cast.hw import api
 from c64cast.hw.api import (
@@ -1360,8 +1361,7 @@ class RouteProbeTest(_RestAnswerTestCase):
                 self.assertEqual(api.classify_route_answer(status, body), expected)
 
     def test_body_too_deep_to_parse_is_unknown(self):
-        with patch.object(api.json, "loads", side_effect=RecursionError):
-            self.assertEqual(api.classify_route_answer(404, b"[[[[]]]]"), "unknown")
+        self.assertEqual(api.classify_route_answer(404, TOO_DEEP_JSON), "unknown")
 
     def test_present_route_is_asked_once(self):
         self._answer(200)
@@ -1404,6 +1404,74 @@ class RouteProbeTest(_RestAnswerTestCase):
         self.get.side_effect = None
         self._answer(200)
         self.assertTrue(self.api.probe_route("/v1/machine:input", "input"))
+
+
+def _real_response(status: int, body: bytes) -> requests.Response:
+    r = requests.Response()
+    r.status_code = status
+    r._content = body
+    r.encoding = "utf-8"
+    r.url = "http://example.invalid/"
+    return r
+
+
+class DeeplyNestedBodyTest(unittest.TestCase):
+    """A device answering with JSON nested too deeply to decode reaches each
+    REST reader's documented failure path, never its caller as a
+    RecursionError."""
+
+    def setUp(self):
+        patcher = patch("c64cast.hw.socket_dma.SocketDMAClient.connect", autospec=True)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        self.api = Ultimate64API("http://example.invalid")
+        self.get = patch.object(
+            self.api.session, "get", return_value=_real_response(200, TOO_DEEP_JSON)
+        ).start()
+        self.post = patch.object(
+            self.api.session, "post", return_value=_real_response(200, TOO_DEEP_JSON)
+        ).start()
+        self.addCleanup(patch.stopall)
+
+    def test_get_config_category_raises_a_request_and_value_error(self):
+        with self.assertRaises(requests.RequestException) as cm:
+            self.api.get_config_category("Audio Mixer")
+        self.assertIsInstance(cm.exception, ValueError)
+
+    def test_get_config_category_404_is_the_missing_route(self):
+        self.get.return_value = _real_response(404, TOO_DEEP_JSON)
+        with self.assertRaises(requests.HTTPError):
+            self.api.get_config_category("Audio Mixer")
+
+    def test_get_device_info_raises_a_request_error(self):
+        with self.assertRaises(requests.RequestException):
+            self.api.get_device_info()
+
+    def test_describe_device_is_empty(self):
+        with self.assertLogs("c64cast.hw.api", "DEBUG") as cm:
+            self.assertEqual(self.api.describe_device(), "")
+        self.assertIn("device identity read failed", cm.output[0])
+
+    def test_get_config_categories_raises_a_request_error(self):
+        with self.assertRaises(requests.RequestException):
+            self.api.get_config_categories()
+
+    def test_refine_capabilities_keeps_optimism(self):
+        before = self.api.profile
+        with self.assertLogs("c64cast.hw.api", "DEBUG") as cm:
+            self.api.refine_capabilities()
+        self.assertIn("/v1/configs unreadable", "\n".join(cm.output))
+        self.assertEqual(self.api.profile.supports_sid_config, before.supports_sid_config)
+
+    def test_input_state_is_none(self):
+        with self.assertLogs("c64cast.hw.api", "DEBUG"):
+            self.assertIsNone(self.api.input_state())
+
+    def test_send_input_is_an_empty_state(self):
+        from c64cast.hw import machine_input as mi
+
+        self.api.profile = replace(self.api.profile, supports_rest_input=True)
+        self.assertEqual(self.api.send_input([mi.RELEASE_ALL]), {})
 
 
 class MenuScreenTest(_RestAnswerTestCase):
