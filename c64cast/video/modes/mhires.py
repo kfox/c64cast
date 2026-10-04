@@ -257,7 +257,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         # a pure neighbor query. Matches the active metric so it agrees with the
         # per-pixel picks.
         self._rebuild_pal_pairwise()
-        self._last_bg: int | None = None
         self._fixed_slots: tuple[int, ...] | None = None
         self._fixed_lut: np.ndarray | None = None
         self._apply_grayscale_fixed_slots()
@@ -325,7 +324,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_quantized = None
         self._last_error_trio = None
         self._bg0 = None
-        self._last_bg = None
         api.invalidate_cache()
         return f"palette_mode={palette_mode}" + ("+forced" if self._force_palette else "")
 
@@ -416,10 +414,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
         self._last_quantized = None
         self._last_error_trio = None
         self._bg0 = None
-        if not self.use_reu_staged:
-            # _last_bg tracks the host-written $D021; the double-buffer path
-            # flips $D021 via the swap tracker instead.
-            self._last_bg = 0
         if self._blend_table is not None:
             # self.double_buffer stays False: the plain host-DMA path installs a
             # swap handler with no $D018 phase toggle, and the two cannot both
@@ -446,7 +440,6 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
                 FRAME_TRACKER_ADDR,
             )
         if self.use_reu_staged:
-            self._last_bg = None
             # So the off-screen bank shows no garbage on the first swap. $D800
             # is not banked, so it keeps whatever the prior scene left there
             # until the first IRQ overwrites it from REU.
@@ -609,9 +602,7 @@ class MultiHiresDisplayMode(BitmapDisplayMode):
             self._arm_hostdma_swap(api, bg0, dd00)
             self._displayed_bank = target
             return
-        if bg0 != self._last_bg:
-            api.write_regs("d021", bg0)
-            self._last_bg = bg0
+        api.write_region(0xD021, bytes([bg0 & 0xFF]), region_id=RegionID.VIC_D021)
         api.write_region(0x0400, screen_bytes, region_id=RegionID.SCREEN)
         api.write_region(0xD800, color_bytes, region_id=RegionID.COLOR)
         api.write_region(0x2000, bitmap_bytes, region_id=RegionID.BITMAP)

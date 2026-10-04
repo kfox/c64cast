@@ -49,9 +49,8 @@ class BlankDisplayMode(CharDisplayMode):
         api.write_memory("d011", "1b")
 
     def set_border(self, api: C64Backend, value: str) -> str:
-        """Live-tune ``mode.border``. Unlike ``background`` (re-read into
-        color RAM every frame by ``compose()``/``push()``), $D020 is only
-        written at ``setup()``, so a live change has to poke it directly."""
+        """Live-tune ``mode.border``. Poked here so the change shows at once;
+        ``push()`` keeps $D020/$D021 asserted through the dirty cache after."""
         self.border = resolve_color(value)
         api.write_regs("d020", self.border, self.background)
         return f"border {color_display_name(self.border)}"
@@ -78,3 +77,6 @@ class BlankDisplayMode(CharDisplayMode):
         else:
             api.write_region(SCREEN.RAM, screen_bytes, region_id=RegionID.SCREEN)
         api.write_region(SCREEN.COLOR_RAM, buffers["color"].tobytes(), region_id=RegionID.COLOR)
+        api.write_region(
+            VIC.D020_BORDER, bytes([self.border, self.background]), region_id=RegionID.VIC_D020
+        )

@@ -22,6 +22,7 @@ import time
 from typing import TYPE_CHECKING, Literal
 
 from c64cast.control.transport import LoopPresetStore, timecode
+from c64cast.hw.c64 import RegionID
 
 if TYPE_CHECKING:
     from .scenes import VideoScene
@@ -249,14 +250,18 @@ class VideoTransportControls:
     def set_record_border(self, active: bool) -> None:
         """Red border while a loop is armed.
 
-        The bitmap/char display modes VideoScene uses engage with a hardcoded
-        black ($00) border and never rewrite $D020 per frame afterward (see
-        modes.engage_bitmap_mode's docstring), so 0 is always the correct value
-        to restore to."""
+        A poke, not part of the frame: a display mode that pushes $D020
+        (hires, mcm, petscii, blank) replaces it while the loop is still
+        armed, whenever that push sends — on a change of its own value, or
+        after a lost write. Clearing it drops that push's cache entry, so a
+        mode whose border is not black puts its own back on its next push."""
         if active == self.record_border_active:
             return
         self.record_border_active = active
-        self._scene.api.write_regs("d020", RECORD_BORDER_COLOR if active else 0)
+        api = self._scene.api
+        api.write_regs("d020", RECORD_BORDER_COLOR if active else 0)
+        if not active:
+            api.invalidate_region(RegionID.VIC_D020)
 
     def record(self) -> None:
         """Record button: arm a loop at the current position (first step of

@@ -1788,6 +1788,9 @@ class Ultimate64API(_SidPlayerMixin, _StubRunnerBackend):
     _EMIT_WRITE_LABEL = "U64 dma write"
     _EMIT_DEVICE_LABEL = "U64"
 
+    def _possible_loss_count(self) -> int:
+        return self.socket_dma.check_for_loss()
+
     def _emit(self, addr: int, payload: bytes) -> None:
         """Route a write through Socket DMA. On OSError or SocketDMAError
         (server died completely, reconnect failed, or mid-handshake

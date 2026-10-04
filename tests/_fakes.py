@@ -237,6 +237,8 @@ class FakeAPI:
         # Mirrors the real backends' `profile`; `supports_reu=False` models
         # the TeensyROM.
         self.profile = HardwareProfile(name="Fake", family="fake")
+        # C64Backend.delivery_epoch; a test bumps it to model a lost write.
+        self.delivery_epoch = 0
 
     @classmethod
     def ultimate(cls, *, supports_config: bool = True) -> FakeAPI:

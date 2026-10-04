@@ -484,6 +484,13 @@ class VoiceScopeRenderer:
         # Loaded by _apply_vic_hires_bank.
         self._glyphs: bytes | None = None
 
+        # Regions painted only when their content changes (strip colors, text
+        # rows): region_id -> (address, bytes). _render_hires sends them again
+        # when api.delivery_epoch moves, since the last paint may not have
+        # landed and nothing else would repaint it until the content changes.
+        self._held_regions: dict[int, tuple[int, bytes]] = {}
+        self._held_epoch: int | None = None
+
     def _alloc_scope_buffers(self) -> None:
         """Allocate the per-voice persistent render buffers — only what each
         voice's mode actually needs (most scenes hit one mode per voice)."""
@@ -531,6 +538,8 @@ class VoiceScopeRenderer:
             bg0=0x00,
             clear_region_ids=(RegionID.WAVE_BITMAP, RegionID.WAVE_SCREEN_CLEAR),
         )
+        self._held_regions = {}
+        self._held_epoch = self.api.delivery_epoch
         self._init_hires_colors()
         # Process-wide cached, so a second scope scene doesn't re-read the file.
         self._glyphs = _load_glyphs()
@@ -560,11 +569,29 @@ class VoiceScopeRenderer:
             c1 = (x_off + w) // CELL_PX
             row[c0:c1] = (color & COLOR_NIBBLE_MASK) << 4  # FG in high nibble
         block = np.tile(row, n_rows).tobytes()
-        self.api.write_region(
+        self._write_held_region(
             self._screen_base + cell_row_top * SCREEN_W_CHARS,
             block,
-            region_id=RegionID.WAVE_SCREEN + v_idx,
+            RegionID.WAVE_SCREEN + v_idx,
         )
+
+    def _write_held_region(self, address: int, data: bytes, region_id: int) -> None:
+        """``write_region`` for a region painted only on a content change,
+        remembered so ``_resend_held_regions`` can send it again."""
+        self._held_regions[region_id] = (address, data)
+        self.api.write_region(address, data, region_id=region_id)
+
+    def _resend_held_regions(self) -> None:
+        """Send every held region again if ``api.delivery_epoch`` has moved
+        since they were last sent: a write the connection may have lost
+        leaves no other path that repaints them before their content
+        changes."""
+        epoch = self.api.delivery_epoch
+        if epoch == self._held_epoch:
+            return
+        self._held_epoch = epoch
+        for region_id, (address, data) in self._held_regions.items():
+            self.api.write_region(address, data, region_id=region_id)
 
     def _initial_voice_color(self, v_idx: int) -> int:
         if self.color_mode == "per_voice":
@@ -630,12 +657,10 @@ class VoiceScopeRenderer:
                 cell = glyphs[sc * CELL_PX : (sc + 1) * CELL_PX]
             bitmap_bytes[col * CELL_PX : (col + 1) * CELL_PX] = cell
         bitmap_addr = self._bitmap_base + cell_row * BITMAP_CELL_ROW_BYTES
-        self.api.write_region(bitmap_addr, bytes(bitmap_bytes), region_id=bitmap_region_id)
+        self._write_held_region(bitmap_addr, bytes(bitmap_bytes), bitmap_region_id)
         fg_byte = (fg & COLOR_NIBBLE_MASK) << 4  # FG in high nibble, BG = 0
         screen_addr = self._screen_base + cell_row * SCREEN_W_CHARS
-        self.api.write_region(
-            screen_addr, bytes([fg_byte] * SCREEN_W_CHARS), region_id=screen_region_id
-        )
+        self._write_held_region(screen_addr, bytes([fg_byte] * SCREEN_W_CHARS), screen_region_id)
 
     def _build_title_line(self) -> str:
         """Subclass hook: the 40-char top info row (see _paint_info_rows)."""
@@ -868,6 +893,9 @@ class VoiceScopeRenderer:
               in this mode because the per-cell writes overwrite it every
               frame."""
         assert self._rows_col is not None
+        # First, so the per-frame strip writes below land over a resent row
+        # that shares their region (the echo mode's screen colors).
+        self._resend_held_regions()
         for v_idx, (top, bot) in enumerate(BITMAP_STRIPS):
             mode = self._voice_render_modes[v_idx]
             if mode == RENDER_MODE_SCROLL:
