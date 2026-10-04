@@ -678,20 +678,7 @@ def _resolve_configs(args: argparse.Namespace) -> tuple[cfgmod.LoadResult, list[
                 "values into the per-system TOMLs."
             )
 
-    cfgs = [cfgmod.merge_cli(c, args) for c in loaded.cfgs]
-    # Ensemble systems keep their TOML identity; the guard above already
-    # rejected a CLI target for them.
-    if not loaded.is_ensemble:
-        target = args.url or os.environ.get("C64CAST_URL")
-        if target:
-            from .connect import apply_to_config, parse_connection_uri
-
-            log.info(
-                "connection target: %s (from %s)",
-                target,
-                "-u/--url" if args.url else "$C64CAST_URL",
-            )
-            apply_to_config(cfgs[0], parse_connection_uri(target))
+    cfgs = [cfgmod.apply_cli_layers(c, args, is_ensemble=loaded.is_ensemble) for c in loaded.cfgs]
     return loaded, cfgs
 
 
